@@ -3762,29 +3762,24 @@ function isCoverDetailOpen() {
 
 function coverDetailMeta(playback, playlists) {
     // Returns { source, title, artist, album, tech } for the cover detail
-    // card. Only uses data already present in the status payload and the
-    // loaded playlist list — never invents entries.
+    // card. Only uses data already present in the status payload — never
+    // invents entries. The source label is the provider identity (Local /
+    // Tidal) like the streaming labels, so all sources share one hierarchy;
+    // radio keeps its station name as the source label.
     const track = playback?.current_track || null;
     if (!track) return { source: '', title: '', artist: '', album: '', tech: '' };
     const isRadio = track.source === 'radio';
     const radioMetadata = isRadio ? playback.radio_metadata : null;
     const providerFresh = radioMetadata && !radioMetadata.stale && radioMetadata.title;
-    // Radio: station name from the track payload. Library: playlist name only
-    // when the active queue exactly matches a known playlist.
+    // Source label: radio shows the station, native playback sources show
+    // their provider identity (Local for the library, Tidal for TIDAL).
     let source = '';
     if (isRadio) {
         source = track.title || '';
-    } else if (Array.isArray(playlists)) {
-        const q = playback.queue || {};
-        const tracks = Array.isArray(q.tracks) ? q.tracks : [];
-        if (tracks.length >= 2) {
-            const ids = tracks.map(item => item.id);
-            const playlist = playlists.find(p => {
-                const trackIds = (p && Array.isArray(p.track_ids)) ? p.track_ids : [];
-                return trackIds.length === ids.length && trackIds.every(id => ids.includes(id));
-            });
-            if (playlist) source = playlist.name || '';
-        }
+    } else if (track.source === 'tidal') {
+        source = 'Tidal';
+    } else if (track.source === 'local') {
+        source = 'Local';
     }
     const title = providerFresh
         ? (radioMetadata.title || '')
@@ -3800,16 +3795,20 @@ function coverDetailMeta(playback, playlists) {
 }
 
 function coverDetailStreamingMeta(data, source = 'spotify') {
-    // External-renderer detail card meta: only fields actually delivered by
-    // the provider's normalized status payload — never invented technical
-    // values. The source label reflects the actual provider.
+    // External-renderer detail card meta: same hierarchy as library/radio —
+    // source label, title, artist, album and the shared audio facts line.
+    // Only fields actually delivered by the provider are used; the tech line
+    // renders through the same footer formatter (formatStreamingMetaLine), so
+    // Qobuz/TIDAL show their real format/bitdepth/rate while Spotify shows
+    // only the resolved rate — never invented technical values.
     if (!data) return { source: '', title: '', artist: '', album: '', tech: '' };
+    const labels = { spotify: 'Spotify', qobuz: 'Qobuz', tidal: 'Tidal' };
     return {
-        source: source === 'qobuz' ? 'QOBUZ' : 'SPOTIFY',
+        source: labels[source] || labels.spotify,
         title: data.title || '',
         artist: data.artist || '',
         album: data.album || '',
-        tech: '',
+        tech: formatStreamingMetaLine(data),
     };
 }
 

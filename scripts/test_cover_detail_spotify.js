@@ -34,7 +34,10 @@ function extractFunction(name) {
     throw new Error(`unterminated ${name}`);
 }
 
-const sandbox = { window: { __spotifyLastData: {} } };
+const sandbox = {
+    window: { __spotifyLastData: {} },
+    state: { samplerate: { available: true, active_rate: 44100 } },
+};
 vm.createContext(sandbox);
 // Dependencies for the artwork resolution chain.
 vm.runInContext(extractFunction('trackCoverUrl'), sandbox);
@@ -42,6 +45,11 @@ vm.runInContext(extractFunction('trackCoverKnownAvailable'), sandbox);
 vm.runInContext(extractFunction('playbackArtworkUrl'), sandbox);
 vm.runInContext(extractFunction('playbackArtworkKnownAvailable'), sandbox);
 vm.runInContext(extractFunction('streamingArtworkItem'), sandbox);
+// Shared footer meta renderer: the cover detail tech line must use the same
+// formatter as the footer (formatStreamingMetaLine -> formatRadioStreamLine).
+vm.runInContext(extractFunction('formatRadioStreamLine'), sandbox);
+vm.runInContext(extractFunction('formatRateKhz'), sandbox);
+vm.runInContext(extractFunction('formatStreamingMetaLine'), sandbox);
 vm.runInContext(extractFunction('coverDetailStreamingMeta'), sandbox);
 vm.runInContext(extractFunction('mergeSpotifyState'), sandbox);
 
@@ -71,7 +79,7 @@ function check(name, actual, expected) {
 
 check('null payload -> all empty', meta(null), { source: '', title: '', artist: '', album: '', tech: '' });
 check('undefined payload -> all empty', meta(undefined), { source: '', title: '', artist: '', album: '', tech: '' });
-check('empty payload -> SPOTIFY source only', meta({}), { source: 'SPOTIFY', title: '', artist: '', album: '', tech: '' });
+check('empty payload -> Spotify source, resolved rate tech', meta({}), { source: 'Spotify', title: '', artist: '', album: '', tech: '44.1 kHz' });
 
 check('full payload', meta({
     title: 'Groove Is in the Heart',
@@ -79,18 +87,18 @@ check('full payload', meta({
     album: 'World Clique',
     status: 'Playing',
     artUrl: 'https://i.scdn.co/image/x',
-}), { source: 'SPOTIFY', title: 'Groove Is in the Heart', artist: 'Deee-Lite', album: 'World Clique', tech: '' });
+}), { source: 'Spotify', title: 'Groove Is in the Heart', artist: 'Deee-Lite', album: 'World Clique', tech: '44.1 kHz' });
 
 check('missing album -> album empty, rest kept', meta({
     title: 'Track Without Album',
     artist: 'Some Artist',
-}), { source: 'SPOTIFY', title: 'Track Without Album', artist: 'Some Artist', album: '', tech: '' });
+}), { source: 'Spotify', title: 'Track Without Album', artist: 'Some Artist', album: '', tech: '44.1 kHz' });
 
-check('missing title/artist -> empty text, SPOTIFY kept', meta({
+check('missing title/artist -> empty text, Spotify kept', meta({
     album: 'Only Album',
-}), { source: 'SPOTIFY', title: '', artist: '', album: 'Only Album', tech: '' });
+}), { source: 'Spotify', title: '', artist: '', album: 'Only Album', tech: '44.1 kHz' });
 
-check('technical fields never leak into tech', meta({
+check('spotify never invents format facts', meta({
     title: 'T',
     artist: 'A',
     album: 'B',
@@ -100,7 +108,34 @@ check('technical fields never leak into tech', meta({
     position: 50.155,
     duration: 231.786,
     volume: 31,
-}), { source: 'SPOTIFY', title: 'T', artist: 'A', album: 'B', tech: '' });
+}), { source: 'Spotify', title: 'T', artist: 'A', album: 'B', tech: '44.1 kHz' });
+
+check('spotify without resolved rate shows no tech', (() => {
+    sandbox.state.samplerate = { available: false, active_rate: null };
+    const result = meta({ title: 'T', artist: 'A' });
+    sandbox.state.samplerate = { available: true, active_rate: 44100 };
+    return result;
+})(), { source: 'Spotify', title: 'T', artist: 'A', album: '', tech: '' });
+
+// Qobuz/TIDAL: real stream facts render through the shared footer formatter
+// (same tech line as library/radio and the footer pill).
+check('qobuz full quality facts in tech line', meta({
+    title: 'T',
+    artist: 'A',
+    album: 'B',
+    audio_format: 'flac',
+    bit_depth: 24,
+    sample_rate: 44100,
+}, 'qobuz'), { source: 'Qobuz', title: 'T', artist: 'A', album: 'B', tech: 'FLAC · 24 bit · 44.1 kHz' });
+
+check('tidal-shaped full quality facts', meta({
+    title: 'T',
+    artist: 'A',
+    album: 'B',
+    audio_format: 'flac',
+    bit_depth: 16,
+    sample_rate: 48000,
+}, 'tidal'), { source: 'Tidal', title: 'T', artist: 'A', album: 'B', tech: 'FLAC · 16 bit · 48 kHz' });
 
 // ---- artwork resolution (mirrors footer via streamingArtworkItem) ----
 
@@ -144,11 +179,11 @@ check('streamingArtworkItem without Qobuz artUrl keeps qobuz source', qobuzWitho
 });
 
 check('coverDetailStreamingMeta labels Qobuz source', meta({ title: 'T', artist: 'A', album: 'B' }, 'qobuz'), {
-    source: 'QOBUZ',
+    source: 'Qobuz',
     title: 'T',
     artist: 'A',
     album: 'B',
-    tech: '',
+    tech: '44.1 kHz',
 });
 
 // artUrl alias artUrl wins over artwork_url (same as footer: artwork_url || artUrl)

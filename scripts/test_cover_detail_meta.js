@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
 // Tests for the cover detail card meta builder in static/app.js.
-// Verifies source/playlist, title, artist, album and tech line only use data
-// already present in the status payload / loaded playlists — never invented.
+// Verifies source label (Local/Tidal/radio station), title, artist, album and
+// tech line only use data already present in the status payload — never
+// invented.
 
 const assert = require('assert/strict');
 const fs = require('fs');
@@ -132,32 +133,42 @@ const cases = [
         tech: 'MP3 · 128 kbps · 48 kHz',
     }],
     ['library single track', localSingle, [], {
-        source: '',
+        source: 'Local',
         title: 'Single Track',
         artist: 'Solo Artist',
         album: 'Album One',
         tech: 'FLAC · 16 bit · 44.1 kHz',
     }],
     ['library playlist matches known playlist', localPlaylist, [playlistDef], {
-        source: 'Mix',
+        source: 'Local',
         title: 'Track B',
         artist: 'Artist B',
         album: 'Album B',
         tech: 'MP3 · 320 kbps · 44.1 kHz',
     }],
     ['library playlist without matching playlist', localSelection, [playlistDef], {
-        source: '',
+        source: 'Local',
         title: 'Track X',
         artist: 'Artist X',
         album: '',
         tech: 'MP3 · 256 kbps · 44.1 kHz',
     }],
     ['no stream info yet', { current_track: { source: 'local', title: 'T' } }, [], {
-        source: '',
+        source: 'Local',
         title: 'T',
         artist: '',
         album: '',
         tech: '',
+    }],
+    ['tidal track with real stream facts', {
+        current_track: { source: 'tidal', title: 'One Wish', artist: 'Hiroshima', album: 'Best Of Hiroshima' },
+        stream_info: { codec: 'FLAC', bit_depth: 16, samplerate_hz: 44100 },
+    }, [], {
+        source: 'Tidal',
+        title: 'One Wish',
+        artist: 'Hiroshima',
+        album: 'Best Of Hiroshima',
+        tech: 'FLAC · 16 bit · 44.1 kHz',
     }],
 ];
 
