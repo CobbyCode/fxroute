@@ -23,6 +23,7 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming.js')
 
 function makeEl() {
     const listeners = {};
+    const childEls = {};
     const el = {
         style: {},
         classList: {
@@ -47,10 +48,19 @@ function makeEl() {
         type: '',
         addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
         dispatch(type, ev) { (listeners[type] || []).forEach((fn) => fn(ev || {})); },
-        click() { el.dispatch('click'); },
+        click() {
+            el.dispatch('click', {
+                target: el,
+                preventDefault() {},
+                stopPropagation() {},
+            });
+        },
         setAttribute(name, value) { el[name] = value; },
         getAttribute(name) { return el[name] != null ? String(el[name]) : null; },
-        querySelector() { return makeEl(); },
+        querySelector(sel) {
+            if (!childEls[sel]) childEls[sel] = makeEl();
+            return childEls[sel];
+        },
         querySelectorAll() { return []; },
         appendChild() {},
         closest() { return null; },
@@ -94,6 +104,31 @@ function buildDom() {
     const tabPanels = {};
     const byId = {};
     const createdEls = [];
+    const tidalSearchTypeButtons = {};
+    for (const type of ['artists', 'tracks', 'albums', 'playlists']) {
+        const button = makeEl();
+        button.dataset.searchType = type;
+        tidalSearchTypeButtons[type] = button;
+    }
+    const tidalFavoriteTypeButtons = {};
+    for (const type of ['tracks', 'albums', 'artists']) {
+        const button = makeEl();
+        button.dataset.type = type;
+        tidalFavoriteTypeButtons[type] = button;
+    }
+    const tidalBrowseBody = makeEl();
+    const tidalBrowseBodyEls = {};
+    tidalBrowseBody.querySelectorAll = (sel) => {
+        if (sel === '#tidal-search-result-types .streaming-chip') return Object.values(tidalSearchTypeButtons);
+        if (sel === '#tidal-fav-types .streaming-chip') return Object.values(tidalFavoriteTypeButtons);
+        return [];
+    };
+    tidalBrowseBody.querySelector = (sel) => {
+        const typeMatch = sel.match(/^#tidal-search-type-(artists|tracks|albums|playlists)$/);
+        if (typeMatch) return tidalSearchTypeButtons[typeMatch[1]];
+        if (!tidalBrowseBodyEls[sel]) tidalBrowseBodyEls[sel] = makeEl();
+        return tidalBrowseBodyEls[sel];
+    };
     for (const pid of providers) {
         shells[pid] = shellEl(pid);
         tabButtons[pid] = makeEl();
@@ -112,6 +147,7 @@ function buildDom() {
         getElementById(id) {
             const m = id.match(/^tab-(\w+)$/);
             if (m) return tabPanels[m[1]];
+            if (id === 'tidal-browse-body') return tidalBrowseBody;
             if (!byId[id]) byId[id] = makeEl();
             return byId[id];
         },
@@ -124,11 +160,12 @@ function buildDom() {
     return { document, shells, tabButtons, tabPanels, createdEls };
 }
 
-function runStreaming() {
+function runStreaming(options = {}) {
     const { document, shells, createdEls } = buildDom();
     const fetchCalls = [];
     const spotifyCommandCalls = [];
     const spotifySeekCalls = [];
+    const tidalFavoriteTracks = options.tidalFavoriteTracks || [];
 
     const sandbox = {
         document,
@@ -145,12 +182,23 @@ function runStreaming() {
             let body = {};
             if (u === '/api/streaming/tidal/playlists') {
                 body = [{ id: 'pl-1', name: 'Test Playlist', art_url: '', track_count: 2 }];
-            } else if (u.startsWith('/api/streaming/tidal/search?q=')) {
-                body = { tracks: [{ id: 's1', title: 'Found Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 10 }] };
+            } else if (u === '/api/streaming/tidal/playlists/pl-1/tracks') {
+                body = [
+                    { id: 'p1', title: 'Playlist One', artist: 'Found Artist', duration: 10 },
+                    { id: 'p2', title: 'Playlist Two', artist: 'Found Artist', duration: 12 },
+                ];
+            } else if (u.includes('/api/streaming/tidal/search?q=')) {
+                if (u.includes('types=artists')) body = { artists: [{ id: 'a1', name: 'Found Artist', art_url: '' }] };
+                else if (u.includes('types=albums')) body = { albums: [{ id: 'al1', title: 'Found Album', artist: 'Found Artist', art_url: '' }] };
+                else if (u.includes('types=playlists')) body = { playlists: [{ id: 'p1', name: 'Found Playlist', art_url: '' }] };
+                else body = { tracks: [
+                    { id: 's1', title: 'Found Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 10 },
+                    { id: 's2', title: 'Second Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 12 },
+                ] };
             } else if (u === '/api/streaming/tidal/favorites/ids') {
                 body = { tracks: [], albums: [], playlists: [] };
             } else if (u.startsWith('/api/streaming/tidal/favorites?type=')) {
-                body = [];
+                body = u.includes('type=tracks') ? tidalFavoriteTracks : [];
             }
             return { ok: true, json: async () => body };
         },
@@ -279,7 +327,7 @@ async function main() {
 // --- 4. Tidal detail views hide the standalone status line ----------------
 
 {
-    const { sandbox, shells, createdEls } = runStreaming();
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming();
     const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
 
     sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
@@ -296,8 +344,18 @@ async function main() {
     const playlistRow = createdEls.find((el) => el.className === 'streaming-result');
     assert.ok(playlistRow, 'a playlist row must be created for the playlists tab');
     playlistRow.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(content.innerHTML.includes('tidal-detail'), 'playlist detail view must render');
     assert.equal(statusLine.hidden, true, 'detail view must hide the standalone status line');
+    const playlistTrackRows = createdEls.filter((el) => el.className === 'streaming-result');
+    playlistTrackRows.at(-1).querySelector('.track-play').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const playlistPlayCalls = fetchCalls.filter((c) => c.url === '/api/play');
+    assert.equal(playlistPlayCalls.length, 1, 'a detail play button must dispatch exactly one playback request');
+    const playlistPlayCall = playlistPlayCalls[0];
+    assert.deepEqual(JSON.parse(playlistPlayCall.opts.body), {
+        source: 'tidal', track_id: 'p2', queue_track_ids: ['p1', 'p2'],
+    }, 'playlist detail playback must keep its complete playlist queue');
 
     // Leaving the detail view restores the status line immediately.
     content.querySelector('#tidal-detail-back').click();
@@ -312,6 +370,7 @@ async function main() {
 
     sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
     const content = shells.tidal.querySelector('.streaming-content');
+    const body = sandbox.document.getElementById('tidal-browse-body');
 
     // First authenticated render lands on Favorites, not an empty Search screen.
     assert.ok(content.innerHTML.includes('streaming-browse'), 'browse surface must render');
@@ -324,26 +383,85 @@ async function main() {
     assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
         'first authenticated render must show Favorites content');
 
-    // Executing a search replaces the browse body with results.
+    // Keep the last favorite category while switching into and out of search.
+    body.querySelectorAll('#tidal-fav-types .streaming-chip').find((tab) => tab.dataset.type === 'albums').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Typing alone must not execute a search.
     const input = content.querySelector('#tidal-search-input');
     input.value = 'daft punk';
-    content.querySelector('#tidal-search-btn').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(fetchCalls.filter((c) => c.url.startsWith('/api/streaming/tidal/search?')).length, 0,
+        'typing must not trigger live TIDAL search');
+
+    // Executing a search replaces the browse body with results.
+    input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(fetchCalls.some((c) => c.url.startsWith('/api/streaming/tidal/search?q=daft%20punk')),
         'search must hit the TIDAL search endpoint');
     const resultCount = createdEls.filter((el) => el.className === 'streaming-result').length;
-    assert.ok(resultCount > 0, 'search must render result rows');
+    assert.equal(resultCount, 2, 'search must render all track result rows');
+    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('Search results for'),
+        'search must switch to the dedicated result state');
+    assert.ok(!sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
+        'favorite categories must not be visible in search results');
+    assert.ok(!body.innerHTML.includes('class="tidal-track-select"'),
+        'normal track search results must not show permanent checkboxes');
+    assert.ok(!body.innerHTML.includes('tidal-select-all'),
+        'selection actions must stay hidden until selection mode is activated');
+
+    // A normal track click uses all currently displayed tracks as a temporary queue.
+    const resultRows = createdEls.filter((el) => el.className === 'streaming-result');
+    resultRows[1].click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const playCall = fetchCalls.find((c) => c.url === '/api/play');
+    assert.ok(playCall, 'clicking a search track must start playback');
+    assert.deepEqual(JSON.parse(playCall.opts.body), {
+        source: 'tidal', track_id: 's2', queue_track_ids: ['s1', 's2'],
+    }, 'search track playback must queue every visible search track');
+
+    // Selection mode is opt-in and can start a queue containing only checked tracks.
+    const selectToggle = body.querySelector('#tidal-track-selection-toggle');
+    selectToggle.click();
+    const selectedRows = createdEls.filter((el) => el.className === 'streaming-result').slice(-2);
+    const firstCheckbox = selectedRows[0].querySelector('.tidal-track-select');
+    firstCheckbox.dispatch('change', { target: { checked: true } });
+    body.querySelector('#tidal-play-selected').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const selectionPlayCalls = fetchCalls.filter((c) => c.url === '/api/play');
+    assert.deepEqual(JSON.parse(selectionPlayCalls.at(-1).opts.body), {
+        source: 'tidal', track_id: 's1', queue_track_ids: ['s1'],
+    }, 'Play selected must queue only checked search tracks');
+
+    // Switching result types reuses the executed query without a second Search click.
+    for (const type of ['artists', 'tracks', 'albums', 'playlists']) {
+        body.querySelector('#tidal-search-type-' + type).click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/search?q=daft%20punk&types=' + type + '&limit=25'),
+            'switching to ' + type + ' must automatically search the saved query');
+    }
+
+    // Returning from a detail opened by search restores the executed search view.
+    body.querySelector('#tidal-search-type-albums').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    content.querySelector('#tidal-detail-back').click();
+    assert.ok(body.innerHTML.includes('Search results for'),
+        'back from a search detail must restore the search result state');
 
     // A status refresh must not wipe the results (contentKey guard).
+    const searchBodyBeforeRefresh = body.innerHTML;
     sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
-    assert.equal(createdEls.filter((el) => el.className === 'streaming-result').length, resultCount,
+    assert.equal(body.innerHTML, searchBodyBeforeRefresh,
         'status refresh must not re-render away the search results');
 
-    // Clearing the search (empty input + Search) returns to Favorites.
+    // Clearing the field itself returns to Favorites without a search request.
     input.value = '';
-    content.querySelector('#tidal-search-btn').click();
+    input.dispatch('input');
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
+    assert.ok(body.innerHTML.includes('tidal-fav-types') &&
+        body.innerHTML.includes('class="streaming-chip is-active" data-type="albums"'),
         'clearing the search must return to Favorites');
 
     // Escape resets the search back to the browse section too.
@@ -362,6 +480,33 @@ async function main() {
     tabs.find((t) => t.dataset.browse === 'favorites').click();
     assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
         'Favorites tab must render the favorites section');
+}
+
+// --- 6. TIDAL Favorites -> Tracks uses all visible tracks as a queue --------
+
+{
+    const favoriteTracks = [
+        { id: 'f1', title: 'Favorite One', artist: 'Artist', duration: 10 },
+        { id: 'f2', title: 'Favorite Two', artist: 'Artist', duration: 11 },
+        { id: 'f3', title: 'Favorite Three', artist: 'Artist', duration: 12 },
+        { id: 'f4', title: 'Favorite Four', artist: 'Artist', duration: 13 },
+    ];
+    const { sandbox, fetchCalls, createdEls } = runStreaming({ tidalFavoriteTracks: favoriteTracks });
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const favoriteRows = createdEls.filter((el) => el.className === 'streaming-result');
+    assert.equal(favoriteRows.length, 4, 'Favorites Tracks must render all currently displayed tracks');
+    favoriteRows[2].click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const playCalls = fetchCalls.filter((c) => c.url === '/api/play');
+    assert.equal(playCalls.length, 1, 'clicking a favorite track must start playback once');
+    assert.deepEqual(JSON.parse(playCalls[0].opts.body), {
+        source: 'tidal', track_id: 'f3', queue_track_ids: ['f1', 'f2', 'f3', 'f4'],
+    }, 'favorite track playback must queue every visible favorite in order at the clicked track');
 }
 
 console.log('PASS  scripts/test_streaming_ui_actions.js');

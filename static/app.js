@@ -2655,10 +2655,10 @@ function renderFooterModeButtons() {
     }
 
     const track = state.playback.current_track;
-    const localActive = !!(track && track.source === 'local');
+    const nativeQueueActive = !!(track && (track.source === 'local' || track.source === 'tidal'));
     const queue = state.playback.queue || {};
-    const showShuffle = localActive && Number(queue.count || 0) > 1;
-    const showLoop = localActive;
+    const showShuffle = nativeQueueActive && Number(queue.count || 0) > 1;
+    const showLoop = nativeQueueActive;
     if (shuffleBtn) {
         shuffleBtn.classList.toggle('hidden', !showShuffle);
         shuffleBtn.classList.toggle('active', showShuffle && !!state.library.shuffle);
@@ -3522,9 +3522,9 @@ function renderQueueUI() {
     const hasQueue = footerSingleTrackOverride ? false : queue.count > 1;
     const queueIndex = footerSingleTrackOverride ? -1 : (typeof queue.index === 'number' ? queue.index : -1);
     const currentTrack = state.playback.current_track;
-    const hasLocalTrack = currentTrack && currentTrack.source === 'local';
-    state.library.shuffle = hasLocalTrack ? !!queue.shuffle : false;
-    state.library.loop = hasLocalTrack ? !!queue.loop : false;
+    const hasNativeQueueTrack = !!(currentTrack && (currentTrack.source === 'local' || currentTrack.source === 'tidal'));
+    state.library.shuffle = hasNativeQueueTrack ? !!queue.shuffle : false;
+    state.library.loop = hasNativeQueueTrack ? !!queue.loop : false;
     libraryModeSyncArmed = false;
     renderLibraryModeButtons();
 

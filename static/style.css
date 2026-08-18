@@ -7151,6 +7151,21 @@ body {
 .streaming-browse-tab:hover { color: var(--text-secondary); background: var(--bg-hover); }
 .streaming-browse-tab.is-active { color: var(--accent); background: var(--accent-dim); border-color: rgba(110, 231, 183, 0.2); }
 
+.tidal-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 430px) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.75rem;
+}
+.tidal-toolbar .streaming-search { min-width: 0; }
+.tidal-toolbar > .streaming-status-line {
+    width: auto;
+    min-height: 0;
+    justify-self: end;
+    padding: 0 0.2rem;
+    text-align: right;
+    white-space: nowrap;
+}
 .streaming-search { display: flex; flex-direction: column; gap: 0.7rem; }
 .streaming-search-row { display: flex; gap: 0.5rem; align-items: center; width: 100%; }
 .streaming-search-row .btn-secondary { flex: 0 0 auto; white-space: nowrap; }
@@ -7185,6 +7200,13 @@ body {
 .streaming-chip.is-active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
 
 .streaming-results { min-height: 2rem; }
+#tidal-fav-results,
+#tidal-search-items { margin-top: 0.35rem; }
+.tidal-search-results-header { display: flex; flex-direction: column; gap: 0.6rem; }
+.streaming-results-title { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 700; }
+.tidal-track-selection { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
+.tidal-track-selection .btn-ghost,
+.tidal-track-selection .btn-primary { min-height: 32px; padding: 0.3rem 0.65rem; font-size: 0.78rem; }
 .streaming-results-heading {
     font-size: 0.78rem;
     text-transform: uppercase;
@@ -7466,7 +7488,10 @@ body {
         gap: 0.75rem;
     }
     .streaming-cover { width: 180px; height: 180px; }
-    .streaming-search-row { flex-wrap: wrap; }
+    .tidal-toolbar { grid-template-columns: 1fr; gap: 0.35rem; }
+    .streaming-search-row { flex-wrap: nowrap; }
+    .streaming-search-row .streaming-search-input { flex: 1 1 0; width: 100%; }
+    .tidal-toolbar > .streaming-status-line { justify-self: end; margin-left: 0; text-align: right; }
     .album-detail-header,
     .streaming-detail-header {
         grid-template-columns: auto minmax(0, 1fr);
