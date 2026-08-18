@@ -425,6 +425,51 @@ class CatalogFavoritesTests(unittest.TestCase):
         self.assertEqual(state["tracks"], ["11", "22"])
         self.assertEqual(state["albums"], ["a1"])
 
+    def test_favorite_state_paginates_beyond_one_page_via_paginated_helper(self):
+        # The paginated helper must yield the full collection (120 > one 50-item
+        # API page) and favorite_state must not truncate it: every id survives.
+        from streaming.tidal import catalog
+
+        tracks = [SimpleNamespace(id=i) for i in range(120)]
+        albums = [SimpleNamespace(id=f"a{i}") for i in range(120)]
+        favorites = FakeFavorites(tracks=tracks, albums=albums)
+        p1, p2 = self._patch(_favorites_session(favorites))
+        with p1, p2:
+            state = catalog.favorite_state()
+        self.assertEqual(len(state["tracks"]), 120)
+        self.assertEqual(len(state["albums"]), 120)
+        self.assertEqual(state["tracks"][0], "0")
+        self.assertEqual(state["tracks"][-1], "119")
+        self.assertEqual(state["albums"][-1], "a119")
+
+    def test_favorite_state_paginates_fallback_without_paginated_helper(self):
+        # Older tidalapi without the *_paginated helpers must still collect the
+        # whole collection via the limit/offset loop (120 items in 50-item
+        # pages), never a single truncated page.
+        from streaming.tidal import catalog
+
+        class PagingFavorites:
+            def __init__(self, tracks, albums):
+                self._tracks = tracks
+                self._albums = albums
+
+            def tracks(self, limit=50, offset=0, **kw):
+                return self._tracks[offset:offset + limit]
+
+            def albums(self, limit=50, offset=0, **kw):
+                return self._albums[offset:offset + limit]
+
+        tracks = [SimpleNamespace(id=i) for i in range(120)]
+        albums = [SimpleNamespace(id=f"a{i}") for i in range(120)]
+        favorites = PagingFavorites(tracks, albums)
+        p1, p2 = self._patch(_favorites_session(favorites))
+        with p1, p2:
+            state = catalog.favorite_state()
+        self.assertEqual(len(state["tracks"]), 120)
+        self.assertEqual(len(state["albums"]), 120)
+        self.assertEqual(state["tracks"][-1], "119")
+        self.assertEqual(state["albums"][-1], "a119")
+
     def test_set_track_favorite_add_and_remove(self):
         from streaming.tidal import catalog
 

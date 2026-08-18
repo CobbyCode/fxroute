@@ -243,12 +243,14 @@ def favorites_artists(limit: int = 50) -> list[dict]:
     return [normalize_artist(a) for a in artists]
 
 
-def _favorite_items(favorites: Any, kind: str, limit: int = 200) -> list:
+def _favorite_items(favorites: Any, kind: str, page_size: int = 50) -> list:
     """Return all favorited items of ``kind`` (``tracks``/``albums``).
 
-    Prefer the paginated helper when tidalapi offers it; otherwise fall back
-    to a single large-page fetch.  Both return plain ``tidalapi`` objects that
-    the caller normalizes.
+    Prefer the paginated helper when tidalapi offers it (it already walks the
+    full collection via the count endpoint); otherwise page explicitly with
+    ``limit``/``offset`` so collections beyond one API page are never
+    truncated.  Both return plain ``tidalapi`` objects that the caller
+    normalizes.
     """
     paginated = getattr(favorites, f"{kind}_paginated", None)
     if callable(paginated):
@@ -257,9 +259,17 @@ def _favorite_items(favorites: Any, kind: str, limit: int = 200) -> list:
         except TypeError:
             pass
     plain = getattr(favorites, kind, None)
-    if callable(plain):
-        return list(plain(limit=limit) or [])
-    return []
+    if not callable(plain):
+        return []
+    items: list = []
+    offset = 0
+    while True:
+        page = list(plain(limit=page_size, offset=offset) or [])
+        items.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return items
 
 
 def favorite_state() -> dict:
