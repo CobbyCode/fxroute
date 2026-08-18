@@ -7081,10 +7081,10 @@ body {
 }
 
 /* Player pages (Spotify/Qobuz) share one top-anchored stage: the now-playing
-   card starts directly under the provider status, so both pages have the
-   same vertical geometry no matter how their metadata heights differ (a
-   content-height-dependent centering made the shorter card hang lower).
-   Catalog providers (TIDAL) keep a full-width browser surface. */
+   card starts at the top of the stage, so both pages have the same vertical
+   geometry no matter how their metadata heights differ. The provider status
+   lives inside the card (top-right chip); catalog providers (TIDAL) keep a
+   full-width browser surface with the standalone status line. */
 .streaming-provider-player {
     min-height: calc(100dvh - 18rem);
     justify-content: flex-start;
@@ -7113,21 +7113,6 @@ body {
     letter-spacing: 0.03em;
     text-align: left;
     min-height: 1em;
-}
-
-/* On player pages the provider status is a small badge tightly coupled to
-   the card header, not a separate content section. */
-.streaming-provider-player .streaming-status-line {
-    width: auto;
-    align-self: center;
-    text-align: center;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0.2rem 0.8rem;
-    font-size: 0.72rem;
-    color: var(--text-muted);
-    letter-spacing: 0.02em;
 }
 
 /* Empty / not-connected state */
@@ -7179,6 +7164,7 @@ body {
     width: 100%;
     max-width: 560px;
     margin: 0 auto;
+    position: relative;
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-top: 3px solid var(--accent);
@@ -7195,6 +7181,26 @@ body {
     justify-items: center;
     text-align: center;
     gap: 0.7rem;
+}
+/* In-card provider status chip (top-right), replacing the old floating
+   status pill above the card. The dot-led label is subtle; the provider /
+   backend detail lives in the tooltip. */
+.streaming-status-chip {
+    position: absolute;
+    top: 0.9rem;
+    right: 1rem;
+    max-width: 62%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.1rem 0.55rem;
 }
 .streaming-cover-wrap {
     grid-area: cover;

@@ -123,6 +123,7 @@
                         '<div class="streaming-empty-actions"></div>' +
                     '</div>' +
                     '<div class="streaming-now-playing" hidden>' +
+                        '<div class="streaming-status-chip" hidden></div>' +
                         '<div class="streaming-cover-wrap">' +
                             '<img class="streaming-cover" alt="" />' +
                         '</div>' +
@@ -169,6 +170,7 @@
                 emptyMsg: root.querySelector('.streaming-empty-msg'),
                 emptyActions: root.querySelector('.streaming-empty-actions'),
                 nowPlaying: root.querySelector('.streaming-now-playing'),
+                statusChip: root.querySelector('.streaming-status-chip'),
                 coverWrap: root.querySelector('.streaming-cover-wrap'),
                 cover: root.querySelector('.streaming-cover'),
                 title: root.querySelector('.streaming-title'),
@@ -224,22 +226,50 @@
     // -----------------------------------------------------------------------
     // Status line (backend / connected / authenticated)
     // -----------------------------------------------------------------------
-    function renderStatusLine(providerId, entry, data) {
+    // Provider status bits (visible text) and the detail string kept in the
+    // chip tooltip. Backend implementation names are never surfaced.
+    function buildStatusBits(providerId, data) {
         const bits = [];
         if (providerId === 'spotify') {
-            if (data.backend === 'desktop') bits.push('Spotify Desktop');
-            else if (data.backend === 'spotifyd') bits.push('spotifyd');
+            bits.push('Connected');
         } else if (providerId === 'qobuz') {
-            // The native control daemon is an implementation detail; surface
-            // only the connect state.
-            if (data.connected) bits.push('Qobuz Connect');
-            if (data.authenticated === true) bits.push('Connected');
+            if (data.connected || data.authenticated === true) bits.push('Connected');
         } else if (providerId === 'tidal') {
             bits.push(PROVIDER_META.tidal.name);
             if (data.authenticated === true) bits.push('Connected');
         }
-        entry.els.statusLine.hidden = bits.length === 0;
-        entry.els.statusLine.textContent = bits.join(' · ');
+        return bits;
+    }
+
+    function buildStatusDetail(providerId, data) {
+        if (providerId === 'spotify') {
+            if (data.backend === 'desktop') return 'Spotify Desktop';
+            if (data.backend === 'spotifyd') return 'spotifyd';
+            return 'Spotify';
+        }
+        if (providerId === 'qobuz') return 'Qobuz Connect';
+        return PROVIDER_META.tidal.name;
+    }
+
+    function renderStatusLine(providerId, entry, data) {
+        const bits = buildStatusBits(providerId, data);
+        const catalogProvider = PROVIDER_META[providerId]?.catalog === true;
+        if (catalogProvider) {
+            // Catalog providers keep the standalone line; the in-tab player
+            // card is not rendered for them (the footer is the player).
+            entry.els.statusLine.hidden = bits.length === 0;
+            entry.els.statusLine.textContent = bits.join(' · ');
+            entry.els.statusLine.title = '';
+            return;
+        }
+        // Player providers integrate the status into the card as a small
+        // top-right chip; the standalone line above the card is gone. The
+        // provider/backend detail stays available via the chip tooltip.
+        const text = bits.length ? '● ' + bits.join(' · ') : '';
+        entry.els.statusChip.hidden = !text;
+        entry.els.statusChip.textContent = text;
+        entry.els.statusChip.title = buildStatusDetail(providerId, data);
+        entry.els.statusLine.hidden = true;
     }
 
     // -----------------------------------------------------------------------

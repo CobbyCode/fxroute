@@ -1234,11 +1234,20 @@ function formatTransitionErrorDetail(detail, fallback = 'Request failed') {
 function formatRadioStreamLine(streamInfo, effectiveOutputRate = null) {
     if (!streamInfo || typeof streamInfo !== 'object') streamInfo = {};
     const parts = [];
-    if (streamInfo.codec) parts.push(String(streamInfo.codec));
-    if (streamInfo.profile) {
-        parts.push(String(streamInfo.profile));
-    } else if (Number.isFinite(Number(streamInfo.bitrate_kbps)) && Number(streamInfo.bitrate_kbps) > 0) {
-        parts.push(`${Math.round(Number(streamInfo.bitrate_kbps))} kbps`);
+    const codec = streamInfo.codec ? String(streamInfo.codec) : '';
+    // Lossless codecs: the decoded bitrate is content-dependent and the
+    // `Lossless` profile label is redundant, so neither is shown for them —
+    // the meaningful facts are bit depth and sample rate (FLAC · 24 bit ·
+    // 44.1 kHz). Lossy codecs keep the profile/bitrate line (AAC · 320 kbps
+    // · 44.1 kHz).
+    const lossless = !!codec && ['FLAC', 'ALAC', 'APE', 'WAVPACK', 'TTA', 'PCM'].includes(codec.toUpperCase());
+    if (codec) parts.push(codec);
+    if (!lossless) {
+        if (streamInfo.profile) {
+            parts.push(String(streamInfo.profile));
+        } else if (Number.isFinite(Number(streamInfo.bitrate_kbps)) && Number(streamInfo.bitrate_kbps) > 0) {
+            parts.push(`${Math.round(Number(streamInfo.bitrate_kbps))} kbps`);
+        }
     }
     if (Number.isFinite(Number(streamInfo.bit_depth)) && Number(streamInfo.bit_depth) > 0) {
         parts.push(`${Math.round(Number(streamInfo.bit_depth))} bit`);

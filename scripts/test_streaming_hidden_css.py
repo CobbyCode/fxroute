@@ -72,6 +72,29 @@ class StreamingHiddenCssTests(unittest.TestCase):
         self.assertIsNotNone(shell, "missing .streaming-shell rule")
         self.assertNotIn("padding-top", shell.group(1))
 
+    def test_player_status_is_integrated_into_the_card(self):
+        # The floating status pill above the player card is gone; the status
+        # is a small top-right chip inside the card.
+        player_pill = re.search(
+            r"^[ \t]*\.streaming-provider-player \.streaming-status-line\s*\{", CSS, re.MULTILINE
+        )
+        self.assertIsNone(
+            player_pill,
+            "player providers must not have a standalone status pill above the card",
+        )
+        card = re.search(
+            r"^[ \t]*\.streaming-now-playing\s*\{([^}]+)\}", CSS, re.MULTILINE
+        )
+        self.assertIsNotNone(card, "missing .streaming-now-playing rule")
+        self.assertIn("position: relative", card.group(1))
+        chip = re.search(
+            r"^[ \t]*\.streaming-status-chip\s*\{([^}]+)\}", CSS, re.MULTILINE
+        )
+        self.assertIsNotNone(chip, "missing .streaming-status-chip rule")
+        self.assertIn("position: absolute", chip.group(1))
+        streaming_js = (ROOT / "static" / "streaming.js").read_text(encoding="utf-8")
+        self.assertIn("streaming-status-chip", streaming_js)
+
     def test_provider_layout_has_player_width_and_footer_safe_area(self):
         # The shared player card is bounded, centered, and generous on desktop.
         now_playing = re.search(

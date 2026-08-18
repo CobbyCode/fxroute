@@ -40,8 +40,9 @@ const format = sandbox.formatRadioStreamLine;
 const cases = [
     // live Radio Paradise aac-320
     [{ codec: 'AAC', bitrate_kbps: 320, samplerate_hz: 44100 }, 'AAC · 320 kbps · 44.1 kHz'],
-    // live Radio Paradise flac
-    [{ codec: 'FLAC', profile: 'Lossless', bitrate_kbps: 746, samplerate_hz: 44100 }, 'FLAC · Lossless · 44.1 kHz'],
+    // live Radio Paradise flac: the Lossless label and the content-dependent
+    // bitrate are redundant for lossless codecs
+    [{ codec: 'FLAC', profile: 'Lossless', bitrate_kbps: 746, samplerate_hz: 44100 }, 'FLAC · 44.1 kHz'],
     // live FIP midfi mp3 (48 kHz!)
     [{ codec: 'MP3', bitrate_kbps: 128, samplerate_hz: 48000 }, 'MP3 · 128 kbps · 48 kHz'],
     // live SomaFM 256 mp3
@@ -53,11 +54,15 @@ const cases = [
     // profile only, no samplerate
     [{ codec: 'AAC', profile: 'Low' }, 'AAC · Low'],
     // local FLAC 24 bit (decoded format s32)
-    [{ codec: 'FLAC', profile: 'Lossless', bit_depth: 24, samplerate_hz: 44100 }, 'FLAC · Lossless · 24 bit · 44.1 kHz'],
+    [{ codec: 'FLAC', profile: 'Lossless', bit_depth: 24, samplerate_hz: 44100 }, 'FLAC · 24 bit · 44.1 kHz'],
     // local FLAC 16 bit
-    [{ codec: 'FLAC', profile: 'Lossless', bit_depth: 16, samplerate_hz: 44100 }, 'FLAC · Lossless · 16 bit · 44.1 kHz'],
-    // local WAV 24 bit
-    [{ codec: 'PCM', bitrate_kbps: 1058, bit_depth: 24, samplerate_hz: 44100 }, 'PCM · 1058 kbps · 24 bit · 44.1 kHz'],
+    [{ codec: 'FLAC', profile: 'Lossless', bit_depth: 16, samplerate_hz: 44100 }, 'FLAC · 16 bit · 44.1 kHz'],
+    // local WAV 24 bit: lossless, no redundant bitrate/profile
+    [{ codec: 'PCM', bitrate_kbps: 1058, bit_depth: 24, samplerate_hz: 44100 }, 'PCM · 24 bit · 44.1 kHz'],
+    // lossless codec without extra facts
+    [{ codec: 'FLAC', profile: 'Lossless' }, 'FLAC'],
+    // lossless ALAC hi-res
+    [{ codec: 'ALAC', profile: 'Lossless', bit_depth: 24, samplerate_hz: 88200 }, 'ALAC · 24 bit · 88.2 kHz'],
     // local lossy: no bit depth (floatp decode)
     [{ codec: 'MP3', bitrate_kbps: 320, samplerate_hz: 44100 }, 'MP3 · 320 kbps · 44.1 kHz'],
     // unknown parts must be omitted

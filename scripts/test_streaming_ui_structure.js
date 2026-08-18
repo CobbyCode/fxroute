@@ -134,11 +134,29 @@ assert.ok(nowPlayingRender.includes('meta.catalog'),
 assert.ok(nowPlayingRender.includes('els.nowPlaying.hidden = true'),
     'catalog providers must keep the in-tab now-playing card hidden');
 
-// The visible provider status must not surface raw backend identifiers.
+// The visible provider status must not surface raw backend identifiers, and
+// player providers integrate the status into the card (top-right chip) while
+// catalog providers keep the standalone line.
+for (const name of ['renderStatusLine', 'buildStatusBits', 'buildStatusDetail']) {
+    const fn = extractFunction(js, name);
+    assert.ok(!fn.includes('qbzd'), `${name} must not surface the qbzd backend name`);
+    assert.ok(!fn.includes('tidalapi'), `${name} must not surface the tidalapi backend name`);
+}
 const statusLineRender = extractFunction(js, 'renderStatusLine');
-assert.ok(!statusLineRender.includes('qbzd'), 'status line must not surface the qbzd backend name');
-assert.ok(!statusLineRender.includes('tidalapi'), 'status line must not surface the tidalapi backend name');
-assert.ok(statusLineRender.includes("PROVIDER_META.tidal.name"),
+assert.ok(statusLineRender.includes('els.statusChip'),
+    'player providers must render status into the in-card chip');
+assert.ok(statusLineRender.includes('els.statusLine'),
+    'catalog providers keep the standalone status line');
+assert.ok(statusLineRender.includes('catalogProvider'),
+    'status placement must branch on the catalog flag, not the provider id');
+assert.ok(js.includes("'<div class=\"streaming-status-chip\" hidden></div>'"),
+    'now-playing card must carry the in-card status chip');
+assert.ok(js.includes("'● ' + bits.join(' · ')"),
+    'in-card status must be a compact dot-led label');
+assert.ok(js.includes('buildStatusDetail'),
+    'backend/provider detail must stay available via the chip tooltip');
+const bitsBuilder = extractFunction(js, 'buildStatusBits');
+assert.ok(bitsBuilder.includes("PROVIDER_META.tidal.name"),
     'Tidal status must use the visible provider name');
 
 // The served navigation changes visible copy only, not the provider id.

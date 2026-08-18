@@ -136,7 +136,7 @@ const cases = [
         title: 'Single Track',
         artist: 'Solo Artist',
         album: 'Album One',
-        tech: 'FLAC · Lossless · 16 bit · 44.1 kHz',
+        tech: 'FLAC · 16 bit · 44.1 kHz',
     }],
     ['library playlist matches known playlist', localPlaylist, [playlistDef], {
         source: 'Mix',
