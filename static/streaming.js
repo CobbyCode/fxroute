@@ -60,7 +60,7 @@
             detailTitle: '',
             detailArt: '',
             contentKey: null,   // availability/auth mode last rendered into .streaming-content
-            browseSection: 'search',
+            browseSection: 'favorites',   // 'favorites' | 'playlists'; search results are a separate temporary overlay
             favoriteIds: { tracks: new Set(), albums: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
         },
@@ -795,87 +795,101 @@
         applyCatalogStatusLine(entry, 'tidal', state.lastData.tidal || {});
         if (state.tidal.view === 'album') { renderTidalAlbum(content); return; }
         if (state.tidal.view === 'playlist') { renderTidalPlaylist(content); return; }
+        // The search bar is a permanent part of the browse surface, above the
+        // navigation. Search results only ever replace the browse body; the bar
+        // itself survives every status refresh (contentKey guard in
+        // renderTidalContent), so a poll never resets an in-progress query.
         content.innerHTML =
             '<div class="streaming-browse">' +
+                '<div class="streaming-search">' +
+                    '<div class="streaming-search-row">' +
+                        '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search tracks, albums, artists, playlists…" autocomplete="off" />' +
+                        '<button type="button" class="btn-secondary" id="tidal-search-btn">Search</button>' +
+                    '</div>' +
+                    '<div class="streaming-chip-row" id="tidal-search-types" aria-label="Search type">' +
+                        chip('tracks', 'Tracks', true) + chip('albums', 'Albums', false) +
+                        chip('artists', 'Artists', false) + chip('playlists', 'Playlists', false) +
+                    '</div>' +
+                '</div>' +
                 '<div class="streaming-browse-tabs" role="tablist">' +
-                    '<button type="button" class="streaming-browse-tab is-active" data-browse="search">Search</button>' +
-                    '<button type="button" class="streaming-browse-tab" data-browse="favorites">Favorites</button>' +
-                    '<button type="button" class="streaming-browse-tab" data-browse="playlists">Playlists</button>' +
+                    '<button type="button" class="streaming-browse-tab' + (state.tidal.browseSection === 'favorites' ? ' is-active' : '') + '" data-browse="favorites">Favorites</button>' +
+                    '<button type="button" class="streaming-browse-tab' + (state.tidal.browseSection === 'playlists' ? ' is-active' : '') + '" data-browse="playlists">Playlists</button>' +
                 '</div>' +
                 '<div class="streaming-browse-body" id="tidal-browse-body"></div>' +
             '</div>';
+        bindTidalSearchBar(content);
         const tabs = content.querySelectorAll('.streaming-browse-tab');
         tabs.forEach((tab) => tab.addEventListener('click', () => {
             tabs.forEach((t) => t.classList.toggle('is-active', t === tab));
+            resetTidalSearch();
             renderTidalBrowseSection(tab.dataset.browse);
         }));
-        renderTidalBrowseSection('search');
+        renderTidalBrowseSection(state.tidal.browseSection);
     }
 
     function renderTidalBrowseSection(section) {
         const body = document.getElementById('tidal-browse-body');
         if (!body) return;
         state.tidal.browseSection = section;
-        if (section === 'search') renderTidalSearch(body);
-        else if (section === 'favorites') renderTidalFavorites(body);
+        if (section === 'favorites') renderTidalFavorites(body);
         else if (section === 'playlists') renderTidalPlaylists(body);
     }
 
-    // -- search ---------------------------------------------------------------
-    function renderTidalSearch(body) {
-        body.innerHTML =
-            '<div class="streaming-search">' +
-                '<div class="streaming-search-row">' +
-                    '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search tracks, albums, artists, playlists…" autocomplete="off" />' +
-                    '<button type="button" class="btn-secondary" id="tidal-search-btn">Search</button>' +
-                '</div>' +
-                '<div class="streaming-chip-row" id="tidal-search-types" aria-label="Search type">' +
-                    chip('tracks', 'Tracks', true) + chip('albums', 'Albums', false) +
-                    chip('artists', 'Artists', false) + chip('playlists', 'Playlists', false) +
-                '</div>' +
-                '<div class="streaming-results" id="tidal-search-results"><p class="streaming-note">Search Tidal for music.</p></div>' +
-            '</div>';
-
-        body.querySelectorAll('#tidal-search-types .streaming-chip').forEach((chipEl) => {
+    // -- search (permanent bar above the browse navigation) ------------------
+    // Executing a search replaces the browse body with results; clearing it
+    // returns to the current browse section (Favorites by default). The bar
+    // lives in the browse surface, so the contentKey guard keeps a running
+    // search (and its results) intact across status refreshes.
+    function bindTidalSearchBar(root) {
+        const input = root.querySelector('#tidal-search-input');
+        const body = document.getElementById('tidal-browse-body');
+        root.querySelectorAll('#tidal-search-types .streaming-chip').forEach((chipEl) => {
             chipEl.addEventListener('click', () => {
-                body.querySelectorAll('#tidal-search-types .streaming-chip').forEach((c) => c.classList.toggle('is-active', c === chipEl));
+                root.querySelectorAll('#tidal-search-types .streaming-chip').forEach((c) => c.classList.toggle('is-active', c === chipEl));
                 state.tidal.searchType = chipEl.dataset.type;
             });
         });
-
         const doSearch = async () => {
-            const query = (body.querySelector('#tidal-search-input').value || '').trim();
-            const results = body.querySelector('#tidal-search-results');
+            const query = (input.value || '').trim();
             if (!query) {
-                state.tidal.searchQuery = '';
-                state.tidal.searchExecuted = false;
-                results.innerHTML = '<p class="streaming-note">Search Tidal for music.</p>';
+                clearTidalSearch();
                 return;
             }
             state.tidal.searchQuery = query;
             state.tidal.searchExecuted = true;
-            results.innerHTML = '<p class="streaming-note">Searching…</p>';
+            body.innerHTML = '<p class="streaming-note">Searching…</p>';
             try {
                 const resp = await fetch('/api/streaming/tidal/search?q=' + encodeURIComponent(query) + '&types=' + encodeURIComponent(state.tidal.searchType) + '&limit=25');
                 if (!resp.ok) throw new Error(await errorDetail(resp));
                 const data = await resp.json();
                 try { await loadTidalFavoriteIds(); } catch (e) { /* hearts render unfilled until state loads */ }
-                renderTidalSearchResults(results, data);
+                renderTidalSearchResults(body, data);
             } catch (err) {
-                results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
+                body.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
             }
         };
-        body.querySelector('#tidal-search-btn').addEventListener('click', doSearch);
-        body.querySelector('#tidal-search-input').addEventListener('keydown', (e) => {
+        root.querySelector('#tidal-search-btn').addEventListener('click', doSearch);
+        input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
                 doSearch();
             } else if (e.key === 'Escape') {
                 e.preventDefault();
-                body.querySelector('#tidal-search-input').value = '';
-                doSearch();
+                clearTidalSearch();
             }
         });
+    }
+
+    function resetTidalSearch() {
+        state.tidal.searchQuery = '';
+        state.tidal.searchExecuted = false;
+        const input = document.getElementById('tidal-search-input');
+        if (input) input.value = '';
+    }
+
+    function clearTidalSearch() {
+        resetTidalSearch();
+        renderTidalBrowseSection(state.tidal.browseSection);
     }
 
     function chip(type, label, active) {
@@ -1076,7 +1090,7 @@
             showToast(data.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
             // The favorites list must stay authoritative: refresh it so an
             // unfavorited item leaves and a newly favorited item appears.
-            if (state.tidal.view !== 'album' && state.tidal.view !== 'playlist') {
+            if (state.tidal.view !== 'album' && state.tidal.view !== 'playlist' && !state.tidal.searchExecuted) {
                 if (state.tidal.browseSection === 'favorites') loadTidalFavorites();
                 else if (state.tidal.browseSection === 'playlists') renderTidalBrowseSection('playlists');
             }
@@ -1206,7 +1220,7 @@
                 '</div>' +
                 '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
             '</div>';
-        content.querySelector('#tidal-detail-back').addEventListener('click', () => { state.tidal.view = null; renderTidalBrowse(entryFor('tidal')); });
+        content.querySelector('#tidal-detail-back').addEventListener('click', () => { state.tidal.view = null; resetTidalSearch(); renderTidalBrowse(entryFor('tidal')); });
         bindFavoriteStars(content);
         loadTidalAlbum(content);
     }
@@ -1269,7 +1283,7 @@
                 '</div>' +
                 '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
             '</div>';
-        content.querySelector('#tidal-detail-back').addEventListener('click', () => { state.tidal.view = null; renderTidalBrowse(entryFor('tidal')); });
+        content.querySelector('#tidal-detail-back').addEventListener('click', () => { state.tidal.view = null; resetTidalSearch(); renderTidalBrowse(entryFor('tidal')); });
         bindFavoriteStars(content);
         loadTidalPlaylistTracks(content);
     }

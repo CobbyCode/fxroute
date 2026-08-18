@@ -535,10 +535,6 @@ const elements = {
     effectsLoudnessStrengthWrap: document.getElementById('effects-loudness-strength-wrap'),
     effectsLoudnessFftSize: document.getElementById('effects-loudness-fft-size'),
     effectsLoudnessFftWrap: document.getElementById('effects-loudness-fft-wrap'),
-    effectsDelayEnabled: document.getElementById('effects-delay-enabled'),
-    effectsDelayInputsWrap: document.getElementById('effects-delay-inputs-wrap'),
-    effectsDelayLeftMs: document.getElementById('effects-delay-left-ms'),
-    effectsDelayRightMs: document.getElementById('effects-delay-right-ms'),
     effectsBassEnabled: document.getElementById('effects-bass-enabled'),
     effectsBassAmount: document.getElementById('effects-bass-amount'),
     effectsBassControlsWrap: document.getElementById('effects-bass-controls-wrap'),
@@ -550,7 +546,6 @@ const elements = {
     effectsSubwooferRouting: document.getElementById('effects-subwoofer-routing'),
     effectsSubwooferModeBadge: document.getElementById('effects-subwoofer-mode-badge'),
     effectsSubwooferPreview: document.getElementById('effects-subwoofer-preview'),
-    effectsSubwooferFrequency: document.getElementById('effects-subwoofer-frequency'),
     effectsSubwooferFrequencyNumber: document.getElementById('effects-subwoofer-frequency-number'),
     effectsSubwooferMainHighpass: document.getElementById('effects-subwoofer-main-highpass'),
     effectsSubwooferLevelLabel: document.getElementById('effects-subwoofer-level-label'),
@@ -1176,7 +1171,7 @@ function normalizeSubwoofersSettings(subwoofers = {}, fallbackSubwoofer = {}) {
 
 function collectSubwooferSettings() {
     return normalizeSubwooferSettings({
-        crossover_frequency_hz: elements.effectsSubwooferFrequencyNumber?.value || elements.effectsSubwooferFrequency?.value || 80,
+        crossover_frequency_hz: elements.effectsSubwooferFrequencyNumber?.value || 80,
         main_highpass_enabled: (elements.effectsSubwooferMainHighpass?.value || 'on') !== 'off',
         sub_level_db: elements.effectsSubwooferLevel?.value || 0,
         sub_alignment_ms: elements.effectsSubwooferDelay?.value || 0,
@@ -6096,7 +6091,6 @@ function setupEffectsActions() {
     if (elements.effectsPeqAddBandBtn) elements.effectsPeqAddBandBtn.addEventListener('click', addPeqBandPair);
     if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.addEventListener('click', createPeqPreset);
     [
-        elements.effectsSubwooferFrequency,
         elements.effectsSubwooferFrequencyNumber,
         elements.effectsSubwooferLevel,
         elements.effectsSubwooferDelay,
@@ -6109,11 +6103,6 @@ function setupEffectsActions() {
         if (!el) return;
         el.addEventListener('focus', () => _activeEditing.add(el));
         el.addEventListener('input', () => {
-            if (el === elements.effectsSubwooferFrequency && elements.effectsSubwooferFrequencyNumber) {
-                elements.effectsSubwooferFrequencyNumber.value = elements.effectsSubwooferFrequency.value;
-            } else if (el === elements.effectsSubwooferFrequencyNumber && elements.effectsSubwooferFrequency) {
-                elements.effectsSubwooferFrequency.value = elements.effectsSubwooferFrequencyNumber.value;
-            }
             updateSubwooferDraftFromControls();
         });
         el.addEventListener('change', () => saveSubwooferDebounced(0));
@@ -6132,14 +6121,12 @@ function setupEffectsActions() {
             const minHz = 20;
             const maxHz = 300;
             const hz = Math.round(Math.pow(10, Math.log10(minHz) + t * (Math.log10(maxHz) - Math.log10(minHz))));
-            if (elements.effectsSubwooferFrequency) elements.effectsSubwooferFrequency.value = String(hz);
             if (elements.effectsSubwooferFrequencyNumber) elements.effectsSubwooferFrequencyNumber.value = String(hz);
             if (commit) saveSubwooferDebounced(0);
             else updateSubwooferDraftFromControls();
         };
         elements.effectsSubwooferPreview.addEventListener('pointerdown', (event) => {
             draggingCrossover = true;
-            if (elements.effectsSubwooferFrequency) _activeEditing.add(elements.effectsSubwooferFrequency);
             if (elements.effectsSubwooferFrequencyNumber) _activeEditing.add(elements.effectsSubwooferFrequencyNumber);
             elements.effectsSubwooferPreview.setPointerCapture?.(event.pointerId);
             updateFromPointer(event, false);
@@ -6151,12 +6138,10 @@ function setupEffectsActions() {
             if (!draggingCrossover) return;
             draggingCrossover = false;
             updateFromPointer(event, true);
-            if (elements.effectsSubwooferFrequency) _activeEditing.delete(elements.effectsSubwooferFrequency);
             if (elements.effectsSubwooferFrequencyNumber) _activeEditing.delete(elements.effectsSubwooferFrequencyNumber);
         });
         elements.effectsSubwooferPreview.addEventListener('pointercancel', () => {
             draggingCrossover = false;
-            if (elements.effectsSubwooferFrequency) _activeEditing.delete(elements.effectsSubwooferFrequency);
             if (elements.effectsSubwooferFrequencyNumber) _activeEditing.delete(elements.effectsSubwooferFrequencyNumber);
         });
         if ('ResizeObserver' in window) {
@@ -6173,8 +6158,6 @@ function setupEffectsActions() {
         elements.effectsAutogainTargetDb,
         elements.effectsLoudnessStrength,
         elements.effectsLoudnessFftSize,
-        elements.effectsDelayLeftMs,
-        elements.effectsDelayRightMs,
         elements.effectsBassAmount,
         elements.effectsToneEffectMode,
     ].forEach(el => {
@@ -6201,10 +6184,6 @@ function setupEffectsActions() {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
-    if (elements.effectsDelayEnabled) elements.effectsDelayEnabled.addEventListener('change', () => {
-        updateEffectsExtrasUi();
-        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
-    });
     if (elements.effectsBassEnabled) elements.effectsBassEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
@@ -6222,8 +6201,7 @@ function setupEffectsActions() {
         });
         updateEffectsPeqDisclosureLabel();
     }
-    setupUploadArea('effects-import-area', 'effects-import-file', (file) => {
-        console.log('upload area file selected:', file.name);
+    setupUploadArea('effects-import-area', 'effects-import-file', () => {
         submitEffectsImport();
     });
     setupUploadArea('effects-rew-left-area', 'effects-rew-left-file', (file) => {
@@ -9802,7 +9780,6 @@ function syncMeasurementStartButtonFallback() {
 function syncSubwooferControlsDuringAutoSub() {
     const autoSubActive = !!(state.measurement?.autoSubInFlight);
     if (elements.effectsSubwooferDelay) elements.effectsSubwooferDelay.disabled = autoSubActive;
-    if (elements.effectsSubwooferFrequency) elements.effectsSubwooferFrequency.disabled = autoSubActive;
     if (elements.effectsSubwooferFrequencyNumber) elements.effectsSubwooferFrequencyNumber.disabled = autoSubActive;
     if (elements.effectsSubwooferLevel) elements.effectsSubwooferLevel.disabled = autoSubActive;
     if (elements.effectsSubwooferPolarity) elements.effectsSubwooferPolarity.disabled = autoSubActive;
@@ -12949,9 +12926,6 @@ function applyEffectsExtras(extras = {}) {
     if (elements.effectsLoudnessFftSize && !_activeEditing.has(elements.effectsLoudnessFftSize)) {
         elements.effectsLoudnessFftSize.value = String(normalizeEffectsLoudnessFftSize(extras.loudnessFftSize, 4096));
     }
-    if (elements.effectsDelayEnabled) elements.effectsDelayEnabled.checked = !!extras.delayEnabled;
-    if (elements.effectsDelayLeftMs && !_activeEditing.has(elements.effectsDelayLeftMs)) elements.effectsDelayLeftMs.value = String(Number(extras.delayLeftMs || 0));
-    if (elements.effectsDelayRightMs && !_activeEditing.has(elements.effectsDelayRightMs)) elements.effectsDelayRightMs.value = String(Number(extras.delayRightMs || 0));
     if (elements.effectsBassEnabled) elements.effectsBassEnabled.checked = !!extras.bassEnabled;
     // Only update amount when bass is enabled — otherwise keep field value (user may re-enable)
     if (elements.effectsBassAmount && !!extras.bassEnabled && !_activeEditing.has(elements.effectsBassAmount)) {
@@ -12976,9 +12950,6 @@ function updateEffectsExtrasUi() {
     }
     if (elements.effectsLoudnessStrengthWrap) {
         elements.effectsLoudnessStrengthWrap.classList.toggle('hidden', !elements.effectsLoudnessEnabled?.checked);
-    }
-    if (elements.effectsDelayInputsWrap) {
-        elements.effectsDelayInputsWrap.classList.toggle('hidden', !elements.effectsDelayEnabled?.checked);
     }
     if (elements.effectsBassControlsWrap) {
         elements.effectsBassControlsWrap.classList.toggle('hidden', !elements.effectsBassEnabled?.checked);
@@ -13066,9 +13037,6 @@ function renderSubwooferPanel() {
     if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = is22StereoMode ? 'Right Sub polarity' : 'Sub 2 polarity';
     elements.effectsSubwooferSub2Fields?.forEach(field => field.classList.toggle('hidden', !is22Mode));
     elements.effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
-    if (elements.effectsSubwooferFrequency && !_activeEditing.has(elements.effectsSubwooferFrequency)) {
-        elements.effectsSubwooferFrequency.value = String(subwoofer.crossover_frequency_hz);
-    }
     if (elements.effectsSubwooferFrequencyNumber && !_activeEditing.has(elements.effectsSubwooferFrequencyNumber)) {
         elements.effectsSubwooferFrequencyNumber.value = String(subwoofer.crossover_frequency_hz);
     }
@@ -13103,7 +13071,6 @@ function renderSubwooferPanel() {
 
 function clearSubwooferActiveEditing() {
     [
-        elements.effectsSubwooferFrequency,
         elements.effectsSubwooferFrequencyNumber,
         elements.effectsSubwooferMainHighpass,
         elements.effectsSubwooferLevel,
@@ -13418,9 +13385,6 @@ function collectEffectsExtras() {
         loudnessEnabled: elements.effectsLoudnessEnabled?.checked || false,
         loudnessStrength: normalizeEffectsLoudnessStrength(elements.effectsLoudnessStrength?.value, 10),
         loudnessFftSize: normalizeEffectsLoudnessFftSize(elements.effectsLoudnessFftSize?.value, 4096),
-        delayEnabled: elements.effectsDelayEnabled?.checked || false,
-        delayLeftMs: parseFloat(elements.effectsDelayLeftMs?.value || '0'),
-        delayRightMs: parseFloat(elements.effectsDelayRightMs?.value || '0'),
         bassEnabled: elements.effectsBassEnabled?.checked || false,
         bassAmount: parseFloat(elements.effectsBassAmount?.value || '0'),
         toneEffectEnabled: elements.effectsToneEffectEnabled?.checked || false,
@@ -14025,12 +13989,6 @@ async function doSeek(seconds) {
         });
         if (!resp.ok) console.debug('Seek result:', await resp.json().catch(() => '??'));
     } catch (e) { /* silent for seek */ }
-}
-function formatTime(s) {
-    if (!s || isNaN(s) || s < 0) return '0:00';
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return m + ':' + (sec < 10 ? '0' : '') + sec;
 }
 function updateSeekUI() {
     if (!elements.seekSlider || !elements.seekCurrent || !elements.seekDuration) return;

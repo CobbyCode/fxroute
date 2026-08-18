@@ -496,7 +496,9 @@
             const isFallbackArt = artSrc.startsWith('data:image/svg+xml');
             const wrapClass = isFallbackArt ? 'station-art-wrap station-art-wrap--fallback' : 'station-art-wrap station-art-wrap--real';
             const imgClass = isFallbackArt ? 'station-art station-art--fallback' : 'station-art station-art--real';
-            const action = `<button class="catalog-station-action" type="button" data-catalog-id="${escapeHtml(station.id)}">Add to My Stations</button>`;
+            const action = station.is_saved
+                ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-catalog-id="${escapeHtml(station.id)}" disabled>Saved</button>`
+                : `<button class="catalog-station-action" type="button" data-catalog-id="${escapeHtml(station.id)}">Add to My Stations</button>`;
             return `
             <div class="station-card catalog-station-card">
                 <div class="${wrapClass}">
@@ -529,11 +531,20 @@
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error(data.detail || 'Failed to add catalog station');
             await fetchStations();
+            markCatalogStationSaved(button);
             showToast(`Added to My Stations: ${data.station?.title || 'Station'}`, 'success');
         } catch (e) {
             if (button) button.disabled = false;
             showToast(e.message || 'Failed to add catalog station', 'error');
         }
+    }
+
+    function markCatalogStationSaved(button) {
+        if (!button) return;
+        button.disabled = true;
+        button.classList.add('catalog-station-action--saved');
+        button.textContent = 'Saved';
+        button.title = 'Added to My Stations';
     }
 
     function clearOnlineResults() {
@@ -650,9 +661,13 @@
             const imgClass = isFallbackArt ? 'station-art station-art--fallback' : 'station-art station-art--real';
             let action = '';
             if (station.searchSource === 'catalog') {
-                action = `<button class="catalog-station-action" type="button" data-catalog-id="${escapeHtml(station.id)}">Add to My Stations</button>`;
+                action = station.is_saved
+                    ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-catalog-id="${escapeHtml(station.id)}" disabled>Saved</button>`
+                    : `<button class="catalog-station-action" type="button" data-catalog-id="${escapeHtml(station.id)}">Add to My Stations</button>`;
             } else if (station.searchSource === 'online') {
-                action = `<button class="catalog-station-action" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}">Add to My Stations</button>`;
+                action = station.is_saved
+                    ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}" disabled>Saved</button>`
+                    : `<button class="catalog-station-action" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}">Add to My Stations</button>`;
             }
             const cardAttrs = station.searchSource === 'personal'
                 ? ` data-station-id="${escapeHtml(station.id)}" role="button" tabindex="0"`
@@ -696,6 +711,7 @@
                 onlineStation.saved_station_id = data.station?.id || null;
             }
             await fetchStations();
+            markCatalogStationSaved(button);
             showToast(`Added to My Stations: ${data.station?.title || 'Station'}`, 'success');
         } catch (e) {
             if (button) button.disabled = false;

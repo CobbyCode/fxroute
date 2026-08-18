@@ -46,7 +46,7 @@ function makeEl() {
         className: '',
         type: '',
         addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
-        dispatch(type) { (listeners[type] || []).forEach((fn) => fn()); },
+        dispatch(type, ev) { (listeners[type] || []).forEach((fn) => fn(ev || {})); },
         click() { el.dispatch('click'); },
         setAttribute(name, value) { el[name] = value; },
         getAttribute(name) { return el[name] != null ? String(el[name]) : null; },
@@ -62,9 +62,9 @@ function shellEl(providerId) {
     const el = makeEl();
     el['data-provider'] = providerId;
     const memo = {};
-    // Browse tabs are real interactive elements in the shim so detail views
-    // can be entered by clicking the Playlists tab.
-    const tabs = ['search', 'favorites', 'playlists'].map((name) => {
+    // Browse tabs are real interactive elements in the shim so sections and
+    // detail views can be entered by clicking them.
+    const tabs = ['favorites', 'playlists'].map((name) => {
         const t = makeEl();
         t.dataset.browse = name;
         return t;
@@ -145,6 +145,12 @@ function runStreaming() {
             let body = {};
             if (u === '/api/streaming/tidal/playlists') {
                 body = [{ id: 'pl-1', name: 'Test Playlist', art_url: '', track_count: 2 }];
+            } else if (u.startsWith('/api/streaming/tidal/search?q=')) {
+                body = { tracks: [{ id: 's1', title: 'Found Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 10 }] };
+            } else if (u === '/api/streaming/tidal/favorites/ids') {
+                body = { tracks: [], albums: [], playlists: [] };
+            } else if (u.startsWith('/api/streaming/tidal/favorites?type=')) {
+                body = [];
             }
             return { ok: true, json: async () => body };
         },
@@ -296,6 +302,66 @@ async function main() {
     // Leaving the detail view restores the status line immediately.
     content.querySelector('#tidal-detail-back').click();
     assert.equal(statusLine.hidden, false, 'back navigation must restore the status line');
+}
+
+// --- 5. TIDAL browse: Favorites default + persistent search bar -----------
+
+{
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming();
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    const content = shells.tidal.querySelector('.streaming-content');
+
+    // First authenticated render lands on Favorites, not an empty Search screen.
+    assert.ok(content.innerHTML.includes('streaming-browse'), 'browse surface must render');
+    assert.ok(content.innerHTML.includes('id="tidal-search-input"'), 'search bar must be part of the browse surface');
+    assert.ok(content.innerHTML.indexOf('tidal-search-input') < content.innerHTML.indexOf('streaming-browse-tabs'),
+        'search bar must sit above the browse navigation');
+    assert.ok(!content.innerHTML.includes('data-browse="search"'), 'Search must not be a browse tab');
+    assert.ok(content.innerHTML.includes('data-browse="favorites"') && content.innerHTML.includes('data-browse="playlists"'),
+        'browse navigation must be Favorites and Playlists');
+    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
+        'first authenticated render must show Favorites content');
+
+    // Executing a search replaces the browse body with results.
+    const input = content.querySelector('#tidal-search-input');
+    input.value = 'daft punk';
+    content.querySelector('#tidal-search-btn').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(fetchCalls.some((c) => c.url.startsWith('/api/streaming/tidal/search?q=daft%20punk')),
+        'search must hit the TIDAL search endpoint');
+    const resultCount = createdEls.filter((el) => el.className === 'streaming-result').length;
+    assert.ok(resultCount > 0, 'search must render result rows');
+
+    // A status refresh must not wipe the results (contentKey guard).
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    assert.equal(createdEls.filter((el) => el.className === 'streaming-result').length, resultCount,
+        'status refresh must not re-render away the search results');
+
+    // Clearing the search (empty input + Search) returns to Favorites.
+    input.value = '';
+    content.querySelector('#tidal-search-btn').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
+        'clearing the search must return to Favorites');
+
+    // Escape resets the search back to the browse section too.
+    input.value = 'daft punk';
+    content.querySelector('#tidal-search-btn').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    input.dispatch('keydown', { key: 'Escape', preventDefault() {} });
+    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
+        'Escape must clear the search back to the browse section');
+
+    // Favorites <-> Playlists switching works.
+    const tabs = content.querySelectorAll('.streaming-browse-tab');
+    tabs.find((t) => t.dataset.browse === 'playlists').click();
+    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-playlists-results'),
+        'Playlists tab must render the playlists section');
+    tabs.find((t) => t.dataset.browse === 'favorites').click();
+    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
+        'Favorites tab must render the favorites section');
 }
 
 console.log('PASS  scripts/test_streaming_ui_actions.js');

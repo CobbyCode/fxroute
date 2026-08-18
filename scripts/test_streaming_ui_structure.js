@@ -119,14 +119,44 @@ assert.ok(js.includes("tidal: { name: 'Tidal', canConnect: true, catalog: true }
     'Tidal visible provider name and catalog role must be explicit');
 assert.ok(js.includes('catalogProvider'),
     'Tidal must be identified as a catalog provider whose player is the footer');
+// --- TIDAL browse: Favorites default, search is a permanent bar ------------
+// Favorites is the default browse section; the search bar lives above the
+// navigation and only ever overlays the browse body with a temporary results
+// state, so there is no empty "search first" start screen anymore.
+assert.ok(js.includes("browseSection: 'favorites'"),
+    'TIDAL browse must default to Favorites');
 assert.ok(js.includes("state.tidal.searchQuery = query"),
     'executed Tidal searches must record the query');
 assert.ok(js.includes("state.tidal.searchQuery = ''"),
     'clearing Tidal search must reset the executed query');
-assert.ok(js.includes("Search Tidal for music."),
-    'Tidal search must have a neutral initial/cleared state');
-assert.ok(js.includes("results.innerHTML = '<p class=\"streaming-note\">Search Tidal for music.</p>'"),
-    'empty Tidal search must remove old results and show the neutral state');
+assert.ok(!js.includes('Search Tidal for music.'),
+    'no empty search start screen: cleared search returns to the browse section');
+assert.ok(js.includes('function bindTidalSearchBar'),
+    'the browse surface must wire the permanent search bar');
+assert.ok(js.includes('function resetTidalSearch') && js.includes('function clearTidalSearch'),
+    'search reset must be explicit state, not DOM-only toggling');
+const tidalBrowseRender = extractFunction(js, 'renderTidalBrowse');
+assert.ok(tidalBrowseRender.includes('id="tidal-search-input"') && tidalBrowseRender.includes('id="tidal-search-btn"'),
+    'the search bar must be part of the browse surface');
+assert.ok(tidalBrowseRender.indexOf('tidal-search-input') < tidalBrowseRender.indexOf('streaming-browse-tabs'),
+    'the search bar must sit above the browse navigation');
+assert.ok(!tidalBrowseRender.includes('data-browse="search"'),
+    'Search must not be a browse tab anymore');
+assert.ok(tidalBrowseRender.includes('data-browse="favorites"') && tidalBrowseRender.includes('data-browse="playlists"'),
+    'browse navigation must be Favorites and Playlists only');
+assert.ok(js.includes('renderTidalBrowseSection(state.tidal.browseSection)'),
+    'first authenticated render must show the current browse section (Favorites by default)');
+
+// Playlist/detail queue semantics stay intact: clicking any track passes the
+// whole track list plus the chosen start id to /api/play.
+assert.ok(js.includes('function renderDetailTracks'),
+    'the shared detail track-list renderer must stay');
+assert.ok(js.includes('playTidalTracks(ids, trackId)'),
+    'a track click must start the whole queue at that track');
+assert.ok(js.includes('playTidalTracks(ids, ids[0])'),
+    'Play playlist must start the whole queue at track 1');
+assert.ok(js.includes('queue_track_ids: trackIds'),
+    'playback must hand the full queue to /api/play');
 
 // Catalog providers must not render a second in-tab now-playing card: the
 // global footer is the authoritative player, so the card stays hidden.
@@ -212,6 +242,8 @@ assert.ok(js.includes("chip('tracks', 'Tracks', true) + chip('albums', 'Albums',
     'Favorites must offer tracks/albums/artists categories');
 assert.ok(js.includes("data-browse=\"favorites\"") && js.includes("data-browse=\"playlists\""),
     'Favorites and Playlists must be separate browse tabs');
+assert.ok(js.includes("chip('tracks', 'Tracks', true) + chip('albums', 'Albums', false)"),
+    'the search bar must keep the track/album/artist/playlist search types');
 assert.ok(js.includes('/api/streaming/tidal/favorites?type=') && js.includes('/api/streaming/tidal/playlists'),
     'favorite albums and real playlists must be fetched from distinct endpoints');
 
