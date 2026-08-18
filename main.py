@@ -661,6 +661,10 @@ from playback.qobuz_watch import (
     QobuzPlayerWatch,
     QobuzWatchDependencies,
 )
+from playback.qbzd_volume_watch import (
+    QobuzVolumeWatch,
+    QobuzVolumeWatchDependencies,
+)
 from dsp.orchestration import (
     DspOrchestrationDeps,
     DspOrchestrator,
@@ -982,6 +986,10 @@ qobuz_player_watch = QobuzPlayerWatch(QobuzWatchDependencies(
     broadcast_qobuz_state=lambda *args, **kwargs: broadcast_qobuz_state(*args, **kwargs),
     is_qobuz_playback_active=lambda *args, **kwargs: _is_qobuz_playback_active(*args, **kwargs),
     claim_qobuz_playback=lambda *args, **kwargs: _claim_qobuz_playback(*args, **kwargs),
+))
+qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
+    is_active=lambda: _resolve_playback_owner() == "qobuz",
+    apply_volume=lambda volume: _set_canonical_output_volume(volume),
 ))
 radio_metadata_service = RadioMetadataService()
 # queue_advancing is a reentrancy/dispatch guard for
@@ -2203,12 +2211,55 @@ async def get_spotify_ui_state(data: Optional[dict] = None) -> dict:
 
 async def get_qobuz_ui_state(data: Optional[dict] = None) -> dict:
     """Return the normalized qbzd provider state (owner is never derived from
-    a status read; it is attached for the UI payload only)."""
+    a status read; it is attached for the UI payload only).
+
+    The UI volume is the canonical FXRoute master: qbzd's engine volume stays
+    pinned at 100% (Unity) while the phone slider drives only the master, so
+    the raw qbzd value is reported separately as ``source_volume``.
+    """
     provider = streaming.get_provider("qobuz")
     status = dict(data or await provider.status())
+    source_volume = status.get("volume") if isinstance(status.get("volume"), (int, float)) else None
+    status["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
+    status["volume"] = get_output_volume_safe(100 if source_volume is None else source_volume)
     status["playback_owner"] = _resolve_playback_owner()
     playback_state.latest_qobuz_state = status
     return status
+
+
+async def _qobuz_pin_unity() -> None:
+    """Pin qbzd's engine gain to 100% (Unity).
+
+    In ``volume_mode=locked`` the local control plane still accepts volume
+    writes while remote Connect SetVolume is ignored, so this is the single
+    write that keeps qbzd from attenuating; every user-facing volume input
+    (phone slider via journal watch, FXRoute web slider) drives the master.
+    """
+    provider = streaming.get_provider("qobuz")
+    try:
+        await provider.set_volume(100)
+    except Exception as exc:
+        logger.warning("Failed to pin qbzd volume to 100%%: %s", exc)
+
+
+async def _qobuz_volume_action(percent: float) -> dict:
+    """Apply the Qobuz UI slider as the canonical FXRoute master volume.
+
+    qbzd's engine volume must stay pinned at 100%; this mirrors the Spotify
+    volume endpoint semantics (one canonical perceived volume).
+    """
+    try:
+        volume_result = await _set_canonical_output_volume(percent)
+    except SystemVolumeError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
+    data = await get_qobuz_ui_state()
+    data["volume"] = volume_result["volume"]
+    if volume_result.get("loudness_enabled"):
+        data["loudnessVolumeDb"] = volume_result["loudnessVolumeDb"]
+    playback_state.latest_qobuz_state = data
+    await peak_monitor_coordinator.sync_qobuz_state(data)
+    await manager.broadcast({"type": "qobuz", "data": data})
+    return data
 
 
 async def qobuz_play() -> dict:
@@ -2291,6 +2342,7 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
     if not getattr(result, "committed", False):
         return qobuz_state
     await _publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
+    await _qobuz_pin_unity()
     return await broadcast_qobuz_state()
 
 
@@ -2937,6 +2989,11 @@ async def lifespan(app: FastAPI):
             qobuz_player_watch.run_watch_loop(),
             name="qobuz-qbzd-claim-watch",
         )
+        logger.info("Starting Qobuz qbzd journal volume watch task")
+        qobuz_volume_watch.watch_task = asyncio.create_task(
+            qobuz_volume_watch.run_watch_loop(),
+            name="qobuz-journal-volume-watch",
+        )
         logger.info("Starting Spotify metadata poll fallback task")
         runtime.spotify_state_poll_task = asyncio.create_task(
             _spotify_state_poll_loop(),
@@ -3002,6 +3059,7 @@ async def _shutdown_lifespan_resources() -> None:
     # their in-flight tasks and releases their state.
     await cleanup("spotify-watch", spotify_playerctl_watch.stop)
     await cleanup("qobuz-watch", qobuz_player_watch.stop)
+    await cleanup("qobuz-volume-watch", qobuz_volume_watch.stop)
     await cleanup("radio-reconnect", radio_reconnect.stop)
     await cleanup("silent-active-recovery", silent_active_recovery.stop)
     runtime.lifecycle_background_tasks.clear()
@@ -4886,6 +4944,7 @@ async def _qobuz_ui_start_action(action: str) -> dict:
     if not getattr(result, "committed", False):
         return await broadcast_qobuz_state()
     await _publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
+    await _qobuz_pin_unity()
     return await broadcast_qobuz_state()
 
 
@@ -4916,6 +4975,10 @@ async def api_streaming_provider_action(provider_id: str, action: str, request: 
             body = await request.json()
         except Exception:
             body = {}
+        if provider_id == "qobuz":
+            # Qobuz volume is the canonical FXRoute master (qbzd gain stays
+            # pinned at 100%); other providers keep their native volume.
+            return await _qobuz_volume_action(float(body.get("volume", 100)))
         return await provider.set_volume(float(body.get("volume", 100)))
     if action not in _STREAMING_TRANSPORT_ACTIONS:
         raise HTTPException(status_code=404, detail=f"unknown streaming action: {action}")
