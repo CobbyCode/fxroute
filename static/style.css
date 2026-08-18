@@ -865,11 +865,6 @@ body {
         touch-action: manipulation;
     }
 }
-.station-card.active {
-    border-color: var(--accent);
-    background: linear-gradient(180deg, rgba(110,231,183,0.14), rgba(110,231,183,0.06));
-    box-shadow: 0 0 0 1px var(--accent), 0 12px 28px rgba(110, 231, 183, 0.16);
-}
 .station-card.active::after {
     content: '♫';
     position: absolute;
@@ -4634,7 +4629,7 @@ input[type="number"]::-webkit-outer-spin-button {
     box-shadow: 0 18px 50px rgba(0,0,0,0.46), 0 -1px 22px rgba(110,231,183,0.045), inset 0 1px 0 rgba(255,255,255,0.035);
 }
 .playback-bar.is-paused {
-    border-color: rgba(167,139,250,0.16);
+    border-color: rgba(110, 231, 183, 0.16);
 }
 
 .playback-bar .track-info {
@@ -4907,7 +4902,6 @@ input[type="number"]::-webkit-outer-spin-button {
 .volume-slider:hover::-webkit-slider-thumb { transform: scale(1.08); }
 .seek-slider:focus-visible::-webkit-slider-thumb,
 .volume-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(110,231,183,.14); }
-.playback-bar.progress-readonly .seek-slider:disabled { cursor: default; opacity: .82; }
 
 .playback-meter {
     grid-area: meter;
@@ -4918,7 +4912,6 @@ input[type="number"]::-webkit-outer-spin-button {
     opacity: .52;
     transition: opacity .15s var(--ease);
 }
-.playback-meter.is-active { opacity: 1; }
 .output-level-badge {
     display: inline-flex;
     align-items: center;
@@ -6301,7 +6294,7 @@ body {
     width: 1.05rem;
     display: inline-grid;
     place-items: center;
-    color: #9d7df5;
+    color: rgba(110,231,183,0.75);
     font-size: .9rem;
 }
 .tab-btn[data-tab="spotify"] .tab-glyph { color: #4ed68b; }
@@ -6348,9 +6341,9 @@ body {
     box-shadow: 0 14px 30px rgba(0,0,0,.28);
 }
 .station-card.active {
-    border-color: rgba(167,139,250,.72);
-    background: linear-gradient(180deg, rgba(167,139,250,.105), rgba(255,255,255,.014));
-    box-shadow: 0 0 0 1px rgba(167,139,250,.38), 0 14px 30px rgba(0,0,0,.26);
+    border-color: rgba(110,231,183,.72);
+    background: linear-gradient(180deg, rgba(110,231,183,.105), rgba(255,255,255,.014));
+    box-shadow: 0 0 0 1px rgba(110,231,183,.38), 0 14px 30px rgba(0,0,0,.26);
 }
 .station-art-wrap { border-radius: 13px; }
 .station-name { font-size: .95rem; min-height: auto; }
