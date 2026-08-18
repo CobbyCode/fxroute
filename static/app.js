@@ -14072,30 +14072,13 @@ function escapeHtml(text) {
 // Spotify source (playerctl / MPRIS)
 // =========================================================================
 const spotifyElements = {
-    unavailable: document.getElementById('spotify-unavailable'),
-    unavailableMsg: document.getElementById('spotify-unavailable-msg'),
-    player: document.getElementById('spotify-player'),
-    cover: document.getElementById('spotify-cover'),
-    title: document.getElementById('spotify-title'),
-    artist: document.getElementById('spotify-artist'),
-    album: document.getElementById('spotify-album'),
-    toggle: document.getElementById('spotify-toggle'),
-    prev: document.getElementById('spotify-prev'),
-    next: document.getElementById('spotify-next'),
-    statusLine: document.getElementById('spotify-status'),
-    secondaryControls: document.getElementById('spotify-secondary-controls'),
-    shuffle: document.getElementById('spotify-shuffle'),
-    loop: document.getElementById('spotify-loop'),
-    loopIcon: document.getElementById('spotify-loop-icon'),
-    loopLabel: document.getElementById('spotify-loop-label'),
-    progress: document.getElementById('spotify-progress'),
-    timeCurrent: document.getElementById('spotify-time-current'),
-    timeTotal: document.getElementById('spotify-time-total'),
+    // The Spotify tab renders through the shared streaming shell
+    // (streaming.js .streaming-shell), so the legacy in-tab player DOM is gone;
+    // only the tab button still lives in this object.
     tabBtn: document.querySelector('[data-tab="spotify"]'),
 };
 
 let _spotifyPollTimer = null;
-let _spotifySeeking = false;   // true while user drags slider
 let _spotifyCommandInFlight = false;
 let _spotifySeekCommitTimer = null;
 let _spotifyLastRenderedTrackKey = '';
@@ -14412,37 +14395,6 @@ async function spotifySeek(positionSec) {
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
-function setupSpotifyActions() {
-    const el = spotifyElements;
-
-    // Transport
-    el.toggle?.addEventListener('click', () => spotifyCommand('toggle'));
-    el.prev?.addEventListener('click', () => spotifyCommand('previous'));
-    el.next?.addEventListener('click', () => spotifyCommand('next'));
-
-    // Shuffle / Loop
-    el.shuffle?.addEventListener('click', () => spotifyCommand('shuffle'));
-    el.loop?.addEventListener('click', () => spotifyCommand('loop'));
-
-    // Seek slider
-    if (el.progress) {
-        el.progress.addEventListener('mousedown', () => { _spotifySeeking = true; });
-        el.progress.addEventListener('touchstart', () => { _spotifySeeking = true; }, { passive: true });
-
-        const commitSeek = () => {
-            _spotifySeeking = false;
-            const data = window.__spotifyLastData;
-            if (!data || !data.duration) return;
-            const posSec = (parseFloat(el.progress.value) / 100) * data.duration;
-            spotifySeek(posSec);
-        };
-
-        el.progress.addEventListener('mouseup', commitSeek);
-        el.progress.addEventListener('touchend', commitSeek);
-        el.progress.addEventListener('change', commitSeek);
-    }
-}
-
 function stopSpotifyPoll() {
     if (_spotifyPollTimer) {
         clearInterval(_spotifyPollTimer);
@@ -14601,7 +14553,6 @@ function renderSpotifyTab(data) {
 }
 
 async function initSpotify() {
-    setupSpotifyActions();
     const data = await fetchSpotifyStatus();
     handleIncomingSpotifyState(data, { renderTab: true, renderFooter: true });
     if (shouldPollSpotify()) {
