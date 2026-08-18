@@ -5346,18 +5346,9 @@ input[type="number"]::-webkit-outer-spin-button {
         flex: 1;
         min-width: 0;
     }
-    .brand-mark {
-        width: 35px;
-        height: 35px;
-        border-radius: 10px;
-        font-size: 0.84rem;
-    }
     .brand-text-block {
         gap: 0.06rem;
         padding-top: 0;
-    }
-    .brand-title {
-        font-size: 0.98rem;
     }
     .tabs {
         padding: 0.4rem 0.5rem;
@@ -6208,6 +6199,13 @@ body {
     .stations-grid { grid-template-columns: repeat(2, minmax(0,1fr)); gap: .72rem; }
     .station-card { padding: .58rem; border-radius: 15px; }
     .station-name { font-size: .88rem; }
+}
+
+/* Small phones: slightly smaller brand lockup than the 760px tablet size.
+   Placed after the 760px override so these win on narrow screens. */
+@media (max-width: 600px) {
+    .brand-mark { width: 35px; height: 35px; border-radius: 10px; font-size: 0.84rem; }
+    .brand-title { font-size: 0.98rem; }
 }
 
 @media (max-width: 420px) {
