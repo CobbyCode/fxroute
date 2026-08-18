@@ -93,12 +93,75 @@ class QobuzVolumeRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QobuzUnityPinTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self._orig_pin_state = main.qobuz_unity_pin_state
+        main.qobuz_unity_pin_state = None
+        self._orig_owner = main.playback_state.current_playback_owner
+        main.playback_state.current_playback_owner = None
+
+    async def asyncTearDown(self):
+        main.qobuz_unity_pin_state = self._orig_pin_state
+        main.playback_state.current_playback_owner = self._orig_owner
+
     async def test_pin_unity_writes_qbzd_engine_volume_100(self):
         provider = mock.Mock()
         provider.set_volume = mock.AsyncMock(return_value={"volume": 100})
         with mock.patch.object(main.streaming, "get_provider", return_value=provider):
             await main._qobuz_pin_unity()
         provider.set_volume.assert_awaited_once_with(100)
+
+    async def test_pin_success_records_health_ok(self):
+        provider = mock.Mock()
+        provider.set_volume = mock.AsyncMock(return_value={"volume": 100})
+        with mock.patch.object(main.streaming, "get_provider", return_value=provider):
+            await main._qobuz_pin_unity()
+        self.assertIsNotNone(main.qobuz_unity_pin_state)
+        self.assertTrue(main.qobuz_unity_pin_state["ok"])
+
+    async def test_pin_failure_records_health_error_without_raising(self):
+        # Regression: a failed unity pin is not a silent no-op. The health
+        # state turns to "error" (visible in the UI state), the failure is
+        # logged, and playback ownership stays untouched.
+        provider = mock.Mock()
+        provider.set_volume = mock.AsyncMock(side_effect=RuntimeError("qbzd unreachable"))
+        with mock.patch.object(main.streaming, "get_provider", return_value=provider), \
+             mock.patch.object(main.logger, "error") as log_error:
+            await main._qobuz_pin_unity()
+        self.assertFalse(main.qobuz_unity_pin_state["ok"])
+        self.assertIn("error", main.qobuz_unity_pin_state)
+        log_error.assert_called_once()
+        self.assertIsNone(main.playback_state.current_playback_owner)
+
+    async def test_pin_retry_recovers_after_failure(self):
+        # The next pin call (claim/UI-start) is the controlled retry path.
+        provider = mock.Mock()
+        provider.set_volume = mock.AsyncMock(side_effect=[RuntimeError("down"), {"volume": 100}])
+        with mock.patch.object(main.streaming, "get_provider", return_value=provider):
+            await main._qobuz_pin_unity()
+            self.assertFalse(main.qobuz_unity_pin_state["ok"])
+            await main._qobuz_pin_unity()
+        self.assertTrue(main.qobuz_unity_pin_state["ok"])
+
+    async def test_ui_state_exposes_unity_pin_health_flag(self):
+        provider = mock.Mock()
+        provider.status = mock.AsyncMock(return_value=_qobuz_state(volume=42))
+        main.qobuz_unity_pin_state = {"ok": True, "at": 1.0}
+        with mock.patch.object(main.streaming, "get_provider", return_value=provider), \
+             mock.patch.object(main, "get_output_volume_safe", return_value=38):
+            state = await main.get_qobuz_ui_state()
+        self.assertEqual(state["qobuz_unity_pin"], "ok")
+
+        main.qobuz_unity_pin_state = {"ok": False, "error": "boom", "at": 1.0}
+        with mock.patch.object(main.streaming, "get_provider", return_value=provider), \
+             mock.patch.object(main, "get_output_volume_safe", return_value=38):
+            state = await main.get_qobuz_ui_state()
+        self.assertEqual(state["qobuz_unity_pin"], "error")
+
+        main.qobuz_unity_pin_state = None
+        with mock.patch.object(main.streaming, "get_provider", return_value=provider), \
+             mock.patch.object(main, "get_output_volume_safe", return_value=38):
+            state = await main.get_qobuz_ui_state()
+        self.assertIsNone(state["qobuz_unity_pin"])
 
     async def test_claim_pins_unity_after_commit(self):
         playing = _qobuz_state(status="Playing", trackId="42")

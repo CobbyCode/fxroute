@@ -2222,9 +2222,19 @@ async def get_qobuz_ui_state(data: Optional[dict] = None) -> dict:
     source_volume = status.get("volume") if isinstance(status.get("volume"), (int, float)) else None
     status["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
     status["volume"] = get_output_volume_safe(100 if source_volume is None else source_volume)
+    status["qobuz_unity_pin"] = (
+        "ok" if qobuz_unity_pin_state.get("ok") else "error"
+    ) if qobuz_unity_pin_state else None
     status["playback_owner"] = _resolve_playback_owner()
     playback_state.latest_qobuz_state = status
     return status
+
+
+# Health state of the last qbzd unity pin (precondition of the volume
+# architecture: qbzd must stay at 100% while the phone slider drives the
+# FXRoute master). Exposed as ``qobuz_unity_pin`` in the Qobuz UI state; a
+# failed pin must be visible and is retried by the next claim/UI-start pin.
+qobuz_unity_pin_state: dict | None = None
 
 
 async def _qobuz_pin_unity() -> None:
@@ -2234,12 +2244,24 @@ async def _qobuz_pin_unity() -> None:
     writes while remote Connect SetVolume is ignored, so this is the single
     write that keeps qbzd from attenuating; every user-facing volume input
     (phone slider via journal watch, FXRoute web slider) drives the master.
+
+    A failed pin is not treated as harmless: it is recorded in
+    ``qobuz_unity_pin_state`` (health flag surfaced in the Qobuz UI state,
+    ownership stays untouched) and retried on the next pin call.
     """
+    global qobuz_unity_pin_state
     provider = streaming.get_provider("qobuz")
     try:
         await provider.set_volume(100)
     except Exception as exc:
-        logger.warning("Failed to pin qbzd volume to 100%%: %s", exc)
+        qobuz_unity_pin_state = {"ok": False, "error": str(exc), "at": time.time()}
+        logger.error(
+            "Qobuz unity pin failed: %s (volume_mode must stay 'locked' so the "
+            "phone slider drives the FXRoute master, not qbzd gain)",
+            exc,
+        )
+        return
+    qobuz_unity_pin_state = {"ok": True, "at": time.time()}
 
 
 async def _qobuz_volume_action(percent: float) -> dict:

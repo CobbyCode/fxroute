@@ -196,12 +196,16 @@ class QobuzProvider(StreamingProvider):
             result["trackId"] = _id_str(status_playback.get("track_id"))
             result["duration"] = float(status_playback.get("duration") or 0)
 
-        # Existing metadata must not be dropped on a transient now-playing gap:
-        # the queue snapshot carries the current track's artwork/album.
-        if not result["artUrl"] and isinstance(queue_current, dict):
-            result["artUrl"] = queue_current.get("artwork_url") or ""
-        if not result["album"] and isinstance(queue_current, dict):
-            result["album"] = queue_current.get("album") or ""
+        # Existing metadata must not be dropped on a transient now-playing gap,
+        # and must never be borrowed across tracks: the queue snapshot is only
+        # used when its current track is unambiguously the same track (by id)
+        # as the reported now-playing track.
+        queue_current_id = _id_str(queue_current.get("id")) if isinstance(queue_current, dict) else ""
+        if isinstance(queue_current, dict) and queue_current_id and queue_current_id == result["trackId"]:
+            if not result["artUrl"]:
+                result["artUrl"] = queue_current.get("artwork_url") or ""
+            if not result["album"]:
+                result["album"] = queue_current.get("album") or ""
 
         playback = np_playback if np_playback else status_playback
         result["status"] = _normalize_state(status_playback.get("state"), playback.get("is_playing"))

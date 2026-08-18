@@ -100,7 +100,12 @@ class QobuzRemoteVolumeTranslator:
 
     def submit(self, percent: int) -> bool:
         """Record a remote volume intent; ``False`` when Qobuz does not own
-        the playback context (e.g. radio is playing) and the intent is dropped."""
+        the playback context (e.g. radio is playing) and the intent is dropped.
+
+        The owner is re-checked again in :meth:`flush` right before the master
+        write: an owner switch inside the debounce window must discard the
+        stale pending value instead of applying a Qobuz intent afterwards.
+        """
         if not self.is_active():
             return False
         self._pending = percent
@@ -108,6 +113,12 @@ class QobuzRemoteVolumeTranslator:
 
     async def flush(self) -> None:
         if self._pending is None:
+            return
+        if not self.is_active():
+            # The owner changed inside the debounce window (e.g. to Tidal or
+            # Spotify): the pending Qobuz intent is stale and must never touch
+            # the FXRoute master anymore.
+            self._pending = None
             return
         percent = self._pending
         self._pending = None
@@ -142,10 +153,12 @@ class QobuzVolumeWatch:
         self.watch_task: asyncio.Task | None = None
         self._drain_task: asyncio.Task | None = None
         self._backoff_seconds = 0.0
-        self._software_warned_at = 0.0
+        # None means "never warned"; 0.0 would suppress the first warning while
+        # the monotonic uptime is still below the rate-limit window.
+        self._software_warned_at: float | None = None
 
     def _warn_software_mode_once(self, now: float) -> None:
-        if now - self._software_warned_at < _WARN_EVERY_SECONDS:
+        if self._software_warned_at is not None and now - self._software_warned_at < _WARN_EVERY_SECONDS:
             return
         self._software_warned_at = now
         logger.warning(
@@ -178,6 +191,13 @@ class QobuzVolumeWatch:
             if self._debounce_seconds > 0:
                 await self._sleep(self._debounce_seconds)
             await self._translator.flush()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # The drain runs as a detached task: a failing master write must be
+            # observed here (never an unretrieved task exception) while the
+            # watch loop stays alive for the next intent.
+            logger.warning("Qobuz journal volume drain failed: %s", exc)
         finally:
             self._drain_task = None
 

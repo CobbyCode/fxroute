@@ -304,6 +304,77 @@ class QobuzQueueAndArtworkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["artUrl"], "https://art/own.jpg")
         self.assertEqual(status["queue_len"], 7)
 
+    async def test_queue_fallback_never_borrows_artwork_across_tracks(self):
+        # Regression (track race): now-playing reports track B (55) without
+        # artwork while the queue snapshot's current track is still track A
+        # (50) with artwork. B must never inherit A's artwork or album.
+        provider = QobuzProvider()
+        getter = _fake_get({
+            "/api/status": _status_payload(),
+            "/api/now-playing": _now_playing_payload(
+                track={"id": 55, "title": "B", "artist": "B-Artist", "album": "B-Album",
+                       "duration_secs": 200, "artwork_url": "", "hires": True,
+                       "bit_depth": 16, "sample_rate": 44.1, "source": "qobuz"},
+            ),
+            "/api/queue": _queue_payload(),
+        })
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
+            status = await provider.status()
+
+        self.assertEqual(status["trackId"], "55")
+        self.assertEqual(status["artUrl"], "")
+        self.assertEqual(status["album"], "B-Album")
+
+    async def test_queue_fallback_recovers_artwork_for_same_track_id(self):
+        # The recovery is allowed when the queue current track is unambiguously
+        # the same track as now-playing (by id): artwork fills the gap.
+        provider = QobuzProvider()
+        queue = _queue_payload(current_track={
+            "id": 42, "title": "T", "artist": "A", "album": "L",
+            "artwork_url": "https://art/queue.jpg", "duration_secs": 200,
+        })
+        getter = _fake_get({
+            "/api/status": _status_payload(),
+            "/api/now-playing": _now_playing_payload(
+                track={"id": 42, "title": "T", "artist": "A", "album": "L",
+                       "duration_secs": 200, "artwork_url": "", "hires": True,
+                       "bit_depth": 24, "sample_rate": 96.0, "source": "qobuz"},
+            ),
+            "/api/queue": queue,
+        })
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
+            status = await provider.status()
+
+        self.assertEqual(status["trackId"], "42")
+        self.assertEqual(status["artUrl"], "https://art/queue.jpg")
+        self.assertEqual(status["album"], "L")
+
+    async def test_queue_fallback_skipped_when_track_id_unknown(self):
+        # No now-playing track and no summary track id: without an
+        # unambiguous id match the queue must not be used as artwork source.
+        provider = QobuzProvider()
+        getter = _fake_get({
+            "/api/status": _status_payload(
+                playback={"state": "playing", "title": "Cur", "artist": "Ar",
+                          "track_id": None, "duration": 180, "position": 5,
+                          "volume": 0.5, "muted": False},
+            ),
+            "/api/now-playing": None,
+            "/api/queue": _queue_payload(),
+        })
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
+            status = await provider.status()
+
+        self.assertEqual(status["trackId"], "")
+        self.assertEqual(status["artUrl"], "")
+        self.assertEqual(status["album"], "")
+
     async def test_queue_absent_leaves_neutral_fields(self):
         provider = QobuzProvider()
         getter = _fake_get({
