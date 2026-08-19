@@ -1560,6 +1560,11 @@ body {
     --control-gap: 12px;
     padding-top: 0.55rem;
 }
+#tab-spotify,
+#tab-qobuz,
+#tab-tidal {
+    padding-top: 0.55rem;
+}
 .library-header {
     display: flex;
     justify-content: space-between;
@@ -5387,7 +5392,10 @@ input[type="number"]::-webkit-outer-spin-button {
         font-size: 1.2rem;
         line-height: 1;
     }
-    #tab-library {
+    #tab-library,
+    #tab-spotify,
+    #tab-qobuz,
+    #tab-tidal {
         padding-top: 0;
     }
     #tab-effects {
@@ -7000,8 +7008,16 @@ body {
 /* =========================================================================
    Streaming provider tabs (Spotify / Qobuz / TIDAL)
    ========================================================================= */
+/* The streaming headers carry the provider title only, so they reserve the
+   standard 44px header row to keep the title baseline in line with the
+   Library/DSP/Radio headers. */
+#tab-spotify .library-header,
+#tab-qobuz .library-header,
+#tab-tidal .library-header {
+    min-height: 44px;
+}
 .streaming-shell {
-    padding: 0.7rem 0.25rem;
+    padding: 0 0.25rem 0.7rem;
 }
 .streaming-provider {
     display: flex;
@@ -7013,9 +7029,12 @@ body {
    card starts at the top of the stage, so both pages have the same vertical
    geometry no matter how their metadata heights differ. The provider status
    lives inside the card (top-right chip); catalog providers (TIDAL) keep a
-   full-width browser surface with the standalone status line. */
+   full-width browser surface with the standalone status line. The 18rem
+   viewport allowance grows by the page header (title row, gap, panel offset
+   minus the former shell top padding) so the stage still ends above the
+   footer. */
 .streaming-provider-player {
-    min-height: calc(100dvh - 18rem);
+    min-height: calc(100dvh - 21.35rem);
     justify-content: flex-start;
 }
 .streaming-provider-catalog .streaming-status-line {
