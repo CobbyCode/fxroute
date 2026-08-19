@@ -116,6 +116,13 @@ class TransitionRequest:
     recovery_commit_context_id: str | None = None
     recovery_source: str | None = None
     recovery_url: str | None = None
+    # External-renderer claims (Spotify/Qobuz Connect) are guarded by the
+    # caller against an already-committed owner before the transition lock,
+    # which a queued claim can lose: an FXRoute-initiated start of the same
+    # source commits while the claim waits.  The Coordinator re-validates
+    # inside the lock; when this callback returns True the transition is
+    # skipped as a no-op without touching the output gate or playback state.
+    skip_if_committed_owner: Callable[[], Awaitable[bool]] | None = None
 
 @dataclass(frozen=True)
 class TransitionResult:

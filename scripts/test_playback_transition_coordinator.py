@@ -1004,6 +1004,64 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await duplicate)
         self.assertEqual(calls, ["attempt"])
 
+    async def test_claim_revalidation_skip_is_noop_without_gate_mutation(self):
+        # A stale external-renderer claim (owner committed while it waited on
+        # the lock) must be discarded before the output gate is touched.
+        runtime = FakeRuntime()
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        async def owner_already_committed() -> bool:
+            return True
+
+        req = TransitionRequest(
+            operation="spotify-claim",
+            source="spotify",
+            target_rate=44_100,
+            should_play=True,
+            rate_change=False,
+            reload_source=True,
+            detail="playerctl-playing",
+            skip_if_committed_owner=owner_already_committed,
+        )
+        result = await coordinator.execute(req)
+
+        self.assertFalse(result.committed)
+        self.assertTrue(result.state.get("skipped"))
+        self.assertEqual(result.state.get("reason"), "claim-owner-already-committed")
+        self.assertEqual(result.source, "spotify")
+        # No gate mutation and no transition stage may run.
+        self.assertNotIn("mute:True", runtime.events)
+        self.assertNotIn("mute:False", runtime.events)
+        self.assertNotIn("start", runtime.events)
+        self.assertNotIn("snapshot", runtime.events)
+
+    async def test_claim_revalidation_false_runs_full_transition(self):
+        # A genuine external claim (no same-source commit behind it) must
+        # still take the normal gate-owned transition path.
+        runtime = FakeRuntime()
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        async def owner_not_committed() -> bool:
+            return False
+
+        req = TransitionRequest(
+            operation="spotify-claim",
+            source="spotify",
+            target_rate=48_000,
+            should_play=True,
+            rate_change=True,
+            reload_source=True,
+            detail="playerctl-playing",
+            skip_if_committed_owner=owner_not_committed,
+        )
+        result = await coordinator.execute(req)
+
+        self.assertTrue(result.committed)
+        self.assertNotIn("skipped", result.state)
+        self.assertIn("mute:True", runtime.events)
+        self.assertIn("mute:False", runtime.events)
+        self.assertIn("start", runtime.events)
+
 
 class PlayerLoadContractTests(unittest.TestCase):
     def test_loadfile_preserves_cached_pause_until_explicit_start(self):

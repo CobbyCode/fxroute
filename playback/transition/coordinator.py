@@ -217,6 +217,38 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             await self.ensure_output_gate_closed(stages.transition_id, stage=gate_check)
         return result
 
+    async def _skip_claim_noop(
+        self,
+        stages: _TransitionStages,
+        request: TransitionRequest,
+    ) -> TransitionResult:
+        """Discard a stale external-renderer claim without mutating playback.
+
+        The claim's pre-lock owner guard can race an FXRoute-initiated start
+        of the same source; re-validation inside the lock turns the queued
+        claim into a no-op so it never closes the output gate over live audio.
+        """
+        result = TransitionResult(
+            transition_id=stages.transition_id,
+            committed=False,
+            source=request.source,
+            target_rate=request.target_rate,
+            state={
+                "committed": False,
+                "skipped": True,
+                "reason": "claim-owner-already-committed",
+            },
+        )
+        self._record_result(result)
+        self.last_error = None
+        logger.info(
+            "Playback transition claim skipped as no-op: source=%s operation=%s transition_id=%s",
+            request.source,
+            request.operation,
+            stages.transition_id,
+        )
+        return result
+
     async def _skip_measurement_restore(
         self,
         stages: _TransitionStages,
@@ -587,6 +619,17 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     raise RuntimeError(
                         f"stale output gate could not be reconciled: {self._startup_gate_error or 'unknown error'}"
                     )
+                if active_request.skip_if_committed_owner is not None:
+                    try:
+                        should_skip = await active_request.skip_if_committed_owner()
+                    except Exception as exc:
+                        logger.warning(
+                            "Playback transition claim revalidation failed; running claim: %s",
+                            exc,
+                        )
+                        should_skip = False
+                    if should_skip:
+                        return await self._skip_claim_noop(stages, active_request)
                 snapshot = await self.runtime.read_transition_snapshot(request)
                 if (
                     not active_request.audio_overview

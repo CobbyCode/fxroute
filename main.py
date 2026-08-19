@@ -2397,6 +2397,13 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
     qobuz_state = await get_qobuz_ui_state()
     if not _is_qobuz_playback_active(qobuz_state):
         return qobuz_state
+
+    async def skip_if_owner_committed() -> bool:
+        # Same re-validation contract as the Spotify claim: the guard above
+        # runs before the transition lock, so a claim queued behind an
+        # FXRoute-initiated Qobuz start must be re-checked inside the lock.
+        return playback_state.current_playback_owner == "qobuz"
+
     track = _qobuz_target_track_from_state(qobuz_state)
     target_rate = _qobuz_target_rate(qobuz_state)
     request = TransitionRequest(
@@ -2409,12 +2416,15 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
         rate_change=_coordinator_rate_change(target_rate),
         reload_source=False,
         detail=detail,
+        skip_if_committed_owner=skip_if_owner_committed,
     )
     try:
         result = await _run_coordinated_transition(request)
     except (ValueError, PlaybackTransitionFailure) as exc:
         logger.warning("Qobuz claim transition failed: %s", getattr(exc, "detail", exc) or exc)
         return qobuz_state
+    if (getattr(result, "state", {}) or {}).get("skipped"):
+        return await get_qobuz_ui_state()
     if not getattr(result, "committed", False):
         return qobuz_state
     await _publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
@@ -2437,6 +2447,15 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
     data = await get_spotify_ui_state()
     if not _is_spotify_playback_active(data):
         return data
+
+    async def skip_if_owner_committed() -> bool:
+        # The guard above runs before the transition lock, so a claim queued
+        # behind an FXRoute-initiated Spotify start would close the output
+        # gate a second time over already-audible audio.  The Coordinator
+        # re-validates inside the lock; the initiating start commits the
+        # owner synchronously before the queued claim can acquire it.
+        return playback_state.current_playback_owner == "spotify"
+
     target_rate = _coordinator_target_rate("spotify")
     request = TransitionRequest(
         operation="spotify-claim",
@@ -2446,12 +2465,15 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
         rate_change=_coordinator_rate_change(target_rate),
         reload_source=True,
         detail=detail,
+        skip_if_committed_owner=skip_if_owner_committed,
     )
     try:
         result = await _run_coordinated_transition(request)
     except (ValueError, PlaybackTransitionFailure) as exc:
         logger.warning("Spotify claim transition failed: %s", getattr(exc, "detail", exc) or exc)
         return data
+    if (getattr(result, "state", {}) or {}).get("skipped"):
+        return await get_spotify_ui_state()
     if not getattr(result, "committed", False):
         return data
     await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))

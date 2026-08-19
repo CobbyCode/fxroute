@@ -438,5 +438,224 @@ class QobuzUiStartHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(request.should_play)
 
 
+class SpotifyClaimRaceTests(unittest.IsolatedAsyncioTestCase):
+    """The MPRIS watcher claim must re-validate the committed owner inside
+    the transition lock, so a claim queued behind an FXRoute-initiated
+    Spotify start becomes a no-op instead of closing the output gate over
+    already-audible audio."""
+
+    def _playing_state(self):
+        return {
+            "available": True, "status": "Playing", "title": "T", "artist": "A",
+            "album": "B", "trackId": "42", "artUrl": "http://x/c.jpg",
+            "sample_rate": 44100,
+        }
+
+    async def asyncSetUp(self):
+        self._orig_owner = main_module.playback_state.current_playback_owner
+        main_module.playback_state.current_playback_owner = None
+
+    async def asyncTearDown(self):
+        main_module.playback_state.current_playback_owner = self._orig_owner
+
+    def _committed_result(self):
+        return type("Result", (), {
+            "committed": True,
+            "transition_id": "tr-claim",
+            "source": "spotify",
+            "target_rate": 44100,
+            "state": {"committed": True},
+        })()
+
+    def _skipped_result(self):
+        return type("Result", (), {
+            "committed": False,
+            "transition_id": "tr-claim-skipped",
+            "source": "spotify",
+            "target_rate": 44100,
+            "state": {"committed": False, "skipped": True,
+                       "reason": "claim-owner-already-committed"},
+        })()
+
+    def _patches(self, run_transition):
+        return [
+            mock.patch.object(
+                main_module, "get_spotify_ui_state",
+                new=mock.AsyncMock(return_value=self._playing_state()),
+            ),
+            mock.patch.object(
+                main_module, "_is_spotify_playback_active", return_value=True
+            ),
+            mock.patch.object(
+                main_module, "_run_coordinated_transition", new=run_transition
+            ),
+            mock.patch.object(
+                main_module, "_publish_committed_playback_owner",
+                new=mock.AsyncMock(),
+            ),
+            mock.patch.object(
+                main_module, "broadcast_spotify_state",
+                new=mock.AsyncMock(return_value=self._playing_state()),
+            ),
+        ]
+
+    async def test_claim_queued_behind_spotify_commit_is_skipped_in_lock(self):
+        # The claim's pre-lock guard sees owner=None; inside the lock the
+        # FXRoute-initiated start has already committed spotify, so the claim
+        # must be skipped without publishing or broadcasting.
+        captured = {}
+
+        async def run_transition(request):
+            captured["request"] = request
+            # The initiating start commits the owner synchronously after
+            # releasing the lock, before the queued claim can acquire it.
+            main_module.playback_state.current_playback_owner = "spotify"
+            if await request.skip_if_committed_owner():
+                return self._skipped_result()
+            return self._committed_result()
+
+        patches = self._patches(run_transition)
+        with patches[0], patches[1], patches[2], patches[3] as publish, patches[4] as broadcast:
+            result = await main_module._claim_spotify_playback("playerctl-playing")
+
+        request = captured["request"]
+        self.assertIsNotNone(request.skip_if_committed_owner)
+        self.assertEqual(request.operation, "spotify-claim")
+        self.assertEqual(request.source, "spotify")
+        self.assertEqual(request.detail, "playerctl-playing")
+        self.assertTrue(request.reload_source)
+        publish.assert_not_awaited()
+        broadcast.assert_not_awaited()
+        self.assertEqual(result["status"], "Playing")
+
+    async def test_claim_revalidation_tracks_committed_owner(self):
+        # The lock-side callback reflects the committed owner: with no
+        # same-source commit behind it, the claim must proceed and publish.
+        async def run_transition(request):
+            if await request.skip_if_committed_owner():
+                return self._skipped_result()
+            return self._committed_result()
+
+        patches = self._patches(run_transition)
+        with patches[0], patches[1], patches[2], patches[3] as publish, patches[4] as broadcast:
+            result = await main_module._claim_spotify_playback("playerctl-playing")
+
+        publish.assert_awaited_once_with("spotify", "tr-claim")
+        broadcast.assert_awaited_once()
+        self.assertEqual(result["status"], "Playing")
+
+
+class QobuzClaimRaceTests(unittest.IsolatedAsyncioTestCase):
+    """The qbzd claim watcher must re-validate the committed owner inside
+    the transition lock, mirroring the Spotify claim contract: a claim queued
+    behind an FXRoute-initiated Qobuz start becomes a no-op instead of
+    re-running the handoff over already-playing audio."""
+
+    def _playing_state(self):
+        return {
+            "available": True, "status": "Playing", "title": "T", "artist": "A",
+            "album": "B", "trackId": "42", "artUrl": "http://x/c.jpg",
+            "sample_rate": 88200,
+        }
+
+    async def asyncSetUp(self):
+        self._orig_owner = main_module.playback_state.current_playback_owner
+        main_module.playback_state.current_playback_owner = None
+
+    async def asyncTearDown(self):
+        main_module.playback_state.current_playback_owner = self._orig_owner
+
+    def _committed_result(self):
+        return type("Result", (), {
+            "committed": True,
+            "transition_id": "tr-claim",
+            "source": "qobuz",
+            "target_rate": 88200,
+            "state": {"committed": True},
+        })()
+
+    def _skipped_result(self):
+        return type("Result", (), {
+            "committed": False,
+            "transition_id": "tr-claim-skipped",
+            "source": "qobuz",
+            "target_rate": 88200,
+            "state": {"committed": False, "skipped": True,
+                       "reason": "claim-owner-already-committed"},
+        })()
+
+    def _patches(self, run_transition):
+        return [
+            mock.patch.object(
+                main_module, "get_qobuz_ui_state",
+                new=mock.AsyncMock(return_value=self._playing_state()),
+            ),
+            mock.patch.object(
+                main_module, "_is_qobuz_playback_active", return_value=True
+            ),
+            mock.patch.object(
+                main_module, "_run_coordinated_transition", new=run_transition
+            ),
+            mock.patch.object(
+                main_module, "_publish_committed_playback_owner",
+                new=mock.AsyncMock(),
+            ),
+            mock.patch.object(
+                main_module, "_qobuz_pin_unity", new=mock.AsyncMock(),
+            ),
+            mock.patch.object(
+                main_module, "broadcast_qobuz_state",
+                new=mock.AsyncMock(return_value=self._playing_state()),
+            ),
+        ]
+
+    async def test_claim_queued_behind_qobuz_commit_is_skipped_in_lock(self):
+        # The claim's pre-lock guard sees owner=None; inside the lock the
+        # FXRoute-initiated start has already committed qobuz, so the claim
+        # must be skipped without publishing, pinning or broadcasting.
+        captured = {}
+
+        async def run_transition(request):
+            captured["request"] = request
+            main_module.playback_state.current_playback_owner = "qobuz"
+            if await request.skip_if_committed_owner():
+                return self._skipped_result()
+            return self._committed_result()
+
+        patches = self._patches(run_transition)
+        with patches[0], patches[1], patches[2], patches[3] as publish, \
+                patches[4] as pin, patches[5] as broadcast:
+            result = await main_module._claim_qobuz_playback("qbzd-playing")
+
+        request = captured["request"]
+        self.assertIsNotNone(request.skip_if_committed_owner)
+        self.assertEqual(request.operation, "qobuz-claim")
+        self.assertEqual(request.source, "qobuz")
+        self.assertEqual(request.detail, "qbzd-playing")
+        self.assertFalse(request.reload_source)
+        publish.assert_not_awaited()
+        pin.assert_not_awaited()
+        broadcast.assert_not_awaited()
+        self.assertEqual(result["status"], "Playing")
+
+    async def test_claim_revalidation_tracks_committed_owner(self):
+        # With no same-source commit behind it, the claim must proceed,
+        # publish the owner and pin qbzd unity as before.
+        async def run_transition(request):
+            if await request.skip_if_committed_owner():
+                return self._skipped_result()
+            return self._committed_result()
+
+        patches = self._patches(run_transition)
+        with patches[0], patches[1], patches[2], patches[3] as publish, \
+                patches[4] as pin, patches[5] as broadcast:
+            result = await main_module._claim_qobuz_playback("qbzd-playing")
+
+        publish.assert_awaited_once_with("qobuz", "tr-claim")
+        pin.assert_awaited_once()
+        broadcast.assert_awaited_once()
+        self.assertEqual(result["status"], "Playing")
+
+
 if __name__ == "__main__":
     unittest.main()
