@@ -552,12 +552,17 @@ class MeasurementRouting:
             # The native engine always runs the full 2.x topology: stereo mode
             # keeps the two sub channels in the layout muted (route gain 0), so
             # the expected output count follows the expected layout for the
-            # mode instead of a bare stereo pair.
-            expected_outputs = len(expected_layout) if expected_layout else (4 if output_mode.startswith("subwoofer-2.") else 2)
-            if len(runtime_layout) != expected_outputs:
-                failures.append(f"native DSP layout does not expose {expected_outputs} outputs")
-            if expected_layout and runtime_layout != expected_layout:
-                failures.append("native DSP routing/crossover/alignment layout does not match measurement output mode")
+            # mode instead of a bare stereo pair.  The expected layout is
+            # always derived from the output overview by the route builder;
+            # when it is missing the sweep must fail closed rather than guess
+            # an output count.
+            if not expected_layout:
+                failures.append("expected native DSP layout is unavailable")
+            else:
+                if len(runtime_layout) != len(expected_layout):
+                    failures.append(f"native DSP layout does not expose {len(expected_layout)} outputs")
+                if runtime_layout != expected_layout:
+                    failures.append("native DSP routing/crossover/alignment layout does not match measurement output mode")
         if playback_route.get("measurement_scope") == MEASUREMENT_SCOPE_RAW_HELPER and not runtime.get("effect_bypass"):
             failures.append("native DSP effects are not bypassed for raw-helper measurement")
         if failures:

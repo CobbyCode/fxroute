@@ -86,17 +86,92 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
             self.assertEqual(route["playback_target_name"], "fxroute_dsp_sink")
 
     def test_pre_sweep_validation_uses_native_runtime_config_not_legacy_argv(self):
+        layout = [{"name": f"OUT{i}", "routes": [{"input": i - 1, "gain": 1.0}]} for i in range(1, 5)]
         self.store.runtime_snapshot_provider = lambda: {
             "active": True,
-            "config": {"sample_rate": 48000, "output_mode": "subwoofer-2.2", "layout": [{}, {}, {}, {}]},
+            "config": {"sample_rate": 48000, "output_mode": "subwoofer-2.2", "layout": layout},
             "effect_bypass": True,
         }
         snapshot = self.store._routing._build_pre_sweep_state_snapshot(
             job_id="job", sample_rate=48000,
             playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_RAW_HELPER,
-                            "output_mode": "subwoofer-2.2"})
+                            "output_mode": "subwoofer-2.2", "expected_native_layout": layout})
         self.assertIsNone(snapshot["validation_failure"])
         self.assertNotIn("parsed", snapshot)
+
+    def test_pre_sweep_validation_accepts_subwoofer_22_layout_with_sub_filters(self):
+        # 2.2 runs the real crossover topology: subs carry active filters, the
+        # layout still exposes exactly the 4 channels the engine drives.
+        layout = [
+            {"name": "FL", "routes": [{"input": 0, "gain": 1.0}]},
+            {"name": "FR", "routes": [{"input": 1, "gain": 1.0}]},
+            {"name": "SUB1", "routes": [{"input": 0, "gain": 0.5}]},
+            {"name": "SUB2", "routes": [{"input": 1, "gain": 0.5}]},
+        ]
+        self.store.runtime_snapshot_provider = lambda: {
+            "active": True,
+            "config": {"sample_rate": 48000, "output_mode": "subwoofer-2.2", "layout": layout},
+            "effect_bypass": True,
+        }
+        snapshot = self.store._routing._build_pre_sweep_state_snapshot(
+            job_id="job", sample_rate=48000,
+            playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_RAW_HELPER,
+                            "output_mode": "subwoofer-2.2", "expected_native_layout": layout})
+        self.assertIsNone(snapshot["validation_failure"])
+
+    def test_pre_sweep_validation_fails_closed_when_expected_layout_missing(self):
+        # The route builder always derives the expected layout from the
+        # overview; a missing one must refuse the sweep instead of guessing an
+        # output count (regression guard: the old stereo=>2 fallback caused
+        # refused sweeps and is gone).
+        layout = [{"name": f"OUT{i}", "routes": [{"input": i - 1, "gain": 1.0}]} for i in range(1, 5)]
+        self.store.runtime_snapshot_provider = lambda: {
+            "active": True,
+            "config": {"sample_rate": 48000, "output_mode": "stereo", "layout": layout},
+        }
+        snapshot = self.store._routing._build_pre_sweep_state_snapshot(
+            job_id="job", sample_rate=48000,
+            playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+                            "output_mode": "stereo"})
+        self.assertIn("expected native DSP layout is unavailable", snapshot["validation_failure"])
+
+    def test_pre_sweep_validation_rejects_wrong_output_count(self):
+        layout = [{"name": f"OUT{i}", "routes": [{"input": i - 1, "gain": 1.0}]} for i in range(1, 5)]
+        self.store.runtime_snapshot_provider = lambda: {
+            "active": True,
+            "config": {"sample_rate": 48000, "output_mode": "stereo", "layout": layout[:2]},
+        }
+        snapshot = self.store._routing._build_pre_sweep_state_snapshot(
+            job_id="job", sample_rate=48000,
+            playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+                            "output_mode": "stereo", "expected_native_layout": layout})
+        self.assertIn("native DSP layout does not expose 4 outputs", snapshot["validation_failure"])
+
+    def test_pre_sweep_validation_rejects_deep_layout_mismatch(self):
+        expected = [
+            {"name": "FL", "routes": [{"input": 0, "gain": 1.0}]},
+            {"name": "FR", "routes": [{"input": 1, "gain": 1.0}]},
+            {"name": "SUB1", "routes": [{"input": 0, "gain": 0.0}]},
+            {"name": "SUB2", "routes": [{"input": 1, "gain": 0.0}]},
+        ]
+        wrong = [
+            {"name": "FL", "routes": [{"input": 0, "gain": 1.0}]},
+            {"name": "FR", "routes": [{"input": 1, "gain": 1.0}]},
+            {"name": "SUB1", "routes": [{"input": 0, "gain": 0.3}]},
+            {"name": "SUB2", "routes": [{"input": 1, "gain": 0.3}]},
+        ]
+        self.store.runtime_snapshot_provider = lambda: {
+            "active": True,
+            "config": {"sample_rate": 48000, "output_mode": "stereo", "layout": wrong},
+        }
+        snapshot = self.store._routing._build_pre_sweep_state_snapshot(
+            job_id="job", sample_rate=48000,
+            playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+                            "output_mode": "stereo", "expected_native_layout": expected})
+        self.assertIn(
+            "native DSP routing/crossover/alignment layout does not match measurement output mode",
+            snapshot["validation_failure"],
+        )
 
     def test_pre_sweep_validation_accepts_stereo_layout_with_muted_subs(self):
         # The native engine always runs the full 2.x topology: in stereo mode
