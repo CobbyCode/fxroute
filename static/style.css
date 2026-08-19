@@ -3422,12 +3422,6 @@ body {
     gap: 0.75rem;
     margin-bottom: 1rem;
 }
-.effects-heading-block {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-}
-
 .effects-header-actions {
     display: flex;
     align-items: center;
@@ -3441,12 +3435,6 @@ body {
     min-width: 112px;
     min-height: 38px;
     padding-inline: 0.95rem;
-}
-.effects-title {
-    line-height: 1.25;
-}
-.effects-subtitle {
-    max-width: 70ch;
 }
 .effects-import-panel {
     margin-bottom: 1rem;
