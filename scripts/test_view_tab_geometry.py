@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Playwright geometry contract for the shared compact view tabs.
 
-Library ``Tracks / Folders / Albums`` and TIDAL level-2 ``Tracks / Albums /
-Artists`` (favorites + search result types) must render through one shared
-``.view-tab`` component: equal visible height, equal horizontal padding and
-one identical mint active state.  The TIDAL level-1 navigation
-(``Favorites / Playlists``) must stay visibly taller/stronger.  Nothing may
-overflow or shrink the touch targets at any checked width.
+Library ``Tracks / Folders / Albums`` and the TIDAL browse navigation
+``Tracks / Albums / Artists / Playlists`` (one shared row) plus the search
+result types must render through one shared ``.view-tab`` component: equal
+visible height, equal horizontal padding and one identical mint active
+state.  The old ``Favorites`` over-tab and its inner category chips are
+gone — no second navigation level may remain.  Nothing may overflow or
+shrink the touch targets at any checked width.
 
 Runs the real rendered page (static server + stubbed streaming API) in
 headless Chromium.  Skips cleanly when playwright or a browser is not
@@ -109,7 +110,7 @@ def _run():
             def bg(sel):
                 return page.evaluate("getComputedStyle(document.querySelector('" + sel + "')).backgroundColor")
 
-            for width in (1600, 1440, 1024, 834):
+            for width in (1440, 1024, 834):
                 page.set_viewport_size({"width": width, "height": 800})
                 page.wait_for_timeout(200)
                 # Library view tabs.
@@ -124,34 +125,36 @@ def _run():
                 check(f"[{width}px] library view tabs share horizontal padding",
                       len({tuple(p) for p in lib_pads}) == 1)
 
-                # TIDAL level-2 favorites tabs.
+                # TIDAL browse navigation: one shared row of four view tabs.
                 activate("tidal")
-                fav_heights = heights("#tidal-fav-types .view-tab")
-                check(f"[{width}px] TIDAL favorites renders three view tabs", len(fav_heights) == 3)
-                check(f"[{width}px] TIDAL favorites tabs share one height",
-                      max(fav_heights) - min(fav_heights) <= 0.5)
-                check(f"[{width}px] TIDAL favorites tabs keep a touchable height (>=36px)",
-                      min(fav_heights) >= 36)
-                fav_pads = pads("#tidal-fav-types .view-tab")
-                check(f"[{width}px] TIDAL favorites tabs share horizontal padding",
-                      len({tuple(p) for p in fav_pads}) == 1)
+                browse_heights = heights(".tidal-subbar .view-tab[data-browse]")
+                check(f"[{width}px] TIDAL browse renders four view tabs", len(browse_heights) == 4)
+                check(f"[{width}px] TIDAL browse tabs share one height",
+                      max(browse_heights) - min(browse_heights) <= 0.5)
+                check(f"[{width}px] TIDAL browse tabs keep a touchable height (>=36px)",
+                      min(browse_heights) >= 36)
+                browse_pads = pads(".tidal-subbar .view-tab[data-browse]")
+                check(f"[{width}px] TIDAL browse tabs share horizontal padding",
+                      len({tuple(p) for p in browse_pads}) == 1)
 
-                # Library and TIDAL level-2 tabs are the same component.
-                check(f"[{width}px] library and TIDAL tabs are equally tall",
-                      abs(min(lib_heights) - min(fav_heights)) <= 0.5)
-                check(f"[{width}px] library and TIDAL tabs are equally padded",
-                      tuple(lib_pads[0]) == tuple(fav_pads[0]))
+                # The browse tabs render in one navigation row: the old
+                # Favorites level and its inner category chips are gone.
+                check(f"[{width}px] no second navigation row (#tidal-fav-types gone)",
+                      page.locator("#tidal-fav-types").count() == 0)
+                check(f"[{width}px] subbar carries exactly one view-tab group",
+                      page.locator(".tidal-subbar .view-tabs").count() == 1)
 
-                # Identical mint active state.
+                # Library and TIDAL browse tabs are the same component.
+                check(f"[{width}px] library and TIDAL browse tabs are equally tall",
+                      abs(min(lib_heights) - min(browse_heights)) <= 0.5)
+                check(f"[{width}px] library and TIDAL browse tabs are equally padded",
+                      tuple(lib_pads[0]) == tuple(browse_pads[0]))
+
+                # Identical mint active state (default browse category Tracks).
                 lib_active = bg("#library-view-tracks")
-                fav_active = bg("#tidal-fav-types .view-tab.is-active")
+                browse_active = bg(".tidal-subbar .view-tab[data-browse].is-active")
                 check(f"[{width}px] library and TIDAL active states match ({lib_active})",
-                      lib_active == fav_active)
-
-                # TIDAL level-1 navigation stays the stronger level.
-                l1_heights = heights(".tidal-subbar .streaming-browse-tab")
-                check(f"[{width}px] TIDAL level-1 nav stays taller than level-2 tabs",
-                      min(l1_heights) > min(fav_heights))
+                      lib_active == browse_active)
 
                 # Search result type tabs use the same component.
                 page.fill("#tidal-search-input", "daft punk")
@@ -160,11 +163,11 @@ def _run():
                 search_heights = heights("#tidal-search-result-types .view-tab")
                 check(f"[{width}px] search result types render as view tabs", len(search_heights) == 4)
                 check(f"[{width}px] search type tabs match the shared height",
-                      abs(min(search_heights) - min(fav_heights)) <= 0.5)
+                      abs(min(search_heights) - min(browse_heights)) <= 0.5)
 
                 check(f"[{width}px] no horizontal overflow",
                       page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
-                # Clear the executed search so the next width starts on Favorites.
+                # Clear the executed search so the next width starts on Tracks.
                 page.fill("#tidal-search-input", "")
                 page.wait_for_timeout(200)
 
@@ -177,12 +180,12 @@ def _run():
             check("[390px] library no horizontal overflow",
                   page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
             activate("tidal")
-            fav_heights = heights("#tidal-fav-types .view-tab")
-            check("[390px] TIDAL view tabs stay touchable on mobile", min(fav_heights) >= 36)
+            browse_heights = heights(".tidal-subbar .view-tab[data-browse]")
+            check("[390px] TIDAL browse tabs stay touchable on mobile", min(browse_heights) >= 36)
+            check("[390px] TIDAL browse navigation has no second level",
+                  page.locator("#tidal-fav-types").count() == 0)
             check("[390px] TIDAL no horizontal overflow",
                   page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
-            l1_heights = heights(".tidal-subbar .streaming-browse-tab")
-            check("[390px] TIDAL level-1 nav stays taller on mobile", min(l1_heights) > min(fav_heights))
 
             browser.close()
     finally:

@@ -119,11 +119,12 @@ assert.ok(js.includes("tidal: { name: 'Tidal', canConnect: true, catalog: true }
     'Tidal visible provider name and catalog role must be explicit');
 assert.ok(js.includes('catalogProvider'),
     'Tidal must be identified as a catalog provider whose player is the footer');
-// --- TIDAL browse: Favorites default, search is a permanent bar ------------
-// Favorites is the default browse section. Search categories only exist in the
-// result state and never compete with the Favorites categories.
-assert.ok(js.includes("browseSection: 'favorites'"),
-    'TIDAL browse must default to Favorites');
+// --- TIDAL browse: one shared navigation row, search is a permanent bar ----
+// Tracks is the default browse category. The four categories live in one
+// navigation row; search categories only exist in the result state and never
+// compete with them.
+assert.ok(js.includes("browseCategory: 'tracks'"),
+    'TIDAL browse must default to Tracks');
 assert.ok(js.includes("state.tidal.searchQuery = query"),
     'executed Tidal searches must record the query');
 assert.ok(js.includes("state.tidal.searchQuery = ''"),
@@ -139,7 +140,7 @@ assert.ok(tidalBrowseRender.includes('id="tidal-search-input"') && tidalBrowseRe
     'the search bar must be part of the browse surface');
 assert.ok(tidalBrowseRender.includes('placeholder="Search"'),
     'the Tidal search placeholder must stay compact');
-assert.ok(tidalBrowseRender.indexOf('tidal-search-input') > tidalBrowseRender.indexOf('streaming-browse-tabs') &&
+assert.ok(tidalBrowseRender.indexOf('tidal-search-input') > tidalBrowseRender.indexOf('data-browse=') &&
     tidalBrowseRender.indexOf('tidal-search-input') > tidalBrowseRender.indexOf('tidal-subbar'),
     'the search bar must share the second header row with the browse navigation');
 assert.ok(tidalBrowseRender.includes('tidal-toolbar-actions') && tidalBrowseRender.includes('entry.els.statusLine'),
@@ -150,16 +151,18 @@ assert.ok(!tidalBrowseRender.includes('tidal-search-types'),
     'search types must not be visible in the browse state');
 assert.ok(!tidalBrowseRender.includes('data-browse="search"'),
     'Search must not be a browse tab anymore');
-assert.ok(tidalBrowseRender.includes('data-browse="favorites"') && tidalBrowseRender.includes('data-browse="playlists"'),
-    'browse navigation must be Favorites and Playlists only');
-assert.ok(js.includes('renderTidalBrowseSection(state.tidal.browseSection)'),
-    'first authenticated render must show the current browse section (Favorites by default)');
+assert.ok(tidalBrowseRender.includes('data-browse="') && tidalBrowseRender.includes('TIDAL_BROWSE_LABELS[cat]'),
+    'browse tabs must render through the shared category map');
+assert.ok(js.includes("const TIDAL_BROWSE_CATEGORIES = ['tracks', 'albums', 'artists', 'playlists'];"),
+    'browse navigation must be Tracks, Albums, Artists and Playlists only');
+assert.ok(js.includes('renderTidalBrowseSection(state.tidal.browseCategory)'),
+    'first authenticated render must show the current browse category (Tracks by default)');
 
 // --- TIDAL toolbar/search state --------------------------------------------
 // Row 1 is the page title with Connected + refresh on the right; the search
-// controls share the second row with the Favorites/Playlists navigation.
-// Search type controls belong to the executed-results view, never to
-// Favorites.
+// controls share the second row with the Tracks/Albums/Artists/Playlists
+// navigation. Search type controls belong to the executed-results view, never
+// to the browse categories.
 assert.ok(js.includes('entry.els.statusLine'),
     'TIDAL Connected status must be moved into the first header row actions');
 assert.ok(js.includes('function bindTidalRefresh') && js.includes('function refreshTidalCatalog'),
@@ -183,7 +186,7 @@ assert.ok(js.includes('Search results for &quot;'),
 assert.ok(js.includes("const TIDAL_SEARCH_TYPES = ['artists', 'tracks', 'albums', 'playlists'];"),
     'search result types must have the requested order');
 assert.ok(js.includes('tidal-search-result-types'),
-    'search result type controls must be distinct from Favorites categories');
+    'search result type controls must be distinct from the browse categories');
 assert.ok(js.includes('if (!state.tidal.searchExecuted || !state.tidal.searchQuery) return;'),
     'search type changes must not request before a query was executed');
 assert.ok(js.includes('void executeTidalSearch(type)'),
@@ -191,33 +194,33 @@ assert.ok(js.includes('void executeTidalSearch(type)'),
 assert.ok(js.includes("input.addEventListener('input'"),
     'clearing the search field must leave the result state immediately');
 
-// --- shared compact view tabs (Library + TIDAL level 2) ---------------------
-// Library Tracks/Folders/Albums and TIDAL Tracks/Albums/Artists must be one
-// shared segmented-navigation component (.view-tab), replacing the oversized
-// library action buttons and the undersized TIDAL filter chips. The TIDAL
-// Favorites/Playlists level-1 navigation stays the stronger level.
+// --- shared compact view tabs (Library + TIDAL browse + search) ------------
+// Library Tracks/Folders/Albums and TIDAL Tracks/Albums/Artists/Playlists
+// (one navigation row) plus the search result types must be one shared
+// segmented-navigation component (.view-tab). No separate Favorites level
+// and no inner category chips remain.
 assert.ok(css.includes('.view-tab') && css.includes('.view-tabs'),
     'the shared compact view-tab component must ship in style.css');
 assert.ok(!css.includes('.streaming-chip'),
     'the old TIDAL filter-chip class must be gone (one shared view-tab remains)');
 assert.ok(!css.includes('.btn-icon-toggle'),
     'the old library view-toggle button class must be gone (one shared view-tab remains)');
+assert.ok(!css.includes('.streaming-browse-tab'),
+    'the old level-1 TIDAL browse tab class must be gone (one shared view-tab remains)');
+assert.ok(!css.includes('.streaming-browse-tabs'),
+    'the old level-1 TIDAL browse container class must be gone');
 assert.ok(html.includes('class="view-tab active"'),
     'the library view toggle must use the shared view-tab class');
 assert.ok(js.includes('class="view-tab'),
-    'TIDAL favorites and search type tabs must use the shared view-tab class');
-assert.ok(js.includes('#tidal-fav-types .view-tab') && js.includes('#tidal-search-result-types .view-tab'),
-    'TIDAL view-tab click wiring must target the shared class');
+    'TIDAL browse and search type tabs must use the shared view-tab class');
+assert.ok(js.includes('.tidal-subbar .view-tab[data-browse]') && js.includes('#tidal-search-result-types .view-tab'),
+    'TIDAL browse and search type click wiring must target the shared class');
 const viewTabCss = css.slice(css.indexOf('.view-tab {'), css.indexOf('.view-tab:hover'));
 assert.ok(/-?\d+px/.test(viewTabCss.match(/min-height:\s*([^;]+);/)[1]),
     'the shared view-tab must define a concrete min-height (36-40px range)');
 const tabMinHeight = parseInt(viewTabCss.match(/min-height:\s*(\d+)px/)[1], 10);
 assert.ok(tabMinHeight >= 36 && tabMinHeight <= 40,
     `shared view-tab min-height must sit in the compact 36-40px range (got ${tabMinHeight}px)`);
-const browseTabCss = css.slice(css.indexOf('.streaming-browse-tab {'), css.indexOf('.streaming-browse-tab:hover'));
-const browseTabMinHeight = parseInt(browseTabCss.match(/min-height:\s*(\d+)px/)[1], 10);
-assert.ok(browseTabMinHeight > tabMinHeight,
-    'TIDAL Favorites/Playlists (level 1) must stay taller than the shared level-2 view tabs');
 assert.ok(!viewTabCss.includes('999px') && viewTabCss.includes('var(--radius-sm)'),
     'the shared view-tab must use the standard radius, not a pill shape');
 
@@ -361,12 +364,12 @@ assert.ok(js.includes('favoriteButtonHtml') && js.includes('data-fav-type') && j
     'tracks and albums must render a favorite heart button');
 assert.ok(js.includes('set_track_favorite') === false && js.includes('/favorite'),
     'the heart must write back through the provider favorite endpoint');
-assert.ok(js.includes("state.tidal.favoritesType === 'tracks'") &&
-    js.includes("state.tidal.favoritesType === 'albums'") &&
-    js.includes("state.tidal.favoritesType === 'artists'"),
-    'Favorites must offer tracks/albums/artists categories');
-assert.ok(js.includes("data-browse=\"favorites\"") && js.includes("data-browse=\"playlists\""),
-    'Favorites and Playlists must be separate browse tabs');
+assert.ok(js.includes("const TIDAL_BROWSE_CATEGORIES = ['tracks', 'albums', 'artists', 'playlists'];"),
+    'the four browse categories must be Tracks, Albums, Artists and Playlists in one row');
+assert.ok(js.includes("TIDAL_BROWSE_LABELS = { tracks: 'Tracks', albums: 'Albums', artists: 'Artists', playlists: 'Playlists' }"),
+    'Tracks, Albums, Artists and Playlists must be the four labelled browse tabs');
+assert.ok(js.includes('data-browse="\' + cat + \'"'),
+    'the browse tabs must carry their category in data-browse');
 assert.ok(js.includes("const TIDAL_SEARCH_TYPES = ['artists', 'tracks', 'albums', 'playlists'];"),
     'the search result view must keep the track/album/artist/playlist search types');
 assert.ok(js.includes('/api/streaming/tidal/favorites?type=') && js.includes('/api/streaming/tidal/playlists'),

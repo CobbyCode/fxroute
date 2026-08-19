@@ -3,10 +3,11 @@
 
 The TIDAL header follows the library pattern: row 1 is the page title with
 the shared ``Connected`` pill + refresh button on the right, row 2 is the
-Favorites/Playlists navigation with the search group on the right.  Both
-right-aligned groups share one right edge with the detail Back button, so
-browse <-> detail never shifts horizontally.  On the <=760px breakpoint the
-second row wraps (search below the navigation) without overflowing.
+single Tracks/Albums/Artists/Playlists navigation with the search group on
+the right.  Both right-aligned groups share one right edge with the detail
+Back button, so browse <-> detail never shifts horizontally.  On the
+<=760px breakpoint the second row wraps (search below the navigation)
+without overflowing.
 
 Also verifies the refresh interaction: clicking the refresh button re-fetches
 the authoritative favorites ids and the provider status without logging out,
@@ -125,7 +126,7 @@ def _run():
                 title_box = page.locator(".tidal-toolbar-title").bounding_box()
                 actions_box = page.locator(".tidal-toolbar-actions").bounding_box()
                 status_box = page.locator(".tidal-toolbar-actions .streaming-status").bounding_box()
-                tabs_box = page.locator(".tidal-subbar .streaming-browse-tabs").bounding_box()
+                tabs_box = page.locator(".tidal-subbar .view-tabs").bounding_box()
                 search_box = page.locator(".tidal-subbar .streaming-search").bounding_box()
                 title_text = page.locator(".tidal-toolbar-title").inner_text().strip()
                 status_text = page.locator(".tidal-toolbar-actions .streaming-status").inner_text()
@@ -140,6 +141,8 @@ def _run():
                       abs(_right_edge(actions_box) - _right_edge(search_box)) <= 1.5)
                 check(f"[{width}px] navigation and search share one second row",
                       abs(_center(tabs_box) - _center(search_box)) <= 2)
+                check(f"[{width}px] single navigation row (no Favorites level)",
+                      page.locator("#tidal-fav-types").count() == 0)
                 check(f"[{width}px] second row sits below the title row",
                       _center(tabs_box) - _center(title_box) > 4)
                 check(f"[{width}px] no horizontal overflow",
@@ -179,7 +182,7 @@ def _run():
 
             title_box = page.locator(".tidal-toolbar-title").bounding_box()
             actions_box = page.locator(".tidal-toolbar-actions").bounding_box()
-            tabs_box = page.locator(".tidal-subbar .streaming-browse-tabs").bounding_box()
+            tabs_box = page.locator(".tidal-subbar .view-tabs").bounding_box()
             search_box = page.locator(".tidal-subbar .streaming-search").bounding_box()
 
             check("[390px] title and actions stay on one row",

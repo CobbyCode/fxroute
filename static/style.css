@@ -7387,43 +7387,15 @@ body {
 }
 .streaming-auth-error { color: var(--error, #f87171); font-size: 0.82rem; margin: 0; }
 
-/* Browse (search / favorites / playlists). Spans the full content column —
-   the same width the album/playlist detail header uses — so the toolbar
-   actions and the search group (right-aligned in rows 1/2) share one right
-   edge with the detail Back button and browse <-> detail never shifts
-   horizontally. */
+/* Browse (categories / search). Spans the full content column — the same
+   width the album/playlist detail header uses — so the toolbar actions and
+   the search group (right-aligned in rows 1/2) share one right edge with
+   the detail Back button and browse <-> detail never shifts horizontally. */
 .streaming-browse {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
 }
-.streaming-browse-tabs {
-    display: flex;
-    gap: 0.3rem;
-    flex-wrap: wrap;
-    border-bottom: 1px solid var(--border-strong);
-    padding-bottom: 0.5rem;
-}
-/* Level-1 TIDAL navigation (Favorites / Playlists): the over-ordered browse
-   level stays visibly stronger than the shared level-2 view tabs below it
-   (taller, slightly larger type). */
-.streaming-browse-tab {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 42px;
-    background: transparent;
-    border: 1px solid transparent;
-    color: var(--text-secondary);
-    font-size: 0.9rem;
-    font-weight: 650;
-    padding: 0.5rem 1rem;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: color 0.15s, background 0.15s;
-}
-.streaming-browse-tab:hover { color: var(--text-secondary); background: var(--bg-hover); }
-.streaming-browse-tab.is-active { color: var(--accent); background: var(--accent-dim); border-color: rgba(110, 231, 183, 0.2); }
 
 .tidal-toolbar {
     display: grid;
@@ -7442,10 +7414,10 @@ body {
     gap: 0.5rem;
     min-width: 0;
 }
-/* Second row: Favorites/Playlists navigation left, search group right — the
-   library pattern. The search keeps the same width cap it had above the
-   navigation, and the subbar carries the underline that used to sit under
-   the tabs. */
+/* Second row: the single Tracks/Albums/Artists/Playlists navigation left,
+   search group right — the library pattern. All four categories share the
+   compact .view-tab component (no separate Favorites level, no inner
+   category chips), and the subbar carries the underline. */
 .tidal-subbar {
     display: flex;
     align-items: center;
@@ -7455,10 +7427,8 @@ body {
     border-bottom: 1px solid var(--border-strong);
     padding-bottom: 0.5rem;
 }
-.tidal-subbar .streaming-browse-tabs {
+.tidal-subbar .view-tabs {
     flex: 0 0 auto;
-    border-bottom: none;
-    padding-bottom: 0;
 }
 .tidal-subbar .streaming-search {
     min-width: 0;

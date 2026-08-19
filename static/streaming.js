@@ -61,12 +61,11 @@
             trackSelectionMode: false,
             selectedTrackIds: new Set(),
             detailRequestId: 0,
-            favoritesType: 'tracks',
             detailId: null,
             detailTitle: '',
             detailArt: '',
             contentKey: null,   // availability/auth mode last rendered into .streaming-content
-            browseSection: 'favorites',   // 'favorites' | 'playlists'; search results are a separate temporary overlay
+            browseCategory: 'tracks',   // 'tracks' | 'albums' | 'artists' | 'playlists'; search results are a separate temporary overlay
             favoriteIds: { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
             favoritesLoaded: false,   // true after at least one successful favorites/ids load
@@ -807,7 +806,15 @@
         return state.providers[providerId] || null;
     }
 
-    // -- browse (search / favorites / playlists) ------------------------------
+    // -- browse (categories + search) ---------------------------------------
+    // The four browse categories (Tracks / Albums / Artists / Playlists) live
+    // in one shared navigation row rendered with the compact view-tab
+    // component. Search results only ever replace the browse body; the bar
+    // itself survives every status refresh (contentKey guard in
+    // renderTidalContent), so a poll never resets an in-progress query.
+    const TIDAL_BROWSE_CATEGORIES = ['tracks', 'albums', 'artists', 'playlists'];
+    const TIDAL_BROWSE_LABELS = { tracks: 'Tracks', albums: 'Albums', artists: 'Artists', playlists: 'Playlists' };
+
     function renderTidalBrowse(entry) {
         const content = entry.els.content;
         // Keep the status line consistent while navigating between the main
@@ -818,10 +825,11 @@
         if (state.tidal.view === 'artist') { renderTidalArtist(content); return; }
         // The browse surface follows the library header logic: row 1 is the
         // page title with the connected pill + refresh on the right, row 2 is
-        // the Favorites/Playlists navigation with the search group on the
-        // right. Search results only ever replace the browse body; the bar
-        // itself survives every status refresh (contentKey guard in
-        // renderTidalContent), so a poll never resets an in-progress query.
+        // the single Tracks/Albums/Artists/Playlists navigation with the
+        // search group on the right. Search results only ever replace the
+        // browse body; the bar itself survives every status refresh
+        // (contentKey guard in renderTidalContent), so a poll never resets an
+        // in-progress query.
         content.innerHTML =
             '<div class="streaming-browse">' +
                 '<div class="tidal-toolbar">' +
@@ -831,9 +839,10 @@
                     '</div>' +
                 '</div>' +
                 '<div class="tidal-subbar">' +
-                    '<div class="streaming-browse-tabs" role="tablist">' +
-                        '<button type="button" class="streaming-browse-tab' + (state.tidal.browseSection === 'favorites' ? ' is-active' : '') + '" data-browse="favorites">Favorites</button>' +
-                        '<button type="button" class="streaming-browse-tab' + (state.tidal.browseSection === 'playlists' ? ' is-active' : '') + '" data-browse="playlists">Playlists</button>' +
+                    '<div class="view-tabs" role="tablist" aria-label="TIDAL browse">' +
+                        TIDAL_BROWSE_CATEGORIES.map((cat) =>
+                            '<button type="button" class="view-tab' + (state.tidal.browseCategory === cat ? ' is-active' : '') + '" data-browse="' + cat + '">' + TIDAL_BROWSE_LABELS[cat] + '</button>'
+                        ).join('') +
                     '</div>' +
                     '<div class="streaming-search">' +
                         '<div class="streaming-search-row">' +
@@ -850,7 +859,7 @@
         bindTidalRefresh(content);
         const input = content.querySelector('#tidal-search-input');
         if (input && state.tidal.searchExecuted) input.value = state.tidal.searchQuery;
-        const tabs = content.querySelectorAll('.streaming-browse-tab');
+        const tabs = content.querySelectorAll('.tidal-subbar .view-tab[data-browse]');
         tabs.forEach((tab) => tab.addEventListener('click', () => {
             tabs.forEach((t) => t.classList.toggle('is-active', t === tab));
             resetTidalSearch();
@@ -859,21 +868,21 @@
         if (state.tidal.searchExecuted && state.tidal.searchResults) {
             renderTidalSearchResults(document.getElementById('tidal-browse-body'), state.tidal.searchResults);
         } else {
-            renderTidalBrowseSection(state.tidal.browseSection);
+            renderTidalBrowseSection(state.tidal.browseCategory);
         }
     }
 
     function renderTidalBrowseSection(section) {
         const body = document.getElementById('tidal-browse-body');
         if (!body) return;
-        state.tidal.browseSection = section;
-        if (section === 'favorites') renderTidalFavorites(body);
-        else if (section === 'playlists') renderTidalPlaylists(body);
+        state.tidal.browseCategory = section;
+        if (section === 'playlists') renderTidalPlaylists(body);
+        else renderTidalFavorites(body, section);
     }
 
     // -- search (permanent bar sharing the second header row) ----------------
     // Executing a search replaces the browse body with results; clearing it
-    // returns to the current browse section (Favorites by default). The bar
+    // returns to the current browse category (Tracks by default). The bar
     // lives in the browse surface, so the contentKey guard keeps a running
     // search (and its results) intact across status refreshes.
     function bindTidalSearchBar(root) {
@@ -918,7 +927,7 @@
 
     function clearTidalSearch() {
         resetTidalSearch();
-        renderTidalBrowseSection(state.tidal.browseSection);
+        renderTidalBrowseSection(state.tidal.browseCategory);
     }
 
     // -- refresh (manual cache invalidation + re-render) ---------------------
@@ -959,11 +968,7 @@
             void executeTidalSearch(state.tidal.searchResultType);
             return;
         }
-        renderTidalBrowseSection(state.tidal.browseSection);
-    }
-
-    function chip(type, label, active) {
-        return '<button type="button" class="view-tab' + (active ? ' is-active' : '') + '" data-type="' + type + '">' + escapeHtml(label) + '</button>';
+        renderTidalBrowseSection(state.tidal.browseCategory);
     }
 
     const TIDAL_SEARCH_TYPES = ['artists', 'tracks', 'albums', 'playlists'];
@@ -1308,8 +1313,8 @@
             // The favorites list must stay authoritative: refresh it so an
             // unfavorited item leaves and a newly favorited item appears.
             if (state.tidal.view !== 'album' && state.tidal.view !== 'playlist' && state.tidal.view !== 'artist' && !state.tidal.searchExecuted) {
-                if (state.tidal.browseSection === 'favorites') loadTidalFavorites();
-                else if (state.tidal.browseSection === 'playlists') renderTidalBrowseSection('playlists');
+                if (state.tidal.browseCategory === 'playlists') renderTidalBrowseSection('playlists');
+                else loadTidalFavorites();
             }
         } catch (err) {
             showToast(friendlyError(err?.message || err), 'error');
@@ -1317,29 +1322,19 @@
     }
 
     // -- favorites ------------------------------------------------------------
-    function renderTidalFavorites(body) {
-        body.innerHTML =
-            '<div class="view-tabs" id="tidal-fav-types" aria-label="Favorites category">' +
-                chip('tracks', 'Tracks', state.tidal.favoritesType === 'tracks') +
-                chip('albums', 'Albums', state.tidal.favoritesType === 'albums') +
-                chip('artists', 'Artists', state.tidal.favoritesType === 'artists') +
-            '</div>' +
-            '<div class="streaming-results" id="tidal-fav-results"></div>';
-
-        body.querySelectorAll('#tidal-fav-types .view-tab').forEach((chipEl) => {
-            chipEl.addEventListener('click', () => {
-                body.querySelectorAll('#tidal-fav-types .view-tab').forEach((c) => c.classList.toggle('is-active', c === chipEl));
-                state.tidal.favoritesType = chipEl.dataset.type;
-                loadTidalFavorites();
-            });
-        });
+    // Tracks / Albums / Artists render the favorite lists of the selected
+    // category (the category itself is the top navigation row); Playlists has
+    // its own dedicated section.
+    function renderTidalFavorites(body, type) {
+        state.tidal.browseCategory = type;
+        body.innerHTML = '<div class="streaming-results" id="tidal-fav-results"></div>';
         loadTidalFavorites();
     }
 
     async function loadTidalFavorites() {
         const results = document.getElementById('tidal-fav-results');
         if (!results) return;
-        const type = state.tidal.favoritesType;
+        const type = state.tidal.browseCategory;
         results.innerHTML = '<p class="streaming-note">Loading…</p>';
         try {
             // Re-read the real TIDAL favorite state so external app changes

@@ -91,7 +91,7 @@ function shellEl(providerId) {
     const memo = {};
     // Browse tabs are real interactive elements in the shim so sections and
     // detail views can be entered by clicking them.
-    const tabs = ['favorites', 'playlists'].map((name) => {
+    const tabs = ['tracks', 'albums', 'artists', 'playlists'].map((name) => {
         const t = makeEl();
         t.dataset.browse = name;
         return t;
@@ -100,7 +100,7 @@ function shellEl(providerId) {
         if (!memo[sel]) {
             memo[sel] = makeEl();
             memo[sel].querySelectorAll = (inner) => {
-                if (inner === '.streaming-browse-tab') return tabs;
+                if (inner === '.view-tab' || inner === '.tidal-subbar .view-tab[data-browse]') return tabs;
                 return [];
             };
             memo[sel].querySelector = (inner) => {
@@ -127,17 +127,10 @@ function buildDom() {
         button.dataset.searchType = type;
         tidalSearchTypeButtons[type] = button;
     }
-    const tidalFavoriteTypeButtons = {};
-    for (const type of ['tracks', 'albums', 'artists']) {
-        const button = makeEl();
-        button.dataset.type = type;
-        tidalFavoriteTypeButtons[type] = button;
-    }
     const tidalBrowseBody = makeEl();
     const tidalBrowseBodyEls = {};
     tidalBrowseBody.querySelectorAll = (sel) => {
         if (sel === '#tidal-search-result-types .view-tab') return Object.values(tidalSearchTypeButtons);
-        if (sel === '#tidal-fav-types .view-tab') return Object.values(tidalFavoriteTypeButtons);
         return [];
     };
     tidalBrowseBody.querySelector = (sel) => {
@@ -369,7 +362,7 @@ async function main() {
     assert.equal(statusLine.textContent, 'Connected', 'status pill must show the shared Connected label');
 
     // Open the Playlists tab and click a playlist row to enter a detail view.
-    const tabs = content.querySelectorAll('.streaming-browse-tab');
+    const tabs = content.querySelectorAll('.view-tab');
     tabs.find((t) => t.dataset.browse === 'playlists').click();
     // renderTidalPlaylists fetches asynchronously; let the microtasks run.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -394,7 +387,7 @@ async function main() {
     assert.equal(statusLine.hidden, false, 'back navigation must restore the status line');
 }
 
-// --- 5. TIDAL browse: Favorites default + persistent search bar -----------
+// --- 5. TIDAL browse: Tracks default + persistent search bar --------------
 
 {
     const { sandbox, shells, fetchCalls, createdEls } = runStreaming();
@@ -404,21 +397,22 @@ async function main() {
     const content = shells.tidal.querySelector('.streaming-content');
     const body = sandbox.document.getElementById('tidal-browse-body');
 
-    // First authenticated render lands on Favorites, not an empty Search screen.
+    // First authenticated render lands on Tracks, not an empty Search screen.
     assert.ok(content.innerHTML.includes('streaming-browse'), 'browse surface must render');
     assert.ok(content.innerHTML.includes('id="tidal-search-input"'), 'search bar must be part of the browse surface');
     assert.ok(content.innerHTML.indexOf('tidal-search-input') > content.innerHTML.indexOf('tidal-subbar') &&
-        content.innerHTML.indexOf('tidal-search-input') > content.innerHTML.indexOf('streaming-browse-tabs'),
+        content.innerHTML.indexOf('tidal-search-input') > content.innerHTML.indexOf('data-browse='),
         'search bar must share the second header row with the navigation');
     assert.ok(content.innerHTML.includes('id="tidal-refresh-btn"'), 'browse surface must carry the refresh button');
     assert.ok(!content.innerHTML.includes('data-browse="search"'), 'Search must not be a browse tab');
-    assert.ok(content.innerHTML.includes('data-browse="favorites"') && content.innerHTML.includes('data-browse="playlists"'),
-        'browse navigation must be Favorites and Playlists');
-    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
-        'first authenticated render must show Favorites content');
+    assert.ok(content.innerHTML.includes('data-browse="tracks"') && content.innerHTML.includes('data-browse="albums"') &&
+        content.innerHTML.includes('data-browse="artists"') && content.innerHTML.includes('data-browse="playlists"'),
+        'browse navigation must be Tracks, Albums, Artists and Playlists in one row');
+    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-results'),
+        'first authenticated render must show Tracks content');
 
-    // Keep the last favorite category while switching into and out of search.
-    body.querySelectorAll('#tidal-fav-types .view-tab').find((tab) => tab.dataset.type === 'albums').click();
+    // Keep the last browse category while switching into and out of search.
+    content.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'albums').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Typing alone must not execute a search.
@@ -437,8 +431,8 @@ async function main() {
     assert.equal(resultCount, 2, 'search must render all track result rows');
     assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('Search results for'),
         'search must switch to the dedicated result state');
-    assert.ok(!sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
-        'favorite categories must not be visible in search results');
+    assert.ok(!sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-results'),
+        'browse categories must not be visible in search results');
     assert.ok(!body.innerHTML.includes('class="tidal-track-select"'),
         'normal track search results must not show permanent checkboxes');
     assert.ok(!body.innerHTML.includes('tidal-select-all'),
@@ -490,33 +484,38 @@ async function main() {
     assert.equal(body.innerHTML, searchBodyBeforeRefresh,
         'status refresh must not re-render away the search results');
 
-    // Clearing the field itself returns to Favorites without a search request.
+    // Clearing the field itself returns to the browse category without a search request.
     input.value = '';
     input.dispatch('input');
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(body.innerHTML.includes('tidal-fav-types') &&
-        body.innerHTML.includes('class="view-tab is-active" data-type="albums"'),
-        'clearing the search must return to Favorites');
+    const browseTabs = content.querySelectorAll('.view-tab');
+    assert.ok(body.innerHTML.includes('tidal-fav-results') &&
+        browseTabs.find((t) => t.dataset.browse === 'albums').classList.contains('is-active'),
+        'clearing the search must return to the last browse category (Albums)');
 
     // Escape resets the search back to the browse section too.
     input.value = 'daft punk';
     content.querySelector('#tidal-search-btn').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     input.dispatch('keydown', { key: 'Escape', preventDefault() {} });
-    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
+    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-results'),
         'Escape must clear the search back to the browse section');
 
-    // Favorites <-> Playlists switching works.
-    const tabs = content.querySelectorAll('.streaming-browse-tab');
-    tabs.find((t) => t.dataset.browse === 'playlists').click();
-    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-playlists-results'),
-        'Playlists tab must render the playlists section');
-    tabs.find((t) => t.dataset.browse === 'favorites').click();
-    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-types'),
-        'Favorites tab must render the favorites section');
+    // Browse category switching works across all four tabs.
+    const tabs = content.querySelectorAll('.view-tab');
+    for (const cat of ['playlists', 'albums', 'artists', 'tracks']) {
+        tabs.find((t) => t.dataset.browse === cat).click();
+        if (cat === 'playlists') {
+            assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-playlists-results'),
+                'Playlists tab must render the playlists section');
+        } else {
+            assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-results'),
+                cat + ' tab must render the favorites section');
+        }
+    }
 }
 
-// --- 6. TIDAL Favorites -> Tracks uses all visible tracks as a queue --------
+// --- 6. TIDAL Tracks uses all visible tracks as a queue --------------------
 
 {
     const favoriteTracks = [
@@ -636,7 +635,7 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const content = shells.tidal.querySelector('.streaming-content');
     const body = sandbox.document.getElementById('tidal-browse-body');
-    assert.ok(body.innerHTML.includes('tidal-fav-types'), 'browse must start on Favorites');
+    assert.ok(body.innerHTML.includes('tidal-fav-results'), 'browse must start on Tracks');
 
     fetchCalls.length = 0;
     content.querySelector('#tidal-refresh-btn').click();
@@ -650,7 +649,7 @@ async function main() {
     assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/status'),
         'refresh must reload the provider status');
     assert.ok(fetchCalls.some((c) => c.url.startsWith('/api/streaming/tidal/favorites?type=tracks')),
-        'refresh must re-render the active Favorites section');
+        'refresh must re-render the active Tracks category');
     // It must never log out, reset the session or touch playback.
     assert.ok(!fetchCalls.some((c) => c.url.includes('/auth/logout')), 'refresh must never log out');
     assert.ok(!fetchCalls.some((c) => c.url === '/api/play'), 'refresh must never touch playback');
@@ -687,7 +686,7 @@ async function main() {
         'refresh must keep the executed search view');
 }
 
-// --- 9. same artist detail path from Favorites -> Artists -------------------
+// --- 9. same artist detail path from the Artists category -------------------
 
 {
     const favRun = runStreaming();
@@ -696,7 +695,7 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const favBody = favRun.sandbox.document.getElementById('tidal-browse-body');
     const favContent = favRun.shells.tidal.querySelector('.streaming-content');
-    favBody.querySelectorAll('#tidal-fav-types .view-tab').find((tab) => tab.dataset.type === 'artists').click();
+    favContent.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'artists').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     favRun.createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -705,9 +704,9 @@ async function main() {
     assert.ok(favContent.innerHTML.includes('tidal-artist-facts'),
         'favorited artist must open the same artist detail view');
     favContent.querySelector('#tidal-detail-back').click();
-    assert.ok(favBody.innerHTML.includes('tidal-fav-types') &&
-        favBody.innerHTML.includes('data-type="artists"'),
-        'back from a favorited artist must restore Favorites -> Artists');
+    assert.ok(favBody.innerHTML.includes('tidal-fav-results') &&
+        favContent.querySelectorAll('.view-tab').find((t) => t.dataset.browse === 'artists').classList.contains('is-active'),
+        'back from a favorited artist must restore the Artists category');
 }
 
 // --- 10. artist row fav heart toggles through the write-back endpoint -------
@@ -750,12 +749,13 @@ async function main() {
     assert.deepEqual(JSON.parse(favCalls[1].opts.body), { favorite: false },
         'the second artist heart click must remove the artist');
 
-    // Favorites -> Artists: same heart, same write-back endpoint.
+    // Artists category: same heart, same write-back endpoint.
     const favRun = runStreaming();
     favRun.sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const favBody = favRun.sandbox.document.getElementById('tidal-browse-body');
-    favBody.querySelectorAll('#tidal-fav-types .view-tab').find((tab) => tab.dataset.type === 'artists').click();
+    const favContent = favRun.shells.tidal.querySelector('.streaming-content');
+    favContent.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'artists').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const favRow = favRun.createdEls.filter((el) => el.className === 'streaming-result').at(-1);
     const favHeart = favRow.querySelectorAll('.streaming-fav, .track-fav')[0];
