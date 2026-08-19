@@ -2,21 +2,17 @@
 
 """Streaming provider layer.
 
-Owns the provider-agnostic models, capability declarations and the registry.
+Owns the provider-agnostic capability declarations and the registry.
 Spotify Desktop and spotifyd are both the ``spotify`` provider; Qobuz is
 implemented via the ``qbzd`` daemon; TIDAL is a native provider via
 ``tidalapi`` whose playback rides the shared FXRoute owner.
+
+Providers normalize their backend objects into plain dicts at the provider
+boundary; those dicts (not dataclass models) are the wire contract that
+crosses to the API/UI.
 """
 
 from streaming.base.capabilities import CAPABILITY_NAMES, Capabilities
-from streaming.base.models import (
-    Album,
-    Artist,
-    PlaybackState,
-    Playlist,
-    ProviderState,
-    Track,
-)
 from streaming.base.provider import (
     DeclaredStreamingProvider,
     ProviderNotImplemented,
@@ -45,20 +41,14 @@ async def describe_providers() -> list[dict]:
 
 
 __all__ = [
-    "Album",
-    "Artist",
     "CAPABILITY_NAMES",
     "Capabilities",
     "DeclaredStreamingProvider",
-    "PlaybackState",
-    "Playlist",
     "ProviderNotImplemented",
     "ProviderRegistry",
-    "ProviderState",
     "SPOTIFY_PREARM_SAMPLE_RATE_HZ",
     "SpotifyProvider",
     "StreamingProvider",
-    "Track",
     "describe_providers",
     "get_provider",
     "registry",

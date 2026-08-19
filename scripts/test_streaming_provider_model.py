@@ -18,7 +18,6 @@ sys.path.insert(0, str(ROOT))
 
 import streaming
 from streaming.base.capabilities import CAPABILITY_NAMES, Capabilities
-from streaming.base.models import PlaybackState, ProviderState, Track
 from streaming.spotify.mpris import (
     detect_backend,
     detect_running_backend,
@@ -59,37 +58,6 @@ class CapabilitiesModelTests(unittest.TestCase):
             caps.supported(),
             {"transport", "seek", "shuffle", "loop", "progress", "volume", "cover"},
         )
-
-
-class ModelsTests(unittest.TestCase):
-    def test_provider_state_serialization(self):
-        state = ProviderState(
-            provider_id="spotify",
-            available=True,
-            installed=True,
-            backend="desktop",
-            playback=PlaybackState(
-                status="Playing",
-                track=Track(id="spotify:track:1", title="T", artist="A", album="L", art_url="http://c"),
-                shuffle=True,
-                loop="playlist",
-                position=10.0,
-                duration=200.0,
-                volume=75,
-            ),
-            capabilities={"transport": True, "cover": True},
-        )
-        payload = state.to_dict()
-        self.assertEqual(payload["source"], "spotify")
-        self.assertEqual(payload["backend"], "desktop")
-        self.assertEqual(payload["status"], "Playing")
-        self.assertEqual(payload["trackId"], "spotify:track:1")
-        self.assertEqual(payload["title"], "T")
-        self.assertEqual(payload["artist"], "A")
-        self.assertEqual(payload["album"], "L")
-        self.assertEqual(payload["artUrl"], "http://c")
-        self.assertEqual(payload["loop"], "playlist")
-        self.assertEqual(payload["volume"], 75)
 
 
 class RegistryTests(unittest.IsolatedAsyncioTestCase):

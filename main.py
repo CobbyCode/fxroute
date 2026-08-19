@@ -5054,7 +5054,10 @@ async def api_streaming_provider_action(provider_id: str, action: str, request: 
             body = await request.json()
         except Exception:
             body = {}
-        return await provider.seek(float(body.get("position", 0)))
+        try:
+            return await provider.seek(float(body.get("position", 0)))
+        except streaming.ProviderNotImplemented as exc:
+            raise HTTPException(status_code=501, detail=str(exc)) from exc
     if action == "volume":
         try:
             body = await request.json()
@@ -5064,7 +5067,10 @@ async def api_streaming_provider_action(provider_id: str, action: str, request: 
             # Qobuz volume is the canonical FXRoute master (qbzd gain stays
             # pinned at 100%); other providers keep their native volume.
             return await _qobuz_volume_action(float(body.get("volume", 100)))
-        return await provider.set_volume(float(body.get("volume", 100)))
+        try:
+            return await provider.set_volume(float(body.get("volume", 100)))
+        except streaming.ProviderNotImplemented as exc:
+            raise HTTPException(status_code=501, detail=str(exc)) from exc
     if action not in _STREAMING_TRANSPORT_ACTIONS:
         raise HTTPException(status_code=404, detail=f"unknown streaming action: {action}")
     method = getattr(provider, action)

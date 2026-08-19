@@ -96,6 +96,17 @@ class _FailingProvider(_FakeProvider):
         raise self._exc
 
 
+class _NoTransportProvider(_FakeProvider):
+    """Fake provider without seek/volume, mirroring the base-class default
+    (``StreamingProvider.seek``/``set_volume`` raise ProviderNotImplemented)."""
+
+    async def seek(self, position_sec):
+        raise main_module.streaming.ProviderNotImplemented("tidal", "seek")
+
+    async def set_volume(self, percent):
+        raise main_module.streaming.ProviderNotImplemented("tidal", "set_volume")
+
+
 class StreamingApiDispatchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -253,6 +264,21 @@ class GenericTransportActionTests(unittest.TestCase):
         with mock.patch.object(main_module.streaming, "get_provider", return_value=provider):
             resp = self.client.post("/api/streaming/qobuz/bogus")
         self.assertEqual(resp.status_code, 404)
+
+    def test_seek_unimplemented_maps_to_501(self):
+        # A provider without seek (e.g. TIDAL, whose transport rides the shared
+        # FXRoute owner) must surface 501 like the other transport actions, not
+        # an unhandled 500.
+        provider = _NoTransportProvider()
+        with mock.patch.object(main_module.streaming, "get_provider", return_value=provider):
+            resp = self.client.post("/api/streaming/tidal/seek", json={"position": 30})
+        self.assertEqual(resp.status_code, 501)
+
+    def test_volume_unimplemented_maps_to_501(self):
+        provider = _NoTransportProvider()
+        with mock.patch.object(main_module.streaming, "get_provider", return_value=provider):
+            resp = self.client.post("/api/streaming/tidal/volume", json={"volume": 50})
+        self.assertEqual(resp.status_code, 501)
 
     def test_qobuz_toggle_playing_is_transport_only(self):
         playing = {"available": True, "status": "Playing", "trackId": "7"}
