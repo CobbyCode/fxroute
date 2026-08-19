@@ -4922,7 +4922,7 @@ input[type="number"]::-webkit-outer-spin-button {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); }
+.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); justify-content: flex-start; padding-left: 0; }
 .queue-status { background: rgba(110,231,183,.08); color: var(--accent); }
 .queue-status::before {
     content: '≡\00a0';
@@ -6526,12 +6526,12 @@ body {
     grid-row: 1 / 3;
     align-self: center;
     justify-self: start;
-    width: 3.35rem;
-    min-width: 3.35rem;
+    width: 2.48rem;
+    min-width: 2.48rem;
     padding: 0;
-    margin-left: .08rem;
-    justify-content: center;
-    text-align: center;
+    margin-left: 0;
+    justify-content: flex-start;
+    text-align: left;
     line-height: 1;
     white-space: nowrap;
     border: 0;
@@ -6642,6 +6642,7 @@ body {
     .samplerate-status, .queue-status { min-height: 1rem;
         padding: .06rem .38rem;
         font-size: .56rem; }
+    .samplerate-status { padding-left: 0; }
     .playback-meter { width: 108px;
         max-width: 108px;
         grid-template-columns: .55rem minmax(68px, 88px);
