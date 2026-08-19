@@ -6970,6 +6970,41 @@ body {
     .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
 }
 
+/* Phone: soften only the visible range paint; the input box remains the
+   existing size so pointer and touch targeting do not change. */
+@media (max-width: 700px) {
+    .seek-slider::-webkit-slider-runnable-track,
+    .volume-slider::-webkit-slider-runnable-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-moz-range-track,
+    .volume-slider::-moz-range-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    .volume-slider::-webkit-slider-thumb { width: 15.5px; height: 15.5px; }
+    .volume-slider::-moz-range-thumb { width: 15.5px; height: 15.5px; }
+}
+
+/* The compact desktop footer keeps the seek row below transport; remove the
+   old negative nudge so the primary control is centered more naturally. */
+@media (min-width: 1181px) {
+    .transport-controls { margin-top: 1px; }
+}
+
 /* =========================================================================
    Streaming provider tabs (Spotify / Qobuz / TIDAL)
    ========================================================================= */

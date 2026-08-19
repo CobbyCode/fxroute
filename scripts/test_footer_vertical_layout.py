@@ -94,6 +94,29 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertIn(".seek-slider { height: 5px; }", CSS)
         self.assertIn(".volume-slider { height: 5px; }", CSS)
 
+    def test_mobile_slider_polish_preserves_input_box_and_volume_hierarchy(self):
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 4\.5px",
+        )
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 12\.5px; height: 12\.5px",
+        )
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 700px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 15\.5px; height: 15\.5px",
+        )
+        self.assertIn(".seek-slider { height: 5px; }", CSS)
+        self.assertIn(".volume-slider { height: 5px; }", CSS)
+
+    def test_desktop_transport_nudge_is_positive_and_footer_height_unchanged(self):
+        self.assertRegex(
+            CSS,
+            r"@media \(min-width: 1181px\)[\s\S]*?\.transport-controls\s*\{\s*margin-top: 1px",
+        )
+        self.assertIn("min-height: 98px", CSS)
+
     def test_cover_and_track_favorite_are_in_track_zone(self):
         markup = footer_markup()
         self.assertEqual(markup.count('id="playback-cover"'), 1)
