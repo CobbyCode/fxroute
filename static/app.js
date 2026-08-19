@@ -814,6 +814,32 @@ function createFxrouteModalManager() {
 
 window.FXRouteModal = createFxrouteModalManager();
 
+/* Shared compact content-state renderer (Library, Radio, TIDAL browse).
+   One vocabulary for Loading / Empty / Error text slots so content areas
+   never fall back to ad-hoc bare text. Exposed globally because radio.js
+   and streaming.js load before app.js but only call it at runtime, after
+   this module has defined it. */
+function setContentState(el, state, message) {
+    if (!el) return;
+    if (state === 'none' || state === 'hidden') {
+        el.classList.add('hidden');
+        el.textContent = '';
+        return;
+    }
+    el.classList.remove('hidden');
+    el.hidden = false;
+    el.style.display = '';
+    el.className = 'content-state content-state--' + state;
+    el.textContent = message || '';
+}
+window.FXRouteContentState = {
+    set: setContentState,
+    loading(el, msg) { setContentState(el, 'loading', msg); },
+    empty(el, msg) { setContentState(el, 'empty', msg); },
+    error(el, msg) { setContentState(el, 'error', msg); },
+    hide(el) { setContentState(el, 'none', ''); },
+};
+
 // Initialization
 document.addEventListener('DOMContentLoaded', () => {
     try { updatePowerButtonConnectionState(); } catch(e) { console.error('updatePowerButtonConnectionState crashed:', e); }
@@ -4733,32 +4759,28 @@ function renderTracks() {
         : state.library.selectedTrackIds;
     const selectedIds = new Set(validSelectedIds);
     state.library.selectedTrackIds = Array.from(selectedIds);
-    const loadingEl = document.querySelector('#tab-library .loading');
+    const loadingEl = document.querySelector('#tab-library .content-state');
     const scanText = formatLibraryScanStatus();
     const hasSearch = !!(state.library.searchQuery || '').trim();
 
     if (allTracks.length === 0 && (!hasSearch || filteredPlaylists.length === 0)) {
-        if (loadingEl) {
-            loadingEl.textContent = scanText || 'No tracks yet. Import a file or URL to get started.';
-            loadingEl.style.display = '';
-        }
+        window.FXRouteContentState.set(loadingEl, scanText ? 'loading' : 'empty',
+            scanText || 'No tracks yet. Import a file or URL to get started.');
         elements.tracksList.innerHTML = '';
         updateLibrarySelectionUI();
         return;
     }
-    if (loadingEl) {
-        loadingEl.textContent = scanText || '';
-        loadingEl.style.display = scanText ? '' : 'none';
-        loadingEl.classList.toggle('scan-status', !!scanText);
+    if (scanText) {
+        window.FXRouteContentState.set(loadingEl, 'loading', scanText);
+    } else {
+        window.FXRouteContentState.hide(loadingEl);
     }
 
     const folderMode = state.library.viewMode === 'folders';
     const childFolders = folderMode ? getFolderChildren() : [];
     if (filteredTracks.length === 0 && childFolders.length === 0 && filteredPlaylists.length === 0) {
-        if (loadingEl) {
-            loadingEl.textContent = hasSearch ? 'No matching tracks or playlists. Try a broader search.' : 'No tracks in this folder.';
-            loadingEl.style.display = '';
-        }
+        window.FXRouteContentState.set(loadingEl, 'empty',
+            hasSearch ? 'No matching tracks or playlists. Try a broader search.' : 'No tracks in this folder.');
         elements.tracksList.innerHTML = '';
         updateLibrarySelectionUI();
         return;
@@ -4949,7 +4971,7 @@ async function fetchAlbums() {
 function renderAlbums() {
     renderLibraryViewButtons();
     updateLibrarySelectionUI();
-    const loadingEl = document.querySelector('#tab-library .loading');
+    const loadingEl = document.querySelector('#tab-library .content-state');
     const query = (state.library.searchQuery || '').trim().toLowerCase();
 
     // Hide tracks list, show albums grid
@@ -4960,10 +4982,7 @@ function renderAlbums() {
 
     if (!state.library.albumsLoaded) {
         // Albums not yet loaded — show loading state and trigger fetch
-        if (loadingEl) {
-            loadingEl.textContent = 'Loading albums…';
-            loadingEl.style.display = '';
-        }
+        window.FXRouteContentState.set(loadingEl, 'loading', 'Loading albums…');
         elements.albumsGrid.classList.add('hidden');
         fetchAlbums();
         return;
@@ -4979,17 +4998,15 @@ function renderAlbums() {
     const showSmartFavorites = state.library.showFavoriteAlbums;
 
     if (albums.length === 0 && !showSmartFavorites) {
-        if (loadingEl) {
-            loadingEl.textContent = state.library.showFavoriteAlbums
+        window.FXRouteContentState.set(loadingEl, 'empty',
+            state.library.showFavoriteAlbums
                 ? 'No favorite albums.'
-                : query ? 'No matching albums.' : 'No albums found. Import music with album tags.';
-            loadingEl.style.display = '';
-        }
+                : query ? 'No matching albums.' : 'No albums found. Import music with album tags.');
         elements.albumsGrid.innerHTML = '';
         elements.albumsGrid.classList.remove('hidden');
         return;
     }
-    if (loadingEl) loadingEl.style.display = 'none';
+    window.FXRouteContentState.hide(loadingEl);
 
     const smartHtml = showSmartFavorites ? `
         <div class="album-card album-card-smart" data-smart-favorite="top40" role="button" tabindex="0">

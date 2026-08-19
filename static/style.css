@@ -111,15 +111,32 @@ body {
     top: 0;
     left: 0;
     right: 0;
-    background: var(--danger);
-    color: white;
+    /* Error stays red, but reads as part of the dark theme: translucent
+       dark-red tint instead of a full-saturation danger band. The red dot
+       and the danger border keep the disconnect meaning unambiguous. */
+    background: rgba(120, 27, 27, 0.6);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(248, 113, 113, 0.32);
+    color: #ffe9e9;
     text-align: center;
-    padding: 0.55rem 1rem;
+    padding: 0.5rem 1rem;
     font-weight: 600;
     font-size: 0.88rem;
     z-index: 1002;
     letter-spacing: 0.02em;
     animation: bannerSlide 0.3s var(--ease);
+}
+.offline-indicator::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 0.5rem;
+    vertical-align: -1px;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.22);
 }
 .offline-indicator.hidden { display: none; }
 .hidden { display: none !important; }
@@ -258,10 +275,10 @@ body {
     color: rgba(225, 250, 239, 0.94);
 }
 .brand-subtitle {
-    color: rgba(160, 160, 172, 0.66);
-    font-size: 0.58rem;
+    color: rgba(176, 176, 190, 0.9);
+    font-size: 0.63rem;
     font-weight: 650;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
 }
 
@@ -486,12 +503,42 @@ body {
     from { opacity: 0; transform: translateY(6px); }
     to   { opacity: 1; transform: translateY(0); }
 }
-/* Loading */
-.loading {
+/* Shared compact content state — one vocabulary for Loading / Empty / Error
+   text slots used by Library, Radio and TIDAL browse. Base padding and type
+   stay identical when a slot switches between states, so there is no layout
+   jump; the modifier only changes the tone and the loading pulse dot. */
+.content-state {
     text-align: center;
     color: var(--text-secondary);
-    padding: 2.5rem 1rem;
-    font-size: 0.92rem;
+    padding: 2rem 1rem;
+    font-size: 0.88rem;
+    line-height: 1.5;
+}
+.content-state--empty {
+    color: var(--text-muted);
+}
+.content-state--error {
+    color: var(--danger);
+}
+.content-state--loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+}
+.content-state--loading::before {
+    content: '';
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: 0.6;
+    animation: content-state-pulse 1.6s ease-in-out infinite;
+}
+@keyframes content-state-pulse {
+    0%, 100% { opacity: 0.2; }
+    50%      { opacity: 0.7; }
 }
 /* ============================================================
    Station Cards — Radio tab
@@ -632,12 +679,6 @@ body {
 .btn-icon-only {
     padding: 0.5rem;
     min-width: 44px;
-}
-.stations-empty-search {
-    text-align: center;
-    color: var(--text-secondary);
-    font-size: 0.86rem;
-    padding: 2rem 1rem;
 }
 .radio-station-sections {
     display: flex;
@@ -1613,6 +1654,7 @@ body {
 .library-search-input {
     width: 100%;
     padding-right: 2.1rem;
+    font-size: 0.86rem;
 }
 .library-search-input::-webkit-search-cancel-button,
 .library-search-input::-webkit-search-decoration {
@@ -1814,12 +1856,6 @@ body {
     border-color: var(--border);
     outline: 2px solid var(--accent);
     outline-offset: 2px;
-}
-.scan-status {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-    margin: 0.4rem 0 0.75rem;
-    animation: pulse 1.5s ease-in-out infinite;
 }
 .track-item {
     display: flex;
@@ -6077,7 +6113,7 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .brand-text-block { gap: 0.1rem; }
     .brand-title { font-size: 1.07rem; }
-    .brand-subtitle { font-size: 0.51rem; }
+    .brand-subtitle { font-size: 0.62rem; }
 }
 .tab-glyph {
     width: 1.05rem;
@@ -6134,7 +6170,7 @@ input[type="number"]::-webkit-outer-spin-button {
     .header { min-height: 64px; padding: .72rem .8rem; }
     .brand-mark { width: 38px; height: 38px; }
     .brand-title { font-size: 1.08rem; }
-    .brand-subtitle { font-size: .52rem; }
+    .brand-subtitle { font-size: .62rem; }
     .tabs { justify-content: space-between; }
     .tab-btn { flex: 1 0 auto; min-width: 86px; min-height: 44px; padding: .48rem .62rem; }
     .tab-content { padding: 1rem .75rem calc(1.5rem + var(--playback-footer-space)); }
@@ -7313,7 +7349,8 @@ input[type="number"]::-webkit-outer-spin-button {
     border-radius: var(--radius-sm);
     background: var(--bg-input);
     color: var(--text-primary);
-    font: inherit;
+    font-size: 0.86rem;
+    font-family: inherit;
     outline: none;
     transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
 }
@@ -7335,7 +7372,6 @@ input[type="number"]::-webkit-outer-spin-button {
     color: var(--text-muted);
     margin: 0.9rem 0 0.4rem;
 }
-.streaming-note { color: var(--text-muted); font-size: 0.85rem; margin: 0.5rem 0; }
 .streaming-results-list {
     list-style: none;
     margin: 0;

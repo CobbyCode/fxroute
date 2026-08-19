@@ -24,6 +24,12 @@
     let trackRowHtml = function () { return ''; };
     let initialized = false;
 
+    // Shared compact content-state markup (same component — and therefore the
+    // same Loading / Empty / Error vocabulary — used by Library and Radio).
+    function contentState(kind, message) {
+        return '<div class="content-state content-state--' + kind + '">' + escapeHtml(message || '') + '</div>';
+    }
+
     // Provider -> transport backend adapter. The rendering is capability
     // driven; only the endpoint each provider's transport must hit is here.
     const TRANSPORT = {
@@ -983,7 +989,7 @@
         state.tidal.searchResultType = type;
         state.tidal.trackSelectionMode = false;
         state.tidal.selectedTrackIds.clear();
-        body.innerHTML = '<p class="streaming-note">Searching…</p>';
+        body.innerHTML = contentState('loading', 'Searching…');
         try {
             const resp = await fetch('/api/streaming/tidal/search?q=' + encodeURIComponent(query) + '&types=' + encodeURIComponent(type) + '&limit=25');
             if (!resp.ok) throw new Error(await errorDetail(resp));
@@ -998,7 +1004,7 @@
         } catch (err) {
             if (requestId !== state.tidal.searchRequestId) return;
             const currentBody = document.getElementById('tidal-browse-body');
-            if (currentBody) currentBody.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
+            if (currentBody) currentBody.innerHTML = contentState('error', friendlyError(err?.message || err));
         }
     }
 
@@ -1035,7 +1041,7 @@
         const itemsContainer = container.querySelector('#tidal-search-items');
         bindTidalSearchResultControls(container, items);
         if (!items.length) {
-            itemsContainer.innerHTML = '<p class="streaming-note">No results.</p>';
+            itemsContainer.innerHTML = contentState('empty', 'No results.');
             return;
         }
         const queueIds = type === 'tracks' ? items.map((item) => String(item.id)).filter(Boolean) : [];
@@ -1335,7 +1341,7 @@
         const results = document.getElementById('tidal-fav-results');
         if (!results) return;
         const type = state.tidal.browseCategory;
-        results.innerHTML = '<p class="streaming-note">Loading…</p>';
+        results.innerHTML = contentState('loading', 'Loading…');
         try {
             // Re-read the real TIDAL favorite state so external app changes
             // appear on refresh (no shadow state).
@@ -1344,25 +1350,25 @@
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const items = await resp.json();
             if (!Array.isArray(items) || !items.length) {
-                results.innerHTML = '<p class="streaming-note">No favorites yet.</p>';
+                results.innerHTML = contentState('empty', 'No favorites yet.');
                 return;
             }
             renderTidalFavoriteResults(results, type, items);
         } catch (err) {
-            results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
+            results.innerHTML = contentState('error', friendlyError(err?.message || err));
         }
     }
 
     // -- playlists ------------------------------------------------------------
     async function renderTidalPlaylists(body) {
-        body.innerHTML = '<div class="streaming-results" id="tidal-playlists-results"><p class="streaming-note">Loading…</p></div>';
+        body.innerHTML = '<div class="streaming-results" id="tidal-playlists-results">' + contentState('loading', 'Loading…') + '</div>';
         const results = body.querySelector('#tidal-playlists-results');
         try {
             const resp = await fetch('/api/streaming/tidal/playlists');
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const items = await resp.json();
             if (!Array.isArray(items) || !items.length) {
-                results.innerHTML = '<p class="streaming-note">No playlists yet.</p>';
+                results.innerHTML = contentState('empty', 'No playlists yet.');
                 return;
             }
             const list = document.createElement('ul');
@@ -1384,7 +1390,7 @@
             results.innerHTML = '';
             results.appendChild(list);
         } catch (err) {
-            results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
+            results.innerHTML = contentState('error', friendlyError(err?.message || err));
         }
     }
 
@@ -1456,7 +1462,7 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
+                '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteStars(content);
@@ -1500,7 +1506,7 @@
             renderDetailTracks(results, items, null);
         } catch (err) {
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
-            results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
+            results.innerHTML = contentState('error', friendlyError(err?.message || err));
         }
     }
 
@@ -1522,7 +1528,7 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
+                '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteStars(content);
@@ -1569,11 +1575,11 @@
                 results.appendChild(list);
             }
             if (!tracks.length && !albums.length) {
-                results.innerHTML = '<p class="streaming-note">No tracks or albums available.</p>';
+                results.innerHTML = contentState('empty', 'No tracks or albums available.');
             }
         } catch (err) {
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'artist') return;
-            results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
+            results.innerHTML = contentState('error', friendlyError(err?.message || err));
         }
     }
 
@@ -1595,7 +1601,7 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
+                '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteStars(content);
@@ -1612,7 +1618,7 @@
             renderDetailTracks(results, items, content.querySelector('#tidal-detail-play'));
         } catch (err) {
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
-            results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
+            results.innerHTML = contentState('error', friendlyError(err?.message || err));
         }
     }
 
@@ -1632,14 +1638,14 @@
             renderDetailTracks(results, items, content.querySelector('#tidal-detail-play'));
         } catch (err) {
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'playlist') return;
-            results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
+            results.innerHTML = contentState('error', friendlyError(err?.message || err));
         }
     }
 
     function renderDetailTracks(container, items, playAllBtn) {
         container.innerHTML = '';
         if (!Array.isArray(items) || !items.length) {
-            container.innerHTML = '<p class="streaming-note">No tracks.</p>';
+            container.innerHTML = contentState('empty', 'No tracks.');
             if (playAllBtn) playAllBtn.disabled = true;
             return;
         }

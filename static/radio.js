@@ -458,23 +458,23 @@
     }
 
     function renderPersonalStations() {
-        const loadingEl = document.querySelector('#tab-radio .loading');
+        const loadingEl = document.querySelector('#tab-radio .content-state');
         if (state.stations.length === 0) {
-            if (loadingEl) loadingEl.textContent = 'No stations yet. Open Manage to add one.';
+            window.FXRouteContentState.set(loadingEl, 'empty', 'No stations yet. Open Manage to add one.');
             elements.stationsGrid.innerHTML = '';
-            if (elements.stationsEmptySearch) elements.stationsEmptySearch.classList.add('hidden');
+            window.FXRouteContentState.hide(elements.stationsEmptySearch);
             renderStationDeleteOptions();
             return;
         }
-        if (loadingEl) loadingEl.style.display = 'none';
+        window.FXRouteContentState.hide(loadingEl);
         const query = getStationSearchQuery();
         const filtered = state.stations.filter(s => stationMatchesSearch(s, query));
         if (filtered.length === 0 && query) {
             elements.stationsGrid.innerHTML = '';
-            if (elements.stationsEmptySearch) elements.stationsEmptySearch.classList.remove('hidden');
+            window.FXRouteContentState.set(elements.stationsEmptySearch, 'empty', 'No saved stations found');
             return;
         }
-        if (elements.stationsEmptySearch) elements.stationsEmptySearch.classList.add('hidden');
+        window.FXRouteContentState.hide(elements.stationsEmptySearch);
         elements.stationsGrid.innerHTML = filtered.map(station => {
             const artCandidates = stationArtCandidates(station);
             const artSrc = artCandidates[0] || stationArtFallbackSvg(station);
@@ -496,21 +496,17 @@
 
     function renderCatalogStations() {
         if (!elements.stationCatalogGrid) return;
-        if (elements.stationCatalogLoading) elements.stationCatalogLoading.style.display = 'none';
+        window.FXRouteContentState.hide(elements.stationCatalogLoading);
         const query = getStationSearchQuery();
         const filtered = state.catalogStations.filter(station =>
             !station.is_saved && stationMatchesSearch(station, query));
         if (filtered.length === 0) {
             elements.stationCatalogGrid.innerHTML = '';
-            if (elements.stationCatalogEmptySearch) {
-                elements.stationCatalogEmptySearch.textContent = query
-                    ? 'No catalog stations found'
-                    : 'All curated stations are already in My Stations';
-                elements.stationCatalogEmptySearch.classList.remove('hidden');
-            }
+            window.FXRouteContentState.set(elements.stationCatalogEmptySearch, 'empty',
+                query ? 'No catalog stations found' : 'All curated stations are already in My Stations');
             return;
         }
-        if (elements.stationCatalogEmptySearch) elements.stationCatalogEmptySearch.classList.add('hidden');
+        window.FXRouteContentState.hide(elements.stationCatalogEmptySearch);
         const providerOrder = ['Radio Paradise', 'SomaFM', 'FIP', 'Other Stations'];
         const renderCard = station => {
             const artCandidates = stationArtCandidates(station);
