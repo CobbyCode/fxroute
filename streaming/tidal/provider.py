@@ -16,11 +16,15 @@ dict using the shared streaming field names.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, ClassVar
 
+from artist_enrichment import ArtistEnrichmentService, get_shared_artist_enrichment
 from streaming.base.capabilities import Capabilities
 from streaming.base.provider import StreamingProvider
 from streaming.tidal import auth, catalog, playback
+
+logger = logging.getLogger(__name__)
 
 TIDAL_BACKEND = "tidalapi"
 
@@ -31,8 +35,14 @@ class TidalProvider(StreamingProvider):
     provider_id: ClassVar[str] = "tidal"
     display_name: ClassVar[str] = "TIDAL"
 
-    def __init__(self) -> None:
+    def __init__(self, artist_enrichment: ArtistEnrichmentService | None = None) -> None:
         self._get_active_playback: Callable[[], dict] | None = None
+        self._artist_enrichment = artist_enrichment
+
+    def _enrichment(self) -> ArtistEnrichmentService:
+        if self._artist_enrichment is None:
+            self._artist_enrichment = get_shared_artist_enrichment()
+        return self._artist_enrichment
 
     def configure(self, get_active_playback: Callable[[], dict]) -> None:
         """Bind the FXRoute playback owner so ``status()`` can report now-playing."""
@@ -168,10 +178,55 @@ class TidalProvider(StreamingProvider):
         return await _to_thread(catalog.set_playlist_favorite, playlist_id, favorite)
 
     async def get_artist(self, artist_id: str) -> dict:
-        return await _to_thread(catalog.get_artist, artist_id)
+        data = await _to_thread(catalog.get_artist, artist_id)
+        return await _to_thread(self._attach_artist_enrichment, data)
+
+    def _attach_artist_enrichment(self, data: dict) -> dict:
+        """Compose shared artist enrichment for the TIDAL artist detail.
+
+        MusicBrainz/Wikipedia/ListenBrainz availability never affects the
+        operator's own TIDAL data: failures degrade to ``enrichment.available``
+        false and the normalized artist payload is returned unchanged.
+        """
+        result = dict(data)
+        try:
+            enrichment = self._enrichment().enriched_artist(
+                "tidal",
+                str(result.get("id") or ""),
+                str(result.get("name") or ""),
+                art_url=str(result.get("art_url") or ""),
+                album_titles=[
+                    str(album.get("title") or "")
+                    for album in (result.get("albums") or [])
+                    if str(album.get("title") or "").strip()
+                ],
+                load_similar=True,
+            )
+            result["enrichment"] = enrichment
+        except Exception as exc:  # noqa: BLE001 - enrichment must never break TIDAL
+            logger.warning("TIDAL artist enrichment failed for %s: %s", result.get("id"), exc)
+            result["enrichment"] = {"available": False, "error": str(exc)[:200]}
+        return result
 
     async def get_album(self, album_id: str) -> dict:
-        return await _to_thread(catalog.get_album, album_id)
+        data = await _to_thread(catalog.get_album, album_id)
+        return await _to_thread(self._attach_album_enrichment, data)
+
+    def _attach_album_enrichment(self, data: dict) -> dict:
+        """Compose the shared album enrichment (artist about + MB supplement)."""
+        result = dict(data)
+        try:
+            enrichment = self._enrichment().enriched_album(
+                "tidal",
+                str(result.get("artist_id") or ""),
+                str(result.get("title") or ""),
+                str(result.get("artist") or ""),
+            )
+            result["enrichment"] = enrichment
+        except Exception as exc:  # noqa: BLE001 - enrichment must never break TIDAL
+            logger.warning("TIDAL album enrichment failed for %s: %s", result.get("id"), exc)
+            result["enrichment"] = {"available": False, "error": str(exc)[:200]}
+        return result
 
     async def playlists(self) -> list[dict]:
         return await _to_thread(catalog.user_playlists)

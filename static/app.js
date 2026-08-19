@@ -870,6 +870,8 @@ document.addEventListener('DOMContentLoaded', () => {
             escapeHtml,
             formatTime,
             trackRowHtml: detailTrackRowHtml,
+            factsHtml: detailFactsHtml,
+            aboutHtml: detailAboutHtml,
             spotifyCommand,
             spotifySeek,
         });
@@ -5363,7 +5365,16 @@ function albumFactsHtml(album) {
     const genreLine = genres.length ? `Genre: ${genres.join(' / ')}` : '';
     const lines = [headline, label, genreLine].filter(Boolean);
     if (!lines.length) return '';
-    return `<div class="album-detail-facts">${lines.map(line => `<div>${escapeHtml(line)}</div>`).join('')}</div>`;
+    return detailFactsHtml(lines);
+}
+
+// Shared metadata-rows builder used by the library album detail and the TIDAL
+// album detail (streaming.js receives it via the init api): one row language
+// for every fact, no per-provider copy.
+function detailFactsHtml(lines) {
+    const rows = (lines || []).filter(Boolean).map(line => `<div>${escapeHtml(line)}</div>`).join('');
+    if (!rows) return '';
+    return `<div class="album-detail-facts">${rows}</div>`;
 }
 
 function albumAboutHtml(album) {
@@ -5372,6 +5383,12 @@ function albumAboutHtml(album) {
     const description = albumDescription || artistDescription;
     if (!description) return '';
     const label = albumDescription ? 'About this album' : 'About this artist';
+    return detailAboutHtml(label, description);
+}
+
+// Shared collapsible "About" component (library + TIDAL album details). The
+// TIDAL artist page intentionally renders about directly visible instead.
+function detailAboutHtml(label, description) {
     return `
         <details class="album-detail-about">
             <summary>${escapeHtml(label)}</summary>

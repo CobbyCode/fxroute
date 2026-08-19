@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -18,18 +17,22 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-MUSICBRAINZ_API = "https://musicbrainz.org/ws/2"
+# Artist/release enrichment (MusicBrainz matching, Wikipedia/Wikidata about
+# text, ListenBrainz similar artists) lives in the shared owner; the library
+# store keeps a compatible request boundary and delegates the network work.
+from artist_enrichment import (
+    DISCOVER_COOLDOWN_SECONDS,
+    FETCH_COOLDOWN_SECONDS,
+    LISTENBRAINZ_API,
+    TRANSIENT_ERROR_RETRY_SECONDS,
+    USER_AGENT,
+    ArtistEnrichmentService,
+    _derive_enrichment_db_path,
+    _json_list,
+    _useful_label,
+)
+
 COVER_ART_API = "https://coverartarchive.org"
-WIKIDATA_API = "https://www.wikidata.org/wiki/Special:EntityData"
-WIKIPEDIA_SUMMARY_APIS = {
-    "enwiki": "https://en.wikipedia.org/api/rest_v1/page/summary",
-    "dewiki": "https://de.wikipedia.org/api/rest_v1/page/summary",
-}
-LISTENBRAINZ_API = "https://api.listenbrainz.org/1"
-USER_AGENT = "FXRoute/0.6 (https://github.com/CobbyCode/fxroute)"
-FETCH_COOLDOWN_SECONDS = 7 * 24 * 60 * 60
-TRANSIENT_ERROR_RETRY_SECONDS = 60 * 60
-DISCOVER_COOLDOWN_SECONDS = 7 * 24 * 60 * 60
 MISSING_RETENTION_SECONDS = 60 * 24 * 60 * 60
 MAX_ENRICH_PER_SCAN = 8
 
@@ -43,33 +46,21 @@ def _config_dir() -> Path:
     return root / "fxroute"
 
 
-def _normalize_text(value: str) -> str:
-    text = (value or "").lower()
-    text = re.sub(r"\([^)]*\)|\[[^]]*\]", " ", text)
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _json_list(values: Any) -> str:
-    if not isinstance(values, list):
-        return "[]"
-    cleaned = []
-    seen = set()
-    for value in values:
-        text = str(value or "").strip()
-        key = text.lower()
-        if text and key not in seen:
-            cleaned.append(text)
-            seen.add(key)
-    return json.dumps(cleaned[:6], ensure_ascii=False)
-
-
 class LibraryMetadataStore:
     """SQLite-backed cache for external album metadata and covers."""
 
-    def __init__(self, db_path: Path | None = None, cover_dir: Path | None = None):
-        self.db_path = db_path or (_config_dir() / "library-metadata.sqlite")
+    def __init__(self, db_path: Path | None = None, cover_dir: Path | None = None, artist_enrichment: ArtistEnrichmentService | None = None):
+        self.db_path = Path(db_path) if db_path is not None else (_config_dir() / "library-metadata.sqlite")
         self.cover_dir = cover_dir or (_config_dir() / "library-metadata-covers")
+        if artist_enrichment is None:
+            # Default: a shared enrichment service whose network calls dispatch
+            # through this store's (patchable) _request_json, caching into the
+            # shared artist-enrichment DB so library and providers share data.
+            artist_enrichment = ArtistEnrichmentService(
+                db_path=_derive_enrichment_db_path(self.db_path),
+                request_backend=self,
+            )
+        self.artist_enrichment = artist_enrichment
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.cover_dir.mkdir(parents=True, exist_ok=True)
         self._last_request_at = 0.0
@@ -272,7 +263,33 @@ class LibraryMetadataStore:
     def get_album(self, album_key: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM albums WHERE album_key = ?", (album_key,)).fetchone()
-        return self._row_to_api(row) if row else {}
+        result = self._row_to_api(row) if row else {}
+        if row:
+            self._adopt_existing_artist_enrichment(row)
+        return result
+
+    def _adopt_existing_artist_enrichment(self, row: sqlite3.Row) -> None:
+        """Lazily move pre-existing per-album artist enrichment into the shared
+        cache so provider enrichment reuses it instead of re-fetching the net.
+
+        Only rows that already carry a MusicBrainz artist id and a description
+        trigger the (cheap) shared-cache check; the library album row itself is
+        never modified and stays the compatibility copy.
+        """
+        mb_artist_id = str(row["mb_artist_id"] or "").strip()
+        description = str(row["artist_description"] or "").strip()
+        if not mb_artist_id or not description:
+            return
+        try:
+            existing = self.artist_enrichment.store.get_artist(mb_artist_id)
+            if existing and existing["description"]:
+                return
+            self.artist_enrichment.store.upsert_artist_description(
+                mb_artist_id, None, description,
+                attempted_at=_utc_now(), error=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - adoption is best-effort
+            logger.debug("Artist enrichment adoption failed for %s: %s", mb_artist_id, exc)
 
     def set_album_favorite(self, album_key: str, favorite: bool) -> dict[str, Any]:
         now = _utc_now()
@@ -378,61 +395,14 @@ class LibraryMetadataStore:
         return {"items": items[:6], "source": seed_type, "seed_id": seed_id, "cached": False, "error": error}
 
     def _fetch_listenbrainz_discover_items(self, seed_type: str | None, seed_id: str, seed_artist_name: str = "") -> list[dict[str, Any]]:
+        """Return similar-artist items for an artist MusicBrainz seed.
+
+        Delegates to the shared enrichment owner so the same canonical artist's
+        similar set is fetched once and cached per MBID instead of per album.
+        """
         if seed_type != "artist" or not seed_id:
             return []
-        payload = {}
-        for mode, max_artists in (("easy", 8), ("medium", 8), ("easy", 5)):
-            try:
-                payload = self._request_json(
-                    f"{LISTENBRAINZ_API}/lb-radio/artist/{quote(seed_id)}",
-                    {
-                        "mode": mode,
-                        "max_similar_artists": max_artists,
-                        "max_recordings_per_artist": 2,
-                        "pop_begin": 0,
-                        "pop_end": 100,
-                    },
-                )
-                if payload:
-                    break
-            except Exception as exc:
-                logger.debug("ListenBrainz radio lookup failed for %s mode=%s: %s", seed_id, mode, exc)
-                payload = {}
-        results = []
-        seen_artist_ids = {seed_id.lower()}
-        seen_artist_names = set()
-        seed_artist_key = _normalize_text(seed_artist_name)
-        if seed_artist_key:
-            seen_artist_names.add(seed_artist_key)
-        for recordings in (payload or {}).values():
-            if not isinstance(recordings, list):
-                continue
-            for item in recordings:
-                if not isinstance(item, dict):
-                    continue
-                artist_id = str(item.get("similar_artist_mbid") or "").strip()
-                artist_name = str(item.get("similar_artist_name") or "").strip()
-                artist_key = artist_id.lower()
-                name_key = _normalize_text(artist_name)
-                if not artist_name or (artist_key and artist_key in seen_artist_ids) or (not artist_key and name_key in seen_artist_names):
-                    continue
-                if name_key and name_key in seen_artist_names:
-                    continue
-                if artist_key:
-                    seen_artist_ids.add(artist_key)
-                if name_key:
-                    seen_artist_names.add(name_key)
-                results.append(
-                    {
-                        "type": "artist",
-                        "artist": artist_name,
-                        "artist_mbid": artist_id,
-                        "listen_count": int(item.get("total_listen_count") or 0),
-                    }
-                )
-                if len(results) >= 6:
-                    return results
-        return results
+        return self.artist_enrichment.similar_artists(str(seed_id), seed_artist_name or "")
 
     def _listenbrainz_recording_metadata(self, recording_ids: list[str]) -> dict[str, dict[str, str]]:
         ids = [str(item or "").strip() for item in recording_ids if str(item or "").strip()]
@@ -634,7 +604,7 @@ class LibraryMetadataStore:
             "release_type": row["release_type"],
             "year": row["year"],
             "country": row["country"],
-            "label": self._useful_label(row["label"]),
+            "label": _useful_label(row["label"]),
             "genres": genres if isinstance(genres, list) else [],
             "favorite": bool(row["favorite"]),
             "artist_description": row["artist_description"],
@@ -724,140 +694,25 @@ class LibraryMetadataStore:
         self._last_request_at = time.monotonic()
 
     def _find_musicbrainz_release(self, album: str, artist: str) -> Optional[dict[str, Any]]:
-        query = f'release:"{album}" AND artist:"{artist}"'
-        payload = self._request_json(f"{MUSICBRAINZ_API}/release", {"query": query, "fmt": "json", "limit": 5})
-        releases = payload.get("releases") or []
-        album_norm = _normalize_text(album)
-        artist_norm = _normalize_text(artist)
-        for release in releases:
-            score = int(release.get("score") or 0)
-            title_norm = _normalize_text(str(release.get("title") or ""))
-            credit = " ".join(str(item.get("name") or "") for item in (release.get("artist-credit") or []) if isinstance(item, dict))
-            credit_norm = _normalize_text(credit)
-            if score < 90 or title_norm != album_norm:
-                continue
-            if artist_norm and artist_norm not in credit_norm and credit_norm not in artist_norm:
-                continue
-            release_id = release.get("id")
-            if not release_id:
-                continue
-            return self._lookup_release(str(release_id), release)
-        return None
+        """Match a release through the shared enrichment owner.
 
-    def _lookup_release(self, release_id: str, fallback: dict[str, Any]) -> dict[str, Any]:
-        payload = self._request_json(
-            f"{MUSICBRAINZ_API}/release/{quote(release_id)}",
-            {"fmt": "json", "inc": "artist-credits+release-groups+labels+tags"},
-        ) or fallback
-        release_group = payload.get("release-group") or {}
-        release_group_detail = {}
-        if release_group.get("id"):
-            release_group_detail = self._request_json(
-                f"{MUSICBRAINZ_API}/release-group/{quote(str(release_group.get('id')))}",
-                {"fmt": "json", "inc": "tags+url-rels"},
-            )
-        artist_credit = payload.get("artist-credit") or []
-        first_artist = next((item.get("artist") for item in artist_credit if isinstance(item, dict) and isinstance(item.get("artist"), dict)), {})
-        labels = payload.get("label-info") or []
-        label = next((item.get("label", {}).get("name") for item in labels if isinstance(item, dict) and isinstance(item.get("label"), dict)), None)
-        label = self._useful_label(label)
-        tags = sorted((release_group_detail.get("tags") or payload.get("tags") or []), key=lambda item: int(item.get("count") or 0), reverse=True)
-        date = str(release_group_detail.get("first-release-date") or release_group.get("first-release-date") or payload.get("date") or "")
-        year = None
-        match = re.search(r"(?:19|20)\d{2}", date)
-        if match:
-            year = int(match.group(0))
-        artist_id = first_artist.get("id")
-        release_group_id = release_group.get("id")
-        return {
-            "mb_artist_id": artist_id,
-            "mb_release_id": payload.get("id") or release_id,
-            "mb_release_group_id": release_group_id,
-            "release_type": release_group_detail.get("primary-type") or release_group.get("primary-type"),
-            "year": year,
-            "country": payload.get("country"),
-            "label": label,
-            "genres": [str(item.get("name") or "").strip().title() for item in tags[:6] if str(item.get("name") or "").strip()],
-            "artist_description": self._fetch_artist_description(artist_id),
-            "album_description": self._fetch_release_group_description(release_group_id, release_group_detail),
-        }
+        Compatibility wrapper for the library smart-metadata batch enrich path;
+        returns ``None`` when no safe MusicBrainz release match exists so the
+        caller records the usual "no safe MusicBrainz match" attempt.
+        """
+        match = self.artist_enrichment.match_release(album, artist, include_descriptions=True)
+        if not match.get("mb_release_id"):
+            return None
+        return match
 
     def _fetch_artist_description(self, artist_id: Any) -> Optional[str]:
         artist_id = str(artist_id or "").strip()
         if not artist_id:
             return None
-        try:
-            payload = self._request_json(
-                f"{MUSICBRAINZ_API}/artist/{quote(artist_id)}",
-                {"fmt": "json", "inc": "url-rels"},
-            )
-            wikidata_id = self._wikidata_id_from_relations(payload.get("relations") or [])
-            return self._wikipedia_summary_for_wikidata_id(wikidata_id)
-        except Exception as exc:
-            logger.debug("Artist description lookup failed for %s: %s", artist_id, exc)
-            return None
+        return self.artist_enrichment.artist_description(artist_id)
 
     def _fetch_release_group_description(self, release_group_id: Any, payload: dict[str, Any] | None = None) -> Optional[str]:
-        release_group_id = str(release_group_id or "").strip()
-        if not release_group_id:
-            return None
-        try:
-            detail = payload or self._request_json(
-                f"{MUSICBRAINZ_API}/release-group/{quote(release_group_id)}",
-                {"fmt": "json", "inc": "url-rels"},
-            )
-            wikidata_id = self._wikidata_id_from_relations(detail.get("relations") or [])
-            return self._wikipedia_summary_for_wikidata_id(wikidata_id)
-        except Exception as exc:
-            logger.debug("Release-group description lookup failed for %s: %s", release_group_id, exc)
-            return None
-
-    @staticmethod
-    def _wikidata_id_from_relations(relations: list[Any]) -> Optional[str]:
-        for relation in relations:
-            if not isinstance(relation, dict):
-                continue
-            url = relation.get("url") or {}
-            resource = str(url.get("resource") or "")
-            match = re.search(r"wikidata\.org/wiki/(Q\d+)", resource)
-            if match:
-                return match.group(1)
-        return None
-
-    def _wikipedia_summary_for_wikidata_id(self, wikidata_id: str | None) -> Optional[str]:
-        if not wikidata_id:
-            return None
-        entity_data = self._request_json(f"{WIKIDATA_API}/{quote(wikidata_id)}.json")
-        entity = (entity_data.get("entities") or {}).get(wikidata_id) or {}
-        sitelinks = entity.get("sitelinks") or {}
-        site_key = "enwiki" if sitelinks.get("enwiki") else "dewiki"
-        site = sitelinks.get(site_key)
-        title = str((site or {}).get("title") or "").strip()
-        if not title:
-            return None
-        summary = self._request_json(f"{WIKIPEDIA_SUMMARY_APIS[site_key]}/{quote(title)}")
-        extract = str(summary.get("extract") or "").strip()
-        return self._compact_description(extract)
-
-    @staticmethod
-    def _compact_description(text: str) -> Optional[str]:
-        text = re.sub(r"\s+", " ", str(text or "")).strip()
-        if not text:
-            return None
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        compact = " ".join(sentence for sentence in sentences[:2] if sentence).strip()
-        if len(compact) > 320:
-            compact = compact[:317].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
-        return compact or None
-
-    @staticmethod
-    def _useful_label(value: Any) -> Optional[str]:
-        label = str(value or "").strip()
-        if not label:
-            return None
-        if label.lower() in {"[no label]", "no label", "none", "unknown"}:
-            return None
-        return label
+        return self.artist_enrichment._release_group_description(release_group_id, payload)
 
     def _fetch_cover(
         self,

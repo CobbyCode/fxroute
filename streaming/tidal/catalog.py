@@ -82,6 +82,7 @@ def normalize_album(album: Any) -> dict:
         "id": _id_str(getattr(album, "id", None)),
         "title": _name(getattr(album, "name", None) or getattr(album, "title", None)),
         "artist": getattr(artist_obj, "name", "") if artist_obj is not None else "",
+        "artist_id": _id_str(getattr(artist_obj, "id", None)) if artist_obj is not None else "",
         "art_url": _cover_url(album),
         "num_tracks": int(getattr(album, "num_tracks", 0) or 0),
         "audio_quality": _name(getattr(album, "audio_quality", None)),

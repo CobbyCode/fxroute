@@ -7629,6 +7629,82 @@ input[type="number"]::-webkit-outer-spin-button {
 .tidal-detail-artist { font-size: 1rem; color: var(--text-secondary); margin: 0; }
 .tidal-detail-facts { font-size: 0.86rem; color: var(--text-secondary); line-height: 1.35; margin: 0; }
 
+/* TIDAL artist about: directly visible in the hero, reusing the library
+   .album-detail-about text styling (colors, size, max-width) without its
+   accordion. Long bios clamp to a few lines with a subtle More/Less toggle. */
+.tidal-artist-about { margin-top: 0.5rem; }
+.streaming-about-text {
+    margin: 0;
+    max-width: 64ch;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    line-height: 1.45;
+}
+.streaming-about-text.is-clamped {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.about-more-toggle {
+    margin-top: 0.3rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.8rem;
+    font-weight: 650;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.about-more-toggle:hover { color: var(--text-secondary); }
+.about-more-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* Discover Similar artist tiles: cover placeholder (reuses the shared
+   .streaming-result-cover tile) + name, responsive grid. */
+.streaming-similar-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 0.7rem;
+    margin: 0.5rem 0 0;
+    padding: 0;
+    list-style: none;
+}
+.streaming-similar-item {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.streaming-similar-item .streaming-result-cover {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    overflow: hidden;
+}
+.streaming-similar-item .streaming-result-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.streaming-similar-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-weight: 600;
+    text-align: center;
+}
+.streaming-similar-item:hover .streaming-similar-name { color: var(--text-primary); }
+
 /* Mobile: tighten the Spotify/Qobuz player; Tidal browse stays compact and the
    search row may wrap so the button never overflows the viewport. Detail
    headers (library + Tidal) keep the compact side-by-side hero at every
