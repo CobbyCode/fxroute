@@ -27,6 +27,8 @@
     --action-gap-mobile: 8px;
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Geist", "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     /* Native form controls (select option popups, autofill, scrollbars)
        follow the dark theme instead of the system light scheme. */
     color-scheme: dark;
@@ -93,7 +95,7 @@ html {
     top: 0.75rem;
 }
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, "Cantarell", sans-serif;
+    font-family: var(--font-sans);
     background: var(--bg-primary);
     color: var(--text-primary);
     min-height: 100vh;
@@ -4704,10 +4706,10 @@ input[type="number"]::-webkit-outer-spin-button {
     transform: translateX(-50%);
     z-index: 100;
     display: grid;
-    grid-template-columns: minmax(220px, 0.95fr) minmax(390px, 1.65fr) minmax(145px, 0.62fr) minmax(220px, 0.82fr);
+    grid-template-columns: minmax(180px, 0.72fr) minmax(390px, 1.75fr) minmax(130px, 0.52fr) minmax(200px, 0.78fr);
     grid-template-areas: "track transport meter volume";
     align-items: center;
-    gap: clamp(0.9rem, 1.6vw, 1.6rem);
+    gap: clamp(0.75rem, 1.3vw, 1.35rem);
     padding: 0.82rem clamp(0.9rem, 1.55vw, 1.45rem);
     border: 1px solid rgba(255,255,255,0.085);
     border-radius: 22px;
@@ -4730,6 +4732,7 @@ input[type="number"]::-webkit-outer-spin-button {
 .playback-bar .track-info {
     grid-area: track;
     min-width: 0;
+    max-width: 100%;
     display: grid;
     grid-template-columns: 72px minmax(0, 1fr);
     align-items: center;
@@ -4777,6 +4780,7 @@ input[type="number"]::-webkit-outer-spin-button {
     grid-column: 1;
     grid-row: 1;
     min-width: 0;
+    max-width: 100%;
     display: grid;
     gap: 0.08rem;
 }
@@ -4836,10 +4840,12 @@ input[type="number"]::-webkit-outer-spin-button {
     align-items: center;
     justify-content: center;
     min-height: 1.25rem;
-    padding: .08rem .5rem;
+    padding: .08rem .48rem;
     border-radius: 999px;
     font-size: .64rem;
     font-weight: 680;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
     line-height: 1;
     white-space: nowrap;
     flex: 0 1 auto;
@@ -4849,6 +4855,11 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); }
 .queue-status { background: rgba(110,231,183,.08); color: var(--accent); }
+.queue-status::before {
+    content: '≡\00a0';
+    opacity: 0.75;
+    font-size: 0.72rem;
+}
 
 .playback-center {
     grid-area: transport;
@@ -4905,15 +4916,16 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .seek-row {
     display: grid;
-    grid-template-columns: 3.1rem minmax(100px,1fr) 3.1rem;
+    grid-template-columns: 2.5rem minmax(100px, 1fr) 2.5rem;
     align-items: center;
-    gap: .5rem;
+    gap: .35rem;
     width: 100%;
     min-width: 0;
 }
 .seek-time {
     color: var(--text-muted);
     font-size: .66rem;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     line-height: 1;
     text-align: center;
@@ -4934,36 +4946,47 @@ input[type="number"]::-webkit-outer-spin-button {
     background: linear-gradient(to right,
         var(--accent) 0%,
         var(--accent) var(--range-progress),
-        rgba(255,255,255,.12) var(--range-progress),
-        rgba(255,255,255,.12) 100%);
+        rgba(255,255,255,.10) var(--range-progress),
+        rgba(255,255,255,.10) 100%);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.4);
 }
-.seek-slider { height: 4px; }
-.volume-slider { height: 6px; }
+.seek-slider { height: 5px; }
+.volume-slider { height: 5px; }
 .seek-slider::-webkit-slider-thumb,
 .volume-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
     border-radius: 50%;
-    background: #f2f6f4;
-    border: 1px solid rgba(0,0,0,.42);
-    box-shadow: 0 1px 5px rgba(0,0,0,.45), 0 0 0 2px rgba(255,255,255,.04);
+    background: #ffffff;
+    border: 1px solid rgba(0,0,0,0.5);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.1);
     transition: transform .12s var(--ease), box-shadow .12s var(--ease);
 }
-.seek-slider::-webkit-slider-thumb { width: 15px; height: 15px; }
-.volume-slider::-webkit-slider-thumb { width: 19px; height: 19px; }
+.seek-slider::-webkit-slider-thumb { width: 13px; height: 13px; }
+.volume-slider::-webkit-slider-thumb { width: 14px; height: 14px; }
 .seek-slider::-moz-range-thumb,
 .volume-slider::-moz-range-thumb {
     border-radius: 50%;
-    background: #f2f6f4;
-    border: 1px solid rgba(0,0,0,.42);
-    box-shadow: 0 1px 5px rgba(0,0,0,.45);
+    background: #ffffff;
+    border: 1px solid rgba(0,0,0,0.5);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.6);
 }
-.seek-slider::-moz-range-thumb { width: 15px; height: 15px; }
-.volume-slider::-moz-range-thumb { width: 19px; height: 19px; }
+.seek-slider::-moz-range-thumb { width: 13px; height: 13px; }
+.volume-slider::-moz-range-thumb { width: 14px; height: 14px; }
 .seek-slider:hover::-webkit-slider-thumb,
-.volume-slider:hover::-webkit-slider-thumb { transform: scale(1.08); }
+.volume-slider:hover::-webkit-slider-thumb {
+    transform: scale(1.18);
+    box-shadow: 0 0 0 3px rgba(110,231,183,.22), 0 2px 6px rgba(0,0,0,0.6);
+}
+.seek-slider:hover::-moz-range-thumb,
+.volume-slider:hover::-moz-range-thumb {
+    transform: scale(1.18);
+    box-shadow: 0 0 0 3px rgba(110,231,183,.22), 0 2px 6px rgba(0,0,0,0.6);
+}
 .seek-slider:focus-visible::-webkit-slider-thumb,
-.volume-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(110,231,183,.14); }
+.volume-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(110,231,183,.28); }
+.seek-slider:focus-visible::-moz-range-thumb,
+.volume-slider:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 4px rgba(110,231,183,.28); }
 
 .meter-segments i.is-lit { background: #55d99f; }
 .meter-segments i.is-lit.is-warn { background: #e9b949; }
@@ -6629,11 +6652,11 @@ body {
 @media (min-width: 1181px) {
     .playback-bar {
         grid-template-columns:
-            minmax(220px, .95fr)
-            minmax(390px, 1.65fr)
-            minmax(145px, .62fr)
-            minmax(220px, .82fr);
-        column-gap: clamp(.9rem, 1.35vw, 1.35rem);
+            minmax(180px, .75fr)
+            minmax(390px, 1.75fr)
+            minmax(130px, .55fr)
+            minmax(200px, .8fr);
+        column-gap: clamp(.75rem, 1.2vw, 1.25rem);
     }
 
     .playback-center {
@@ -6850,6 +6873,20 @@ body {
    readout never overflows toward the rounded bar corner. Tablet/mobile
    geometry is intentionally unchanged. */
 @media (min-width: 1181px) {
+    /* Keep the expanded metadata readable without letting it consume the
+       independent transport/seekbar area. */
+    .playback-bar {
+        grid-template-columns:
+            minmax(280px, 430px)
+            minmax(390px, 1fr)
+            minmax(150px, 220px)
+            minmax(220px, 300px);
+    }
+    .playback-bar .track-info {
+        width: min(100%, 430px);
+        max-width: 430px;
+    }
+
     .playback-bar .controls {
         width: min(100%, 360px);
         max-width: 360px;
@@ -6870,6 +6907,67 @@ body {
         max-width: none;
         min-width: 0;
     }
+}
+
+/* ============================================================
+   Playback footer refinement v7 — desktop/tablet vertical compacting
+   ============================================================ */
+/* Preserve the four-zone layout and control sizing; only reclaim vertical
+   breathing room above and below the existing content. */
+@media (min-width: 1181px) {
+    .playback-bar {
+        bottom: 9px;
+        min-height: 98px;
+        padding-block: .55rem;
+    }
+    .track-copy { gap: .28rem; }
+    .playback-meta-row { min-height: 1.1rem; }
+    .playback-center { gap: .56rem; }
+}
+
+@media (min-width: 901px) and (max-width: 1180px) {
+    .playback-bar {
+        bottom: 9px;
+        min-height: 116px;
+        grid-template-rows: minmax(46px, auto) minmax(42px, auto);
+        row-gap: .4rem;
+        padding-block: .6rem .64rem;
+    }
+    .track-copy { gap: .24rem; }
+    .playback-meta-row { min-height: 1.1rem; }
+    .playback-center { gap: .56rem; }
+}
+
+/* ============================================================
+   Playback footer refinement v8 — quieter desktop/tablet sliders
+   ============================================================ */
+/* Keep the input box unchanged for pointer/touch behavior. Only the native
+   track paint and thumb are made slightly lighter than the volume control. */
+@media (min-width: 901px) {
+    .seek-slider::-webkit-slider-runnable-track,
+    .volume-slider::-webkit-slider-runnable-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-moz-range-track,
+    .volume-slider::-moz-range-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
+    .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
 }
 
 /* =========================================================================
@@ -7137,6 +7235,7 @@ body {
     color: var(--text-muted);
     min-width: 2.5rem;
     text-align: center;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
 }
 .streaming-progress {

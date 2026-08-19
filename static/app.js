@@ -9650,7 +9650,7 @@ function drawMeasurementGraph() {
         return;
     }
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
     ctx.lineWidth = 1;
     const dbStep = 6;
     for (let db = range.minDb; db <= range.maxDb; db += dbStep) {
@@ -9659,25 +9659,25 @@ function drawMeasurementGraph() {
         ctx.moveTo(bounds.left, y);
         ctx.lineTo(bounds.left + bounds.width, y);
         ctx.stroke();
-        ctx.fillStyle = db === 0 ? '#d1fae5' : 'rgba(236,236,240,0.72)';
-        ctx.font = '12px sans-serif';
+        ctx.fillStyle = db === 0 ? '#6ee7b7' : 'rgba(236,236,240,0.65)';
+        ctx.font = '11px "Geist Mono", "JetBrains Mono", monospace, sans-serif';
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
-        ctx.fillText(`${db} dB`, bounds.left - 10, y);
+        ctx.fillText(`${db} dB`, bounds.left - 8, y);
     }
 
     [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].forEach(frequency => {
         const x = measurementFrequencyToX(frequency, bounds);
-        ctx.strokeStyle = frequency === 1000 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.08)';
+        ctx.strokeStyle = frequency === 1000 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.06)';
         ctx.beginPath();
         ctx.moveTo(x, bounds.top);
         ctx.lineTo(x, bounds.top + bounds.height);
         ctx.stroke();
-        ctx.fillStyle = 'rgba(236,236,240,0.72)';
-        ctx.font = '12px sans-serif';
+        ctx.fillStyle = 'rgba(236,236,240,0.65)';
+        ctx.font = '11px "Geist Mono", "JetBrains Mono", monospace, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillText(frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`, x, bounds.top + bounds.height + 10);
+        ctx.fillText(frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`, x, bounds.top + bounds.height + 8);
     });
 
     drawMeasurementTargetCurve(ctx, bounds, range);
@@ -9686,9 +9686,35 @@ function drawMeasurementGraph() {
         (entry.traces || []).forEach(trace => {
             if (!trace.points.length) return;
             const isReviewTrace = trace.role === 'raw-review';
-            ctx.strokeStyle = entry.graphColor || '#6ee7b7';
-            ctx.lineWidth = entry.current ? 2.8 : (isReviewTrace ? 1.8 : 2.1);
-            ctx.setLineDash(entry.current ? [] : (isReviewTrace ? [6, 5] : [10, 6]));
+            const traceColor = entry.graphColor || '#6ee7b7';
+
+            // Subtle area fill under current primary curve
+            if (entry.current && !isReviewTrace && trace.points.length > 1) {
+                const fillGrad = ctx.createLinearGradient(0, bounds.top, 0, bounds.top + bounds.height);
+                fillGrad.addColorStop(0, 'rgba(110, 231, 183, 0.15)');
+                fillGrad.addColorStop(1, 'rgba(110, 231, 183, 0.0)');
+                ctx.fillStyle = fillGrad;
+                ctx.beginPath();
+                trace.points.forEach(([frequency, level], pointIndex) => {
+                    const x = measurementFrequencyToX(frequency, bounds);
+                    const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(level, bounds, range)));
+                    if (pointIndex === 0) {
+                        ctx.moveTo(x, bounds.top + bounds.height);
+                        ctx.lineTo(x, y);
+                    } else {
+                        ctx.lineTo(x, y);
+                    }
+                });
+                const lastPoint = trace.points[trace.points.length - 1];
+                const lastX = measurementFrequencyToX(lastPoint[0], bounds);
+                ctx.lineTo(lastX, bounds.top + bounds.height);
+                ctx.closePath();
+                ctx.fill();
+            }
+
+            ctx.strokeStyle = traceColor;
+            ctx.lineWidth = entry.current ? 2.6 : (isReviewTrace ? 1.6 : 2.0);
+            ctx.setLineDash(entry.current ? [] : (isReviewTrace ? [5, 4] : [8, 5]));
             ctx.beginPath();
             trace.points.forEach(([frequency, level], pointIndex) => {
                 const x = measurementFrequencyToX(frequency, bounds);
