@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.11">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.11">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.85">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.86">
 </head>
 <body>
     <a class="skip-link" href="#tab-content">Skip to content</a>
@@ -68,14 +68,14 @@
         <div id="settings-panel" class="manage-overlay hidden">
             <div class="manage-overlay-backdrop"></div>
             <section class="manage-dialog settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-                <div class="manage-dialog-header">
+                <div class="manage-dialog-header dialog-header-corner-close">
                     <div>
                         <h2 id="settings-title" class="section-title">Technical settings</h2>
                         <p class="section-subtitle">Audio routing and system controls.</p>
                     </div>
-                    <button id="close-settings" class="btn-ghost btn-close-manage" type="button">
+                    <button id="close-settings" class="btn-ghost btn-close-manage" type="button" aria-label="Close settings">
                         <span class="btn-ghost-icon">✕</span>
-                        <span>Close</span>
+                        <span class="dialog-close-label">Close</span>
                     </button>
                 </div>
 
@@ -266,14 +266,14 @@
                 <div id="radio-manage-panel" class="manage-overlay hidden">
                     <div class="manage-overlay-backdrop"></div>
                     <section class="manage-dialog" role="dialog" aria-modal="true" aria-labelledby="manage-stations-title">
-                        <div class="manage-dialog-header">
+                        <div class="manage-dialog-header dialog-header-corner-close">
                             <div>
                                 <h2 id="manage-stations-title" class="section-title">Manage stations</h2>
                                 <p class="section-subtitle">Add a stream or remove a station from My Stations.</p>
                             </div>
-                            <button id="close-station-manage" class="btn-ghost btn-close-manage" type="button">
+                            <button id="close-station-manage" class="btn-ghost btn-close-manage" type="button" aria-label="Close manage stations">
                                 <span class="btn-ghost-icon">✕</span>
-                                <span>Close</span>
+                                <span class="dialog-close-label">Close</span>
                             </button>
                         </div>
 
@@ -817,14 +817,14 @@
         <div id="measurement-panel" class="manage-overlay measurement-overlay hidden">
             <div class="manage-overlay-backdrop"></div>
             <section class="manage-dialog measurement-dialog" role="dialog" aria-modal="true" aria-labelledby="measurement-title">
-                <div class="manage-dialog-header measurement-dialog-header">
+                <div class="manage-dialog-header dialog-header-corner-close">
                     <div>
                         <h2 id="measurement-title" class="section-title">Measurement assistant</h2>
                         <p class="section-subtitle">Run a sweep, review it, then save the measurements you want to keep.</p>
                     </div>
-                    <button id="measurement-close" class="btn-ghost btn-close-manage" type="button">
+                    <button id="measurement-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close measurement assistant">
                         <span class="btn-ghost-icon">✕</span>
-                        <span class="measurement-close-label">Close</span>
+                        <span class="dialog-close-label">Close</span>
                     </button>
                 </div>
                 <div class="measurement-layout">
@@ -1125,12 +1125,14 @@
         <div id="spl-calibration-panel" class="manage-overlay measurement-overlay hidden">
             <div class="manage-overlay-backdrop"></div>
             <section class="manage-dialog spl-calibration-dialog" role="dialog" aria-modal="true" aria-labelledby="spl-calibration-title">
-                <div class="manage-dialog-header">
+                <div class="manage-dialog-header dialog-header-corner-close">
                     <div>
                         <h2 id="spl-calibration-title" class="section-title">SPL Calibration</h2>
                         <p class="section-subtitle">Pink Noise −23 LUFS · target 83 dB SPL · external meter: C-weighted / Slow.</p>
                     </div>
-                    <button id="spl-calibration-close" class="btn-ghost btn-close-manage" type="button">✕</button>
+                    <button id="spl-calibration-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close SPL calibration">
+                        <span class="btn-ghost-icon">✕</span>
+                    </button>
                 </div>
                 <div class="effects-stack">
                     <div class="effects-actions-row">
@@ -1154,13 +1156,15 @@
         <div id="measurement-hybrid-panel" class="manage-overlay measurement-overlay hybrid-measurement-overlay hidden">
             <div class="manage-overlay-backdrop"></div>
             <section class="manage-dialog hybrid-measurement-dialog" role="dialog" aria-modal="true" aria-labelledby="measurement-hybrid-title">
-                <div class="manage-dialog-header measurement-dialog-header">
+                <div class="manage-dialog-header dialog-header-corner-close">
                     <div>
                         <p id="measurement-hybrid-mode" class="hybrid-mode-label"></p>
                         <h2 id="measurement-hybrid-title" class="section-title">Advanced Measurement</h2>
                         <p class="section-subtitle">Measure speakers, room response and position.</p>
                     </div>
-                    <button id="measurement-hybrid-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close advanced measurement">✕</button>
+                    <button id="measurement-hybrid-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close advanced measurement">
+                        <span class="btn-ghost-icon">✕</span>
+                    </button>
                 </div>
                 <div class="hybrid-wizard-grid">
                     <div class="hybrid-room-view" aria-label="Top view of speakers and listening positions">

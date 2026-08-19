@@ -2216,11 +2216,11 @@ body {
     overflow: auto;
 }
 
-.measurement-dialog-header {
+.dialog-header-corner-close {
     margin-bottom: 1rem;
     padding-right: 3rem;
 }
-.measurement-dialog-header .btn-close-manage {
+.dialog-header-corner-close .btn-close-manage {
     position: absolute;
     top: 1rem;
     right: 1rem;
@@ -2233,10 +2233,10 @@ body {
     gap: 0;
     line-height: 1;
 }
-.measurement-dialog-header .measurement-close-label {
+.dialog-header-corner-close .dialog-close-label {
     display: none;
 }
-.measurement-dialog-header .btn-close-manage .btn-ghost-icon {
+.dialog-header-corner-close .btn-close-manage .btn-ghost-icon {
     font-size: 0.95rem;
     opacity: 0.9;
     line-height: 1;
