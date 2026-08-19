@@ -191,6 +191,36 @@ assert.ok(js.includes('void executeTidalSearch(type)'),
 assert.ok(js.includes("input.addEventListener('input'"),
     'clearing the search field must leave the result state immediately');
 
+// --- shared compact view tabs (Library + TIDAL level 2) ---------------------
+// Library Tracks/Folders/Albums and TIDAL Tracks/Albums/Artists must be one
+// shared segmented-navigation component (.view-tab), replacing the oversized
+// library action buttons and the undersized TIDAL filter chips. The TIDAL
+// Favorites/Playlists level-1 navigation stays the stronger level.
+assert.ok(css.includes('.view-tab') && css.includes('.view-tabs'),
+    'the shared compact view-tab component must ship in style.css');
+assert.ok(!css.includes('.streaming-chip'),
+    'the old TIDAL filter-chip class must be gone (one shared view-tab remains)');
+assert.ok(!css.includes('.btn-icon-toggle'),
+    'the old library view-toggle button class must be gone (one shared view-tab remains)');
+assert.ok(html.includes('class="view-tab active"'),
+    'the library view toggle must use the shared view-tab class');
+assert.ok(js.includes('class="view-tab'),
+    'TIDAL favorites and search type tabs must use the shared view-tab class');
+assert.ok(js.includes('#tidal-fav-types .view-tab') && js.includes('#tidal-search-result-types .view-tab'),
+    'TIDAL view-tab click wiring must target the shared class');
+const viewTabCss = css.slice(css.indexOf('.view-tab {'), css.indexOf('.view-tab:hover'));
+assert.ok(/-?\d+px/.test(viewTabCss.match(/min-height:\s*([^;]+);/)[1]),
+    'the shared view-tab must define a concrete min-height (36-40px range)');
+const tabMinHeight = parseInt(viewTabCss.match(/min-height:\s*(\d+)px/)[1], 10);
+assert.ok(tabMinHeight >= 36 && tabMinHeight <= 40,
+    `shared view-tab min-height must sit in the compact 36-40px range (got ${tabMinHeight}px)`);
+const browseTabCss = css.slice(css.indexOf('.streaming-browse-tab {'), css.indexOf('.streaming-browse-tab:hover'));
+const browseTabMinHeight = parseInt(browseTabCss.match(/min-height:\s*(\d+)px/)[1], 10);
+assert.ok(browseTabMinHeight > tabMinHeight,
+    'TIDAL Favorites/Playlists (level 1) must stay taller than the shared level-2 view tabs');
+assert.ok(!viewTabCss.includes('999px') && viewTabCss.includes('var(--radius-sm)'),
+    'the shared view-tab must use the standard radius, not a pill shape');
+
 // Track search results are a temporary queue, while playlist/detail queues keep
 // their existing ids path. Selection controls are opt-in and disappear from the
 // normal result presentation.

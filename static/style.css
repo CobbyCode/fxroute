@@ -1585,12 +1585,7 @@ body {
 .library-view-toggle {
     display: flex;
     align-items: center;
-    gap: var(--action-gap);
     flex: 0 0 auto;
-}
-.library-view-toggle .btn-icon-toggle {
-    min-width: 74px;
-    padding-inline: 0.7rem;
 }
 .library-search-wrap {
     display: flex;
@@ -4714,19 +4709,47 @@ input[type="number"]::-webkit-outer-spin-button {
     animation: btn-spin 0.7s linear infinite;
 }
 @keyframes btn-spin { to { transform: rotate(360deg); } }
-.btn-icon-toggle {
-    min-width: 44px;
-    width: 44px;
-    padding: 0.65rem;
-    font-size: 1rem;
+/* Shared compact view tabs (Library Tracks/Folders/Albums + TIDAL
+   Tracks/Albums/Artists): one segmented-navigation standard instead of the
+   oversized library action buttons and the undersized TIDAL filter chips.
+   Inactive tabs are quiet (muted text, transparent); the active tab keeps the
+   mint accent. Touch height stays adequate at 38px. */
+.view-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
 }
-.btn-icon-toggle.active,
-.btn-secondary.btn-icon-toggle.active,
-.library-toolbar .btn-icon-toggle.active,
-.library-toolbar .btn-secondary.btn-icon-toggle.active {
-    background: var(--accent-dim) !important;
-    border-color: var(--accent) !important;
-    color: var(--accent) !important;
+.view-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 0.3rem 0.9rem;
+    font-size: 0.86rem;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+.view-tab:hover {
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+}
+.view-tab.active,
+.view-tab.is-active {
+    color: var(--accent);
+    background: var(--accent-dim);
+    border-color: var(--accent);
     box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.2);
 }
 .btn-danger {
@@ -7381,13 +7404,20 @@ body {
     border-bottom: 1px solid var(--border-strong);
     padding-bottom: 0.5rem;
 }
+/* Level-1 TIDAL navigation (Favorites / Playlists): the over-ordered browse
+   level stays visibly stronger than the shared level-2 view tabs below it
+   (taller, slightly larger type). */
 .streaming-browse-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
     background: transparent;
     border: 1px solid transparent;
     color: var(--text-secondary);
-    font-size: 0.88rem;
+    font-size: 0.9rem;
     font-weight: 650;
-    padding: 0.45rem 0.8rem;
+    padding: 0.5rem 1rem;
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: color 0.15s, background 0.15s;
@@ -7453,20 +7483,6 @@ body {
 }
 .streaming-search-input::placeholder { color: var(--text-muted); }
 .streaming-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
-
-.streaming-chip-row { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-.streaming-chip {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text-muted);
-    border-radius: 999px;
-    padding: 0.25rem 0.7rem;
-    font-size: 0.76rem;
-    cursor: pointer;
-    transition: color 0.15s, border-color 0.15s, background 0.15s;
-}
-.streaming-chip:hover { color: var(--text-secondary); border-color: var(--border-strong); }
-.streaming-chip.is-active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
 
 .streaming-results { min-height: 2rem; }
 #tidal-fav-results,

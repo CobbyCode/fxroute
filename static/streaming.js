@@ -963,7 +963,7 @@
     }
 
     function chip(type, label, active) {
-        return '<button type="button" class="streaming-chip' + (active ? ' is-active' : '') + '" data-type="' + type + '">' + escapeHtml(label) + '</button>';
+        return '<button type="button" class="view-tab' + (active ? ' is-active' : '') + '" data-type="' + type + '">' + escapeHtml(label) + '</button>';
     }
 
     const TIDAL_SEARCH_TYPES = ['artists', 'tracks', 'albums', 'playlists'];
@@ -1008,7 +1008,7 @@
         state.tidal.searchResults = data;
         container.innerHTML = '';
         const typeButtons = TIDAL_SEARCH_TYPES.map((value) =>
-            '<button type="button" class="streaming-chip' + (value === type ? ' is-active' : '') + '" id="tidal-search-type-' + value + '" data-search-type="' + value + '">' + TIDAL_SEARCH_TYPE_LABELS[value] + '</button>'
+            '<button type="button" class="view-tab' + (value === type ? ' is-active' : '') + '" id="tidal-search-type-' + value + '" data-search-type="' + value + '">' + TIDAL_SEARCH_TYPE_LABELS[value] + '</button>'
         ).join('');
         const selectionControls = type === 'tracks'
             ? '<div class="tidal-track-selection" id="tidal-track-selection-controls">' +
@@ -1023,7 +1023,7 @@
         container.innerHTML =
             '<div class="tidal-search-results-header">' +
                 '<h3 class="streaming-results-title">Search results for &quot;' + escapeHtml(state.tidal.searchQuery) + '&quot;</h3>' +
-                '<div class="streaming-chip-row" id="tidal-search-result-types" aria-label="Search result type">' + typeButtons + '</div>' +
+                '<div class="view-tabs" id="tidal-search-result-types" aria-label="Search result type">' + typeButtons + '</div>' +
                 selectionControls +
             '</div>' +
             '<div class="streaming-results" id="tidal-search-items"></div>';
@@ -1041,7 +1041,7 @@
     }
 
     function bindTidalSearchResultControls(container, items) {
-        container.querySelectorAll('#tidal-search-result-types .streaming-chip').forEach((chipEl) => {
+        container.querySelectorAll('#tidal-search-result-types .view-tab').forEach((chipEl) => {
             chipEl.addEventListener('click', () => runTidalSearch(chipEl.dataset.searchType));
         });
         if (state.tidal.searchResultType !== 'tracks') return;
@@ -1319,16 +1319,16 @@
     // -- favorites ------------------------------------------------------------
     function renderTidalFavorites(body) {
         body.innerHTML =
-            '<div class="streaming-chip-row" id="tidal-fav-types" aria-label="Favorites category">' +
+            '<div class="view-tabs" id="tidal-fav-types" aria-label="Favorites category">' +
                 chip('tracks', 'Tracks', state.tidal.favoritesType === 'tracks') +
                 chip('albums', 'Albums', state.tidal.favoritesType === 'albums') +
                 chip('artists', 'Artists', state.tidal.favoritesType === 'artists') +
             '</div>' +
             '<div class="streaming-results" id="tidal-fav-results"></div>';
 
-        body.querySelectorAll('#tidal-fav-types .streaming-chip').forEach((chipEl) => {
+        body.querySelectorAll('#tidal-fav-types .view-tab').forEach((chipEl) => {
             chipEl.addEventListener('click', () => {
-                body.querySelectorAll('#tidal-fav-types .streaming-chip').forEach((c) => c.classList.toggle('is-active', c === chipEl));
+                body.querySelectorAll('#tidal-fav-types .view-tab').forEach((c) => c.classList.toggle('is-active', c === chipEl));
                 state.tidal.favoritesType = chipEl.dataset.type;
                 loadTidalFavorites();
             });

@@ -136,8 +136,8 @@ function buildDom() {
     const tidalBrowseBody = makeEl();
     const tidalBrowseBodyEls = {};
     tidalBrowseBody.querySelectorAll = (sel) => {
-        if (sel === '#tidal-search-result-types .streaming-chip') return Object.values(tidalSearchTypeButtons);
-        if (sel === '#tidal-fav-types .streaming-chip') return Object.values(tidalFavoriteTypeButtons);
+        if (sel === '#tidal-search-result-types .view-tab') return Object.values(tidalSearchTypeButtons);
+        if (sel === '#tidal-fav-types .view-tab') return Object.values(tidalFavoriteTypeButtons);
         return [];
     };
     tidalBrowseBody.querySelector = (sel) => {
@@ -418,7 +418,7 @@ async function main() {
         'first authenticated render must show Favorites content');
 
     // Keep the last favorite category while switching into and out of search.
-    body.querySelectorAll('#tidal-fav-types .streaming-chip').find((tab) => tab.dataset.type === 'albums').click();
+    body.querySelectorAll('#tidal-fav-types .view-tab').find((tab) => tab.dataset.type === 'albums').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Typing alone must not execute a search.
@@ -495,7 +495,7 @@ async function main() {
     input.dispatch('input');
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(body.innerHTML.includes('tidal-fav-types') &&
-        body.innerHTML.includes('class="streaming-chip is-active" data-type="albums"'),
+        body.innerHTML.includes('class="view-tab is-active" data-type="albums"'),
         'clearing the search must return to Favorites');
 
     // Escape resets the search back to the browse section too.
@@ -696,7 +696,7 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const favBody = favRun.sandbox.document.getElementById('tidal-browse-body');
     const favContent = favRun.shells.tidal.querySelector('.streaming-content');
-    favBody.querySelectorAll('#tidal-fav-types .streaming-chip').find((tab) => tab.dataset.type === 'artists').click();
+    favBody.querySelectorAll('#tidal-fav-types .view-tab').find((tab) => tab.dataset.type === 'artists').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     favRun.createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -755,7 +755,7 @@ async function main() {
     favRun.sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const favBody = favRun.sandbox.document.getElementById('tidal-browse-body');
-    favBody.querySelectorAll('#tidal-fav-types .streaming-chip').find((tab) => tab.dataset.type === 'artists').click();
+    favBody.querySelectorAll('#tidal-fav-types .view-tab').find((tab) => tab.dataset.type === 'artists').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const favRow = favRun.createdEls.filter((el) => el.className === 'streaming-result').at(-1);
     const favHeart = favRow.querySelectorAll('.streaming-fav, .track-fav')[0];
