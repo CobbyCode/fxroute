@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Playwright geometry contract for the TIDAL browse header.
 
-The TIDAL toolbar must follow the established one-row header pattern
-(Library/Radio/DSP): provider title left, search group right, vertically
-aligned; the ``Tidal · Connected`` status small and right-aligned below on
-the same content edge.  On the <=760px breakpoint the row stacks like the
-other tab headers instead of overflowing.
+The TIDAL header follows the library pattern: row 1 is the page title with
+the shared ``Connected`` pill + refresh button on the right, row 2 is the
+Favorites/Playlists navigation with the search group on the right.  Both
+right-aligned groups share one right edge with the detail Back button, so
+browse <-> detail never shifts horizontally.  On the <=760px breakpoint the
+second row wraps (search below the navigation) without overflowing.
+
+Also verifies the refresh interaction: clicking the refresh button re-fetches
+the authoritative favorites ids and the provider status without logging out,
+and the browse surface (and its search) keeps working.
 
 Runs the real rendered page (static server + stubbed streaming API) in
 headless Chromium.  Skips cleanly when playwright or a browser is not
@@ -44,9 +49,11 @@ def _serve():
 
 
 STUB = """
+window.__tidalFetches = [];
 const realFetch = window.fetch.bind(window);
 window.fetch = (url, opts) => {
     const u = String(url);
+    window.__tidalFetches.push(u);
     const json = (d) => Promise.resolve(new Response(JSON.stringify(d), { status: 200, headers: { 'Content-Type': 'application/json' } }));
     if (u.includes('/api/streaming/providers')) {
         return json({ providers: [
@@ -57,6 +64,12 @@ window.fetch = (url, opts) => {
     }
     if (u.includes('/api/streaming/tidal/status')) {
         return json({ installed: true, available: true, authenticated: true, capabilities: { transport: false } });
+    }
+    if (u.includes('/api/streaming/tidal/search?q=')) {
+        return json({ tracks: [], artists: [], albums: [], playlists: [] });
+    }
+    if (u.includes('/api/streaming/tidal/favorites/ids')) {
+        return json({ tracks: [], albums: [], artists: [], playlists: [] });
     }
     if (u.includes('/api/streaming/tidal/')) return json({});
     if (u.includes('/api/streaming/')) return json({ installed: false, available: false });
@@ -99,46 +112,82 @@ def _run():
             page.wait_for_timeout(300)
 
             def activate():
-                page.evaluate("document.querySelector('.tab-btn[data-tab=\"tidal\"]').click()")
+                page.evaluate("document.querySelector('.tab-btn[data-tab=\\\"tidal\\\"]').click()")
                 page.wait_for_timeout(400)
 
-            # Desktop/tablet widths: title + search on one row, status shares
-            # the search right edge, no overflow, footer intact.
+            # Desktop/tablet widths: title + Connected/refresh on row 1,
+            # navigation + search on row 2, shared right edge, no overflow.
             for width in (1440, 1024, 834):
                 page.set_viewport_size({"width": width, "height": 800})
                 page.wait_for_timeout(200)
                 activate()
 
                 title_box = page.locator(".tidal-toolbar-title").bounding_box()
-                search_box = page.locator(".tidal-toolbar .streaming-search").bounding_box()
-                status_box = page.locator(".tidal-toolbar > .streaming-status-line").bounding_box()
+                actions_box = page.locator(".tidal-toolbar-actions").bounding_box()
+                status_box = page.locator(".tidal-toolbar-actions .streaming-status").bounding_box()
+                tabs_box = page.locator(".tidal-subbar .streaming-browse-tabs").bounding_box()
+                search_box = page.locator(".tidal-subbar .streaming-search").bounding_box()
                 title_text = page.locator(".tidal-toolbar-title").inner_text().strip()
-                status_text = page.locator(".tidal-toolbar > .streaming-status-line").inner_text()
+                status_text = page.locator(".tidal-toolbar-actions .streaming-status").inner_text()
 
                 check(f"[{width}px] Tidal title text is 'Tidal'", title_text == "Tidal")
-                check(f"[{width}px] title and search are vertically aligned",
-                      abs(_center(title_box) - _center(search_box)) <= 2)
-                check(f"[{width}px] status right edge matches search right edge",
-                      abs(_right_edge(status_box) - _right_edge(search_box)) <= 1.5)
-                check(f"[{width}px] status shows provider + connected", "Connected" in status_text)
+                check(f"[{width}px] title and actions share one header row",
+                      abs(_center(title_box) - _center(actions_box)) <= 2)
+                check(f"[{width}px] status shows the shared Connected label", status_text == "Connected")
+                check(f"[{width}px] refresh button sits in the actions group",
+                      page.locator("#tidal-refresh-btn").is_visible())
+                check(f"[{width}px] actions right edge matches search right edge",
+                      abs(_right_edge(actions_box) - _right_edge(search_box)) <= 1.5)
+                check(f"[{width}px] navigation and search share one second row",
+                      abs(_center(tabs_box) - _center(search_box)) <= 2)
+                check(f"[{width}px] second row sits below the title row",
+                      _center(tabs_box) - _center(title_box) > 4)
                 check(f"[{width}px] no horizontal overflow",
                       page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
                 check(f"[{width}px] footer present", page.locator("#playback-bar").count() == 1)
 
-            # Mobile: the title stacks above the search row instead of
-            # overflowing; status stays on the same right edge.
+            # Search still works: typing + Enter executes the stored query.
+            activate()
+            page.fill("#tidal-search-input", "daft punk")
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(400)
+            check("[search] executing a search shows the result state",
+                  page.locator("#tidal-browse-body").inner_text().find("No results") != -1)
+
+            # Refresh reloads favorite ids + status without logging out and
+            # keeps the browse surface alive.
+            page.wait_for_timeout(200)
+            page.evaluate("window.__tidalFetches.length = 0")
+            page.click("#tidal-refresh-btn")
+            page.wait_for_timeout(500)
+            fetches = page.evaluate("window.__tidalFetches")
+            ids_fetches = [u for u in fetches if u.endswith("/api/streaming/tidal/favorites/ids")]
+            status_fetches = [u for u in fetches if u.endswith("/api/streaming/tidal/status")]
+            logout_fetches = [u for u in fetches if "auth/logout" in u]
+            check("[refresh] forces a fresh favorites/ids load", len(ids_fetches) >= 1)
+            check("[refresh] reloads the provider status", len(status_fetches) >= 1)
+            check("[refresh] never logs out", len(logout_fetches) == 0)
+            check("[refresh] keeps the browse surface",
+                  page.locator(".streaming-browse").count() == 1 and
+                  page.locator(".tidal-toolbar-title").inner_text().strip() == "Tidal")
+
+            # Mobile: the title row stays on one line; the second row wraps so
+            # the search lands below the navigation, without overflowing.
             page.set_viewport_size({"width": 390, "height": 844})
             page.wait_for_timeout(200)
             activate()
 
             title_box = page.locator(".tidal-toolbar-title").bounding_box()
-            search_box = page.locator(".tidal-toolbar .streaming-search").bounding_box()
-            status_box = page.locator(".tidal-toolbar > .streaming-status-line").bounding_box()
+            actions_box = page.locator(".tidal-toolbar-actions").bounding_box()
+            tabs_box = page.locator(".tidal-subbar .streaming-browse-tabs").bounding_box()
+            search_box = page.locator(".tidal-subbar .streaming-search").bounding_box()
 
-            check("[390px] mobile stacks the title above the search row",
-                  _center(search_box) - _center(title_box) > 8)
-            check("[390px] status right edge matches search right edge on mobile",
-                  abs(_right_edge(status_box) - _right_edge(search_box)) <= 1.5)
+            check("[390px] title and actions stay on one row",
+                  abs(_center(title_box) - _center(actions_box)) <= 2)
+            check("[390px] search wraps below the navigation",
+                  _center(search_box) - _center(tabs_box) > 8)
+            check("[390px] refresh button visible",
+                  page.locator("#tidal-refresh-btn").is_visible())
             check("[390px] no horizontal overflow on mobile",
                   page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
             check("[390px] footer present on mobile", page.locator("#playback-bar").count() == 1)

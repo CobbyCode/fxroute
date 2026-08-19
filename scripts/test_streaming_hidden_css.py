@@ -74,7 +74,8 @@ class StreamingHiddenCssTests(unittest.TestCase):
 
     def test_player_status_is_integrated_into_the_card(self):
         # The floating status pill above the player card is gone; the status
-        # is a small top-right chip inside the card.
+        # is one shared dot-led pill inside the card header and the TIDAL
+        # browse toolbar (no per-provider status variant).
         player_pill = re.search(
             r"^[ \t]*\.streaming-provider-player \.streaming-status-line\s*\{", CSS, re.MULTILINE
         )
@@ -82,12 +83,17 @@ class StreamingHiddenCssTests(unittest.TestCase):
             player_pill,
             "player providers must not have a standalone status pill above the card",
         )
+        self.assertNotIn(
+            ".streaming-status-line",
+            CSS,
+            "the old per-provider status line must be gone; one shared .streaming-status pill remains",
+        )
         card = re.search(
             r"^[ \t]*\.streaming-now-playing\s*\{([^}]+)\}", CSS, re.MULTILINE
         )
         self.assertIsNotNone(card, "missing .streaming-now-playing rule")
         self.assertIn("position: relative", card.group(1))
-        # The status chip now sits in-flow in the card header row next to the
+        # The status pill now sits in-flow in the card header row next to the
         # provider name; it must not float absolutely over the card anymore.
         header = re.search(
             r"^[ \t]*\.streaming-card-header\s*\{([^}]+)\}", CSS, re.MULTILINE
@@ -95,12 +101,14 @@ class StreamingHiddenCssTests(unittest.TestCase):
         self.assertIsNotNone(header, "missing .streaming-card-header rule")
         self.assertIn("grid-area: header", header.group(1))
         chip = re.search(
-            r"^[ \t]*\.streaming-status-chip\s*\{([^}]+)\}", CSS, re.MULTILINE
+            r"^[ \t]*\.streaming-status\s*\{([^}]+)\}", CSS, re.MULTILINE
         )
-        self.assertIsNotNone(chip, "missing .streaming-status-chip rule")
+        self.assertIsNotNone(chip, "missing shared .streaming-status rule")
         self.assertNotIn("position: absolute", chip.group(1))
+        self.assertIn("display: inline-flex", chip.group(1))
         streaming_js = (ROOT / "static" / "streaming.js").read_text(encoding="utf-8")
-        self.assertIn("streaming-status-chip", streaming_js)
+        self.assertIn("streaming-status", streaming_js)
+        self.assertNotIn("streaming-status-chip", streaming_js)
         self.assertIn("streaming-provider-name", streaming_js)
 
     def test_provider_layout_has_player_width_and_footer_safe_area(self):

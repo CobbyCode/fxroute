@@ -139,10 +139,13 @@ assert.ok(tidalBrowseRender.includes('id="tidal-search-input"') && tidalBrowseRe
     'the search bar must be part of the browse surface');
 assert.ok(tidalBrowseRender.includes('placeholder="Search"'),
     'the Tidal search placeholder must stay compact');
-assert.ok(tidalBrowseRender.indexOf('tidal-search-input') < tidalBrowseRender.indexOf('streaming-browse-tabs'),
-    'the search bar must sit above the browse navigation');
-assert.ok(tidalBrowseRender.includes('entry.els.statusLine'),
-    'Tidal connected status must share the compact search row');
+assert.ok(tidalBrowseRender.indexOf('tidal-search-input') > tidalBrowseRender.indexOf('streaming-browse-tabs') &&
+    tidalBrowseRender.indexOf('tidal-search-input') > tidalBrowseRender.indexOf('tidal-subbar'),
+    'the search bar must share the second header row with the browse navigation');
+assert.ok(tidalBrowseRender.includes('tidal-toolbar-actions') && tidalBrowseRender.includes('entry.els.statusLine'),
+    'Tidal connected status must move into the first header row actions');
+assert.ok(tidalBrowseRender.includes('id="tidal-refresh-btn"'),
+    'the first header row must carry the manual refresh button');
 assert.ok(!tidalBrowseRender.includes('tidal-search-types'),
     'search types must not be visible in the browse state');
 assert.ok(!tidalBrowseRender.includes('data-browse="search"'),
@@ -153,10 +156,18 @@ assert.ok(js.includes('renderTidalBrowseSection(state.tidal.browseSection)'),
     'first authenticated render must show the current browse section (Favorites by default)');
 
 // --- TIDAL toolbar/search state --------------------------------------------
-// The search controls and the connected label share one compact row. Search
-// type controls belong to the executed-results view, never to Favorites.
+// Row 1 is the page title with Connected + refresh on the right; the search
+// controls share the second row with the Favorites/Playlists navigation.
+// Search type controls belong to the executed-results view, never to
+// Favorites.
 assert.ok(js.includes('entry.els.statusLine'),
-    'TIDAL Connected status must be moved into the compact search row');
+    'TIDAL Connected status must be moved into the first header row actions');
+assert.ok(js.includes('function bindTidalRefresh') && js.includes('function refreshTidalCatalog'),
+    'the manual TIDAL refresh must have an explicit handler');
+assert.ok(js.includes('loadTidalFavoriteIds(true)') && js.includes('refreshTidalStatus()'),
+    'refresh must reuse the existing favorite-ids and status provider logic');
+assert.ok(js.includes('refreshActiveTidalView'),
+    'refresh must re-render the currently active TIDAL view');
 assert.ok(js.includes('state.tidal.searchRequestId += 1'),
     'clearing or navigating away must invalidate pending search responses');
 assert.ok(js.includes('if (input && state.tidal.searchExecuted) input.value = state.tidal.searchQuery'),
@@ -206,14 +217,18 @@ assert.ok(tidalSearchRender.includes('state.tidal.searchQuery'),
 assert.ok(js.includes('detailRequestId'),
     'TIDAL detail loads must ignore responses from an obsolete detail view');
 
-// Toolbar layout is compact on desktop and remains a single responsive surface
-// on mobile; the status is no longer styled as a standalone search-row line.
-assert.ok(css.includes('.tidal-toolbar') && css.includes('.tidal-toolbar > .streaming-status-line'),
-    'TIDAL toolbar must place the connected status beside the search controls');
-assert.ok(/@media \(max-width: 760px\)[\s\S]*?\.tidal-toolbar\s*\{[\s\S]*?grid-template-columns: 1fr;/.test(css),
-    'TIDAL toolbar must give the search surface the full mobile width');
-assert.ok(!css.includes('.streaming-search-row .streaming-status-line'),
-    'mobile status placement must not create a separate search-row status rule');
+// Toolbar layout follows the library pattern: title row with Connected +
+// refresh right-aligned, then a second row with the navigation left and the
+// search right. Both right-aligned groups share one right edge so browse <->
+// detail never shifts horizontally.
+assert.ok(css.includes('.tidal-toolbar') && css.includes('.tidal-toolbar-actions'),
+    'TIDAL toolbar must place the connected status + refresh in the title row');
+assert.ok(css.includes('.tidal-subbar'),
+    'TIDAL second header row (navigation + search) must have its own container');
+assert.ok(/@media \(max-width: 760px\)[\s\S]*?\.tidal-subbar \.streaming-search\s*\{[\s\S]*?width: 100%;/.test(css),
+    'TIDAL search must take the full second-row width on mobile');
+assert.ok(!css.includes('.streaming-status-line'),
+    'the old standalone status line must be gone; one shared .streaming-status pill remains');
 assert.ok(css.includes('#tidal-fav-results') && css.includes('#tidal-search-items'),
     'Favorites and search results must both reserve a gap below their subtabs');
 assert.ok(/#tidal-fav-results[\s\S]*?#tidal-search-items[\s\S]*?margin-top:\s*0\.35rem/.test(css),
@@ -252,20 +267,22 @@ for (const name of ['renderStatusLine', 'buildStatusBits', 'buildStatusDetail'])
 }
 const statusLineRender = extractFunction(js, 'renderStatusLine');
 assert.ok(statusLineRender.includes('els.statusChip'),
-    'player providers must render status into the in-card chip');
+    'player providers must render status into the in-card status pill');
 assert.ok(statusLineRender.includes('els.statusLine'),
-    'catalog providers keep the standalone status line');
+    'catalog providers keep the toolbar status pill');
 assert.ok(statusLineRender.includes('catalogProvider'),
     'status placement must branch on the catalog flag, not the provider id');
-assert.ok(js.includes("'<div class=\"streaming-status-chip\" hidden></div>'"),
-    'now-playing card must carry the in-card status chip');
-assert.ok(js.includes("'● ' + bits.join(' · ')"),
-    'in-card status must be a compact dot-led label');
+assert.ok(js.includes("'<span class=\"streaming-status\" hidden></span>'"),
+    'the now-playing card must carry the shared in-card status pill');
+assert.ok(js.includes("textContent = 'Connected'"),
+    'the status pill must be the one shared Connected label');
 assert.ok(js.includes('buildStatusDetail'),
-    'backend/provider detail must stay available via the chip tooltip');
+    'backend/provider detail must stay available via the pill tooltip');
 const bitsBuilder = extractFunction(js, 'buildStatusBits');
-assert.ok(bitsBuilder.includes("PROVIDER_META.tidal.name"),
-    'Tidal status must use the visible provider name');
+assert.ok(!bitsBuilder.includes("PROVIDER_META.tidal.name"),
+    'the status label must not repeat the provider name (Tidal is the page title)');
+assert.ok(bitsBuilder.includes("['Connected']"),
+    'all providers must share the identical Connected status language');
 
 // The served navigation changes visible copy only, not the provider id.
 assert.ok(html.includes('data-tab="tidal"') && html.includes('<span>Tidal</span>'),

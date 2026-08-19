@@ -4901,7 +4901,7 @@ input[type="number"]::-webkit-outer-spin-button {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); justify-content: flex-start; padding-left: 0; }
+.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); }
 .queue-status { background: rgba(110,231,183,.08); color: var(--accent); }
 .queue-status::before {
     content: '≡\00a0';
@@ -6619,7 +6619,6 @@ body {
     .samplerate-status, .queue-status { min-height: 1rem;
         padding: .06rem .38rem;
         font-size: .56rem; }
-    .samplerate-status { padding-left: 0; }
     .playback-meter { width: 108px;
         max-width: 108px;
         grid-template-columns: .55rem minmax(68px, 88px);
@@ -7018,12 +7017,6 @@ body {
     min-height: calc(100dvh - 18rem);
     justify-content: flex-start;
 }
-.streaming-provider-catalog .streaming-status-line {
-    width: 100%;
-    align-self: flex-start;
-    text-align: right;
-    letter-spacing: 0.02em;
-}
 
 /* The shared hidden contract for every streaming component: the per-element
    display rules below (flex/grid) must never override the JS-toggled hidden
@@ -7031,17 +7024,6 @@ body {
    time. Scoped to the streaming shell, provider-neutral. */
 .streaming-provider [hidden] {
     display: none !important;
-}
-
-.streaming-status-line {
-    align-self: center;
-    width: min(100%, 960px);
-    padding: 0 0.35rem;
-    font-size: 0.7rem;
-    color: var(--text-muted);
-    letter-spacing: 0.03em;
-    text-align: left;
-    min-height: 1em;
 }
 
 /* Empty / not-connected state */
@@ -7134,11 +7116,17 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-/* In-card provider status chip (right side of the card header), replacing
-   the old floating status pill above the card. The dot-led label is subtle;
-   the provider/backend detail lives in the tooltip. */
-.streaming-status-chip {
+/* Shared connected-status pill for every streaming provider: one compact,
+   restrained status language in the Spotify/Qobuz card header and the TIDAL
+   browse toolbar. The mint dot is the only accent; the label stays muted gray
+   and the pill is clearly smaller and calmer than an action button (same
+   typography, height, radius and spacing everywhere). The provider/backend
+   detail lives in the tooltip. */
+.streaming-status {
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
     max-width: 62%;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -7151,6 +7139,14 @@ body {
     border: 1px solid var(--border);
     border-radius: 999px;
     padding: 0.1rem 0.55rem;
+}
+.streaming-status::before {
+    content: '';
+    flex: 0 0 auto;
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 50%;
+    background: var(--accent);
 }
 .streaming-cover-wrap {
     grid-area: cover;
@@ -7369,9 +7365,10 @@ body {
 .streaming-auth-error { color: var(--error, #f87171); font-size: 0.82rem; margin: 0; }
 
 /* Browse (search / favorites / playlists). Spans the full content column —
-   the same width the album/playlist detail header uses — so the Connected
-   status (right-aligned in the toolbar) shares one right edge with the
-   detail Back button and browse <-> detail never shifts horizontally. */
+   the same width the album/playlist detail header uses — so the toolbar
+   actions and the search group (right-aligned in rows 1/2) share one right
+   edge with the detail Back button and browse <-> detail never shifts
+   horizontally. */
 .streaming-browse {
     display: flex;
     flex-direction: column;
@@ -7408,19 +7405,35 @@ body {
     margin: 0;
     justify-self: start;
 }
-.tidal-toolbar .streaming-search {
+.tidal-toolbar-actions {
+    justify-self: end;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+/* Second row: Favorites/Playlists navigation left, search group right — the
+   library pattern. The search keeps the same width cap it had above the
+   navigation, and the subbar carries the underline that used to sit under
+   the tabs. */
+.tidal-subbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 0.8rem;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border-strong);
+    padding-bottom: 0.5rem;
+}
+.tidal-subbar .streaming-browse-tabs {
+    flex: 0 0 auto;
+    border-bottom: none;
+    padding-bottom: 0;
+}
+.tidal-subbar .streaming-search {
     min-width: 0;
     width: min(100%, 430px);
-    justify-self: end;
-}
-.tidal-toolbar > .streaming-status-line {
-    grid-column: 1 / -1;
-    width: auto;
-    min-height: 0;
-    justify-self: end;
-    padding: 0 0.2rem;
-    text-align: right;
-    white-space: nowrap;
+    margin-left: auto;
 }
 .streaming-search { display: flex; flex-direction: column; gap: 0.7rem; }
 .streaming-search-row { display: flex; gap: 0.5rem; align-items: center; width: 100%; }
@@ -7743,10 +7756,11 @@ body {
         gap: 0.75rem;
     }
     .streaming-cover { width: 180px; height: 180px; }
-    .tidal-toolbar { grid-template-columns: 1fr; gap: 0.35rem; }
+    .tidal-toolbar { gap: 0.35rem; }
+    .tidal-subbar { gap: 0.35rem; }
+    .tidal-subbar .streaming-search { width: 100%; }
     .streaming-search-row { flex-wrap: nowrap; }
     .streaming-search-row .streaming-search-input { flex: 1 1 0; width: 100%; }
-    .tidal-toolbar > .streaming-status-line { justify-self: end; margin-left: 0; text-align: right; }
     .album-detail-header,
     .streaming-detail-header {
         grid-template-columns: auto minmax(0, 1fr);

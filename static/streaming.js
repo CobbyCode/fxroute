@@ -136,7 +136,7 @@
             const providerId = root.getAttribute('data-provider');
             root.innerHTML =
                 '<div class="streaming-provider">' +
-                    '<div class="streaming-status-line tidal-status-slot" hidden></div>' +
+                    '<span class="streaming-status" hidden></span>' +
                     '<div class="streaming-empty" hidden>' +
                         '<div class="streaming-empty-icon" aria-hidden="true"></div>' +
                         '<h2 class="streaming-empty-title"></h2>' +
@@ -146,7 +146,7 @@
                     '<div class="streaming-now-playing" hidden>' +
                         '<div class="streaming-card-header">' +
                             '<span class="streaming-provider-name"></span>' +
-                            '<div class="streaming-status-chip" hidden></div>' +
+                            '<span class="streaming-status" hidden></span>' +
                         '</div>' +
                         '<div class="streaming-cover-wrap">' +
                             '<img class="streaming-cover" alt="" />' +
@@ -187,7 +187,7 @@
             providerEl.classList.toggle('streaming-provider-catalog', isCatalog);
 
             const els = {
-                statusLine: root.querySelector('.streaming-status-line'),
+                statusLine: root.querySelector('.streaming-status'),
                 providerName: root.querySelector('.streaming-provider-name'),
                 empty: root.querySelector('.streaming-empty'),
                 emptyIcon: root.querySelector('.streaming-empty-icon'),
@@ -195,7 +195,7 @@
                 emptyMsg: root.querySelector('.streaming-empty-msg'),
                 emptyActions: root.querySelector('.streaming-empty-actions'),
                 nowPlaying: root.querySelector('.streaming-now-playing'),
-                statusChip: root.querySelector('.streaming-status-chip'),
+                statusChip: root.querySelector('.streaming-card-header .streaming-status'),
                 coverWrap: root.querySelector('.streaming-cover-wrap'),
                 cover: root.querySelector('.streaming-cover'),
                 title: root.querySelector('.streaming-title'),
@@ -253,21 +253,20 @@
     }
 
     // -----------------------------------------------------------------------
-    // Status line (backend / connected / authenticated)
+    // Status (backend / connected / authenticated)
     // -----------------------------------------------------------------------
-    // Provider status bits (visible text) and the detail string kept in the
-    // chip tooltip. Backend implementation names are never surfaced.
+    // All three providers share one status language: a single `Connected`
+    // label with a dot-led pill. The detail string stays in the tooltip and
+    // backend implementation names are never surfaced.
     function buildStatusBits(providerId, data) {
-        const bits = [];
-        if (providerId === 'spotify') {
-            bits.push('Connected');
-        } else if (providerId === 'qobuz') {
-            if (data.connected || data.authenticated === true) bits.push('Connected');
-        } else if (providerId === 'tidal') {
-            bits.push(PROVIDER_META.tidal.name);
-            if (data.authenticated === true) bits.push('Connected');
+        if (providerId === 'spotify') return ['Connected'];
+        if (providerId === 'qobuz') {
+            return (data.connected || data.authenticated === true) ? ['Connected'] : [];
         }
-        return bits;
+        if (providerId === 'tidal') {
+            return data.authenticated === true ? ['Connected'] : [];
+        }
+        return [];
     }
 
     function buildStatusDetail(providerId, data) {
@@ -282,21 +281,21 @@
 
     // The permanent Connected status belongs on the main catalog surface only;
     // detail views keep a clean header. Real problems stay visible: while not
-    // authenticated the line (and the login surface) still render.
+    // authenticated the pill (and the login surface) still render.
     function isTidalDetailView() {
         return state.tidal.view === 'album' || state.tidal.view === 'playlist' || state.tidal.view === 'artist';
     }
 
-    // Catalog providers keep the standalone line; the in-tab player card is
-    // not rendered for them (the footer is the player). Shared by the status
-    // render path and by browse/detail navigation, so the line reflects the
-    // current view immediately instead of waiting for the next poll.
+    // Catalog providers keep the pill in the browse toolbar; the in-tab player
+    // card is not rendered for them (the footer is the player). Shared by the
+    // status render path and by browse/detail navigation, so the pill reflects
+    // the current view immediately instead of waiting for the next poll.
     function applyCatalogStatusLine(entry, providerId, data) {
-        const bits = buildStatusBits(providerId, data);
-        entry.els.statusLine.textContent = bits.join(' · ');
-        entry.els.statusLine.title = '';
+        const connected = buildStatusBits(providerId, data).length > 0;
+        entry.els.statusLine.textContent = 'Connected';
+        entry.els.statusLine.title = buildStatusDetail(providerId, data);
         const healthyDetail = providerId === 'tidal' && isTidalDetailView() && data.authenticated === true;
-        entry.els.statusLine.hidden = bits.length === 0 || healthyDetail;
+        entry.els.statusLine.hidden = !connected || healthyDetail;
     }
 
     function renderStatusLine(providerId, entry, data) {
@@ -306,12 +305,11 @@
             return;
         }
         // Player providers integrate the status into the card as a small
-        // top-right chip; the standalone line above the card is gone. The
-        // provider/backend detail stays available via the chip tooltip.
-        const bits = buildStatusBits(providerId, data);
-        const text = bits.length ? '● ' + bits.join(' · ') : '';
-        entry.els.statusChip.hidden = !text;
-        entry.els.statusChip.textContent = text;
+        // top-right pill; the provider/backend detail stays available via the
+        // pill tooltip. The dot-led label is one shared rendering.
+        const connected = buildStatusBits(providerId, data).length > 0;
+        entry.els.statusChip.hidden = !connected;
+        entry.els.statusChip.textContent = 'Connected';
         entry.els.statusChip.title = buildStatusDetail(providerId, data);
         entry.els.statusLine.hidden = true;
     }
@@ -818,14 +816,25 @@
         if (state.tidal.view === 'album') { renderTidalAlbum(content); return; }
         if (state.tidal.view === 'playlist') { renderTidalPlaylist(content); return; }
         if (state.tidal.view === 'artist') { renderTidalArtist(content); return; }
-        // The search bar is a permanent part of the browse surface, above the
-        // navigation. Search results only ever replace the browse body; the bar
+        // The browse surface follows the library header logic: row 1 is the
+        // page title with the connected pill + refresh on the right, row 2 is
+        // the Favorites/Playlists navigation with the search group on the
+        // right. Search results only ever replace the browse body; the bar
         // itself survives every status refresh (contentKey guard in
         // renderTidalContent), so a poll never resets an in-progress query.
         content.innerHTML =
             '<div class="streaming-browse">' +
                 '<div class="tidal-toolbar">' +
                     '<h2 class="section-title tidal-toolbar-title">Tidal</h2>' +
+                    '<div class="tidal-toolbar-actions">' +
+                        '<button type="button" class="btn-secondary btn-icon" id="tidal-refresh-btn" title="Refresh TIDAL" aria-label="Refresh TIDAL">⟳</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="tidal-subbar">' +
+                    '<div class="streaming-browse-tabs" role="tablist">' +
+                        '<button type="button" class="streaming-browse-tab' + (state.tidal.browseSection === 'favorites' ? ' is-active' : '') + '" data-browse="favorites">Favorites</button>' +
+                        '<button type="button" class="streaming-browse-tab' + (state.tidal.browseSection === 'playlists' ? ' is-active' : '') + '" data-browse="playlists">Playlists</button>' +
+                    '</div>' +
                     '<div class="streaming-search">' +
                         '<div class="streaming-search-row">' +
                             '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search" autocomplete="off" />' +
@@ -833,15 +842,12 @@
                         '</div>' +
                     '</div>' +
                 '</div>' +
-                '<div class="streaming-browse-tabs" role="tablist">' +
-                    '<button type="button" class="streaming-browse-tab' + (state.tidal.browseSection === 'favorites' ? ' is-active' : '') + '" data-browse="favorites">Favorites</button>' +
-                    '<button type="button" class="streaming-browse-tab' + (state.tidal.browseSection === 'playlists' ? ' is-active' : '') + '" data-browse="playlists">Playlists</button>' +
-                '</div>' +
                 '<div class="streaming-browse-body" id="tidal-browse-body"></div>' +
             '</div>';
-        const toolbar = content.querySelector('.tidal-toolbar');
-        if (toolbar && entry.els.statusLine) toolbar.appendChild(entry.els.statusLine);
+        const actions = content.querySelector('.tidal-toolbar-actions');
+        if (actions && entry.els.statusLine) actions.prepend(entry.els.statusLine);
         bindTidalSearchBar(content);
+        bindTidalRefresh(content);
         const input = content.querySelector('#tidal-search-input');
         if (input && state.tidal.searchExecuted) input.value = state.tidal.searchQuery;
         const tabs = content.querySelectorAll('.streaming-browse-tab');
@@ -865,7 +871,7 @@
         else if (section === 'playlists') renderTidalPlaylists(body);
     }
 
-    // -- search (permanent bar above the browse navigation) ------------------
+    // -- search (permanent bar sharing the second header row) ----------------
     // Executing a search replaces the browse body with results; clearing it
     // returns to the current browse section (Favorites by default). The bar
     // lives in the browse surface, so the contentKey guard keeps a running
@@ -912,6 +918,47 @@
 
     function clearTidalSearch() {
         resetTidalSearch();
+        renderTidalBrowseSection(state.tidal.browseSection);
+    }
+
+    // -- refresh (manual cache invalidation + re-render) ---------------------
+    // The refresh button reuses the existing TIDAL provider logic: it forces
+    // a fresh authoritative favorite-ids load (the source of heart/browse
+    // state), reloads the provider status, then re-renders whatever view is
+    // active. It never logs out, resets the session, touches playback or the
+    // queue, or clears any unrelated FXRoute cache.
+    function bindTidalRefresh(root) {
+        const btn = root.querySelector('#tidal-refresh-btn');
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            if (btn.disabled) return;
+            btn.disabled = true;
+            void refreshTidalCatalog().finally(() => { btn.disabled = false; });
+        });
+    }
+
+    async function refreshTidalCatalog() {
+        try {
+            try { await loadTidalFavoriteIds(true); } catch (err) { /* keep refreshing below */ }
+            await refreshTidalStatus();
+            refreshActiveTidalView();
+            showToast('TIDAL refreshed', 'success');
+        } catch (err) {
+            showToast(friendlyError(err?.message || err), 'error');
+        }
+    }
+
+    function refreshActiveTidalView() {
+        if (state.tidal.contentKey !== 'browse') return;
+        if (isTidalDetailView()) {
+            const entry = entryFor('tidal');
+            if (entry) renderTidalBrowse(entry);
+            return;
+        }
+        if (state.tidal.searchExecuted && state.tidal.searchQuery) {
+            void executeTidalSearch(state.tidal.searchResultType);
+            return;
+        }
         renderTidalBrowseSection(state.tidal.browseSection);
     }
 
