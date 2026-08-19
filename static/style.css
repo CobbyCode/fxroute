@@ -499,9 +499,6 @@ body {
     color: var(--text-secondary);
     font-size: 0.92rem;
 }
-.subtitle-compact {
-    display: none;
-}
 .radio-panel {
     background: var(--bg-surface);
     border: 1px solid var(--border);
@@ -1581,7 +1578,6 @@ body {
     align-items: center;
     gap: var(--action-gap);
     flex-wrap: wrap;
-    padding-top: 0.18rem;
 }
 .library-actions-row {
     display: flex;
@@ -5376,8 +5372,7 @@ input[type="number"]::-webkit-outer-spin-button {
         display: none;
     }
 
-    .brand-subtitle,
-    .subtitle-full {
+    .brand-subtitle {
         display: none;
     }
     .track-artist {
@@ -5583,7 +5578,6 @@ input[type="number"]::-webkit-outer-spin-button {
         margin-bottom: 0.75rem;
     }
     .effects-header-actions { justify-content: flex-start; }
-    .subtitle-compact { display: inline; }
     .effects-peq-band-fields {
         grid-template-columns: 1fr;
     }
