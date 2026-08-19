@@ -76,9 +76,11 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
             CSS,
             r"@media \(min-width: 901px\) and \(max-width: 1180px\)[\s\S]*?min-height: 116px",
         )
-        # Bottom insets sit 1-2px closer to the viewport edge.
-        self.assertIn("bottom: 7px", CSS)
-        self.assertIn(".playback-bar { bottom: 5px;", CSS)
+        # Bottom insets sit a couple px closer to the viewport edge; the phone
+        # inset respects the home-indicator safe area while keeping a 3px min.
+        self.assertIn("bottom: 5px", CSS)
+        self.assertIn("bottom: 6px", CSS)
+        self.assertRegex(CSS, r"bottom: max\(3px, env\(safe-area-inset-bottom\)\)")
         self.assertRegex(CSS, r"\.control-btn\s*\{\s*width:\s*46px")
 
     def test_desktop_tablet_sliders_get_visual_refinement_only(self):
