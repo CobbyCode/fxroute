@@ -42,6 +42,81 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertNotRegex(playback_bar, r"(?m)^\s*height\s*:")
         self.assertIn("width: min(1560px, calc(100% - 20px))", playback_bar)
 
+    def test_desktop_track_info_has_a_hard_boundary_before_transport(self):
+        desktop_blocks = re.findall(
+            r"@media \(min-width: 1181px\) \{[\s\S]*?\.playback-bar\s*\{([^}]+)\}",
+            CSS,
+        )
+        self.assertTrue(desktop_blocks)
+        self.assertTrue(
+            any("minmax(280px, 430px)" in block and "minmax(390px, 1fr)" in block
+                for block in desktop_blocks)
+        )
+        self.assertIn("grid-template-areas: \"track transport meter volume\"", rule(".playback-bar"))
+
+        track_info = rule(".playback-bar .track-info")
+        self.assertIn("min-width: 0", track_info)
+        self.assertIn("max-width: 100%", track_info)
+        for selector in (".track-copy", ".track-copy-main", ".playback-bar .song-info"):
+            self.assertIn("min-width: 0", rule(selector))
+        self.assertRegex(CSS, r"\.track-fallback,\s*\n\.playback-bar \.song-info\s*\{[^}]*min-width: 0")
+
+    def test_metadata_ellipsis_is_scoped_to_track_info(self):
+        self.assertIn(".playback-bar .track-title", CSS)
+        self.assertIn(".playback-bar .track-artist", CSS)
+        self.assertNotIn(".playback-bar .seek-row", rule(".playback-bar .track-info"))
+
+    def test_desktop_and_tablet_compact_without_touching_phone_layout(self):
+        self.assertIn("Playback footer refinement v7", CSS)
+        self.assertRegex(CSS, r"@media \(min-width: 1181px\)[\s\S]*?min-height: 98px")
+        self.assertRegex(
+            CSS,
+            r"@media \(min-width: 901px\) and \(max-width: 1180px\)[\s\S]*?min-height: 116px",
+        )
+        self.assertIn("bottom: 9px", CSS)
+        self.assertIn(".playback-bar { bottom: 6px;", CSS)
+        self.assertRegex(CSS, r"\.control-btn\s*\{\s*width:\s*46px")
+
+    def test_desktop_tablet_sliders_get_visual_refinement_only(self):
+        self.assertIn("Playback footer refinement v8", CSS)
+        self.assertRegex(
+            CSS,
+            r"@media \(min-width: 901px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 4\.5px",
+        )
+        self.assertRegex(
+            CSS,
+            r"@media \(min-width: 901px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 12\.5px; height: 12\.5px",
+        )
+        self.assertRegex(
+            CSS,
+            r"@media \(min-width: 901px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 13\.5px; height: 13\.5px",
+        )
+        self.assertIn(".seek-slider { height: 5px; }", CSS)
+        self.assertIn(".volume-slider { height: 5px; }", CSS)
+
+    def test_mobile_slider_polish_preserves_input_box_and_volume_hierarchy(self):
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 4\.5px",
+        )
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 12\.5px; height: 12\.5px",
+        )
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 700px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 15\.5px; height: 15\.5px",
+        )
+        self.assertIn(".seek-slider { height: 5px; }", CSS)
+        self.assertIn(".volume-slider { height: 5px; }", CSS)
+
+    def test_desktop_transport_nudge_is_positive_and_footer_height_unchanged(self):
+        self.assertRegex(
+            CSS,
+            r"@media \(min-width: 1181px\)[\s\S]*?\.transport-controls\s*\{\s*margin-top: 1px",
+        )
+        self.assertIn("min-height: 98px", CSS)
+
     def test_cover_and_track_favorite_are_in_track_zone(self):
         markup = footer_markup()
         self.assertEqual(markup.count('id="playback-cover"'), 1)
