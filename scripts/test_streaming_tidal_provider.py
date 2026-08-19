@@ -366,6 +366,8 @@ class FakeFavorites:
         self.removed_tracks: list[str] = []
         self.added_albums: list[str] = []
         self.removed_albums: list[str] = []
+        self.added_artists: list[str] = []
+        self.removed_artists: list[str] = []
         self.added_playlists: list[str] = []
         self.removed_playlists: list[str] = []
 
@@ -387,6 +389,9 @@ class FakeFavorites:
     def albums_paginated(self, **kw):
         return self._albums
 
+    def artists_paginated(self, **kw):
+        return self._artists
+
     def playlists_paginated(self, **kw):
         return self._playlists
 
@@ -404,6 +409,14 @@ class FakeFavorites:
 
     def remove_album(self, album_id):
         self.removed_albums.append(str(album_id))
+        return True
+
+    def add_artist(self, artist_id):
+        self.added_artists.append(str(artist_id))
+        return True
+
+    def remove_artist(self, artist_id):
+        self.removed_artists.append(str(artist_id))
         return True
 
     def add_playlist(self, playlist_id):
@@ -429,12 +442,13 @@ class CatalogFavoritesTests(unittest.TestCase):
             mock.patch.object(auth.manager, "session", return_value=session),
         )
 
-    def test_favorite_state_returns_track_album_and_playlist_ids(self):
+    def test_favorite_state_returns_track_album_artist_and_playlist_ids(self):
         from streaming.tidal import catalog
 
         favorites = FakeFavorites(
             tracks=[SimpleNamespace(id=11), SimpleNamespace(id=22)],
             albums=[SimpleNamespace(id="a1")],
+            artists=[SimpleNamespace(id="ar-1")],
             playlists=[SimpleNamespace(id="pl-1")],
         )
         p1, p2 = self._patch(_favorites_session(favorites))
@@ -442,7 +456,52 @@ class CatalogFavoritesTests(unittest.TestCase):
             state = catalog.favorite_state()
         self.assertEqual(state["tracks"], ["11", "22"])
         self.assertEqual(state["albums"], ["a1"])
+        self.assertEqual(state["artists"], ["ar-1"])
         self.assertEqual(state["playlists"], ["pl-1"])
+
+    def test_set_artist_favorite_add_and_remove(self):
+        from streaming.tidal import catalog
+
+        favorites = FakeFavorites()
+        p1, p2 = self._patch(_favorites_session(favorites))
+        with p1, p2:
+            added = catalog.set_artist_favorite("ar-9", True)
+            removed = catalog.set_artist_favorite("ar-9", False)
+        self.assertEqual(added, {"type": "artist", "id": "ar-9", "favorite": True})
+        self.assertEqual(removed, {"type": "artist", "id": "ar-9", "favorite": False})
+        self.assertEqual(favorites.added_artists, ["ar-9"])
+        self.assertEqual(favorites.removed_artists, ["ar-9"])
+
+    def test_get_artist_normalizes_meta_albums_and_top_tracks(self):
+        from streaming.tidal import catalog
+
+        artist = SimpleNamespace(
+            id=3674176,
+            name="Aphrodite",
+            picture="46f7f1c9-709a-4f5b-852b-34d67c3914c8",
+            get_albums=lambda limit=50, offset=0: [
+                SimpleNamespace(id=9, name="Album", artist=SimpleNamespace(name="Aphrodite"),
+                                image=lambda size=640: "https://c/9.jpg", num_tracks=10,
+                                audio_quality="LOSSLESS", available=True, year=1996),
+            ],
+            get_top_tracks=lambda limit=10, offset=0: [
+                SimpleNamespace(id=5, name="Track", duration=200, available=True, explicit=False,
+                                is_hi_res_lossless=False, is_lossless=True, audio_quality="LOSSLESS",
+                                artist=SimpleNamespace(name="Aphrodite"), artists=[],
+                                album=SimpleNamespace(name="Album", image=lambda size=640: "https://c/9.jpg")),
+            ],
+        )
+        session = _favorites_session(FakeFavorites())
+        session.artist = lambda artist_id: artist
+        p1, p2 = self._patch(session)
+        with p1, p2:
+            data = catalog.get_artist("3674176")
+        self.assertEqual(data["id"], "3674176")
+        self.assertEqual(data["name"], "Aphrodite")
+        self.assertIn("46f7f1c9", data["art_url"])
+        self.assertEqual(data["albums"][0]["title"], "Album")
+        self.assertEqual(data["top_tracks"][0]["title"], "Track")
+        self.assertEqual(data["top_tracks"][0]["id"], "5")
 
     def test_set_playlist_favorite_add_and_remove(self):
         from streaming.tidal import catalog

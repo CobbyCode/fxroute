@@ -195,10 +195,21 @@ function runStreaming(options = {}) {
                     { id: 's1', title: 'Found Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 10 },
                     { id: 's2', title: 'Second Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 12 },
                 ] };
+            } else if (u === '/api/streaming/tidal/artists/a1') {
+                body = {
+                    id: 'a1', name: 'Found Artist', art_url: '',
+                    albums: [{ id: 'al1', title: 'Found Album', artist: 'Found Artist', art_url: '' }],
+                    top_tracks: [{ id: 's1', title: 'Found Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 10 }],
+                };
+            } else if (u === '/api/streaming/tidal/albums/al1') {
+                body = { id: 'al1', title: 'Found Album', artist: 'Found Artist', year: 1996, audio_quality: 'LOSSLESS', num_tracks: 1 };
+            } else if (u === '/api/streaming/tidal/albums/al1/tracks') {
+                body = [{ id: 's1', title: 'Found Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 10 }];
             } else if (u === '/api/streaming/tidal/favorites/ids') {
-                body = { tracks: [], albums: [], playlists: [] };
+                body = { tracks: [], albums: [], artists: [], playlists: [] };
             } else if (u.startsWith('/api/streaming/tidal/favorites?type=')) {
-                body = u.includes('type=tracks') ? tidalFavoriteTracks : [];
+                if (u.includes('type=tracks')) body = tidalFavoriteTracks;
+                else if (u.includes('type=artists')) body = [{ id: 'a1', name: 'Found Artist', art_url: '' }];
             }
             return { ok: true, json: async () => body };
         },
@@ -507,6 +518,112 @@ async function main() {
     assert.deepEqual(JSON.parse(playCalls[0].opts.body), {
         source: 'tidal', track_id: 'f3', queue_track_ids: ['f1', 'f2', 'f3', 'f4'],
     }, 'favorite track playback must queue every visible favorite in order at the clicked track');
+}
+
+// --- 7. TIDAL artist detail: click from search and favorites ----------------
+
+{
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming();
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    const content = shells.tidal.querySelector('.streaming-content');
+    const body = sandbox.document.getElementById('tidal-browse-body');
+    const input = content.querySelector('#tidal-search-input');
+
+    // Search -> artists -> click the artist row: detail must open with the id.
+    input.value = 'aphrodite';
+    input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    body.querySelector('#tidal-search-type-artists').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/artists/a1'),
+        'clicking an artist must fetch the artist detail with the artist id');
+    assert.ok(content.innerHTML.includes('tidal-detail') && content.innerHTML.includes('tidal-artist-facts'),
+        'artist click must open the artist detail view');
+    assert.ok(content.innerHTML.includes('Found Artist'), 'artist detail must show the artist name');
+    const headings = createdEls.filter((el) => el.className === 'streaming-results-heading');
+    assert.ok(headings.some((el) => el.textContent === 'Top Tracks'),
+        'artist detail must list top tracks');
+    assert.ok(headings.some((el) => el.textContent === 'Albums'),
+        'artist detail must list albums');
+
+    // Track click from the artist detail uses the existing queue logic (the
+    // album row is rendered last, so the top track is the second-to-last row).
+    createdEls.filter((el) => el.className === 'streaming-result').at(-2).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const artistTrackPlay = fetchCalls.filter((c) => c.url === '/api/play').at(-1);
+    assert.deepEqual(JSON.parse(artistTrackPlay.opts.body), {
+        source: 'tidal', track_id: 's1', queue_track_ids: ['s1'],
+    }, 'artist top-track click must play through the native queue');
+
+    // Album click from the artist detail opens the existing album detail
+    // (the album row is the last row rendered after the top tracks).
+    const albumRow = createdEls.filter((el) => el.className === 'streaming-result').at(-1);
+    albumRow.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/albums/al1'),
+        'album click from the artist detail must open the album detail');
+
+    // Back from the album restores the artist detail with the artist's own
+    // id (nested back state) — never the album id.
+    content.querySelector('#tidal-detail-back').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const artistRefetchCount = fetchCalls.filter((c) => c.url === '/api/streaming/tidal/artists/a1').length;
+    assert.equal(artistRefetchCount, 2, 'back from the album must restore the artist detail');
+    assert.ok(!fetchCalls.some((c) => c.url === '/api/streaming/tidal/artists/al1'),
+        'the restored artist detail must keep the artist id, not the album id');
+}
+
+// --- 8. artist back returns to the previous search --------------------------
+
+{
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming();
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    const content = shells.tidal.querySelector('.streaming-content');
+    const body = sandbox.document.getElementById('tidal-browse-body');
+    const input = content.querySelector('#tidal-search-input');
+
+    input.value = 'aphrodite';
+    input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    body.querySelector('#tidal-search-type-artists').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Back from the artist returns exactly to the executed search results.
+    content.querySelector('#tidal-detail-back').click();
+    assert.ok(body.innerHTML.includes('Search results for'),
+        'back from the artist must restore the previous artist search');
+}
+
+// --- 9. same artist detail path from Favorites -> Artists -------------------
+
+{
+    const favRun = runStreaming();
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+    favRun.sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const favBody = favRun.sandbox.document.getElementById('tidal-browse-body');
+    const favContent = favRun.shells.tidal.querySelector('.streaming-content');
+    favBody.querySelectorAll('#tidal-fav-types .streaming-chip').find((tab) => tab.dataset.type === 'artists').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    favRun.createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(favRun.fetchCalls.some((c) => c.url === '/api/streaming/tidal/artists/a1'),
+        'clicking a favorited artist must open the same artist detail');
+    assert.ok(favContent.innerHTML.includes('tidal-artist-facts'),
+        'favorited artist must open the same artist detail view');
+    favContent.querySelector('#tidal-detail-back').click();
+    assert.ok(favBody.innerHTML.includes('tidal-fav-types') &&
+        favBody.innerHTML.includes('data-type="artists"'),
+        'back from a favorited artist must restore Favorites -> Artists');
 }
 
 console.log('PASS  scripts/test_streaming_ui_actions.js');

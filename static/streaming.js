@@ -51,7 +51,8 @@
         lastPlaybackSource: null,
         lastPlaybackAt: 0,
         tidal: {
-            view: null,         // 'login' | 'browse' | 'album' | 'playlist'
+            view: null,         // 'login' | 'browse' | 'album' | 'playlist' | 'artist'
+            viewStack: [],      // previous detail views so Back returns through nested details
             searchQuery: '',
             searchExecuted: false,
             searchResultType: 'tracks',
@@ -66,7 +67,7 @@
             detailArt: '',
             contentKey: null,   // availability/auth mode last rendered into .streaming-content
             browseSection: 'favorites',   // 'favorites' | 'playlists'; search results are a separate temporary overlay
-            favoriteIds: { tracks: new Set(), albums: new Set(), playlists: new Set() },
+            favoriteIds: { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
         },
     };
@@ -267,7 +268,7 @@
     // detail views keep a clean header. Real problems stay visible: while not
     // authenticated the line (and the login surface) still render.
     function isTidalDetailView() {
-        return state.tidal.view === 'album' || state.tidal.view === 'playlist';
+        return state.tidal.view === 'album' || state.tidal.view === 'playlist' || state.tidal.view === 'artist';
     }
 
     // Catalog providers keep the standalone line; the in-tab player card is
@@ -800,6 +801,7 @@
         applyCatalogStatusLine(entry, 'tidal', state.lastData.tidal || {});
         if (state.tidal.view === 'album') { renderTidalAlbum(content); return; }
         if (state.tidal.view === 'playlist') { renderTidalPlaylist(content); return; }
+        if (state.tidal.view === 'artist') { renderTidalArtist(content); return; }
         // The search bar is a permanent part of the browse surface, above the
         // navigation. Search results only ever replace the browse body; the bar
         // itself survives every status refresh (contentKey guard in
@@ -1065,7 +1067,10 @@
                 '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
                 '<div class="streaming-result-info">' +
                     '<div class="streaming-result-title">' + escapeHtml(item.name) + '</div>' +
-                '</div>';
+                '</div>' +
+                favoriteButtonHtml('artists', item.id);
+            li.addEventListener('click', () => openTidalArtist(item.id, item.name, item.art_url));
+            bindTidalFavoriteButtons(li);
         } else if (type === 'playlists') {
             li.innerHTML =
                 '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
@@ -1098,6 +1103,7 @@
                 state.tidal.favoriteIds = {
                     tracks: new Set((data.tracks || []).map(String)),
                     albums: new Set((data.albums || []).map(String)),
+                    artists: new Set((data.artists || []).map(String)),
                     playlists: new Set((data.playlists || []).map(String)),
                 };
                 return state.tidal.favoriteIds;
@@ -1207,7 +1213,7 @@
             showToast(data.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
             // The favorites list must stay authoritative: refresh it so an
             // unfavorited item leaves and a newly favorited item appears.
-            if (state.tidal.view !== 'album' && state.tidal.view !== 'playlist' && !state.tidal.searchExecuted) {
+            if (state.tidal.view !== 'album' && state.tidal.view !== 'playlist' && state.tidal.view !== 'artist' && !state.tidal.searchExecuted) {
                 if (state.tidal.browseSection === 'favorites') loadTidalFavorites();
                 else if (state.tidal.browseSection === 'playlists') renderTidalBrowseSection('playlists');
             }
@@ -1294,9 +1300,18 @@
     }
 
     // -- album / playlist detail ----------------------------------------------
-    function openTidalAlbum(id, title, artUrl) {
+    function openTidalDetail(view, id, title, artUrl) {
+        // Push the full current detail state so Back returns exactly through
+        // nested details (browse -> artist -> album) with the previous view's
+        // own id/title/art restored, instead of jumping straight to browse.
         state.tidal.detailRequestId += 1;
-        state.tidal.view = 'album';
+        state.tidal.viewStack.push({
+            view: state.tidal.view,
+            detailId: state.tidal.detailId,
+            detailTitle: state.tidal.detailTitle,
+            detailArt: state.tidal.detailArt,
+        });
+        state.tidal.view = view;
         state.tidal.detailId = id;
         state.tidal.detailTitle = title;
         state.tidal.detailArt = artUrl || '';
@@ -1304,14 +1319,26 @@
         if (entry) renderTidalBrowse(entry);
     }
 
+    function openTidalAlbum(id, title, artUrl) {
+        openTidalDetail('album', id, title, artUrl);
+    }
+
     function openTidalPlaylist(id, title, artUrl) {
+        openTidalDetail('playlist', id, title, artUrl);
+    }
+
+    function openTidalArtist(id, name, artUrl) {
+        openTidalDetail('artist', id, name, artUrl);
+    }
+
+    function closeTidalDetail() {
         state.tidal.detailRequestId += 1;
-        state.tidal.view = 'playlist';
-        state.tidal.detailId = id;
-        state.tidal.detailTitle = title;
-        state.tidal.detailArt = artUrl || '';
-        const entry = entryFor('tidal');
-        if (entry) renderTidalBrowse(entry);
+        const previous = state.tidal.viewStack.pop();
+        state.tidal.view = previous ? previous.view : null;
+        state.tidal.detailId = previous ? previous.detailId : null;
+        state.tidal.detailTitle = previous ? previous.detailTitle : '';
+        state.tidal.detailArt = previous ? previous.detailArt || '' : '';
+        renderTidalBrowse(entryFor('tidal'));
     }
 
     function detailCoverHtml(extraClass) {
@@ -1342,11 +1369,7 @@
                 '</div>' +
                 '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
             '</div>';
-        content.querySelector('#tidal-detail-back').addEventListener('click', () => {
-            state.tidal.detailRequestId += 1;
-            state.tidal.view = null;
-            renderTidalBrowse(entryFor('tidal'));
-        });
+        content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteStars(content);
         loadTidalAlbum(content, requestId);
     }
@@ -1392,6 +1415,79 @@
         }
     }
 
+    function renderTidalArtist(content) {
+        const requestId = ++state.tidal.detailRequestId;
+        // Same library-mirroring layout as the album/playlist detail: cover +
+        // name, follow star in the title row, shared back button in the header,
+        // then Top Tracks and Albums sections.
+        content.innerHTML =
+            '<div class="streaming-detail tidal-detail">' +
+                '<div class="streaming-detail-header tidal-detail-header">' +
+                    detailCoverHtml('tidal-detail-cover') +
+                    '<div class="streaming-detail-main tidal-detail-meta">' +
+                        '<div class="tidal-detail-title-row">' +
+                            '<h3 class="streaming-detail-title tidal-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
+                            favoriteStarHtml('artists') +
+                        '</div>' +
+                        '<p class="streaming-detail-artist tidal-detail-artist" id="tidal-artist-facts"></p>' +
+                    '</div>' +
+                    '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
+                '</div>' +
+                '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
+            '</div>';
+        content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
+        bindFavoriteStars(content);
+        loadTidalArtist(content, requestId);
+    }
+
+    async function loadTidalArtist(content, requestId) {
+        const results = content.querySelector('#tidal-detail-results');
+        try {
+            const resp = await fetch('/api/streaming/tidal/artists/' + encodeURIComponent(state.tidal.detailId));
+            if (!resp.ok) throw new Error(await errorDetail(resp));
+            const data = await resp.json();
+            try { await loadTidalFavoriteIds(); } catch (e) { /* hearts degrade to unfilled */ }
+            if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'artist') return;
+            const factsEl = content.querySelector('#tidal-artist-facts');
+            if (factsEl) {
+                const facts = [];
+                if (Array.isArray(data.albums) && data.albums.length) {
+                    facts.push(data.albums.length + (data.albums.length === 1 ? ' album' : ' albums'));
+                }
+                if (Array.isArray(data.top_tracks) && data.top_tracks.length) {
+                    facts.push(data.top_tracks.length + (data.top_tracks.length === 1 ? ' top track' : ' top tracks'));
+                }
+                factsEl.textContent = facts.join(' · ');
+            }
+            syncFavoriteStars('artists', state.tidal.detailId);
+            const tracks = Array.isArray(data.top_tracks) ? data.top_tracks : [];
+            const albums = Array.isArray(data.albums) ? data.albums : [];
+            if (tracks.length) {
+                const heading = document.createElement('h4');
+                heading.className = 'streaming-results-heading';
+                heading.textContent = 'Top Tracks';
+                results.appendChild(heading);
+                renderDetailTracks(results, tracks, null);
+            }
+            if (albums.length) {
+                const heading = document.createElement('h4');
+                heading.className = 'streaming-results-heading';
+                heading.textContent = 'Albums';
+                results.appendChild(heading);
+                const list = document.createElement('ul');
+                list.className = 'streaming-results-list';
+                albums.forEach((item) => list.appendChild(renderSearchItem('albums', item, [])));
+                results.appendChild(list);
+            }
+            if (!tracks.length && !albums.length) {
+                results.innerHTML = '<p class="streaming-note">No tracks or albums available.</p>';
+            }
+        } catch (err) {
+            if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'artist') return;
+            results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
+        }
+    }
+
     function renderTidalPlaylist(content) {
         const requestId = ++state.tidal.detailRequestId;
         // Same library-mirroring layout as the album detail; the playlist adds
@@ -1412,11 +1508,7 @@
                 '</div>' +
                 '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
             '</div>';
-        content.querySelector('#tidal-detail-back').addEventListener('click', () => {
-            state.tidal.detailRequestId += 1;
-            state.tidal.view = null;
-            renderTidalBrowse(entryFor('tidal'));
-        });
+        content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteStars(content);
         loadTidalPlaylistTracks(content, requestId);
     }

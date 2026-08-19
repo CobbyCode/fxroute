@@ -161,8 +161,14 @@ class TidalProvider(StreamingProvider):
     async def set_album_favorite(self, album_id: str, favorite: bool) -> dict:
         return await _to_thread(catalog.set_album_favorite, album_id, favorite)
 
+    async def set_artist_favorite(self, artist_id: str, favorite: bool) -> dict:
+        return await _to_thread(catalog.set_artist_favorite, artist_id, favorite)
+
     async def set_playlist_favorite(self, playlist_id: str, favorite: bool) -> dict:
         return await _to_thread(catalog.set_playlist_favorite, playlist_id, favorite)
+
+    async def get_artist(self, artist_id: str) -> dict:
+        return await _to_thread(catalog.get_artist, artist_id)
 
     async def get_album(self, album_id: str) -> dict:
         return await _to_thread(catalog.get_album, album_id)

@@ -47,17 +47,25 @@ class _FakeProvider:
         return [{"id": "3", "title": "AT"}]
 
     async def favorite_state(self):
-        return {"tracks": ["1"], "albums": ["a1"], "playlists": ["p1"]}
+        return {"tracks": ["1"], "albums": ["a1"], "artists": ["ar1"], "playlists": ["p1"]}
 
     async def get_album(self, album_id):
         return {"id": album_id, "title": "Album", "artist": "A", "year": 1996,
                 "audio_quality": "LOSSLESS", "num_tracks": 10}
+
+    async def get_artist(self, artist_id):
+        return {"id": artist_id, "name": "Artist", "art_url": "https://c/a.jpg",
+                "albums": [{"id": "a1", "title": "Album"}],
+                "top_tracks": [{"id": "5", "title": "Track"}]}
 
     async def set_track_favorite(self, track_id, favorite):
         return {"type": "track", "id": track_id, "favorite": favorite}
 
     async def set_album_favorite(self, album_id, favorite):
         return {"type": "album", "id": album_id, "favorite": favorite}
+
+    async def set_artist_favorite(self, artist_id, favorite):
+        return {"type": "artist", "id": artist_id, "favorite": favorite}
 
     async def set_playlist_favorite(self, playlist_id, favorite):
         return {"type": "playlist", "id": playlist_id, "favorite": favorite}
@@ -157,6 +165,14 @@ class StreamingApiDispatchTests(unittest.TestCase):
         self.assertEqual(resp.json()["title"], "Album")
         self.assertEqual(resp.json()["year"], 1996)
 
+    def test_artist_meta_dispatch(self):
+        with self._patch(_FakeProvider()):
+            resp = self.client.get("/api/streaming/tidal/artists/ar1")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["name"], "Artist")
+        self.assertEqual(len(resp.json()["albums"]), 1)
+        self.assertEqual(len(resp.json()["top_tracks"]), 1)
+
     def test_track_favorite_post(self):
         with self._patch(_FakeProvider()):
             resp = self.client.post("/api/streaming/tidal/tracks/9/favorite", json={"favorite": True})
@@ -168,6 +184,14 @@ class StreamingApiDispatchTests(unittest.TestCase):
             resp = self.client.post("/api/streaming/tidal/albums/a1/favorite", json={"favorite": False})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["favorite"], False)
+
+    def test_artist_favorite_post(self):
+        with self._patch(_FakeProvider()):
+            resp = self.client.post("/api/streaming/tidal/artists/ar1/favorite", json={"favorite": True})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["favorite"], True)
+        self.assertEqual(resp.json()["type"], "artist")
+        self.assertEqual(resp.json()["id"], "ar1")
 
     def test_playlist_favorite_post(self):
         with self._patch(_FakeProvider()):

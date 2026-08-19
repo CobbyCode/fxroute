@@ -380,8 +380,33 @@ assert.ok(!/"back"\s*"cover"\s*"meta"/.test(css),
 // views hide it (real errors still render via the login surface and line).
 assert.ok(js.includes('function isTidalDetailView'),
     'streaming must have an explicit detail-view guard for the status line');
-assert.ok(js.includes("state.tidal.view === 'album' || state.tidal.view === 'playlist'"),
-    'album/playlist must count as detail views for the status line');
+assert.ok(js.includes("state.tidal.view === 'album' || state.tidal.view === 'playlist' || state.tidal.view === 'artist'"),
+    'album/playlist/artist must count as detail views for the status line');
+
+// --- TIDAL artist detail: same path from search and favorites ----------------
+// Artist rows open a shared artist detail (cover/name/follow star in the
+// header, Top Tracks + Albums sections); search and Favorites artists render
+// through the same renderSearchItem path, so one openTidalArtist serves both.
+assert.ok(js.includes('function openTidalArtist'),
+    'artist rows must open a dedicated artist detail');
+assert.ok(js.includes("favoriteButtonHtml('artists', item.id)"),
+    'artist rows must render a follow heart like tracks/albums/playlists');
+assert.ok(js.includes("artists: new Set((data.artists || []).map(String))"),
+    'favorites/ids must feed artist follow state');
+const artistRender = extractFunction(js, 'renderTidalArtist');
+assert.ok(artistRender.includes("favoriteStarHtml('artists')"),
+    'the artist detail header must carry the follow star');
+const artistLoad = extractFunction(js, 'loadTidalArtist');
+assert.ok(artistLoad.includes("'/api/streaming/tidal/artists/' + encodeURIComponent(state.tidal.detailId)"),
+    'the artist detail must fetch through the artist endpoint');
+assert.ok(artistLoad.includes("heading.textContent = 'Top Tracks'") && artistLoad.includes("heading.textContent = 'Albums'"),
+    'the artist detail must render Top Tracks and Albums sections');
+assert.ok(artistLoad.includes("renderSearchItem('albums', item, [])"),
+    'album rows in the artist detail must reuse the existing album row/click');
+assert.ok(js.includes('viewStack'),
+    'detail navigation must keep a back stack so nested details return through');
+assert.ok(js.includes('function closeTidalDetail'),
+    'detail back must pop the shared navigation stack');
 const statusRender = extractFunction(js, 'renderStatusLine');
 assert.ok(statusRender.includes('applyCatalogStatusLine'),
     'catalog status must render through the shared status-line helper');
