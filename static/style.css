@@ -1701,22 +1701,39 @@ body {
 .playlist-download-btn,
 .playlist-delete-btn,
 .folder-action-btn--delete {
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-size: 0.9rem;
-    padding: 0.2rem 0.5rem;
-    color: #aaa;
-    opacity: 1;
-    flex-shrink: 0;
+    flex: 0 0 auto;
     align-self: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    transition: color .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
 }
 .playlist-download-btn:hover {
     color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-dim);
 }
 .playlist-delete-btn:hover,
 .folder-action-btn--delete:hover {
     color: var(--danger);
+    border-color: var(--danger);
+    background: var(--danger-dim);
+}
+.playlist-download-btn:focus-visible,
+.playlist-delete-btn:focus-visible,
+.folder-action-btn--delete:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 .library-import-panel {
     margin-bottom: 0.85rem;
@@ -1926,34 +1943,36 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-/* Per-track favorite action shared by Tracks and Album detail rows. */
+/* Per-track favorite action. Library Tracks rows and Album-detail rows share
+   the round bordered heart of the streaming detail rows (see .track-fav below)
+   so every row-level favorite looks identical across library and TIDAL. */
 .track-row-favorite {
-    align-self: stretch;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 38px;
-    min-width: 38px;
-    min-height: 44px;
-    flex: 0 0 38px;
-    border: 0;
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    min-height: 34px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
     background: transparent;
     color: var(--text-muted);
     font: inherit;
-    font-size: 1.08rem;
+    font-size: 0.95rem;
     line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
     cursor: pointer;
-    border-radius: 10px;
-    transition: color .15s var(--ease), background .15s var(--ease), transform .12s var(--ease);
+    transition: color .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease), transform .12s var(--ease);
     -webkit-tap-highlight-color: transparent;
 }
-.track-row-favorite:hover {
+.track-row-favorite:hover,
+.track-row-favorite.active {
     color: var(--accent);
-    background: rgba(110,231,183,0.07);
+    border-color: var(--accent);
 }
 .track-row-favorite:focus-visible {
     color: var(--accent);
-    background: rgba(110,231,183,0.07);
     outline: 2px solid var(--accent);
     outline-offset: -2px;
 }
@@ -1962,6 +1981,7 @@ body {
 }
 .track-row-favorite.active {
     color: var(--accent);
+    border-color: var(--accent);
     text-shadow: 0 0 10px rgba(110,231,183,.18);
 }
 .track-row-favorite:disabled {
@@ -1974,10 +1994,81 @@ body {
 @media (max-width: 640px) {
     .track-row-favorite {
         width: 40px;
-        min-width: 40px;
+        height: 40px;
+        min-height: 40px;
         flex-basis: 40px;
-        min-height: 44px;
         font-size: 1rem;
+    }
+}
+/* ============================================================
+   Library list rows — shared card language with the album detail
+   (rounded bordered rows, stacked title/sub, round play + heart).
+   Applies to the Tracks / Folders / Playlist lists only; the Albums
+   grid and the album-detail rows keep their existing rules.
+   ============================================================ */
+#tracks-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+#tracks-list .track-item {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    min-height: 0;
+    min-width: 0;
+    transition: background 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+#tracks-list .track-item:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+}
+#tracks-list .track-item.selected {
+    background: var(--accent-dim);
+    border-color: rgba(110, 231, 183, 0.35);
+}
+#tracks-list .track-item.active {
+    background: var(--accent-dim);
+    border-color: rgba(110, 231, 183, 0.45);
+}
+#tracks-list .track-item.active .track-play {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+#tracks-list .track-item.active .track-title {
+    color: #f0fff8;
+}
+#tracks-list .track-item .track-info {
+    flex: 1;
+    min-width: 0;
+    gap: 0.12rem;
+}
+#tracks-list .track-artist {
+    text-align: left;
+    min-width: 0;
+    flex-shrink: 1;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+#tracks-list .folder-item,
+#tracks-list .playlist-item {
+    align-items: center;
+}
+#tracks-list .folder-actions {
+    opacity: 0;
+}
+#tracks-list .folder-item:hover .folder-actions,
+#tracks-list .folder-actions:focus-within {
+    opacity: 1;
+}
+@media (hover: none), (pointer: coarse) {
+    #tracks-list .folder-actions {
+        opacity: 1;
     }
 }
 /* ============================================================
@@ -5313,9 +5404,8 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .track-artist {
         display: block;
-        flex: 0 1 34%;
-        min-width: 72px;
-        max-width: 34%;
+        min-width: 0;
+        max-width: 100%;
         font-size: 0.72rem;
         line-height: 1.2;
     }
@@ -7362,12 +7452,14 @@ body {
 }
 .streaming-auth-error { color: var(--error, #f87171); font-size: 0.82rem; margin: 0; }
 
-/* Browse (search / favorites / playlists) */
+/* Browse (search / favorites / playlists). Spans the full content column —
+   the same width the album/playlist detail header uses — so the Connected
+   status (right-aligned in the toolbar) shares one right edge with the
+   detail Back button and browse <-> detail never shifts horizontally. */
 .streaming-browse {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
-    max-width: 1080px;
 }
 .streaming-browse-tabs {
     display: flex;

@@ -297,6 +297,7 @@ let volumeRequestInFlight = false;
 let pendingVolume = null;
 let volumeGestureActive = false;
 let trackFavoriteRequestInFlight = false;
+let tidalFavoriteRequestInFlight = false;
 let effectsImportInFlight = false;
 let peqCreateInFlight = false;
 let convolverCreateInFlight = false;
@@ -2733,6 +2734,7 @@ function setupPlaybackControls() {
     if (elements.footerLoopBtn) elements.footerLoopBtn.addEventListener('click', toggleFooterLoop);
     if (elements.btnClearQueue) elements.btnClearQueue.addEventListener('click', clearQueue);
     if (elements.trackFavoriteBtn) elements.trackFavoriteBtn.addEventListener('click', toggleCurrentTrackFavorite);
+    window.addEventListener('fxroute:tidal-favorites', renderFooterFavoriteFromTidalChange);
     elements.volumeSlider.addEventListener('input', handleVolumeChange);
     if (elements.playbackCover) {
         elements.playbackCover.addEventListener('click', toggleCoverDetailCard);
@@ -3528,15 +3530,44 @@ function renderSamplerateUI() {
 function renderTrackFavoriteButton(track = state.playback.current_track) {
     const button = elements.trackFavoriteBtn;
     if (!button) return;
-    const available = !!(track && track.source === 'local' && track.id);
+    const source = track?.source;
+    const isLocal = source === 'local';
+    const isTidal = source === 'tidal';
+    const hasId = !!(track && track.id);
+    const available = !!((isLocal || isTidal) && hasId);
     button.classList.toggle('hidden', !available);
-    button.disabled = !available || trackFavoriteRequestInFlight;
     if (!available) {
+        button.disabled = true;
         button.textContent = '♡';
         button.classList.remove('active');
         button.setAttribute('aria-pressed', 'false');
         return;
     }
+    const inFlight = trackFavoriteRequestInFlight || tidalFavoriteRequestInFlight;
+    if (isTidal) {
+        // The footer heart favorites the current TIDAL track through the same
+        // canonical state/API as the TIDAL tab. While the ids are still
+        // loading the button stays disabled so it never guesses the state;
+        // the fxroute:tidal-favorites event re-renders it once they arrive.
+        const ready = !!(window.FXRouteStreaming && window.FXRouteStreaming.tidalFavoritesReady()
+            && window.FXRouteStreaming.isTidalFavorite);
+        const favorite = ready ? window.FXRouteStreaming.isTidalFavorite('tracks', track.id) : false;
+        button.disabled = inFlight || !ready;
+        button.textContent = favorite ? '♥' : '♡';
+        button.classList.toggle('active', favorite);
+        button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
+        button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
+        button.title = favorite ? 'Remove track from favorites' : 'Add track to favorites';
+        if (!ready) {
+            const streaming = window.FXRouteStreaming;
+            if (streaming && streaming.ensureTidalFavoritesLoaded) {
+                void streaming.ensureTidalFavoritesLoaded().then(() => renderTrackFavoriteButton(state.playback.current_track));
+            }
+        }
+        return;
+    }
+    // Local library track favorite (unchanged native path).
+    button.disabled = inFlight;
     const favorite = !!track.favorite;
     button.textContent = favorite ? '♥' : '♡';
     button.classList.toggle('active', favorite);
@@ -3614,9 +3645,45 @@ async function toggleTrackFavoriteById(trackId) {
     }
 }
 
+function renderFooterFavoriteFromTidalChange() {
+    // The footer heart mirrors the current TIDAL track favorite. Called on
+    // every canonical favorites change so the footer never drifts from the
+    // state the TIDAL tab/detail rows use.
+    renderTrackFavoriteButton(state.playback.current_track);
+}
+
+async function toggleTidalFooterFavorite(track) {
+    const streaming = window.FXRouteStreaming;
+    if (!streaming || !streaming.toggleTidalFavorite || !track?.id || tidalFavoriteRequestInFlight) return;
+    if (!streaming.tidalFavoritesReady()) {
+        // State not loaded yet — request it and let the state render path
+        // re-enable the button; do not guess a half-hearted toggle.
+        void streaming.ensureTidalFavoritesLoaded().then(() => renderTrackFavoriteButton(state.playback.current_track));
+        return;
+    }
+    tidalFavoriteRequestInFlight = true;
+    renderTrackFavoriteButton(track);
+    try {
+        await streaming.toggleTidalFavorite('tracks', track.id);
+    } catch (error) {
+        showToast((error && error.message) || 'Failed to update favorite', 'error');
+    } finally {
+        tidalFavoriteRequestInFlight = false;
+        // Re-derive from canonical state: on success the toggle flipped the
+        // ids, on failure they are unchanged, so the button never shows a
+        // stale optimistic value.
+        renderTrackFavoriteButton(state.playback.current_track);
+    }
+}
+
 async function toggleCurrentTrackFavorite() {
     const track = state.playback.current_track;
-    if (!track || track.source !== 'local' || !track.id) return;
+    if (!track || !track.id) return;
+    if (track.source === 'tidal') {
+        await toggleTidalFooterFavorite(track);
+        return;
+    }
+    if (track.source !== 'local') return;
     await toggleTrackFavoriteById(track.id);
 }
 
@@ -4703,11 +4770,11 @@ function renderTracks() {
         html += filteredPlaylists.map(playlist => {
             const classes = ['track-item', 'playlist-item'];
             return `<div class="${classes.join(' ')}" data-playlist-id="${escapeHtml(playlist.id)}">
-                <button class="track-play-button" data-playlist-id="${escapeHtml(playlist.id)}" type="button">
-                    <span class="track-item-icon">📋</span>
+                <button class="track-play" data-playlist-id="${escapeHtml(playlist.id)}" type="button" title="Play ${escapeHtml(playlist.name)}" aria-label="Play playlist ${escapeHtml(playlist.name)}">▶</button>
+                <div class="track-info">
                     <div class="track-title">${escapeHtml(playlist.name)}</div>
-                    <div class="track-artist">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
-                </button>
+                    <div class="track-artist track-sub">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
+                </div>
                 <button class="playlist-download-btn" data-playlist-download="${escapeHtml(playlist.id)}" type="button" title="Export playlist as M3U8">⬇</button>
                 <button class="playlist-delete-btn" data-playlist-delete="${escapeHtml(playlist.id)}" type="button" title="Delete playlist">🗑</button>
             </div>`;
@@ -4716,11 +4783,11 @@ function renderTracks() {
 
     if (folderMode) {
         html += childFolders.map(folder => `<div class="track-item folder-item" data-folder="${escapeHtml(folder.path)}">
-            <button class="track-play-button" data-folder="${escapeHtml(folder.path)}" type="button" title="Open folder">
-                <span class="track-item-icon">📁</span>
+            <button class="track-play" data-folder="${escapeHtml(folder.path)}" type="button" title="Open folder ${escapeHtml(folder.name)}" aria-label="Open folder ${escapeHtml(folder.name)}">▶</button>
+            <div class="track-info">
                 <div class="track-title">${escapeHtml(folder.name)}</div>
-                <div class="folder-count">${folder.count} track${folder.count === 1 ? '' : 's'}</div>
-            </button>
+                <div class="track-artist track-sub">${folder.count} track${folder.count === 1 ? '' : 's'}</div>
+            </div>
             <div class="folder-actions" aria-label="Folder actions">
                 <button class="folder-action-btn" data-folder-play="${escapeHtml(folder.path)}" type="button" title="Play folder" aria-label="Play ${escapeHtml(folder.name)}">▶</button>
                 <button class="folder-action-btn folder-action-btn--delete" data-folder-delete="${escapeHtml(folder.path)}" type="button" title="Delete folder" aria-label="Delete ${escapeHtml(folder.name)}">🗑</button>
@@ -4741,11 +4808,11 @@ function renderTracks() {
                     <input type="checkbox" class="track-checkbox" data-track-id="${escapeHtml(track.id)}" ${isSelected ? 'checked' : ''}>
                     <span class="track-select-box"></span>
                 </label>
-                <button class="track-play-button" data-track-id="${escapeHtml(track.id)}" type="button" title="${escapeHtml(rel)}">
-                    <span class="track-item-icon">♫</span>
+                <button class="track-play" data-track-id="${escapeHtml(track.id)}" type="button" title="${escapeHtml(rel)}" aria-label="Play ${escapeHtml(track.title)}">▶</button>
+                <div class="track-info">
                     <div class="track-title">${escapeHtml(track.title)}</div>
-                    ${subline ? `<div class="track-artist">${escapeHtml(subline)}</div>` : ''}
-                </button>
+                    ${subline ? `<div class="track-artist track-sub">${escapeHtml(subline)}</div>` : ''}
+                </div>
                 <button class="track-row-favorite ${track.favorite ? 'active' : ''}"
                         data-track-favorite="${escapeHtml(track.id)}"
                         type="button"
@@ -4758,7 +4825,7 @@ function renderTracks() {
 
     elements.tracksList.innerHTML = html;
 
-    elements.tracksList.querySelectorAll('.track-play-button[data-folder]').forEach(item => {
+    elements.tracksList.querySelectorAll('.track-play[data-folder]').forEach(item => {
         item.addEventListener('click', (e) => {
             e.stopPropagation();
             setLibraryFolder(item.dataset.folder || '');
@@ -4779,7 +4846,7 @@ function renderTracks() {
         });
     });
 
-    elements.tracksList.querySelectorAll('.track-play-button[data-track-id]').forEach(item => {
+    elements.tracksList.querySelectorAll('.track-play[data-track-id]').forEach(item => {
         item.addEventListener('click', (e) => {
             e.stopPropagation();
             playLocal(item.dataset.trackId);
@@ -4787,7 +4854,7 @@ function renderTracks() {
     });
     bindTrackFavoriteRowButtons(elements.tracksList);
 
-    elements.tracksList.querySelectorAll('.track-play-button[data-playlist-id]').forEach(item => {
+    elements.tracksList.querySelectorAll('.track-play[data-playlist-id]').forEach(item => {
         item.addEventListener('click', async (e) => {
             e.stopPropagation();
             await loadPlaylistById(item.dataset.playlistId, { autoplay: true });
@@ -4796,6 +4863,29 @@ function renderTracks() {
 
     elements.tracksList.querySelectorAll('.track-checkbox').forEach(input => {
         input.addEventListener('change', () => toggleTrackSelection(input.dataset.trackId, input.checked));
+    });
+
+    // Whole-row clicks start the row action like the album-detail rows do,
+    // while selection, favorite and folder/playlist/detail actions keep their
+    // own stopPropagation handlers.
+    elements.tracksList.querySelectorAll('.track-item[data-track-id]').forEach(row => {
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('.track-select, .track-checkbox, .track-row-favorite, .track-fav, .track-play')) return;
+            playLocal(row.dataset.trackId);
+        });
+    });
+    elements.tracksList.querySelectorAll('.folder-item[data-folder]').forEach(row => {
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('.folder-actions, .track-play')) return;
+            setLibraryFolder(row.dataset.folder || '');
+        });
+    });
+    elements.tracksList.querySelectorAll('.playlist-item[data-playlist-id]').forEach(row => {
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('.playlist-download-btn, .playlist-delete-btn, .track-play')) return;
+            const rowId = row.dataset.playlistId;
+            if (rowId) void loadPlaylistById(rowId, { autoplay: true });
+        });
     });
 
     elements.tracksList.querySelectorAll('.playlist-download-btn[data-playlist-download]').forEach(btn => {

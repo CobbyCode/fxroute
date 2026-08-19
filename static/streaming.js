@@ -69,6 +69,7 @@
             browseSection: 'favorites',   // 'favorites' | 'playlists'; search results are a separate temporary overlay
             favoriteIds: { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
+            favoritesLoaded: false,   // true after at least one successful favorites/ids load
         },
     };
 
@@ -107,6 +108,13 @@
         state.lastPlaybackSource = playback?.current_track?.source || null;
         state.lastPlaybackAt = Date.now();
         const now = Date.now();
+        // The global footer shows the TIDAL track favorite; the canonical
+        // favorites ids must be loaded even when playback starts without the
+        // TIDAL tab ever being opened. The load dispatches fxroute:tidal-favorites
+        // so the footer re-derives its state from the server truth.
+        if (state.lastPlaybackSource === 'tidal' && !state.tidal.favoritesLoaded) {
+            void ensureTidalFavoritesLoaded();
+        }
         if (state.lastPlaybackSource === 'tidal' && now - (state._tidalNudgeAt || 0) > 700) {
             state._tidalNudgeAt = now;
             void refreshTidalStatus();
@@ -1094,6 +1102,33 @@
     }
 
     // -- favorites (authoritative TIDAL state; no FXRoute shadow) -------------
+    function notifyFavoritesChanged() {
+        if (typeof window.dispatchEvent !== 'function') return;
+        window.dispatchEvent(new CustomEvent('fxroute:tidal-favorites', { detail: state.tidal.favoriteIds }));
+    }
+
+    function tidalFavoritesReady() {
+        return state.tidal.favoritesLoaded === true;
+    }
+
+    // Ensure the canonical favorite ids are loaded, fetching from the backend
+    // once (twice when a stale load needs forcing). Resolves true when the
+    // ids are available, false when the request failed; never throws.
+    function ensureTidalFavoritesLoaded(force) {
+        const existing = state.tidal.favoriteIdsPromise;
+        if (!force && existing && state.tidal.favoritesLoaded) return Promise.resolve(true);
+        const promise = (async () => {
+            try {
+                await loadTidalFavoriteIds(true);
+                return true;
+            } catch (e) {
+                return false;
+            }
+        })();
+        if (!state.tidal.favoritesLoaded) state.tidal.favoriteIdsPromise = promise;
+        return promise;
+    }
+
     function loadTidalFavoriteIds(force) {
         if (!state.tidal.favoriteIdsPromise || force) {
             state.tidal.favoriteIdsPromise = (async () => {
@@ -1106,6 +1141,8 @@
                     artists: new Set((data.artists || []).map(String)),
                     playlists: new Set((data.playlists || []).map(String)),
                 };
+                state.tidal.favoritesLoaded = true;
+                notifyFavoritesChanged();
                 return state.tidal.favoriteIds;
             })();
         }
@@ -1210,6 +1247,7 @@
             else state.tidal.favoriteIds[type].delete(idStr);
             syncTidalFavoriteButtons(type, idStr);
             syncFavoriteStars(type, idStr);
+            notifyFavoritesChanged();
             showToast(data.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
             // The favorites list must stay authoritative: refresh it so an
             // unfavorited item leaves and a newly favorited item appears.
@@ -1611,5 +1649,12 @@
         notifyPlayback,
         onTabVisible,
         refreshActiveTab: () => { if (window.__visibleTab === 'qobuz' || window.__visibleTab === 'tidal') void refreshProvider(window.__visibleTab); },
+        // Footer / global favorite hooks: the shared footer heart favorites the
+        // current TIDAL track through the same canonical state and API the
+        // TIDAL tab and detail rows use — no second favorite source.
+        isTidalFavorite,
+        tidalFavoritesReady,
+        ensureTidalFavoritesLoaded,
+        toggleTidalFavorite,
     };
 })();
