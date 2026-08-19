@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.11">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.11">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.69">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.70">
 </head>
 <body>
     <a class="skip-link" href="#tab-content">Skip to content</a>
@@ -26,15 +26,14 @@
     <main id="app">
         <!-- Header -->
         <header class="header">
-            <button id="open-settings" class="brand-lockup brand-lockup-button" type="button" aria-labelledby="brand-title settings-trigger-action" aria-haspopup="dialog" aria-expanded="false">
+            <button id="open-settings" class="brand-lockup brand-lockup-button" type="button" aria-label="Settings" data-tooltip="Settings" aria-haspopup="dialog" aria-expanded="false">
                 <span class="brand-mark" aria-hidden="true">
                     <span class="brand-mark-f">F</span><span class="brand-mark-x">X</span>
                 </span>
-                <div class="brand-text-block">
-                    <span class="brand-title" id="brand-title"><span class="brand-title-fx">FX</span>Route</span>
+                <div class="brand-text-block" aria-hidden="true">
+                    <span class="brand-title"><span class="brand-title-fx">FX</span>Route</span>
                     <span class="brand-subtitle">local audio control</span>
                 </div>
-                <span id="settings-trigger-action" class="visually-hidden">Open technical settings</span>
             </button>
             <div class="header-status">
                 <div id="power-menu-root" class="power-menu-root hidden">

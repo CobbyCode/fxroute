@@ -35,11 +35,15 @@ check('settings uses the shared modal manager', /settingsPanel[\s\S]*?FXRouteMod
 check('radio management uses the shared modal manager', /radioManagePanel[\s\S]*?FXRouteModal/.test(radioJs));
 check('modal manager restores focus on close', /opener[\s\S]*?\.focus\(\)/.test(appJs));
 
-// The visible FXRoute brand remains the settings trigger, but its accessible
-// name must be derived from the same visible brand text.
-check('brand title has a stable accessible label target', /class="brand-title" id="brand-title"/.test(html));
-check('settings trigger references visible brand text', /id="open-settings"[\s\S]*?aria-labelledby="brand-title settings-trigger-action"/.test(html));
-check('settings trigger has no conflicting aria-label', !/id="open-settings"[\s\S]*?aria-label="Open technical settings"/.test(html));
+// The visible FXRoute brand remains the settings trigger, while its function
+// has one consistent accessible name and tooltip label.
+check('settings trigger accessible name is Settings', /id="open-settings"[\s\S]*?aria-label="Settings"/.test(html));
+check('visible brand is excluded from the trigger name', /class="brand-text-block" aria-hidden="true"/.test(html));
+check('settings trigger has the Settings tooltip label', /id="open-settings"[\s\S]*?data-tooltip="Settings"/.test(html));
+check('settings trigger has no old technical-settings label', !/Open technical settings/.test(html));
+check('settings tooltip is rendered by the existing trigger pattern', /\.brand-lockup-button\[data-tooltip\]::after/.test(css));
+check('settings tooltip appears on keyboard focus', /\.brand-lockup-button:focus-visible::after/.test(css));
+check('settings tooltip does not participate in layout flow', /\.brand-lockup-button\[data-tooltip\]::after[\s\S]*?position:\s*absolute/.test(css));
 
 // Measurement graph controls get an explicit two-row mobile layout.
 check('mobile measurement toolbar uses a grid', /@media \(max-width: 599px\)[\s\S]*?\.measurement-graph-header-actions[\s\S]*?display:\s*grid/.test(css));
