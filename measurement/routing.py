@@ -547,9 +547,13 @@ class MeasurementRouting:
                 failures.append(f"native DSP rate {config.get('sample_rate')} != measurement rate {sample_rate}")
             if str(config.get("output_mode") or "") != output_mode:
                 failures.append(f"native DSP output mode {config.get('output_mode')} != measurement mode {output_mode}")
-            expected_outputs = 4 if output_mode.startswith("subwoofer-2.") else 2
             runtime_layout = config.get("layout") or []
             expected_layout = playback_route.get("expected_native_layout") or []
+            # The native engine always runs the full 2.x topology: stereo mode
+            # keeps the two sub channels in the layout muted (route gain 0), so
+            # the expected output count follows the expected layout for the
+            # mode instead of a bare stereo pair.
+            expected_outputs = len(expected_layout) if expected_layout else (4 if output_mode.startswith("subwoofer-2.") else 2)
             if len(runtime_layout) != expected_outputs:
                 failures.append(f"native DSP layout does not expose {expected_outputs} outputs")
             if expected_layout and runtime_layout != expected_layout:

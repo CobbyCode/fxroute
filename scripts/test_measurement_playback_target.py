@@ -98,6 +98,28 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         self.assertIsNone(snapshot["validation_failure"])
         self.assertNotIn("parsed", snapshot)
 
+    def test_pre_sweep_validation_accepts_stereo_layout_with_muted_subs(self):
+        # The native engine always runs the full 2.x topology: in stereo mode
+        # the two sub channels stay in the layout muted (route gain 0). The
+        # pre-sweep check must accept the 4-channel layout instead of demanding
+        # a bare stereo pair (regression: sweep was refused with "does not
+        # expose 2 outputs").
+        layout = [
+            {"name": "FL", "routes": [{"input": 0, "gain": 1.0}]},
+            {"name": "FR", "routes": [{"input": 1, "gain": 1.0}]},
+            {"name": "SUB1", "routes": [{"input": 0, "gain": 0.0}]},
+            {"name": "SUB2", "routes": [{"input": 1, "gain": 0.0}]},
+        ]
+        self.store.runtime_snapshot_provider = lambda: {
+            "active": True,
+            "config": {"sample_rate": 48000, "output_mode": "stereo", "layout": layout},
+        }
+        snapshot = self.store._routing._build_pre_sweep_state_snapshot(
+            job_id="job", sample_rate=48000,
+            playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+                            "output_mode": "stereo", "expected_native_layout": layout})
+        self.assertIsNone(snapshot["validation_failure"])
+
     def test_raw_helper_bypass_is_restored_after_worker_failure(self):
         calls = []
 
