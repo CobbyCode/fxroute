@@ -825,6 +825,7 @@
         content.innerHTML =
             '<div class="streaming-browse">' +
                 '<div class="tidal-toolbar">' +
+                    '<h2 class="section-title tidal-toolbar-title">Tidal</h2>' +
                     '<div class="streaming-search">' +
                         '<div class="streaming-search-row">' +
                             '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search" autocomplete="off" />' +
