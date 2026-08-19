@@ -170,9 +170,21 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
     def test_compact_tablet_spans_two_rows(self):
         self.assertRegex(
             CSS,
-            r"@media \(min-width: 701px\) and \(max-width: 1180px\)"
+            r"@media \(min-width: 901px\) and \(max-width: 1180px\)"
             r"[\s\S]*?grid-template-areas:\s*"
             r'\s*"track transport meter"\s*"track transport volume"',
+        )
+
+    def test_small_tablet_uses_the_narrow_responsive_composition(self):
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 900px\)\s*\{[\s\S]*?"
+            r'grid-template-areas:\s*"track meter"\s*'
+            r'"transport transport"\s*"volume volume"',
+        )
+        self.assertNotRegex(
+            CSS,
+            r"@media \(min-width: 701px\) and \(max-width: 1180px\)",
         )
 
     def test_page_end_clearance_tracks_real_footer_height(self):

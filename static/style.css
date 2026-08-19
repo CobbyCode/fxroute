@@ -6413,7 +6413,7 @@ body {
         text-align: left; }
 }
 
-@media (min-width: 701px) and (max-width: 1180px) {
+@media (min-width: 901px) and (max-width: 1180px) {
     .playback-bar { width: calc(100% - 16px);
         min-height: 104px;
         grid-template-columns:
@@ -6551,7 +6551,7 @@ body {
         width: 100%; }
 }
 
-@media (min-width: 701px) and (max-width: 1180px) {
+@media (min-width: 901px) and (max-width: 1180px) {
     .transport-controls { min-height: 44px;
         gap: .3rem; }
     .control-btn-secondary { width: 33px;
@@ -6710,7 +6710,7 @@ body {
 /* Tablet / compact desktop: give the transport real vertical breathing room,
    keep the album/queue chip inside the track-copy column, and preserve a
    compact right-side meter/volume stack. */
-@media (min-width: 701px) and (max-width: 1180px) {
+@media (min-width: 901px) and (max-width: 1180px) {
     .playback-bar {
         min-height: 126px;
         grid-template-columns:
