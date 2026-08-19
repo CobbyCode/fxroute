@@ -87,13 +87,21 @@ class StreamingHiddenCssTests(unittest.TestCase):
         )
         self.assertIsNotNone(card, "missing .streaming-now-playing rule")
         self.assertIn("position: relative", card.group(1))
+        # The status chip now sits in-flow in the card header row next to the
+        # provider name; it must not float absolutely over the card anymore.
+        header = re.search(
+            r"^[ \t]*\.streaming-card-header\s*\{([^}]+)\}", CSS, re.MULTILINE
+        )
+        self.assertIsNotNone(header, "missing .streaming-card-header rule")
+        self.assertIn("grid-area: header", header.group(1))
         chip = re.search(
             r"^[ \t]*\.streaming-status-chip\s*\{([^}]+)\}", CSS, re.MULTILINE
         )
         self.assertIsNotNone(chip, "missing .streaming-status-chip rule")
-        self.assertIn("position: absolute", chip.group(1))
+        self.assertNotIn("position: absolute", chip.group(1))
         streaming_js = (ROOT / "static" / "streaming.js").read_text(encoding="utf-8")
         self.assertIn("streaming-status-chip", streaming_js)
+        self.assertIn("streaming-provider-name", streaming_js)
 
     def test_provider_layout_has_player_width_and_footer_safe_area(self):
         # The shared player card is bounded, centered, and generous on desktop.

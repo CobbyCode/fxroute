@@ -1560,11 +1560,6 @@ body {
     --control-gap: 12px;
     padding-top: 0.55rem;
 }
-#tab-spotify,
-#tab-qobuz,
-#tab-tidal {
-    padding-top: 0.55rem;
-}
 .library-header {
     display: flex;
     justify-content: space-between;
@@ -5392,10 +5387,7 @@ input[type="number"]::-webkit-outer-spin-button {
         font-size: 1.2rem;
         line-height: 1;
     }
-    #tab-library,
-    #tab-spotify,
-    #tab-qobuz,
-    #tab-tidal {
+    #tab-library {
         padding-top: 0;
     }
     #tab-effects {
@@ -7008,16 +7000,8 @@ body {
 /* =========================================================================
    Streaming provider tabs (Spotify / Qobuz / TIDAL)
    ========================================================================= */
-/* The streaming headers carry the provider title only, so they reserve the
-   standard 44px header row to keep the title baseline in line with the
-   Library/DSP/Radio headers. */
-#tab-spotify .library-header,
-#tab-qobuz .library-header,
-#tab-tidal .library-header {
-    min-height: 44px;
-}
 .streaming-shell {
-    padding: 0 0.25rem 0.7rem;
+    padding: 0.7rem 0.25rem;
 }
 .streaming-provider {
     display: flex;
@@ -7029,12 +7013,9 @@ body {
    card starts at the top of the stage, so both pages have the same vertical
    geometry no matter how their metadata heights differ. The provider status
    lives inside the card (top-right chip); catalog providers (TIDAL) keep a
-   full-width browser surface with the standalone status line. The 18rem
-   viewport allowance grows by the page header (title row, gap, panel offset
-   minus the former shell top padding) so the stage still ends above the
-   footer. */
+   full-width browser surface with the standalone status line. */
 .streaming-provider-player {
-    min-height: calc(100dvh - 21.35rem);
+    min-height: calc(100dvh - 18rem);
     justify-content: flex-start;
 }
 .streaming-provider-catalog .streaming-status-line {
@@ -7121,6 +7102,7 @@ body {
     display: grid;
     grid-template-columns: 1fr;
     grid-template-areas:
+        "header"
         "cover"
         "meta"
         "controls"
@@ -7130,13 +7112,33 @@ body {
     text-align: center;
     gap: 0.7rem;
 }
-/* In-card provider status chip (top-right), replacing the old floating
-   status pill above the card. The dot-led label is subtle; the provider /
-   backend detail lives in the tooltip. */
+/* Card header row: provider name left, status chip right — one calm,
+   symmetric line inside the card. Replaces the standalone page titles that
+   used to sit above the card. */
+.streaming-card-header {
+    grid-area: header;
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+.streaming-provider-name {
+    min-width: 0;
+    font-size: 0.8rem;
+    font-weight: 650;
+    letter-spacing: 0.03em;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* In-card provider status chip (right side of the card header), replacing
+   the old floating status pill above the card. The dot-led label is subtle;
+   the provider/backend detail lives in the tooltip. */
 .streaming-status-chip {
-    position: absolute;
-    top: 0.9rem;
-    right: 1rem;
+    flex: 0 0 auto;
     max-width: 62%;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -7398,11 +7400,14 @@ body {
 
 .tidal-toolbar {
     display: grid;
-    grid-template-columns: minmax(0, 430px) minmax(0, 1fr);
-    align-items: center;
-    gap: 0.75rem;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: end;
+    gap: 0.4rem;
 }
-.tidal-toolbar .streaming-search { min-width: 0; }
+.tidal-toolbar .streaming-search {
+    min-width: 0;
+    width: min(100%, 430px);
+}
 .tidal-toolbar > .streaming-status-line {
     width: auto;
     min-height: 0;

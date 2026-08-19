@@ -144,7 +144,10 @@
                         '<div class="streaming-empty-actions"></div>' +
                     '</div>' +
                     '<div class="streaming-now-playing" hidden>' +
-                        '<div class="streaming-status-chip" hidden></div>' +
+                        '<div class="streaming-card-header">' +
+                            '<span class="streaming-provider-name"></span>' +
+                            '<div class="streaming-status-chip" hidden></div>' +
+                        '</div>' +
                         '<div class="streaming-cover-wrap">' +
                             '<img class="streaming-cover" alt="" />' +
                         '</div>' +
@@ -185,6 +188,7 @@
 
             const els = {
                 statusLine: root.querySelector('.streaming-status-line'),
+                providerName: root.querySelector('.streaming-provider-name'),
                 empty: root.querySelector('.streaming-empty'),
                 emptyIcon: root.querySelector('.streaming-empty-icon'),
                 emptyTitle: root.querySelector('.streaming-empty-title'),
@@ -220,6 +224,10 @@
                 tabPanel: document.getElementById('tab-' + providerId),
                 seeking: false,
             };
+            // The player card header shows the provider name next to the
+            // status chip; the standalone page titles above the card are gone.
+            const providerName = PROVIDER_META[providerId]?.name || providerId;
+            if (els.providerName) els.providerName.textContent = providerName;
             state.providers[providerId] = entry;
             wireNowPlayingTransport(providerId, entry);
         });
