@@ -4699,9 +4699,9 @@ input[type="number"]::-webkit-outer-spin-button {
    ============================================================ */
 .playback-bar {
     position: fixed;
-    left: 50%;
-    bottom: 10px;
-    width: min(1560px, calc(100% - 20px));
+    left: 50vw;
+    bottom: 8px;
+    width: min(1560px, calc(100vw - 20px));
     min-height: 112px;
     transform: translateX(-50%);
     z-index: 100;
@@ -5031,7 +5031,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 @media (max-width: 900px) {
     .playback-bar {
-        width: calc(100% - 16px);
+        width: calc(100vw - 16px);
         grid-template-columns: minmax(0,1fr) auto;
         grid-template-areas:
             "track meter"
@@ -5057,8 +5057,8 @@ input[type="number"]::-webkit-outer-spin-button {
 
 @media (max-width: 600px) {
     .playback-bar {
-        bottom: 6px;
-        width: calc(100% - 12px);
+        bottom: 5px;
+        width: calc(100vw - 12px);
         grid-template-columns: minmax(0,1fr) auto;
         grid-template-areas:
             "track track"
@@ -6235,7 +6235,7 @@ body {
    (verbatim rules previously spread across the v1-v4 blocks)
    ============================================================ */
 @media (max-width: 1100px) and (orientation: portrait) {
-    .playback-bar { width: calc(100% - 18px);
+    .playback-bar { width: calc(100vw - 18px);
         grid-template-columns: minmax(0, 1fr) 150px;
         grid-template-areas:
             "track meter"
@@ -6414,7 +6414,7 @@ body {
 }
 
 @media (min-width: 701px) and (max-width: 1180px) {
-    .playback-bar { width: calc(100% - 16px);
+    .playback-bar { width: calc(100vw - 16px);
         min-height: 104px;
         grid-template-columns:
             minmax(220px, .95fr)
@@ -6456,8 +6456,8 @@ body {
 }
 
 @media (max-width: 700px) {
-    .playback-bar { bottom: 6px;
-        width: calc(100% - 12px);
+    .playback-bar { bottom: 5px;
+        width: calc(100vw - 12px);
         min-height: 0;
         grid-template-columns: minmax(0, 1fr) 112px;
         grid-template-rows: auto auto auto;
@@ -6916,7 +6916,7 @@ body {
    breathing room above and below the existing content. */
 @media (min-width: 1181px) {
     .playback-bar {
-        bottom: 9px;
+        bottom: 7px;
         min-height: 98px;
         padding-block: .55rem;
     }
@@ -6927,7 +6927,7 @@ body {
 
 @media (min-width: 901px) and (max-width: 1180px) {
     .playback-bar {
-        bottom: 9px;
+        bottom: 7px;
         min-height: 116px;
         grid-template-rows: minmax(46px, auto) minmax(42px, auto);
         row-gap: .4rem;
@@ -6968,6 +6968,11 @@ body {
     .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
     .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
     .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
+    /* Chromium anchors the thumb to the track top when the track is shorter
+       than the thumb; lift it by half the size difference so the thumb sits
+       centered on the 4.5px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
 }
 
 /* Phone: soften only the visible range paint; the input box remains the
@@ -6997,6 +7002,8 @@ body {
     .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
     .volume-slider::-webkit-slider-thumb { width: 15.5px; height: 15.5px; }
     .volume-slider::-moz-range-thumb { width: 15.5px; height: 15.5px; }
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 15.5px) / 2); }
 }
 
 /* The compact desktop footer keeps the seek row below transport; remove the

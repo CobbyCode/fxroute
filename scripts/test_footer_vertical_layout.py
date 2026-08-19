@@ -40,7 +40,10 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertIn('grid-template-areas: "track transport meter volume"', playback_bar)
         self.assertIn("min-height: 112px", playback_bar)
         self.assertNotRegex(playback_bar, r"(?m)^\s*height\s*:")
-        self.assertIn("width: min(1560px, calc(100% - 20px))", playback_bar)
+        # Window-based centering: vw keeps the outer gaps equal even when a
+        # classic scrollbar narrows the fixed-position containing block.
+        self.assertIn("left: 50vw", playback_bar)
+        self.assertIn("width: min(1560px, calc(100vw - 20px))", playback_bar)
 
     def test_desktop_track_info_has_a_hard_boundary_before_transport(self):
         desktop_blocks = re.findall(
@@ -73,8 +76,9 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
             CSS,
             r"@media \(min-width: 901px\) and \(max-width: 1180px\)[\s\S]*?min-height: 116px",
         )
-        self.assertIn("bottom: 9px", CSS)
-        self.assertIn(".playback-bar { bottom: 6px;", CSS)
+        # Bottom insets sit 1-2px closer to the viewport edge.
+        self.assertIn("bottom: 7px", CSS)
+        self.assertIn(".playback-bar { bottom: 5px;", CSS)
         self.assertRegex(CSS, r"\.control-btn\s*\{\s*width:\s*46px")
 
     def test_desktop_tablet_sliders_get_visual_refinement_only(self):
@@ -93,6 +97,18 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         )
         self.assertIn(".seek-slider { height: 5px; }", CSS)
         self.assertIn(".volume-slider { height: 5px; }", CSS)
+        # Chromium top-anchors the thumb when the 4.5px track is shorter than
+        # the thumb; the geometry-derived margin re-centers it (webkit only).
+        self.assertRegex(
+            CSS,
+            r"@media \(min-width: 901px\)[\s\S]*?"
+            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(4\.5px - 12\.5px\) / 2\)",
+        )
+        self.assertRegex(
+            CSS,
+            r"@media \(min-width: 901px\)[\s\S]*?"
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(4\.5px - 13\.5px\) / 2\)",
+        )
 
     def test_mobile_slider_polish_preserves_input_box_and_volume_hierarchy(self):
         self.assertRegex(
@@ -109,6 +125,12 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         )
         self.assertIn(".seek-slider { height: 5px; }", CSS)
         self.assertIn(".volume-slider { height: 5px; }", CSS)
+        # Same centering correction for the phone thumb sizes (15.5px volume).
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 700px\)[\s\S]*?"
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(4\.5px - 15\.5px\) / 2\)",
+        )
 
     def test_desktop_transport_nudge_is_positive_and_footer_height_unchanged(self):
         self.assertRegex(
