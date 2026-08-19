@@ -323,7 +323,7 @@ assert.ok(html.includes('data-tab="tidal"') && html.includes('<span>Tidal</span>
 assert.ok(!html.includes('<span>TIDAL</span>'), 'served navigation must not use all-caps TIDAL');
 
 // Footer clearance is part of the streaming content layout contract.
-assert.ok(css.includes('.tab-content') && css.includes('padding: 1rem 1.25rem calc(1.5rem + var(--playback-footer-space))'),
+assert.ok(css.includes('.tab-content') && css.includes('calc(2rem + var(--playback-footer-space))'),
     'tab content must reserve the centralized footer safe area');
 
 // --- TIDAL album view mirrors the library (no Play Album, facts + tracks) ------
