@@ -82,14 +82,16 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(streaming.get_provider("unknown"))
 
     async def test_tidal_without_dependency_reports_implemented_but_unavailable(self):
-        # tidalapi is not installed in the test environment: TIDAL is now a
-        # real provider (implemented=True) but not usable (available=False).
-        tidal = streaming.get_provider("tidal")
-        described = await tidal.describe()
-        self.assertTrue(described["implemented"])
-        self.assertFalse(described["available"])
-        self.assertFalse(described["installed"])
-        self.assertIsNone(described["backend"])
+        # Simulate a host without tidalapi regardless of the local environment
+        # (the dependency is present on some test hosts): TIDAL stays a real
+        # provider (implemented=True) but is not usable (available=False).
+        with mock.patch("streaming.tidal.auth.tidalapi_available", return_value=False):
+            tidal = streaming.get_provider("tidal")
+            described = await tidal.describe()
+            self.assertTrue(described["implemented"])
+            self.assertFalse(described["available"])
+            self.assertFalse(described["installed"])
+            self.assertIsNone(described["backend"])
 
 
 class SpotifyBackendTests(unittest.IsolatedAsyncioTestCase):
