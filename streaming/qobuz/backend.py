@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -26,7 +27,11 @@ PING_TIMEOUT = 1.0
 
 
 def qbzd_installed() -> bool:
-    return shutil.which("qbzd") is not None
+    if shutil.which("qbzd") is not None:
+        return True
+    # systemd user services run with a system PATH that omits ~/.local/bin
+    # (pip/pipx user installs), so probe the standard user bin dir too.
+    return shutil.which("qbzd", path=str(Path.home() / ".local/bin")) is not None
 
 
 def default_base_url() -> str:

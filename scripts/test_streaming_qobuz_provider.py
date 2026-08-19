@@ -58,6 +58,15 @@ class QobuzBackendTests(unittest.TestCase):
         with mock.patch("streaming.qobuz.backend.shutil.which", return_value=None):
             self.assertFalse(qbzd_installed())
 
+    def test_qbzd_installed_user_bin_fallback(self):
+        # systemd user services run with a system PATH that omits ~/.local/bin;
+        # a pip/pipx user install must still be detected.
+        def fake_which(name, path=None):
+            return None if path is None else "/home/tester/.local/bin/qbzd"
+
+        with mock.patch("streaming.qobuz.backend.shutil.which", side_effect=fake_which):
+            self.assertTrue(qbzd_installed())
+
 
 class QobuzCapabilityTests(unittest.TestCase):
     def test_implemented_surface_only(self):
