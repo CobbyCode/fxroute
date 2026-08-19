@@ -213,14 +213,22 @@ class TidalProvider(StreamingProvider):
         return await _to_thread(self._attach_album_enrichment, data)
 
     def _attach_album_enrichment(self, data: dict) -> dict:
-        """Compose the shared album enrichment (artist about + MB supplement)."""
+        """Compose the shared album enrichment (artist about + MB supplement).
+
+        The stable TIDAL album id is the provider release identity so distinct
+        editions never share a cache entry; TIDAL year/num_tracks disambiguate
+        equally-plausible MusicBrainz releases.
+        """
         result = dict(data)
         try:
             enrichment = self._enrichment().enriched_album(
                 "tidal",
-                str(result.get("artist_id") or ""),
+                str(result.get("id") or ""),
                 str(result.get("title") or ""),
                 str(result.get("artist") or ""),
+                provider_artist_id=str(result.get("artist_id") or ""),
+                year=result.get("year"),
+                num_tracks=result.get("num_tracks"),
             )
             result["enrichment"] = enrichment
         except Exception as exc:  # noqa: BLE001 - enrichment must never break TIDAL

@@ -23,14 +23,20 @@ Persistence
   about text, similar-artist items and attempt/refresh timestamps/errors so the
   retry/cooldown behaviour matches the library smart-metadata cache.
 * ``provider_artists``: the provider->canonical mapping (``provider`` +
-  ``provider_artist_id`` -> ``mb_artist_id``) with match state and timestamps, so
-  a confidently matched artist is never re-matched and an ambiguous/unmatched one
-  is only retried after a cooldown.  The same table drives the reverse lookup
-  (MBID -> provider artist id) used to jump from a similar artist straight to the
-  provider artist without a search.
-* ``releases``: cached MusicBrainz release supplements (release type, country,
-  label, genres) keyed by normalized album + artist, so provider album views do
-  not re-query the network per album.
+  ``provider_artist_id`` -> ``mb_artist_id``) with match state, timestamps and a
+  ``mapping_version``, so a confidently matched artist is kept permanently but
+  re-resolved once after a matcher improvement.  The same table drives the
+  reverse lookup (MBID -> provider artist id) used to jump from a similar artist
+  straight to the provider artist without a search.
+* ``releases``: one row per canonical MusicBrainz release, keyed by
+  ``mb_release_id``, holding the shared MusicBrainz supplement (release type,
+  country, label, genres and descriptions).  Cache identity is the release id —
+  matching normalisation is a separate, re-run heuristic.
+* ``provider_releases``: the provider album -> canonical release mapping
+  (``provider`` + ``provider_release_id`` -> ``mb_release_id``) with match state
+  and timestamps.  Distinct provider albums (e.g. different TIDAL editions of
+  the same title) therefore never share a cache entry even when their titles
+  normalise identically.
 
 Network access is rate limited.  A consumer that owns its request boundary (the
 library metadata store patches its ``_request_json`` in tests) can inject itself
@@ -73,6 +79,13 @@ DISCOVER_COOLDOWN_SECONDS = 7 * 24 * 60 * 60
 MISSING_DESCRIPTION_COOLDOWN = FETCH_COOLDOWN_SECONDS
 SIMILAR_MAX_ITEMS = 8
 MS_MATCH_SCORE_MIN = 90
+# Current provider-artist matcher version. A ``mapped`` provider_artists row
+# whose mapping_version predates this constant is re-resolved once with the
+# current matcher (see ArtistEnrichmentService._resolve_mapping).
+MATCHER_VERSION = 1
+# Bounded track-count tiebreak: at most this many MusicBrainz release details
+# are fetched to disambiguate equally-plausible edition candidates.
+_RELEASE_TIEBREAK_MAX = 3
 
 # Cross-instance rate limiting: library store and standalone provider instances
 # share one clock so simultaneous enrichment jobs stay below the MusicBrainz
@@ -128,6 +141,14 @@ def _json_list(values: Any) -> str:
     return json.dumps(cleaned[:6], ensure_ascii=False)
 
 
+def _date_year(value: Any) -> Optional[int]:
+    """Extract a 4-digit year from a MusicBrainz date (YYYY-MM-DD or YYYY)."""
+    match = re.search(r"(?:19|20)\d{2}", str(value or ""))
+    if match:
+        return int(match.group(0))
+    return None
+
+
 def _useful_label(value: Any) -> Optional[str]:
     label = str(value or "").strip()
     if not label:
@@ -158,10 +179,6 @@ def _wikidata_id_from_relations(relations: list[Any]) -> Optional[str]:
         if match:
             return match.group(1)
     return None
-
-
-def _release_key(album: str, artist: str) -> str:
-    return f"{_normalize_text(album)}::{_normalize_text(artist)}"
 
 
 def _iso_timestamp(value: Any) -> Optional[float]:
@@ -231,15 +248,31 @@ class ArtistEnrichmentStore:
                 )
                 """
             )
+            # Additive: matcher version so a confident mapping is kept forever
+            # (no TTL) but re-resolved once after a matcher improvement.
+            self._ensure_column(conn, "provider_artists", "mapping_version", "INTEGER NOT NULL DEFAULT 0")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_provider_artists_mb ON provider_artists(provider, mb_artist_id)")
+
+            # Legacy releases table was keyed by a normalized (album, artist)
+            # text signature, so distinct editions of the same title collided on
+            # one identity. It is renamed (keeping any existing rows) and the
+            # canonical `releases` table takes over, keyed by MusicBrainz
+            # release id. Matching normalisation is separate from cache identity.
+            legacy = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='releases'"
+            ).fetchone()
+            if legacy:
+                cols = {row["name"] for row in conn.execute("PRAGMA table_info(releases)").fetchall()}
+                if "release_key" in cols:
+                    conn.execute("ALTER TABLE releases RENAME TO releases_legacy")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS releases (
-                    release_key TEXT PRIMARY KEY,
+                    mb_release_id TEXT PRIMARY KEY,
+                    mb_release_group_id TEXT,
+                    mb_artist_id TEXT,
                     album TEXT,
                     artist TEXT,
-                    mb_artist_id TEXT,
-                    mb_release_id TEXT,
-                    mb_release_group_id TEXT,
                     release_type TEXT,
                     year INTEGER,
                     country TEXT,
@@ -252,7 +285,28 @@ class ArtistEnrichmentStore:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_provider_artists_mb ON provider_artists(provider, mb_artist_id)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS provider_releases (
+                    provider TEXT NOT NULL,
+                    provider_release_id TEXT NOT NULL,
+                    album TEXT,
+                    artist TEXT,
+                    mb_release_id TEXT,
+                    match_state TEXT,
+                    attempted_at TEXT,
+                    matched_at TEXT,
+                    error TEXT,
+                    PRIMARY KEY (provider, provider_release_id)
+                )
+                """
+            )
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     # -- artists (canonical MB artist, about + similar caches) ----------------
 
@@ -336,15 +390,17 @@ class ArtistEnrichmentStore:
         attempted_at: str,
         matched_at: Optional[str],
         error: Optional[str],
+        mapping_version: int = 0,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO provider_artists (
                     provider, provider_artist_id, name, art_url, mb_artist_id,
-                    canonical_name, match_state, attempted_at, matched_at, error
+                    canonical_name, match_state, attempted_at, matched_at, error,
+                    mapping_version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(provider, provider_artist_id) DO UPDATE SET
                     name = excluded.name,
                     art_url = CASE
@@ -356,7 +412,8 @@ class ArtistEnrichmentStore:
                     match_state = excluded.match_state,
                     attempted_at = excluded.attempted_at,
                     matched_at = COALESCE(excluded.matched_at, provider_artists.matched_at),
-                    error = excluded.error
+                    error = excluded.error,
+                    mapping_version = excluded.mapping_version
                 """,
                 (
                     provider,
@@ -369,6 +426,7 @@ class ArtistEnrichmentStore:
                     attempted_at,
                     matched_at,
                     error,
+                    int(mapping_version or 0),
                 ),
             )
 
@@ -421,17 +479,18 @@ class ArtistEnrichmentStore:
                 (provider, next(iter(matched_ids))),
             ).fetchone()
 
-    # -- releases (album supplement cache) ------------------------------------
+    # -- releases (canonical MB release + provider album mapping) --------------
 
-    def get_release(self, release_key: str) -> Optional[sqlite3.Row]:
+    def get_release(self, mb_release_id: str) -> Optional[sqlite3.Row]:
+        """Return the canonical MusicBrainz release row by its release id."""
         with self._connect() as conn:
             return conn.execute(
-                "SELECT * FROM releases WHERE release_key = ?", (release_key,)
+                "SELECT * FROM releases WHERE mb_release_id = ?", (mb_release_id,)
             ).fetchone()
 
     def set_release(
         self,
-        release_key: str,
+        mb_release_id: str,
         *,
         album: str,
         artist: str,
@@ -439,21 +498,21 @@ class ArtistEnrichmentStore:
         attempted_at: str,
         error: Optional[str],
     ) -> None:
+        """Upsert the canonical (MusicBrainz-release-keyed) supplement row."""
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO releases (
-                    release_key, album, artist, mb_artist_id, mb_release_id,
+                    mb_release_id, album, artist, mb_artist_id,
                     mb_release_group_id, release_type, year, country, label,
                     genres_json, artist_description, album_description,
                     attempted_at, error
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(release_key) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(mb_release_id) DO UPDATE SET
                     album = excluded.album,
                     artist = excluded.artist,
                     mb_artist_id = excluded.mb_artist_id,
-                    mb_release_id = excluded.mb_release_id,
                     mb_release_group_id = excluded.mb_release_group_id,
                     release_type = excluded.release_type,
                     year = excluded.year,
@@ -466,11 +525,10 @@ class ArtistEnrichmentStore:
                     error = excluded.error
                 """,
                 (
-                    release_key,
+                    mb_release_id,
                     album,
                     artist,
                     data.get("mb_artist_id"),
-                    data.get("mb_release_id"),
                     data.get("mb_release_group_id"),
                     data.get("release_type"),
                     data.get("year"),
@@ -480,6 +538,57 @@ class ArtistEnrichmentStore:
                     data.get("artist_description"),
                     data.get("album_description"),
                     attempted_at,
+                    error,
+                ),
+            )
+
+    def get_provider_release(self, provider: str, provider_release_id: str) -> Optional[sqlite3.Row]:
+        """Return the provider album -> canonical release mapping row."""
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT * FROM provider_releases WHERE provider = ? AND provider_release_id = ?",
+                (provider, provider_release_id),
+            ).fetchone()
+
+    def set_provider_release(
+        self,
+        provider: str,
+        provider_release_id: str,
+        *,
+        album: str,
+        artist: str,
+        mb_release_id: Optional[str],
+        match_state: str,
+        attempted_at: str,
+        matched_at: Optional[str],
+        error: Optional[str],
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO provider_releases (
+                    provider, provider_release_id, album, artist, mb_release_id,
+                    match_state, attempted_at, matched_at, error
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider, provider_release_id) DO UPDATE SET
+                    album = excluded.album,
+                    artist = excluded.artist,
+                    mb_release_id = excluded.mb_release_id,
+                    match_state = excluded.match_state,
+                    attempted_at = excluded.attempted_at,
+                    matched_at = COALESCE(excluded.matched_at, provider_releases.matched_at),
+                    error = excluded.error
+                """,
+                (
+                    provider,
+                    provider_release_id,
+                    album,
+                    artist,
+                    mb_release_id,
+                    match_state,
+                    attempted_at,
+                    matched_at,
                     error,
                 ),
             )
@@ -534,11 +643,16 @@ class ArtistEnrichmentService:
         art_url: str = "",
         album_titles: list[str] | None = None,
         load_similar: bool = True,
+        force_rematch: bool = False,
     ) -> dict[str, Any]:
         """Resolve a provider artist and return cached about + similar data.
 
         Never raises for enrichment problems: network/matching errors degrade to
         an ``available=False`` result so the provider's own data still renders.
+
+        ``force_rematch`` is the internal maintenance path used to re-resolve a
+        mapping with the current matcher regardless of its stored version; there
+        is no UI for it.
         """
         provider = (provider or "").strip()
         provider_artist_id = str(provider_artist_id or "").strip()
@@ -562,7 +676,12 @@ class ArtistEnrichmentService:
             return result
 
         mapping = self._resolve_mapping(
-            provider, provider_artist_id, name, art_url=art_url, album_titles=album_titles
+            provider,
+            provider_artist_id,
+            name,
+            art_url=art_url,
+            album_titles=album_titles,
+            force_rematch=force_rematch,
         )
         result["match_state"] = mapping.get("match_state", "unmatched")
         result["error"] = mapping.get("error")
@@ -582,10 +701,13 @@ class ArtistEnrichmentService:
     def enriched_album(
         self,
         provider: str,
-        provider_artist_id: str,
+        provider_release_id: str,
         album_title: str,
         artist_name: str,
         *,
+        provider_artist_id: str = "",
+        year: int | None = None,
+        num_tracks: int | None = None,
         art_url: str = "",
     ) -> dict[str, Any]:
         """Return the artist about plus additive MusicBrainz release metadata.
@@ -593,6 +715,12 @@ class ArtistEnrichmentService:
         The provider's own album fields stay untouched at the top level; the
         ``supplement`` dict only carries MusicBrainz fields the provider does
         not already expose (release type, country, label, genres).
+
+        ``provider_release_id`` is the provider's stable album identity (TIDAL
+        album id, local library album_key); it keys the provider album -> release
+        mapping so different editions never share one cache entry.  ``year`` and
+        ``num_tracks`` are optional provider hints used to disambiguate among
+        equally-plausible MusicBrainz releases.
         """
         artist = self.enriched_artist(
             provider,
@@ -604,7 +732,14 @@ class ArtistEnrichmentService:
         )
         supplement: dict[str, Any] = {}
         if artist.get("available") and artist.get("mb_artist_id"):
-            release = self._release_supplement(album_title, artist_name)
+            release = self._provider_release_supplement(
+                provider,
+                provider_release_id,
+                album_title,
+                artist_name,
+                year=year,
+                num_tracks=num_tracks,
+            )
             for key in ("release_type", "country", "label", "genres"):
                 value = release.get(key)
                 if value in (None, "", []):
@@ -632,24 +767,106 @@ class ArtistEnrichmentService:
         *,
         art_url: str,
         album_titles: list[str] | None,
+        force_rematch: bool = False,
     ) -> dict[str, Any]:
+        """Resolve or re-resolve a provider artist to a canonical MB artist.
+
+        A confident ``mapped`` row at or above :data:`MATCHER_VERSION` is a
+        permanent cache hit (no TTL); there is intentionally no periodic
+        re-matching of stable id pairs.  A mapped row with an older version — or
+        a forced rematch — is re-resolved once with the current matcher.
+
+        Rematch outcomes:
+
+        * successful: the mapping is updated and stamped at the current matcher
+          version;
+        * deterministically declined (the matcher ran and found no safer
+          replacement — ambiguous/unmatched): the existing mapping is kept and
+          stamped at the current version, so the verdict of a completed run is
+          recorded without re-hammering;
+        * transient failure (timeout / 429 / 5xx / network): the existing
+          mapping stays usable and keeps its *old* ``mapping_version``, the
+          failure is recorded, and the transient cooldown suppresses a new
+          rematch until it expires — a failed network call is never mistaken
+          for a completed matcher run.
+        """
         row = self.store.get_provider_artist(provider, provider_artist_id)
         now_ts = time.time()
         if row and row["mb_artist_id"] and row["match_state"] == "mapped":
-            if art_url:
+            mapped_version = int(row["mapping_version"] or 0)
+            if not force_rematch and mapped_version >= MATCHER_VERSION:
+                if art_url:
+                    self.store.set_provider_artist(
+                        provider, provider_artist_id,
+                        name=row["name"] or name, art_url=art_url,
+                        mb_artist_id=row["mb_artist_id"], canonical_name=row["canonical_name"],
+                        match_state="mapped", attempted_at=row["attempted_at"] or _utc_now(),
+                        matched_at=row["matched_at"] or _utc_now(), error=None,
+                        mapping_version=MATCHER_VERSION,
+                    )
+                return {
+                    "match_state": "mapped",
+                    "mb_artist_id": row["mb_artist_id"],
+                    "canonical_name": row["canonical_name"],
+                    "cached": True,
+                    "error": None,
+                }
+
+            # Version/force rematch: exactly one re-resolution with the current
+            # matcher.  A previous transient failure (error set + attempt within
+            # the transient window) suppresses an immediate retry so a flaky
+            # MusicBrainz is not hammered on every artist open; the mapping keeps
+            # rendering until the cooldown expires.
+            recent_attempt = _iso_timestamp(row["attempted_at"]) if not force_rematch else None
+            if recent_attempt is not None and row["error"] and (now_ts - recent_attempt) < TRANSIENT_ERROR_RETRY_SECONDS:
+                return {
+                    "match_state": "mapped",
+                    "mb_artist_id": row["mb_artist_id"],
+                    "canonical_name": row["canonical_name"],
+                    "cached": True,
+                    "error": row["error"],
+                }
+
+            rematch = self._match_artist_by_name(name, album_titles=album_titles or [])
+            now = _utc_now()
+            if rematch["match_state"] == "mapped" and rematch.get("mb_artist_id"):
+                # Successful re-resolution: adopt (or confirm) the mapping at the
+                # current matcher version and clear the failure state.
                 self.store.set_provider_artist(
                     provider, provider_artist_id,
-                    name=row["name"] or name, art_url=art_url,
-                    mb_artist_id=row["mb_artist_id"], canonical_name=row["canonical_name"],
-                    match_state="mapped", attempted_at=row["attempted_at"] or _utc_now(),
-                    matched_at=row["matched_at"] or _utc_now(), error=None,
+                    name=name, art_url=art_url,
+                    mb_artist_id=rematch["mb_artist_id"], canonical_name=rematch["canonical_name"],
+                    match_state="mapped", attempted_at=now, matched_at=now,
+                    error=None, mapping_version=MATCHER_VERSION,
                 )
+                return {
+                    "match_state": "mapped",
+                    "mb_artist_id": rematch["mb_artist_id"],
+                    "canonical_name": rematch["canonical_name"],
+                    "cached": False,
+                    "error": None,
+                }
+
+            deterministic = rematch["match_state"] in {"unmatched", "ambiguous"}
+            # Preserve the existing mapping either way: a determinate decline
+            # (matcher completed without a safer replacement) or a transient
+            # failure must never destroy a working mapping.  Only a completed
+            # run stamps the current version; a transient failure keeps the old
+            # version so the expired cooldown allows a later version-rematch.
+            self.store.set_provider_artist(
+                provider, provider_artist_id,
+                name=row["name"] or name, art_url=row["art_url"] or art_url,
+                mb_artist_id=row["mb_artist_id"], canonical_name=row["canonical_name"],
+                match_state="mapped", attempted_at=now, matched_at=row["matched_at"] or now,
+                error=rematch.get("error") or "rematch declined",
+                mapping_version=MATCHER_VERSION if deterministic else mapped_version,
+            )
             return {
                 "match_state": "mapped",
                 "mb_artist_id": row["mb_artist_id"],
                 "canonical_name": row["canonical_name"],
                 "cached": True,
-                "error": None,
+                "error": rematch.get("error"),
             }
 
         if row and row["attempted_at"]:
@@ -676,6 +893,7 @@ class ArtistEnrichmentService:
             match_state=match["match_state"],
             attempted_at=now, matched_at=matched_at,
             error=match.get("error"),
+            mapping_version=MATCHER_VERSION if match["match_state"] == "mapped" else 0,
         )
         match["cached"] = False
         return match
@@ -939,20 +1157,40 @@ class ArtistEnrichmentService:
 
     # -- release supplement ---------------------------------------------------
 
-    def _release_supplement(self, album: str, artist: str) -> dict[str, Any]:
-        """Return additive MusicBrainz release fields for a provider album.
+    def _provider_release_supplement(
+        self,
+        provider: str,
+        provider_release_id: str,
+        album: str,
+        artist: str,
+        *,
+        year: int | None = None,
+        num_tracks: int | None = None,
+    ) -> dict[str, Any]:
+        """Return additive MusicBrainz release fields for one provider album.
 
-        Cached in the shared ``releases`` store keyed by normalized album +
-        artist; the same (album, artist) is never re-queried per provider album.
+        Cache identity is the provider album -> canonical release mapping
+        (``provider`` + ``provider_release_id``), never the normalized title.
+        Different editions (distinct provider album ids) therefore keep their
+        own mapping and their own canonical release row; a mapped provider album
+        is served from the shared ``releases`` cache without a new request.
         """
+        provider = (provider or "").strip()
+        provider_release_id = str(provider_release_id or "").strip()
         album = str(album or "").strip()
         artist = str(artist or "").strip()
-        key = _release_key(album, artist)
-        if not album or not artist:
+        if not provider or not provider_release_id or not album or not artist:
             return {}
-        row = self.store.get_release(key)
-        if row and row["mb_release_id"]:
-            return _release_supplement_from_row(row)
+
+        row = self.store.get_provider_release(provider, provider_release_id)
+        if row and row["mb_release_id"] and row["match_state"] == "mapped":
+            canonical = self.store.get_release(str(row["mb_release_id"]))
+            if canonical is not None:
+                return _release_supplement_from_row(canonical)
+            # The canonical row vanished (tampered/migrated): re-resolve fresh,
+            # ignoring any cooldown, to repair the cache instead of suppressing.
+            row = None
+
         attempted = _iso_timestamp(row["attempted_at"]) if row else None
         if attempted:
             cooldown = FETCH_COOLDOWN_SECONDS if (row and row["error"] == "no safe MusicBrainz match") else TRANSIENT_ERROR_RETRY_SECONDS
@@ -961,25 +1199,86 @@ class ArtistEnrichmentService:
 
         now = _utc_now()
         try:
-            match = self.match_release(album, artist, include_descriptions=False)
+            match = self.match_release(album, artist, include_descriptions=False, year=year, num_tracks=num_tracks)
             if match.get("mb_release_id"):
-                self.store.set_release(key, album=album, artist=artist, data=match, attempted_at=now, error=None)
+                release_id = str(match["mb_release_id"])
+                self.store.set_release(
+                    release_id, album=album, artist=artist, data=match, attempted_at=now, error=None
+                )
+                self.store.set_provider_release(
+                    provider, provider_release_id, album=album, artist=artist,
+                    mb_release_id=release_id, match_state="mapped",
+                    attempted_at=now, matched_at=now, error=None,
+                )
                 return _release_supplement_from_mapping(match)
-            if match.get("error"):
-                self.store.set_release(key, album=album, artist=artist, data={}, attempted_at=now, error=match["error"])
-                return {}
-            self.store.set_release(key, album=album, artist=artist, data={}, attempted_at=now, error="no safe MusicBrainz match")
+            # Not confidently matched (ambiguous/unmatched/transient): never
+            # deliver a guessed supplement; record the state + cooldown.
+            match_state = match.get("match_state") or "failed"
+            self.store.set_provider_release(
+                provider, provider_release_id, album=album, artist=artist,
+                mb_release_id=None, match_state=match_state,
+                attempted_at=now, matched_at=None, error=match.get("error"),
+            )
             return {}
         except Exception as exc:  # noqa: BLE001 - enrichment must degrade quietly
             logger.info("MusicBrainz release supplement failed for %s - %s: %s", artist, album, exc)
-            self.store.set_release(key, album=album, artist=artist, data={}, attempted_at=now, error=str(exc)[:200])
+            self.store.set_provider_release(
+                provider, provider_release_id, album=album, artist=artist,
+                mb_release_id=None, match_state="failed",
+                attempted_at=now, matched_at=None, error=str(exc)[:200],
+            )
             return {}
 
-    def match_release(self, album: str, artist: str, *, include_descriptions: bool = True) -> dict[str, Any]:
+    def record_provider_release(
+        self,
+        provider: str,
+        provider_release_id: str,
+        album: str,
+        artist: str,
+        match: dict[str, Any],
+    ) -> None:
+        """Record a completed release match into the shared provider mapping.
+
+        Used by the library smart-metadata enrich path so its (album_key-keyed)
+        albums share the canonical MusicBrainz release rows with streaming
+        providers instead of duplicating them.  Best-effort: never raises.
+        """
+        release_id = str(match.get("mb_release_id") or "").strip()
+        provider_release_id = str(provider_release_id or "").strip()
+        if not provider or not provider_release_id or not release_id:
+            return
+        try:
+            now = _utc_now()
+            self.store.set_release(
+                release_id, album=str(album or ""), artist=str(artist or ""),
+                data=match, attempted_at=now, error=None,
+            )
+            self.store.set_provider_release(
+                str(provider), provider_release_id,
+                album=str(album or ""), artist=str(artist or ""),
+                mb_release_id=release_id, match_state="mapped",
+                attempted_at=now, matched_at=now, error=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort shared cache
+            logger.debug("Provider release record failed for %s:%s: %s", provider, provider_release_id, exc)
+
+    def match_release(
+        self,
+        album: str,
+        artist: str,
+        *,
+        include_descriptions: bool = True,
+        year: int | None = None,
+        num_tracks: int | None = None,
+    ) -> dict[str, Any]:
         """Resolve a release by exact album/artist and enrich it.
 
         Mirrors the library smart-metadata release matcher: candidates must score
-        at least 90 and normalize to the requested album/artist credit.  Returns
+        at least 90 and normalize to the requested album/artist credit.  When
+        several candidates are equally plausible (typically editions of the same
+        album), the provider's ``year`` and ``num_tracks`` act as soft
+        disambiguation signals; genuinely unsure branches return "no safe
+        MusicBrainz match" instead of a possibly wrong edition's data.  Returns
         the shared release field set (MBIDs, release type, year, country, label,
         genres) plus the artist/album descriptions when requested.
         """
@@ -992,10 +1291,11 @@ class ArtistEnrichmentService:
                 {"query": query, "fmt": "json", "limit": 5},
             )
         except Exception as exc:  # noqa: BLE001 - enrichment must degrade quietly
-            return {"error": str(exc)[:200]}
+            return {"error": str(exc)[:200], "match_state": "failed"}
         releases = payload.get("releases") or []
         album_norm = _normalize_text(album)
         artist_norm = _normalize_text(artist)
+        candidates: list[dict[str, Any]] = []
         for release in releases:
             try:
                 score = int(release.get("score") or 0)
@@ -1015,8 +1315,81 @@ class ArtistEnrichmentService:
             release_id = release.get("id")
             if not release_id:
                 continue
-            return self._lookup_release(str(release_id), release, include_descriptions=include_descriptions)
-        return {"error": "no safe MusicBrainz match"}
+            candidates.append(
+                {
+                    "mb_release_id": str(release_id),
+                    "score": score,
+                    "year": _date_year(release.get("date")),
+                    "release": release,
+                }
+            )
+        chosen, confident = self._disambiguate_release_candidates(
+            candidates, year=year, num_tracks=num_tracks
+        )
+        if not confident or chosen is None:
+            return {"error": "no safe MusicBrainz match", "match_state": "ambiguous" if len(candidates) > 1 else "unmatched"}
+        return self._lookup_release(chosen["mb_release_id"], chosen["release"], include_descriptions=include_descriptions)
+
+    def _disambiguate_release_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        year: int | None,
+        num_tracks: int | None,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Pick one release among equally plausible candidates.
+
+        Signals are soft disambiguation, never hard filters that drop otherwise
+        fine matches: ``year`` (from the provider, already present in the search
+        payload) narrows the pool, ``num_tracks`` (bounded per-candidate detail
+        lookup) breaks remaining ties, and a unique MusicBrainz best score is
+        the final fallback.  A tie that survives every signal yields ``(None,
+        False)`` so no guessed edition supplement is delivered.
+        """
+        if not candidates:
+            return None, False
+        if len(candidates) == 1:
+            return candidates[0], True
+
+        pool = list(candidates)
+        if year is not None:
+            exact = [candidate for candidate in pool if candidate.get("year") == year]
+            if len(exact) == 1:
+                return exact[0], True
+            if len(exact) > 1:
+                pool = exact
+            # exact == 0: the provider year matches no candidate; keep the full
+            # pool (year is unhelpful here, not a reason to reject).
+
+        if num_tracks is not None and len(pool) <= _RELEASE_TIEBREAK_MAX:
+            hits = []
+            for candidate in pool:
+                track_count = self._release_track_count(candidate["mb_release_id"])
+                if track_count is not None and track_count == num_tracks:
+                    hits.append(candidate)
+            if len(hits) == 1:
+                return hits[0], True
+            if len(hits) > 1:
+                return None, False  # several editions share the track count
+            # no hit: track count unhelpful; keep the pool.
+
+        top_score = max(candidate["score"] for candidate in pool)
+        top = [candidate for candidate in pool if candidate["score"] == top_score]
+        if len(top) == 1:
+            return top[0], True  # MusicBrainz's best-scored candidate
+        return None, False
+
+    def _release_track_count(self, mb_release_id: str) -> Optional[int]:
+        """Return a release's track count from its MusicBrainz record."""
+        try:
+            payload = self._request_json(
+                f"{MUSICBRAINZ_API}/release/{quote(str(mb_release_id))}",
+                {"fmt": "json"},
+            )
+            value = payload.get("track-count")
+            return int(value) if value else None
+        except Exception:
+            return None
 
     def _lookup_release(
         self,
@@ -1065,10 +1438,7 @@ class ArtistEnrichmentService:
             or payload.get("date")
             or ""
         )
-        year = None
-        match = re.search(r"(?:19|20)\d{2}", date)
-        if match:
-            year = int(match.group(0))
+        year = _date_year(date)
         artist_id = first_artist.get("id")
         release_group_id = release_group.get("id")
         result: dict[str, Any] = {

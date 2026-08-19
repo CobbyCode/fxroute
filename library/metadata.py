@@ -630,6 +630,14 @@ class LibraryMetadataStore:
             self._mark_attempt(row["album_key"], "no safe MusicBrainz match")
             return
 
+        # Share the canonical MusicBrainz release + the library album mapping
+        # through the shared enrichment owner so streaming providers reuse the
+        # same release row instead of duplicating it.  The library's own albums
+        # table stays the compatibility copy.
+        self.artist_enrichment.record_provider_release(
+            "library", str(row["album_key"]), album, artist, match
+        )
+
         cover_path, cover_mime = (None, None)
         if not row["local_cover_source"]:
             cover_path, cover_mime = self._fetch_cover(

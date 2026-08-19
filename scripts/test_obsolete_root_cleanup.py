@@ -10,7 +10,7 @@ Verifies that scripts/fxroute_obsolete_root_cleanup.py:
 - is idempotent (running twice is harmless);
 - skips removal when the new package layout is not fully installed;
 - the manifest is authoritative: it covers every root module renamed into
-  a package by the migration commits and none of the nine intentionally
+  a package by the migration commits and none of the intentionally
   remaining root Python modules.
 """
 
@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "fxroute_obsolete_root_cleanup.py"
 
 REMAINING_ROOT_MODULES = (
+    "artist_enrichment.py",
     "config.py",
     "downloader.py",
     "http_errors.py",
