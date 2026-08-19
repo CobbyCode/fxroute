@@ -1568,11 +1568,6 @@ body {
     gap: var(--control-gap);
     flex-wrap: wrap;
 }
-.library-title-block {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-}
 .library-toolbar {
     display: flex;
     align-items: center;
