@@ -233,6 +233,12 @@ static void test_peak_safety_freezes_previous_gain(void) {
     left[0] = 0.95f;
     check(fx_autogain_process(gain, left, right, out_left, out_right, BLOCK) == 0,
           "unsafe candidate block still processes");
+    /* The worker measures asynchronously: the unsafe block must be drained
+     * and the peak-safety freeze published before comparing gains, otherwise
+     * a mid-drain transient (a quiet pre-freeze measurement) fails the exact
+     * equality spuriously. */
+    check(wait_for_gain_settled(gain, 8U),
+          "peak-safety freeze is published after the unsafe block");
     check_close(fx_autogain_get_measurement(gain).gain, safe_gain, 0.0,
                  "sample-peak safety rejects a clipping gain update");
     check(fabsf(out_left[0]) < 1.0f,
