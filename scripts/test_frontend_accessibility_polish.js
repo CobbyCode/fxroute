@@ -45,6 +45,15 @@ check('settings tooltip is rendered by the existing trigger pattern', /\.brand-l
 check('settings tooltip appears on keyboard focus', /\.brand-lockup-button:focus-visible::after/.test(css));
 check('settings tooltip does not participate in layout flow', /\.brand-lockup-button\[data-tooltip\]::after[\s\S]*?position:\s*absolute/.test(css));
 
+// The power button reuses the same custom tooltip style as the brand trigger
+// instead of the native browser title tooltip.
+check('power button uses the custom tooltip attribute', /id="power-menu-toggle"[\s\S]*?data-tooltip="System power"/.test(html));
+check('power button no longer uses the native title tooltip', !/id="power-menu-toggle"[^>]*title="/.test(html));
+check('power button keeps its accessible name', /id="power-menu-toggle"[\s\S]*?aria-label="System power"/.test(html));
+check('power tooltip reuses the shared tooltip styling', /\.power-btn\[data-tooltip\]::after/.test(css));
+check('power tooltip is anchored to the button edge', /\.power-btn\[data-tooltip\]::after[\s\S]*?right:\s*0/.test(css));
+check('power tooltip stays hidden while the menu is open', /\.power-btn\[data-tooltip\]\[aria-expanded="true"\]::after/.test(css));
+
 // Measurement graph controls get an explicit two-row mobile layout.
 check('mobile measurement toolbar uses a grid', /@media \(max-width: 599px\)[\s\S]*?\.measurement-graph-header-actions[\s\S]*?display:\s*grid/.test(css));
 check('mobile measurement view controls occupy row one', /\.measurement-view-toggle[\s\S]*?grid-row:\s*1/.test(css));

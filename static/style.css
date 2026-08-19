@@ -163,11 +163,14 @@ body {
 .brand-lockup-button:focus-visible {
     outline: none;
 }
-.brand-lockup-button[data-tooltip]::after {
+/* Custom CSS tooltips (header buttons): the brand/settings trigger and the
+   power button use the same look. The attribute selector keeps the shared
+   visuals in one place; per-button rules only set the horizontal anchor. */
+.brand-lockup-button[data-tooltip]::after,
+.power-btn[data-tooltip]::after {
     content: attr(data-tooltip);
     position: absolute;
     top: calc(100% + 0.45rem);
-    left: 0;
     z-index: 3000;
     padding: 0.32rem 0.52rem;
     border: 1px solid var(--border-strong);
@@ -185,14 +188,30 @@ body {
     transform: translateY(-2px);
     transition: opacity 0.15s var(--ease), visibility 0.15s var(--ease), transform 0.15s var(--ease);
 }
+.brand-lockup-button[data-tooltip]::after {
+    left: 0;
+}
+.power-btn[data-tooltip]::after {
+    right: 0;
+}
 .brand-lockup-button[data-tooltip]:hover::after,
-.brand-lockup-button:focus-visible::after {
+.brand-lockup-button:focus-visible::after,
+.power-btn[data-tooltip]:hover::after,
+.power-btn:focus-visible::after {
     opacity: 1;
     visibility: visible;
     transform: translateY(0);
 }
+/* The open power menu covers the area under the button, so its tooltip must
+   stay hidden while the button is expanded. */
+.power-btn[data-tooltip][aria-expanded="true"]::after {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-2px);
+}
 @media (hover: none), (pointer: coarse) {
-    .brand-lockup-button[data-tooltip]::after {
+    .brand-lockup-button[data-tooltip]::after,
+    .power-btn[data-tooltip]::after {
         display: none;
     }
 }
@@ -258,6 +277,7 @@ body {
     align-items: center;
 }
 .power-btn {
+    position: relative;
     width: 34px;
     height: 34px;
     display: inline-flex;
