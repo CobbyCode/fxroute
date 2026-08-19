@@ -641,6 +641,178 @@ const elements = {
     powerSuspend: document.getElementById('power-suspend'),
     powerShutdown: document.getElementById('power-shutdown'),
 };
+
+function createFxrouteModalManager() {
+    const stack = [];
+    const managedInertElements = new Set();
+
+    function focusElement(element) {
+        if (!element || typeof element.focus !== 'function') return false;
+        try {
+            element.focus({ preventScroll: true });
+        } catch (error) {
+            element.focus();
+        }
+        return document.activeElement === element;
+    }
+
+    function isVisible(element) {
+        const closedDetails = element.closest('details:not([open])');
+        if (closedDetails && element.tagName !== 'SUMMARY') return false;
+        return !element.hidden
+            && element.getAttribute('aria-hidden') !== 'true'
+            && (element.offsetParent !== null || element === document.activeElement);
+    }
+
+    function getFocusableElements(root) {
+        if (!root) return [];
+        const selector = [
+            'a[href]',
+            'area[href]',
+            'button:not([disabled])',
+            'input:not([disabled]):not([type="hidden"])',
+            'select:not([disabled])',
+            'textarea:not([disabled])',
+            'summary',
+            '[tabindex]:not([tabindex="-1"])',
+        ].join(',');
+        return Array.from(root.querySelectorAll(selector)).filter(isVisible);
+    }
+
+    function clearManagedInert() {
+        managedInertElements.forEach(element => {
+            element.inert = false;
+        });
+        managedInertElements.clear();
+    }
+
+    function containsProtectedRoot(element, protectedRoots) {
+        return protectedRoots.some(root => element === root || element.contains(root));
+    }
+
+    function applyBackgroundInert(entry) {
+        clearManagedInert();
+        if (!entry) return;
+
+        const protectedRoots = [entry.root, ...(entry.siblingRoots || [])]
+            .filter(Boolean);
+        protectedRoots.forEach(root => {
+            let node = root;
+            while (node && node.parentElement) {
+                const parent = node.parentElement;
+                Array.from(parent.children).forEach(sibling => {
+                    if (sibling === node || containsProtectedRoot(sibling, protectedRoots)) return;
+                    if (!(sibling instanceof HTMLElement) || sibling.inert) return;
+                    sibling.inert = true;
+                    managedInertElements.add(sibling);
+                });
+                node = parent;
+            }
+        });
+    }
+
+    function focusInitial(entry) {
+        const focusables = getFocusableElements(entry.root);
+        if (entry.initialFocus && isVisible(entry.initialFocus) && focusElement(entry.initialFocus)) return;
+        if (focusElement(focusables[0])) return;
+        focusElement(entry.dialog || entry.root);
+    }
+
+    function open(root, options = {}) {
+        if (!root) return;
+        const existingIndex = stack.findIndex(entry => entry.root === root);
+        if (existingIndex >= 0) {
+            const existing = stack.splice(existingIndex, 1)[0];
+            stack.push(existing);
+            applyBackgroundInert(existing);
+            focusInitial(existing);
+            return;
+        }
+
+        const dialog = options.dialog
+            || (root.matches?.('[role="dialog"]') ? root : root.querySelector?.('[role="dialog"]'))
+            || root;
+        const opener = options.opener
+            || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+        const entry = {
+            root,
+            dialog,
+            opener,
+            initialFocus: options.initialFocus || null,
+            siblingRoots: options.siblingRoots || [],
+            onEscape: options.onEscape,
+        };
+        stack.push(entry);
+        applyBackgroundInert(entry);
+        focusInitial(entry);
+    }
+
+    function close(root) {
+        const index = stack.findIndex(entry => entry.root === root);
+        if (index < 0) return;
+        const wasTop = index === stack.length - 1;
+        const [entry] = stack.splice(index, 1);
+        applyBackgroundInert(stack[stack.length - 1]);
+        if (!wasTop) return;
+
+        const replacement = stack[stack.length - 1];
+        if (replacement) {
+            if (replacement.root.contains(entry.opener)) {
+                focusElement(entry.opener);
+            } else {
+                focusInitial(replacement);
+            }
+            return;
+        }
+        focusElement(entry.opener);
+    }
+
+    function isOpen(root) {
+        return stack.some(entry => entry.root === root);
+    }
+
+    document.addEventListener('keydown', event => {
+        const entry = stack[stack.length - 1];
+        if (!entry) return;
+
+        if (event.key === 'Escape' && typeof entry.onEscape === 'function') {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            void entry.onEscape(event);
+            return;
+        }
+        if (event.key !== 'Tab') return;
+
+        const focusables = getFocusableElements(entry.root);
+        if (!focusables.length) {
+            event.preventDefault();
+            focusElement(entry.dialog || entry.root);
+            return;
+        }
+
+        const active = document.activeElement;
+        if (!entry.root.contains(active)) {
+            event.preventDefault();
+            focusElement(event.shiftKey ? focusables[focusables.length - 1] : focusables[0]);
+            return;
+        }
+
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (event.shiftKey && active === first) {
+            event.preventDefault();
+            focusElement(last);
+        } else if (!event.shiftKey && active === last) {
+            event.preventDefault();
+            focusElement(first);
+        }
+    }, true);
+
+    return { open, close, isOpen };
+}
+
+window.FXRouteModal = createFxrouteModalManager();
+
 // Initialization
 document.addEventListener('DOMContentLoaded', () => {
     try { updatePowerButtonConnectionState(); } catch(e) { console.error('updatePowerButtonConnectionState crashed:', e); }
@@ -1105,11 +1277,6 @@ function setupSettingsActions() {
     });
     const backdrop = elements.settingsPanel.querySelector('.manage-overlay-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => toggleSettingsPanel(false));
-    document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && !elements.settingsPanel.classList.contains('hidden')) {
-            toggleSettingsPanel(false);
-        }
-    });
     renderSettingsPanel();
 }
 
@@ -1520,9 +1687,13 @@ function toggleSettingsPanel(forceOpen = null) {
         renderSettingsPanel();
         void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), fetchHardwareStatus(), fetchMusicLibraries(), checkFxrouteUpdate({ silent: true })]);
         startSettingsStatusPolling();
-        elements.settingsCloseBtn?.focus();
+        window.FXRouteModal?.open(elements.settingsPanel, {
+            initialFocus: elements.settingsCloseBtn,
+            onEscape: () => toggleSettingsPanel(false),
+        });
     } else {
         stopSettingsStatusPolling();
+        window.FXRouteModal?.close(elements.settingsPanel);
     }
 }
 
@@ -2563,7 +2734,14 @@ function setupPlaybackControls() {
     if (elements.btnClearQueue) elements.btnClearQueue.addEventListener('click', clearQueue);
     if (elements.trackFavoriteBtn) elements.trackFavoriteBtn.addEventListener('click', toggleCurrentTrackFavorite);
     elements.volumeSlider.addEventListener('input', handleVolumeChange);
-    if (elements.playbackCover) elements.playbackCover.addEventListener('click', toggleCoverDetailCard);
+    if (elements.playbackCover) {
+        elements.playbackCover.addEventListener('click', toggleCoverDetailCard);
+        elements.playbackCover.addEventListener('keydown', event => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            toggleCoverDetailCard();
+        });
+    }
     if (elements.coverDetailBackdrop) elements.coverDetailBackdrop.addEventListener('click', closeCoverDetailCard);
     if (elements.coverDetailQueueList) {
         elements.coverDetailQueueList.addEventListener('click', (event) => {
@@ -3991,11 +4169,18 @@ function openCoverDetailCard() {
     renderCoverDetailCard();
     elements.coverDetailBackdrop.classList.remove('hidden');
     elements.coverDetailCard.classList.remove('hidden');
+    window.FXRouteModal?.open(elements.coverDetailCard, {
+        dialog: elements.coverDetailCard,
+        initialFocus: elements.coverDetailCard,
+        siblingRoots: [elements.coverDetailBackdrop],
+        onEscape: closeCoverDetailCard,
+    });
 }
 
 function closeCoverDetailCard() {
     elements.coverDetailBackdrop.classList.add('hidden');
     elements.coverDetailCard.classList.add('hidden');
+    window.FXRouteModal?.close(elements.coverDetailCard);
 }
 
 function toggleCoverDetailCard() {
@@ -6265,6 +6450,10 @@ async function stopSplCalibrationOperation(statusText = '') {
 
 async function openSplCalibration() {
     elements.splCalibrationPanel?.classList.remove('hidden');
+    window.FXRouteModal?.open(elements.splCalibrationPanel, {
+        initialFocus: elements.splCalibrationNoise,
+        onEscape: () => { void closeSplCalibration(); },
+    });
     try {
         const response = await fetch('/api/measurements/spl-calibration');
         const data = await response.json();
@@ -6283,6 +6472,7 @@ async function openSplCalibration() {
 async function closeSplCalibration() {
     await stopSplCalibrationOperation().catch(() => null);
     elements.splCalibrationPanel?.classList.add('hidden');
+    window.FXRouteModal?.close(elements.splCalibrationPanel);
 }
 
 async function toggleSplCalibrationNoise() {
@@ -9285,9 +9475,13 @@ function toggleMeasurementPanel(forceOpen = null) {
         renderMeasurementPanel();
         void fetchMeasurementInputs();
         scheduleMeasurementGraphRender();
-        elements.measurementCloseBtn?.focus();
+        window.FXRouteModal?.open(elements.measurementPanel, {
+            initialFocus: elements.measurementCloseBtn,
+            onEscape: () => toggleMeasurementPanel(false),
+        });
     } else {
         stopMeasurementWindowHeartbeat();
+        window.FXRouteModal?.close(elements.measurementPanel);
     }
 }
 
@@ -10292,6 +10486,10 @@ function openHybridMeasurementWizard() {
         wizard.open = true;
         elements.measurementHybridPanel?.classList.remove('hidden');
         renderHybridMeasurementWizard();
+        window.FXRouteModal?.open(elements.measurementHybridPanel, {
+            initialFocus: elements.measurementHybridPrimaryBtn,
+            onEscape: () => { void closeHybridMeasurementWizard(); },
+        });
         return;
     }
     const sequence = HybridMeasurement.buildSequence(getCurrentOutputModeName());
@@ -10311,7 +10509,10 @@ function openHybridMeasurementWizard() {
     });
     elements.measurementHybridPanel?.classList.remove('hidden');
     renderHybridMeasurementWizard();
-    elements.measurementHybridPrimaryBtn?.focus();
+    window.FXRouteModal?.open(elements.measurementHybridPanel, {
+        initialFocus: elements.measurementHybridPrimaryBtn,
+        onEscape: () => { void closeHybridMeasurementWizard(); },
+    });
 }
 
 async function closeHybridMeasurementWizard() {
@@ -10326,7 +10527,7 @@ async function closeHybridMeasurementWizard() {
         state.measurement.activeMeasurementKind = '';
     }
     elements.measurementHybridPanel?.classList.add('hidden');
-    elements.measurementHybridOpenBtn?.focus();
+    window.FXRouteModal?.close(elements.measurementHybridPanel);
     renderMeasurementPanelDefensively('hybrid wizard close');
 }
 
@@ -10625,13 +10826,6 @@ function setupHybridMeasurementWizard() {
     elements.measurementHybridPanel.querySelector('.manage-overlay-backdrop')?.addEventListener('click', () => {
         if (!getHybridWizardState().running) void closeHybridMeasurementWizard();
     });
-    document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && getHybridWizardState().open) {
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            void closeHybridMeasurementWizard();
-        }
-    }, true);
 }
 
 async function startMeasurement() {

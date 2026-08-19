@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>FXRoute</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.9.11">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=0.9.11">
@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.11">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.11">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.68">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.69">
 </head>
 <body>
     <a class="skip-link" href="#tab-content">Skip to content</a>
@@ -26,14 +26,15 @@
     <main id="app">
         <!-- Header -->
         <header class="header">
-            <button id="open-settings" class="brand-lockup brand-lockup-button" type="button" aria-label="Open technical settings" aria-haspopup="dialog" aria-expanded="false">
+            <button id="open-settings" class="brand-lockup brand-lockup-button" type="button" aria-labelledby="brand-title settings-trigger-action" aria-haspopup="dialog" aria-expanded="false">
                 <span class="brand-mark" aria-hidden="true">
                     <span class="brand-mark-f">F</span><span class="brand-mark-x">X</span>
                 </span>
                 <div class="brand-text-block">
-                    <span class="brand-title"><span class="brand-title-fx">FX</span>Route</span>
+                    <span class="brand-title" id="brand-title"><span class="brand-title-fx">FX</span>Route</span>
                     <span class="brand-subtitle">local audio control</span>
                 </div>
+                <span id="settings-trigger-action" class="visually-hidden">Open technical settings</span>
             </button>
             <div class="header-status">
                 <div id="power-menu-root" class="power-menu-root hidden">
@@ -1202,7 +1203,7 @@
     <footer id="playback-bar" class="playback-bar">
         <div class="track-info">
             <div class="playback-visual">
-                <img id="playback-cover" class="playback-cover hidden" alt="" />
+                <img id="playback-cover" class="playback-cover hidden" alt="" role="button" tabindex="0" aria-label="Open now-playing details" aria-haspopup="dialog" />
                 <span class="playback-cover-placeholder" aria-hidden="true">FX</span>
             </div>
             <div class="track-copy">
@@ -1290,7 +1291,7 @@
 
     <!-- Cover detail card (shared radio/library) -->
     <div id="cover-detail-backdrop" class="cover-detail-backdrop hidden"></div>
-    <div id="cover-detail-card" class="cover-detail-card hidden" role="dialog" aria-modal="true" aria-label="Cover details">
+    <div id="cover-detail-card" class="cover-detail-card hidden" role="dialog" aria-modal="true" aria-label="Cover details" tabindex="-1">
         <div id="cover-detail-cover-col" class="cover-detail-cover-col">
             <img id="cover-detail-cover" class="cover-detail-cover" alt="" />
             <div id="cover-detail-extra" class="cover-detail-extra hidden">
@@ -1320,8 +1321,8 @@
 
     <script src="/static/measurement_dsp.js?v=0.9.11"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.11"></script>
-    <script src="/static/radio.js?v=0.9.12"></script>
-    <script src="/static/app.js?v=0.9.44"></script>
+    <script src="/static/radio.js?v=0.9.13"></script>
+    <script src="/static/app.js?v=0.9.45"></script>
     <script src="/static/streaming.js?v=0.9.19"></script>
 </body>
 </html>

@@ -194,6 +194,25 @@
         }
         updateStationNameRequirement();
     }
+
+    function activateStationCard(card) {
+        const stationId = card?.dataset?.stationId || '';
+        if (stationId) playRadio(stationId);
+    }
+
+    function handleStationCardKeydown(event) {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        activateStationCard(event.currentTarget);
+    }
+
+    function bindStationCardPlayback(container) {
+        container?.querySelectorAll('.station-card[data-station-id]').forEach(card => {
+            card.addEventListener('click', () => activateStationCard(card));
+            card.addEventListener('keydown', handleStationCardKeydown);
+        });
+    }
+
     function toggleStationManagePanel(forceOpen = null) {
         const shouldOpen = forceOpen === null
             ? elements.radioManagePanel.classList.contains('hidden')
@@ -202,7 +221,12 @@
         resetStationForm();
         resetManagedStationForm();
         if (shouldOpen) {
-            elements.closeStationManageBtn?.focus();
+            window.FXRouteModal?.open(elements.radioManagePanel, {
+                initialFocus: elements.closeStationManageBtn,
+                onEscape: () => toggleStationManagePanel(false),
+            });
+        } else {
+            window.FXRouteModal?.close(elements.radioManagePanel);
         }
     }
     async function fetchStations() {
@@ -465,9 +489,7 @@
                 <div class="station-name">${escapeHtml(station.title)}</div>
             </div>`;
         }).join('');
-        elements.stationsGrid.querySelectorAll('.station-card').forEach(card => {
-            card.addEventListener('click', () => playRadio(card.dataset.stationId));
-        });
+        bindStationCardPlayback(elements.stationsGrid);
         bindStationArtFallbacks(elements.stationsGrid);
         highlightActiveTrack();
     }
@@ -685,9 +707,7 @@
                 ${action}
             </div>`;
         }).join('');
-        elements.stationSearchGrid.querySelectorAll('.station-card[data-station-id]').forEach(card => {
-            card.addEventListener('click', () => playRadio(card.dataset.stationId));
-        });
+        bindStationCardPlayback(elements.stationSearchGrid);
         elements.stationSearchGrid.querySelectorAll('.catalog-station-action[data-catalog-id]').forEach(button => {
             button.addEventListener('click', () => addCatalogStation(button.dataset.catalogId, button));
         });
