@@ -61,7 +61,23 @@ function makeEl() {
             if (!childEls[sel]) childEls[sel] = makeEl();
             return childEls[sel];
         },
-        querySelectorAll() { return []; },
+        querySelectorAll(sel) {
+            // Favorite hearts are rendered inside row innerHTML; surface the
+            // button (with its dataset) so bindTidalFavoriteButtons and the
+            // tests can exercise the write-back click path.
+            if (sel === '.streaming-fav, .track-fav') {
+                if (!el._favBtn) {
+                    const m = el.innerHTML.match(/data-fav-type="([^"]+)" data-fav-id="([^"]+)"/);
+                    const btn = makeEl();
+                    btn.className = 'streaming-fav';
+                    btn.dataset.favType = m ? m[1] : '';
+                    btn.dataset.favId = m ? m[2] : '';
+                    el._favBtn = btn;
+                }
+                return [el._favBtn];
+            }
+            return [];
+        },
         appendChild() {},
         closest() { return null; },
     };
@@ -210,6 +226,8 @@ function runStreaming(options = {}) {
             } else if (u.startsWith('/api/streaming/tidal/favorites?type=')) {
                 if (u.includes('type=tracks')) body = tidalFavoriteTracks;
                 else if (u.includes('type=artists')) body = [{ id: 'a1', name: 'Found Artist', art_url: '' }];
+            } else if (u.startsWith('/api/streaming/tidal/') && u.endsWith('/favorite')) {
+                body = { favorite: !!JSON.parse((opts && opts.body) || '{}').favorite };
             }
             return { ok: true, json: async () => body };
         },
@@ -624,6 +642,68 @@ async function main() {
     assert.ok(favBody.innerHTML.includes('tidal-fav-types') &&
         favBody.innerHTML.includes('data-type="artists"'),
         'back from a favorited artist must restore Favorites -> Artists');
+}
+
+// --- 10. artist row fav heart toggles through the write-back endpoint -------
+
+{
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming();
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    const content = shells.tidal.querySelector('.streaming-content');
+    const body = sandbox.document.getElementById('tidal-browse-body');
+    const input = content.querySelector('#tidal-search-input');
+
+    // Search -> Artists: the row heart must carry the artist type + id.
+    input.value = 'aphrodite';
+    input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    body.querySelector('#tidal-search-type-artists').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const artistRow = createdEls.filter((el) => el.className === 'streaming-result').at(-1);
+    const heart = artistRow.querySelectorAll('.streaming-fav, .track-fav')[0];
+    assert.ok(heart, 'artist rows must render a favorite heart');
+    assert.equal(heart.dataset.favType, 'artists', 'the artist heart must carry the artists favorite type');
+    assert.equal(heart.dataset.favId, 'a1', 'the artist heart must carry the artist id');
+
+    heart.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    let favCalls = fetchCalls.filter((c) => c.url === '/api/streaming/tidal/artists/a1/favorite');
+    assert.equal(favCalls.length, 1, 'the artist heart must dispatch exactly one write-back request');
+    assert.deepEqual(JSON.parse(favCalls[0].opts.body), { favorite: true },
+        'the first artist heart click must add the artist');
+    assert.equal(fetchCalls.filter((c) => c.url === '/api/streaming/tidal/artists/a1').length, 0,
+        'the artist heart click must not open the artist detail (stopPropagation)');
+
+    heart.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    favCalls = fetchCalls.filter((c) => c.url === '/api/streaming/tidal/artists/a1/favorite');
+    assert.equal(favCalls.length, 2, 'the second artist heart click must write back again');
+    assert.deepEqual(JSON.parse(favCalls[1].opts.body), { favorite: false },
+        'the second artist heart click must remove the artist');
+
+    // Favorites -> Artists: same heart, same write-back endpoint.
+    const favRun = runStreaming();
+    favRun.sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const favBody = favRun.sandbox.document.getElementById('tidal-browse-body');
+    favBody.querySelectorAll('#tidal-fav-types .streaming-chip').find((tab) => tab.dataset.type === 'artists').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const favRow = favRun.createdEls.filter((el) => el.className === 'streaming-result').at(-1);
+    const favHeart = favRow.querySelectorAll('.streaming-fav, .track-fav')[0];
+    assert.ok(favHeart, 'favorite artist rows must render a favorite heart');
+    assert.equal(favHeart.dataset.favType, 'artists', 'the favorites artist heart must carry the artists type');
+    assert.equal(favHeart.dataset.favId, 'a1', 'the favorites artist heart must carry the artist id');
+    favHeart.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const favFavCalls = favRun.fetchCalls.filter((c) => c.url === '/api/streaming/tidal/artists/a1/favorite');
+    assert.equal(favFavCalls.length, 1, 'the favorites artist heart must dispatch exactly one write-back request');
+    assert.deepEqual(JSON.parse(favFavCalls[0].opts.body), { favorite: true },
+        'the favorites artist heart must add through the same endpoint');
+    assert.equal(favRun.fetchCalls.filter((c) => c.url === '/api/streaming/tidal/artists/a1').length, 0,
+        'the favorites artist heart click must not open the artist detail');
 }
 
 console.log('PASS  scripts/test_streaming_ui_actions.js');
