@@ -569,7 +569,21 @@ class PlaybackOrchestrator:
                 helper_needs_sync = bool(request.rate_change or not snapshot.get("active") or self._deps.helper_argument_sample_rate(snapshot) != target_rate or not diagnosis.get("helper_ports") or not all(diagnosis.get("links", {}).values()))
                 if helper_needs_sync:
                     kwargs = {"reason": f"coordinator-{request.operation}"}
-                    if request.operation in {"measurement-entry", "measurement-restore"}: kwargs.update(audio_overview=overview, _rate_lock_held=True)
+                    if request.operation in {"measurement-entry", "measurement-restore"}:
+                        # The measurement-entry establishes its target rate inside
+                        # this same transition (force pin + sink alignment), but
+                        # the live audio overview still reflects the pre-rebuild
+                        # hardware rate -- rebuilding the helper at the target is
+                        # precisely what moves the device.  Handing the
+                        # subordinate sync that pre-switch overview would make its
+                        # stale-check compare requested(96000) != authoritative
+                        # (48000) and wrongly suppress the required helper
+                        # rebuild, so the token carries the transition's own
+                        # target rate instead.
+                        kwargs.update(
+                            audio_overview=samplerate.audio_output_overview_with_effective_rate(overview, target_rate),
+                            _rate_lock_held=True,
+                        )
                     await self._deps.sync_runtime(**kwargs); helper_rebuilt = True
                 if helper_needs_sync or not diagnosis.get("links_complete"):
                     if mode in self._deps.output_mode_subwoofer_modes: await self.reconcile_subwoofer_links_only()
