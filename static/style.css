@@ -6169,7 +6169,8 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .track-favorite-btn,
     .track-row-favorite,
-    .track-fav {
+    .track-fav,
+    .streaming-fav {
         width: 28px;
         height: 28px;
         min-height: 28px;
@@ -7108,9 +7109,6 @@ input[type="number"]::-webkit-outer-spin-button {
 
     /* from _playback.css */
     .header { min-height: 64px; padding: .72rem .8rem; }
-        .brand-mark { width: 38px; height: 38px; }
-        .brand-title { font-size: 1.08rem; }
-        .brand-subtitle { font-size: .62rem; }
         .tabs { justify-content: space-between; }
         .tab-btn { flex: 1 0 auto; min-width: 86px; min-height: 44px; padding: .48rem .62rem; }
         .tab-content { padding: 1rem .75rem calc(1.5rem + var(--playback-footer-space)); }
@@ -7167,7 +7165,6 @@ input[type="number"]::-webkit-outer-spin-button {
         .streaming-btn,
         .streaming-result-play,
         .track-play { min-width: 44px; min-height: 44px; }
-        .track-fav { width: 40px; height: 40px; min-height: 40px; }
 
     /* from _effects.css */
     .effects-card-subwoofer-header,
@@ -7260,6 +7257,15 @@ input[type="number"]::-webkit-outer-spin-button {
             padding: 0.95rem 0.9rem;
         }
 
+}
+
+@media (min-width: 601px) and (max-width: 760px) {
+    /* Brand tablet size (38px) scoped to 601-760px. The 600px small-phone
+       block above must win at ≤600px; the 760px tablet size used to be
+       declared later in the cascade and overrode it. */
+    .brand-mark { width: 38px; height: 38px; }
+    .brand-title { font-size: 1.08rem; }
+    .brand-subtitle { font-size: .62rem; }
 }
 
 @media (max-width: 767px) {
@@ -7435,7 +7441,9 @@ input[type="number"]::-webkit-outer-spin-button {
         }
 
     /* from _radio.css */
-    .track-row-favorite {
+    .track-row-favorite,
+        .track-fav,
+        .streaming-fav {
             width: 40px;
             height: 40px;
             min-height: 40px;
@@ -7508,8 +7516,9 @@ input[type="number"]::-webkit-outer-spin-button {
 
 }
 
-@media (max-width: 1100px) {
-    /* from _effects.css */
+@media (min-width: 761px) and (max-width: 1100px) {
+    /* Tablet subwoofer layout: two control columns. Scoped to ≥761px so the
+       one-column mobile layout at ≤760px wins the cascade. */
     .effects-subwoofer-controls {
             grid-template-columns: repeat(2, minmax(0, 1fr));
         }
@@ -7533,6 +7542,9 @@ input[type="number"]::-webkit-outer-spin-button {
             grid-column: 1 / -1;
         }
 
+}
+
+@media (max-width: 1100px) {
     /* from _effects.css */
     .effects-peq-dual-grid {
             grid-template-columns: 1fr;
