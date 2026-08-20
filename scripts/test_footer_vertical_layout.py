@@ -74,7 +74,7 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertRegex(CSS, r"@media \(min-width: 1181px\)[\s\S]*?min-height: 98px")
         self.assertRegex(
             CSS,
-            r"@media \(min-width: 901px\) and \(max-width: 1180px\)[\s\S]*?min-height: 116px",
+            r"@media \(min-width: (?:901|701)px\)(?: and \(max-width: 1180px\))?[\s\S]*?min-height: 116px",
         )
         # Bottom insets sit a couple px closer to the viewport edge; the phone
         # inset respects the home-indicator safe area while keeping a 3px min.
@@ -87,15 +87,15 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertIn("Playback footer refinement v8", CSS)
         self.assertRegex(
             CSS,
-            r"@media \(min-width: 901px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 4\.5px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 4\.5px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: 901px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 12\.5px; height: 12\.5px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 12\.5px; height: 12\.5px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: 901px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 13\.5px; height: 13\.5px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 13\.5px; height: 13\.5px",
         )
         self.assertIn(".seek-slider { height: 5px; }", CSS)
         self.assertIn(".volume-slider { height: 5px; }", CSS)
@@ -103,12 +103,12 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         # the thumb; the geometry-derived margin re-centers it (webkit only).
         self.assertRegex(
             CSS,
-            r"@media \(min-width: 901px\)[\s\S]*?"
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
             r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(4\.5px - 12\.5px\) / 2\)",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: 901px\)[\s\S]*?"
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
             r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(4\.5px - 13\.5px\) / 2\)",
         )
 
