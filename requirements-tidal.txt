@@ -1,0 +1,3 @@
+# Optional TIDAL provider dependency.
+# The existing FXRoute provider owns PKCE/device-flow session handling.
+tidalapi==0.8.11
