@@ -176,14 +176,14 @@ def _block_value(block, prefix):
     return None
 
 
-def test_limiter_input_matches_pre_migration_level(tmp_path):
-    # Pre-migration: plugin work point p = volumeDb - calibration + strength
-    # + AutoGain, wrapper output gain = volumeDb - p, so the level entering
-    # the protection limiter was volumeDb.  The new split keeps the same p
-    # with the inverse host compensation (-p) and moves the canonical volume
-    # into a master gain stage between the pre-master meter tap and the
-    # limiter: -p + volumeDb = volumeDb - p, so the Limiter input must be
-    # identical to the pre-migration level.
+def test_limiter_input_is_level_neutral_pre_master_level(tmp_path):
+    # The loudness stage keeps work point p with the inverse host
+    # compensation (-p) and the graph master position between the pre-master
+    # meter tap and the protection limiter is 0 dB: the stage net is 0 dB, so
+    # the Limiter input is the unattenuated pre-master level.  The single
+    # global FXRoute master is the system volume applied after the whole DSP
+    # chain; Loudness volumeDb is only the ISO-226 work point and never owns
+    # a gain stage.
     cases = (
         (0.0, 10, 0.0, -23.0, False),
         (-37.19, 10, 0.0, -23.0, False),
@@ -218,14 +218,15 @@ def test_limiter_input_matches_pre_migration_level(tmp_path):
         assert abs(_block_value(loudness, "control volume ") - p_clamped) < 1e-6
         assert abs(_block_value(loudness, "param output_gain_db ") + p_clamped) < 1e-6
 
-        # Canonical volume gain sits right after the loudness stage and
-        # before the protection limiter; its net with the stage compensation
-        # equals the pre-migration Limiter input level (volumeDb).
+        # The graph master gain sits right after the loudness stage and
+        # before the protection limiter.  It is level-neutral (0 dB): the
+        # stage net (p - p) plus the 0 dB master equals the unattenuated
+        # pre-master Limiter input.
         master = blocks[loudness_index + 1]
         assert master["header"].split()[4] == "master_gain"
-        assert abs(_block_value(master, "param gain_db ") - volume_db) < 1e-6
+        assert abs(_block_value(master, "param gain_db ")) < 1e-6
         assert limiter_index == loudness_index + 2
-        assert abs((p_clamped - p_clamped + volume_db) - volume_db) < 1e-6
+        assert abs(p_clamped - p_clamped) < 1e-6
 
 
 from native_test_runner import run_pytest_style_module

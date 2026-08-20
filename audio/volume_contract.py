@@ -35,8 +35,10 @@ def loudness_in_path(preset: str, loudness_enabled: bool) -> bool:
 
 
 def effective_db(state: VolumeState) -> float:
-    loudness_part = float(state.volume_db) if state.loudness_in_path else 0.0
-    return loudness_part + volume_percent_to_db(state.master_percent) + float(state.dsp_guard_db)
+    # The global master is the single level control.  Loudness volumeDb is
+    # only the ISO-226 work point of the curve and never contributes to the
+    # output level (the loudness stage net is 0 dB).
+    return volume_percent_to_db(state.master_percent) + float(state.dsp_guard_db)
 
 
 def canonical_percent(state: VolumeState) -> int:

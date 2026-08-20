@@ -74,10 +74,13 @@ class VolumeContractUnitTests(unittest.TestCase):
         self.assertFalse(state(preset="Neutral", loudness=False).loudness_in_path)
         self.assertFalse(state(preset="Direct", loudness=False).loudness_in_path)
 
-    def test_effective_gain_sums_work_point_master_and_guard(self):
+    def test_effective_gain_is_master_and_guard_only(self):
+        # volumeDb is only the ISO-226 work point and never contributes to
+        # the output level, so the effective gain is master + guard in every
+        # state, loudness in the path or not.
         self.assertAlmostEqual(
             volume_contract.effective_db(state(preset="Neutral", loudness=True, volume_db=-31.0, master=100)),
-            -31.0,
+            0.0,
             places=9,
         )
         self.assertAlmostEqual(
