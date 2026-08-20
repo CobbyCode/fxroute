@@ -141,23 +141,30 @@ body {
    ============================================================ */
 .btn-fav,
 .track-row-favorite,
-.track-fav{flex:0 0 auto;width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);font:inherit;font-size:0.95rem;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer;transition:color .12s var(--ease),border-color .12s var(--ease),background .12s var(--ease),transform .12s var(--ease);-webkit-tap-highlight-color:transparent}
+.track-fav,
+.streaming-fav{flex:0 0 auto;width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);font:inherit;font-size:0.95rem;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer;transition:color .12s var(--ease),border-color .12s var(--ease),background .12s var(--ease),transform .12s var(--ease);-webkit-tap-highlight-color:transparent}
 .btn-fav:hover,
 .track-row-favorite:hover,
 .track-fav:hover,
+.streaming-fav:hover,
 .btn-fav.active,
 .track-row-favorite.active,
 .track-fav.active,
-.track-fav.is-active{color:var(--accent);border-color:var(--accent)}
+.streaming-fav.active,
+.track-fav.is-active,
+.streaming-fav.is-active{color:var(--accent);border-color:var(--accent)}
 .btn-fav:active,
 .track-row-favorite:active,
-.track-fav:active{transform:scale(.92)}
+.track-fav:active,
+.streaming-fav:active{transform:scale(.92)}
 .btn-fav:focus-visible,
 .track-row-favorite:focus-visible,
-.track-fav:focus-visible{color:var(--accent);outline:2px solid var(--accent);outline-offset:-2px}
+.track-fav:focus-visible,
+.streaming-fav:focus-visible{color:var(--accent);outline:2px solid var(--accent);outline-offset:-2px}
 .btn-fav:disabled,
 .track-row-favorite:disabled,
-.track-fav:disabled{opacity:.45;cursor:wait}
+.track-fav:disabled,
+.streaming-fav:disabled{opacity:.45;cursor:wait}
 .track-row-favorite.active{ text-shadow:0 0 10px rgba(110,231,183,.18)}
 .track-row,
 .streaming-result,
@@ -1429,8 +1436,6 @@ body {
     white-space: nowrap;
 }
 
-
-
 .radio-manage-section {
     display: flex;
     flex-direction: column;
@@ -2111,9 +2116,6 @@ body {
 }
 .upload-area-text-input:focus {
     outline: none;
-}
-#station-save-row.hidden {
-    display: none !important;
 }
 .library-import-cancel-row {
     justify-content: flex-end;
@@ -3077,7 +3079,6 @@ body {
     padding: 1rem;
 }
 
-
 .effects-card-manage {
     border-top-color: var(--accent);
 }
@@ -3115,8 +3116,6 @@ body {
     gap: 0.75rem;
 }
 
-
-
 .effects-compare-slot {
     padding: 0.8rem;
     border-radius: var(--radius-md);
@@ -3134,8 +3133,6 @@ body {
 .effects-compare-slot.is-armed {
     border-color: rgba(110, 231, 183, 0.34);
 }
-
-
 
 .effects-compare-fields .field-group {
     margin-bottom: 0;
@@ -3573,12 +3570,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     max-width: 100%;
 }
 
-
-
-
-
-
-
 .effects-filter-import-area.is-busy {
     opacity: 0.75;
     pointer-events: none;
@@ -3740,10 +3731,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     min-width: 110px;
 }
 
-
-
-
-
 .delay-field {
     display: flex;
     flex-direction: column;
@@ -3769,10 +3756,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     font-size: 0.76rem;
 }
 
-.delay-field-compact .delay-number-input {
-    width: 4.6rem !important;
-}
-
 .delay-field label {
     font-size: 0.82rem;
     font-weight: 600;
@@ -3785,23 +3768,13 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     gap: 0.45rem;
 }
 
-.delay-number-input {
-    min-height: 34px !important;
-    padding: 0.35rem 0.45rem !important;
-    font-size: 0.84rem !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-    flex: 0 0 auto !important;
-    width: 5.2rem !important;
-}
-
 /* Bigger up/down arrows for number inputs */
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
-    opacity: 1 !important;
-    height: 26px !important;
-    width: 12px !important;
-    margin-right: 2px !important;
+    opacity: 1;
+    height: 26px;
+    width: 12px;
+    margin-right: 2px;
 }
 
 .delay-unit {
@@ -3980,14 +3953,6 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 0.45rem;
 }
 
-.effects-bass-controls .delay-number-input {
-    width: 4.6rem !important;
-    min-width: 4.6rem;
-    min-height: 46px !important;
-    padding: 0.7rem 0.85rem !important;
-}
-
-
 .effects-card-peq-workshop {
     padding-top: 1.45rem;
 }
@@ -4118,6 +4083,27 @@ input[type="number"]::-webkit-outer-spin-button {
     padding: 0.7rem 0.85rem;
     border-radius: var(--radius-sm);
     font-size: 0.92rem;
+}
+/* Delay number inputs override the shared #tab-effects .url-input sizing:
+   compact fixed-width fields. Selectors carry #tab-effects to win over the
+   shared rule at equal specificity. */
+#tab-effects .delay-number-input {
+    min-height: 34px;
+    padding: 0.35rem 0.45rem;
+    font-size: 0.84rem;
+    max-width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
+    width: 5.2rem;
+}
+#tab-effects .delay-field-compact .delay-number-input {
+    width: 4.6rem;
+}
+#tab-effects .effects-bass-controls .delay-number-input {
+    width: 4.6rem;
+    min-width: 4.6rem;
+    min-height: 46px;
+    padding: 0.7rem 0.85rem;
 }
 /* ============================================================
    Buttons
@@ -4644,31 +4630,10 @@ input[type="number"]::-webkit-outer-spin-button {
     to { opacity: 0; transform: translateX(30px); }
 }
 
-
-
-/* ============================================================
-   Responsive — Tablet
-   ============================================================ */
-
-
-
-
-
-
-
-/* ============================================================
-   Responsive — Phone
-   ============================================================ */
-
 .playback-bar.progress-readonly .seek-slider:disabled {
     cursor: default;
     opacity: 0.9;
 }
-
-
-
-
-
 
 /* Unified upload area */
 .upload-area {
@@ -4752,12 +4717,6 @@ input[type="number"]::-webkit-outer-spin-button {
    are gone. No provider-specific panel offset may exist — Spotify and Qobuz
    must start at the same height.
    ========================================================================= */
-
-
-
-
-
-
 
 /* ============ Cover detail card (shared radio/library) ============ */
 .cover-detail-backdrop {
@@ -4978,8 +4937,6 @@ input[type="number"]::-webkit-outer-spin-button {
     border-radius: 3px;
 }
 
-
-
 /* ============================================================
    2026 visual refresh — shell, navigation and content rhythm
    (Duplicate base/override rules were folded into their base definitions;
@@ -5023,24 +4980,13 @@ input[type="number"]::-webkit-outer-spin-button {
 /* Mobile touch targets: keep the header power button tappable on narrow
    screens (base 38px, refreshed at all widths below). */
 
-
-
-
-
-
 /* Small phones: slightly smaller brand lockup than the 760px tablet size.
    Placed after the 760px override so these win on narrow screens. */
-
-
-
 
 /* ============================================================
    Playback footer refinement — consolidated survivors
    (verbatim rules previously spread across the v1-v4 blocks)
    ============================================================ */
-
-
-
 
 .control-btn-mode:hover:not(:disabled), .control-btn-mode:focus-visible:not(:disabled) { color: var(--text-primary);
     border-color: rgba(255,255,255,.065);
@@ -5072,7 +5018,6 @@ input[type="number"]::-webkit-outer-spin-button {
    stays anchored at the track's right edge at every desktop width. The
    metadata caps at 430px and the footer compacts to 98px min-height at
    a 5px bottom inset. */
-
 
 .transport-controls { display: flex;
     align-items: center;
@@ -5185,33 +5130,17 @@ input[type="number"]::-webkit-outer-spin-button {
     font-weight: 650;
     font-variant-numeric: tabular-nums; }
 
-
-
-
-
-
-
-
-
-.meter-segment-hidden { display: none !important; }
-
-
-
-
-
-
+/* Hidden meter segments (JS-driven via .meter-segment-hidden): must win
+   over the base .meter-segments i { display: block } row rule. */
+.meter-segments .meter-segment-hidden { display: none; }
 
 /* Tablet / compact desktop: give the transport real vertical breathing room,
    keep the album/queue chip inside the track-copy column, and preserve a
    compact right-side meter/volume stack. */
 
-
 /* Phone: keep the six-segment stereo meter, but give transport/seek/volume
    more air. Seek and volume use identical outer gutters so both slider tracks
    share the same center line and width. */
-
-
-
 
 /* ============================================================
    Playback footer refinement v7 — desktop/tablet vertical compacting
@@ -5220,13 +5149,11 @@ input[type="number"]::-webkit-outer-spin-button {
    breathing room above and below the existing content. Desktop rules live
    in the consolidated ≥1181px block above; this block covers tablets. */
 
-
 /* ============================================================
    Playback footer refinement v8 — quieter desktop/tablet sliders
    ============================================================ */
 /* Keep the input box unchanged for pointer/touch behavior. Only the native
    track paint and thumb are made slightly lighter than the volume control. */
-
 
 /* Phone: soften only the visible range paint; the input box remains the
    existing size so pointer and touch targeting do not change. */
@@ -5940,661 +5867,504 @@ input[type="number"]::-webkit-outer-spin-button {
    Playback footer — canonical 3 ranges
    ========================================================================= */
 @media (min-width: 1181px) {
-  /* from _playback.css :: (min-width: 1181px) */
     .playback-bar {
-            grid-template-columns:
-                minmax(280px, 430px)
-                minmax(390px, 1fr)
-                minmax(150px, 220px)
-                minmax(220px, 300px);
-            row-gap: clamp(.9rem, 1.35vw, 1.35rem);
-            column-gap: clamp(.75rem, 1.2vw, 1.25rem);
-            bottom: 5px;
-            min-height: 98px;
-            padding-block: .55rem;
-        }
-
-        .playback-bar .track-info {
-            width: min(100%, 430px);
-            max-width: 430px;
-        }
-
-        .playback-bar .controls {
-            width: min(100%, 360px);
-            max-width: 360px;
-            min-width: 0;
-            justify-self: start;
-            margin-left: 0;
-            margin-right: 0;
-            padding-right: 0;
-        }
-
-        .volume-control {
-            width: 100%;
-            max-width: 360px;
-            min-width: 0;
-            grid-template-columns: 24px minmax(130px, 1fr) 2.5rem;
-            column-gap: .42rem;
-        }
-
-        .volume-slider {
-            width: 100%;
-            max-width: none;
-            min-width: 0;
-        }
-
-        .volume-display {
-            width: 2.5rem;
-            min-width: 2.5rem;
-            justify-content: flex-end;
-            text-align: right;
-            padding: 0;
-        }
-
-        .playback-center {
-            gap: .56rem;
-        }
-
-        .transport-controls {
-            margin-top: 1px;
-            min-height: 46px;
-        }
-
-        .control-btn {
-            width: 46px;
-            height: 46px;
-            font-size: 1.04rem;
-        }
-        .control-btn-secondary {
-            width: 34px;
-            height: 34px;
-        }
-        .control-btn-mode,
-        .control-btn-clear {
-            width: 28px;
-            height: 28px;
-        }
-
-        .track-copy { gap: .28rem; }
-        .playback-meta-row { min-height: 1.1rem; }
-
-        .playback-meter {
-            grid-template-columns: .62rem 112px 2.48rem;
-            column-gap: .18rem;
-            justify-self: center;
-        }
-
-        .output-level-badge {
-            width: 2.48rem;
-            min-width: 2.48rem;
-            margin-left: -.04rem;
-            justify-content: flex-start;
-            text-align: left;
-        }
-
-  /* from _playback.css :: (min-width: 901px) */
+        grid-template-columns:
+            minmax(280px, 430px)
+            minmax(390px, 1fr)
+            minmax(150px, 220px)
+            minmax(220px, 300px);
+        row-gap: clamp(.9rem, 1.35vw, 1.35rem);
+        column-gap: clamp(.75rem, 1.2vw, 1.25rem);
+        bottom: 5px;
+        min-height: 98px;
+        padding-block: .55rem;
+    }
+    .playback-bar .track-info {
+        width: min(100%, 430px);
+        max-width: 430px;
+    }
+    .playback-bar .controls {
+        width: min(100%, 360px);
+        max-width: 360px;
+        min-width: 0;
+        justify-self: start;
+        margin-left: 0;
+        margin-right: 0;
+        padding-right: 0;
+    }
+    .volume-control {
+        width: 100%;
+        max-width: 360px;
+        min-width: 0;
+        grid-template-columns: 24px minmax(130px, 1fr) 2.5rem;
+        column-gap: .42rem;
+    }
+    .volume-slider {
+        width: 100%;
+        max-width: none;
+        min-width: 0;
+    }
+    .volume-display {
+        width: 2.5rem;
+        min-width: 2.5rem;
+        justify-content: flex-end;
+        text-align: right;
+        padding: 0;
+    }
+    .playback-center { gap: .56rem; }
+    .transport-controls {
+        margin-top: 1px;
+        min-height: 46px;
+    }
+    .control-btn {
+        width: 46px;
+        height: 46px;
+        font-size: 1.04rem;
+    }
+    .control-btn-secondary {
+        width: 34px;
+        height: 34px;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 28px;
+        height: 28px;
+    }
+    .track-copy { gap: .28rem; }
+    .playback-meta-row { min-height: 1.1rem; }
+    .playback-meter {
+        grid-template-columns: .62rem 112px 2.48rem;
+        column-gap: .18rem;
+        justify-self: center;
+    }
+    .output-level-badge {
+        width: 2.48rem;
+        min-width: 2.48rem;
+        margin-left: -.04rem;
+        justify-content: flex-start;
+        text-align: left;
+    }
+    /* Desktop slider paint and thumb geometry (also applied at ≥901px). */
     .seek-slider::-webkit-slider-runnable-track,
-        .volume-slider::-webkit-slider-runnable-track {
-            height: 4.5px;
-            border-radius: 999px;
-            background: linear-gradient(to right,
-                var(--accent) 0%,
-                var(--accent) var(--range-progress),
-                rgba(255,255,255,.10) var(--range-progress),
-                rgba(255,255,255,.10) 100%);
-        }
-        .seek-slider::-moz-range-track,
-        .volume-slider::-moz-range-track {
-            height: 4.5px;
-            border-radius: 999px;
-            background: linear-gradient(to right,
-                var(--accent) 0%,
-                var(--accent) var(--range-progress),
-                rgba(255,255,255,.10) var(--range-progress),
-                rgba(255,255,255,.10) 100%);
-        }
-        .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
-        .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
-        .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
-        .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
-        /* Chromium anchors the thumb to the track top when the track is shorter
-           than the thumb; lift it by half the size difference so the thumb sits
-           centered on the 4.5px track. Firefox centers natively (webkit only). */
-        .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
-        .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
-
+    .volume-slider::-webkit-slider-runnable-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-moz-range-track,
+    .volume-slider::-moz-range-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
+    .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
+    /* Chromium anchors the thumb to the track top when the track is shorter
+       than the thumb; lift it by half the size difference so the thumb sits
+       centered on the 4.5px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
 }
 
 @media (min-width: 701px) and (max-width: 1180px) {
-  /* from _measurement.css :: (max-width: 1180px) */
     .playback-bar {
-            grid-template-columns: minmax(190px,.9fr) minmax(330px,1.45fr) minmax(120px,.55fr) minmax(185px,.7fr);
-            gap: .8rem;
-        }
-        .playback-bar .track-info { grid-template-columns: 64px minmax(0,1fr); }
-        .playback-visual { width: 64px; height: 64px; }
-        .volume-control { grid-template-columns: 22px minmax(108px,1fr) 2.3rem; gap: .42rem; }
-        .volume-slider { min-width: 108px; }
-
-  /* from _measurement.css :: (max-width: 900px) */
-    .playback-bar {
-            width: calc(100vw - 16px);
-            grid-template-columns: minmax(0,1fr) auto;
-            grid-template-areas:
-                "track meter"
-                "transport transport"
-                "volume volume";
-            gap: .55rem .8rem;
-            min-height: 0;
-            padding: .7rem .82rem .75rem;
-            border-radius: 19px;
-        }
-        .playback-bar .track-info { max-width: none; }
-        .playback-meter { width: 132px; justify-self: end; }
-        .playback-center { gap: .36rem; }
-        .transport-controls { min-height: 48px; }
-        .control-btn { width: 50px; height: 50px; }
-        .volume-control {
-            width: min(620px,100%);
-            justify-self: center;
-            margin: 0 auto;
-            grid-template-columns: 24px minmax(180px,1fr) 3rem;
-        }
-
-  /* from _playback.css :: (max-width: 1100px) and (orientation: portrait) */
-    .playback-bar { width: calc(100vw - 18px);
-            grid-template-columns: minmax(0, 1fr) 150px;
-            grid-template-areas:
-                "track meter"
-                "transport transport"
-                "volume volume";
-            gap: .58rem .85rem;
-            min-height: 0;
-            padding: .72rem .9rem .78rem; }
-        .volume-control { width: min(650px, 100%);
-            margin-inline: auto;
-            grid-template-columns: 24px minmax(200px, 1fr) 3rem; }
-
-  /* from _playback.css :: (max-width: 1180px) */
-    .output-level-badge { width: 3rem;
-            min-width: 3rem;
-            margin-left: .04rem;
-            font-size: .59rem; }
-
-  /* from _playback.css :: (min-width: 701px) and (max-width: 1180px) */
-    .playback-bar { width: calc(100vw - 16px);
-            min-height: 104px;
-            grid-template-columns:
-                minmax(220px, .95fr)
-                minmax(320px, 1.35fr)
-                minmax(205px, .82fr);
-            grid-template-rows: auto auto;
-            grid-template-areas:
-                "track transport meter"
-                "track transport volume";
-            column-gap: clamp(.72rem, 1.3vw, 1rem);
-            row-gap: .22rem;
-            align-items: center;
-            padding: .66rem .82rem;
-            border-radius: var(--radius-xl); }
-        .playback-bar .track-info { grid-template-columns: 60px minmax(0, 1fr);
-            gap: .7rem;
-            max-width: none; }
-        .playback-visual { width: 60px;
-            height: 60px;
-            border-radius: var(--radius-md); }
-        .track-copy { gap: .28rem; }
-        .playback-center { width: 100%;
-            gap: .32rem;
-            align-self: center; }
-        .seek-row { grid-template-columns: 2.65rem minmax(100px, 1fr) 2.65rem;
-            gap: .42rem; }
-        .output-level-badge { display: inline-flex !important;
-            width: 2.55rem;
-            min-width: 2.55rem;
-            margin: 0;
-            justify-content: flex-start;
-            text-align: left;
-            font-size: .58rem; }
-        .volume-control { width: 100%;
-            grid-template-columns: 21px minmax(0, 1fr) 2.25rem;
-            gap: .46rem; }
-        .volume-display { min-width: 2.25rem;
-            justify-content: flex-start; }
-
-  /* from _playback.css :: (min-width: 701px) and (max-width: 1180px) */
-    .transport-controls { min-height: 44px;
-            gap: .3rem; }
-        .control-btn-secondary { width: 33px;
-            height: 33px;
-            font-size: .86rem; }
-        .control-btn-mode, .control-btn-clear { width: 27px;
-            height: 27px;
-            font-size: .76rem; }
-        .playback-meter { width: max-content;
-            max-width: none;
-            grid-template-columns: .58rem 82px;
-            grid-template-rows: 4px 4px;
-            column-gap: .26rem;
-            row-gap: .42rem;
-            justify-self: center;
-            align-self: end;
-            margin: 0 0 .22rem; }
-        .meter-segments { grid-template-columns: repeat(8, minmax(3px, 1fr));
-            width: 82px;
-            min-width: 82px;
-            max-width: 82px;
-            gap: 1.7px; }
-        .meter-segments i { height: 4px; }
-        .output-level-badge { display: none !important; }
-        .playback-bar .controls { width: min(100%, 235px);
-            max-width: 235px;
-            justify-self: center;
-            align-self: start;
-            margin-top: .22rem;
-            padding: 0; }
-        .volume-control { grid-template-columns: 20px minmax(0, 1fr) 2.25rem;
-            gap: .42rem; }
-        .volume-slider { min-width: 0; }
-
-  /* from _playback.css :: (min-width: 701px) and (max-width: 1180px) */
-    .playback-bar {
-            min-height: 126px;
-            grid-template-columns:
-                minmax(220px, .96fr)
-                minmax(240px, 1.18fr)
-                minmax(170px, .78fr);
-            grid-template-rows: minmax(50px, auto) minmax(46px, auto);
-            grid-template-areas:
-                "track transport meter"
-                "track transport volume";
-            column-gap: clamp(.72rem, 1.2vw, 1rem);
-            row-gap: .58rem;
-            padding: .8rem .9rem .84rem;
-        }
-
-        .playback-bar .track-info {
-            min-width: 0;
-        }
-        .track-copy,
-        .track-copy-main,
-        .playback-meta-row {
-            min-width: 0;
-            max-width: 100%;
-        }
-        .playback-meta-row {
-            overflow: hidden;
-        }
-        .samplerate-status {
-            max-width: calc(100% - 3rem);
-            flex: 1 1 auto;
-        }
-        .queue-status {
-            flex: 0 0 auto;
-        }
-
-        .playback-center {
-            align-self: center;
-            gap: .68rem;
-        }
-        .transport-controls {
-            min-height: 42px;
-            margin: 0;
-        }
-        .control-btn {
-            width: 42px;
-            height: 42px;
-            font-size: .96rem;
-        }
-        .control-btn-secondary {
-            width: 32px;
-            height: 32px;
-        }
-        .control-btn-mode,
-        .control-btn-clear {
-            width: 26px;
-            height: 26px;
-        }
-        .seek-row {
-            min-width: 0;
-            margin-top: .02rem;
-        }
-
-        .playback-meter {
-            align-self: end;
-            margin-bottom: .2rem;
-        }
-        .playback-bar .controls {
-            align-self: start;
-            margin-top: .2rem;
-        }
-
-  /* from _playback.css :: (min-width: 901px) and (max-width: 1180px) */
-    .playback-bar {
-            bottom: 5px;
-            min-height: 116px;
-            grid-template-rows: minmax(46px, auto) minmax(42px, auto);
-            row-gap: .4rem;
-            padding-block: .6rem .64rem;
-        }
-        .track-copy { gap: .24rem; }
-        .playback-meta-row { min-height: 1.1rem; }
-        .playback-center { gap: .56rem; }
-
-  /* from _playback.css :: (min-width: 901px) */
+        bottom: 5px;
+        width: calc(100vw - 16px);
+        min-height: 116px;
+        grid-template-columns:
+            minmax(220px, .96fr)
+            minmax(240px, 1.18fr)
+            minmax(170px, .78fr);
+        grid-template-rows: minmax(46px, auto) minmax(42px, auto);
+        grid-template-areas:
+            "track transport meter"
+            "track transport volume";
+        column-gap: clamp(.72rem, 1.2vw, 1rem);
+        row-gap: .4rem;
+        align-items: center;
+        padding: .6rem .9rem .64rem;
+        border-radius: var(--radius-xl);
+    }
+    .playback-bar .track-info {
+        grid-template-columns: 60px minmax(0, 1fr);
+        gap: .7rem;
+        max-width: none;
+        min-width: 0;
+    }
+    .playback-visual {
+        width: 60px;
+        height: 60px;
+        border-radius: var(--radius-md);
+    }
+    .track-copy,
+    .track-copy-main,
+    .playback-meta-row {
+        min-width: 0;
+        max-width: 100%;
+    }
+    .track-copy { gap: .24rem; }
+    .playback-meta-row {
+        min-height: 1.1rem;
+        overflow: hidden;
+    }
+    .samplerate-status {
+        max-width: calc(100% - 3rem);
+        flex: 1 1 auto;
+    }
+    .queue-status {
+        flex: 0 0 auto;
+    }
+    .playback-center {
+        width: 100%;
+        gap: .56rem;
+        align-self: center;
+    }
+    .transport-controls {
+        min-height: 42px;
+        margin: 0;
+        gap: .3rem;
+    }
+    .control-btn {
+        width: 42px;
+        height: 42px;
+        font-size: .96rem;
+    }
+    .control-btn-secondary {
+        width: 32px;
+        height: 32px;
+        font-size: .86rem;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 26px;
+        height: 26px;
+        font-size: .76rem;
+    }
+    .seek-row {
+        grid-template-columns: 2.65rem minmax(100px, 1fr) 2.65rem;
+        gap: .42rem;
+        min-width: 0;
+        margin-top: .02rem;
+    }
+    .playback-meter {
+        width: max-content;
+        max-width: none;
+        grid-template-columns: .58rem 82px;
+        grid-template-rows: 4px 4px;
+        column-gap: .26rem;
+        row-gap: .42rem;
+        justify-self: center;
+        align-self: end;
+        margin: 0 0 .2rem;
+    }
+    .meter-segments {
+        grid-template-columns: repeat(8, minmax(3px, 1fr));
+        width: 82px;
+        min-width: 82px;
+        max-width: 82px;
+        gap: 1.7px;
+    }
+    .meter-segments i { height: 4px; }
+    .playback-bar .controls {
+        width: min(100%, 235px);
+        max-width: 235px;
+        justify-self: center;
+        align-self: start;
+        margin-top: .2rem;
+        padding: 0;
+    }
+    .volume-control {
+        width: 100%;
+        justify-self: center;
+        margin: 0 auto;
+        grid-template-columns: 20px minmax(0, 1fr) 2.25rem;
+        gap: .42rem;
+    }
+    .volume-slider { min-width: 0; }
+    .volume-display {
+        min-width: 2.25rem;
+        justify-content: flex-start;
+    }
+    /* Tablet slider paint and thumb geometry (applied at ≥901px). */
     .seek-slider::-webkit-slider-runnable-track,
-        .volume-slider::-webkit-slider-runnable-track {
-            height: 4.5px;
-            border-radius: 999px;
-            background: linear-gradient(to right,
-                var(--accent) 0%,
-                var(--accent) var(--range-progress),
-                rgba(255,255,255,.10) var(--range-progress),
-                rgba(255,255,255,.10) 100%);
-        }
-        .seek-slider::-moz-range-track,
-        .volume-slider::-moz-range-track {
-            height: 4.5px;
-            border-radius: 999px;
-            background: linear-gradient(to right,
-                var(--accent) 0%,
-                var(--accent) var(--range-progress),
-                rgba(255,255,255,.10) var(--range-progress),
-                rgba(255,255,255,.10) 100%);
-        }
-        .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
-        .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
-        .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
-        .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
-        /* Chromium anchors the thumb to the track top when the track is shorter
-           than the thumb; lift it by half the size difference so the thumb sits
-           centered on the 4.5px track. Firefox centers natively (webkit only). */
-        .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
-        .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
-
+    .volume-slider::-webkit-slider-runnable-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-moz-range-track,
+    .volume-slider::-moz-range-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
+    .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
+    /* Chromium anchors the thumb to the track top when the track is shorter
+       than the thumb; lift it by half the size difference so the thumb sits
+       centered on the 4.5px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
 }
 
 @media (max-width: 700px) {
-  /* from _measurement.css :: (max-width: 600px) */
     .playback-bar {
-            bottom: max(3px, env(safe-area-inset-bottom));
-            width: calc(100vw - 12px);
-            grid-template-columns: minmax(0,1fr) auto;
-            grid-template-areas:
-                "track track"
-                "transport transport"
-                "meter volume";
-            gap: .55rem .7rem;
-            padding: .66rem .7rem .72rem;
-            border-radius: 18px;
-        }
-        .playback-bar .track-info { grid-template-columns: 56px minmax(0,1fr); gap: .65rem; }
-        .playback-visual { width: 56px; height: 56px; border-radius: var(--radius-md); }
-        .playback-bar .song-info .sc-album { display: none !important; }
-        .track-favorite-btn,.track-row-favorite,.track-fav{width:32px;height:32px}
-        .playback-meta-row { margin-top: -.05rem; }
-        .playback-center { width: 100%; }
-        .transport-controls { min-height: 50px; gap: .55rem; }
-        .control-btn { width: 52px; height: 52px; }
-        .control-btn-secondary { width: 40px; height: 40px; }
-        .seek-row { grid-template-columns: 2.7rem minmax(80px,1fr) 2.7rem; gap: .38rem; }
-        .playback-meter { width: 105px; align-self: center; }
-        .meter-segments { min-width: 76px; max-width: 92px; gap: 1.5px; }
-        .meter-segments i { height: 4px; }
-        .output-level-badge { display: none !important; }
-        .volume-control {
-            width: 100%;
-            grid-template-columns: 22px minmax(105px,1fr) 2.8rem;
-            gap: .42rem;
-        }
-        .volume-slider { min-width: 105px; }
-        .volume-display { font-size: .66rem; }
-
-  /* from _playback.css :: (max-width: 600px) */
-    .playback-bar:not(.has-media) { grid-template-areas:
-                "track track"
-                "volume volume"; }
-        .playback-bar:not(.has-media) .playback-center, .playback-bar:not(.has-media) .playback-meter { display: none; }
-
-  /* from _playback.css :: (max-width: 700px) */
-    .playback-bar { bottom: max(3px, env(safe-area-inset-bottom));
-            width: calc(100vw - 12px);
-            min-height: 0;
-            grid-template-columns: minmax(0, 1fr) 112px;
-            grid-template-rows: auto auto auto;
-            grid-template-areas:
-                "track meter"
-                "transport transport"
-                "volume volume";
-            column-gap: .55rem;
-            row-gap: .38rem;
-            align-items: center;
-            padding: .58rem .68rem .62rem;
-            border-radius: 18px; }
-        .playback-bar .track-info { grid-template-columns: 50px minmax(0, 1fr);
-            gap: .6rem;
-            max-width: none;
-            align-self: center; }
-        .playback-visual { width: 50px;
-            height: 50px;
-            border-radius: 11px; }
-        .track-copy { gap: .18rem; }
-        .track-copy-main { gap: .25rem; }
-        .playback-bar .track-title, .playback-bar .song-info .sc-title { font-size: .86rem;
-            line-height: 1.15; }
-        .playback-bar .track-artist, .playback-bar .song-info .sc-artist { display: block;
-            font-size: .68rem; }
-        .playback-bar .song-info .sc-album { display: none !important; }
-        .track-favorite-btn,.track-row-favorite,.track-fav{width:28px;height:28px;margin-top:-.08rem;font-size:1.08rem}
-        .playback-meta-row { gap: .25rem;
-            min-height: 1rem;
-            margin-top: 0; }
-        .samplerate-status, .queue-status { min-height: 1rem;
-            padding: .06rem .38rem;
-            font-size: .56rem; }
-        .playback-meter { width: 108px;
-            max-width: 108px;
-            grid-template-columns: .55rem minmax(68px, 88px);
-            grid-template-rows: 4px 4px;
-            column-gap: .25rem;
-            row-gap: .42rem;
-            justify-self: end;
-            align-self: center;
-            min-height: 22px;
-            margin: 0; }
-        .playback-center { width: 100%;
-            gap: .24rem;
-            align-self: start;
-            margin: 0; }
-        .seek-row { grid-template-columns: 2.45rem minmax(0, 1fr) 2.45rem;
-            gap: .34rem;
-            margin: 0; }
-        .seek-time { font-size: .59rem; }
-        .seek-slider { min-width: 0; }
-        .playback-bar .controls { width: min(100%, 410px);
-            max-width: none;
-            justify-self: center;
-            padding: 0;
-            margin: 0; }
-        .volume-control { width: 100%;
-            grid-template-columns: 20px minmax(0, 1fr) 2.2rem;
-            gap: .48rem; }
-        .volume-icon { width: 20px;
-            height: 20px; }
-        .volume-icon svg { width: 18px; height: 18px; }
-        .volume-slider { min-width: 0;
-            height: 5px; }
-        .volume-slider::-webkit-slider-thumb { width: 17px; height: 17px; }
-        .volume-slider::-moz-range-thumb { width: 17px; height: 17px; }
-        .volume-display { min-width: 2.2rem;
-            justify-content: flex-start;
-            font-size: .64rem; }
-
-  /* from _playback.css :: (max-width: 700px) */
-    .playback-bar { grid-template-columns: minmax(0, 1fr) 84px;
-            grid-template-rows: auto auto auto;
-            grid-template-areas:
-                "track meter"
-                "transport transport"
-                "volume volume";
-            column-gap: .6rem;
-            row-gap: .58rem;
-            padding: .72rem .7rem .78rem; }
-        .playback-center { gap: .46rem;
-            align-self: center; }
-        .transport-controls { min-height: 42px;
-            gap: .32rem; }
-        .control-btn-secondary { width: 30px;
-            height: 30px;
-            font-size: .8rem; }
-        .control-btn-mode, .control-btn-clear { width: 25px;
-            height: 25px;
-            font-size: .72rem; }
-        .seek-row { gap: .38rem; }
-        .playback-meter { width: 84px;
-            max-width: 84px;
-            grid-template-columns: .52rem 62px;
-            grid-template-rows: 4px 4px;
-            column-gap: .22rem;
-            row-gap: .4rem;
-            justify-self: end;
-            align-self: center;
-            min-height: 20px; }
-        .meter-channel { font-size: .5rem; }
-        .meter-segments { grid-template-columns: repeat(6, minmax(3px, 1fr));
-            width: 62px;
-            min-width: 62px;
-            max-width: 62px;
-            gap: 1.6px; }
-        .meter-segments i { height: 4px;
-            border-radius: 999px; }
-        .output-level-badge { display: none !important; }
-        .volume-control { grid-template-columns: 20px minmax(0, 1fr) 2.2rem;
-            gap: .44rem; }
-
-  /* from _playback.css :: (max-width: 700px) */
-    .playback-bar {
-            row-gap: .66rem;
-            padding: .76rem .7rem .82rem;
-        }
-
-        .playback-center {
-            gap: .72rem;
-        }
-        .transport-controls {
-            min-height: 40px;
-            margin: 0;
-        }
-        .control-btn {
-            width: 40px;
-            height: 40px;
-            font-size: .92rem;
-        }
-        .control-btn-secondary {
-            width: 29px;
-            height: 29px;
-        }
-        .control-btn-mode,
-        .control-btn-clear {
-            width: 24px;
-            height: 24px;
-        }
-
-        .seek-row,
-        .volume-control {
-            width: 100%;
-            grid-template-columns: 2.55rem minmax(0, 1fr) 2.55rem;
-            column-gap: .4rem;
-        }
-        .seek-time {
-            text-align: center;
-        }
-        .seek-slider,
-        .volume-slider {
-            width: 100%;
-            min-width: 0;
-        }
-        .volume-icon {
-            justify-self: center;
-        }
-        .volume-display {
-            width: 2.55rem;
-            min-width: 2.55rem;
-            justify-content: flex-end;
-            text-align: right;
-            padding-right: .08rem;
-        }
-        .playback-bar .controls {
-            width: min(100%, 430px);
-            justify-self: center;
-            margin-top: 0;
-        }
-
-  /* from _playback.css :: (max-width: 700px) */
+        bottom: max(3px, env(safe-area-inset-bottom));
+        width: calc(100vw - 12px);
+        min-height: 0;
+        grid-template-columns: minmax(0, 1fr) 84px;
+        grid-template-rows: auto auto auto;
+        grid-template-areas:
+            "track meter"
+            "transport transport"
+            "volume volume";
+        column-gap: .6rem;
+        row-gap: .66rem;
+        align-items: center;
+        padding: .76rem .7rem .82rem;
+        border-radius: 18px;
+    }
+    .playback-bar .track-info {
+        grid-template-columns: 50px minmax(0, 1fr);
+        gap: .6rem;
+        max-width: none;
+        align-self: center;
+    }
+    .playback-visual {
+        width: 50px;
+        height: 50px;
+        border-radius: 11px;
+    }
+    .track-copy { gap: .18rem; }
+    .track-copy-main { gap: .25rem; }
+    .playback-bar .track-title,
+    .playback-bar .song-info .sc-title {
+        font-size: .86rem;
+        line-height: 1.15;
+    }
+    .playback-bar .track-artist,
+    .playback-bar .song-info .sc-artist {
+        display: block;
+        font-size: .68rem;
+    }
+    .track-favorite-btn,
+    .track-row-favorite,
+    .track-fav {
+        width: 28px;
+        height: 28px;
+        margin-top: -.08rem;
+        font-size: 1.08rem;
+    }
+    .playback-meta-row {
+        gap: .25rem;
+        min-height: 1rem;
+        margin-top: 0;
+    }
+    .samplerate-status,
+    .queue-status {
+        min-height: 1rem;
+        padding: .06rem .38rem;
+        font-size: .56rem;
+    }
+    .playback-center {
+        width: 100%;
+        gap: .72rem;
+        align-self: center;
+        margin: 0;
+    }
+    .transport-controls {
+        min-height: 40px;
+        margin: 0;
+        gap: .32rem;
+    }
+    .control-btn {
+        width: 40px;
+        height: 40px;
+        font-size: .92rem;
+    }
+    .control-btn-secondary {
+        width: 29px;
+        height: 29px;
+        font-size: .8rem;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 24px;
+        height: 24px;
+        font-size: .72rem;
+    }
+    .seek-row {
+        width: 100%;
+        grid-template-columns: 2.55rem minmax(0, 1fr) 2.55rem;
+        row-gap: .38rem;
+        column-gap: .4rem;
+        margin: 0;
+    }
+    .seek-time {
+        text-align: center;
+        font-size: .59rem;
+    }
+    .seek-slider,
+    .volume-slider {
+        width: 100%;
+        min-width: 0;
+    }
+    .playback-meter {
+        width: 84px;
+        max-width: 84px;
+        grid-template-columns: .52rem 62px;
+        grid-template-rows: 4px 4px;
+        column-gap: .22rem;
+        row-gap: .4rem;
+        justify-self: end;
+        align-self: center;
+        min-height: 20px;
+        margin: 0;
+    }
+    .meter-channel { font-size: .5rem; }
+    .meter-segments {
+        grid-template-columns: repeat(6, minmax(3px, 1fr));
+        width: 62px;
+        min-width: 62px;
+        max-width: 62px;
+        gap: 1.6px;
+    }
+    .meter-segments i {
+        height: 4px;
+        border-radius: 999px;
+    }
+    .output-level-badge { display: none; }
+    .playback-bar .controls {
+        width: min(100%, 430px);
+        max-width: none;
+        justify-self: center;
+        padding: 0;
+        margin: 0;
+    }
+    .volume-control {
+        width: 100%;
+        grid-template-columns: 2.55rem minmax(0, 1fr) 2.55rem;
+        row-gap: .44rem;
+        column-gap: .4rem;
+    }
+    .volume-icon {
+        width: 20px;
+        height: 20px;
+        justify-self: center;
+    }
+    .volume-icon svg {
+        width: 18px;
+        height: 18px;
+    }
+    .volume-slider { height: 5px; }
+    .volume-slider::-webkit-slider-thumb { width: 15.5px; height: 15.5px; }
+    .volume-slider::-moz-range-thumb { width: 15.5px; height: 15.5px; }
+    .volume-display {
+        width: 2.55rem;
+        min-width: 2.55rem;
+        justify-content: flex-end;
+        text-align: right;
+        padding-right: .08rem;
+        font-size: .64rem;
+    }
+    /* Phone: no-media fallback keeps track + volume only. */
+    .playback-bar:not(.has-media) {
+        grid-template-areas:
+            "track track"
+            "volume volume";
+    }
+    .playback-bar:not(.has-media) .playback-center,
+    .playback-bar:not(.has-media) .playback-meter { display: none; }
+    /* Phone slider paint and thumb geometry. */
     .seek-slider::-webkit-slider-runnable-track,
-        .volume-slider::-webkit-slider-runnable-track {
-            height: 4.5px;
-            border-radius: 999px;
-            background: linear-gradient(to right,
-                var(--accent) 0%,
-                var(--accent) var(--range-progress),
-                rgba(255,255,255,.10) var(--range-progress),
-                rgba(255,255,255,.10) 100%);
-        }
-        .seek-slider::-moz-range-track,
-        .volume-slider::-moz-range-track {
-            height: 4.5px;
-            border-radius: 999px;
-            background: linear-gradient(to right,
-                var(--accent) 0%,
-                var(--accent) var(--range-progress),
-                rgba(255,255,255,.10) var(--range-progress),
-                rgba(255,255,255,.10) 100%);
-        }
-        .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
-        .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
-        .volume-slider::-webkit-slider-thumb { width: 15.5px; height: 15.5px; }
-        .volume-slider::-moz-range-thumb { width: 15.5px; height: 15.5px; }
-        .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
-        .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 15.5px) / 2); }
+    .volume-slider::-webkit-slider-runnable-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-moz-range-track,
+    .volume-slider::-moz-range-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    /* Chromium anchors the thumb to the track top when the track is shorter
+       than the thumb; lift it by half the size difference so the thumb sits
+       centered on the 4.5px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 15.5px) / 2); }
 
     @media (max-width: 360px) {
-    /* from _playback.css :: (max-width: 360px) */
-        .playback-bar .track-info { grid-template-columns: 46px minmax(0,1fr); gap: .5rem; }
-            .playback-visual { width: 46px; height: 46px; }
-
-    /* from _playback.css :: (max-width: 360px) */
-        .playback-bar { grid-template-columns: minmax(0, 1fr) 78px;
-                row-gap: .52rem; }
-            .playback-meter { width: 78px;
-                max-width: 78px;
-                grid-template-columns: .5rem 57px; }
-            .meter-segments { width: 57px;
-                min-width: 57px;
-                max-width: 57px; }
-
-    /* from _playback.css :: (max-width: 360px) */
+        .playback-bar .track-info {
+            grid-template-columns: 46px minmax(0, 1fr);
+            gap: .5rem;
+        }
+        .playback-visual {
+            width: 46px;
+            height: 46px;
+        }
         .playback-bar {
-                row-gap: .6rem;
-                padding-inline: .6rem;
-            }
-            .seek-row,
-            .volume-control {
-                grid-template-columns: 2.35rem minmax(0, 1fr) 2.35rem;
-                column-gap: .34rem;
-            }
-            .volume-display {
-                width: 2.35rem;
-                min-width: 2.35rem;
-            }
-
+            grid-template-columns: minmax(0, 1fr) 78px;
+            row-gap: .6rem;
+            padding-inline: .6rem;
+        }
+        .playback-meter {
+            width: 78px;
+            max-width: 78px;
+            grid-template-columns: .5rem 57px;
+        }
+        .meter-segments {
+            width: 57px;
+            min-width: 57px;
+            max-width: 57px;
+        }
+        .seek-row,
+        .volume-control {
+            grid-template-columns: 2.35rem minmax(0, 1fr) 2.35rem;
+            column-gap: .34rem;
+        }
+        .volume-display {
+            width: 2.35rem;
+            min-width: 2.35rem;
+        }
     }
-    @media (max-width: 390px) {
-    /* from _measurement.css :: (max-width: 390px) */
-        .playback-bar { grid-template-areas: "track track" "transport transport" "volume volume"; }
-            .playback-meter { display: none; }
-            .volume-control { grid-template-columns: 22px minmax(120px,1fr) 2.7rem; }
 
+    @media (max-width: 390px) {
+        .playback-bar {
+            grid-template-areas: "track track" "transport transport" "volume volume";
+        }
+        .playback-meter { display: none; }
+        .volume-control { grid-template-columns: 22px minmax(120px, 1fr) 2.7rem; }
     }
 }
 
@@ -6637,140 +6407,90 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 @media (min-width: 641px) and (max-width: 980px) {
-    /* from _streaming.css */
     .measurement-overlay {
-            padding: 0.5rem;
-        }
-
-        .measurement-dialog {
-            width: min(1040px, calc(100vw - 1rem));
-            min-height: min(960px, calc(100vh - 1rem));
-            max-height: calc(100vh - 1rem);
-            padding: 1rem;
-        }
-
-        .measurement-actions-top {
-            align-items: flex-start;
-        }
-
-        .measurement-workflow-list {
-            width: 100%;
-        }
-
-        .measurement-graph-wrap {
-            padding: 0.9rem;
-        }
-
-        .measurement-graph {
-            min-height: 460px;
-        }
-
-        .measurement-peq-editor-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.75rem 0.8rem;
-            align-items: start;
-        }
-
-        .measurement-peq-direct-input-field {
-            grid-column: auto;
-        }
-
-        .measurement-peq-stepper {
-            grid-template-columns: 42px minmax(96px, 1fr) 42px;
-        }
-
-        .measurement-peq-editor-actions {
-            grid-column: 1 / -1;
-        }
-
-        .measurement-peq-editor-actions {
-            justify-content: flex-start;
-        }
-
-    /* from _playback.css */
-    .measurement-overlay {
-            padding: 0.5rem;
-        }
-
-        .measurement-dialog {
-            width: min(1040px, calc(100vw - 1rem));
-            min-height: min(960px, calc(100vh - 1rem));
-            max-height: calc(100vh - 1rem);
-        }
-        .library-search-field {
-            flex-basis: clamp(260px, 30vw, 400px);
-            width: clamp(260px, 30vw, 400px);
-        }
-        .library-selection-toolbar .btn-secondary {
-            min-width: 104px;
-        }
-
+        padding: 0.5rem;
+    }
+    .measurement-dialog {
+        width: min(1040px, calc(100vw - 1rem));
+        min-height: min(960px, calc(100vh - 1rem));
+        max-height: calc(100vh - 1rem);
+        padding: 1rem;
+    }
+    .measurement-actions-top {
+        align-items: flex-start;
+    }
+    .measurement-workflow-list {
+        width: 100%;
+    }
+    .measurement-graph-wrap {
+        padding: 0.9rem;
+    }
+    .measurement-graph {
+        min-height: 460px;
+    }
+    .measurement-peq-editor-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem 0.8rem;
+        align-items: start;
+    }
+    .measurement-peq-direct-input-field {
+        grid-column: auto;
+    }
+    .measurement-peq-stepper {
+        grid-template-columns: 42px minmax(96px, 1fr) 42px;
+    }
+    .measurement-peq-editor-actions {
+        grid-column: 1 / -1;
+        justify-content: flex-start;
+    }
+    .library-search-field {
+        flex-basis: clamp(260px, 30vw, 400px);
+        width: clamp(260px, 30vw, 400px);
+    }
+    .library-selection-toolbar .btn-secondary {
+        min-width: 104px;
+    }
 }
 
 @media (min-width: 600px) and (max-width: 640px) {
-    /* from _streaming.css */
     .measurement-overlay {
-            padding: 0.5rem;
-        }
-
-        .measurement-dialog {
-            width: min(1040px, calc(100vw - 1rem));
-            min-height: min(960px, calc(100vh - 1rem));
-            max-height: calc(100vh - 1rem);
-            padding: 1rem;
-        }
-
-        .measurement-actions-top {
-            align-items: flex-start;
-        }
-
-        .measurement-workflow-list {
-            width: 100%;
-        }
-
-        .measurement-graph-wrap {
-            padding: 0.9rem;
-        }
-
-        .measurement-graph {
-            min-height: 460px;
-        }
-
-        .measurement-peq-editor-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.75rem 0.8rem;
-            align-items: start;
-        }
-
-        .measurement-peq-direct-input-field {
-            grid-column: auto;
-        }
-
-        .measurement-peq-stepper {
-            grid-template-columns: 42px minmax(96px, 1fr) 42px;
-        }
-
-        .measurement-peq-editor-actions {
-            grid-column: 1 / -1;
-        }
-
-        .measurement-peq-editor-actions {
-            justify-content: flex-start;
-        }
-
-    /* from _playback.css */
-    .measurement-overlay {
-            padding: 0.5rem;
-            align-items: stretch;
-        }
-
-        .measurement-dialog {
-            width: min(1040px, calc(100vw - 1rem));
-            min-height: min(960px, calc(100vh - 1rem));
-            max-height: calc(100vh - 1rem);
-            border-radius: var(--radius-xl);
-        }
-
+        padding: 0.5rem;
+        align-items: stretch;
+    }
+    .measurement-dialog {
+        width: min(1040px, calc(100vw - 1rem));
+        min-height: min(960px, calc(100vh - 1rem));
+        max-height: calc(100vh - 1rem);
+        padding: 1rem;
+        border-radius: var(--radius-xl);
+    }
+    .measurement-actions-top {
+        align-items: flex-start;
+    }
+    .measurement-workflow-list {
+        width: 100%;
+    }
+    .measurement-graph-wrap {
+        padding: 0.9rem;
+    }
+    .measurement-graph {
+        min-height: 460px;
+    }
+    .measurement-peq-editor-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem 0.8rem;
+        align-items: start;
+    }
+    .measurement-peq-direct-input-field {
+        grid-column: auto;
+    }
+    .measurement-peq-stepper {
+        grid-template-columns: 42px minmax(96px, 1fr) 42px;
+    }
+    .measurement-peq-editor-actions {
+        grid-column: 1 / -1;
+        justify-content: flex-start;
+    }
 }
 
 @media (min-width: 600px) and (max-width: 980px) and (orientation: portrait) {
@@ -7164,15 +6884,6 @@ input[type="number"]::-webkit-outer-spin-button {
         .brand-text-block {
             gap: 0.06rem;
             padding-top: 0;
-        }
-        .radio-panel-header {
-            grid-template-columns: 1fr auto;
-        }
-        .radio-search-field {
-            display: block;
-            grid-column: 1 / -1;
-            grid-row: 2;
-            max-width: none;
         }
         .radio-search-main-row {
             grid-template-columns: minmax(0, 1fr) auto;
@@ -7841,9 +7552,9 @@ input[type="number"]::-webkit-outer-spin-button {
 /* Prefers reduced motion — keep at end */
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
-            animation-duration: 0.01ms !important;
-            animation-iteration-count: 1 !important;
-            transition-duration: 0.01ms !important;
-            scroll-behavior: auto !important;
+            animation-duration: 0.01ms;
+            animation-iteration-count: 1;
+            transition-duration: 0.01ms;
+            scroll-behavior: auto;
         }
 }

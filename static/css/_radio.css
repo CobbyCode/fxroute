@@ -506,9 +506,6 @@
 .upload-area-text-input:focus {
     outline: none;
 }
-#station-save-row.hidden {
-    display: none !important;
-}
 .library-import-cancel-row {
     justify-content: flex-end;
     margin-top: -0.1rem;

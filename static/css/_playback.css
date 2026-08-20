@@ -87,31 +87,10 @@
     to { opacity: 0; transform: translateX(30px); }
 }
 
-
-
-/* ============================================================
-   Responsive — Tablet
-   ============================================================ */
-
-
-
-
-
-
-
-/* ============================================================
-   Responsive — Phone
-   ============================================================ */
-
 .playback-bar.progress-readonly .seek-slider:disabled {
     cursor: default;
     opacity: 0.9;
 }
-
-
-
-
-
 
 /* Unified upload area */
 .upload-area {
@@ -195,12 +174,6 @@
    are gone. No provider-specific panel offset may exist — Spotify and Qobuz
    must start at the same height.
    ========================================================================= */
-
-
-
-
-
-
 
 /* ============ Cover detail card (shared radio/library) ============ */
 .cover-detail-backdrop {
@@ -421,8 +394,6 @@
     border-radius: 3px;
 }
 
-
-
 /* ============================================================
    2026 visual refresh — shell, navigation and content rhythm
    (Duplicate base/override rules were folded into their base definitions;
@@ -466,24 +437,13 @@
 /* Mobile touch targets: keep the header power button tappable on narrow
    screens (base 38px, refreshed at all widths below). */
 
-
-
-
-
-
 /* Small phones: slightly smaller brand lockup than the 760px tablet size.
    Placed after the 760px override so these win on narrow screens. */
-
-
-
 
 /* ============================================================
    Playback footer refinement — consolidated survivors
    (verbatim rules previously spread across the v1-v4 blocks)
    ============================================================ */
-
-
-
 
 .control-btn-mode:hover:not(:disabled), .control-btn-mode:focus-visible:not(:disabled) { color: var(--text-primary);
     border-color: rgba(255,255,255,.065);
@@ -515,7 +475,6 @@
    stays anchored at the track's right edge at every desktop width. The
    metadata caps at 430px and the footer compacts to 98px min-height at
    a 5px bottom inset. */
-
 
 .transport-controls { display: flex;
     align-items: center;
@@ -628,33 +587,17 @@
     font-weight: 650;
     font-variant-numeric: tabular-nums; }
 
-
-
-
-
-
-
-
-
-.meter-segment-hidden { display: none !important; }
-
-
-
-
-
-
+/* Hidden meter segments (JS-driven via .meter-segment-hidden): must win
+   over the base .meter-segments i { display: block } row rule. */
+.meter-segments .meter-segment-hidden { display: none; }
 
 /* Tablet / compact desktop: give the transport real vertical breathing room,
    keep the album/queue chip inside the track-copy column, and preserve a
    compact right-side meter/volume stack. */
 
-
 /* Phone: keep the six-segment stereo meter, but give transport/seek/volume
    more air. Seek and volume use identical outer gutters so both slider tracks
    share the same center line and width. */
-
-
-
 
 /* ============================================================
    Playback footer refinement v7 — desktop/tablet vertical compacting
@@ -663,13 +606,11 @@
    breathing room above and below the existing content. Desktop rules live
    in the consolidated ≥1181px block above; this block covers tablets. */
 
-
 /* ============================================================
    Playback footer refinement v8 — quieter desktop/tablet sliders
    ============================================================ */
 /* Keep the input box unchanged for pointer/touch behavior. Only the native
    track paint and thumb are made slightly lighter than the volume control. */
-
 
 /* Phone: soften only the visible range paint; the input box remains the
    existing size so pointer and touch targeting do not change. */
