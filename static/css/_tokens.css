@@ -1,0 +1,44 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* FXRoute — Redesigned Styles */
+/* Dark, warm, product-like. Touch-friendly. */
+:root {
+    --bg-primary:    #0d0d0f;
+    --bg-surface:    #161619;
+    --bg-elevated:   #1e1e22;
+    --bg-hover:      #26262b;
+    --bg-input:      #1c1c20;
+    --text-primary:   #ececf0;
+    --text-secondary: #a0a0ac;
+    --text-muted:     #848490;
+    --accent:        #6ee7b7;   /* fresh teal */
+    --accent-dim:    rgba(110, 231, 183, 0.12);
+    --accent-hover:  #4dd8a0;
+    --danger:        #f87171;
+    --danger-dim:    rgba(248, 113, 113, 0.12);
+    --success:       #34d399;
+    --border:        rgba(255, 255, 255, 0.06);
+    --border-strong: rgba(255, 255, 255, 0.10);
+    --shadow:        rgba(0, 0, 0, 0.4);
+    --radius-sm:  8px;
+    --radius-md:  12px;
+    --radius-lg:  16px;
+    --radius-xl:  20px;
+    --action-gap: 12px;
+    --action-gap-mobile: 8px;
+    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    --playback-footer-space: 142px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Geist", "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    /* Native form controls (select option popups, autofill, scrollbars)
+       follow the dark theme instead of the system light scheme. */
+    color-scheme: dark;
+}
+
+@media (max-width: 420px) {
+    .radio-search-field .radio-search-main-row {
+        grid-template-columns: 1fr;
+    }
+    .radio-search-main-row .radio-search-online {
+        width: 100%;
+    }
+}

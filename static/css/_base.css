@@ -1,0 +1,105 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    /* Global dark scrollbars for the page and unscoped scroll areas. */
+    scrollbar-width: thin;
+    scrollbar-color: var(--bg-hover) transparent;
+}
+html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+*::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+    background: var(--bg-hover);
+    border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: var(--border-strong);
+}
+::selection {
+    background: rgba(110, 231, 183, 0.18);
+    color: var(--text-primary);
+}
+/* Visually hidden skip link, revealed on keyboard focus. */
+.skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0.75rem;
+    z-index: 2000;
+    padding: 0.6rem 0.9rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 0.88rem;
+    text-decoration: none;
+    box-shadow: 0 8px 24px var(--shadow);
+    transition: top 0.15s var(--ease);
+}
+.skip-link:focus-visible {
+    top: 0.75rem;
+}
+body {
+    font-family: var(--font-sans);
+    background:
+        radial-gradient(circle at 50% -20%, rgba(110,231,183,.035), transparent 34%),
+        linear-gradient(180deg, #0b0b0e 0%, #0d0d10 55%, #0b0b0e 100%);
+    color: var(--text-primary);
+    min-height: 100vh;
+    padding-bottom: var(--playback-footer-space);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+/* ============================================================
+   Offline / Connection banner
+   ============================================================ */
+.offline-indicator {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    /* Error stays red, but reads as part of the dark theme: translucent
+       dark-red tint instead of a full-saturation danger band. The red dot
+       and the danger border keep the disconnect meaning unambiguous. */
+    background: rgba(120, 27, 27, 0.6);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(248, 113, 113, 0.32);
+    color: #ffe9e9;
+    text-align: center;
+    padding: 0.5rem 1rem;
+    font-weight: 600;
+    font-size: 0.88rem;
+    z-index: 1002;
+    letter-spacing: 0.02em;
+    animation: bannerSlide 0.3s var(--ease);
+}
+.offline-indicator::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 0.5rem;
+    vertical-align: -1px;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.22);
+}
+.offline-indicator.hidden { display: none; }
+.hidden { display: none !important; }
+@keyframes bannerSlide {
+    from { transform: translateY(-100%); }
+    to   { transform: translateY(0); }
+}
+/* ============================================================
+   Header
+   ============================================================ */

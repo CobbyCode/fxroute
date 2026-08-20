@@ -1,0 +1,1708 @@
+/* ============================================================
+   Toasts
+   ============================================================ */
+.toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 1005;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: 320px;
+}
+.toast {
+    padding: 0.85rem 1.1rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    box-shadow: 0 8px 24px var(--shadow);
+    animation: toastIn 0.3s var(--ease);
+    font-size: 0.88rem;
+    line-height: 1.4;
+}
+.toast.success { border-left-color: var(--success); }
+.toast.error   { border-left-color: var(--danger); }
+.toast.info    { border-left-color: var(--accent); }
+.toast.now-playing-cue {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    min-width: min(320px, calc(100vw - 2rem));
+    max-width: min(420px, calc(100vw - 2rem));
+    padding: 0.65rem 0.85rem;
+}
+.now-playing-cover {
+    width: 0;
+    height: 56px;
+    border-radius: 0.7rem;
+    object-fit: contain;
+    background: var(--bg-elevated);
+    flex: 0 0 auto;
+    opacity: 0;
+    border: 0;
+    box-shadow: none;
+    transition: width 0.18s var(--ease), opacity 0.18s var(--ease);
+}
+.now-playing-cue.has-cover .now-playing-cover.is-ready {
+    width: 56px;
+    opacity: 1;
+    border: 1px solid var(--border);
+    box-shadow: 0 6px 18px var(--shadow);
+}
+.now-playing-text {
+    min-width: 0;
+}
+.now-playing-label {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.12rem;
+}
+.now-playing-title,
+.now-playing-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.now-playing-title {
+    color: var(--text-primary);
+    font-weight: 700;
+}
+.now-playing-meta {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-top: 0.1rem;
+}
+.toast.remove {
+    animation: toastOut 0.25s ease-in forwards;
+}
+@keyframes toastIn {
+    from { opacity: 0; transform: translateX(30px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes toastOut {
+    to { opacity: 0; transform: translateX(30px); }
+}
+@media (min-width: 1200px) and (max-width: 2559px) {
+    .radio-search-input-wrap {
+        margin-left: 13rem;
+    }
+}
+@media (min-width: 900px) and (max-width: 1199px) {
+    .radio-search-input-wrap {
+        margin-left: 10.25rem;
+    }
+}
+@media (min-width: 2560px) {
+    .radio-search-input-wrap {
+        margin-left: 8.25rem;
+    }
+    .manage-dialog {
+        width: min(620px, 100%);
+    }
+}
+/* ============================================================
+   Responsive — Tablet
+   ============================================================ */
+@media (max-width: 900px) {
+    .manage-dialog {
+        width: min(620px, 100%);
+    }
+    .effects-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+    .effects-card { padding: 1.25rem; }
+    .effects-actions-right { justify-content: flex-end; }
+}
+
+@media (max-width: 1180px) {
+    .library-actions-row {
+        align-items: center;
+        margin-bottom: 0.5rem;
+    }
+    .playlist-save-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+        margin-bottom: 0.7rem;
+    }
+    .playlist-save-controls {
+        width: 100%;
+        flex: 0 1 auto;
+    }
+}
+
+@media (max-width: 1180px) and (min-width: 601px) {
+    .library-actions-row {
+        margin-bottom: var(--action-gap);
+    }
+}
+
+@media (min-width: 641px) and (max-width: 980px) {
+    .measurement-overlay {
+        padding: 0.5rem;
+    }
+
+    .measurement-dialog {
+        width: min(1040px, calc(100vw - 1rem));
+        min-height: min(960px, calc(100vh - 1rem));
+        max-height: calc(100vh - 1rem);
+    }
+    .library-search-field {
+        flex-basis: clamp(260px, 30vw, 400px);
+        width: clamp(260px, 30vw, 400px);
+    }
+    .library-selection-toolbar .btn-secondary {
+        min-width: 104px;
+    }
+}
+/* ============================================================
+   Responsive — Phone
+   ============================================================ */
+@media (max-width: 600px) {
+    .library-toolbar,
+    .effects-header-actions {
+        gap: var(--action-gap-mobile);
+    }
+    .library-toolbar {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+    }
+    .library-toolbar::-webkit-scrollbar {
+        display: none;
+    }
+
+    .brand-subtitle {
+        display: none;
+    }
+    .track-artist {
+        display: block;
+        min-width: 0;
+        max-width: 100%;
+        font-size: 0.72rem;
+        line-height: 1.2;
+    }
+    .library-toolbar #toggle-import {
+        width: 44px;
+        min-width: 44px;
+        max-width: 44px;
+        height: 44px;
+        min-height: 44px;
+        max-height: 44px;
+        padding: 0;
+        font-size: 0;
+        line-height: 1;
+        align-self: center;
+        white-space: nowrap;
+        overflow: hidden;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .library-toolbar #toggle-import::before {
+        content: "＋";
+        font-size: 1.2rem;
+        line-height: 1;
+    }
+    #tab-library {
+        padding-top: 0;
+    }
+    #tab-effects {
+        padding-top: 0;
+    }
+    .header {
+        flex-direction: row;
+        gap: 0.65rem;
+    }
+    .brand-lockup {
+        gap: 0.5rem;
+        flex: 1;
+        min-width: 0;
+    }
+    .brand-text-block {
+        gap: 0.06rem;
+        padding-top: 0;
+    }
+    .radio-panel-header {
+        grid-template-columns: 1fr auto;
+    }
+    .radio-search-field {
+        display: block;
+        grid-column: 1 / -1;
+        grid-row: 2;
+        max-width: none;
+    }
+    .radio-search-main-row {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .manage-overlay {
+        padding: 0.75rem;
+        align-items: flex-end;
+    }
+    .manage-dialog {
+        width: 100%;
+        max-height: 85vh;
+        overflow: auto;
+        border-radius: 18px 18px 0 0;
+    }
+    .manage-dialog-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .radio-manage-submit-row {
+        justify-content: stretch;
+    }
+    .radio-manage-submit-row .btn-primary,
+    .manage-dialog-header .btn-secondary {
+        width: 100%;
+    }
+    .settings-maintenance-actions {
+        grid-template-columns: 1fr;
+        width: 100%;
+        margin-left: 0;
+    }
+    .btn-ghost {
+        font-size: 0.78rem;
+        padding: 0.3rem 0.55rem;
+        min-height: 32px;
+    }
+    .btn-ghost-icon {
+        font-size: 0.85rem;
+    }
+    /* Library tighter */
+    .library-actions-row {
+        align-items: stretch;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+        margin-bottom: 0.5rem;
+    }
+    .library-search-wrap {
+        flex-basis: 100%;
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 104px;
+        gap: var(--action-gap-mobile, 8px);
+        align-items: stretch;
+    }
+    .library-search-field {
+        flex: 1 1 auto;
+        width: 100%;
+        min-width: 0;
+    }
+    .library-selection-toolbar {
+        width: 100%;
+        min-width: 0;
+    }
+    .library-selection-toolbar .btn-secondary {
+        flex: 0 0 auto;
+        width: 100%;
+        min-width: 0;
+        height: 44px;
+        min-height: 44px;
+    }
+    .track-item { padding: 0.7rem 0.75rem; }
+    /* Download */
+    .playlist-save-row {
+        flex-wrap: nowrap;
+        align-items: stretch;
+        margin-bottom: 0.7rem;
+    }
+    .playlist-save-controls {
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 104px;
+        gap: var(--action-gap-mobile, 8px);
+        align-items: stretch;
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+    .playlist-save-row .url-input {
+        flex: initial;
+        width: 100%;
+        min-width: 0;
+        font-size: 0.84rem;
+        padding: 0.28rem 0.5rem;
+    }
+    #save-playlist {
+        width: 100%;
+        min-width: 0;
+        height: 44px;
+        min-height: 44px;
+    }
+    .download-form { flex-direction: column; }
+    .download-form .btn-primary,
+    .download-form .btn-danger { width: 100%; }
+    /* Effects */
+    #tab-effects,
+    #tab-effects .effects-shell,
+    #tab-effects .effects-grid,
+    #tab-effects .effects-card {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+    }
+    #tab-effects,
+    #tab-effects .effects-shell {
+        overflow-x: clip;
+    }
+    .effects-shell { padding: 0; }
+    .effects-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.75rem;
+        margin-bottom: 0.75rem;
+    }
+    .effects-header-actions { justify-content: flex-start; }
+    .effects-peq-band-fields {
+        grid-template-columns: 1fr;
+    }
+    .effects-peq-band-header,
+    .effects-peq-pane-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .effects-actions-row .btn-primary,
+    .effects-actions-row .btn-danger,
+    .effects-actions-row .btn-secondary { width: 100%; min-width: unset; }
+    .effects-actions-right { flex-direction: column; align-items: stretch; }
+    .toast-container {
+        right: 0.5rem;
+        left: 0.5rem;
+        max-width: calc(100% - 1rem);
+    }
+}
+.playback-bar.progress-readonly .seek-slider:disabled {
+    cursor: default;
+    opacity: 0.9;
+}
+
+
+
+
+
+
+/* Unified upload area */
+.upload-area {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    padding: 1.2rem 1rem;
+    border: 2px dashed var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    text-align: center;
+    min-height: 80px;
+}
+.upload-area:hover,
+.upload-area.drag-over,
+.upload-area:focus-visible {
+    border-color: var(--accent);
+    background: var(--bg-elevated);
+}
+.upload-area:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.upload-area-icon {
+    font-size: 1.4rem;
+}
+.upload-area-text {
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+}
+.upload-area-text u {
+    color: var(--accent);
+    cursor: pointer;
+}
+.upload-area-filename {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.upload-area-input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+}
+
+.measurement-calibration-select-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 0.5rem;
+    align-items: stretch;
+}
+
+.measurement-calibration-select-row .btn-secondary,
+.measurement-calibration-select-row .btn-danger {
+    min-width: 92px;
+    padding-left: 0.9rem;
+    padding-right: 0.9rem;
+}
+
+.measurement-calibration-upload-area {
+    min-height: 64px;
+    padding: 0.9rem 1rem;
+}
+
+.measurement-calibration-upload-area .upload-area-icon {
+    font-size: 1.1rem;
+}
+
+/* =========================================================================
+   Spotify tab: the tab renders through the shared streaming shell today
+   (static/streaming.js .streaming-shell), so the legacy in-tab player rules
+   are gone. No provider-specific panel offset may exist — Spotify and Qobuz
+   must start at the same height.
+   ========================================================================= */
+
+@media (max-width: 760px) {
+    #tab-effects .url-input,
+    #tab-effects select,
+    #tab-effects textarea {
+        font-size: 16px;
+    }
+
+    #tab-effects .effects-actions-rew-dual {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 0.7rem;
+    }
+
+    #tab-effects .effects-actions-peq-dual,
+    #tab-effects .effects-actions-combine {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 0.7rem;
+    }
+
+    #tab-effects .effects-actions-peq-dual .effects-rew-dual-name-input {
+        max-width: none;
+    }
+
+    #tab-effects .effects-actions-rew-dual .effects-rew-dual-name-input,
+    #tab-effects .effects-actions-peq-dual .effects-rew-dual-name-input,
+    #tab-effects .effects-actions-combine .effects-combine-name-input {
+        width: 100%;
+        max-width: none;
+        min-width: 0;
+        min-height: 36px;
+        height: 36px;
+        padding: 0.4rem 0.7rem;
+        font-size: 16px;
+        line-height: 1.2;
+    }
+
+    #tab-effects .effects-actions-rew-dual .btn-primary,
+    #tab-effects .effects-actions-rew-dual .btn-secondary,
+    #tab-effects .effects-actions-peq-dual .btn-primary,
+    #tab-effects .effects-actions-combine .btn-primary {
+        width: auto;
+        min-width: 88px;
+        min-height: 36px;
+        height: 36px;
+        padding: 0.4rem 0.85rem;
+    }
+}
+
+@media (min-width: 600px) and (max-width: 640px) {
+    .measurement-overlay {
+        padding: 0.5rem;
+        align-items: stretch;
+    }
+
+    .measurement-dialog {
+        width: min(1040px, calc(100vw - 1rem));
+        min-height: min(960px, calc(100vh - 1rem));
+        max-height: calc(100vh - 1rem);
+        border-radius: var(--radius-xl);
+    }
+}
+
+@media (max-width: 767px) {
+    .measurement-overlay {
+        padding: 0.5rem;
+        align-items: center;
+        overflow-x: hidden;
+    }
+
+    .measurement-dialog {
+        width: min(100%, calc(100vw - 1rem));
+        min-height: auto;
+        max-height: calc(100dvh - 1rem);
+        padding: 0.85rem;
+        border-radius: var(--radius-lg);
+        overflow-x: hidden;
+    }
+
+    .measurement-saved-group > summary,
+    .measurement-saved-toolbar button,
+    .measurement-select-all-toggle {
+        font-size: 16px;
+        touch-action: manipulation;
+    }
+
+    .measurement-saved-group {
+        padding: 0.1rem 0.1rem 0.25rem;
+    }
+
+    .measurement-saved-group > summary {
+        padding: 0.45rem 0.55rem;
+    }
+
+    .measurement-saved-list {
+        gap: 0.5rem;
+        padding: 0 0.15rem 0.15rem;
+    }
+
+    .measurement-saved-toolbar,
+    .measurement-saved-toolbar-selection {
+        gap: 0.5rem;
+    }
+    .measurement-saved-toolbar {
+        justify-content: space-between;
+    }
+    .measurement-saved-toolbar-selection {
+        flex: 1 1 auto;
+    }
+    .measurement-saved-delete-action,
+    .measurement-saved-merge-action {
+        width: 38px;
+        min-width: 38px;
+        padding-inline: 0;
+        font-size: 1rem;
+    }
+    .measurement-saved-delete-action .label-full,
+    .measurement-saved-merge-action .label-full,
+    .measurement-saved-close-action .label-full {
+        display: none;
+    }
+    .measurement-saved-delete-action .label-compact,
+    .measurement-saved-merge-action .label-compact,
+    .measurement-saved-close-action .label-compact {
+        display: inline;
+    }
+    .measurement-saved-close-action {
+        width: 38px;
+        min-width: 38px;
+        padding-inline: 0;
+        font-size: 1rem;
+    }
+
+    .measurement-list-item {
+        gap: 0.24rem;
+        padding: 0.62rem 0.68rem;
+    }
+
+    .measurement-list-row {
+        gap: 0.45rem;
+    }
+
+    .measurement-toggle {
+        gap: 0.48rem;
+    }
+
+    .measurement-saved-toolbar button {
+        min-height: 36px;
+        padding: 0.42rem 0.72rem;
+    }
+}
+
+/* ============ Cover detail card (shared radio/library) ============ */
+.cover-detail-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1040;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
+.cover-detail-card {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(102px + 8px + 14px);
+    z-index: 1041;
+    width: min(720px, calc(100vw - 2rem));
+    max-height: calc(100vh - 102px - 8px - 14px - 1rem);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--bg-hover) transparent;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xl);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    padding: 0.95rem;
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    grid-template-areas:
+        "cover info"
+        "cover history"
+        "cover queue";
+    gap: 0.85rem 1.1rem;
+    align-items: start;
+    touch-action: manipulation;
+}
+/* Wide layout, local playback with an active queue: move the whole meta
+   block (incl. tech line and tag-info block) under the cover into the left
+   column; the right column then holds only the queue heading + list.
+   Radio, library without a queue and the narrow layout keep the original
+   arrangement (queue section carries .hidden when no queue is active). */
+@media (min-width: 601px) {
+    .cover-detail-card:has(#cover-detail-queue:not(.hidden)) {
+        grid-template-areas:
+            "cover queue"
+            "info queue";
+        /* Keep the left column compact: the queue spans both rows and can be
+           taller than the left content; with auto 1fr only the info row
+           absorbs the extra height, so no gap appears between the cover
+           tag block and the meta block. */
+        grid-template-rows: auto 1fr;
+    }
+}
+.cover-detail-cover-col {
+    grid-area: cover;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    min-width: 0;
+}
+.cover-detail-cover {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: var(--radius-lg);
+    background: var(--bg-hover);
+    display: block;
+}
+.cover-detail-extra {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+    min-width: 0;
+}
+.cover-detail-extra-line {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cover-detail-info {
+    grid-area: info;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.cover-detail-source {
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--accent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cover-detail-title {
+    font-size: 1.15rem;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+.cover-detail-artist {
+    font-size: 0.95rem;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cover-detail-album {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cover-detail-tech {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono, monospace);
+    margin-top: 0.15rem;
+}
+.cover-detail-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    min-width: 0;
+}
+.cover-detail-heading {
+    margin: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+.cover-detail-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.cover-detail-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.38rem 0.55rem;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    min-width: 0;
+}
+.cover-detail-row.current {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+}
+/* Library queue rows are interactive (jump to index via canonical play path).
+   Radio "Recently played" rows stay non-interactive. */
+.cover-detail-row[data-queue-index] {
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.cover-detail-row[data-queue-index]:hover {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.16);
+}
+.cover-detail-row[data-queue-index]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    background: rgba(255, 255, 255, 0.06);
+}
+.cover-detail-row[data-queue-index].current:hover {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    cursor: default;
+}
+.cover-detail-row-index {
+    flex: 0 0 auto;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    min-width: 1.4rem;
+    text-align: right;
+}
+.cover-detail-row-current-mark {
+    flex: 0 0 auto;
+    color: var(--accent);
+    font-size: 0.8rem;
+}
+.cover-detail-row-body {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+}
+.cover-detail-row-title {
+    font-size: 0.92rem;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cover-detail-row-artist {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#cover-detail-history {
+    grid-area: history;
+}
+#cover-detail-queue {
+    grid-area: queue;
+}
+.cover-detail-card::-webkit-scrollbar {
+    width: 5px;
+}
+.cover-detail-card::-webkit-scrollbar-track {
+    background: transparent;
+}
+.cover-detail-card::-webkit-scrollbar-thumb {
+    background: var(--bg-hover);
+    border-radius: 3px;
+}
+@media (max-width: 600px) {
+    .cover-detail-card {
+        bottom: calc(102px + 8px + 14px);
+        width: min(400px, calc(100vw - 1.2rem));
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "cover"
+            "info"
+            "history"
+            "queue";
+    }
+    .cover-detail-cover-col {
+        align-items: center;
+    }
+    .cover-detail-cover {
+        width: auto;
+        max-width: 100%;
+        max-height: 34vh;
+        margin-inline: auto;
+    }
+    .cover-detail-extra {
+        align-items: center;
+        text-align: center;
+    }
+}
+
+
+/* ============================================================
+   2026 visual refresh — shell, navigation and content rhythm
+   (Duplicate base/override rules were folded into their base definitions;
+   the rest are refresh-only chrome and responsive refinements.)
+   ============================================================ */
+/* Desktop-only brand scale-down (~12%): the whole logo lockup shrinks
+   uniformly so the first nav tab keeps more clearance from the brand
+   without touching the nav buttons or rebalancing the header. */
+@media (min-width: 761px) {
+    .brand-lockup { gap: 0.56rem; }
+    .brand-mark {
+        width: 37px;
+        height: 37px;
+        border-radius: 10px;
+        font-size: 0.84rem;
+    }
+    .brand-text-block { gap: 0.1rem; }
+    .brand-title { font-size: 1.07rem; }
+    .brand-subtitle { font-size: 0.62rem; }
+}
+.tab-glyph {
+    width: 1.05rem;
+    display: inline-grid;
+    place-items: center;
+    color: rgba(110,231,183,0.75);
+    font-size: .9rem;
+}
+.tab-btn[data-tab="spotify"] .tab-glyph { color: #4ed68b; }
+.tab-btn[data-tab="radio"] .tab-glyph { color: #7fe2b7; }
+.tab-btn.active .tab-glyph { color: var(--accent); }
+.station-search-input,
+.url-input {
+    border-color: rgba(255,255,255,.075);
+    background: rgba(255,255,255,.035);
+}
+.station-card.active {
+    border-color: rgba(110,231,183,.72);
+    background: linear-gradient(180deg, rgba(110,231,183,.105), rgba(255,255,255,.014));
+    box-shadow: 0 0 0 1px rgba(110,231,183,.38), 0 14px 30px rgba(0,0,0,.26);
+}
+.library-header,
+.album-detail-header,
+.effects-header {
+    gap: 1rem;
+}
+.btn-primary,
+.btn-secondary,
+.btn-ghost {
+    border-radius: 11px;
+}
+
+/* Mobile touch targets: keep the header power button tappable on narrow
+   screens (base 38px, refreshed at all widths below). */
+@media (max-width: 540px) {
+    .power-btn { width: 44px; height: 44px; }
+}
+
+@media (min-width: 940px) {
+    .tabs {
+        width: max-content;
+        margin: -72px auto 0;
+        height: 72px;
+        align-items: center;
+        background: transparent;
+        border-bottom: 0;
+        padding: 0;
+        pointer-events: none;
+    }
+    .tab-btn { pointer-events: auto; min-width: 124px; }
+}
+
+@media (max-width: 760px) {
+    .header { min-height: 64px; padding: .72rem .8rem; }
+    .brand-mark { width: 38px; height: 38px; }
+    .brand-title { font-size: 1.08rem; }
+    .brand-subtitle { font-size: .62rem; }
+    .tabs { justify-content: space-between; }
+    .tab-btn { flex: 1 0 auto; min-width: 86px; min-height: 44px; padding: .48rem .62rem; }
+    .tab-content { padding: 1rem .75rem calc(1.5rem + var(--playback-footer-space)); }
+    .radio-panel { padding: .9rem; border-radius: 18px; }
+    .radio-panel-header { gap: .65rem; }
+    .stations-grid { grid-template-columns: repeat(2, minmax(0,1fr)); gap: .72rem; }
+    .station-card { padding: .58rem; border-radius: 15px; }
+    .station-name { font-size: .88rem; }
+}
+
+/* Small phones: slightly smaller brand lockup than the 760px tablet size.
+   Placed after the 760px override so these win on narrow screens. */
+@media (max-width: 600px) {
+    .brand-mark { width: 35px; height: 35px; border-radius: 10px; font-size: 0.84rem; }
+    .brand-title { font-size: 0.98rem; }
+}
+
+@media (max-width: 420px) {
+    .header-status { gap: .32rem; }
+    .tabs { gap: .12rem; padding-inline: .38rem; }
+    .tab-btn { min-width: 74px; font-size: .78rem; gap: .22rem; }
+    .tab-glyph { width: .8rem; font-size: .8rem; }
+    .stations-grid { gap: .58rem; }
+}
+
+/* ============================================================
+   Playback footer refinement — consolidated survivors
+   (verbatim rules previously spread across the v1-v4 blocks)
+   ============================================================ */
+@media (max-width: 1100px) and (orientation: portrait) {
+    .playback-bar { width: calc(100vw - 18px);
+        grid-template-columns: minmax(0, 1fr) 150px;
+        grid-template-areas:
+            "track meter"
+            "transport transport"
+            "volume volume";
+        gap: .58rem .85rem;
+        min-height: 0;
+        padding: .72rem .9rem .78rem; }
+    .volume-control { width: min(650px, 100%);
+        margin-inline: auto;
+        grid-template-columns: 24px minmax(200px, 1fr) 3rem; }
+}
+
+@media (max-width: 600px) {
+    .playback-bar:not(.has-media) { grid-template-areas:
+            "track track"
+            "volume volume"; }
+    .playback-bar:not(.has-media) .playback-center, .playback-bar:not(.has-media) .playback-meter { display: none; }
+}
+
+.control-btn-mode:hover:not(:disabled), .control-btn-mode:focus-visible:not(:disabled) { color: var(--text-primary);
+    border-color: rgba(255,255,255,.065);
+    background: rgba(255,255,255,.04);
+    box-shadow: none; }
+.control-btn-mode.active { color: var(--accent);
+    border-color: rgba(110,231,183,.16);
+    background: rgba(110,231,183,.055); }
+.control-btn-mode:disabled { opacity: .28; }
+.playback-meter.is-active { opacity: .94; }
+.meter-row { display: contents; }
+.meter-row[data-channel="left"] .meter-channel { grid-column: 1; grid-row: 1; }
+.meter-row[data-channel="left"] .meter-segments { grid-column: 2; grid-row: 1; }
+.meter-row[data-channel="right"] .meter-channel { grid-column: 1; grid-row: 2; }
+.meter-row[data-channel="right"] .meter-segments { grid-column: 2; grid-row: 2; }
+.meter-channel { font-size: .54rem;
+    color: rgba(160,160,172,.68);
+    text-align: center;
+    font-weight: 760;
+    line-height: 1; }
+
+/* ============================================================
+   Playback footer refinement — consolidated desktop rules
+   (v5/v6/v7 passes merged into a single ≥1181px block)
+   ============================================================ */
+/* The volume cluster stays bounded by its own grid track: speaker left,
+   slider middle, percentage right, with constant column gaps. The slider
+   is the only flexible part and grows with the track; the percentage
+   stays anchored at the track's right edge at every desktop width. The
+   metadata caps at 430px and the footer compacts to 98px min-height at
+   a 5px bottom inset. */
+@media (min-width: 1181px) {
+    .playback-bar {
+        grid-template-columns:
+            minmax(280px, 430px)
+            minmax(390px, 1fr)
+            minmax(150px, 220px)
+            minmax(220px, 300px);
+        row-gap: clamp(.9rem, 1.35vw, 1.35rem);
+        column-gap: clamp(.75rem, 1.2vw, 1.25rem);
+        bottom: 5px;
+        min-height: 98px;
+        padding-block: .55rem;
+    }
+
+    .playback-bar .track-info {
+        width: min(100%, 430px);
+        max-width: 430px;
+    }
+
+    .playback-bar .controls {
+        width: min(100%, 360px);
+        max-width: 360px;
+        min-width: 0;
+        justify-self: start;
+        margin-left: 0;
+        margin-right: 0;
+        padding-right: 0;
+    }
+
+    .volume-control {
+        width: 100%;
+        max-width: 360px;
+        min-width: 0;
+        grid-template-columns: 24px minmax(130px, 1fr) 2.5rem;
+        column-gap: .42rem;
+    }
+
+    .volume-slider {
+        width: 100%;
+        max-width: none;
+        min-width: 0;
+    }
+
+    .volume-display {
+        width: 2.5rem;
+        min-width: 2.5rem;
+        justify-content: flex-end;
+        text-align: right;
+        padding: 0;
+    }
+
+    .playback-center {
+        gap: .56rem;
+    }
+
+    .transport-controls {
+        margin-top: 1px;
+        min-height: 46px;
+    }
+
+    .control-btn {
+        width: 46px;
+        height: 46px;
+        font-size: 1.04rem;
+    }
+    .control-btn-secondary {
+        width: 34px;
+        height: 34px;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 28px;
+        height: 28px;
+    }
+
+    .track-copy { gap: .28rem; }
+    .playback-meta-row { min-height: 1.1rem; }
+
+    .playback-meter {
+        grid-template-columns: .62rem 112px 2.48rem;
+        column-gap: .18rem;
+        justify-self: center;
+    }
+
+    .output-level-badge {
+        width: 2.48rem;
+        min-width: 2.48rem;
+        margin-left: -.04rem;
+        justify-content: flex-start;
+        text-align: left;
+    }
+}
+
+.transport-controls { display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    gap: .32rem; }
+.control-btn, .control-btn-secondary, .control-btn-mode, .control-btn-clear { padding: 0;
+    line-height: 1;
+    align-self: center;
+    vertical-align: middle; }
+.control-btn-secondary { width: 36px;
+    height: 36px;
+    font-size: .94rem; }
+.control-btn-mode { width: 30px;
+    height: 30px;
+    border-color: transparent;
+    background: transparent;
+    color: rgba(160,160,172,.72);
+    box-shadow: none;
+    font-size: .84rem;
+    font-weight: 700; }
+.control-btn-clear { width: 30px;
+    height: 30px;
+    font-size: .78rem;
+    margin-left: .08rem;
+    color: var(--text-muted); }
+.track-copy-main { display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto;
+    align-items: start;
+    gap: 0.55rem;
+    min-width: 0; }
+.track-favorite-btn { grid-column: 2;
+    grid-row: 1;
+    width: 34px;
+    height: 34px;
+    display: inline-grid;
+    place-items: center;
+    flex-shrink: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 1.3rem;
+    cursor: pointer;
+    transition: color .15s var(--ease), background .15s var(--ease), transform .12s var(--ease);
+    align-self: start;
+    margin-top: -.16rem; }
+.playback-meter { grid-area: meter;
+    min-width: 0;
+    display: grid;
+    gap: .28rem;
+    grid-template-columns: .65rem minmax(94px, 118px) 3.35rem;
+    grid-template-rows: 5px 5px;
+    width: max-content;
+    max-width: none;
+    min-height: 28px;
+    column-gap: .52rem;
+    row-gap: .5rem;
+    align-content: center;
+    align-items: center;
+    justify-self: center;
+    align-self: center;
+    opacity: .48;
+    transition: opacity .15s var(--ease); }
+.meter-segments { display: grid;
+    grid-template-columns: repeat(12, minmax(3px, 1fr));
+    width: 112px;
+    min-width: 94px;
+    max-width: 118px;
+    gap: 2px;
+    align-self: center; }
+.meter-segments i { display: block;
+    height: 5px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.075);
+    transition: background .08s linear, box-shadow .08s linear, opacity .08s linear; }
+.output-level-badge { display: inline-flex;
+    align-items: center;
+    grid-column: 3;
+    grid-row: 1 / 3;
+    align-self: center;
+    justify-self: start;
+    width: 2.48rem;
+    min-width: 2.48rem;
+    padding: 0;
+    margin-left: 0;
+    justify-content: flex-start;
+    text-align: left;
+    line-height: 1;
+    white-space: nowrap;
+    border: 0;
+    background: transparent;
+    color: rgba(160,160,172,.78);
+    font-size: .62rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums; }
+.volume-display { display: inline-flex;
+    position: static;
+    justify-content: flex-start;
+    min-width: 2.25rem;
+    text-align: left;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-secondary);
+    font-size: .69rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums; }
+
+@media (max-width: 1180px) {
+    .output-level-badge { width: 3rem;
+        min-width: 3rem;
+        margin-left: .04rem;
+        font-size: .59rem; }
+}
+
+@media (min-width: 701px) and (max-width: 1180px) {
+    .playback-bar { width: calc(100vw - 16px);
+        min-height: 104px;
+        grid-template-columns:
+            minmax(220px, .95fr)
+            minmax(320px, 1.35fr)
+            minmax(205px, .82fr);
+        grid-template-rows: auto auto;
+        grid-template-areas:
+            "track transport meter"
+            "track transport volume";
+        column-gap: clamp(.72rem, 1.3vw, 1rem);
+        row-gap: .22rem;
+        align-items: center;
+        padding: .66rem .82rem;
+        border-radius: var(--radius-xl); }
+    .playback-bar .track-info { grid-template-columns: 60px minmax(0, 1fr);
+        gap: .7rem;
+        max-width: none; }
+    .playback-visual { width: 60px;
+        height: 60px;
+        border-radius: var(--radius-md); }
+    .track-copy { gap: .28rem; }
+    .playback-center { width: 100%;
+        gap: .32rem;
+        align-self: center; }
+    .seek-row { grid-template-columns: 2.65rem minmax(100px, 1fr) 2.65rem;
+        gap: .42rem; }
+    .output-level-badge { display: inline-flex !important;
+        width: 2.55rem;
+        min-width: 2.55rem;
+        margin: 0;
+        justify-content: flex-start;
+        text-align: left;
+        font-size: .58rem; }
+    .volume-control { width: 100%;
+        grid-template-columns: 21px minmax(0, 1fr) 2.25rem;
+        gap: .46rem; }
+    .volume-display { min-width: 2.25rem;
+        justify-content: flex-start; }
+}
+
+@media (max-width: 700px) {
+    .playback-bar { bottom: max(3px, env(safe-area-inset-bottom));
+        width: calc(100vw - 12px);
+        min-height: 0;
+        grid-template-columns: minmax(0, 1fr) 112px;
+        grid-template-rows: auto auto auto;
+        grid-template-areas:
+            "track meter"
+            "transport transport"
+            "volume volume";
+        column-gap: .55rem;
+        row-gap: .38rem;
+        align-items: center;
+        padding: .58rem .68rem .62rem;
+        border-radius: 18px; }
+    .playback-bar .track-info { grid-template-columns: 50px minmax(0, 1fr);
+        gap: .6rem;
+        max-width: none;
+        align-self: center; }
+    .playback-visual { width: 50px;
+        height: 50px;
+        border-radius: 11px; }
+    .track-copy { gap: .18rem; }
+    .track-copy-main { gap: .25rem; }
+    .playback-bar .track-title, .playback-bar .song-info .sc-title { font-size: .86rem;
+        line-height: 1.15; }
+    .playback-bar .track-artist, .playback-bar .song-info .sc-artist { display: block;
+        font-size: .68rem; }
+    .playback-bar .song-info .sc-album { display: none !important; }
+    .track-favorite-btn { width: 28px;
+        height: 28px;
+        margin-top: -.08rem;
+        font-size: 1.08rem; }
+    .playback-meta-row { gap: .25rem;
+        min-height: 1rem;
+        margin-top: 0; }
+    .samplerate-status, .queue-status { min-height: 1rem;
+        padding: .06rem .38rem;
+        font-size: .56rem; }
+    .playback-meter { width: 108px;
+        max-width: 108px;
+        grid-template-columns: .55rem minmax(68px, 88px);
+        grid-template-rows: 4px 4px;
+        column-gap: .25rem;
+        row-gap: .42rem;
+        justify-self: end;
+        align-self: center;
+        min-height: 22px;
+        margin: 0; }
+    .playback-center { width: 100%;
+        gap: .24rem;
+        align-self: start;
+        margin: 0; }
+    .seek-row { grid-template-columns: 2.45rem minmax(0, 1fr) 2.45rem;
+        gap: .34rem;
+        margin: 0; }
+    .seek-time { font-size: .59rem; }
+    .seek-slider { min-width: 0; }
+    .playback-bar .controls { width: min(100%, 410px);
+        max-width: none;
+        justify-self: center;
+        padding: 0;
+        margin: 0; }
+    .volume-control { width: 100%;
+        grid-template-columns: 20px minmax(0, 1fr) 2.2rem;
+        gap: .48rem; }
+    .volume-icon { width: 20px;
+        height: 20px; }
+    .volume-icon svg { width: 18px; height: 18px; }
+    .volume-slider { min-width: 0;
+        height: 5px; }
+    .volume-slider::-webkit-slider-thumb { width: 17px; height: 17px; }
+    .volume-slider::-moz-range-thumb { width: 17px; height: 17px; }
+    .volume-display { min-width: 2.2rem;
+        justify-content: flex-start;
+        font-size: .64rem; }
+}
+
+@media (max-width: 360px) {
+    .playback-bar .track-info { grid-template-columns: 46px minmax(0,1fr); gap: .5rem; }
+    .playback-visual { width: 46px; height: 46px; }
+}
+
+.meter-segment-hidden { display: none !important; }
+
+@media (min-width: 701px) and (max-width: 1180px) {
+    .transport-controls { min-height: 44px;
+        gap: .3rem; }
+    .control-btn-secondary { width: 33px;
+        height: 33px;
+        font-size: .86rem; }
+    .control-btn-mode, .control-btn-clear { width: 27px;
+        height: 27px;
+        font-size: .76rem; }
+    .playback-meter { width: max-content;
+        max-width: none;
+        grid-template-columns: .58rem 82px;
+        grid-template-rows: 4px 4px;
+        column-gap: .26rem;
+        row-gap: .42rem;
+        justify-self: center;
+        align-self: end;
+        margin: 0 0 .22rem; }
+    .meter-segments { grid-template-columns: repeat(8, minmax(3px, 1fr));
+        width: 82px;
+        min-width: 82px;
+        max-width: 82px;
+        gap: 1.7px; }
+    .meter-segments i { height: 4px; }
+    .output-level-badge { display: none !important; }
+    .playback-bar .controls { width: min(100%, 235px);
+        max-width: 235px;
+        justify-self: center;
+        align-self: start;
+        margin-top: .22rem;
+        padding: 0; }
+    .volume-control { grid-template-columns: 20px minmax(0, 1fr) 2.25rem;
+        gap: .42rem; }
+    .volume-slider { min-width: 0; }
+}
+
+@media (max-width: 700px) {
+    .playback-bar { grid-template-columns: minmax(0, 1fr) 84px;
+        grid-template-rows: auto auto auto;
+        grid-template-areas:
+            "track meter"
+            "transport transport"
+            "volume volume";
+        column-gap: .6rem;
+        row-gap: .58rem;
+        padding: .72rem .7rem .78rem; }
+    .playback-center { gap: .46rem;
+        align-self: center; }
+    .transport-controls { min-height: 42px;
+        gap: .32rem; }
+    .control-btn-secondary { width: 30px;
+        height: 30px;
+        font-size: .8rem; }
+    .control-btn-mode, .control-btn-clear { width: 25px;
+        height: 25px;
+        font-size: .72rem; }
+    .seek-row { gap: .38rem; }
+    .playback-meter { width: 84px;
+        max-width: 84px;
+        grid-template-columns: .52rem 62px;
+        grid-template-rows: 4px 4px;
+        column-gap: .22rem;
+        row-gap: .4rem;
+        justify-self: end;
+        align-self: center;
+        min-height: 20px; }
+    .meter-channel { font-size: .5rem; }
+    .meter-segments { grid-template-columns: repeat(6, minmax(3px, 1fr));
+        width: 62px;
+        min-width: 62px;
+        max-width: 62px;
+        gap: 1.6px; }
+    .meter-segments i { height: 4px;
+        border-radius: 999px; }
+    .output-level-badge { display: none !important; }
+    .volume-control { grid-template-columns: 20px minmax(0, 1fr) 2.2rem;
+        gap: .44rem; }
+}
+
+@media (max-width: 360px) {
+    .playback-bar { grid-template-columns: minmax(0, 1fr) 78px;
+        row-gap: .52rem; }
+    .playback-meter { width: 78px;
+        max-width: 78px;
+        grid-template-columns: .5rem 57px; }
+    .meter-segments { width: 57px;
+        min-width: 57px;
+        max-width: 57px; }
+}
+
+/* Tablet / compact desktop: give the transport real vertical breathing room,
+   keep the album/queue chip inside the track-copy column, and preserve a
+   compact right-side meter/volume stack. */
+@media (min-width: 701px) and (max-width: 1180px) {
+    .playback-bar {
+        min-height: 126px;
+        grid-template-columns:
+            minmax(220px, .96fr)
+            minmax(240px, 1.18fr)
+            minmax(170px, .78fr);
+        grid-template-rows: minmax(50px, auto) minmax(46px, auto);
+        grid-template-areas:
+            "track transport meter"
+            "track transport volume";
+        column-gap: clamp(.72rem, 1.2vw, 1rem);
+        row-gap: .58rem;
+        padding: .8rem .9rem .84rem;
+    }
+
+    .playback-bar .track-info {
+        min-width: 0;
+    }
+    .track-copy,
+    .track-copy-main,
+    .playback-meta-row {
+        min-width: 0;
+        max-width: 100%;
+    }
+    .playback-meta-row {
+        overflow: hidden;
+    }
+    .samplerate-status {
+        max-width: calc(100% - 3rem);
+        flex: 1 1 auto;
+    }
+    .queue-status {
+        flex: 0 0 auto;
+    }
+
+    .playback-center {
+        align-self: center;
+        gap: .68rem;
+    }
+    .transport-controls {
+        min-height: 42px;
+        margin: 0;
+    }
+    .control-btn {
+        width: 42px;
+        height: 42px;
+        font-size: .96rem;
+    }
+    .control-btn-secondary {
+        width: 32px;
+        height: 32px;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 26px;
+        height: 26px;
+    }
+    .seek-row {
+        min-width: 0;
+        margin-top: .02rem;
+    }
+
+    .playback-meter {
+        align-self: end;
+        margin-bottom: .2rem;
+    }
+    .playback-bar .controls {
+        align-self: start;
+        margin-top: .2rem;
+    }
+}
+
+/* Phone: keep the six-segment stereo meter, but give transport/seek/volume
+   more air. Seek and volume use identical outer gutters so both slider tracks
+   share the same center line and width. */
+@media (max-width: 700px) {
+    .playback-bar {
+        row-gap: .66rem;
+        padding: .76rem .7rem .82rem;
+    }
+
+    .playback-center {
+        gap: .72rem;
+    }
+    .transport-controls {
+        min-height: 40px;
+        margin: 0;
+    }
+    .control-btn {
+        width: 40px;
+        height: 40px;
+        font-size: .92rem;
+    }
+    .control-btn-secondary {
+        width: 29px;
+        height: 29px;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 24px;
+        height: 24px;
+    }
+
+    .seek-row,
+    .volume-control {
+        width: 100%;
+        grid-template-columns: 2.55rem minmax(0, 1fr) 2.55rem;
+        column-gap: .4rem;
+    }
+    .seek-time {
+        text-align: center;
+    }
+    .seek-slider,
+    .volume-slider {
+        width: 100%;
+        min-width: 0;
+    }
+    .volume-icon {
+        justify-self: center;
+    }
+    .volume-display {
+        width: 2.55rem;
+        min-width: 2.55rem;
+        justify-content: flex-end;
+        text-align: right;
+        padding-right: .08rem;
+    }
+    .playback-bar .controls {
+        width: min(100%, 430px);
+        justify-self: center;
+        margin-top: 0;
+    }
+}
+
+@media (max-width: 360px) {
+    .playback-bar {
+        row-gap: .6rem;
+        padding-inline: .6rem;
+    }
+    .seek-row,
+    .volume-control {
+        grid-template-columns: 2.35rem minmax(0, 1fr) 2.35rem;
+        column-gap: .34rem;
+    }
+    .volume-display {
+        width: 2.35rem;
+        min-width: 2.35rem;
+    }
+}
+
+/* ============================================================
+   Playback footer refinement v7 — desktop/tablet vertical compacting
+   ============================================================ */
+/* Preserve the four-zone layout and control sizing; only reclaim vertical
+   breathing room above and below the existing content. Desktop rules live
+   in the consolidated ≥1181px block above; this block covers tablets. */
+@media (min-width: 901px) and (max-width: 1180px) {
+    .playback-bar {
+        bottom: 5px;
+        min-height: 116px;
+        grid-template-rows: minmax(46px, auto) minmax(42px, auto);
+        row-gap: .4rem;
+        padding-block: .6rem .64rem;
+    }
+    .track-copy { gap: .24rem; }
+    .playback-meta-row { min-height: 1.1rem; }
+    .playback-center { gap: .56rem; }
+}
+
+/* ============================================================
+   Playback footer refinement v8 — quieter desktop/tablet sliders
+   ============================================================ */
+/* Keep the input box unchanged for pointer/touch behavior. Only the native
+   track paint and thumb are made slightly lighter than the volume control. */
+@media (min-width: 901px) {
+    .seek-slider::-webkit-slider-runnable-track,
+    .volume-slider::-webkit-slider-runnable-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-moz-range-track,
+    .volume-slider::-moz-range-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
+    .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
+    /* Chromium anchors the thumb to the track top when the track is shorter
+       than the thumb; lift it by half the size difference so the thumb sits
+       centered on the 4.5px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
+}
+
+/* Phone: soften only the visible range paint; the input box remains the
+   existing size so pointer and touch targeting do not change. */
+@media (max-width: 700px) {
+    .seek-slider::-webkit-slider-runnable-track,
+    .volume-slider::-webkit-slider-runnable-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-moz-range-track,
+    .volume-slider::-moz-range-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    .volume-slider::-webkit-slider-thumb { width: 15.5px; height: 15.5px; }
+    .volume-slider::-moz-range-thumb { width: 15.5px; height: 15.5px; }
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 15.5px) / 2); }
+}
+
