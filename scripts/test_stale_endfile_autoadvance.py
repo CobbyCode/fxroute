@@ -139,7 +139,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         for patcher in self._patchers:
             patcher.stop()
 
-    def _commit_queue_b(self) -> None:
+    async def _commit_queue_b(self) -> None:
         """Simulates the successful user play-commit of Queue B=[b1,b2]
         incl. new coordinator token (like execute() -> _record_result)."""
         candidate = playback_queue.cleared_queue_candidate(_local("b1", 96000))
@@ -148,7 +148,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         candidate.index = 0
         candidate.mode = "app_replace"
         playback_queue.queue.commit(candidate)
-        main._commit_coordinated_track(
+        await main._commit_coordinated_track(
             candidate.queue[0], source="local", commit_token=COMMIT_B
         )
 
@@ -159,7 +159,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stale_eof_after_new_local_queue_commit_is_noop(self):
         self._install()
-        self._commit_queue_b()
+        await self._commit_queue_b()
         before = (list(playback_queue.queue.tracks), playback_queue.queue.index,
                   main.playback_state.current_track_info and main.playback_state.current_track_info.get("id"))
 
@@ -185,7 +185,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         candidate.index = 1
         candidate.mode = "app_replace"
         playback_queue.queue.commit(candidate)
-        main._commit_coordinated_track(
+        await main._commit_coordinated_track(
             candidate.queue[1], source="local", commit_token=COMMIT_B
         )
 
@@ -209,7 +209,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         candidate.mode = "app_replace"
         candidate.loop = True
         playback_queue.queue.commit(candidate)
-        main._commit_coordinated_track(
+        await main._commit_coordinated_track(
             candidate.queue[1], source="local", commit_token=COMMIT_B
         )
 
@@ -350,7 +350,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         candidate.index = 0
         candidate.mode = "app_replace"
         playback_queue.queue.commit(candidate)
-        main._commit_coordinated_track(
+        await main._commit_coordinated_track(
             candidate.queue[0], source="local", commit_token=COMMIT_B
         )
         main._end_playback_transition_attempt()
@@ -381,7 +381,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         candidate.index = 0
         candidate.mode = "app_replace"
         playback_queue.queue.commit(candidate)
-        main._commit_coordinated_track(
+        await main._commit_coordinated_track(
             candidate.queue[0], source="local", commit_token=COMMIT_B
         )
         main._end_playback_transition_attempt()
@@ -490,7 +490,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         candidate.loop = True
         candidate.shuffle = True
         playback_queue.queue.commit(candidate)
-        main._commit_coordinated_track(
+        await main._commit_coordinated_track(
             candidate.queue[1], source="local", commit_token=COMMIT_B
         )
 
@@ -503,12 +503,21 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_spotify_play_publishes_token_before_state_read(self):
         self._install()
-        entered = asyncio.Event()
-        release = asyncio.Event()
+        preflight_entered = asyncio.Event()
+        preflight_release = asyncio.Event()
+        post_read_entered = asyncio.Event()
+        post_read_release = asyncio.Event()
+        state_calls = 0
 
         async def blocking_spotify_state(data=None):
-            entered.set()
-            await release.wait()
+            nonlocal state_calls
+            state_calls += 1
+            if state_calls == 1:
+                preflight_entered.set()
+                await preflight_release.wait()
+                return {"status": "Paused", "backend": "spotifyd"}
+            post_read_entered.set()
+            await post_read_release.wait()
             return {"status": "Playing", "playback_owner": "spotify"}
 
         async def spotify_transition(request):
@@ -520,26 +529,72 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         async def fake_broadcast(data=None):
             return data
 
-        main._begin_playback_transition_attempt()
-        eof_task = asyncio.create_task(
-            main.on_player_state_change(_ended_snapshot(), event_commit_id=COMMIT_A)
-        )
-        await asyncio.sleep(0)
-        self.assertFalse(eof_task.done())
-
         with patch.object(main, "_run_coordinated_transition", spotify_transition), patch.object(
             main, "get_spotify_ui_state", blocking_spotify_state
         ), patch.object(main, "broadcast_spotify_state", fake_broadcast):
             play_task = asyncio.create_task(main.api_spotify_play())
-            await asyncio.wait_for(entered.wait(), timeout=5)
+            await asyncio.wait_for(preflight_entered.wait(), timeout=5)
+            eof_task = asyncio.create_task(
+                main.on_player_state_change(_ended_snapshot(), event_commit_id=COMMIT_A)
+            )
+            await asyncio.sleep(0)
+            self.assertEqual(main._current_playback_commit_id(), COMMIT_A)
+            self.assertNotEqual(main.playback_state.current_playback_owner, "spotify")
+            self.assertEqual(playback_queue.queue.index, 0)
+            self.assertGreater(main.playback_state.playback_transition_pending_attempts, 0)
+            self.assertFalse(eof_task.done())
+
+            preflight_release.set()
+            await asyncio.wait_for(post_read_entered.wait(), timeout=5)
             self.assertEqual(main._current_playback_commit_id(), COMMIT_B)
             self.assertEqual(main.playback_state.current_playback_owner, "spotify")
-            release.set()
-            main._end_playback_transition_attempt()
+            self.assertEqual(playback_queue.queue.index, 0)
+            post_read_release.set()
             await asyncio.gather(play_task, eof_task)
+
+        self.assertEqual(main.playback_state.playback_transition_pending_attempts, 0)
 
         self.assertNotIn("a2", self._request_targets())
         self.assertEqual(playback_queue.queue.index, 0)
+
+    async def test_spotify_play_guard_abort_releases_outer_attempt(self):
+        for connect_state in ("ready", "offline"):
+            with self.subTest(connect_state=connect_state):
+                self._install()
+
+                async def spotify_state(data=None):
+                    return {"status": "Paused", "backend": "spotifyd", "connect_state": connect_state}
+
+                async def fake_broadcast(data=None):
+                    return data
+
+                with patch.object(main, "get_spotify_ui_state", spotify_state), patch.object(
+                    main, "broadcast_spotify_state", fake_broadcast
+                ):
+                    await main.api_spotify_play()
+
+                self.assertEqual(main.playback_state.playback_transition_pending_attempts, 0)
+                self.assertEqual(main._current_playback_commit_id(), COMMIT_A)
+
+    async def test_spotify_play_transfer_failure_releases_outer_attempt(self):
+        self._install()
+
+        async def spotify_state(data=None):
+            return {"status": "Paused", "backend": "spotifyd", "connect_state": "connected"}
+
+        async def failed_transfer():
+            return False
+
+        async def fake_broadcast(data=None):
+            return data
+
+        with patch.object(main, "get_spotify_ui_state", spotify_state), patch.object(
+            main, "spotify_transfer_playback", failed_transfer
+        ), patch.object(main, "broadcast_spotify_state", fake_broadcast):
+            await main.api_spotify_play()
+
+        self.assertEqual(main.playback_state.playback_transition_pending_attempts, 0)
+        self.assertEqual(main._current_playback_commit_id(), COMMIT_A)
 
     async def test_spotify_toggle_play_publishes_token_before_state_read(self):
         self._install()

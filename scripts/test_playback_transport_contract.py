@@ -91,7 +91,7 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
             player._state["playing"] = True
             return SimpleNamespace(target_rate=44100)
 
-        commit = Mock()
+        commit = AsyncMock()
         track = {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100}
         run_mock = AsyncMock(side_effect=run)
         with patch.object(main.runtime, "player_instance", player), patch.object(

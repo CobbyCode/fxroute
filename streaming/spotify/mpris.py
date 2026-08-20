@@ -21,13 +21,27 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # MPRIS player names for the two supported Spotify backends. Spotify Desktop
-# publishes ``spotify``; spotifyd publishes ``spotifyd``.
+# publishes ``spotify``; spotifyd 0.4.x publishes an instance-suffixed name
+# ``spotifyd.instance<PID>`` (the PID part changes across service restarts),
+# so spotifyd is matched by prefix and never by an exact static name.
 SPOTIFY_DESKTOP_PLAYER = "spotify"
 SPOTIFYD_PLAYER = "spotifyd"
+SPOTIFYD_MPRIS_INSTANCE_PREFIX = "spotifyd."
+
+# spotifyd publishes its Controls D-Bus name after pairing. It embeds the
+# spotifyd PID: the name is ``rs.spotifyd.instance<PID>`` and the control
+# interface lives at ``/rs/spotifyd/Controls`` (interface
+# ``rs.spotifyd.Controls``, method ``TransferPlayback``).
+SPOTIFYD_CONTROLS_PREFIX = "rs.spotifyd.instance"
+SPOTIFYD_CONTROLS_PATH = "/rs/spotifyd/Controls"
+SPOTIFYD_CONTROLS_INTERFACE = "rs.spotifyd.Controls"
 
 # Bounded timeout for the running-player discovery subprocess; a stuck
 # playerctl must not stall a status read.
 PLAYER_LIST_TIMEOUT_SECONDS = 2.0
+
+# Bounded timeout for session-bus (busctl/gdbus) spotifyd subprocesses.
+SPOTIFYD_BUS_TIMEOUT_SECONDS = 2.0
 
 _playerctl_path: str | None = None
 
@@ -60,6 +74,17 @@ def _spotify_desktop_installed() -> bool:
 
 def _spotifyd_installed() -> bool:
     return shutil.which("spotifyd") is not None
+
+
+def is_spotifyd_player(name: str) -> bool:
+    """Return whether a playerctl ``-l`` entry belongs to spotifyd.
+
+    Spotify Desktop uses the well-known ``spotify`` name.  spotifyd 0.4.x
+    registers an instance-suffixed name ``spotifyd.instance<PID>`` that
+    changes on each restart, so both the bare name (test fixtures and older
+    builds) and the ``spotifyd.*`` instance form are accepted.
+    """
+    return name == SPOTIFYD_PLAYER or name.startswith(SPOTIFYD_MPRIS_INSTANCE_PREFIX)
 
 
 def spotify_installed() -> bool:
@@ -110,11 +135,15 @@ async def detect_running_backend(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -
     * exactly one running player -> that backend;
     * both running -> desktop wins deterministically (documented, stable);
     * none running -> None.
+
+    spotifyd is matched by prefix (``spotifyd.instance<PID>``) so a PID
+    change after a service restart is picked up automatically and no old bus
+    name is ever cached.
     """
-    players = set(await list_players(timeout))
+    players = await list_players(timeout)
     if SPOTIFY_DESKTOP_PLAYER in players:
         return "desktop"
-    if SPOTIFYD_PLAYER in players:
+    if any(is_spotifyd_player(player) for player in players):
         return "spotifyd"
     return None
 
@@ -122,14 +151,20 @@ async def detect_running_backend(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -
 async def detect_backend(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> str | None:
     """Return the Spotify backend to target.
 
-    The running MPRIS player is authoritative. When nothing is running, fall
-    back to the install profile so a desktop client that is installed but not
-    running still reports ``Stopped`` instead of unavailable (preserving the
-    existing desktop behavior).
+    The running MPRIS player is authoritative (Desktop wins while both are
+    running).  When nothing is running, prefer a backend whose daemon is
+    actually up: spotifyd runs headless and is Connect-ready even before the
+    first pairing, so it beats a Desktop that is merely installed.  The
+    install profile remains the final fallback so an idle desktop or an
+    offline spotifyd still reports its own state instead of ``None``.
     """
     running = await detect_running_backend(timeout)
     if running is not None:
         return running
+    if await spotifyd_control_names():
+        return "spotifyd"
+    if await spotifyd_process_running():
+        return "spotifyd"
     if _spotify_desktop_installed():
         return "desktop"
     if _spotifyd_installed():
@@ -185,3 +220,105 @@ async def _run(*args: str, timeout: float = 4.0) -> str | None:
         # Timeout or cancellation leaves the child running; reap it so no
         # playerctl process is orphaned.
         await _stop_process(proc)
+
+
+async def _run_checked(*args: str, timeout: float = SPOTIFYD_BUS_TIMEOUT_SECONDS) -> str | None:
+    """Run an external command, return stdout on exit code 0, else None.
+
+    Used for the session-bus helpers (busctl/gdbus).  Every failure path is
+    bounded and the child is always reaped, mirroring ``_run``.
+    """
+    proc: asyncio.subprocess.Process | None = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode == 0:
+            return stdout.decode(errors="ignore")
+        return None
+    except (asyncio.TimeoutError, OSError) as exc:
+        logger.debug("%s failed: %s", args[0] if args else "<command>", exc)
+        return None
+    finally:
+        await _stop_process(proc)
+
+
+async def _list_session_bus_names(timeout: float = SPOTIFYD_BUS_TIMEOUT_SECONDS) -> list[str]:
+    """Return the names present on the session bus (busctl ``--user list``)."""
+    output = await _run_checked("busctl", "--user", "list", "--no-legend", timeout=timeout)
+    if not output:
+        return []
+    names: list[str] = []
+    for raw_line in output.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("NAME"):
+            # Header line on systemd versions without --no-legend support.
+            continue
+        name = stripped.split(None, 1)[0]
+        if name:
+            names.append(name)
+    return names
+
+
+async def spotifyd_control_names(timeout: float = SPOTIFYD_BUS_TIMEOUT_SECONDS) -> list[str]:
+    """Return the ``rs.spotifyd.instance<PID>`` names owned on the session bus.
+
+    spotifyd owns this name (and its MPRIS name) only after a Spotify session
+    is established — i.e. once paired/connected.  Before the first pairing
+    there are no spotifyd bus names at all, so running-status is detected via
+    process presence (:func:`spotifyd_process_running`), never via this
+    helper.
+    """
+    names = await _list_session_bus_names(timeout)
+    return [name for name in names if name.startswith(SPOTIFYD_CONTROLS_PREFIX)]
+
+
+def spotifyd_pid_from_name(name: str) -> int | None:
+    """Extract the spotifyd PID embedded in a controls bus name."""
+    if not name or not name.startswith(SPOTIFYD_CONTROLS_PREFIX):
+        return None
+    suffix = name[len(SPOTIFYD_CONTROLS_PREFIX):]
+    return int(suffix) if suffix.isdigit() else None
+
+
+async def spotifyd_process_running(timeout: float = SPOTIFYD_BUS_TIMEOUT_SECONDS) -> bool:
+    """Return whether the spotifyd daemon process is running.
+
+    spotifyd publishes no D-Bus name before its first pairing, so the
+    "daemon up but never paired" connect state must come from process
+    presence.  This only classifies the daemon lifecycle: transport
+    capability is still gated on MPRIS presence
+    (:func:`detect_running_backend`).
+    """
+    output = await _run_checked("pgrep", "-x", "spotifyd", timeout=timeout)
+    return output is not None and output.strip() != ""
+
+
+async def transfer_playback(timeout: float = 4.0) -> bool:
+    """Transfer Spotify playback to spotifyd via ``rs.spotifyd.Controls``.
+
+    Resolves the live ``rs.spotifyd.instance<PID>`` bus name (never a cached
+    one), then calls ``TransferPlayback`` on ``/rs/spotifyd/Controls``.  This
+    is an explicit user-intent operation; it is never used from status
+    polling.  Returns False when spotifyd is not reachable or the call fails.
+    """
+    names = await spotifyd_control_names()
+    if not names:
+        return False
+    # Several instances would be unusual; prefer the most recent PID.
+    target = sorted(names, key=lambda name: spotifyd_pid_from_name(name) or 0)[-1]
+    output = await _run_checked(
+        "gdbus", "call", "--session",
+        "--dest", target,
+        "--object-path", SPOTIFYD_CONTROLS_PATH,
+        "--method", f"{SPOTIFYD_CONTROLS_INTERFACE}.TransferPlayback",
+        timeout=timeout,
+    )
+    if output is None:
+        logger.warning("spotifyd TransferPlayback failed for bus name %s", target)
+        return False
+    logger.info("spotifyd TransferPlayback requested on %s", target)
+    return True

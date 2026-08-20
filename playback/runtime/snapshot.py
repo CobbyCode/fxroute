@@ -176,10 +176,7 @@ class _RuntimeSnapshotMixin:
         if previous_context_unchanged:
             live_track = self._deps.get_current_track_info() or {}
             if current_file and live_track.get("url") not in {None, current_file}:
-                if snapshot_track.get("url") == current_file:
-                    self._deps.set_current_track_info(snapshot_track)
-                else:
-                    previous_context_unchanged = False
+                previous_context_unchanged = False
             if previous_context_unchanged:
                 # The committed queue and track context stay valid: MPV still
                 # exposes the exact pre-transition file and a staged queue
@@ -198,10 +195,10 @@ class _RuntimeSnapshotMixin:
         # then invalidate only the active context. last_track_info is
         # deliberately untouched so the caller can offer a retry.  The
         # committed queue state is preserved.
-        self._stop_staged_target_and_invalidate()
+        await self._stop_staged_target_and_invalidate()
         return {"invalidate": True}
 
-    def _stop_staged_target_and_invalidate(self) -> None:
+    async def _stop_staged_target_and_invalidate(self) -> None:
         """Stop a staged MPV target and invalidate only the active context."""
         if self._deps.player_is_running():
             try:
@@ -230,8 +227,7 @@ class _RuntimeSnapshotMixin:
             # app-owned navigation so the queue data stays usable.
             self._deps.queue().normalize_after_native_loss()
 
-        self._deps.set_current_track_info(None)
-        self._deps.set_playback_owner(None)
+        await self._deps.clear_track_and_owner()
         self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
 
     def _build_restore_request(
@@ -325,9 +321,9 @@ class _RuntimeSnapshotMixin:
         track = dict(request.target_track or {})
         if not track:
             return
-        self._deps.set_current_track_info(track)
         source = str(track.get("source") or request.source)
-        self._deps.set_playback_owner(source if source_policy.is_known_source(source) else None)
+        owner = source if source_policy.is_known_source(source) else None
+        await self._deps.set_track_and_owner(track, owner)
         self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
 
     async def normalize_queue_after_native_loss(self) -> None:
@@ -366,4 +362,3 @@ class _RuntimeSnapshotMixin:
             expected_spotify_identities=expected_spotify_identities,
             intent_generation=intent.get("intent_generation"),
         )
-

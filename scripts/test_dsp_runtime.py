@@ -959,6 +959,14 @@ class ContainsLinkTests(unittest.TestCase):
         self.assertTrue(_contains_link("mpv:output_FL -> fxroute_dsp_sink:playback_FL",
                                        "mpv:output_FL", "fxroute_dsp_sink:playback_FL"))
 
+    def test_anonymous_source_does_not_match_named_source(self):
+        text = "mpv:output_FL -> fxroute_dsp_sink:playback_FL"
+        self.assertFalse(_contains_link(text, ":output_FL", "fxroute_dsp_sink:playback_FL"))
+
+    def test_named_source_does_not_match_anonymous_source(self):
+        text = ":output_FL -> fxroute_dsp_sink:playback_FL"
+        self.assertFalse(_contains_link(text, "mpv:output_FL", "fxroute_dsp_sink:playback_FL"))
+
 
 class ControlReplyTruncationTests(unittest.TestCase):
     def setUp(self):

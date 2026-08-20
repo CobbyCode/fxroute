@@ -74,6 +74,8 @@ POST_START_GRAPH_STABILITY_READBACKS = 2
 SPOTIFY_STATE_POLL_INTERVAL_SECONDS = 2.0
 SPOTIFY_STATE_IDLE_POLL_INTERVAL_SECONDS = 5.0
 SPOTIFY_STATE_REFRESH_DEBOUNCE_SECONDS = 0.20
+_SPOTIFY_TRANSFER_WAIT_TIMEOUT_SECONDS = 3.0
+_SPOTIFY_TRANSFER_WAIT_POLL_SECONDS = 0.10
 MEASUREMENT_WINDOW_TTL_SECONDS = 30.0
 
 # Track last play command time to debounce rapid requests
@@ -261,12 +263,25 @@ def _list_mpv_sink_inputs() -> list[dict]:
 
 
 def _list_spotify_sink_inputs() -> list[dict]:
+    # Both Spotify backends enter the graph through pipewire-pulse.  Desktop
+    # publishes ``spotify`` properties; spotifyd (librespot pulse backend)
+    # creates a stream whose application/node/media names are all empty and
+    # only carries ``application.process.binary = "spotifyd"``, so that binary
+    # property is the reliable spotifyd marker.
+    def matches(value: str) -> bool:
+        if value == "spotify":
+            return True
+        if value == "spotifyd" or value.startswith("spotifyd."):
+            return True
+        return False
+
     return [
         entry
         for entry in _list_sink_inputs()
-        if str((entry.get("properties") or {}).get("application.name") or "").lower() == "spotify"
-        or str((entry.get("properties") or {}).get("application.id") or "").lower() == "spotify"
-        or str((entry.get("properties") or {}).get("node.name") or "").lower() == "spotify"
+        if matches(str((entry.get("properties") or {}).get("application.name") or "").lower())
+        or matches(str((entry.get("properties") or {}).get("application.id") or "").lower())
+        or matches(str((entry.get("properties") or {}).get("node.name") or "").lower())
+        or matches(str((entry.get("properties") or {}).get("application.process.binary") or "").lower())
         or (entry.get("properties") or {}).get("media.name") == "Spotify"
     ]
 
@@ -619,10 +634,6 @@ def _resolve_playback_owner() -> str | None:
     return _derive_playback_owner_readonly()
 
 
-def _set_playback_owner(source: str | None) -> None:
-    playback_state.current_playback_owner = source
-
-
 
 
 from models import (
@@ -730,6 +741,7 @@ from streaming.spotify.provider import (
     shuffle_toggle as spotify_shuffle_toggle,
     loop_cycle as spotify_loop_cycle,
     seek_to as spotify_seek_to,
+    transfer_playback as spotify_transfer_playback,
 )
 from audio.system_volume import SystemVolumeError, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor, volume_percent_to_db
 import audio.volume_contract as volume_contract
@@ -994,7 +1006,10 @@ qobuz_player_watch = QobuzPlayerWatch(QobuzWatchDependencies(
 ))
 qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
     is_active=lambda: _resolve_playback_owner() == "qobuz",
-    apply_volume=lambda volume: _set_canonical_output_volume(volume),
+    apply_volume=lambda volume, generation: _set_canonical_output_volume(
+        volume, pickup_generation=generation
+    ),
+    get_canonical_volume=lambda: get_output_volume_safe(100),
 ))
 radio_metadata_service = RadioMetadataService()
 # queue_advancing is a reentrancy/dispatch guard for
@@ -1092,14 +1107,6 @@ autosub.configure_dependencies(autosub.AutoSubDependencies(
     get_dsp_manager=lambda: dsp_manager,
 ))
 
-def _set_runtime_current_track_info(value: dict | None) -> None:
-    playback_state.current_track_info = value
-
-
-def _set_runtime_playback_owner(value: str | None) -> None:
-    playback_state.current_playback_owner = value
-
-
 def _set_runtime_track_context(current: dict, last: dict) -> None:
     playback_state.set_track_context(current, last)
 
@@ -1116,10 +1123,10 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         dsp_manager=lambda: dsp_manager,
         dsp_runtime=lambda: runtime.dsp_runtime,
         get_current_track_info=lambda: playback_state.current_track_info,
-        set_current_track_info=_set_runtime_current_track_info,
         get_playback_intent_generation=lambda: playback_state.playback_intent_generation,
         get_transition_epoch=lambda: playback_state.playback_transition_epoch,
-        set_playback_owner=_set_runtime_playback_owner,
+        set_track_and_owner=_atomic_set_track_and_owner,
+        clear_track_and_owner=_atomic_clear_track_and_owner,
         queue=lambda: playback_queue.queue,
         player_is_running=lambda *a, **k: _player_is_running(*a, **k),
         load_player_paused=lambda *a, **k: _load_player_paused(*a, **k),
@@ -1234,14 +1241,49 @@ def _current_playback_commit_id() -> str | None:
 
 
 def _publish_playback_context_commit(commit_token: str | None) -> None:
-    """Publish the playback-context token exactly once at the app boundary.
+    if commit_token:
+        playback_state.publish_playback_context_commit(commit_token)
 
-    Synchronous: callers invoke this immediately after all globals of the new
-    authoritative playback context were committed and before any further
-    await, so the Ended-Waiter can never observe a window with a new token
-    but old playback globals (or vice versa).
-    """
-    playback_state.publish_playback_context_commit(commit_token)
+
+async def _commit_playback_owner(owner: str | None, commit_token: str | None) -> None:
+    async with _canonical_volume_write_lock():
+        previous_owner = playback_state.current_playback_owner
+        changed = playback_state.commit_playback_context(
+            current=playback_state.current_track_info,
+            last=playback_state.last_track_info,
+            owner=owner,
+            commit_token=commit_token,
+        )
+        _ = previous_owner
+        if changed:
+            qobuz_volume_watch.reset_pickup()
+
+
+async def _commit_playback_context(
+    *,
+    current: dict | None,
+    last: dict | None,
+    owner: str | None,
+    commit_token: str | None,
+    last_radio: dict | None = None,
+) -> None:
+    async with _canonical_volume_write_lock():
+        changed = playback_state.commit_playback_context(
+            current=current,
+            last=last,
+            owner=owner,
+            commit_token=commit_token,
+            last_radio=last_radio,
+        )
+        if changed:
+            qobuz_volume_watch.reset_pickup()
+
+
+async def _clear_playback_context(last_radio: dict | None = None) -> None:
+    async with _canonical_volume_write_lock():
+        had_owner = playback_state.clear_playback_context(last_radio=last_radio)
+        if had_owner:
+            qobuz_volume_watch.reset_pickup()
 
 
 async def _publish_committed_playback_owner(owner: str, transition_id: str | None) -> None:
@@ -1253,8 +1295,7 @@ async def _publish_committed_playback_owner(owner: str, transition_id: str | Non
     freshest copy the frontend resolves against.  Publishing here keeps the
     owner and the committed context token on the same broadcast path.
     """
-    playback_state.current_playback_owner = owner
-    _publish_playback_context_commit(transition_id)
+    await _commit_playback_owner(owner, transition_id)
     player_state = runtime.player_instance.state if runtime.player_instance else None
     await manager.broadcast({
         "type": "playback",
@@ -1393,27 +1434,60 @@ def _mark_playback_intent_changed() -> None:
     playback_state.mark_playback_intent_changed()
 
 
-def _commit_coordinated_track(
+async def _commit_coordinated_track(
     track_info: Mapping[str, Any],
     *,
     source: str,
     commit_token: str | None = None,
+    queue_candidate: Any | None = None,
 ) -> None:
-    track = dict(track_info)
-    _mark_playback_intent_changed()
-    playback_state.current_track_info = track
-    playback_state.last_track_info = track
-    playback_state.current_playback_owner = source if source_policy.is_known_source(source) else None
-    if source == "radio":
-        playback_state.last_radio_track_info = dict(track)
-    if source == "local":
-        _record_local_track_started(track)
-    _mark_player_state_authoritative(runtime.player_instance.state if runtime.player_instance else {})
-    # Publish the new playback context token only here, after all globals
-    # belonging to the context were committed: the ended waiter can never
-    # run between the coordinator commit and this boundary (the boundary
-    # is published synchronously in the same caller step).
-    _publish_playback_context_commit(commit_token)
+    async with _canonical_volume_write_lock():
+        if queue_candidate is not None:
+            playback_queue.queue.commit(queue_candidate)
+            track_info = queue_candidate.track if hasattr(queue_candidate, "track") else track_info
+        track = dict(track_info)
+        _mark_playback_intent_changed()
+        next_owner = source if source_policy.is_known_source(source) else None
+        last_radio = dict(track) if source == "radio" else None
+        if source == "local":
+            _record_local_track_started(track)
+        _mark_player_state_authoritative(runtime.player_instance.state if runtime.player_instance else {})
+        changed = playback_state.commit_playback_context(
+            current=track,
+            last=track,
+            owner=next_owner,
+            commit_token=commit_token,
+            last_radio=last_radio,
+        )
+        if changed:
+            qobuz_volume_watch.reset_pickup()
+
+
+async def _atomic_set_track_and_owner(track: dict | None, owner: str | None) -> None:
+    async with _canonical_volume_write_lock():
+        changed = playback_state.current_playback_owner != owner
+        playback_state.current_track_info = dict(track) if track is not None else None
+        playback_state.current_playback_owner = owner
+        if changed:
+            qobuz_volume_watch.reset_pickup()
+        _mark_player_state_authoritative(runtime.player_instance.state if runtime.player_instance else {})
+
+
+async def _atomic_clear_track_and_owner() -> None:
+    async with _canonical_volume_write_lock():
+        had_owner = playback_state.current_playback_owner is not None
+        playback_state.current_track_info = None
+        playback_state.current_playback_owner = None
+        if had_owner:
+            qobuz_volume_watch.reset_pickup()
+        _mark_player_state_authoritative(runtime.player_instance.state if runtime.player_instance else {})
+
+
+async def _atomic_publish_token(token: str | None) -> None:
+    if not token:
+        return
+    async with _canonical_volume_write_lock():
+        playback_state.publish_playback_context_commit(token)
 
 # WebSocket connection manager
 class _ClientSender:
@@ -2118,7 +2192,9 @@ async def _apply_volume_actions(
     return extras
 
 
-async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
+async def _set_canonical_output_volume(
+    volume: float | int, *, pickup_generation: int | None = None
+) -> dict[str, Any]:
     """Apply the one UI-volume contract for local, radio and Spotify.
 
     One canonical perceived volume.  Loudness owns it only while it is in
@@ -2127,14 +2203,30 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
     canonical volume write lock first, then DSP mutation lock.
     """
     async with _canonical_volume_write_lock():
+        if pickup_generation is not None and not qobuz_volume_watch.is_generation_current(pickup_generation):
+            return {"volume": get_output_volume_safe(100), "stale_pickup": True}
         requested = max(0, min(100, int(round(float(volume)))))
+        if pickup_generation is None:
+            qobuz_volume_watch.canonical_volume_changed(requested)
         async with _dsp_mutation_lock():
+            # Owner/provider invalidation may occur while waiting for the DSP
+            # mutation lock. Recheck before recording or performing any write.
+            if pickup_generation is not None and not qobuz_volume_watch.is_generation_current(pickup_generation):
+                return {"volume": get_output_volume_safe(100), "stale_pickup": True}
             start = await _volume_state_for_manager(dsp_manager, live_master=0)
+            # The state read can yield while ownership changes. This is the
+            # final validation point immediately before any volume mutation.
+            if pickup_generation is not None and not qobuz_volume_watch.is_generation_current(pickup_generation):
+                return {"volume": get_output_volume_safe(100), "stale_pickup": True}
             target = volume_contract.target_for(current=start, percent=requested)
             if target.loudness_in_path and dsp_manager:
                 volume_result = await _drain_worker(
                     dsp_manager.set_loudness_volume_db, target.volume_db
                 )
+                if pickup_generation is not None:
+                    # The persisted Loudness value is now the observable
+                    # canonical value; publish it before the later pin/sync.
+                    qobuz_volume_watch.canonical_volume_written(requested, pickup_generation)
                 if not volume_result.get("runtime_applied"):
                     await dsp_orchestrator.sync_runtime(reason="native-dsp-loudness-volume")
                 await _drain_worker(set_output_volume, 100)
@@ -2153,6 +2245,8 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
             ]
             if remaining:
                 await _apply_volume_actions(remaining, extras)
+            if pickup_generation is not None:
+                qobuz_volume_watch.canonical_volume_written(requested, pickup_generation)
             return {
                 "volume": requested,
                 "loudnessVolumeDb": None,
@@ -2480,6 +2574,47 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
     return await broadcast_spotify_state()
 
 
+async def _spotify_explicit_start_guard(data: dict) -> dict | None:
+    """Handle spotifyd-specific preconditions of an explicit UI start.
+
+    Returns a finished payload when the endpoint must not run a Spotify
+    transition (daemon not paired, or daemon not running), and None when the
+    transition should run — after TransferPlayback has been requested for a
+    connected-but-inactive spotifyd.
+
+    Desktop behavior is untouched.  Only an explicit user action reaches this
+    path: TransferPlayback is never issued from status polling.
+    """
+    if data.get("backend") != "spotifyd":
+        return None
+    connect_state = data.get("connect_state")
+    if connect_state in {"offline", "ready"}:
+        # Daemon is up but never paired: no transition can produce audio.
+        # Report the pairing-required state as a clean payload instead of a
+        # generic transition failure.
+        logger.info("Spotify start held with spotifyd connect_state=%s", connect_state)
+        return data
+    if connect_state == "connected":
+        # spotifyd is authenticated/connected but playback sits on another
+        # Spotify device.  Transfer playback to FXRoute on behalf of the
+        # explicit start, then let the transition verify audio.
+        transferred = await spotify_transfer_playback()
+        if not transferred:
+            logger.warning("spotifyd TransferPlayback failed on explicit start")
+            return data
+        else:
+            logger.info("spotifyd TransferPlayback issued for explicit start")
+        deadline = time.monotonic() + _SPOTIFY_TRANSFER_WAIT_TIMEOUT_SECONDS
+        while True:
+            if await spotify_mpris.detect_running_backend() == "spotifyd":
+                break
+            if time.monotonic() >= deadline:
+                logger.warning("spotifyd MPRIS did not become active after TransferPlayback")
+                return data
+            await asyncio.sleep(_SPOTIFY_TRANSFER_WAIT_POLL_SECONDS)
+    return None
+
+
 def _radio_artwork_url_for_track(track: dict) -> str:
     station_id = str(track.get("station_id") or track.get("id") or "")
     if station_id.startswith("radio_"):
@@ -2685,8 +2820,7 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
     if synced is not None:
         queue_index, track = synced
         previous_track = playback_state.current_track_info or {}
-        playback_state.current_track_info = track
-        playback_state.last_track_info = track
+        playback_state.set_track_context(track, track)
         if (
             previous_track.get("source") != track.get("source")
             or previous_track.get("id") != track.get("id")
@@ -2723,12 +2857,8 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
                     ))
                     if _sample_rate_policy_is_auto() and isinstance(result.target_rate, int) and result.target_rate > 0:
                         playback_state.current_track_info["sample_rate_hz"] = result.target_rate
-                    # A new physical playback instance was committed:
-                    # publish only the playback instance token (no
-                    # _commit_coordinated_track: its side effects like
-                    # intent/history are unwanted for automatic single-track
-                    # loop).
-                    _publish_playback_context_commit(getattr(result, "transition_id", None))
+                    async with _canonical_volume_write_lock():
+                        playback_state.publish_playback_context_commit(getattr(result, "transition_id", None))
                 except PlaybackTransitionFailure as exc:
                     logger.warning("Single-track loop transition failed: %s", exc.as_status())
                 return
@@ -2864,8 +2994,10 @@ async def _spotify_state_poll_loop() -> None:
 async def _spotify_player_present(timeout: float = 0.8) -> bool:
     """Return whether any Spotify backend player is running (desktop or spotifyd)."""
     try:
-        players = set(await spotify_mpris.list_players(timeout=timeout))
-        return bool({spotify_mpris.SPOTIFY_DESKTOP_PLAYER, spotify_mpris.SPOTIFYD_PLAYER} & players)
+        players = await spotify_mpris.list_players(timeout=timeout)
+        return spotify_mpris.SPOTIFY_DESKTOP_PLAYER in players or any(
+            spotify_mpris.is_spotifyd_player(player) for player in players
+        )
     except Exception:
         return False
 
@@ -2900,7 +3032,7 @@ async def pause_local_playback_for_spotify_broadcast():
     try:
         if runtime.player_instance and runtime.player_instance._running:
             runtime.player_instance.stop_playback()
-            playback_state.current_track_info = None
+            await _atomic_clear_track_and_owner()
             await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
             released = await _wait_for_pipewire_mpv_release()
             if not released:
@@ -3739,10 +3871,12 @@ async def play_track(req: PlayRequest):
             )
     if source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
         track_info["sample_rate_hz"] = result.target_rate
+        if hasattr(queue_candidate, "track"):
+            queue_candidate.track["sample_rate_hz"] = result.target_rate
 
-    playback_queue.queue.commit(queue_candidate)
-    _commit_coordinated_track(
-        track_info, source=source, commit_token=getattr(result, "transition_id", None)
+    await _commit_coordinated_track(
+        track_info, source=source, commit_token=getattr(result, "transition_id", None),
+        queue_candidate=queue_candidate,
     )
     return {
         "status": "playing",
@@ -3899,7 +4033,7 @@ async def toggle_playback():
         if was_paused:
             if _sample_rate_policy_is_auto() and source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
                 active_track["sample_rate_hz"] = result.target_rate
-            _commit_coordinated_track(
+            await _commit_coordinated_track(
                 active_track, source=source, commit_token=getattr(result, "transition_id", None)
             )
         new_state = runtime.player_instance.state
@@ -3934,7 +4068,7 @@ async def toggle_playback():
         raise _transition_error_http(exc) from exc
     if _sample_rate_policy_is_auto() and source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
         replay_track["sample_rate_hz"] = result.target_rate
-    _commit_coordinated_track(
+    await _commit_coordinated_track(
         replay_track, source=source, commit_token=getattr(result, "transition_id", None)
     )
     return {
@@ -3949,11 +4083,11 @@ async def stop_playback():
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
+    last_radio = None
     if playback_state.current_track_info and playback_state.current_track_info.get("source") == "radio":
-        playback_state.last_radio_track_info = dict(playback_state.current_track_info)
+        last_radio = dict(playback_state.current_track_info)
     _mark_playback_intent_changed()
-    playback_state.current_track_info = None
-    playback_state.current_playback_owner = None
+    await _clear_playback_context(last_radio=last_radio)
     radio_reconnect.reset()
     playback_queue.queue.reset()
     playback_queue.queue.reset_mpv_loop_state()
@@ -4919,7 +5053,10 @@ async def select_music_library(request: Request):
         if runtime.player_instance is not None and runtime.player_instance._running:
             _mark_playback_intent_changed()
             runtime.player_instance.stop_playback()
-            playback_state.current_track_info = None
+            await _clear_playback_context()
+            playback_state.last_track_info = None
+        else:
+            await _clear_playback_context()
             playback_state.last_track_info = None
         playback_queue.queue.reset()
         runtime.music_library.scanner = _library_scanner_for(root, library_id)
@@ -5338,29 +5475,38 @@ async def api_spotify_status():
 
 @app.post("/api/spotify/play")
 async def api_spotify_play():
-    target_rate = _coordinator_target_rate("spotify")
-    request = TransitionRequest(
-        operation="spotify-play",
-        source="spotify",
-        target_rate=target_rate,
-        should_play=True,
-        rate_change=_coordinator_rate_change(target_rate),
-        reload_source=True,
-        detail="api-spotify-play",
-    )
+    # Hold the app-level fence across the fresh spotifyd preflight. A stale
+    # EOF may wait, but the old committed context remains authoritative until
+    # the coordinator commit is published below.
+    _begin_playback_transition_attempt()
     try:
-        result = await _run_coordinated_transition(request)
-    except ValueError as exc:
-        raise bad_request(exc) from exc
-    except PlaybackTransitionFailure as exc:
-        raise _transition_error_http(exc) from exc
-    # After the coordinator commit the Spotify source is already the
-    # committed playback context; the subsequent state read is
-    # telemetry/UI refresh and not part of the ownership boundary.
-    # Publish the authoritative owner synchronously before any further await
-    # so the ended waiter never sees a window with a new token and an old
-    # footer, and the browser resolves the owner on the playback channel.
-    await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
+        current_state = await get_spotify_ui_state()
+        playback_state.latest_spotify_state = current_state
+        guard = await _spotify_explicit_start_guard(current_state)
+        if guard is not None:
+            playback_state.latest_spotify_state = guard
+            return await broadcast_spotify_state(guard)
+        target_rate = _coordinator_target_rate("spotify")
+        request = TransitionRequest(
+            operation="spotify-play",
+            source="spotify",
+            target_rate=target_rate,
+            should_play=True,
+            rate_change=_coordinator_rate_change(target_rate),
+            reload_source=True,
+            detail="api-spotify-play",
+        )
+        try:
+            result = await _run_coordinated_transition(request)
+        except ValueError as exc:
+            raise bad_request(exc) from exc
+        except PlaybackTransitionFailure as exc:
+            raise _transition_error_http(exc) from exc
+        # Publish owner and token before releasing the outer fence. The
+        # following state read is telemetry only.
+        await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
+    finally:
+        _end_playback_transition_attempt()
     playback_state.latest_spotify_state = await get_spotify_ui_state()
     return await broadcast_spotify_state(playback_state.latest_spotify_state)
 
@@ -5374,33 +5520,39 @@ async def api_spotify_pause():
 
 @app.post("/api/spotify/toggle")
 async def api_spotify_toggle():
-    sd = await get_spotify_ui_state()
-    if sd.get("status") == "Playing":
-        # Toggling an already-playing Spotify source is transport-only.  In
-        # particular it must not quiet MPV or clear the local queue/context.
-        data = await spotify_pause()
-        return await broadcast_spotify_state(data)
-
-    target_rate = _coordinator_target_rate("spotify")
-    request = TransitionRequest(
-        operation="spotify-toggle",
-        source="spotify",
-        target_rate=target_rate,
-        should_play=True,
-        rate_change=_coordinator_rate_change(target_rate),
-        reload_source=True,
-        detail="api-spotify-toggle",
-    )
+    _begin_playback_transition_attempt()
     try:
-        result = await _run_coordinated_transition(request)
-    except ValueError as exc:
-        raise bad_request(exc) from exc
-    except PlaybackTransitionFailure as exc:
-        raise _transition_error_http(exc) from exc
-    # Same ownership contract as api_spotify_play: the authoritative owner
-    # and token are published synchronously after the commit, before the
-    # Spotify state is read or broadcast.
-    await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
+        sd = await get_spotify_ui_state()
+        if sd.get("status") == "Playing":
+            # Toggling an already-playing Spotify source is transport-only. In
+            # particular it must not quiet MPV or clear the local queue/context.
+            data = await spotify_pause()
+            return await broadcast_spotify_state(data)
+
+        guard = await _spotify_explicit_start_guard(sd)
+        if guard is not None:
+            playback_state.latest_spotify_state = guard
+            return await broadcast_spotify_state(guard)
+
+        target_rate = _coordinator_target_rate("spotify")
+        request = TransitionRequest(
+            operation="spotify-toggle",
+            source="spotify",
+            target_rate=target_rate,
+            should_play=True,
+            rate_change=_coordinator_rate_change(target_rate),
+            reload_source=True,
+            detail="api-spotify-toggle",
+        )
+        try:
+            result = await _run_coordinated_transition(request)
+        except ValueError as exc:
+            raise bad_request(exc) from exc
+        except PlaybackTransitionFailure as exc:
+            raise _transition_error_http(exc) from exc
+        await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
+    finally:
+        _end_playback_transition_attempt()
     data = await get_spotify_ui_state()
     return await broadcast_spotify_state(data)
 

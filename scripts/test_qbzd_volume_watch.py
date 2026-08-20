@@ -124,6 +124,168 @@ class TranslatorDebounceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.applied, [29])
 
 
+class TranslatorPickupTests(unittest.IsolatedAsyncioTestCase):
+    async def _make(self, master):
+        self.master = master
+        self.applied = []
+
+        async def apply_volume(percent, generation=None):
+            self.applied.append(percent)
+            self.master = percent
+
+        return QobuzRemoteVolumeTranslator(
+            is_active=lambda: True,
+            apply_volume=apply_volume,
+            get_canonical_volume=lambda: self.master,
+        )
+
+    async def test_remote_above_master_must_cross_before_writing(self):
+        translator = await self._make(30)
+        for value in range(90, 30, -1):
+            self.assertFalse(translator.submit(value))
+            await translator.flush()
+        self.assertFalse(self.applied)
+        self.assertFalse(translator.submit(30))
+        await translator.flush()
+        self.assertEqual(self.applied, [])
+        self.assertTrue(translator.picked_up)
+        self.assertTrue(translator.submit(29))
+        await translator.flush()
+        self.assertEqual(self.applied, [29])
+
+    async def test_remote_below_master_crosses_up(self):
+        translator = await self._make(70)
+        for value in range(20, 70):
+            self.assertFalse(translator.submit(value))
+            await translator.flush()
+        self.assertFalse(self.applied)
+        self.assertFalse(translator.submit(70))
+        await translator.flush()
+        self.assertTrue(translator.picked_up)
+        self.assertTrue(translator.submit(71))
+        await translator.flush()
+        self.assertEqual(self.applied, [71])
+
+    async def test_equal_initial_remote_arms_then_picks_up_downward(self):
+        translator = await self._make(30)
+        self.assertFalse(translator.submit(30))
+        await translator.flush()
+        self.assertEqual(self.applied, [])
+        self.assertTrue(translator.picked_up)
+        self.assertTrue(translator.submit(29))
+        await translator.flush()
+        self.assertEqual(self.applied, [29])
+        self.assertTrue(translator.picked_up)
+
+    async def test_equal_initial_remote_arms_then_picks_up_upward(self):
+        translator = await self._make(30)
+        self.assertFalse(translator.submit(30))
+        await translator.flush()
+        self.assertEqual(self.applied, [])
+        self.assertTrue(translator.picked_up)
+        self.assertTrue(translator.submit(31))
+        await translator.flush()
+        self.assertEqual(self.applied, [31])
+        self.assertTrue(translator.picked_up)
+
+    async def test_equal_initial_remote_large_overshoot_stays_safe(self):
+        translator = await self._make(30)
+        self.assertFalse(translator.submit(30))
+        self.assertFalse(translator.submit(100))
+        await translator.flush()
+        self.assertEqual(self.applied, [])
+
+    async def test_different_initial_remote_large_crossing_stays_safe(self):
+        translator = await self._make(30)
+        self.assertFalse(translator.submit(10))
+        self.assertFalse(translator.submit(100))
+        await translator.flush()
+        self.assertEqual(self.applied, [])
+
+    async def test_skipping_target_still_picks_up(self):
+        translator = await self._make(30)
+        translator.submit(90)
+        self.assertTrue(translator.submit(29))
+        await translator.flush()
+        self.assertTrue(translator.picked_up)
+        translator.submit(28)
+        await translator.flush()
+        self.assertEqual(self.applied, [29, 28])
+
+    async def test_external_master_change_resets_pickup(self):
+        translator = await self._make(30)
+        translator.submit(90)
+        translator.submit(30)
+        await translator.flush()
+        self.assertTrue(translator.picked_up)
+        self.master = 50
+        self.assertFalse(translator.submit(29))
+        self.assertFalse(translator.picked_up)
+
+    async def test_reset_discards_pending_and_latch(self):
+        translator = await self._make(30)
+        translator.submit(90)
+        translator.submit(30)
+        translator.submit(29)
+        translator.reset()
+        await translator.flush()
+        self.assertEqual(self.applied, [])
+        self.assertFalse(translator.picked_up)
+
+    async def test_large_upward_overshoot_does_not_pick_up(self):
+        translator = await self._make(30)
+        translator.submit(10)
+        self.assertFalse(translator.submit(100))
+        await translator.flush()
+        self.assertEqual(self.applied, [])
+        self.assertFalse(translator.picked_up)
+
+    async def test_large_downward_overshoot_does_not_pick_up(self):
+        translator = await self._make(30)
+        translator.submit(90)
+        self.assertFalse(translator.submit(0))
+        await translator.flush()
+        self.assertEqual(self.applied, [])
+        self.assertFalse(translator.picked_up)
+
+    async def test_external_change_invalidates_inflight_remote_generation(self):
+        translator = await self._make(30)
+        translator.submit(90)
+        translator.submit(29)
+        generation = translator.pending_generation
+        translator.canonical_volume_changed(60)
+        self.assertFalse(translator.is_generation_current(generation))
+        await translator.flush()
+        self.assertEqual(self.applied, [])
+
+    async def test_external_change_during_remote_barrier_cannot_be_overwritten(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        master = 30
+        applied = []
+
+        async def apply_volume(percent, generation):
+            started.set()
+            await release.wait()
+            if translator.is_generation_current(generation):
+                applied.append(percent)
+
+        translator = QobuzRemoteVolumeTranslator(
+            is_active=lambda: True,
+            apply_volume=apply_volume,
+            get_canonical_volume=lambda: master,
+        )
+        translator.submit(90)
+        translator.submit(29)
+        flush_task = asyncio.create_task(translator.flush())
+        await started.wait()
+        master = 60
+        translator.canonical_volume_changed(master)
+        release.set()
+        await flush_task
+        self.assertEqual(applied, [])
+
+
 class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
     def _fake_proc(self, lines, gap=0.02):
         proc = mock.Mock()
@@ -334,6 +496,70 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(applied, [45, 30])
         drain_warnings = [w for w in warnings if "drain failed" in str(w)]
         self.assertEqual(len(drain_warnings), 1)
+
+    async def test_drain_reflushes_intent_arriving_during_apply(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        applied = []
+
+        async def apply_volume(percent, generation=None):
+            applied.append(percent)
+            if percent == 29:
+                started.set()
+                await release.wait()
+
+        watch = QobuzVolumeWatch(
+            QobuzVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume=apply_volume,
+                get_canonical_volume=lambda: 30,
+            ),
+            debounce_seconds=0.0,
+        )
+        watch._translator.submit(90)
+        self.assertTrue(watch._translator.submit(29))
+        watch._schedule_drain()
+        await started.wait()
+        self.assertTrue(watch._translator.submit(28))
+        watch._schedule_drain()
+        drain_task = watch._drain_task
+        release.set()
+        await asyncio.wait_for(drain_task, timeout=1.0)
+        self.assertEqual(applied, [29, 28])
+        self.assertIsNone(watch._translator.pending)
+        self.assertIsNone(watch._drain_task)
+
+    async def test_drain_coalesces_multiple_intents_during_apply(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        applied = []
+
+        async def apply_volume(percent, generation=None):
+            applied.append(percent)
+            if percent == 29:
+                started.set()
+                await release.wait()
+
+        watch = QobuzVolumeWatch(
+            QobuzVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume=apply_volume,
+                get_canonical_volume=lambda: 30,
+            ),
+            debounce_seconds=0.0,
+        )
+        watch._translator.submit(90)
+        watch._translator.submit(29)
+        watch._schedule_drain()
+        await started.wait()
+        for value in (28, 27, 26):
+            self.assertTrue(watch._translator.submit(value))
+            watch._schedule_drain()
+        drain_task = watch._drain_task
+        release.set()
+        await asyncio.wait_for(drain_task, timeout=1.0)
+        self.assertEqual(applied, [29, 26])
+        self.assertIsNone(watch._translator.pending)
 
     def test_software_volume_apply_detection(self):
         self.assertTrue(is_software_volume_apply(

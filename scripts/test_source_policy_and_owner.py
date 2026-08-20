@@ -88,19 +88,19 @@ class PlaybackOwnerTests(unittest.IsolatedAsyncioTestCase):
         self.main.playback_state.current_playback_owner = self._orig_owner
 
     async def test_pause_preserves_owner(self):
-        self.main._set_playback_owner("qobuz")
+        self.main.playback_state.current_playback_owner = "qobuz"
         # A paused owner is still the owner: resume/global controls stay
         # unambiguous.
         self.assertEqual(self.main._resolve_playback_owner(), "qobuz")
         self.assertEqual(self.main.playback_state.current_playback_owner, "qobuz")
 
     async def test_metadata_refresh_does_not_change_owner(self):
-        self.main._set_playback_owner("tidal")
+        self.main.playback_state.current_playback_owner = "tidal"
         self.main._resolve_playback_owner()
         self.assertEqual(self.main.playback_state.current_playback_owner, "tidal")
 
     async def test_readonly_derivation_never_persists(self):
-        self.main._set_playback_owner(None)
+        self.main.playback_state.current_playback_owner = None
         with mock.patch.object(
             self.main.runtime, "player_instance", mock.Mock(state={
                 "current_file": "/music/x.flac", "playing": True, "paused": False, "ended": False,
@@ -121,16 +121,16 @@ class PlaybackOwnerTests(unittest.IsolatedAsyncioTestCase):
         ) as spot, mock.patch.object(
             self.main, "_qobuz_global_control", new=mock.AsyncMock(return_value={"routed": "qobuz"})
         ) as qob:
-            self.main._set_playback_owner("spotify")
+            self.main.playback_state.current_playback_owner = "spotify"
             self.assertEqual(await self.main._route_global_control("toggle"), {"routed": "spotify"})
             spot.assert_awaited_once()
 
-            self.main._set_playback_owner("qobuz")
+            self.main.playback_state.current_playback_owner = "qobuz"
             self.assertEqual(await self.main._route_global_control("next"), {"routed": "qobuz"})
             qob.assert_awaited_once()
 
             # Native MPV sources fall through to the native transport path.
-            self.main._set_playback_owner("tidal")
+            self.main.playback_state.current_playback_owner = "tidal"
             self.assertIsNone(await self.main._route_global_control("toggle"))
             self.assertIsNone(await self.main._route_global_control("seek"))
 
@@ -138,7 +138,7 @@ class PlaybackOwnerTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(self.main, "_mark_player_state_authoritative"), mock.patch.object(
             self.main.runtime, "player_instance", mock.Mock(state={})
         ):
-            self.main._commit_coordinated_track(
+            await self.main._commit_coordinated_track(
                 {"source": "tidal", "id": "1", "url": "https://x/stream"}, source="tidal"
             )
             self.assertEqual(self.main.playback_state.current_playback_owner, "tidal")
@@ -162,7 +162,7 @@ class PlaybackOwnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.main.playback_state.current_playback_owner, "qobuz")
 
     async def test_qobuz_claim_noop_when_already_committed(self):
-        self.main._set_playback_owner("qobuz")
+        self.main.playback_state.current_playback_owner = "qobuz"
         with mock.patch.object(self.main, "get_qobuz_ui_state", new=mock.AsyncMock()) as get, mock.patch.object(
             self.main, "_run_coordinated_transition", new=mock.AsyncMock()
         ) as run:

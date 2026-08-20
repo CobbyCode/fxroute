@@ -207,6 +207,55 @@ def _calls() -> list[tuple[str, int, str, str]]:
     return sorted(result)
 
 
+ALLOWED_CONTEXT_WRITES: dict[str, set[str]] = {
+    "commit_playback_context": {"current_track_info", "last_track_info", "last_radio_track_info", "current_playback_owner", "playback_context_commit_id"},
+    "clear_playback_context": {"current_track_info", "current_playback_owner", "last_radio_track_info"},
+    "set_track_context": {"current_track_info", "last_track_info"},
+    "_atomic_set_track_and_owner": {"current_track_info", "current_playback_owner"},
+    "_atomic_clear_track_and_owner": {"current_track_info", "current_playback_owner"},
+    "_commit_playback_owner": {"current_track_info", "last_track_info", "current_playback_owner", "playback_context_commit_id"},
+    "_commit_coordinated_track": {"current_track_info", "last_track_info", "last_radio_track_info", "current_playback_owner", "playback_context_commit_id"},
+    "_commit_playback_context": {"current_track_info", "last_track_info", "last_radio_track_info", "current_playback_owner", "playback_context_commit_id"},
+    "_clear_playback_context": {"current_track_info", "current_playback_owner", "last_radio_track_info"},
+    "_publish_playback_context_commit": {"playback_context_commit_id"},
+    "_publish_committed_playback_owner": {"current_track_info", "last_track_info", "current_playback_owner", "playback_context_commit_id"},
+    "_sync_playback_track_favorite": {"current_track_info", "last_track_info"},
+    "on_player_state_change": {"current_track_info", "last_track_info"},
+    "stop_playback": {"last_radio_track_info"},
+    "select_music_library": {"last_track_info"},
+    "_sync_active_local_queue_selection": {"last_track_info"},
+}
+
+
+def _context_writes() -> list[tuple[str, int, str, str]]:
+    result: list[tuple[str, int, str, str]] = []
+    for file_name, tree in TREES.items():
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                leaf = node.name
+                assigns: list[ast.AST] = []
+                for child in ast.walk(node):
+                    if isinstance(child, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                        assigns.append(child)
+                for assign in assigns:
+                    targets = []
+                    if isinstance(assign, ast.Assign):
+                        targets = assign.targets
+                    elif isinstance(assign, ast.AnnAssign):
+                        targets = [assign.target]
+                    elif isinstance(assign, ast.AugAssign):
+                        targets = [assign.target]
+                    for target in targets:
+                        if isinstance(target, ast.Attribute) and target.attr in {"current_track_info", "current_playback_owner", "playback_context_commit_id", "last_track_info", "last_radio_track_info"}:
+                            if isinstance(target.value, ast.Attribute) and isinstance(target.value.value, ast.Name) and target.value.value.id == "playback_state":
+                                result.append((file_name, target.lineno, leaf, target.attr))
+                            elif isinstance(target.value, ast.Name) and target.value.id == "playback_state":
+                                result.append((file_name, target.lineno, leaf, target.attr))
+                        if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Attribute) and target.value.attr in {"current_track_info", "last_track_info"}:
+                            result.append((file_name, target.lineno, leaf, f"{target.value.attr}[]"))
+    return sorted(set(result))
+
+
 def _reason(context: str, name: str) -> str | None:
     leaf = context.rsplit("/", 1)[-1]
     if leaf in {"make_playback_runtime_deps", "_make_dsp_orchestration_deps", "_make_measurement_services", "_make_playback_orchestration_deps"}:
@@ -385,6 +434,37 @@ def main() -> int:
             errors.append(f"PlaybackRuntimeDependencies still declares queue dep: {name}")
     if "queue" not in runtime_fields:
         errors.append("PlaybackRuntimeDependencies no longer exposes the typed queue boundary")
+    for forbidden in ("set_current_track_info", "set_playback_owner"):
+        if forbidden in runtime_fields:
+            errors.append(f"PlaybackRuntimeDependencies still declares separate playback context dep: {forbidden} (must use atomic set_track_and_owner/clear_track_and_owner)")
+    main_source = (ROOT / "main.py").read_text()
+    main_has_separate_setter = "_set_runtime_current_track_info" in main_source or "def _set_playback_owner" in main_source
+    if main_has_separate_setter and "def _set_playback_owner" in main_source:
+        has_dep = any(k in runtime_fields for k in ("set_current_track_info", "set_playback_owner"))
+        if not has_dep:
+            pass
+        else:
+            errors.append("main.py still exposes separate track/owner setter exposed via deps")
+    if "def _set_playback_owner" in main_source:
+        errors.append("main.py still defines _set_playback_owner legacy setter (must be removed)")
+
+    # transitional: keep _set_runtime_current_track_info shim if tests still need it, but flag if used in runtime deps
+    # the real check is that snapshot.py must not use separate setters
+    for file_name, tree in TREES.items():
+        if "playback/runtime" not in file_name:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in {"set_current_track_info", "set_playback_owner"}:
+                errors.append(f"separate playback context setter still used at {file_name}:{node.lineno}: {node.attr} (must use set_track_and_owner/clear_track_and_owner)")
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"set_current_track_info", "set_playback_owner"}:
+                errors.append(f"separate playback context call still present at {file_name}:{node.lineno}: {node.func.attr}")
+
+    for file_name, lineno, leaf, attr in _context_writes():
+        allowed = ALLOWED_CONTEXT_WRITES.get(leaf)
+        if allowed is None:
+            errors.append(f"unclassified playback context write at {file_name}:{lineno}: {leaf} -> {attr}")
+        elif attr not in allowed and not attr.endswith("[]"):
+            errors.append(f"forbidden playback context write at {file_name}:{lineno}: {leaf} -> {attr} (allowed: {sorted(allowed)})")
 
     if errors:
         for error in errors:

@@ -31,7 +31,10 @@ from playback_transition_test_support import MainCoreTransitionRuntime, make_tra
 OUTPUT_KEY = "alsa_output.pci-0000_00_1f.3.analog-stereo"
 
 
-def _links_text(mode: str, *, direct: bool = False, source: bool = True, complete: bool = True) -> str:
+def _links_text(mode: str, *, direct: bool = False, source: bool = True, complete: bool = True,
+                source_ports: tuple[str, str] = ("mpv:output_FL", "mpv:output_FR"),
+                anonymous_source_bypass: bool = False, source_complete: bool = True,
+                foreign_source_bypass: bool = False, duplicate_anonymous: bool = False) -> str:
     lines = [
         "fxroute_dsp_sink:monitor_FL",
         "fxroute_dsp_sink:monitor_FR",
@@ -44,8 +47,16 @@ def _links_text(mode: str, *, direct: bool = False, source: bool = True, complet
     ]
     if source:
         lines.extend([
-            "mpv:output_FL -> fxroute_dsp_sink:playback_FL",
-            "mpv:output_FR -> fxroute_dsp_sink:playback_FR",
+            f"{source_ports[0]} -> fxroute_dsp_sink:playback_FL",
+        ])
+        if source_complete:
+            lines.append(f"{source_ports[1]} -> fxroute_dsp_sink:playback_FR")
+    if duplicate_anonymous:
+        lines.extend([
+            ":output_FL",
+            ":output_FR",
+            ":output_FL",
+            ":output_FR",
         ])
     if mode == "stereo":
         lines.append(
@@ -71,6 +82,16 @@ def _links_text(mode: str, *, direct: bool = False, source: bool = True, complet
         lines.extend([
             f"legacy_dsp:output_FL -> {OUTPUT_KEY}:playback_FL",
             f"legacy_dsp:output_FR -> {OUTPUT_KEY}:playback_FR",
+        ])
+    if anonymous_source_bypass:
+        lines.extend([
+            f":output_FL -> {OUTPUT_KEY}:playback_FL",
+            f":output_FR -> {OUTPUT_KEY}:playback_FR",
+        ])
+    if foreign_source_bypass:
+        lines.extend([
+            f"mpv:output_FL -> {OUTPUT_KEY}:playback_FL",
+            f"mpv:output_FR -> {OUTPUT_KEY}:playback_FR",
         ])
     return "\n".join(lines)
 
@@ -103,6 +124,11 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
         helper: HelperDouble | None = None,
         direct: bool = False,
         source: str | None = "local",
+        source_ports: tuple[str, str] = ("mpv:output_FL", "mpv:output_FR"),
+        anonymous_source_bypass: bool = False,
+        source_complete: bool = True,
+        foreign_source_bypass: bool = False,
+        duplicate_anonymous: bool = False,
         require_source: bool = True,
         target_rate: int | None = 48000,
         complete: bool = True,
@@ -118,6 +144,11 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
             direct=direct,
             source=source is not None,
             complete=complete,
+            source_ports=source_ports,
+            anonymous_source_bypass=anonymous_source_bypass,
+            source_complete=source_complete,
+            foreign_source_bypass=foreign_source_bypass,
+            duplicate_anonymous=duplicate_anonymous,
         )
         async def pw_link(*_args):
             return io_text
@@ -148,6 +179,86 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
             mode="stereo", source=None, require_source=True
         )
         self.assertFalse(missing_source["links_complete"])
+
+    async def test_spotify_accepts_desktop_producer_ports(self):
+        diagnosis = await self._diagnose(
+            mode="stereo",
+            source="spotify",
+            source_ports=("spotify:output_FL", "spotify:output_FR"),
+        )
+        self.assertTrue(diagnosis["source_links_complete"])
+        self.assertTrue(diagnosis["links_complete"])
+
+    async def test_spotify_accepts_anonymous_spotifyd_pulse_ports(self):
+        diagnosis = await self._diagnose(
+            mode="stereo",
+            source="spotify",
+            source_ports=(":output_FL", ":output_FR"),
+        )
+        self.assertTrue(diagnosis["source_links_complete"])
+        self.assertEqual(
+            set(diagnosis["source_links"]),
+            {
+                ":output_FL -> fxroute_dsp_sink:playback_FL",
+                ":output_FR -> fxroute_dsp_sink:playback_FR",
+            },
+        )
+        self.assertTrue(diagnosis["links_complete"])
+
+    async def test_partial_spotifyd_link_reports_the_active_producer(self):
+        diagnosis = await self._diagnose(
+            mode="stereo",
+            source="spotify",
+            source_ports=(":output_FL", ":output_FR"),
+            source_complete=False,
+        )
+        self.assertFalse(diagnosis["source_links_complete"])
+        self.assertEqual(
+            set(diagnosis["source_links"]),
+            {
+                ":output_FL -> fxroute_dsp_sink:playback_FL",
+                ":output_FR -> fxroute_dsp_sink:playback_FR",
+            },
+        )
+
+    async def test_selected_anonymous_spotifyd_bypass_is_attributed(self):
+        diagnosis = await self._diagnose(
+            mode="subwoofer-2.2",
+            source="spotify",
+            source_ports=(":output_FL", ":output_FR"),
+            anonymous_source_bypass=True,
+        )
+        self.assertTrue(diagnosis["direct_source_to_hw_present"])
+        self.assertFalse(diagnosis["links_complete"])
+
+    async def test_foreign_named_source_bypass_does_not_look_like_spotifyd(self):
+        diagnosis = await self._diagnose(
+            mode="subwoofer-2.2",
+            source="spotify",
+            source_ports=(":output_FL", ":output_FR"),
+            foreign_source_bypass=True,
+        )
+        self.assertFalse(diagnosis["direct_source_to_hw_present"])
+
+    async def test_multiple_anonymous_streams_are_not_assumed_to_be_spotifyd(self):
+        diagnosis = await self._diagnose(
+            mode="stereo",
+            source="spotify",
+            source_ports=(":output_FL", ":output_FR"),
+            duplicate_anonymous=True,
+        )
+        self.assertFalse(diagnosis["source_links_complete"])
+
+    async def test_anonymous_port_identity_does_not_match_named_port_substring(self):
+        diagnosis = await self._diagnose(
+            mode="stereo",
+            source="spotify",
+            source_ports=(":output_FL", ":output_FR"),
+            source_complete=False,
+            foreign_source_bypass=True,
+        )
+        self.assertIn(":output_FL", diagnosis["port_identities"]["source"])
+        self.assertNotIn(":output_FR", diagnosis["port_identities"]["source"])
 
     async def test_22_ignores_obsolete_legacy_direct_links(self):
         helper = HelperDouble(active=True, rate=48000, direct=True)
