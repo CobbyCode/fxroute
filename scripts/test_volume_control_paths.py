@@ -186,30 +186,28 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(first, second)
             self.assertEqual(order, ["set-50", "set-60"])
 
-    async def test_loudness_volume_write_rebuilds_native_engine(self):
+    async def test_volume_write_never_touches_loudness(self):
         class FakeManager:
             EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
 
             def load_global_extras(self):
                 return {"loudness": {"enabled": True, "params": {"volumeDb": -10.0}}}
 
-            def loudness_db_from_percent(self, percent):
-                return -float(percent)
-
             def get_active_preset(self):
                 return "Neutral"
 
             def set_loudness_volume_db(self, volume_db):
-                return {"extras": {"loudness": {"params": {"volumeDb": volume_db}}}}
+                raise AssertionError("the footer slider must not rewrite the Loudness work point")
 
         fake = FakeManager()
         sync = mock.AsyncMock()
         with mock.patch.object(main, "dsp_manager", fake), mock.patch.object(
             main.dsp_orchestrator, "sync_runtime", sync
-        ), mock.patch.object(main, "set_output_volume", return_value=100):
-            await main._set_canonical_output_volume(60)
+        ), mock.patch.object(main, "set_output_volume", return_value=60):
+            result = await main._set_canonical_output_volume(60)
 
-        sync.assert_awaited_once_with(reason="native-dsp-loudness-volume")
+        self.assertEqual(result, {"volume": 60})
+        sync.assert_not_awaited()
 
     async def test_set_readback_sequence_never_interleaves(self):
         entered = threading.Event()
@@ -272,7 +270,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system_volume.get_status_volume(), 55)
 
 
-    async def test_loudness_enable_serializes_against_parallel_write(self):
+    async def test_loudness_enable_serializes_and_never_writes_master(self):
         entered = threading.Event()
         release = threading.Event()
         calls = []
@@ -296,17 +294,9 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             def load_global_extras(self):
                 return copy.deepcopy(self.extras)
 
-            def loudness_db_from_percent(self, percent):
-                return -float(percent)
-
             def apply_autogain_loudness_runtime(self, previous, extras):
                 self.extras = copy.deepcopy(extras)
                 return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
-
-            def set_loudness_volume_db(self, volume_db):
-                self.extras["loudness"]["params"]["volumeDb"] = float(volume_db)
-                return {"extras": copy.deepcopy(self.extras), "runtime_applied": True,
-                        "updated": 1, "skipped": []}
 
             def normalize_effects_extras(self, extras):
                 return extras
@@ -336,44 +326,35 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
 
             write_task = asyncio.create_task(main._set_canonical_output_volume(60))
             await asyncio.sleep(0.05)
-            # The parallel canonical write must not interleave while the
-            # Loudness enable owns the canonical lock.
+            # The Loudness enable owns the canonical lock; the parallel write
+            # must wait, and the enable itself never writes the master.
             self.assertEqual(calls, ["get"])
 
             release.set()
             await asyncio.gather(extras_task, write_task)
 
-        # enable: live get, loudness mutation, master set+readback; then the
-        # parallel write: set+readback.  No interleaving.
-        self.assertEqual(calls, ["get", "set", "get", "set", "get"])
+        # enable reads the master for state capture only; then the parallel
+        # write sets and reads it back.  No master=100 write anywhere.
+        self.assertEqual(calls, ["get", "set", "get"])
 
-    async def test_loudness_disable_serializes_against_parallel_write(self):
+    async def test_loudness_disable_serializes_and_never_writes_master(self):
         entered = threading.Event()
         release = threading.Event()
         calls = []
 
         def blocking_run(args, **kwargs):
-            if args[1] == "set-volume":
-                calls.append("set")
+            if args[1] == "get-volume":
+                calls.append("get")
                 entered.set()
                 release.wait(timeout=5)
-                return subprocess.CompletedProcess([], 0, stdout="", stderr="")
-            calls.append("get")
+                return subprocess.CompletedProcess([], 0, stdout="Volume: 0.50\n", stderr="")
+            calls.append("set")
             return subprocess.CompletedProcess([], 0, stdout="Volume: 0.50\n", stderr="")
 
         class FakeManager:
             EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
             def load_global_extras(self):
                 return {"loudness": {"enabled": True, "params": {"volumeDb": -10.0}}}
-
-            def loudness_percent_from_db(self, volume_db):
-                return system_volume.volume_db_to_percent(volume_db)
-
-            def loudness_db_from_percent(self, percent):
-                return -float(percent)
-
-            def set_loudness_volume_db(self, volume_db):
-                return {"extras": {"loudness": {"params": {"volumeDb": volume_db}}}}
 
             def apply_autogain_loudness_runtime(self, previous, extras):
                 return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
@@ -409,15 +390,12 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
 
             write_task = asyncio.create_task(main._set_canonical_output_volume(60))
             await asyncio.sleep(0.05)
-            # The Loudness->master transfer owns the canonical lock; the
-            # parallel write must wait.
-            self.assertEqual(calls, ["set"])
+            self.assertEqual(calls, ["get"])
 
             release.set()
             await asyncio.gather(extras_task, write_task)
 
-        # transfer set+readback, loudness mutation, then the parallel write.
-        self.assertEqual(calls, ["set", "get", "set", "get"])
+        self.assertEqual(calls, ["get", "set", "get"])
 
     async def test_loudness_enable_acquires_canonical_before_mutation_lock(self):
         class FakeManager:
@@ -518,7 +496,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         main.dsp_manager = None
 
-    async def test_loudness_disable_transfer_order_is_preserved(self):
+    async def test_loudness_disable_does_not_transfer_to_master(self):
         order = []
 
         class FakeManager:
@@ -526,18 +504,11 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             def load_global_extras(self):
                 return {"loudness": {"enabled": True, "params": {"volumeDb": -10.0}}}
 
-            def loudness_percent_from_db(self, volume_db):
-                return system_volume.volume_db_to_percent(volume_db)
-
             def apply_global_extras_to_all_presets(self, extras):
                 order.append("apply")
                 return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
 
             def apply_autogain_loudness_runtime(self, previous, extras):
-                order.append("apply")
-                return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
-
-            def apply_loudness_strength_runtime(self, previous, extras):
                 order.append("apply")
                 return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
 
@@ -560,14 +531,14 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(
             main, "set_output_volume", side_effect=lambda value: order.append(f"set-{value}") or value
         ), mock.patch.object(
-            main, "get_output_volume", side_effect=AssertionError("no read expected")
+            main, "get_output_volume", return_value=55
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             await dsp_api.save_dsp_extras(FakeExtrasRequest())
 
-        expected = system_volume.volume_db_to_percent(-10.0)
-        self.assertEqual(order, [f"set-{expected}", "apply"])
+        # The disable only applies the extras change; it never rewrites the master.
+        self.assertEqual(order, ["apply"])
 
     async def test_autogain_change_reloads_active_native_preset(self):
         class FakeManager:
@@ -604,7 +575,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
 
         reload_preset.assert_awaited_once_with("Neutral", _locks_held=True)
 
-    async def test_loudness_disable_failure_rolls_back_to_100(self):
+    async def test_loudness_disable_failure_restores_original_master(self):
         order = []
 
         class FakeManager:
@@ -612,9 +583,6 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
 
             def load_global_extras(self):
                 return {"loudness": {"enabled": True, "params": {"volumeDb": -10.0}}}
-
-            def loudness_percent_from_db(self, volume_db):
-                return system_volume.volume_db_to_percent(volume_db)
 
             def get_active_preset(self):
                 return "Neutral"
@@ -642,12 +610,15 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", fake
         ), mock.patch.object(
             main, "set_output_volume", side_effect=lambda value: order.append(f"set-{value}") or value
+        ), mock.patch.object(
+            main, "get_output_volume", return_value=42
         ):
             with self.assertRaises(RuntimeError):
                 await dsp_api.save_dsp_extras(FakeExtrasRequest())
 
-        expected = system_volume.volume_db_to_percent(-10.0)
-        self.assertEqual(order, [f"set-{expected}", "apply", "set-100"])
+        # The failed disable restores the live master captured before the
+        # change, never a hardcoded 100%.
+        self.assertEqual(order, ["apply", "set-42"])
 
     async def test_blocking_wpctl_does_not_stop_event_loop(self):
         entered = threading.Event()
@@ -830,7 +801,7 @@ class _FakeVolumeManager:
 
 
 class VolumeOwnershipDirectTests(unittest.IsolatedAsyncioTestCase):
-    """Loudness owns the volume only while it runs in the active path."""
+    """The footer slider drives only the global master; presets never do."""
 
     def setUp(self):
         self.manager = _FakeVolumeManager()
@@ -856,75 +827,30 @@ class VolumeOwnershipDirectTests(unittest.IsolatedAsyncioTestCase):
         main.dsp_manager = self.manager
         return self.manager
 
-    async def test_loudness_owns_volume_depends_on_active_path(self):
-        self.use_manager(loudness_enabled=True, active_preset="Neutral")
-        self.assertTrue(main._loudness_owns_volume())
-        self.use_manager(loudness_enabled=True, active_preset="Direct")
-        self.assertFalse(main._loudness_owns_volume())
-        self.use_manager(loudness_enabled=False, active_preset="Neutral")
-        self.assertFalse(main._loudness_owns_volume())
-
-    async def test_volume_slider_in_direct_controls_system_master(self):
-        # Loudness enabled in state, Direct active: the slider must reach the
-        # system master (the only path that runs), not the bypassed volumeDb.
+    async def test_volume_slider_in_direct_controls_only_the_master(self):
         self.use_manager(loudness_enabled=True, active_preset="Direct")
         result = await main._set_canonical_output_volume(30)
-        self.assertEqual(result["volume"], 30)
-        self.assertFalse(result["loudness_enabled"])
+        self.assertEqual(result, {"volume": 30})
         self.assertEqual(self.volume_writes, [30])
         self.assertEqual(self.manager.loudness_volume_writes, [])
 
-    async def test_volume_slider_in_neutral_still_writes_loudness(self):
+    async def test_volume_slider_in_neutral_controls_only_the_master(self):
         self.use_manager(loudness_enabled=True, active_preset="Neutral")
         result = await main._set_canonical_output_volume(40)
-        self.assertTrue(result["loudness_enabled"])
-        self.assertEqual(self.volume_writes, [100])
-        self.assertEqual(len(self.manager.loudness_volume_writes), 1)
+        self.assertEqual(result, {"volume": 40})
+        self.assertEqual(self.volume_writes, [40])
+        self.assertEqual(self.manager.loudness_volume_writes, [])
 
-    async def test_enter_direct_moves_attenuation_to_system_before_bypass(self):
-        # Neutral (Loudness active, volumeDb=-20 dB) -> Direct: the master is
-        # set to the Loudness attenuation while Loudness still runs; never 100.
+    async def test_preset_load_never_moves_master(self):
         manager = self.use_manager(loudness_enabled=True, active_preset="Neutral", volume_db=-20.0)
-        await main._transfer_volume_ownership_for_preset(manager, "Direct")
-        expected = manager.loudness_percent_from_db(-20.0)
-        self.assertEqual(self.volume_writes, [expected])
-        self.assertNotIn(100, self.volume_writes)
-        self.assertEqual(manager.loudness_volume_writes, [])
-
-    async def test_leave_direct_mirrors_master_into_loudness_before_path_change(self):
-        # Transfer alone must not raise the master while Direct still bypasses
-        # Loudness.  volumeDb mirrors the live master; master=100 happens after
-        # the preset load puts Loudness in the path.
-        manager = self.use_manager(loudness_enabled=True, active_preset="Direct")
-        with mock.patch.object(main, "get_output_volume", return_value=30):
-            await main._transfer_volume_ownership_for_preset(manager, "Neutral")
-        expected_db = manager.loudness_db_from_percent(30)
-        self.assertTrue(abs(float(manager.extras["loudness"]["params"]["volumeDb"]) - expected_db) < 1e-9)
+        self.live_master = 65
+        await main._load_dsp_preset("Direct")
         self.assertEqual(self.volume_writes, [])
-        self.assertTrue(manager.saved)
-
-    async def test_direct_with_loudness_disabled_untouched(self):
-        manager = self.use_manager(loudness_enabled=False, active_preset="Direct", volume_db=-20.0)
-        await main._transfer_volume_ownership_for_preset(manager, "Neutral")
-        self.assertEqual(self.volume_writes, [])
-        self.assertEqual(manager.saved, [])
-        await main._transfer_volume_ownership_for_preset(manager, "Direct")
-        self.assertEqual(self.volume_writes, [])
-
-    async def test_preset_load_entering_direct_transfers_before_rebuild(self):
-        manager = self.use_manager(loudness_enabled=True, active_preset="Neutral", volume_db=-20.0)
-        sync_calls = []
-        original_sync = main.dsp_orchestrator.sync_runtime
-        main.dsp_orchestrator.sync_runtime = mock.AsyncMock(side_effect=lambda **_k: sync_calls.append(1))
-        try:
-            await main._load_dsp_preset("Direct")
-        finally:
-            main.dsp_orchestrator.sync_runtime = original_sync
-        expected = manager.loudness_percent_from_db(-20.0)
-        self.assertEqual(self.volume_writes, [expected])
-        self.assertNotIn(100, self.volume_writes)
+        self.assertEqual(self.live_master, 65)
         self.assertEqual(manager.active_preset, "Direct")
-        self.assertEqual(len(sync_calls), 1)
+        self.assertAlmostEqual(
+            float(manager.extras["loudness"]["params"]["volumeDb"]), -20.0, places=9
+        )
 
 
 if __name__ == "__main__":

@@ -40,7 +40,7 @@ class NativeQueueSelectionTests(unittest.TestCase):
         self.assertFalse(playback_queue.can_use_native_local_queue([_track("a", 44100), _track("b", 48000)]))
         self.assertFalse(playback_queue.can_use_native_local_queue([_track("a", 44100), _track("b", None)]))
 
-    def test_loudness_volume_uses_canonical_curve_and_master_100(self):
+    def test_volume_slider_writes_only_the_global_master(self):
         class LoudnessManager:
             EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
 
@@ -50,18 +50,12 @@ class NativeQueueSelectionTests(unittest.TestCase):
             def get_active_preset(self):
                 return "Neutral"
 
-            def loudness_db_from_percent(self, percent):
-                return system_volume.volume_percent_to_db(percent)
-
-            def set_loudness_volume_db(self, volume_db):
-                return {"extras": {"loudness": {"params": {"volumeDb": volume_db}}}}
-
         with patch.object(main, "dsp_manager", LoudnessManager()), \
-             patch.object(main, "set_output_volume", return_value=100) as set_master:
+             patch.object(main, "set_output_volume", return_value=32) as set_master:
             result = asyncio.run(main._set_canonical_output_volume(32))
         self.assertEqual(result["volume"], 32)
-        self.assertEqual(result["loudnessVolumeDb"], system_volume.volume_percent_to_db(32))
-        set_master.assert_called_once_with(100)
+        self.assertNotIn("loudnessVolumeDb", result)
+        set_master.assert_called_once_with(32)
 
 
 class _QueuePlayer:

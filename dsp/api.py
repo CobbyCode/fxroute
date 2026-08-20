@@ -24,7 +24,6 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-import audio.volume_contract as volume_contract
 import zip_album
 from http_errors import bad_request
 from dsp.effects_extras import (
@@ -73,7 +72,6 @@ class DspApiDeps:
     load_dsp_preset: Callable[..., Awaitable[Any]]
     restore_volume_state: Callable[..., Awaitable[Any]]
     volume_state_for_manager: Callable[..., Awaitable[Any]]
-    apply_volume_actions: Callable[..., Awaitable[Any]]
     schedule_peak_monitor_refresh: Callable[[str], None]
 
 
@@ -258,12 +256,6 @@ async def save_dsp_extras(request: Request):
                     detail={"code": "invalid_effects_extras", "message": str(exc)},
                 ) from exc
             start = await _deps().volume_state_for_manager(dsp_mgr)
-            target = volume_contract.target_for(
-                current=start,
-                loudness_enabled=bool((extras.get("loudness") or {}).get("enabled")),
-            )
-            extras.setdefault("loudness", {}).setdefault("params", {})["volumeDb"] = target.volume_db
-            extras.setdefault("loudness", {})["enabled"] = target.loudness_enabled
             if extras == previous:
                 logger.info("Ignored unchanged effects extras update")
                 return {
@@ -276,12 +268,7 @@ async def save_dsp_extras(request: Request):
             runtime_autogain_loudness_change = _is_runtime_autogain_loudness_change(
                 previous, extras
             )
-            actions = volume_contract.plan_transition(start, target)
-            pre, post = volume_contract.partition_actions(
-                actions, ("set_loudness_enabled",)
-            )
             try:
-                await _deps().apply_volume_actions(pre, extras, persist_extras=False)
                 if runtime_strength_change:
                     result = await _deps().drain_worker(
                         dsp_mgr.apply_loudness_strength_runtime, previous, extras
@@ -294,7 +281,6 @@ async def save_dsp_extras(request: Request):
                     result = await _deps().drain_worker(
                         dsp_mgr.apply_global_extras_to_all_presets, extras
                     )
-                await _deps().apply_volume_actions(post, extras, persist_extras=False)
             except Exception:
                 try:
                     await _deps().restore_volume_state(dsp_mgr, start)

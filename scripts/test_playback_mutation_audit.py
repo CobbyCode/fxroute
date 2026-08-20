@@ -256,7 +256,7 @@ def _reason(context: str, name: str) -> str | None:
         "_set_canonical_output_volume",
         "_finish_dsp_preset_mutation", "save_dsp_extras",
         "load_dsp_preset", "_load_dsp_preset", "_load_preset_locked",
-        "_transfer_volume_ownership_for_preset", "_make_dsp_api_deps",
+        "_make_dsp_api_deps",
     }:
         return "startup or explicit user configuration workflow"
     if leaf.startswith("sync_peak_monitor_for_"):

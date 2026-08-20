@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import audio.samplerate as samplerate
-from streaming.spotify.mpris import _stop_process, spotify_installed
+from streaming.spotify.mpris import (
+    _stop_process,
+    detect_backend,
+    resolve_player_name,
+    spotify_installed,
+)
 from streaming.spotify.provider import SPOTIFY_PREARM_SAMPLE_RATE_HZ
 
 logger = logging.getLogger(__name__)
@@ -195,10 +200,11 @@ class SpotifyPlayerctlWatch:
         while True:
             proc = None
             try:
-                logger.info("Spotify playerctl watch spawning follow process")
+                player = await resolve_player_name(await detect_backend())
+                logger.info("Spotify playerctl watch spawning follow process: player=%s", player)
                 proc = await asyncio.create_subprocess_exec(
                     playerctl_path,
-                    "--player=spotify",
+                    f"--player={player}",
                     "metadata",
                     "--follow",
                     "--format",

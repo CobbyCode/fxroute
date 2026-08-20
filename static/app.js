@@ -306,12 +306,6 @@ let lastConfirmedVolume = state.playback.volume;
 let volumeSyncGraceUntil = 0;
 let downloadStatusPollTimer = null;
 let lastDownloadStatus = null;
-let spotifyVolumeTimer = null;
-let spotifyVolumeRequestInFlight = false;
-let pendingSpotifyVolume = null;
-let qobuzVolumeTimer = null;
-let qobuzVolumeRequestInFlight = false;
-let pendingQobuzVolume = null;
 let libraryModeSyncArmed = false;
 let lastLibraryPlaybackContextSignature = null;
 let libraryModeRequestInFlight = false;
@@ -3284,14 +3278,6 @@ async function sendVolume() {
             if (!resp.ok) throw new Error(data.detail || 'Volume change failed');
             lastConfirmedVolume = typeof data.volume === 'number' ? data.volume : nextVolume;
             state.playback.volume = lastConfirmedVolume;
-            if (typeof data.loudnessVolumeDb === 'number') {
-                state.dsp = state.dsp || {};
-                state.dsp.global_extras = state.dsp.global_extras || {};
-                state.dsp.global_extras.loudness = state.dsp.global_extras.loudness || {};
-                state.dsp.global_extras.loudness.params =
-                    state.dsp.global_extras.loudness.params || {};
-                state.dsp.global_extras.loudness.params.volumeDb = data.loudnessVolumeDb;
-            }
             volumeSyncGraceUntil = Date.now() + VOLUME_SYNC_GRACE_MS;
             if (!volumeGestureActive && pendingVolume === null) {
                 optimisticVolume = null;
@@ -3305,100 +3291,6 @@ async function sendVolume() {
         }
     }
     volumeRequestInFlight = false;
-    updatePlaybackUI();
-}
-
-function queueSpotifyVolumeSend(volume, immediate = false) {
-    pendingSpotifyVolume = volume;
-    clearTimeout(spotifyVolumeTimer);
-    if (immediate) {
-        void sendSpotifyVolume();
-        return;
-    }
-    spotifyVolumeTimer = setTimeout(() => {
-        void sendSpotifyVolume();
-    }, VOLUME_SEND_DEBOUNCE_MS);
-}
-
-async function sendSpotifyVolume() {
-    if (spotifyVolumeRequestInFlight || pendingSpotifyVolume === null) return;
-    spotifyVolumeRequestInFlight = true;
-    while (pendingSpotifyVolume !== null) {
-        const nextVolume = pendingSpotifyVolume;
-        pendingSpotifyVolume = null;
-        try {
-            const resp = await fetch('/api/spotify/volume', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ volume: nextVolume }),
-            });
-            const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || 'Spotify volume change failed');
-            if (data) handleIncomingSpotifyState(data, { renderTab: true, renderFooter: true });
-            lastConfirmedVolume = typeof data.volume === 'number' ? data.volume : nextVolume;
-            state.playback.volume = lastConfirmedVolume;
-            volumeSyncGraceUntil = Date.now() + VOLUME_SYNC_GRACE_MS;
-            if (!volumeGestureActive && pendingSpotifyVolume === null) {
-                optimisticVolume = null;
-            }
-        } catch (e) {
-            pendingSpotifyVolume = null;
-            volumeGestureActive = false;
-            optimisticVolume = null;
-            showToast(e.message || 'Failed to set Spotify volume', 'error');
-            break;
-        }
-    }
-    spotifyVolumeRequestInFlight = false;
-    updatePlaybackUI();
-}
-
-function queueQobuzVolumeSend(volume, immediate = false) {
-    pendingQobuzVolume = volume;
-    clearTimeout(qobuzVolumeTimer);
-    if (immediate) {
-        void sendQobuzVolume();
-        return;
-    }
-    qobuzVolumeTimer = setTimeout(() => {
-        void sendQobuzVolume();
-    }, VOLUME_SEND_DEBOUNCE_MS);
-}
-
-async function sendQobuzVolume() {
-    if (qobuzVolumeRequestInFlight || pendingQobuzVolume === null) return;
-    qobuzVolumeRequestInFlight = true;
-    while (pendingQobuzVolume !== null) {
-        const nextVolume = pendingQobuzVolume;
-        pendingQobuzVolume = null;
-        try {
-            const resp = await fetch('/api/streaming/qobuz/volume', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ volume: nextVolume }),
-            });
-            const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || 'Qobuz volume change failed');
-            if (data) {
-                window.__qobuzLastData = data;
-                reconcileFooterSource();
-                if (window.__footerSource === 'qobuz') updateFooterForStreamingOwner(data);
-            }
-            lastConfirmedVolume = typeof data.volume === 'number' ? data.volume : nextVolume;
-            state.playback.volume = lastConfirmedVolume;
-            volumeSyncGraceUntil = Date.now() + VOLUME_SYNC_GRACE_MS;
-            if (!volumeGestureActive && pendingQobuzVolume === null) {
-                optimisticVolume = null;
-            }
-        } catch (e) {
-            pendingQobuzVolume = null;
-            volumeGestureActive = false;
-            optimisticVolume = null;
-            showToast(e.message || 'Failed to set Qobuz volume', 'error');
-            break;
-        }
-    }
-    qobuzVolumeRequestInFlight = false;
     updatePlaybackUI();
 }
 
@@ -14745,10 +14637,7 @@ function updateFooterForStreamingOwner(data) {
     elements.playbackBar?.classList.toggle('has-media', hasMedia);
     elements.playbackBar?.classList.toggle('is-playing', hasMedia && data.status === 'Playing');
     elements.playbackBar?.classList.toggle('is-paused', hasMedia && data.status === 'Paused');
-    const streamingVolumeIdle = window.__footerSource === 'qobuz'
-        ? (!qobuzVolumeRequestInFlight && pendingQobuzVolume === null)
-        : (!spotifyVolumeRequestInFlight && pendingSpotifyVolume === null);
-    if (typeof data.volume === 'number' && !volumeGestureActive && streamingVolumeIdle) {
+    if (typeof data.volume === 'number' && !volumeGestureActive) {
         state.playback.volume = data.volume;
         renderVolumeControlsFromActualVolume(data.volume);
     }

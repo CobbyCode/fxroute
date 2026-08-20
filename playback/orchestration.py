@@ -70,6 +70,10 @@ class PlaybackOrchestrationDeps:
     source_port_readiness_timeout_ms: int = 4500
     get_dsp_snapshot: Callable[[], Mapping[str, Any]] | None = None
     repair_stereo_output_links: Callable[[dict], Awaitable[None]] | None = None
+    # Resolves the concrete producer ports for a source at verification time
+    # (after the source has started).  For Spotify this must derive the ports
+    # from the live sink-input identity, never a static desktop fallback.
+    resolve_source_producer_ports: Callable[[str], tuple[str, str] | None] | None = None
 
 
 class PlaybackOrchestrator:
@@ -362,7 +366,13 @@ class PlaybackOrchestrator:
             link_text = await self._deps.run_pw_link_command("-l")
         except Exception:
             return result
-        source_ports = source_policy.graph_port_names(source) or ()
+        source_ports = ()
+        resolver = getattr(self._deps, "resolve_source_producer_ports", None)
+        if callable(resolver):
+            resolved = resolver(source)
+            source_ports = resolved if resolved is not None else ()
+        else:
+            source_ports = source_policy.graph_port_names(source) or ()
         source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
         snapshot = dict(self._deps.get_dsp_snapshot() or {}) if self._deps.get_dsp_snapshot else {}
         output_count = 4 if mode in self._deps.output_mode_subwoofer_modes else 2

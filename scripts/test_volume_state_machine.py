@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Canonical volume contract: final state and max intermediate gain."""
+"""Canonical volume contract: master and Loudness work point are independent.
+
+The global FXRoute master is the single user-facing volume.  Loudness
+``volumeDb`` is only the ISO-226 work point of the curve and is never derived
+from, or promoted to, the master.  These tests pin that separation.
+"""
 
 from __future__ import annotations
 
@@ -63,13 +68,13 @@ def assert_safe_transition(test, start, target, actions):
 
 
 class VolumeContractUnitTests(unittest.TestCase):
-    def test_loudness_owns_only_when_in_active_path(self):
+    def test_loudness_in_path_only_when_enabled_and_not_direct(self):
         self.assertTrue(state(preset="Neutral", loudness=True).loudness_in_path)
         self.assertFalse(state(preset="Direct", loudness=True).loudness_in_path)
         self.assertFalse(state(preset="Neutral", loudness=False).loudness_in_path)
         self.assertFalse(state(preset="Direct", loudness=False).loudness_in_path)
 
-    def test_effective_gain_uses_one_owner(self):
+    def test_effective_gain_sums_work_point_master_and_guard(self):
         self.assertAlmostEqual(
             volume_contract.effective_db(state(preset="Neutral", loudness=True, volume_db=-31.0, master=100)),
             -31.0,
@@ -86,140 +91,53 @@ class VolumeContractUnitTests(unittest.TestCase):
             places=9,
         )
 
-    def test_matrix_preserves_volume_and_never_spikes(self):
+    def test_canonical_percent_is_always_the_master(self):
+        self.assertEqual(volume_contract.canonical_percent(state(master=37)), 37)
+        self.assertEqual(
+            volume_contract.canonical_percent(state(preset="Neutral", loudness=True, volume_db=-20.0, master=55)),
+            55,
+        )
+
+    def test_preset_and_loudness_transitions_never_move_master_or_work_point(self):
         cases = []
         low = 30
         mid = 50
-        low_db = db(low)
 
-        cases.append((
-            "direct_neutral_loudness_off",
-            state(preset="Direct", loudness=False, master=low),
-            target_for(current=state(preset="Direct", loudness=False, master=low), preset="Neutral"),
-        ))
-        cases.append((
-            "neutral_direct_loudness_off",
-            state(preset="Neutral", loudness=False, master=low),
-            target_for(current=state(preset="Neutral", loudness=False, master=low), preset="Direct"),
-        ))
-        cases.append((
-            "direct_neutral_loudness_on",
-            state(preset="Direct", loudness=True, volume_db=-10.0, master=low),
-            target_for(current=state(preset="Direct", loudness=True, volume_db=-10.0, master=low), preset="Neutral"),
-        ))
-        cases.append((
-            "neutral_direct_loudness_on",
-            state(preset="Neutral", loudness=True, volume_db=low_db, master=100),
-            target_for(current=state(preset="Neutral", loudness=True, volume_db=low_db, master=100), preset="Direct"),
-        ))
-        cases.append((
-            "enable_loudness_neutral",
-            state(preset="Neutral", loudness=False, master=low),
-            target_for(current=state(preset="Neutral", loudness=False, master=low), loudness_enabled=True),
-        ))
-        cases.append((
-            "disable_loudness_neutral",
-            state(preset="Neutral", loudness=True, volume_db=low_db, master=100),
-            target_for(current=state(preset="Neutral", loudness=True, volume_db=low_db, master=100), loudness_enabled=False),
-        ))
-        cases.append((
-            "enable_loudness_direct",
-            state(preset="Direct", loudness=False, master=low),
-            target_for(current=state(preset="Direct", loudness=False, master=low), loudness_enabled=True),
-        ))
-        cases.append((
-            "disable_loudness_direct",
-            state(preset="Direct", loudness=True, volume_db=-10.0, master=low),
-            target_for(current=state(preset="Direct", loudness=True, volume_db=-10.0, master=low), loudness_enabled=False),
-        ))
-        cases.append((
-            "slider_neutral_loudness_on",
-            state(preset="Neutral", loudness=True, volume_db=low_db, master=100),
-            target_for(current=state(preset="Neutral", loudness=True, volume_db=low_db, master=100), percent=mid),
-        ))
-        cases.append((
-            "slider_direct_loudness_on",
-            state(preset="Direct", loudness=True, volume_db=-10.0, master=low),
-            target_for(current=state(preset="Direct", loudness=True, volume_db=-10.0, master=low), percent=mid),
-        ))
-        cases.append((
-            "slider_neutral_loudness_off",
-            state(preset="Neutral", loudness=False, master=low),
-            target_for(current=state(preset="Neutral", loudness=False, master=low), percent=mid),
-        ))
-        cases.append((
-            "preset_ab_loudness_on",
-            state(preset="Neutral", loudness=True, volume_db=low_db, master=100),
-            target_for(current=state(preset="Neutral", loudness=True, volume_db=low_db, master=100), preset="Room"),
-        ))
-        cases.append((
-            "leave_direct_at_30_percent",
-            state(preset="Direct", loudness=True, volume_db=0.0, master=low),
-            target_for(current=state(preset="Direct", loudness=True, volume_db=0.0, master=low), preset="Neutral"),
-        ))
-        cases.append((
-            "neutral_room_loudness_off",
-            state(preset="Neutral", loudness=False, master=low),
-            target_for(current=state(preset="Neutral", loudness=False, master=low), preset="Room"),
-        ))
+        cases.append(("preset_switch", state(preset="Direct", loudness=False, master=low),
+                      target_for(current=state(preset="Direct", loudness=False, master=low), preset="Neutral")))
+        cases.append(("enable_loudness", state(preset="Neutral", loudness=False, master=low, volume_db=0.0),
+                      target_for(current=state(preset="Neutral", loudness=False, master=low, volume_db=0.0), loudness_enabled=True)))
+        cases.append(("disable_loudness", state(preset="Neutral", loudness=True, volume_db=-10.0, master=low),
+                      target_for(current=state(preset="Neutral", loudness=True, volume_db=-10.0, master=low), loudness_enabled=False)))
+        cases.append(("slider", state(preset="Neutral", loudness=False, master=low),
+                      target_for(current=state(preset="Neutral", loudness=False, master=low), percent=mid)))
 
         for name, start, target in cases:
             with self.subTest(name):
-                self.assertAlmostEqual(
-                    volume_contract.canonical_percent(target),
-                    volume_contract.canonical_percent(target_for(current=start, preset=target.preset, loudness_enabled=target.loudness_enabled, percent=volume_contract.canonical_percent(target))),
-                    delta=0,
-                )
-                if name.startswith("slider_"):
-                    self.assertEqual(volume_contract.canonical_percent(target), mid)
-                elif not name.startswith("slider_"):
-                    self.assertEqual(
-                        volume_contract.canonical_percent(target),
-                        volume_contract.canonical_percent(start),
-                    )
                 actions = plan_transition(start, target)
+                if name == "slider":
+                    self.assertEqual([action.op for action in actions], ["set_master"])
+                    self.assertEqual(target.master_percent, mid)
+                else:
+                    self.assertFalse(any(action.op == "set_master" for action in actions))
+                    self.assertFalse(any(action.op == "set_volume_db" for action in actions))
+                    self.assertEqual(target.master_percent, start.master_percent)
+                    self.assertAlmostEqual(target.volume_db, start.volume_db, places=9)
                 assert_safe_transition(self, start, target, actions)
 
-    def test_enable_loudness_while_direct_keeps_master(self):
-        start = state(preset="Direct", loudness=False, master=30)
-        target = target_for(current=start, loudness_enabled=True)
-        self.assertEqual(target.master_percent, 30)
-        self.assertFalse(target.loudness_in_path)
-        self.assertAlmostEqual(target.volume_db, db(30), places=9)
-        _, samples = simulate(start, plan_transition(start, target))
-        self.assertLessEqual(max(samples), db(30) + 1e-9)
+    def test_slider_only_changes_master_and_never_the_work_point(self):
+        start = state(preset="Neutral", loudness=True, volume_db=-26.5, master=30)
+        target = target_for(current=start, percent=60)
+        self.assertEqual(target.master_percent, 60)
+        self.assertAlmostEqual(target.volume_db, -26.5, places=9)
+        self.assertTrue(target.loudness_enabled)
 
-    def test_leave_direct_at_30_never_uses_shallower_guard(self):
-        start = state(preset="Direct", loudness=True, volume_db=0.0, master=30)
-        target = target_for(current=start, preset="Neutral")
-        actions = plan_transition(start, target)
-        _, samples = simulate(start, actions)
-        self.assertLessEqual(max(samples), db(30) + 1e-9)
-        self.assertTrue(any(action.op == "set_volume_db" for action in actions))
-        raise_master = [i for i, action in enumerate(actions) if action.op == "set_master" and int(action.value) == 100]
-        enter_path = [i for i, action in enumerate(actions) if action.op == "set_preset" and action.value != "Direct"]
-        self.assertTrue(raise_master)
-        self.assertTrue(enter_path)
-        self.assertLess(enter_path[0], raise_master[0])
-
-    def test_autogain_and_calibration_do_not_retarget_canonical_volume(self):
+    def test_noop_transition_is_empty(self):
         start = state(preset="Neutral", loudness=True, volume_db=-26.5, master=100)
         same = target_for(current=start)
         self.assertAlmostEqual(same.volume_db, -26.5, places=9)
         self.assertEqual(same.master_percent, 100)
         self.assertEqual(plan_transition(start, same), [])
-
-    def test_fixed_minus_18_guard_before_master_100_would_fail_the_contract(self):
-        start = state(preset="Direct", loudness=True, volume_db=0.0, master=30)
-        unsafe = [
-            VolumeAction("set_volume_db", db(30)),
-            VolumeAction("set_guard", -18.0),
-            VolumeAction("set_master", 100),
-            VolumeAction("set_preset", "Neutral"),
-            VolumeAction("set_guard", 0.0),
-        ]
-        _, samples = simulate(start, unsafe)
-        self.assertGreater(max(samples), db(30) + 1.0)
 
 
 class _RecordingManager:
@@ -398,114 +316,68 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.recorder.capture()
         return max(self.recorder.samples)
 
-    async def test_leave_direct_at_30_never_exceeds_start(self):
+    async def test_preset_switch_from_direct_keeps_master_and_work_point(self):
         self.manager.active_preset = "Direct"
         self.manager.extras["loudness"]["enabled"] = True
         self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
         self.recorder.master = 30
-        start = db(30)
-        self.recorder.capture()
+        start = self.recorder.capture()
         await main._load_dsp_preset("Neutral")
         final = self.recorder.capture()
         self.assertEqual(final.preset, "Neutral")
-        self.assertTrue(final.loudness_in_path)
-        self.assertEqual(final.master_percent, 100)
-        self.assertAlmostEqual(final.volume_db, start, places=6)
-        self.assertLessEqual(self.peak(), start + 1e-9)
+        self.assertEqual(final.master_percent, 30)
+        self.assertAlmostEqual(final.volume_db, 0.0, places=6)
+        self.assertLessEqual(self.peak(), volume_contract.effective_db(start) + 1e-9)
 
-    async def test_direct_neutral_direct_neutral_syncs_before_master_restore(self):
-        events = []
+    async def test_preset_round_trip_never_moves_master(self):
         self.manager.active_preset = "Direct"
         self.manager.extras["loudness"]["enabled"] = True
         self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
         self.recorder.master = 25
-        self.recorder.capture()
-
-        original_set_master = self.recorder.set_master
+        writes = []
+        original = self.recorder.set_master
 
         def record_master(value):
-            events.append(("master", int(round(float(value)))))
-            return original_set_master(value)
+            writes.append(int(round(float(value))))
+            return original(value)
 
-        self.manager.load_preset = lambda preset_name, **_kwargs: (
-            setattr(self.manager, "active_preset", preset_name),
-            events.append(("preset", preset_name)),
-        )[-1]
-
-        async def confirm_sync(*_args, **_kwargs):
-            events.append(("sync", self.manager.get_active_preset()))
-
-        with mock.patch.object(main, "set_output_volume", record_master), \
-                mock.patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=confirm_sync):
-            start = self.recorder.capture()
+        with mock.patch.object(main, "set_output_volume", record_master):
             await main._load_dsp_preset("Neutral")
             await main._load_dsp_preset("Direct")
             await main._load_dsp_preset("Neutral")
 
-        self.assertEqual([event for event in events if event == ("master", 100)],
-                         [("master", 100), ("master", 100)])
-        for index, event in enumerate(events):
-            if event == ("master", 100):
-                self.assertEqual(events[index - 1][0], "sync")
-                self.assertEqual(events[index - 1][1], "Neutral")
-        self.assertLessEqual(self.peak(), volume_contract.effective_db(start) + 1e-9)
+        self.assertEqual(writes, [])
+        self.assertEqual(self.recorder.master, 25)
         final = self.recorder.capture()
         self.assertEqual(final.preset, "Neutral")
-        self.assertEqual(final.master_percent, 100)
-        self.assertAlmostEqual(volume_contract.effective_db(final), volume_contract.effective_db(start), places=6)
+        self.assertEqual(final.master_percent, 25)
 
-    async def test_direct_preset_a_b_transition_syncs_before_master_restore(self):
-        events = []
+    async def test_preset_a_b_switch_never_moves_master(self):
         self.manager.active_preset = "Direct"
         self.manager.extras["loudness"]["enabled"] = True
         self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
         self.recorder.master = 25
-        self.recorder.capture()
-
-        original_set_master = self.recorder.set_master
-
-        def record_master(value):
-            events.append(("master", int(round(float(value)))))
-            return original_set_master(value)
-
-        def load(preset_name, **_kwargs):
-            self.manager.active_preset = preset_name
-            events.append(("preset", preset_name))
-
-        async def confirm_sync(*_args, **_kwargs):
-            events.append(("sync", self.manager.get_active_preset()))
-
-        self.manager.load_preset = load
-        with mock.patch.object(main, "set_output_volume", record_master), \
-                mock.patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=confirm_sync):
-            await main._load_dsp_preset("Room")
-            await main._load_dsp_preset("Direct")
-
-        room_sync = events.index(("sync", "Room"))
-        room_master = events.index(("master", 100))
-        self.assertLess(room_sync, room_master)
+        await main._load_dsp_preset("Room")
+        await main._load_dsp_preset("Direct")
         self.assertEqual(self.manager.get_active_preset(), "Direct")
         self.assertEqual(self.recorder.master, 25)
 
-    async def test_enter_direct_from_neutral_loudness_preserves_volume(self):
+    async def test_enter_direct_from_neutral_keeps_master_and_work_point(self):
         self.manager.active_preset = "Neutral"
         self.manager.extras["loudness"]["enabled"] = True
         self.manager.extras["loudness"]["params"]["volumeDb"] = db(30)
         self.recorder.master = 100
-        self.recorder.capture()
         await main._load_dsp_preset("Direct")
         final = self.recorder.capture()
         self.assertEqual(final.preset, "Direct")
-        self.assertEqual(final.master_percent, 30)
-        self.assertNotIn(100, [sample for sample in self.recorder.samples[1:]])
-        self.assertLessEqual(self.peak(), 0.0 + 1e-9)
-        self.assertAlmostEqual(volume_contract.effective_db(final), db(30), places=6)
+        self.assertEqual(final.master_percent, 100)
+        self.assertAlmostEqual(final.volume_db, db(30), places=6)
 
-    async def test_enable_loudness_while_direct_does_not_pin_master(self):
+    async def test_enable_loudness_while_direct_keeps_master_and_work_point(self):
         self.manager.active_preset = "Direct"
         self.manager.extras["loudness"]["enabled"] = False
+        self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
         self.recorder.master = 30
-        self.recorder.capture()
 
         class Request:
             async def json(self):
@@ -514,14 +386,13 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await dsp_api.save_dsp_extras(Request())
         self.assertEqual(self.recorder.master, 30)
         self.assertTrue(self.manager.extras["loudness"]["enabled"])
-        self.assertAlmostEqual(self.manager.extras["loudness"]["params"]["volumeDb"], db(30), places=6)
-        self.assertLessEqual(self.peak(), db(30) + 1e-9)
+        self.assertAlmostEqual(self.manager.extras["loudness"]["params"]["volumeDb"], 0.0, places=6)
 
-    async def test_enable_loudness_while_neutral_pins_master_after_path_owns(self):
+    async def test_enable_loudness_while_neutral_keeps_master(self):
         self.manager.active_preset = "Neutral"
         self.manager.extras["loudness"]["enabled"] = False
+        self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
         self.recorder.master = 30
-        self.recorder.capture()
 
         class Request:
             async def json(self):
@@ -529,10 +400,9 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         await dsp_api.save_dsp_extras(Request())
         final = self.recorder.capture()
-        self.assertEqual(final.master_percent, 100)
+        self.assertEqual(final.master_percent, 30)
         self.assertTrue(final.loudness_in_path)
-        self.assertAlmostEqual(final.volume_db, db(30), places=6)
-        self.assertLessEqual(self.peak(), db(30) + 1e-9)
+        self.assertAlmostEqual(final.volume_db, 0.0, places=6)
 
     async def test_disable_loudness_while_direct_keeps_master(self):
         self.manager.active_preset = "Direct"
@@ -548,7 +418,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.recorder.master, 30)
         self.assertFalse(self.manager.extras["loudness"]["enabled"])
 
-    async def test_slider_follows_active_owner(self):
+    async def test_slider_always_drives_the_global_master(self):
         self.manager.active_preset = "Direct"
         self.manager.extras["loudness"]["enabled"] = True
         self.recorder.master = 30
@@ -558,12 +428,12 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.loudness_volume_writes, [])
 
         self.manager.active_preset = "Neutral"
-        self.recorder.master = 100
+        self.recorder.master = 40
         self.manager.extras["loudness"]["params"]["volumeDb"] = db(40)
         result = await main._set_canonical_output_volume(50)
         self.assertEqual(result["volume"], 50)
-        self.assertEqual(self.recorder.master, 100)
-        self.assertEqual(len(self.manager.loudness_volume_writes), 1)
+        self.assertEqual(self.recorder.master, 50)
+        self.assertEqual(self.manager.loudness_volume_writes, [])
 
     async def test_autogain_change_does_not_retarget_master(self):
         self.manager.active_preset = "Neutral"

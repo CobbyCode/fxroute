@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
-from audio.system_volume import volume_db_to_percent, volume_percent_to_db
+from audio.system_volume import volume_percent_to_db
 
 EXCLUDED_PRESETS = frozenset({"Direct"})
 
@@ -40,8 +40,8 @@ def effective_db(state: VolumeState) -> float:
 
 
 def canonical_percent(state: VolumeState) -> int:
-    if state.loudness_in_path:
-        return volume_db_to_percent(state.volume_db)
+    # The global master is the single user-facing volume.  Loudness volumeDb
+    # is only the ISO-226 work point of the curve and never owns the master.
     return int(state.master_percent)
 
 
@@ -66,29 +66,22 @@ def target_for(
     loudness_enabled: bool | None = None,
     percent: int | float | None = None,
 ) -> VolumeState:
+    """Project one transition onto the canonical volume state.
+
+    Loudness on/off and preset switches never move the master and never
+    rewrite the ISO-226 work point (``volume_db``).  Only an explicit
+    ``percent`` (the footer slider) changes the master.
+    """
     new_preset = current.preset if preset is None else str(preset)
     new_enabled = current.loudness_enabled if loudness_enabled is None else bool(loudness_enabled)
-    owns = loudness_in_path(new_preset, new_enabled)
-    enabling = bool(new_enabled) and not bool(current.loudness_enabled)
-    entering_path = (not current.loudness_in_path) and owns
-    leaving_path = current.loudness_in_path and not owns
+    new_master = int(current.master_percent)
     if percent is not None:
-        perc = max(0, min(100, int(round(float(percent)))))
-        stored_db = volume_percent_to_db(perc) if owns or enabling else float(current.volume_db)
-    elif enabling or entering_path:
-        perc = max(0, min(100, int(current.master_percent)))
-        stored_db = volume_percent_to_db(perc)
-    elif leaving_path:
-        perc = volume_db_to_percent(current.volume_db)
-        stored_db = float(current.volume_db)
-    else:
-        perc = canonical_percent(current)
-        stored_db = float(current.volume_db)
+        new_master = max(0, min(100, int(round(float(percent)))))
     return VolumeState(
         preset=new_preset,
         loudness_enabled=new_enabled,
-        volume_db=stored_db,
-        master_percent=100 if owns else perc,
+        volume_db=float(current.volume_db),
+        master_percent=new_master,
         dsp_guard_db=float(current.dsp_guard_db),
     )
 
@@ -97,31 +90,12 @@ def plan_transition(start: VolumeState, target: VolumeState) -> list[VolumeActio
     actions: list[VolumeAction] = []
     if abs(float(target.volume_db) - float(start.volume_db)) > 1e-9:
         actions.append(VolumeAction("set_volume_db", float(target.volume_db)))
-
-    start_owns = start.loudness_in_path
-    target_owns = target.loudness_in_path
-    leaving_loudness = start_owns and not target_owns
-    entering_loudness = (not start_owns) and target_owns
-
-    def add_path_changes() -> None:
-        if bool(target.loudness_enabled) != bool(start.loudness_enabled):
-            actions.append(VolumeAction("set_loudness_enabled", bool(target.loudness_enabled)))
-        if target.preset != start.preset:
-            actions.append(VolumeAction("set_preset", target.preset))
-
-    def add_master() -> None:
-        if int(target.master_percent) != int(start.master_percent):
-            actions.append(VolumeAction("set_master", int(target.master_percent)))
-
-    if leaving_loudness:
-        add_master()
-        add_path_changes()
-    elif entering_loudness:
-        add_path_changes()
-        add_master()
-    else:
-        add_path_changes()
-        add_master()
+    if bool(target.loudness_enabled) != bool(start.loudness_enabled):
+        actions.append(VolumeAction("set_loudness_enabled", bool(target.loudness_enabled)))
+    if target.preset != start.preset:
+        actions.append(VolumeAction("set_preset", target.preset))
+    if int(target.master_percent) != int(start.master_percent):
+        actions.append(VolumeAction("set_master", int(target.master_percent)))
 
     start_guard = float(start.dsp_guard_db)
     target_guard = float(target.dsp_guard_db)

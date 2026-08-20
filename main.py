@@ -2034,32 +2034,10 @@ def ensure_local_source_volume() -> None:
 
 
 def get_output_volume_safe(default: int = 100) -> int:
-    if _loudness_owns_volume():
-        try:
-            loudness = dsp_manager.load_global_extras().get("loudness", {})
-            volume_db = float(loudness.get("params", {}).get("volumeDb", 0.0))
-            return dsp_manager.loudness_percent_from_db(volume_db)
-        except Exception:
-            logger.warning("Failed to read Loudness volume, falling back to system volume", exc_info=True)
+    # The global FXRoute master is the single user-facing volume.  Loudness
+    # volumeDb is only the ISO-226 work point and must never be reported as
+    # the volume.
     return get_status_volume(default)
-
-
-def _loudness_owns_volume() -> bool:
-    """Return whether Loudness owns the canonical attenuation.
-
-    Ownership follows the active signal path: Direct bypasses every global
-    helper, so the persisted ``loudness.enabled`` flag is not enough.
-    """
-    if not dsp_manager:
-        return False
-    try:
-        extras = dsp_manager.load_global_extras()
-        active = dsp_manager.get_active_preset() or ""
-        return volume_contract.loudness_in_path(
-            active, bool((extras.get("loudness") or {}).get("enabled"))
-        )
-    except Exception:
-        return False
 
 
 async def _volume_state_for_manager(
@@ -2079,10 +2057,7 @@ async def _volume_state_for_manager(
     params = loudness.get("params") if isinstance(loudness.get("params"), dict) else {}
     enabled = bool(loudness.get("enabled"))
     if live_master is None:
-        if volume_contract.loudness_in_path(preset, enabled):
-            live_master = 100
-        else:
-            live_master = int(await _drain_worker(get_output_volume))
+        live_master = int(await _drain_worker(get_output_volume))
     guard = 0.0
     if runtime.dsp_runtime is not None:
         try:
@@ -2098,92 +2073,31 @@ async def _volume_state_for_manager(
     )
 
 
-async def _apply_volume_actions(
-    actions, extras=None, *, persist_extras: bool = True
-):
-    """Apply planned master/Loudness/guard writes. Caller holds the volume locks."""
-    if extras is None and dsp_manager:
-        extras = dsp_manager.load_global_extras()
-    extras_dirty = False
-    for action in actions:
-        if action.op == "set_volume_db":
-            if extras is None:
-                extras = {"loudness": {"enabled": False, "params": {}}}
-            extras.setdefault("loudness", {}).setdefault("params", {})["volumeDb"] = float(action.value)
-            extras_dirty = True
-        elif action.op == "set_loudness_enabled":
-            if extras is None:
-                extras = {"loudness": {"params": {}}}
-            extras.setdefault("loudness", {})["enabled"] = bool(action.value)
-            extras_dirty = True
-        elif action.op == "set_master":
-            await _drain_worker(set_output_volume, int(round(float(action.value))))
-        elif action.op == "set_guard":
-            if runtime.dsp_runtime is not None and runtime.dsp_runtime.snapshot().get("active"):
-                await runtime.dsp_runtime.set_output_gain_db(float(action.value))
-    if extras_dirty and persist_extras and dsp_manager and extras is not None:
-        dsp_manager.save_global_extras(extras)
-    return extras
-
-
 async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
-    """Apply the one UI-volume contract for local, radio and Spotify.
+    """Apply the one global FXRoute master volume for every source.
 
-    One canonical perceived volume.  Loudness owns it only while it is in
-    the active path; otherwise the system master does.  The write is
-    serialized against other canonical volume writes.  Lock order:
-    canonical volume write lock first, then DSP mutation lock.
+    The footer slider (and the Qobuz remote bridge) drives only the master.
+    Loudness volumeDb is the ISO-226 work point and is never touched here.
+    Writes are serialized against concurrent canonical volume writes.
     """
     async with _canonical_volume_write_lock():
         requested = max(0, min(100, int(round(float(volume)))))
-        async with _dsp_mutation_lock():
-            start = await _volume_state_for_manager(dsp_manager, live_master=0)
-            target = volume_contract.target_for(current=start, percent=requested)
-            if target.loudness_in_path and dsp_manager:
-                volume_result = await _drain_worker(
-                    dsp_manager.set_loudness_volume_db, target.volume_db
-                )
-                if not volume_result.get("runtime_applied"):
-                    await dsp_orchestrator.sync_runtime(reason="native-dsp-loudness-volume")
-                await _drain_worker(set_output_volume, 100)
-                return {
-                    "volume": requested,
-                    "loudnessVolumeDb": float(
-                        volume_result["extras"]["loudness"]["params"]["volumeDb"]
-                    ),
-                    "loudness_enabled": True,
-                }
-            await _drain_worker(set_output_volume, requested)
-            extras = dsp_manager.load_global_extras() if dsp_manager else None
-            remaining = [
-                action for action in volume_contract.plan_transition(start, target)
-                if action.op not in {"set_master", "set_volume_db"}
-            ]
-            if remaining:
-                await _apply_volume_actions(remaining, extras)
-            return {
-                "volume": requested,
-                "loudnessVolumeDb": None,
-                "loudness_enabled": False,
-            }
+        await _drain_worker(set_output_volume, requested)
+        return {"volume": requested}
 
 
 async def _guarded_effects_transition(previous, candidate, persist_all_presets):
-    """Apply extras through a guarded DSP rebuild. Master is pinned only if Loudness is in path."""
+    """Apply extras through a guarded DSP rebuild without touching the master."""
     overview = get_audio_output_overview()
     result_holder = {}
     start = await _volume_state_for_manager(dsp_manager)
     candidate_loudness = (candidate.get("loudness") or {})
-    target = volume_contract.target_for(
-        current=start,
-        loudness_enabled=bool(candidate_loudness.get("enabled")),
-    )
-    if start.loudness_in_path or target.loudness_in_path:
+    if start.loudness_in_path or volume_contract.loudness_in_path(
+        start.preset, bool(candidate_loudness.get("enabled"))
+    ):
         guard_db = dsp_manager.loudness_transition_guard_db(previous, candidate)
     else:
         guard_db = min(0.0, start.dsp_guard_db, volume_percent_to_db(start.master_percent))
-    pin_master = target.loudness_in_path and int(start.master_percent) != 100
-    restore_master = start.master_percent if pin_master else None
     settle = float(getattr(dsp_manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0) or 0.0)
 
     def persist_candidate():
@@ -2200,9 +2114,6 @@ async def _guarded_effects_transition(previous, candidate, persist_all_presets):
         settle_seconds=settle,
         candidate_extras=candidate,
         previous_extras=previous,
-        before_ramp=(lambda: _drain_worker(set_output_volume, 100)) if pin_master else None,
-        before_rollback_ramp=(lambda: _drain_worker(
-            set_output_volume, restore_master)) if pin_master else None,
     )
     result = result_holder["result"]
     result["runtime_applied"] = True
@@ -2213,7 +2124,7 @@ async def get_spotify_ui_state(data: Optional[dict] = None) -> dict:
     status = dict(data or await spotify_get_status())
     source_volume = status.get("volume") if isinstance(status.get("volume"), (int, float)) else None
     status["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
-    status["volume"] = get_output_volume_safe(status.get("source_volume") or 100)
+    status["volume"] = get_output_volume_safe()
     status["playback_owner"] = _resolve_playback_owner()
     art_url = str(status.get("artwork_url") or status.get("artUrl") or "").strip()
     status["artwork_available"] = bool(art_url)
@@ -2234,7 +2145,7 @@ async def get_qobuz_ui_state(data: Optional[dict] = None) -> dict:
     status = dict(data or await provider.status())
     source_volume = status.get("volume") if isinstance(status.get("volume"), (int, float)) else None
     status["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
-    status["volume"] = get_output_volume_safe(100 if source_volume is None else source_volume)
+    status["volume"] = get_output_volume_safe()
     status["qobuz_unity_pin"] = (
         "ok" if qobuz_unity_pin_state.get("ok") else "error"
     ) if qobuz_unity_pin_state else None
@@ -2280,8 +2191,8 @@ async def _qobuz_pin_unity() -> None:
 async def _qobuz_volume_action(percent: float) -> dict:
     """Apply the Qobuz UI slider as the canonical FXRoute master volume.
 
-    qbzd's engine volume must stay pinned at 100%; this mirrors the Spotify
-    volume endpoint semantics (one canonical perceived volume).
+    qbzd's engine volume stays pinned at 100%; the slider drives only the
+    global master.
     """
     try:
         volume_result = await _set_canonical_output_volume(percent)
@@ -2289,8 +2200,6 @@ async def _qobuz_volume_action(percent: float) -> dict:
         raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
     data = await get_qobuz_ui_state()
     data["volume"] = volume_result["volume"]
-    if volume_result.get("loudness_enabled"):
-        data["loudnessVolumeDb"] = volume_result["loudnessVolumeDb"]
     playback_state.latest_qobuz_state = data
     await peak_monitor_coordinator.sync_qobuz_state(data)
     await manager.broadcast({"type": "qobuz", "data": data})
@@ -2554,7 +2463,7 @@ def build_playback_payload(
         player_state["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
     elif source_volume is not None:
         player_state["source_volume"] = int(round(float(source_volume)))
-    player_state["volume"] = get_output_volume_safe(int(round(float(source_volume))) if source_volume is not None else 100)
+    player_state["volume"] = get_output_volume_safe()
     # Radio: hide stale track from UI when mpv has no active stream.
     # Prevents UI showing a resumable station when the stream connection
     # is dead and mpv is idle (current_file=None, ended=True).
@@ -2872,8 +2781,10 @@ async def _spotify_state_poll_loop() -> None:
 async def _spotify_player_present(timeout: float = 0.8) -> bool:
     """Return whether any Spotify backend player is running (desktop or spotifyd)."""
     try:
-        players = set(await spotify_mpris.list_players(timeout=timeout))
-        return bool({spotify_mpris.SPOTIFY_DESKTOP_PLAYER, spotify_mpris.SPOTIFYD_PLAYER} & players)
+        players = await spotify_mpris.list_players(timeout=timeout)
+        return spotify_mpris.SPOTIFY_DESKTOP_PLAYER in players or any(
+            spotify_mpris.is_spotifyd_player(player) for player in players
+        )
     except Exception:
         return False
 
@@ -2893,7 +2804,7 @@ async def pause_spotify_for_local_playback_broadcast():
         import shutil
         pc = shutil.which("playerctl")
         if pc:
-            player = spotify_mpris.player_name(await spotify_mpris.detect_backend())
+            player = await spotify_mpris.resolve_player_name(await spotify_mpris.detect_backend())
             proc = await asyncio.create_subprocess_exec(pc, f"--player={player}", "pause")
             await asyncio.wait_for(proc.communicate(), timeout=3)
     except Exception:
@@ -2959,8 +2870,6 @@ async def lifespan(app: FastAPI):
         logger.info("Downloader initialized")
 
         dsp_manager = await _drain_worker(DSPManager)
-        if _loudness_owns_volume():
-            set_output_volume(100)
         volume_read_monitor_task = start_volume_read_monitor()
         runtime.lifecycle_background_tasks.add(volume_read_monitor_task)
         volume_read_monitor_task.add_done_callback(runtime.lifecycle_background_tasks.discard)
@@ -3243,7 +3152,6 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
         restore_volume_state=lambda *args, **kwargs: _restore_volume_state(*args, **kwargs),
         volume_state_for_manager=lambda *args, **kwargs: _volume_state_for_manager(*args, **kwargs),
-        apply_volume_actions=lambda *args, **kwargs: _apply_volume_actions(*args, **kwargs),
         schedule_peak_monitor_refresh=lambda reason: dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason),
     )
 
@@ -3336,6 +3244,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         # Let the extracted owner use the supplied low-level PipeWire
         # primitives; do not route this dependency through its public wrapper.
         repair_stereo_output_links=None,
+        resolve_source_producer_ports=lambda source: _resolve_playback_source_producer_ports(source),
     )
 
 
@@ -3997,15 +3906,8 @@ async def set_volume(request: Request):
     except SystemVolumeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
     ensure_local_source_volume()
-    # Keep local/radio output-volume changes responsive. Spotify volume uses
-    # /api/spotify/volume, so this endpoint should not block on multiple
-    # playerctl/Spotify status reads on slow boards.
     await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
-    return {
-        "volume": volume_result["volume"],
-        **({"loudnessVolumeDb": volume_result["loudnessVolumeDb"]}
-           if volume_result.get("loudness_enabled") else {}),
-    }
+    return {"volume": volume_result["volume"]}
 
 @app.post("/api/playback/next")
 async def next_playback():
@@ -4767,9 +4669,8 @@ async def _load_dsp_preset(
     load_preset() also synchronizes global extras into the preset and is
     therefore not read-only: it must never run concurrently with a threaded
     IR/preset mutation.  Lock order: the canonical volume write lock is
-    acquired first (so the Direct volume-ownership transfer serializes
-    against volume writes), then the DSP mutation lock.  Callers
-    that already hold both locks pass ``_locks_held=True``.
+    acquired first, then the DSP mutation lock.  Callers that already hold
+    both locks pass ``_locks_held=True``.
     ``_rate_lock_held`` is forwarded to the runtime sync so a caller that
     already owns the measurement sample-rate session lock (the measurement
     entry) does not re-enter it.
@@ -4819,17 +4720,7 @@ async def _load_preset_locked(
 ) -> None:
     manager = _require_dsp_manager()
     start = await _volume_state_for_manager(manager)
-    target = volume_contract.target_for(current=start, preset=preset_name)
-    actions = volume_contract.plan_transition(start, target)
-    pre, post = volume_contract.partition_actions(actions, ("set_preset",))
-    # The target DSP must be live before restoring a master level that was
-    # previously owned by Loudness.  Keep that write on the post-sync side of
-    # the preset transition, but prepare volumeDb while Direct still owns the
-    # output.
-    deferred_master = [action for action in post if action.op == "set_master"]
-    post = [action for action in post if action.op != "set_master"]
     try:
-        await _apply_volume_actions(pre)
         await _drain_worker(
             manager.load_preset,
             preset_name,
@@ -4837,8 +4728,6 @@ async def _load_preset_locked(
         )
         await dsp_orchestrator.sync_runtime(reason="native-dsp-preset-load",
                                             _rate_lock_held=_rate_lock_held)
-        await _apply_volume_actions(post)
-        await _apply_volume_actions(deferred_master)
     except Exception:
         try:
             if (manager.get_active_preset() or "") != start.preset:
@@ -4848,26 +4737,11 @@ async def _load_preset_locked(
                     logger.exception("Failed to reload previous preset after preset load failure")
                     if hasattr(manager, "active_preset"):
                         manager.active_preset = start.preset
-            await _restore_volume_state(manager, start)
             await dsp_orchestrator.sync_runtime(reason="native-dsp-preset-load-rollback",
                                                 _rate_lock_held=_rate_lock_held)
         except Exception:
-            logger.exception("Failed to restore volume state after preset load failure")
+            logger.exception("Failed to restore previous preset after preset load failure")
         raise
-
-
-async def _transfer_volume_ownership_for_preset(manager, preset_name: str) -> None:
-    """Move the canonical attenuation across the Direct bypass boundary.
-
-    The planner owns the order: raise the master only after Loudness is in
-    the live path, and lower it before Loudness leaves the path.
-    """
-    start = await _volume_state_for_manager(manager)
-    target = volume_contract.target_for(current=start, preset=preset_name)
-    pre, _post = volume_contract.partition_actions(
-        volume_contract.plan_transition(start, target), ("set_preset",)
-    )
-    await _apply_volume_actions(pre)
 
 
 
@@ -5344,6 +5218,63 @@ async def api_spotify_status():
     return data
 
 
+def _spotify_producer_for_coordinator(relax_to_any: bool = False) -> tuple[str, str] | None:
+    """Resolve the concrete Spotify producer ports from the live sink input.
+
+    Desktop and spotifyd are two renderers of the same logical ``spotify``
+    source.  The concrete producer is the active sink input's PipeWire node:
+    its ports are normally ``<node.name>:output_FL/FR``.  The spotifyd Pulse
+    backend can expose an empty ``node.name``; PipeWire then reports its ports
+    as ``:output_FL/FR``.  That anonymous form is accepted only after the
+    sink input was identified as spotifyd, never as a generic fallback.
+    """
+    entries = _list_spotify_sink_inputs()
+    if not entries:
+        return None
+    obs = _spotify_sink_input_observation(entries)
+    if obs is None and not relax_to_any:
+        return None
+    candidate = None
+    if obs is not None:
+        identity, _rate = obs
+        for entry in entries:
+            props = entry.get("properties") or {}
+            cand = entry.get("id")
+            if cand is None:
+                cand = (
+                    props.get("node.name"),
+                    props.get("application.name") or props.get("application.id"),
+                    props.get("media.name"),
+                )
+            if cand == identity:
+                candidate = entry
+                break
+    elif relax_to_any and entries:
+        candidate = entries[0]
+    if candidate is None:
+        return None
+    props = candidate.get("properties") or {}
+    process_binary = str(props.get("application.process.binary") or "").strip().lower()
+    process_binary = process_binary.rsplit("/", 1)[-1]
+    node_name = str(props.get("node.name") or "").strip()
+    if not node_name and (process_binary == "spotifyd" or process_binary.startswith("spotifyd.")):
+        return (":output_FL", ":output_FR")
+    if not node_name:
+        node_name = str(
+            props.get("application.name") or props.get("application.id") or ""
+        ).strip()
+    if not node_name:
+        return None
+    return (f"{node_name}:output_FL", f"{node_name}:output_FR")
+
+
+def _resolve_playback_source_producer_ports(source: str | None) -> tuple[str, str] | None:
+    """Resolve the producer ports for one source at verification time."""
+    if source == "spotify":
+        return _spotify_producer_for_coordinator()
+    return source_policy.graph_port_names(source)
+
+
 @app.post("/api/spotify/play")
 async def api_spotify_play():
     target_rate = _coordinator_target_rate("spotify")
@@ -5448,24 +5379,6 @@ async def api_spotify_seek(request: Request):
     position = float(body.get("position", 0))
     data = await spotify_seek_to(position)
     return await broadcast_spotify_state(data)
-
-
-@app.post("/api/spotify/volume")
-async def api_spotify_volume(request: Request):
-    # COMPAT: footer slider is a single global master.  Prefer /api/volume;
-    # keep /api/spotify/volume as compat shim that also writes the canonical master.
-    body = await request.json()
-    volume = float(body.get("volume", 100))
-    try:
-        volume_result = await _set_canonical_output_volume(volume)
-    except SystemVolumeError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
-    ensure_local_source_volume()
-    data = await broadcast_spotify_state()
-    data["volume"] = volume_result["volume"]
-    if volume_result.get("loudness_enabled"):
-        data["loudnessVolumeDb"] = volume_result["loudnessVolumeDb"]
-    return data
 
 
 @app.websocket("/ws")

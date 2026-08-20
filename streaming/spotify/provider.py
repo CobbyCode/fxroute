@@ -58,7 +58,7 @@ class SpotifyProvider(StreamingProvider):
         return await mpris.detect_backend()
 
     async def _run_player(self, *args: str, timeout: float = 4.0) -> str | None:
-        player = mpris.player_name(await self.backend())
+        player = await mpris.resolve_player_name(await self.backend())
         return await mpris._run(f"--player={player}", *args, timeout=timeout)
 
     async def status(self) -> dict:
@@ -88,7 +88,7 @@ class SpotifyProvider(StreamingProvider):
         backend = await self.backend()
         if backend:
             result["backend"] = backend
-        player = mpris.player_name(backend)
+        player = await mpris.resolve_player_name(backend)
 
         async def run(*args: str, timeout: float = 4.0) -> str | None:
             return await mpris._run(f"--player={player}", *args, timeout=timeout)

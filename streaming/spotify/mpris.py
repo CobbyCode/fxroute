@@ -21,9 +21,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # MPRIS player names for the two supported Spotify backends. Spotify Desktop
-# publishes ``spotify``; spotifyd publishes ``spotifyd``.
+# publishes ``spotify``; spotifyd 0.4.x publishes ``spotifyd.instance<PID>``.
 SPOTIFY_DESKTOP_PLAYER = "spotify"
 SPOTIFYD_PLAYER = "spotifyd"
+SPOTIFYD_MPRIS_INSTANCE_PREFIX = "spotifyd."
 
 # Bounded timeout for the running-player discovery subprocess; a stuck
 # playerctl must not stall a status read.
@@ -71,9 +72,30 @@ def spotify_installed() -> bool:
     return _spotify_desktop_installed() or _spotifyd_installed()
 
 
+def is_spotifyd_player(name: str) -> bool:
+    return name == SPOTIFYD_PLAYER or name.startswith(SPOTIFYD_MPRIS_INSTANCE_PREFIX)
+
+
 def player_name(backend: str | None) -> str:
-    """Map a backend name to the playerctl MPRIS player name."""
+    """Map a backend name to its static playerctl MPRIS player name."""
     return SPOTIFYD_PLAYER if backend == "spotifyd" else SPOTIFY_DESKTOP_PLAYER
+
+
+async def resolve_player_name(backend: str | None) -> str:
+    """Resolve the concrete MPRIS player name to target.
+
+    Spotify Desktop publishes ``spotify``.  spotifyd 0.4.x publishes
+    ``spotifyd.instance<PID>``, so the bare ``spotifyd`` name is never the
+    live player; this returns the actually running instance name when one is
+    visible and falls back to the static name otherwise.
+    """
+    if backend != "spotifyd":
+        return SPOTIFY_DESKTOP_PLAYER
+    players = await list_players()
+    for player in players:
+        if is_spotifyd_player(player):
+            return player
+    return SPOTIFYD_PLAYER
 
 
 async def list_players(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> list[str]:
@@ -110,11 +132,13 @@ async def detect_running_backend(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -
     * exactly one running player -> that backend;
     * both running -> desktop wins deterministically (documented, stable);
     * none running -> None.
+
+    spotifyd 0.4.x publishes ``spotifyd.instance<PID>`` so prefix match.
     """
-    players = set(await list_players(timeout))
+    players = await list_players(timeout)
     if SPOTIFY_DESKTOP_PLAYER in players:
         return "desktop"
-    if SPOTIFYD_PLAYER in players:
+    if any(is_spotifyd_player(player) for player in players):
         return "spotifyd"
     return None
 

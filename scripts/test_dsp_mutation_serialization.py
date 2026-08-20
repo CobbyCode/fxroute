@@ -258,11 +258,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(upload_task, extras_task)
             self.assertEqual(order, ["upload-entered", "extras-entered"])
 
-    async def test_threaded_upload_serializes_against_loudness_volume_mutation(self):
-        entered = threading.Event()
-        release = threading.Event()
-        order = []
-
+    async def test_volume_write_never_enters_the_dsp_mutation_path(self):
+        # The footer slider writes only the global master; it must not route
+        # through ``set_loudness_volume_db`` (the old Loudness-owned path).
         class FakeManager:
             EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
 
@@ -272,48 +270,17 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             def get_active_preset(self):
                 return "Neutral"
 
-            def loudness_db_from_percent(self, percent):
-                return -float(percent)
-
             def set_loudness_volume_db(self, volume_db):
-                order.append("loudness-entered")
-                entered.set()
-                release.wait(timeout=5)
-                return {"extras": {"loudness": {"params": {"volumeDb": volume_db}}}}
-
-            def upload_ir(self, source_path, filename, stored_name=None):
-                order.append("upload-entered")
-                entered.set()
-                release.wait(timeout=5)
-                return {
-                    "name": "x.irs",
-                    "basename": "x",
-                    "path": "/tmp/x.irs",
-                    "size": 4,
-                    "format": "irs",
-                }
-
-            def get_status(self):
-                return {"status": "ok"}
+                raise AssertionError("footer slider must not mutate Loudness")
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
-            main, "dsp_manager", fake
-        ), mock.patch.object(
-            main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
-            main, "set_output_volume", return_value=100
-        ):
-            upload_task = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
-            self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+        with mock.patch.object(main, "dsp_manager", fake), mock.patch.object(
+            main, "set_output_volume", return_value=32
+        ) as set_master:
+            result = await main._set_canonical_output_volume(32)
 
-            volume_task = asyncio.create_task(main._set_canonical_output_volume(32))
-            await asyncio.sleep(0.05)
-            self.assertEqual(order, ["upload-entered"])
-
-            release.set()
-            await asyncio.gather(upload_task, volume_task)
-            self.assertEqual(order, ["upload-entered", "loudness-entered"])
+        self.assertEqual(result, {"volume": 32})
+        set_master.assert_called_once_with(32)
 
 
     async def test_cancelled_upload_holds_lock_until_worker_finishes(self):
