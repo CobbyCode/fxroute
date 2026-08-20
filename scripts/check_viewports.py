@@ -134,6 +134,20 @@ def _run():
                     check("seek/volume left gutters match", abs(seek["x"] - vol["x"]) <= 1)
                     check("seek/volume right gutters match", abs((seek["x"] + seek["width"]) - (vol["x"] + vol["width"])) <= 1)
 
+                # The actual slider tracks (not just their rows) must share the
+                # same horizontal center on phones: the volume track sits in a
+                # row with icon/display side columns and would drift off-center
+                # if those columns were asymmetric against the seek row.
+                if width in (390, 360, 320):
+                    seek_slider = page.locator(".seek-slider").bounding_box()
+                    vol_slider = page.locator(".volume-slider").bounding_box()
+                    check("seek-slider has box", seek_slider is not None)
+                    check("volume-slider has box", vol_slider is not None)
+                    assert seek_slider is not None and vol_slider is not None
+                    seek_mid = seek_slider["x"] + seek_slider["width"] / 2
+                    vol_mid = vol_slider["x"] + vol_slider["width"] / 2
+                    check("seek/volume track centers match", abs(vol_mid - seek_mid) <= 1)
+
                 # No overlap between track, transport, meter and volume zones
                 def zone(sel):
                     return page.locator(sel).first.bounding_box()

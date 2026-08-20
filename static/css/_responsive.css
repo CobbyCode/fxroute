@@ -1013,6 +1013,7 @@
     .track-fav {
         width: 28px;
         height: 28px;
+        min-height: 28px;
         margin-top: -.08rem;
         font-size: 1.08rem;
     }
@@ -1205,7 +1206,6 @@
             grid-template-areas: "track track" "transport transport" "volume volume";
         }
         .playback-meter { display: none; }
-        .volume-control { grid-template-columns: 22px minmax(120px, 1fr) 2.7rem; }
     }
 }
 
@@ -2390,12 +2390,15 @@
 
 }
 
-/* Prefers reduced motion — keep at end */
+/* Prefers reduced motion — keep at end. !important is required here: the
+   generic star rule must beat every specific animation/transition rule
+   (e.g. .content-state--loading::before) without touching the normal
+   cascade. These are the only non-utility !important in the stylesheet. */
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
-            animation-duration: 0.01ms;
-            animation-iteration-count: 1;
-            transition-duration: 0.01ms;
-            scroll-behavior: auto;
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+            scroll-behavior: auto !important;
         }
 }
