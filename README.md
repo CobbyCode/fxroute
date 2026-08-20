@@ -72,10 +72,12 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
 - Bluetooth input visibility/control when the host audio stack supports it
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
 - selectable local and SMB music libraries, with SMB share discovery and manual `smb://` share entry
+- optional Spotify Desktop, spotifyd, Qobuz/qbzd, and TIDAL installer support; see [docs/INSTALLER.md](docs/INSTALLER.md)
 - installer support for the native DSP build, systemd user service, PipeWire/BlueZ dependencies, firewall comfort rules, and `.local` LAN naming
 - installer package-manager support for apt (Debian/Ubuntu), dnf (Fedora),
   zypper (openSUSE), and pacman (Arch/Manjaro); package-manager preparation
-  runs at most once per installer run
+  avoids repeated refreshes, with a required metadata refresh when a new
+  Spotify apt source is added
 
 ## Intended setup
 
@@ -164,6 +166,14 @@ chmod +x install.sh
 ```
 
 The installer creates `.env` automatically and preserves it on reruns. For manual setup, copy `.env.example` to `.env` and adjust at least `MUSIC_ROOT` when needed. Network libraries can be selected in **Technical settings**. FXRoute discovers accessible SMB shares and also accepts a manual `smb://server/share` entry.
+
+Optional streaming providers are never selected by default in a non-interactive install. Select them explicitly, for example:
+
+```bash
+./install.sh --providers spotify-desktop,spotifyd,qobuz,tidal
+```
+
+Spotify Desktop and spotifyd are independent choices. Spotify Desktop is limited to x86_64 desktop sessions; spotifyd and Qobuz/qbzd also support headless user sessions where their architecture is available. The installer does not write provider credentials or session data. See [docs/INSTALLER.md](docs/INSTALLER.md) for the supported matrix, first-run authentication, and uninstall behavior.
 
 Default user service:
 
