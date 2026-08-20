@@ -361,15 +361,7 @@
     white-space: nowrap;
 }
 
-@media (max-width: 640px) {
-    .albums-grid {
-        grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
-    }
-    .track-duration {
-        flex-basis: 3.8rem;
-        font-size: 0.8rem;
-    }
-}
+
 
 .radio-manage-section {
     display: flex;

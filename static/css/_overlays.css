@@ -18,17 +18,7 @@
 /* Narrow panels: put the search on its own row so the action buttons on the
    right never push the header past the viewport (base grid keeps a 420px
    search minimum, which overflows at 601-660px). Mirrors the <=600px rules. */
-@media (max-width: 700px) {
-    .radio-panel-header {
-        grid-template-columns: 1fr auto;
-    }
-    .radio-search-field {
-        display: block;
-        grid-column: 1 / -1;
-        grid-row: 2;
-        max-width: none;
-    }
-}
+
 .radio-search-field {
     width: 100%;
     max-width: 820px;
@@ -501,4 +491,3 @@
 .radio-manage-stack {
     gap: 0.8rem;
 }
-

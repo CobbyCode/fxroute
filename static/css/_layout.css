@@ -80,12 +80,7 @@
     visibility: hidden;
     transform: translateY(-2px);
 }
-@media (hover: none), (pointer: coarse) {
-    .brand-lockup-button[data-tooltip]::after,
-    .power-btn[data-tooltip]::after {
-        display: none;
-    }
-}
+
 .brand-mark {
     display: inline-flex;
     align-items: center;
@@ -259,9 +254,7 @@
 .power-menu-item[data-pending="true"] .power-menu-item-icon {
     color: var(--accent);
 }
-@media (max-width: 540px) {
-    .power-btn-icon { width: 20px; height: 20px; }
-}
+
 /* ============================================================
    Tabs
    ============================================================ */

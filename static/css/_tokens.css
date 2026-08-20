@@ -34,12 +34,3 @@
        follow the dark theme instead of the system light scheme. */
     color-scheme: dark;
 }
-
-@media (max-width: 420px) {
-    .radio-search-field .radio-search-main-row {
-        grid-template-columns: 1fr;
-    }
-    .radio-search-main-row .radio-search-online {
-        width: 100%;
-    }
-}

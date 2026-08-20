@@ -51,30 +51,7 @@
     padding: 1rem;
 }
 
-@media (min-width: 768px) {
-    .effects-shell {
-        padding: 0 1.5rem 1.5rem;
-    }
 
-    .effects-header {
-        gap: 1rem;
-        margin-bottom: 1.5rem;
-    }
-
-    .effects-grid {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 1.5rem;
-    }
-
-    .effects-card {
-        padding: 1.5rem;
-    }
-
-    .effects-card-extras {
-        padding-left: 1rem;
-        padding-right: 1rem;
-    }
-}
 .effects-card-manage {
     border-top-color: var(--accent);
 }
@@ -112,11 +89,7 @@
     gap: 0.75rem;
 }
 
-@media (min-width: 480px) {
-    .effects-compare-fields {
-        grid-template-columns: 1fr 1fr;
-    }
-}
+
 
 .effects-compare-slot {
     padding: 0.8rem;
@@ -136,12 +109,7 @@
     border-color: rgba(110, 231, 183, 0.34);
 }
 
-@media (max-width: 700px) {
-    .effects-compare-actions {
-        justify-content: center;
-        flex-wrap: wrap;
-    }
-}
+
 
 .effects-compare-fields .field-group {
     margin-bottom: 0;
@@ -579,59 +547,11 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     max-width: 100%;
 }
 
-@media (max-width: 1100px) {
-    .effects-subwoofer-controls {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
 
-    .effects-subwoofer-global-group,
-    .effects-subwoofer-channel-group {
-        grid-column: auto;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
 
-    .effects-subwoofer-channel-group {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
 
-    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
-    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
-        grid-column: auto;
-    }
 
-    .effects-subwoofer-derived-delays {
-        grid-column: 1 / -1;
-    }
-}
 
-@media (max-width: 760px) {
-    .effects-card-subwoofer-header,
-    .effects-subwoofer-controls,
-    .effects-subwoofer-frequency-row {
-        grid-template-columns: 1fr;
-    }
-
-    .effects-subwoofer-controls {
-        display: grid;
-    }
-
-    .effects-subwoofer-global-group,
-    .effects-subwoofer-channel-group {
-        grid-column: 1;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .effects-subwoofer-frequency-row {
-        gap: 0.55rem;
-    }
-}
-
-@media (max-width: 520px) {
-    .effects-subwoofer-global-group,
-    .effects-subwoofer-channel-group {
-        grid-template-columns: 1fr;
-    }
-}
 
 .effects-filter-import-area.is-busy {
     opacity: 0.75;
@@ -794,51 +714,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     min-width: 110px;
 }
 
-@media (max-width: 1100px) {
-    .effects-peq-dual-grid {
-        grid-template-columns: 1fr;
-    }
-}
 
-@media (max-width: 760px) {
-    .effects-rew-dual-grid,
-    .effects-combine-grid {
-        grid-template-columns: 1fr;
-    }
 
-    .effects-actions-rew-dual,
-    .effects-actions-peq-dual,
-    .effects-actions-combine {
-        flex-direction: row;
-        align-items: center;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-    }
 
-    .effects-actions-rew-dual .effects-rew-dual-name-input,
-    .effects-actions-peq-dual .effects-rew-dual-name-input {
-        flex: 0 1 170px;
-        max-width: 170px;
-        width: 170px;
-    }
-
-    .effects-actions-rew-dual .btn-primary,
-    .effects-actions-rew-dual .btn-secondary,
-    .effects-actions-peq-dual .btn-primary,
-    .effects-actions-peq-dual .btn-secondary {
-        width: auto;
-        min-width: 96px;
-        flex: 0 0 auto;
-    }
-
-    .effects-peq-add-row {
-        grid-template-columns: 1fr auto;
-    }
-
-    .effects-peq-mode-field {
-        max-width: none;
-    }
-}
 
 .delay-field {
     display: flex;
@@ -1083,37 +961,7 @@ input[type="number"]::-webkit-outer-spin-button {
     padding: 0.7rem 0.85rem !important;
 }
 
-@media (max-width: 760px) {
-    .effects-loudness-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        align-items: center;
-    }
 
-    .effects-loudness-controls {
-        display: inline-flex;
-        width: max-content;
-        max-width: 100%;
-        gap: 0.65rem;
-    }
-
-    .effects-loudness-controls .effects-inline-control {
-        flex-wrap: nowrap;
-    }
-
-    .effects-bass-row,
-    .effects-bass-controls {
-        display: flex;
-        align-items: center;
-        gap: 0.65rem;
-        flex-wrap: wrap;
-    }
-
-    .effects-extras-inner {
-        width: 100%;
-        padding: 0.95rem 0.9rem;
-    }
-}
 .effects-card-peq-workshop {
     padding-top: 1.45rem;
 }
