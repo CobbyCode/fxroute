@@ -62,25 +62,21 @@ def _contains_link(text: str, source: str, target: str) -> bool:
     each non-link line is the current port header, each ``|<-``/``|->`` line
     is a link of that port.  Link order within a port block is irrelevant.
     """
-    if not text:
+    if not text or source not in text or target not in text:
         return False
+    if f"{source} -> {target}" in text:
+        return True
     current_port: str | None = None
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
-        if " -> " in line and not line.startswith("|"):
-            direct_source, direct_target = line.split(" -> ", 1)
-            if direct_source == source and direct_target == target:
-                return True
-            current_port = None
-            continue
         if line.startswith("|"):
             if current_port is None:
                 continue
-            if line.startswith("|<- ") and line[4:].strip() == source and current_port == target:
+            if f"|<- {source}" in raw and current_port == target:
                 return True
-            if line.startswith("|-> ") and line[4:].strip() == target and current_port == source:
+            if f"|-> {target}" in raw and current_port == source:
                 return True
         else:
             current_port = line

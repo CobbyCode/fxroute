@@ -270,18 +270,7 @@
     // label with a dot-led pill. The detail string stays in the tooltip and
     // backend implementation names are never surfaced.
     function buildStatusBits(providerId, data) {
-        if (providerId === 'spotify') {
-            // Desktop keeps its well-known Connected label unchanged.
-            // spotifyd gains explicit labels for its lifecycle states.
-            if (data.backend === 'spotifyd') {
-                if (data.status === 'Playing') return ['Playing'];
-                if (data.status === 'Paused') return ['Paused'];
-                if (data.connect_state === 'connected') return ['Connected'];
-                if (data.connect_state === 'ready') return [];
-                return [];
-            }
-            return ['Connected'];
-        }
+        if (providerId === 'spotify') return ['Connected'];
         if (providerId === 'qobuz') {
             return (data.connected || data.authenticated === true) ? ['Connected'] : [];
         }
@@ -294,11 +283,7 @@
     function buildStatusDetail(providerId, data) {
         if (providerId === 'spotify') {
             if (data.backend === 'desktop') return 'Spotify Desktop';
-            if (data.backend === 'spotifyd') {
-                if (data.connect_state === 'ready') return 'spotifyd — select “FXRoute” in Spotify';
-                if (data.connect_state === 'connected') return 'spotifyd connected — playback on another device';
-                return 'spotifyd';
-            }
+            if (data.backend === 'spotifyd') return 'spotifyd';
             return 'Spotify';
         }
         if (providerId === 'qobuz') return 'Qobuz Connect';
@@ -371,14 +356,6 @@
         // Not connected / not authenticated (account-gated providers).
         if (data.authenticated === false) {
             showEmpty(entry, 'Not connected', connectMessage(providerId), meta.canConnect ? 'connect' : null);
-            return;
-        }
-
-        // Provider-provided actionable empty state (e.g. Spotify Connect
-        // pairing required, playback on another device).  Data-driven copy:
-        // the render path never branches on provider identity.
-        if (data.empty_title) {
-            showEmpty(entry, data.empty_title, data.empty_message || '');
             return;
         }
 
@@ -459,14 +436,6 @@
 
     function showEmpty(entry, title, message, action) {
         const els = entry.els;
-        // Do not rebuild a stable empty state on every poll: the 1s provider
-        // poll must not recreate DOM/content while nothing changed.
-        if (!els.empty.hidden
-            && els.emptyTitle.textContent === title
-            && els.emptyMsg.textContent === message
-            && (els.emptyActions.childNodes.length > 0) === (action === 'connect')) {
-            return;
-        }
         els.nowPlaying.hidden = true;
         els.empty.hidden = false;
         els.emptyTitle.textContent = title;

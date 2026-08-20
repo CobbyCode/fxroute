@@ -130,7 +130,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         finally:
             restore_queue_state(saved_queue)
 
-        self.assertGreaterEqual(mark_authoritative.call_count, 1)
+        mark_authoritative.assert_called_once()
 
     async def test_radio_spotify_failure_requests_and_publishes_radio_restore(self):
         player = PlayerDouble(None, playing=False)
@@ -230,7 +230,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         player = PlayerDouble(None, playing=False)
         track = local_track()
         run_mock = AsyncMock(return_value=SimpleNamespace(target_rate=48000))
-        commit = AsyncMock()
+        commit = Mock()
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", None
         ), patch.object(main.playback_state, "current_playback_owner", "spotify"), patch.object(

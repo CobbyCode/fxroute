@@ -192,18 +192,13 @@ class SpotifyPlayerctlWatch:
             logger.info("Spotify playerctl watch skipped: playerctl not available")
             return
         logger.info("Spotify playerctl watch resolved playerctl path: %s", playerctl_path)
-        failure_gap_logged = False
         while True:
             proc = None
             try:
                 logger.info("Spotify playerctl watch spawning follow process")
-                # Watch both Spotify backends: Desktop (``spotify``) and spotifyd
-                # (matched by the ``spotifyd`` prefix, so the instance-suffixed
-                # MPRIS name is followed across restarts).  Whichever backend a
-                # real Playing event comes from, the watcher detects/claims it.
                 proc = await asyncio.create_subprocess_exec(
                     playerctl_path,
-                    "--player=spotify,spotifyd",
+                    "--player=spotify",
                     "metadata",
                     "--follow",
                     "--format",
@@ -221,8 +216,6 @@ class SpotifyPlayerctlWatch:
                     if not text:
                         continue
                     status, _, tail = text.partition("|")
-                    if status in {"Playing", "Paused", "Stopped"}:
-                        failure_gap_logged = False
                     if status == "Playing":
                         self.schedule_detect(f"playerctl:{tail or 'playing'}")
                         # A real MPRIS Playing event is an external source
@@ -241,19 +234,11 @@ class SpotifyPlayerctlWatch:
                     except Exception:
                         stderr = b""
                 if proc.returncode not in (0, None):
-                    reason = stderr.decode(errors="ignore").strip() or "no stderr"
-                    if not failure_gap_logged:
-                        logger.info(
-                            "Spotify playerctl watch has no connected player yet (%s); "
-                            "retrying — pair 'FXRoute' in Spotify when spotifyd is used",
-                            reason,
-                        )
-                        failure_gap_logged = True
-                    else:
-                        logger.debug(
-                            "Spotify playerctl watch still without a connected player: %s",
-                            reason,
-                        )
+                    logger.warning(
+                        "Spotify playerctl watch exited with %s: %s",
+                        proc.returncode,
+                        stderr.decode(errors="ignore").strip() or "no stderr",
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

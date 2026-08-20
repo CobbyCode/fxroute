@@ -2797,15 +2797,6 @@ function setupPlaybackControls() {
         const sliderValue = parseInt(e.target.value, 10);
         const actualVolume = sliderVolumeToActualVolume(sliderValue);
         volumeGestureActive = false;
-        const volumeSource = getEffectivePlaybackControlSource();
-        if (volumeSource === 'spotify') {
-            queueSpotifyVolumeSend(actualVolume, true);
-            return;
-        }
-        if (volumeSource === 'qobuz') {
-            queueQobuzVolumeSend(actualVolume, true);
-            return;
-        }
         queueVolumeSend(actualVolume, true);
     });
     updatePlaybackUI();
@@ -3419,15 +3410,6 @@ async function handleVolumeChange(e) {
     volumeSyncGraceUntil = Date.now() + VOLUME_SYNC_GRACE_MS;
     setLocalVolume(sliderValue);
     showVolumeDisplayTemporarily();
-    const volumeSource = getEffectivePlaybackControlSource();
-    if (volumeSource === 'spotify') {
-        queueSpotifyVolumeSend(actualVolume);
-        return;
-    }
-    if (volumeSource === 'qobuz') {
-        queueQobuzVolumeSend(actualVolume);
-        return;
-    }
     queueVolumeSend(actualVolume);
 }
 // Metadata polling for radio ICY tags

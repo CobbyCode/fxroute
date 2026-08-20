@@ -111,33 +111,16 @@ class SpotifyBackendTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("streaming.spotify.mpris.list_players", new=_players([])):
             self.assertIsNone(await detect_running_backend())
 
-    async def test_detect_backend_prefers_running_spotifyd_over_idle_desktop(self):
-        # Desktop is installed but not running, spotifyd daemon is up: the
-        # actually-available backend (spotifyd, Connect-ready) must win.
-        with mock.patch("streaming.spotify.mpris.list_players", new=_players([])), \
-             mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=True), \
-             mock.patch("streaming.spotify.mpris.spotifyd_process_running", return_value=True):
-            self.assertEqual(await detect_backend(), "spotifyd")
-
-    async def test_detect_backend_idle_desktop_when_spotifyd_daemon_down(self):
-        with mock.patch("streaming.spotify.mpris.list_players", new=_players([])), \
-             mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=True), \
-             mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=True), \
-             mock.patch("streaming.spotify.mpris.spotifyd_process_running", return_value=False):
-            self.assertEqual(await detect_backend(), "desktop")
-
     async def test_detect_backend_falls_back_to_install_profile(self):
         with mock.patch("streaming.spotify.mpris.list_players", new=_players([])), \
              mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=False), \
-             mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=True), \
-             mock.patch("streaming.spotify.mpris.spotifyd_process_running", return_value=False):
+             mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=True):
             self.assertEqual(await detect_backend(), "spotifyd")
 
     async def test_detect_backend_none_when_neither_installed(self):
         with mock.patch("streaming.spotify.mpris.list_players", new=_players([])), \
              mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=False), \
-             mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=False), \
-             mock.patch("streaming.spotify.mpris.spotifyd_process_running", return_value=False):
+             mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=False):
             self.assertIsNone(await detect_backend())
 
     def test_player_name_maps_backends(self):

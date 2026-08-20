@@ -80,7 +80,7 @@ class PlaybackQueueDependencies:
 
     player: Callable[[], Any]
     run_transition: Callable[..., Awaitable[Any]]
-    commit_coordinated_track: Callable[..., Awaitable[None]]
+    commit_coordinated_track: Callable[..., None]
     get_current_track_info: Callable[[], dict | None]
     set_track_context: Callable[[dict, dict], None]
     transition_is_active: Callable[[], bool]
@@ -350,21 +350,18 @@ class PlaybackQueue:
             raise self._deps.transition_error_http(exc) from exc
         if not getattr(result, "committed", False):
             raise HTTPException(status_code=500, detail="Playback transition was not committed")
-        effective_track = dict(next_track)
+        rate_updated = False
         if self._deps.sample_rate_policy_is_auto() and source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
-            effective_track["sample_rate_hz"] = result.target_rate
+            next_track["sample_rate_hz"] = result.target_rate
+            rate_updated = True
         if queue_candidate is not None:
-            if "sample_rate_hz" in effective_track:
-                queue_candidate.track["sample_rate_hz"] = effective_track["sample_rate_hz"]
-        candidate_for_commit = queue_candidate
+            self.commit(queue_candidate)
+        if rate_updated and 0 <= index < len(self.tracks):
+            self.tracks[index]["sample_rate_hz"] = result.target_rate
         if queue_candidate is None:
             self.index = index
-            if "sample_rate_hz" in effective_track and 0 <= index < len(self.tracks):
-                self.tracks[index]["sample_rate_hz"] = effective_track["sample_rate_hz"]
-            candidate_for_commit = None
-        await self._deps.commit_coordinated_track(
-            effective_track, source=source, commit_token=getattr(result, "transition_id", None),
-            queue_candidate=candidate_for_commit,
+        self._deps.commit_coordinated_track(
+            next_track, source=source, commit_token=getattr(result, "transition_id", None)
         )
         return True
 

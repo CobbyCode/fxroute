@@ -27,10 +27,10 @@ class PlaybackRuntimeDependencies:
 
     # Playback-context state owned by the application shell
     get_current_track_info: Callable[[], dict | None]
+    set_current_track_info: Callable[[dict | None], None]
     get_playback_intent_generation: Callable[[], int]
     get_transition_epoch: Callable[[], int]
-    set_track_and_owner: Callable[[dict | None, str | None], Awaitable[None]]
-    clear_track_and_owner: Callable[[], Awaitable[None]]
+    set_playback_owner: Callable[[str | None], None]
     queue: Callable[[], PlaybackQueue]
 
     # Player / transport primitives (main.py)
@@ -91,3 +91,4 @@ class PlaybackRuntimeDependencies:
     playback_graph_links_complete: Callable[..., Awaitable[bool]]
     log_playback_graph_diagnosis: Callable[..., None]
     coordinator_reconcile_post_start_graph: Callable[..., Awaitable[dict]]
+

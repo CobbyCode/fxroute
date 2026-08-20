@@ -13,7 +13,6 @@ import asyncio
 import copy
 import json
 import logging
-import re
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping
@@ -23,14 +22,6 @@ import playback.source_policy as source_policy
 import playback.state
 import audio.samplerate as samplerate
 from playback.transition import PlaybackTransitionFailure, TransitionRequest, stable_graph_readbacks
-
-
-def _port_identity_present(io_text: str, port: str) -> bool:
-    """Match a complete PipeWire port token, not a suffix of another port."""
-    return re.search(
-        rf"(?<![A-Za-z0-9_.-]){re.escape(port)}(?![A-Za-z0-9_.-])",
-        io_text,
-    ) is not None
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +362,7 @@ class PlaybackOrchestrator:
             link_text = await self._deps.run_pw_link_command("-l")
         except Exception:
             return result
+        source_ports = source_policy.graph_port_names(source) or ()
         source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
         snapshot = dict(self._deps.get_dsp_snapshot() or {}) if self._deps.get_dsp_snapshot else {}
         output_count = 4 if mode in self._deps.output_mode_subwoofer_modes else 2
@@ -383,54 +375,16 @@ class PlaybackOrchestrator:
         result["helper_active"] = bool(snapshot.get("active"))
         result["helper_rate"] = self._deps.helper_argument_sample_rate(snapshot)
         result["helper_rate_matches"] = bool(result["helper_active"] and (target_rate is None or result["helper_rate"] == target_rate))
-        # A source's producer may appear either as its modeled node or (for
-        # spotifyd's pulse backend) as an anonymous pulse stream with empty
-        # node name and ``:output_<ch>`` ports.  The link check accepts the
-        # first producer form that is fully linked; ``source_links`` then
-        # reflects the form actually present so a missing link can be named.
-        source_port_pairs = source_policy.graph_producer_port_pairs(source)
-        source_ports = tuple(dict.fromkeys(port for pair in source_port_pairs for port in pair))
-        result["source_links"] = {}
-        result["source_links_complete"] = None
-        best_candidate: dict[str, bool] | None = None
-        best_ports: tuple[str, str] | None = None
-        selected_source_ports: tuple[str, str] = ()
-        best_score = -1
-        for fl_port, fr_port in source_port_pairs:
-            anonymous_candidate = fl_port.startswith(":") and fr_port.startswith(":")
-            anonymous_port_headers = {
-                port: sum(1 for line in link_text.splitlines() if line.strip() == port)
-                for port in (fl_port, fr_port)
-            }
-            if anonymous_candidate and any(count > 1 for count in anonymous_port_headers.values()):
-                continue
-            candidate = {
-                f"{fl_port} -> {source_targets[0]}": self._deps.contains_link(link_text, fl_port, source_targets[0]),
-                f"{fr_port} -> {source_targets[1]}": self._deps.contains_link(link_text, fr_port, source_targets[1]),
-            }
-            score = sum(candidate.values())
-            if score > best_score:
-                best_candidate = candidate
-                best_ports = (fl_port, fr_port)
-                best_score = score
-            if all(candidate.values()):
-                result["source_links"] = candidate
-                result["source_links_complete"] = True
-                selected_source_ports = (fl_port, fr_port)
-                break
-        if result["source_links_complete"] is None:
-            if best_candidate is not None:
-                result["source_links"] = best_candidate
-                selected_source_ports = best_ports or ()
-            result["source_links_complete"] = False if require_source else None
+        result["source_links"] = {f"{p} -> {t}": self._deps.contains_link(link_text, p, t) for p, t in zip(source_ports, source_targets)}
+        result["source_links_complete"] = all(result["source_links"].values()) if source_ports else (False if require_source else None)
         # A source that reaches the hardware directly (not via the DSP) is a
         # bypass. Check every modeled source node and both port naming schemes
         # (MPV/Spotify use ``output_<ch>``, the qbzd ALSA node uses
         # ``playback_<ch>``).
-        # A direct link is only attributable to the producer selected above.
-        # Anonymous ports are safe here only after the same unique pair passed
-        # the source-link selection and ambiguity checks.
-        bypass_ports = selected_source_ports
+        bypass_ports: list[str] = []
+        for node in dict.fromkeys(source_policy.GRAPH_NODE_BY_SOURCE.values()):
+            for channel in ("FL", "FR", "RL", "RR"):
+                bypass_ports.extend((f"{node}:output_{channel}", f"{node}:playback_{channel}"))
         result["direct_source_to_hw_present"] = any(
             self._deps.contains_link(link_text, port, f"{output_key}:playback_{channel}")
             for port in bypass_ports
@@ -440,9 +394,9 @@ class PlaybackOrchestrator:
             **{f"{p} -> {t}": self._deps.contains_link(link_text, p, t) for p, t in zip(ingress_sources, ingress_targets)},
             **{f"{p} -> {output_key}:playback_{c}": self._deps.contains_link(link_text, p, f"{output_key}:playback_{c}") for p, c in zip(dsp_ports, channels)},
         }
-        result["port_identities"] = {"source": tuple(p for p in source_ports if _port_identity_present(io_text, p)), "source_target": tuple(p for p in source_targets if _port_identity_present(io_text, p)),
-                                      "ee": tuple(p for p in ingress_targets if _port_identity_present(io_text, p)), "helper": tuple(p for p in dsp_ports if _port_identity_present(io_text, p)),
-                                      "output": tuple(f"{output_key}:playback_{c}" for c in channels if _port_identity_present(io_text, f"{output_key}:playback_{c}"))}
+        result["port_identities"] = {"source": tuple(p for p in source_ports if p in io_text), "source_target": tuple(p for p in source_targets if p in io_text),
+                                      "ee": tuple(p for p in ingress_targets if p in io_text), "helper": tuple(p for p in dsp_ports if p in io_text),
+                                      "output": tuple(f"{output_key}:playback_{c}" for c in channels if f"{output_key}:playback_{c}" in io_text)}
         native = bool(result["source_links_complete"] is not False and result["ee_ports"] and result["helper_rate_matches"] and all(result["links"].values()))
         result["bypass_only"] = bool(native and result["direct_source_to_hw_present"])
         result["links_complete"] = bool(native and not result["direct_source_to_hw_present"])

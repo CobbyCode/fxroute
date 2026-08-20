@@ -40,8 +40,6 @@ JOURNALCTL_COMMAND = [
 RESTART_BACKOFF_BASE_SECONDS = 1.0
 RESTART_BACKOFF_MAX_SECONDS = 30.0
 DEBOUNCE_SECONDS = 0.15
-PICKUP_TOLERANCE_PERCENT = 0
-PICKUP_CAPTURE_WINDOW_PERCENT = 5
 
 # qbzd 2.0.2 locked-mode line. The captured group is the remote volume in 0..1.
 _IGNORED_VOLUME_RE = re.compile(
@@ -80,74 +78,25 @@ def is_software_volume_apply(line: str | None) -> bool:
 
 
 class QobuzRemoteVolumeTranslator:
-    """Apply remote volume only after a safe pickup of the canonical volume.
+    """Coalesce phone slider intents into one canonical master write.
 
-    The first remote value establishes the side of the canonical value and is
-    observed only. A later movement must cross that value before writes are
-    enabled. This state is provider-neutral even though Qobuz is its current
-    journal source.
+    ``submit`` records the latest intent; ``flush`` applies the latest pending
+    value exactly once. Bursts (one line per drag step) therefore apply the
+    gesture's final value instead of every intermediate step.
     """
 
     def __init__(
         self,
         is_active: Callable[[], bool],
         apply_volume: Callable[[int], Awaitable[Any]],
-        get_canonical_volume: Callable[[], int] | None = None,
-        tolerance: int = PICKUP_TOLERANCE_PERCENT,
-        capture_window: int = PICKUP_CAPTURE_WINDOW_PERCENT,
     ) -> None:
         self.is_active = is_active
         self.apply_volume = apply_volume
-        self.get_canonical_volume = get_canonical_volume
-        self.tolerance = max(0, int(tolerance))
-        self.capture_window = max(0, int(capture_window))
         self._pending: int | None = None
-        self._pending_generation: int | None = None
-        self._last_remote: int | None = None
-        self._pickup_target: int | None = None
-        self._picked_up = False
-        self._armed_at_target = False
-        self._last_canonical: int | None = None
-        self._generation = 0
 
     @property
     def pending(self) -> int | None:
         return self._pending
-
-    @property
-    def picked_up(self) -> bool:
-        return self._picked_up
-
-    @property
-    def pending_generation(self) -> int | None:
-        return self._pending_generation
-
-    def is_generation_current(self, generation: int | None) -> bool:
-        return generation is not None and generation == self._generation
-
-    def reset(self) -> None:
-        """Forget a provider/ownership session without touching the master."""
-        self._pending = None
-        self._pending_generation = None
-        self._last_remote = None
-        self._pickup_target = None
-        self._picked_up = False
-        self._armed_at_target = False
-        self._last_canonical = None
-        self._generation += 1
-
-    def canonical_volume_changed(self, percent: int) -> None:
-        """Invalidate pickup on an unrelated canonical volume write."""
-        value = max(0, min(100, int(round(float(percent)))))
-        if self._last_canonical is not None and value != self._last_canonical:
-            self.reset()
-        self._last_canonical = value
-
-    def canonical_volume_written(self, percent: int, generation: int | None) -> None:
-        """Record a validated remote write without treating it as external."""
-        if not self.is_generation_current(generation):
-            return
-        self._last_canonical = max(0, min(100, int(round(float(percent)))))
 
     def submit(self, percent: int) -> bool:
         """Record a remote volume intent; ``False`` when Qobuz does not own
@@ -158,59 +107,8 @@ class QobuzRemoteVolumeTranslator:
         stale pending value instead of applying a Qobuz intent afterwards.
         """
         if not self.is_active():
-            self.reset()
             return False
-        percent = max(0, min(100, int(round(float(percent)))))
-        if self.get_canonical_volume is None:
-            # Kept for small standalone callers; the live integration always
-            # supplies the canonical read and therefore always picks up.
-            self._pending = percent
-            return True
-        canonical = max(0, min(100, int(self.get_canonical_volume())))
-        if self._last_canonical is None:
-            self._last_canonical = canonical
-        elif canonical != self._last_canonical:
-            self.reset()
-            self._last_canonical = canonical
-        if self._last_remote is None:
-            self._last_remote = percent
-            self._pickup_target = canonical
-            if abs(percent - canonical) <= self.tolerance:
-                # The initial value is already aligned: arm without writing,
-                # then accept the first small movement in either direction.
-                self._picked_up = True
-                self._armed_at_target = True
-            return False
-        if self._armed_at_target:
-            self._last_remote = percent
-            if percent == self._pickup_target:
-                return False
-            if not (
-                self._pickup_target - self.capture_window
-                <= percent
-                <= self._pickup_target + self.capture_window
-            ):
-                return False
-            self._armed_at_target = False
-            self._pending = percent
-            self._pending_generation = self._generation
-            return True
-        if not self._picked_up:
-            started_above = self._last_remote > self._pickup_target + self.tolerance
-            crossed = (
-                self._pickup_target - self.capture_window <= percent <= self._pickup_target + self.tolerance
-                if started_above
-                else self._pickup_target - self.tolerance <= percent <= self._pickup_target + self.capture_window
-            )
-            self._last_remote = percent
-            if not crossed:
-                return False
-            self._picked_up = True
-            if percent == self._pickup_target:
-                return False
-        self._last_remote = percent
         self._pending = percent
-        self._pending_generation = self._generation
         return True
 
     async def flush(self) -> None:
@@ -223,14 +121,8 @@ class QobuzRemoteVolumeTranslator:
             self._pending = None
             return
         percent = self._pending
-        generation = self._pending_generation
         self._pending = None
-        self._pending_generation = None
-        if self.get_canonical_volume is None:
-            await self.apply_volume(percent)
-        else:
-            await self.apply_volume(percent, generation)
-        self.canonical_volume_written(percent, generation)
+        await self.apply_volume(percent)
 
 
 @dataclass
@@ -239,7 +131,6 @@ class QobuzVolumeWatchDependencies:
 
     is_active: Callable[[], bool]
     apply_volume: Callable[[int], Awaitable[Any]]
-    get_canonical_volume: Callable[[], int] | None = None
 
 
 class QobuzVolumeWatch:
@@ -258,7 +149,6 @@ class QobuzVolumeWatch:
         self._translator = QobuzRemoteVolumeTranslator(
             is_active=deps.is_active,
             apply_volume=deps.apply_volume,
-            get_canonical_volume=deps.get_canonical_volume,
         )
         self.watch_task: asyncio.Task | None = None
         self._drain_task: asyncio.Task | None = None
@@ -277,18 +167,6 @@ class QobuzVolumeWatch:
             "(run: qbzd settings set qconnect.volume_mode locked && systemctl "
             "--user restart qbzd)"
         )
-
-    def reset_pickup(self) -> None:
-        self._translator.reset()
-
-    def canonical_volume_changed(self, percent: int) -> None:
-        self._translator.canonical_volume_changed(percent)
-
-    def canonical_volume_written(self, percent: int, generation: int | None) -> None:
-        self._translator.canonical_volume_written(percent, generation)
-
-    def is_generation_current(self, generation: int | None) -> bool:
-        return self._translator.is_generation_current(generation)
 
     async def _sleep(self, delay: float) -> None:
         await asyncio.sleep(delay)
@@ -310,21 +188,16 @@ class QobuzVolumeWatch:
 
     async def _drain_pending(self) -> None:
         try:
-            first_flush = True
-            while True:
-                if first_flush and self._debounce_seconds > 0:
-                    await self._sleep(self._debounce_seconds)
-                first_flush = False
-                try:
-                    await self._translator.flush()
-                except Exception as exc:
-                    # A later intent may have arrived while the failed write
-                    # was in flight; keep this drain responsible for it.
-                    logger.warning("Qobuz journal volume drain failed: %s", exc)
-                if self._translator.pending is None:
-                    break
+            if self._debounce_seconds > 0:
+                await self._sleep(self._debounce_seconds)
+            await self._translator.flush()
         except asyncio.CancelledError:
             raise
+        except Exception as exc:
+            # The drain runs as a detached task: a failing master write must be
+            # observed here (never an unretrieved task exception) while the
+            # watch loop stays alive for the next intent.
+            logger.warning("Qobuz journal volume drain failed: %s", exc)
         finally:
             self._drain_task = None
 

@@ -143,30 +143,3 @@ class PlaybackState:
         """Commit the current and last track snapshots together."""
         self.current_track_info = current
         self.last_track_info = last
-
-    def commit_playback_context(
-        self,
-        *,
-        current: dict[str, Any] | None,
-        last: dict[str, Any] | None,
-        owner: str | None,
-        commit_token: str | None,
-        last_radio: dict[str, Any] | None = None,
-    ) -> bool:
-        changed_owner = self.current_playback_owner != owner
-        self.current_track_info = current
-        self.last_track_info = last
-        if last_radio is not None:
-            self.last_radio_track_info = dict(last_radio)
-        self.current_playback_owner = owner
-        if commit_token:
-            self.playback_context_commit_id = str(commit_token)
-        return changed_owner
-
-    def clear_playback_context(self, last_radio: dict | None = None) -> bool:
-        had_owner = self.current_playback_owner is not None
-        if last_radio is not None:
-            self.last_radio_track_info = dict(last_radio)
-        self.current_track_info = None
-        self.current_playback_owner = None
-        return had_owner
