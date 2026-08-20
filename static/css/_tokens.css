@@ -18,6 +18,7 @@
     --success:       #34d399;
     --border:        rgba(255, 255, 255, 0.06);
     --border-strong: rgba(255, 255, 255, 0.10);
+    --scrollbar:     var(--bg-hover);
     --shadow:        rgba(0, 0, 0, 0.4);
     --radius-sm:  8px;
     --radius-md:  12px;

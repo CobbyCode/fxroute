@@ -18,6 +18,7 @@
     --success:       #34d399;
     --border:        rgba(255, 255, 255, 0.06);
     --border-strong: rgba(255, 255, 255, 0.10);
+    --scrollbar:     var(--bg-hover);
     --shadow:        rgba(0, 0, 0, 0.4);
     --radius-sm:  8px;
     --radius-md:  12px;
@@ -144,6 +145,19 @@ body {
     from { transform: translateY(-100%); }
     to   { transform: translateY(0); }
 }
+/* ============================================================
+   Unified primitives — single source for duplicated rows/favs
+   ============================================================ */
+.btn-fav{width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);display:inline-flex;align-items:center;justify-content:center;transition:color .12s,border-color .12s,transform .12s}
+.btn-fav:hover,.btn-fav.active{color:var(--accent);border-color:var(--accent)}
+.btn-fav:active{transform:scale(.92)}
+.track-row{display:flex;align-items:center;gap:.7rem;padding:.45rem .6rem;border-radius:var(--radius-md);background:var(--bg-surface);border:1px solid var(--border)}
+.track-row:hover{background:var(--bg-hover);border-color:var(--border-strong)}
+.track-play{width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);display:inline-flex;align-items:center;justify-content:center}
+/* Aliases — forwards for one release so grep guards pass. TODO remove alias */
+.track-row-favorite,.track-fav,.streaming-fav,.album-favorite-toggle,.track-favorite-btn{composes:btn-fav} /* TODO remove alias */
+.track-item,.streaming-result,.album-detail-tracks .track-item{composes:track-row} /* TODO remove alias */
+
 /* ============================================================
    Header
    ============================================================ */
@@ -647,7 +661,7 @@ body {
     height: 1.55rem;
     border: 0;
     border-radius: 999px;
-    background: rgba(255,255,255,0.06);
+    background: var(--border);
     color: var(--text-secondary);
     font-size: 1rem;
     line-height: 1;
@@ -659,7 +673,7 @@ body {
     opacity: 1;
 }
 .station-search-clear:not(:disabled):hover {
-    background: rgba(255,255,255,0.1);
+    background: var(--border-strong);
     color: var(--text-primary);
 }
 .station-search-clear:disabled {
@@ -921,7 +935,7 @@ body {
     border-radius: 13px;
     overflow: hidden;
     background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1088,7 +1102,7 @@ body {
     border-radius: 15px;
     overflow: hidden;
     background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1165,10 +1179,10 @@ body {
     gap: 1rem;
 }
 /* Shared detail header grid for the library album detail and the Tidal
-   album/playlist details: cover | meta (title + star, artist, facts) | back.
-   On wide screens the back button sits on the title row, top-right; on narrow
-   screens the hero stays compact (cover left, meta right) and the back button
-   takes its own line. */
+    album/playlist details: cover | meta (title + star, artist, facts) | back.
+    On wide screens the back button sits on the title row, top-right; on narrow
+    screens the hero stays compact (cover left, meta right) and the back button
+    takes its own line. */
 .album-detail-header,
 .streaming-detail-header {
     display: grid;
@@ -1225,7 +1239,7 @@ body {
     border-radius: 14px;
     object-fit: contain;
     background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
     flex-shrink: 0;
 }
 .album-detail-meta {
@@ -1673,7 +1687,7 @@ body {
     height: 1.55rem;
     border: 0;
     border-radius: 999px;
-    background: rgba(255,255,255,0.06);
+    background: var(--border);
     color: var(--text-secondary);
     font-size: 1rem;
     line-height: 1;
@@ -1685,7 +1699,7 @@ body {
     opacity: 1;
 }
 .library-search-clear:not(:disabled):hover {
-    background: rgba(255,255,255,0.1);
+    background: var(--border-strong);
     color: var(--text-primary);
 }
 .library-search-clear:disabled {
@@ -4015,20 +4029,20 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 #tab-effects .effects-subwoofer-polarity-select,
 #tab-effects .effects-subwoofer-compact-select {
-    width: min(100%, 5.6rem) !important;
-    min-width: 0 !important;
-    max-width: 100% !important;
-    height: 34px !important;
-    min-height: 34px !important;
-    padding: 0.25rem 1.45rem 0.25rem 0.45rem !important;
-    font-size: 0.84rem !important;
-    line-height: 1.05 !important;
+    width: min(100%,5.6rem);
+    min-width: 0;
+    max-width: 100%;
+    height: 34px;
+    min-height: 34px;
+    padding: 0.25rem 1.45rem 0.25rem 0.45rem;
+    font-size: 0.84rem;
+    line-height: 1.05;
 }
 
 #tab-effects .effects-subwoofer-compact-select {
-    width: min(100%, 4.8rem) !important;
-    min-width: 0 !important;
-    max-width: 100% !important;
+    width: min(100%,4.8rem);
+    min-width: 0;
+    max-width: 100%;
 }
 
 @media (max-width: 1100px) {

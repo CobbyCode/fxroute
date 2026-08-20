@@ -29,7 +29,7 @@
     border-radius: 15px;
     overflow: hidden;
     background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -106,10 +106,10 @@
     gap: 1rem;
 }
 /* Shared detail header grid for the library album detail and the Tidal
-   album/playlist details: cover | meta (title + star, artist, facts) | back.
-   On wide screens the back button sits on the title row, top-right; on narrow
-   screens the hero stays compact (cover left, meta right) and the back button
-   takes its own line. */
+    album/playlist details: cover | meta (title + star, artist, facts) | back.
+    On wide screens the back button sits on the title row, top-right; on narrow
+    screens the hero stays compact (cover left, meta right) and the back button
+    takes its own line. */
 .album-detail-header,
 .streaming-detail-header {
     display: grid;
@@ -166,7 +166,7 @@
     border-radius: 14px;
     object-fit: contain;
     background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
     flex-shrink: 0;
 }
 .album-detail-meta {

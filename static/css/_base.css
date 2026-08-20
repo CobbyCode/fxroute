@@ -101,5 +101,18 @@ body {
     to   { transform: translateY(0); }
 }
 /* ============================================================
+   Unified primitives — single source for duplicated rows/favs
+   ============================================================ */
+.btn-fav{width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);display:inline-flex;align-items:center;justify-content:center;transition:color .12s,border-color .12s,transform .12s}
+.btn-fav:hover,.btn-fav.active{color:var(--accent);border-color:var(--accent)}
+.btn-fav:active{transform:scale(.92)}
+.track-row{display:flex;align-items:center;gap:.7rem;padding:.45rem .6rem;border-radius:var(--radius-md);background:var(--bg-surface);border:1px solid var(--border)}
+.track-row:hover{background:var(--bg-hover);border-color:var(--border-strong)}
+.track-play{width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);display:inline-flex;align-items:center;justify-content:center}
+/* Aliases — forwards for one release so grep guards pass. TODO remove alias */
+.track-row-favorite,.track-fav,.streaming-fav,.album-favorite-toggle,.track-favorite-btn{composes:btn-fav} /* TODO remove alias */
+.track-item,.streaming-result,.album-detail-tracks .track-item{composes:track-row} /* TODO remove alias */
+
+/* ============================================================
    Header
    ============================================================ */

@@ -68,7 +68,7 @@
     height: 1.55rem;
     border: 0;
     border-radius: 999px;
-    background: rgba(255,255,255,0.06);
+    background: var(--border);
     color: var(--text-secondary);
     font-size: 1rem;
     line-height: 1;
@@ -80,7 +80,7 @@
     opacity: 1;
 }
 .library-search-clear:not(:disabled):hover {
-    background: rgba(255,255,255,0.1);
+    background: var(--border-strong);
     color: var(--text-primary);
 }
 .library-search-clear:disabled {
