@@ -103,9 +103,10 @@ def _run():
             check("tidal subbar navigation has box", tabs_box is not None)
             assert tabs_box is not None
 
-            # All widths from small phone to desktop: no horizontal overflow
-            # while the TIDAL tab is active, and the subbar stays in the viewport.
-            for width in (320, 360, 390, 520, 600, 700, 760, 900, 1440):
+            # All widths from extreme small phone to desktop: no horizontal
+            # overflow while the TIDAL tab is active, and the subbar stays in
+            # the viewport.
+            for width in (280, 300, 320, 360, 390, 520, 600, 700, 760, 900, 1440):
                 page.set_viewport_size({"width": width, "height": 844})
                 page.wait_for_timeout(200)
                 overflow = page.evaluate(
