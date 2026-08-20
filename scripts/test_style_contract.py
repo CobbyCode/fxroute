@@ -6,16 +6,15 @@ Asserts on the built artifact static/style.css:
  1. static/style.css exists and is non-empty, served via static/index.html ?v= query
  2. no hand-divergence: if static/css/ sources exist, cat order in
     scripts/build-css.sh reproduces static/style.css (hash check)
- 3. no !important drift beyond allowlist (currently 2 sensitive-width
-    overrides in .effects-subwoofer-*-select; otherwise zero)
+ 3. !important only at the explicitly justified utility/accessibility spots:
+    .hidden, .streaming-provider [hidden], and the prefers-reduced-motion
+    override block; any !important elsewhere fails the guard
  4. unified primitives exist in the built CSS: .btn-fav, .track-row, .track-play
  5. media sanity: at most 3 playback ranges (min-width:1181 desktop +
     701-1180 tablet + max-width:700 phone) — fail if >3 @media blocks
     touch .playback-bar
 
 Must run via: python3 scripts/test_style_contract.py  (supports -v)
-Expected on the current monolith: FAIL (drift + playback cap + missing
-primitives). Guard is consumed by Tasks 2-5 and CI.
 """
 
 import re
@@ -38,8 +37,30 @@ CSS_SOURCES_DIR = ROOT / "static/css"
 # playback range cap — tighten after consolidation
 # assert css.count(".playback-bar") >= 1
 
-ALLOWED_IMPORTANT = 2  # 2 sensitive-width overrides in .effects-subwoofer-*-select; otherwise zero
-ALLOWLIST_HINT = ".effects-subwoofer-*-select"
+# !important is a last-resort tool: every occurrence must be an explicitly
+# justified utility or accessibility override. The contract below verifies
+# each declaration's selector, so a new !important anywhere else fails the
+# guard no matter how the total count changes.
+#
+# Justified spots:
+#  - ".hidden"                          JS toggles this utility against
+#                                       flex/grid display rules
+#  - ".streaming-provider [hidden]"     streaming.js toggles the hidden
+#                                       attribute; per-element display rules
+#                                       (flex/grid) must never override it
+#  - prefers-reduced-motion block       accessibility override; the generic
+#                                       star rule must beat every specific
+#                                       animation/transition rule
+IMPORTANT_ALLOWED_SELECTORS = (
+    ".hidden",
+    ".streaming-provider [hidden]",
+)
+IMPORTANT_REDUCED_MOTION = (
+    "animation-duration",
+    "animation-iteration-count",
+    "transition-duration",
+    "scroll-behavior",
+)
 MAX_PLAYBACK_MEDIA_BLOCKS = 3
 
 
@@ -154,26 +175,33 @@ def check_important_allowlist(errors: list[str], verbose: bool) -> None:
     if not CSS_PATH.exists():
         return
     css = CSS_PATH.read_text(encoding="utf-8", errors="replace")
-    total = css.count("!important")
+    # Strip comments so "!important" inside a comment never counts.
+    css_nc = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    total = css_nc.count("!important")
+    violations: list[str] = []
+    for m in re.finditer(r"([^{}]+)\{([^{}]*!important[^{}]*)\}", css_nc):
+        selector = " ".join(m.group(1).split())
+        decls = " ".join(m.group(2).split())
+        if selector.startswith("*") and any(p in decls for p in IMPORTANT_REDUCED_MOTION):
+            continue  # prefers-reduced-motion accessibility override
+        allowed = any(selector == s or selector.endswith(" " + s) for s in IMPORTANT_ALLOWED_SELECTORS)
+        if not allowed:
+            violations.append(f"  {selector} {{ {decls} }}")
     if verbose:
-        print(f"[info] !important total: {total} (allowed {ALLOWED_IMPORTANT} — allowlist: {ALLOWLIST_HINT})")
-    if total > ALLOWED_IMPORTANT:
-        # Provide context lines for drift
-        lines = []
-        for idx, line in enumerate(css.splitlines(), 1):
-            if "!important" in line:
-                lines.append(f"  {idx}: {line.strip()}")
-                if len(lines) >= 12:
-                    lines.append(f"  ... and {total - len(lines)} more")
-                    break
-        detail = "\n".join(lines)
+        print(f"[info] !important total: {total}")
+        print(f"[info] allowed selectors: {', '.join(IMPORTANT_ALLOWED_SELECTORS)}")
+        print(f"[info] allowed reduced-motion props: {', '.join(IMPORTANT_REDUCED_MOTION)}")
+    if violations:
+        detail = "\n".join(violations[:12])
+        if len(violations) > 12:
+            detail += f"\n  ... and {len(violations) - 12} more"
         errors.append(
-            f"!important drift: {total} > allowed {ALLOWED_IMPORTANT} "
-            f"(allowlist: {ALLOWED_IMPORTANT} sensitive-width overrides in {ALLOWLIST_HINT}; otherwise zero)\n"
-            f"{detail}"
+            f"!important drift: {len(violations)} declaration(s) outside the justified "
+            f"utility/accessibility spots (.hidden, .streaming-provider [hidden], "
+            f"prefers-reduced-motion override)\n{detail}"
         )
     elif verbose:
-        print(f"[ok] !important count {total} within allowlist {ALLOWED_IMPORTANT}")
+        print(f"[ok] !important restricted to the justified utility/accessibility spots")
 
 
 def check_primitives(errors: list[str], verbose: bool) -> None:

@@ -1,3 +1,8 @@
+/* ============================================================
+   Effects tab styling
+   ============================================================ */
+#tab-effects { padding-top: 0.75rem; }
+
 .effects-shell {
     max-width: 1180px;
     margin: 0 auto;
@@ -51,7 +56,6 @@
     padding: 1rem;
 }
 
-
 .effects-card-manage {
     border-top-color: var(--accent);
 }
@@ -89,8 +93,6 @@
     gap: 0.75rem;
 }
 
-
-
 .effects-compare-slot {
     padding: 0.8rem;
     border-radius: var(--radius-md);
@@ -108,8 +110,6 @@
 .effects-compare-slot.is-armed {
     border-color: rgba(110, 231, 183, 0.34);
 }
-
-
 
 .effects-compare-fields .field-group {
     margin-bottom: 0;
@@ -547,12 +547,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     max-width: 100%;
 }
 
-
-
-
-
-
-
 .effects-filter-import-area.is-busy {
     opacity: 0.75;
     pointer-events: none;
@@ -714,10 +708,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     min-width: 110px;
 }
 
-
-
-
-
 .delay-field {
     display: flex;
     flex-direction: column;
@@ -743,10 +733,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     font-size: 0.76rem;
 }
 
-.delay-field-compact .delay-number-input {
-    width: 4.6rem !important;
-}
-
 .delay-field label {
     font-size: 0.82rem;
     font-weight: 600;
@@ -759,23 +745,13 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     gap: 0.45rem;
 }
 
-.delay-number-input {
-    min-height: 34px !important;
-    padding: 0.35rem 0.45rem !important;
-    font-size: 0.84rem !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-    flex: 0 0 auto !important;
-    width: 5.2rem !important;
-}
-
 /* Bigger up/down arrows for number inputs */
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
-    opacity: 1 !important;
-    height: 26px !important;
-    width: 12px !important;
-    margin-right: 2px !important;
+    opacity: 1;
+    height: 26px;
+    width: 12px;
+    margin-right: 2px;
 }
 
 .delay-unit {
@@ -954,14 +930,6 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 0.45rem;
 }
 
-.effects-bass-controls .delay-number-input {
-    width: 4.6rem !important;
-    min-width: 4.6rem;
-    min-height: 46px !important;
-    padding: 0.7rem 0.85rem !important;
-}
-
-
 .effects-card-peq-workshop {
     padding-top: 1.45rem;
 }
@@ -1093,6 +1061,27 @@ input[type="number"]::-webkit-outer-spin-button {
     border-radius: var(--radius-sm);
     font-size: 0.92rem;
 }
+/* Delay number inputs override the shared #tab-effects .url-input sizing:
+   compact fixed-width fields. Selectors carry #tab-effects to win over the
+   shared rule at equal specificity. */
+#tab-effects .delay-number-input {
+    min-height: 34px;
+    padding: 0.35rem 0.45rem;
+    font-size: 0.84rem;
+    max-width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
+    width: 5.2rem;
+}
+#tab-effects .delay-field-compact .delay-number-input {
+    width: 4.6rem;
+}
+#tab-effects .effects-bass-controls .delay-number-input {
+    width: 4.6rem;
+    min-width: 4.6rem;
+    min-height: 46px;
+    padding: 0.7rem 0.85rem;
+}
 /* ============================================================
    Buttons
    ============================================================ */
@@ -1150,49 +1139,7 @@ input[type="number"]::-webkit-outer-spin-button {
     animation: btn-spin 0.7s linear infinite;
 }
 @keyframes btn-spin { to { transform: rotate(360deg); } }
-/* Shared compact view tabs (Library Tracks/Folders/Albums + TIDAL
-   Tracks/Albums/Artists): one segmented-navigation standard instead of the
-   oversized library action buttons and the undersized TIDAL filter chips.
-   Inactive tabs are quiet (muted text, transparent); the active tab keeps the
-   mint accent. Touch height stays adequate at 38px. */
-.view-tabs {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    flex-wrap: wrap;
-}
-.view-tab {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 38px;
-    padding: 0.3rem 0.9rem;
-    font-size: 0.86rem;
-    font-weight: 650;
-    letter-spacing: 0.01em;
-    white-space: nowrap;
-    color: var(--text-muted);
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-family: inherit;
-    transition: color 0.15s, background 0.15s, border-color 0.15s;
-    -webkit-tap-highlight-color: transparent;
-    user-select: none;
-}
-.view-tab:hover {
-    color: var(--text-secondary);
-    background: var(--bg-hover);
-    border-color: var(--border-strong);
-}
-.view-tab.active,
-.view-tab.is-active {
-    color: var(--accent);
-    background: var(--accent-dim);
-    border-color: var(--accent);
-    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.2);
-}
+
 .btn-danger {
     background: var(--danger);
     color: #fff;
@@ -1206,3 +1153,68 @@ input[type="number"]::-webkit-outer-spin-button {
     transform: none;
 }
 .btn-danger.hidden { display: none; }
+
+/* Unified upload area */
+.upload-area {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    padding: 1.2rem 1rem;
+    border: 2px dashed var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    text-align: center;
+    min-height: 80px;
+}
+.upload-area:hover,
+.upload-area.drag-over,
+.upload-area:focus-visible {
+    border-color: var(--accent);
+    background: var(--bg-elevated);
+}
+.upload-area:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.upload-area-icon {
+    font-size: 1.4rem;
+}
+.upload-area-text {
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+}
+.upload-area-text u {
+    color: var(--accent);
+    cursor: pointer;
+}
+.upload-area-filename {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.upload-area-input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+}
+
+.library-header,
+.album-detail-header,
+.effects-header {
+    gap: 1rem;
+}
+
+.btn-primary,
+.btn-secondary,
+.btn-ghost {
+    border-radius: 11px;
+}
