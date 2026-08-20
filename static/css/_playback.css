@@ -1,150 +1,3 @@
-/* ============================================================
-   Toasts
-   ============================================================ */
-.toast-container {
-    position: fixed;
-    top: 1rem;
-    right: 1rem;
-    z-index: 1005;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    max-width: 320px;
-}
-.toast {
-    padding: 0.85rem 1.1rem;
-    border-radius: var(--radius-sm);
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    box-shadow: 0 8px 24px var(--shadow);
-    animation: toastIn 0.3s var(--ease);
-    font-size: 0.88rem;
-    line-height: 1.4;
-}
-.toast.success { border-left-color: var(--success); }
-.toast.error   { border-left-color: var(--danger); }
-.toast.info    { border-left-color: var(--accent); }
-.toast.now-playing-cue {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    min-width: min(320px, calc(100vw - 2rem));
-    max-width: min(420px, calc(100vw - 2rem));
-    padding: 0.65rem 0.85rem;
-}
-.now-playing-cover {
-    width: 0;
-    height: 56px;
-    border-radius: 0.7rem;
-    object-fit: contain;
-    background: var(--bg-elevated);
-    flex: 0 0 auto;
-    opacity: 0;
-    border: 0;
-    box-shadow: none;
-    transition: width 0.18s var(--ease), opacity 0.18s var(--ease);
-}
-.now-playing-cue.has-cover .now-playing-cover.is-ready {
-    width: 56px;
-    opacity: 1;
-    border: 1px solid var(--border);
-    box-shadow: 0 6px 18px var(--shadow);
-}
-.now-playing-text {
-    min-width: 0;
-}
-.now-playing-label {
-    color: var(--text-muted);
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: 0.12rem;
-}
-.now-playing-title,
-.now-playing-meta {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.now-playing-title {
-    color: var(--text-primary);
-    font-weight: 700;
-}
-.now-playing-meta {
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-    margin-top: 0.1rem;
-}
-.toast.remove {
-    animation: toastOut 0.25s ease-in forwards;
-}
-@keyframes toastIn {
-    from { opacity: 0; transform: translateX(30px); }
-    to   { opacity: 1; transform: translateX(0); }
-}
-@keyframes toastOut {
-    to { opacity: 0; transform: translateX(30px); }
-}
-
-.playback-bar.progress-readonly .seek-slider:disabled {
-    cursor: default;
-    opacity: 0.9;
-}
-
-/* Unified upload area */
-.upload-area {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 0.35rem;
-    padding: 1.2rem 1rem;
-    border: 2px dashed var(--border-strong);
-    border-radius: var(--radius-md);
-    background: var(--bg-surface);
-    cursor: pointer;
-    transition: border-color 0.2s, background 0.2s;
-    text-align: center;
-    min-height: 80px;
-}
-.upload-area:hover,
-.upload-area.drag-over,
-.upload-area:focus-visible {
-    border-color: var(--accent);
-    background: var(--bg-elevated);
-}
-.upload-area:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 3px var(--accent-dim);
-}
-.upload-area-icon {
-    font-size: 1.4rem;
-}
-.upload-area-text {
-    color: var(--text-secondary);
-    font-size: 0.88rem;
-}
-.upload-area-text u {
-    color: var(--accent);
-    cursor: pointer;
-}
-.upload-area-filename {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.upload-area-input {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    cursor: pointer;
-    width: 100%;
-    height: 100%;
-}
-
 .measurement-calibration-select-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
@@ -168,277 +21,334 @@
     font-size: 1.1rem;
 }
 
-/* =========================================================================
-   Spotify tab: the tab renders through the shared streaming shell today
-   (static/streaming.js .streaming-shell), so the legacy in-tab player rules
-   are gone. No provider-specific panel offset may exist — Spotify and Qobuz
-   must start at the same height.
-   ========================================================================= */
-
-/* ============ Cover detail card (shared radio/library) ============ */
-.cover-detail-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 1040;
-    background: rgba(0, 0, 0, 0.55);
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
-}
-.cover-detail-card {
-    position: fixed;
-    left: 50%;
-    transform: translateX(-50%);
-    bottom: calc(102px + 8px + 14px);
-    z-index: 1041;
-    width: min(720px, calc(100vw - 2rem));
-    max-height: calc(100vh - 102px - 8px - 14px - 1rem);
-    overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--bg-hover) transparent;
-    background: var(--bg-surface);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-xl);
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
-    padding: 0.95rem;
-    display: grid;
-    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-    grid-template-areas:
-        "cover info"
-        "cover history"
-        "cover queue";
-    gap: 0.85rem 1.1rem;
-    align-items: start;
-    touch-action: manipulation;
-}
-/* Wide layout, local playback with an active queue: move the whole meta
-   block (incl. tech line and tag-info block) under the cover into the left
-   column; the right column then holds only the queue heading + list.
-   Radio, library without a queue and the narrow layout keep the original
-   arrangement (queue section carries .hidden when no queue is active). */
-
-.cover-detail-cover-col {
-    grid-area: cover;
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    min-width: 0;
-}
-.cover-detail-cover {
-    width: 100%;
-    aspect-ratio: 1 / 1;
-    object-fit: cover;
-    border-radius: var(--radius-lg);
-    background: var(--bg-hover);
-    display: block;
-}
-.cover-detail-extra {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    line-height: 1.35;
-    min-width: 0;
-}
-.cover-detail-extra-line {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.cover-detail-info {
-    grid-area: info;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-}
-.cover-detail-source {
-    font-size: 0.82rem;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--accent);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.cover-detail-title {
-    font-size: 1.15rem;
-    font-weight: 600;
-    line-height: 1.3;
-    color: var(--text-primary);
-    overflow-wrap: anywhere;
-}
-.cover-detail-artist {
-    font-size: 0.95rem;
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.cover-detail-album {
-    font-size: 0.85rem;
-    color: var(--text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.cover-detail-tech {
-    font-size: 0.8rem;
-    color: var(--text-muted);
-    font-family: var(--font-mono, monospace);
-    margin-top: 0.15rem;
-}
-.cover-detail-section {
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-    min-width: 0;
-}
-.cover-detail-heading {
-    margin: 0;
-    font-size: 0.85rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--text-secondary);
-}
-.cover-detail-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-}
-.cover-detail-row {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    padding: 0.38rem 0.55rem;
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    min-width: 0;
-}
-.cover-detail-row.current {
-    background: var(--accent-dim);
-    border-color: var(--accent);
-}
-/* Library queue rows are interactive (jump to index via canonical play path).
-   Radio "Recently played" rows stay non-interactive. */
-.cover-detail-row[data-queue-index] {
-    cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease;
-}
-.cover-detail-row[data-queue-index]:hover {
-    background: rgba(255, 255, 255, 0.07);
-    border-color: rgba(255, 255, 255, 0.16);
-}
-.cover-detail-row[data-queue-index]:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-    background: rgba(255, 255, 255, 0.06);
-}
-.cover-detail-row[data-queue-index].current:hover {
-    background: var(--accent-dim);
-    border-color: var(--accent);
-    cursor: default;
-}
-.cover-detail-row-index {
-    flex: 0 0 auto;
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    min-width: 1.4rem;
-    text-align: right;
-}
-.cover-detail-row-current-mark {
-    flex: 0 0 auto;
-    color: var(--accent);
-    font-size: 0.8rem;
-}
-.cover-detail-row-body {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.05rem;
-}
-.cover-detail-row-title {
-    font-size: 0.92rem;
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.cover-detail-row-artist {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-#cover-detail-history {
-    grid-area: history;
-}
-#cover-detail-queue {
-    grid-area: queue;
-}
-.cover-detail-card::-webkit-scrollbar {
-    width: 5px;
-}
-.cover-detail-card::-webkit-scrollbar-track {
-    background: transparent;
-}
-.cover-detail-card::-webkit-scrollbar-thumb {
-    background: var(--bg-hover);
-    border-radius: 3px;
-}
-
 /* ============================================================
-   2026 visual refresh — shell, navigation and content rhythm
-   (Duplicate base/override rules were folded into their base definitions;
-   the rest are refresh-only chrome and responsive refinements.)
+   Playback Bar (fixed bottom)
    ============================================================ */
-/* Desktop-only brand scale-down (~12%): the whole logo lockup shrinks
-   uniformly so the first nav tab keeps more clearance from the brand
-   without touching the nav buttons or rebalancing the header. */
+.playback-bar {
+    position: fixed;
+    left: 50vw;
+    bottom: 6px;
+    width: min(1560px, calc(100vw - 20px));
+    min-height: 112px;
+    transform: translateX(-50%);
+    z-index: 100;
+    display: grid;
+    grid-template-columns: minmax(180px, 0.72fr) minmax(390px, 1.75fr) minmax(130px, 0.52fr) minmax(200px, 0.78fr);
+    grid-template-areas: "track transport meter volume";
+    align-items: center;
+    gap: clamp(0.75rem, 1.3vw, 1.35rem);
+    padding: 0.82rem clamp(0.9rem, 1.55vw, 1.45rem);
+    border: 1px solid rgba(255,255,255,0.085);
+    border-radius: 22px;
+    background:
+        radial-gradient(circle at 18% 0%, rgba(110,231,183,0.045), transparent 30%),
+        linear-gradient(180deg, rgba(24,24,29,0.96), rgba(14,14,18,0.965));
+    box-shadow: 0 18px 50px rgba(0,0,0,0.46), inset 0 1px 0 rgba(255,255,255,0.035);
+    backdrop-filter: blur(24px) saturate(1.12);
+    -webkit-backdrop-filter: blur(24px) saturate(1.12);
+    transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.playback-bar.is-playing {
+    border-color: rgba(110,231,183,0.18);
+    box-shadow: 0 18px 50px rgba(0,0,0,0.46), 0 -1px 22px rgba(110,231,183,0.045), inset 0 1px 0 rgba(255,255,255,0.035);
+}
+.playback-bar.is-paused {
+    border-color: rgba(110, 231, 183, 0.16);
+}
 
-.tab-glyph {
-    width: 1.05rem;
+.playback-bar .track-info {
+    grid-area: track;
+    min-width: 0;
+    max-width: 100%;
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    align-items: center;
+    gap: 0.82rem;
+}
+.playback-visual {
+    position: relative;
+    width: 72px;
+    height: 72px;
+    border-radius: 14px;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    background:
+        radial-gradient(circle at 25% 15%, rgba(110,231,183,0.11), transparent 42%),
+        rgba(255,255,255,0.035);
+    border: 1px solid rgba(255,255,255,0.09);
+    box-shadow: 0 8px 22px rgba(0,0,0,0.28);
+}
+.playback-cover {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: inherit;
+    cursor: pointer;
+    position: relative;
+    z-index: 2;
+}
+.playback-cover.hidden { display: none; }
+.playback-cover-placeholder {
+    color: rgba(110,231,183,0.62);
+    font-size: 0.9rem;
+    font-weight: 800;
+    letter-spacing: -0.06em;
+}
+.playback-visual:has(.playback-cover:not(.hidden)) .playback-cover-placeholder { display: none; }
+
+.track-copy {
+    min-width: 0;
+    display: grid;
+    gap: 0.38rem;
+}
+.track-fallback,
+.playback-bar .song-info {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    max-width: 100%;
+    display: grid;
+    gap: 0.08rem;
+}
+.playback-bar .song-info:not(:has(> :not(:empty))) { display: none; }
+.playback-bar .song-info > :empty { display: none; }
+.playback-bar .track-title,
+.playback-bar .song-info .sc-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: rgba(255,255,255,0.97);
+    font-weight: 720;
+    font-size: clamp(0.9rem, 1vw, 1.02rem);
+    line-height: 1.25;
+    text-align: left;
+}
+.playback-bar .track-title.placeholder { color: var(--text-muted); font-weight: 560; }
+.playback-bar .track-artist,
+.playback-bar .song-info .sc-artist,
+.playback-bar .song-info .sc-album {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    color: var(--text-secondary);
+    line-height: 1.2;
+}
+.playback-bar .track-artist,
+.playback-bar .song-info .sc-artist { font-size: 0.76rem; font-weight: 590; }
+.playback-bar .song-info .sc-album { font-size: 0.7rem; color: var(--text-muted); }
+.track-favorite-btn:hover {
+    color: var(--accent);
+    background: rgba(110,231,183,0.08);
+}
+.track-favorite-btn:focus-visible {
+    color: var(--accent);
+    background: rgba(110,231,183,0.08);
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+.track-favorite-btn:active { transform: scale(.92); }
+.track-favorite-btn.active { color: var(--accent); text-shadow: 0 0 12px rgba(110,231,183,.22); }
+.track-favorite-btn:disabled { opacity: .45; cursor: wait; }
+.playback-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: nowrap;
+    min-height: 1.25rem;
+}
+.playback-meta-row:not(:has(> :not(.hidden):not(:empty))) { display: none; }
+.samplerate-status,
+.queue-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 1.25rem;
+    padding: .08rem .48rem;
+    border-radius: 999px;
+    font-size: .64rem;
+    font-weight: 680;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    white-space: nowrap;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); }
+.queue-status { background: rgba(110,231,183,.08); color: var(--accent); }
+.queue-status::before {
+    content: '≡\00a0';
+    opacity: 0.75;
+    font-size: 0.72rem;
+}
+
+.playback-center {
+    grid-area: transport;
+    min-width: 0;
+    width: 100%;
+    display: grid;
+    align-items: center;
+    gap: 0.48rem;
+}
+.control-btn {
+    width: 56px;
+    height: 56px;
+    flex: 0 0 auto;
     display: inline-grid;
     place-items: center;
-    color: rgba(110,231,183,0.75);
-    font-size: .9rem;
+    border-radius: 50%;
+    border: 1px solid rgba(110,231,183,.38);
+    background:
+        radial-gradient(circle at 50% 35%, rgba(110,231,183,.24), rgba(110,231,183,.07) 62%, transparent 63%),
+        rgba(13,20,18,.92);
+    color: #f0fff8;
+    box-shadow: 0 0 0 5px rgba(110,231,183,.035), 0 8px 22px rgba(0,0,0,.25);
+    cursor: pointer;
+    font-size: 1.25rem;
+    transition: transform .12s var(--ease), border-color .15s var(--ease), background .15s var(--ease), box-shadow .15s var(--ease);
 }
-.tab-btn[data-tab="spotify"] .tab-glyph { color: #4ed68b; }
-.tab-btn[data-tab="radio"] .tab-glyph { color: #7fe2b7; }
-.tab-btn.active .tab-glyph { color: var(--accent); }
-.station-search-input,
-.url-input {
-    border-color: rgba(255,255,255,.075);
-    background: rgba(255,255,255,.035);
+.control-btn:hover:not(:disabled),
+.control-btn:focus-visible:not(:disabled) {
+    border-color: rgba(110,231,183,.64);
+    box-shadow: 0 0 0 5px rgba(110,231,183,.055), 0 8px 24px rgba(0,0,0,.3);
+    outline: none;
 }
-.station-card.active {
-    border-color: rgba(110,231,183,.72);
-    background: linear-gradient(180deg, rgba(110,231,183,.105), rgba(255,255,255,.014));
-    box-shadow: 0 0 0 1px rgba(110,231,183,.38), 0 14px 30px rgba(0,0,0,.26);
+.control-btn:active:not(:disabled) { transform: scale(.94); }
+.control-btn:disabled { opacity: .32; cursor: default; }
+.control-btn-secondary,
+.control-btn-clear {
+    width: 38px;
+    height: 38px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    box-shadow: none;
+    font-size: .98rem;
 }
-.library-header,
-.album-detail-header,
-.effects-header {
-    gap: 1rem;
-}
-.btn-primary,
-.btn-secondary,
-.btn-ghost {
-    border-radius: 11px;
+.control-btn-secondary:hover:not(:disabled),
+.control-btn-secondary:focus-visible:not(:disabled),
+.control-btn-clear:hover:not(:disabled),
+.control-btn-clear:focus-visible:not(:disabled) {
+    color: var(--text-primary);
+    background: rgba(255,255,255,.045);
+    border-color: rgba(255,255,255,.06);
+    box-shadow: none;
 }
 
-/* Mobile touch targets: keep the header power button tappable on narrow
-   screens (base 38px, refreshed at all widths below). */
+.seek-row {
+    display: grid;
+    grid-template-columns: 2.5rem minmax(100px, 1fr) 2.5rem;
+    align-items: center;
+    gap: .35rem;
+    width: 100%;
+    min-width: 0;
+}
+.seek-time {
+    color: var(--text-muted);
+    font-size: .66rem;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    text-align: center;
+    white-space: nowrap;
+}
+.seek-slider,
+.volume-slider {
+    --range-progress: 0%;
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    outline: none;
+    cursor: pointer;
+    background: linear-gradient(to right,
+        var(--accent) 0%,
+        var(--accent) var(--range-progress),
+        rgba(255,255,255,.10) var(--range-progress),
+        rgba(255,255,255,.10) 100%);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.4);
+}
+.seek-slider { height: 5px; }
+.volume-slider { height: 5px; }
+.seek-slider::-webkit-slider-thumb,
+.volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 1px solid rgba(0,0,0,0.5);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.1);
+    transition: transform .12s var(--ease), box-shadow .12s var(--ease);
+}
+.seek-slider::-webkit-slider-thumb { width: 13px; height: 13px; }
+.volume-slider::-webkit-slider-thumb { width: 14px; height: 14px; }
+.seek-slider::-moz-range-thumb,
+.volume-slider::-moz-range-thumb {
+    border-radius: 50%;
+    background: #ffffff;
+    border: 1px solid rgba(0,0,0,0.5);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+}
+.seek-slider::-moz-range-thumb { width: 13px; height: 13px; }
+.volume-slider::-moz-range-thumb { width: 14px; height: 14px; }
+.seek-slider:hover::-webkit-slider-thumb,
+.volume-slider:hover::-webkit-slider-thumb {
+    transform: scale(1.18);
+    box-shadow: 0 0 0 3px rgba(110,231,183,.22), 0 2px 6px rgba(0,0,0,0.6);
+}
+.seek-slider:hover::-moz-range-thumb,
+.volume-slider:hover::-moz-range-thumb {
+    transform: scale(1.18);
+    box-shadow: 0 0 0 3px rgba(110,231,183,.22), 0 2px 6px rgba(0,0,0,0.6);
+}
+.seek-slider:focus-visible::-webkit-slider-thumb,
+.volume-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(110,231,183,.28); }
+.seek-slider:focus-visible::-moz-range-thumb,
+.volume-slider:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 4px rgba(110,231,183,.28); }
 
-/* Small phones: slightly smaller brand lockup than the 760px tablet size.
-   Placed after the 760px override so these win on narrow screens. */
+.meter-segments i.is-lit { background: #55d99f; }
+.meter-segments i.is-lit.is-warn { background: #e9b949; }
+.meter-segments i.is-lit.is-hot { background: #ef7b4f; }
+.meter-segments i.is-peak {
+    background: #ff5a5f;
+    box-shadow: 0 0 8px rgba(255,90,95,.72);
+}
+
+.playback-bar .controls {
+    grid-area: volume;
+    min-width: 0;
+}
+.volume-control {
+    display: grid;
+    grid-template-columns: 24px minmax(130px,1fr) 2.5rem;
+    align-items: center;
+    gap: .5rem;
+    min-width: 0;
+}
+.volume-icon {
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    color: var(--text-secondary);
+}
+.volume-icon svg { width: 20px; height: 20px; display: block; }
+.volume-slider { min-width: 130px; }
+.playback-bar .controls.is-adjusting-volume .volume-display { color: var(--text-primary); }
+
+.playback-bar.progress-readonly .seek-slider:disabled {
+    cursor: default;
+    opacity: 0.9;
+}
 
 /* ============================================================
    Playback footer refinement — consolidated survivors

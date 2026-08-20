@@ -145,3 +145,47 @@ body {
 /* ============================================================
    Header
    ============================================================ */
+
+/* Shared compact view tabs (Library Tracks/Folders/Albums + TIDAL
+   Tracks/Albums/Artists): one segmented-navigation standard instead of the
+   oversized library action buttons and the undersized TIDAL filter chips.
+   Inactive tabs are quiet (muted text, transparent); the active tab keeps the
+   mint accent. Touch height stays adequate at 38px. */
+.view-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+.view-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 0.3rem 0.9rem;
+    font-size: 0.86rem;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+.view-tab:hover {
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+}
+.view-tab.active,
+.view-tab.is-active {
+    color: var(--accent);
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.2);
+}
