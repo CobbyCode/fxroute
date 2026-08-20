@@ -411,7 +411,8 @@
     padding-bottom: 0.5rem;
 }
 .tidal-subbar .view-tabs {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    min-width: 0;
 }
 .tidal-subbar .streaming-search {
     min-width: 0;
