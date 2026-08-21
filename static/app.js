@@ -4889,12 +4889,13 @@ function renderAlbums() {
         albums = albums.filter(album => !!album.favorite);
     }
     const showSmartFavorites = state.library.showFavoriteAlbums;
+    const playlists = getFilteredPlaylists();
 
-    if (albums.length === 0 && !showSmartFavorites) {
+    if (albums.length === 0 && playlists.length === 0 && !showSmartFavorites) {
         window.FXRouteContentState.set(loadingEl, 'empty',
             state.library.showFavoriteAlbums
                 ? 'No favorite albums.'
-                : query ? 'No matching albums.' : 'No albums found. Import music with album tags.');
+                : query ? 'No matching albums or playlists.' : 'No albums found. Import music with album tags.');
         elements.albumsGrid.innerHTML = '';
         elements.albumsGrid.classList.remove('hidden');
         return;
@@ -4914,6 +4915,12 @@ function renderAlbums() {
             <div class="album-artist">Most Played Tracks</div>
         </div>
     ` : '';
+    const playlistHtml = playlists.map(playlist => `
+        <div class="album-card playlist-card" data-playlist-id="${escapeHtml(playlist.id)}" role="button" tabindex="0">
+            <div class="album-art-wrap">${playlistCoverHtml(playlist)}</div>
+            <div class="album-name">${escapeHtml(playlist.name)}</div>
+            <div class="album-artist">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
+        </div>`).join('');
     const manualHtml = albums.length > 0 ? albums.map(album => {
         const coverUrl = albumCoverUrl(album);
         const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
@@ -4930,11 +4937,12 @@ function renderAlbums() {
             <div class="album-artist">${escapeHtml(album.artist)}</div>
         </div>`;
     }).join('') : '';
-    elements.albumsGrid.innerHTML = smartHtml + manualHtml;
+    elements.albumsGrid.innerHTML = smartHtml + playlistHtml + manualHtml;
     elements.albumsGrid.classList.remove('hidden');
 
     const openAlbumCard = (card) => () => {
-        if (card.dataset.smartFavorite) openSmartTopTracks();
+        if (card.dataset.playlistId) loadPlaylistById(card.dataset.playlistId, { autoplay: true });
+        else if (card.dataset.smartFavorite) openSmartTopTracks();
         else openAlbumDetail(card.dataset.albumId);
     };
     const handleAlbumCardKeydown = (card) => (event) => {
@@ -4984,6 +4992,56 @@ function setAlbumCoverImage(img, coverUrl, fallbackText) {
         this.src = fallbackSvg;
     };
     img.src = coverUrl || fallbackSvg;
+}
+
+function findAlbumForTrack(track) {
+    const name = (track?.album || '').trim();
+    if (!name) return null;
+    const artist = (track.album_artist || track.artist || '').trim();
+    const albums = state.library.albums || [];
+    const byName = albums.filter(a => (a.name || '').trim().toLowerCase() === name.toLowerCase());
+    // Exact artist + album match first (mirrors backend album grouping).
+    const byArtist = byName.find(a => (a.artist || '').trim().toLowerCase() === artist.toLowerCase());
+    if (byArtist) return byArtist;
+    // Fall back to a unique album name (handles compilations / Various).
+    if (byName.length === 1) return byName[0];
+    return null;
+}
+
+function playlistDistinctAlbums(playlist) {
+    const tracksById = new Map((state.library.tracks || []).map(t => [t.id, t]));
+    const albums = [];
+    const seen = new Set();
+    for (const id of (playlist?.track_ids || [])) {
+        const track = tracksById.get(id);
+        if (!track) continue;
+        const album = findAlbumForTrack(track);
+        const key = album?.id
+            || ('noalbum::' + (track.album || '').trim().toLowerCase() + '::' + (track.album_artist || track.artist || '').trim().toLowerCase());
+        if (seen.has(key)) continue;
+        seen.add(key);
+        albums.push(album);
+        if (albums.length >= 4) break;
+    }
+    return albums;
+}
+
+function playlistCoverHtml(playlist) {
+    const albums = playlistDistinctAlbums(playlist).filter(a => a?.id);
+    if (albums.length === 0) {
+        return '<div class="playlist-collage-fallback" aria-hidden="true"><img src="/static/fxroute-logo.png" alt="" /></div>';
+    }
+    const count = Math.min(albums.length, 4);
+    const cells = albums.slice(0, count).map(album => {
+        const coverUrl = albumCoverUrl(album);
+        const isFallback = !coverUrl;
+        return `<img class="playlist-collage-cell${isFallback ? ' is-fallback' : ''}"
+            src="${escapeHtml(coverUrl || '/static/fxroute-logo.png')}"
+            alt="${escapeHtml(album.name || '')}"
+            loading="lazy"
+            onerror="this.onerror=null;this.classList.add('is-fallback');this.src='/static/fxroute-logo.png';" />`;
+    }).join('');
+    return `<div class="playlist-collage playlist-collage--${count}">${cells}</div>`;
 }
 
 async function openAlbumDetail(albumId) {
@@ -5310,13 +5368,9 @@ function detailAboutHtml(label, description) {
 
 function closeAlbumDetail() {
     state.library.albumDetail = null;
-    elements.albumDetail.classList.add('hidden');
-    elements.albumsGrid.classList.remove('hidden');
-    if (elements.albumDiscover) {
-        elements.albumDiscover.classList.add('hidden');
-        elements.albumDiscover.innerHTML = '';
-    }
-    updatePlaylistSaveRowVisibility();
+    // Re-render the grid (instead of just unhiding it) so newly saved
+    // playlists appear as tiles as soon as the user leaves the album.
+    renderAlbums();
 }
 
 async function playTrackInAlbum(trackId, albumId) {
@@ -5502,10 +5556,10 @@ function syncRenderedTrackSelection() {
 function updatePlaylistSaveRowVisibility() {
     if (!elements.playlistSaveRow) return;
     const count = state.library.selectedTrackIds.length;
-    const isAlbumsMode = state.library.viewMode === 'albums';
-    const hasPlaylistSelection = count >= 2 && !isAlbumsMode;
-    // The album detail back button lives inside the detail header, which is
-    // shown/hidden as a whole, so it needs no separate visibility toggle.
+    // The playlist-build selection is independent of the view mode: whenever
+    // at least two tracks are selected (album detail, tracks or folders), the
+    // existing save-playlist row stays reachable.
+    const hasPlaylistSelection = count >= 2;
     elements.playlistSaveRow.classList.toggle('hidden', !hasPlaylistSelection);
     if (elements.playlistSaveControls) {
         elements.playlistSaveControls.classList.toggle('hidden', !hasPlaylistSelection);
