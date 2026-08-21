@@ -2622,7 +2622,7 @@ body {
    Streaming provider tabs (Spotify / Qobuz / TIDAL)
    ========================================================================= */
 .streaming-shell {
-    padding: 0.7rem 0.25rem;
+    padding: 0.7rem 0;
 }
 .streaming-provider {
     display: flex;
