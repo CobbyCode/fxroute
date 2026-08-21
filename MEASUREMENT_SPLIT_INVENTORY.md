@@ -42,6 +42,19 @@ Stand: 2026-08-21, `static/app.js` @ 14.911 Zeilen (HEAD f25ed7b).
 
 ## Phasen-Fortschritt
 
+**Phase 2** (2026-08-21): `static/measurement_graph.js` (IIFE, DI via
+`init()`, Muster streaming.js) angelegt. Verschoben: `drawMeasurementGraph`,
+`scheduleMeasurementGraphRender(+ForResize)` (rAF-Koaleszenz, Flag ist jetzt
+modulprivat), `buildMeasurementGraphEntry`, `getGraphMeasurementEntries`.
+Canvas/Panel kommen über injizierte Getter (`getCanvas`/`getPanel`),
+State-Leser und Overlay-Painter werden als hoisted Funktionsreferenzen
+injiziert; Modul nutzt `FXRouteMeasurementUI`/`-Dsp` direkt. app.js hält
+gleichnamige Wrapper; `measurementResizeScheduled`-Global entfallen;
+ResizeObserver-Wiring bleibt in app.js. index.html: Script-Tag +
+app.js v=0.9.56. Verifikation wie Phase 1: Fokus-Tests grün, Walkthrough
+200 Checks grün ohne strukturelle Screenshot-Diffs (>2000 px), Final Gate
+200/0/10.
+
 **Phase 0** (2026-08-21, Commit 1401fc0): dieses Inventar + Baseline.
 
 **Phase 1** (2026-08-21): `static/measurement_ui.js` (UMD) angelegt. 66 reine

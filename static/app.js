@@ -12,6 +12,25 @@ const CONFIG = {
 const MeasurementDsp = window.FXRouteMeasurementDsp || {};
 const HybridMeasurement = window.FXRouteHybridMeasurement || {};
 const MeasurementUI = window.FXRouteMeasurementUI || {};
+const MeasurementGraph = window.FXRouteMeasurementGraph || {};
+// Graph module: injected state readers and overlay painters (all hoisted
+// app.js functions; element getters resolve lazily after `elements` is built).
+window.FXRouteMeasurementGraph?.init({
+    getCanvas: () => elements.measurementGraph,
+    getPanel: () => elements.measurementPanel,
+    getMeasurementGraphView,
+    getDisplaySmoothing: () => state.measurement.displaySmoothing || '1/6-oct',
+    getCurrentMeasurementEntries,
+    getVisibleMeasurementEntries,
+    getVisibleMeasurementColorById,
+    getMeasurementDisplayTraces,
+    buildMeasurementIrGraphEntry,
+    drawMeasurementIrGraph,
+    drawMeasurementTargetCurve,
+    drawMeasurementConvolverRangeOverlay,
+    drawMeasurementPeqOverlay,
+    drawCustomHouseCurveHandles,
+});
 const MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS = MeasurementUI.MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS;
 const MEASUREMENT_JOB_CANCELLED_STATES = MeasurementUI.MEASUREMENT_JOB_CANCELLED_STATES;
 const MEASUREMENT_JOB_FAILED_STATES = MeasurementUI.MEASUREMENT_JOB_FAILED_STATES;
@@ -330,7 +349,6 @@ let settingsStatusPollTimer = null;
 let settingsOutputScanOnFocusDone = false;
 let measurementInputScanOnFocusDone = false;
 let measurementSettingsRevision = 0;
-let measurementResizeScheduled = false;
 let measurementGraphResizeObserver = null;
 let playbackFooterResizeObserver = null;
 let playbackFooterSpaceFrame = null;
@@ -8482,36 +8500,11 @@ function handleMeasurementGraphPointerUp(event) {
 }
 
 function buildMeasurementGraphEntry(measurement = {}, { current = false, graphColor = '' } = {}) {
-    const traces = getMeasurementDisplayTraces(measurement);
-    if (!traces.length) return null;
-    const smoothing = state.measurement.displaySmoothing || '1/6-oct';
-    return {
-        ...measurement,
-        traces: traces.map((trace) => ({
-            ...trace,
-            points: smoothMeasurementTracePoints(trace.points || [], smoothing),
-        })),
-        current,
-        graphColor: graphColor || (current ? measurementCurrentColor : ''),
-    };
+    return MeasurementGraph.buildMeasurementGraphEntry(measurement, { current, graphColor });
 }
 
 function getGraphMeasurementEntries() {
-    const entries = [];
-    const builder = getMeasurementGraphView() === 'ir' ? buildMeasurementIrGraphEntry : buildMeasurementGraphEntry;
-    getCurrentMeasurementEntries().forEach((measurement, index) => {
-        const currentEntry = builder(measurement, {
-            current: true,
-            graphColor: index === 0 ? measurementCurrentColor : measurementComparePalette[index - 1],
-        });
-        if (currentEntry) entries.push(currentEntry);
-    });
-    const visibleColorById = getVisibleMeasurementColorById();
-    getVisibleMeasurementEntries().forEach((measurement) => {
-        const entry = builder(measurement, { current: false, graphColor: visibleColorById[measurement.id] });
-        if (entry) entries.push(entry);
-    });
-    return entries;
+    return MeasurementGraph.getGraphMeasurementEntries();
 }
 
 function measurementModeReady() {
@@ -9154,17 +9147,11 @@ function getMeasurementReferenceWarning() {
 }
 
 function scheduleMeasurementGraphRender() {
-    if (measurementResizeScheduled) return;
-    measurementResizeScheduled = true;
-    window.requestAnimationFrame(() => {
-        measurementResizeScheduled = false;
-        drawMeasurementGraph();
-    });
+    return MeasurementGraph.scheduleMeasurementGraphRender();
 }
 
 function scheduleMeasurementGraphRenderForResize() {
-    if (!elements.measurementPanel || elements.measurementPanel.classList.contains('hidden')) return;
-    scheduleMeasurementGraphRender();
+    return MeasurementGraph.scheduleMeasurementGraphRenderForResize();
 }
 
 function getSortedNumericValues(values = []) {
@@ -9249,123 +9236,7 @@ function drawMeasurementPeqOverlay(ctx, bounds, range) {
 }
 
 function drawMeasurementGraph() {
-    const canvas = elements.measurementGraph;
-    if (!canvas || elements.measurementPanel?.classList.contains('hidden')) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const displaySize = getMeasurementGraphDisplaySize(canvas);
-    if (!displaySize.width || !displaySize.height) return;
-    const displayWidth = displaySize.width;
-    const displayHeight = displaySize.height;
-    const dpr = window.devicePixelRatio || 1;
-    const targetWidth = Math.round(displayWidth * dpr);
-    const targetHeight = Math.round(displayHeight * dpr);
-    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-        canvas.width = targetWidth;
-        canvas.height = targetHeight;
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, displayWidth, displayHeight);
-
-    ctx.fillStyle = '#161619';
-    ctx.fillRect(0, 0, displayWidth, displayHeight);
-
-    const graphEntries = getGraphMeasurementEntries();
-    const range = getMeasurementGraphRange(graphEntries);
-    const bounds = getMeasurementGraphBounds(displayWidth, displayHeight);
-    if (getMeasurementGraphView() === 'ir') {
-        drawMeasurementIrGraph(ctx, bounds, graphEntries);
-        ctx.strokeStyle = 'rgba(255,255,255,0.16)';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(bounds.left, bounds.top, bounds.width, bounds.height);
-        return;
-    }
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-    ctx.lineWidth = 1;
-    const dbStep = 6;
-    for (let db = range.minDb; db <= range.maxDb; db += dbStep) {
-        const y = measurementDbToY(db, bounds, range);
-        ctx.beginPath();
-        ctx.moveTo(bounds.left, y);
-        ctx.lineTo(bounds.left + bounds.width, y);
-        ctx.stroke();
-        ctx.fillStyle = db === 0 ? '#6ee7b7' : 'rgba(236,236,240,0.65)';
-        ctx.font = '11px "Geist Mono", "JetBrains Mono", monospace, sans-serif';
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(`${db} dB`, bounds.left - 8, y);
-    }
-
-    [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].forEach(frequency => {
-        const x = measurementFrequencyToX(frequency, bounds);
-        ctx.strokeStyle = frequency === 1000 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.06)';
-        ctx.beginPath();
-        ctx.moveTo(x, bounds.top);
-        ctx.lineTo(x, bounds.top + bounds.height);
-        ctx.stroke();
-        ctx.fillStyle = 'rgba(236,236,240,0.65)';
-        ctx.font = '11px "Geist Mono", "JetBrains Mono", monospace, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        ctx.fillText(frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`, x, bounds.top + bounds.height + 8);
-    });
-
-    drawMeasurementTargetCurve(ctx, bounds, range);
-
-    graphEntries.forEach(entry => {
-        (entry.traces || []).forEach(trace => {
-            if (!trace.points.length) return;
-            const isReviewTrace = trace.role === 'raw-review';
-            const traceColor = entry.graphColor || '#6ee7b7';
-
-            // Subtle area fill under current primary curve
-            if (entry.current && !isReviewTrace && trace.points.length > 1) {
-                const fillGrad = ctx.createLinearGradient(0, bounds.top, 0, bounds.top + bounds.height);
-                fillGrad.addColorStop(0, 'rgba(110, 231, 183, 0.15)');
-                fillGrad.addColorStop(1, 'rgba(110, 231, 183, 0.0)');
-                ctx.fillStyle = fillGrad;
-                ctx.beginPath();
-                trace.points.forEach(([frequency, level], pointIndex) => {
-                    const x = measurementFrequencyToX(frequency, bounds);
-                    const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(level, bounds, range)));
-                    if (pointIndex === 0) {
-                        ctx.moveTo(x, bounds.top + bounds.height);
-                        ctx.lineTo(x, y);
-                    } else {
-                        ctx.lineTo(x, y);
-                    }
-                });
-                const lastPoint = trace.points[trace.points.length - 1];
-                const lastX = measurementFrequencyToX(lastPoint[0], bounds);
-                ctx.lineTo(lastX, bounds.top + bounds.height);
-                ctx.closePath();
-                ctx.fill();
-            }
-
-            ctx.strokeStyle = traceColor;
-            ctx.lineWidth = entry.current ? 2.6 : (isReviewTrace ? 1.6 : 2.0);
-            ctx.setLineDash(entry.current ? [] : (isReviewTrace ? [5, 4] : [8, 5]));
-            ctx.beginPath();
-            trace.points.forEach(([frequency, level], pointIndex) => {
-                const x = measurementFrequencyToX(frequency, bounds);
-                const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(level, bounds, range)));
-                if (pointIndex === 0) ctx.moveTo(x, y);
-                else ctx.lineTo(x, y);
-            });
-            ctx.stroke();
-            ctx.setLineDash([]);
-        });
-    });
-
-    drawMeasurementConvolverRangeOverlay(ctx, bounds);
-    drawMeasurementPeqOverlay(ctx, bounds, range);
-    drawCustomHouseCurveHandles(ctx, bounds, range);
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(bounds.left, bounds.top, bounds.width, bounds.height);
+    return MeasurementGraph.drawMeasurementGraph(elements.measurementGraph);
 }
 
 function summarizeMeasurementBand(summary = {}, fallbackLabel = 'No points') {
