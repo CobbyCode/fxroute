@@ -174,6 +174,53 @@ class QobuzStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["source"], "qobuz")
 
 
+class QobuzStandbyFlagTests(unittest.IsolatedAsyncioTestCase):
+    async def _status(self, payload):
+        provider = QobuzProvider()
+        getter = _fake_get({"/api/status": payload, "/api/now-playing": None})
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
+            return await provider.status()
+
+    async def test_idle_daemon_without_connect_session_flags_standby(self):
+        payload = _status_payload(
+            playback={"state": "stopped", "title": None, "artist": None, "track_id": None,
+                      "duration": None, "position": None, "volume": 1.0, "muted": False},
+            qconnect={"device_name": "QBZ (fxroute)", "enabled": True,
+                      "session_active": False, "state": "idle"},
+        )
+        status = await self._status(payload)
+        self.assertEqual(status["status"], "Stopped")
+        self.assertFalse(status["connected"])
+        self.assertTrue(status["qbzd_standby"])
+
+    async def test_active_session_never_flags_standby(self):
+        # Playing with an active Connect session: now-playing card, not standby.
+        status = await self._status(_status_payload())
+        self.assertEqual(status["status"], "Playing")
+        self.assertTrue(status["connected"])
+        self.assertFalse(status["qbzd_standby"])
+
+    async def test_local_playback_without_session_never_flags_standby(self):
+        # FXRoute-started playback runs through qbzd's engine without a Connect
+        # session; playing must never read as standby.
+        payload = _status_payload(
+            qconnect={"device_name": "QBZ (fxroute)", "enabled": True,
+                      "session_active": False, "state": "on"},
+        )
+        status = await self._status(payload)
+        self.assertEqual(status["status"], "Playing")
+        self.assertFalse(status["qbzd_standby"])
+
+    async def test_unavailable_daemon_has_no_standby_flag(self):
+        provider = QobuzProvider()
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=False), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=AssertionError("must not be called")):
+            status = await provider.status()
+        self.assertNotIn("qbzd_standby", status)
+
+
 class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_facts_survive_transient_now_playing_gap(self):
         # A transient now-playing gap (pause/transition) must not degrade a

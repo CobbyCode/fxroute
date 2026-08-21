@@ -49,6 +49,27 @@ assert.deepEqual(
     },
 );
 
+// Standby parity: idle qbzd (daemon up, no Connect session) reads as ready.
+assert.deepEqual(
+    notPlayingContent('qobuz', { status: 'Stopped', qbzd_standby: true }),
+    {
+        title: 'Qobuz is ready.',
+        message: 'qbzd is waiting for a Qobuz Connect session. Start playback from the Qobuz app and select FXRoute.',
+    },
+);
+
+// Without the flag the classic messages are preserved.
+assert.deepEqual(
+    notPlayingContent('qobuz', { status: 'Stopped' }),
+    { title: 'Nothing is playing. Start a track from the Qobuz app.', message: '' },
+);
+
+// The flags never leak across providers.
+assert.deepEqual(
+    notPlayingContent('spotify', { status: 'Stopped', qbzd_standby: true }),
+    { title: 'Spotify is not running.', message: '' },
+);
+
 // Without the flag the classic not-running message is preserved.
 assert.deepEqual(
     notPlayingContent('spotify', { status: 'Stopped' }),

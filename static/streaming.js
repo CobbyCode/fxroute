@@ -463,11 +463,18 @@
     function notPlayingContent(providerId, data) {
         // spotifyd 0.4.x hides its MPRIS interface without an active Connect
         // session; the backend flags standby so an idle daemon reads as
-        // "ready" instead of "not running".
+        // "ready" instead of "not running". qbzd reports the same through its
+        // session state.
         if (providerId === 'spotify' && data && data.spotifyd_standby) {
             return {
                 title: 'Spotify is ready.',
                 message: 'spotifyd is waiting for a Spotify Connect session. Start playback from any Spotify app and select FXRoute.',
+            };
+        }
+        if (providerId === 'qobuz' && data && data.qbzd_standby) {
+            return {
+                title: 'Qobuz is ready.',
+                message: 'qbzd is waiting for a Qobuz Connect session. Start playback from the Qobuz app and select FXRoute.',
             };
         }
         if (providerId === 'spotify') return { title: 'Spotify is not running.', message: '' };

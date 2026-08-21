@@ -272,6 +272,11 @@ class QobuzProvider(StreamingProvider):
                         "artUrl": nxt.get("artwork_url") or "",
                     }
 
+        # Standby parity with spotifyd: the daemon is up but no Connect
+        # session is active, so the UI can show "ready" instead of a bare
+        # "not running". Never flagged while anything is playing.
+        result["qbzd_standby"] = result["status"] == "Stopped" and not result["connected"]
+
         return result
 
     async def play(self) -> dict:
