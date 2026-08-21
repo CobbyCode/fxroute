@@ -10599,7 +10599,7 @@ function renderMeasurementPanel() {
     normalizeMeasurementInputChannelSelections();
     measurementState.modeNote = measurementModeNoteText();
     const current = getCurrentMeasurementEntry();
-    const measurements = (measurementState.measurements || []).filter(measurement => measurement.id !== current?.id);
+    const measurements = getSavedListMeasurements();
     const graphEntries = getGraphMeasurementEntries();
     const assistMode = measurementState.assistMode === 'convolver' ? 'convolver' : 'peq';
     const activeEditor = getMeasurementActiveEditor();
@@ -10609,6 +10609,22 @@ function renderMeasurementPanel() {
     const conv = ensureMeasurementConvolverState();
     const activePeqFilter = getMeasurementPeqActiveFilter();
 
+    const ctx = { measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter };
+    renderMeasurementPanelSetupSection(ctx);
+    renderMeasurementPanelInputsSection(ctx);
+    renderMeasurementPanelCalibrationSection(ctx);
+    renderMeasurementPanelHouseCurveSection(ctx);
+    renderMeasurementPanelActionsSection(ctx);
+    renderMeasurementPanelViewSection(ctx);
+    renderMeasurementPanelStatusSection(ctx);
+    renderMeasurementPanelEditorsSection(ctx);
+    renderMeasurementPanelConvolverSection(ctx);
+    renderMeasurementPanelSavedListSection(ctx);
+    syncAutoSubButton();
+    scheduleMeasurementGraphRender();
+}
+
+function renderMeasurementPanelSetupSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     if (elements.measurementSetupCard) {
         elements.measurementSetupCard.classList.toggle('hidden', !measurementState.setupOpen);
     }
@@ -10637,6 +10653,9 @@ function renderMeasurementPanel() {
         button.classList.toggle('is-active', active);
         button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
+}
+
+function renderMeasurementPanelInputsSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     if (elements.measurementInputGroup) {
         elements.measurementInputGroup.classList.remove('hidden');
     }
@@ -10685,6 +10704,9 @@ function renderMeasurementPanel() {
         elements.measurementChannelSelect.value = measurementState.selectedChannel || 'left';
         elements.measurementChannelSelect.disabled = measurementState.startInFlight;
     }
+}
+
+function renderMeasurementPanelCalibrationSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     if (elements.measurementCalibrationSelect) {
         const options = [{ id: '', filename: 'No calibration file' }, ...(measurementState.calibrationOptions || [])];
         elements.measurementCalibrationSelect.innerHTML = options.map(option => `<option value="${escapeHtml(option.id || '')}" ${(option.id || '') === (measurementState.selectedCalibrationRef || '') ? 'selected' : ''}>${escapeHtml(option.filename || 'Calibration')}</option>`).join('');
@@ -10712,6 +10734,9 @@ function renderMeasurementPanel() {
         elements.measurementCalibrationName.textContent = activeCalibrationLabel;
         elements.measurementCalibrationName.classList.toggle('hidden', !activeCalibrationLabel);
     }
+}
+
+function renderMeasurementPanelHouseCurveSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     if (elements.measurementHouseCurveSelect) {
         const houseCurveOptions = measurementState.houseCurveOptions || [];
         const selectedHouseCurveId = String(conv.targetCurve || '').startsWith('house:') ? String(conv.targetCurve).slice(6) : '';
@@ -10745,6 +10770,9 @@ function renderMeasurementPanel() {
         elements.measurementHouseCurveName.textContent = activeHouseCurveLabel;
         elements.measurementHouseCurveName.classList.toggle('hidden', !activeHouseCurveLabel);
     }
+}
+
+function renderMeasurementPanelActionsSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     if (elements.measurementNameInput) {
         elements.measurementNameInput.value = measurementState.currentMeasurementName || '';
         elements.measurementNameInput.disabled = measurementState.startInFlight || measurementState.saveInFlight || !!measurementState.activeJobId;
@@ -10777,6 +10805,9 @@ function renderMeasurementPanel() {
         elements.measurementSaveBtn.disabled = !hasUnsavedContent || measurementState.saveInFlight || measurementState.startInFlight;
         elements.measurementSaveBtn.textContent = measurementState.saveInFlight ? 'Working…' : (measurementState.currentMeasurementSaved && !hasAutoSubMeas ? 'Saved' : 'Save current');
     }
+}
+
+function renderMeasurementPanelViewSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     if (elements.measurementAssistMode) {
         elements.measurementAssistMode.value = assistMode;
         elements.measurementAssistMode.disabled = !frequencyView;
@@ -10808,6 +10839,9 @@ function renderMeasurementPanel() {
         elements.measurementClearBtn.disabled = !frequencyView || !hasResettableGraphState || measurementState.startInFlight || !!measurementState.activeJobId;
         elements.measurementClearBtn.title = frequencyView ? '' : 'Only available in frequency view.';
     }
+}
+
+function renderMeasurementPanelStatusSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     if (elements.measurementSetupStatus) {
         elements.measurementSetupStatus.textContent = measurementSetupStatusText();
     }
@@ -10846,6 +10880,9 @@ function renderMeasurementPanel() {
         elements.measurementGraph.title = '';
     }
     renderMeasurementIrDiagnostics(graphEntries, frequencyView);
+}
+
+function renderMeasurementPanelEditorsSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     if (elements.measurementPeqPanel) {
         elements.measurementPeqPanel.classList.toggle('hidden', !frequencyView || activeEditor !== 'peq' || (!peq.enabled && !peq.filters.length));
     }
@@ -10977,112 +11014,9 @@ function renderMeasurementPanel() {
     if (elements.measurementPeqTakeBothBtn) elements.measurementPeqTakeBothBtn.disabled = !peq.filters.length;
     if (elements.measurementPeqCreateBtn) elements.measurementPeqCreateBtn.disabled = (!peqDraftLeftCount && !peqDraftRightCount) || !String(peq.draft?.presetName || '').trim() || peqCreateInFlight;
 
-    elements.measurementPeqChips?.querySelectorAll('[data-measurement-peq-slot]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const filterId = button.dataset.measurementPeqChip;
-            if (filterId) {
-                selectMeasurementPeqFilter(filterId);
-            } else {
-                const created = addMeasurementPeqFilter();
-                if (!created) return;
-            }
-            renderMeasurementPanel();
-            scheduleMeasurementGraphRender();
-            focusMeasurementPeqPanelContext();
-        });
-    });
-    elements.measurementCustomHouseCurveChips?.querySelectorAll('[data-custom-house-curve-slot]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const custom = ensureCustomHouseCurveState();
-            const pointId = button.dataset.customHouseCurvePoint;
-            if (pointId) custom.activePointId = pointId;
-            else if (!addCustomHouseCurvePoint({ slot: Number(button.dataset.customHouseCurveSlot) })) return;
-            renderMeasurementPanel();
-            scheduleMeasurementGraphRender();
-        });
-    });
-    elements.measurementCustomHouseCurveEditor?.querySelectorAll('[data-custom-house-curve-field]').forEach((input) => {
-        const commit = () => {
-            const custom = ensureCustomHouseCurveState();
-            if (!custom.activePointId) return;
-            updateCustomHouseCurvePoint(custom.activePointId, { [input.dataset.customHouseCurveField]: Number(input.value) });
-        };
-        input.addEventListener('input', () => { commit(); scheduleMeasurementGraphRender(); });
-        input.addEventListener('change', () => { commit(); renderMeasurementPanel(); scheduleMeasurementGraphRender(); });
-    });
-    elements.measurementCustomHouseCurveEditor?.querySelectorAll('[data-custom-house-curve-delete]').forEach((button) => {
-        button.addEventListener('click', () => {
-            deleteCustomHouseCurvePoint(button.dataset.customHouseCurveDelete);
-            renderMeasurementPanel();
-            scheduleMeasurementGraphRender();
-        });
-    });
-    elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-field]').forEach((input) => {
-        const commit = (reRender) => {
-            const activeFilter = getMeasurementPeqActiveFilter();
-            if (!activeFilter) return;
-            const field = input.dataset.measurementPeqField;
-            const value = field === 'type' ? input.value : Number(input.value);
-            updateMeasurementPeqFilter(activeFilter.id, { [field]: value });
-            if (reRender) renderMeasurementPanel();
-            scheduleMeasurementGraphRender();
-        };
-        if (input instanceof HTMLInputElement && input.type === 'number') {
-            input.addEventListener('keydown', handleMeasurementPeqNumberInputArrowKey);
-        }
-        input.addEventListener('input', () => commit(input.dataset.measurementPeqField === 'type'));
-        input.addEventListener('change', () => commit(true));
-    });
-    elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-frequency-step]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const activeFilter = getMeasurementPeqActiveFilter();
-            if (!activeFilter) return;
-            const input = elements.measurementPeqEditor?.querySelector('#measurement-peq-freq');
-            const step = Number(input?.step) || 1;
-            const direction = Number(button.dataset.measurementPeqFrequencyStep || '0');
-            const nextValue = stepMeasurementPeqFrequency(activeFilter.id, direction, step);
-            if (nextValue === null) return;
-            if (input) input.value = String(nextValue);
-            scheduleMeasurementGraphRender();
-            focusMeasurementPeqPanelContext();
-        });
-    });
-    elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-gain-step]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const activeFilter = getMeasurementPeqActiveFilter();
-            if (!activeFilter) return;
-            const input = elements.measurementPeqEditor?.querySelector('#measurement-peq-gain');
-            const step = Number(input?.step) || 0.1;
-            const direction = Number(button.dataset.measurementPeqGainStep || '0');
-            const nextValue = stepMeasurementPeqGain(activeFilter.id, direction, step);
-            if (nextValue === null) return;
-            if (input) input.value = nextValue.toFixed(1);
-            scheduleMeasurementGraphRender();
-            focusMeasurementPeqPanelContext();
-        });
-    });
-    elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-q-step]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const activeFilter = getMeasurementPeqActiveFilter();
-            if (!activeFilter) return;
-            const input = elements.measurementPeqEditor?.querySelector('#measurement-peq-q');
-            const step = Number(input?.step) || 0.1;
-            const direction = Number(button.dataset.measurementPeqQStep || '0');
-            const nextValue = stepMeasurementPeqQ(activeFilter.id, direction, step);
-            if (nextValue === null) return;
-            if (input) input.value = nextValue.toFixed(2);
-            scheduleMeasurementGraphRender();
-            focusMeasurementPeqPanelContext();
-        });
-    });
-    elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-delete]').forEach((button) => {
-        button.addEventListener('click', () => {
-            deleteMeasurementPeqFilter(button.dataset.measurementPeqDelete);
-            renderMeasurementPanel();
-            scheduleMeasurementGraphRender();
-        });
-    });
+}
 
+function renderMeasurementPanelConvolverSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     if (elements.measurementConvolverTarget) {
         const optionsHtml = getMeasurementConvolverCurveOptions().map((curve) => `<option value="${escapeHtml(curve.key)}" ${conv.targetCurve === curve.key ? 'selected' : ''}>${escapeHtml(curve.label || curve.shortLabel || curve.key)}</option>`).join('');
         if (elements.measurementConvolverTarget.innerHTML !== optionsHtml) elements.measurementConvolverTarget.innerHTML = optionsHtml;
@@ -11194,7 +11128,9 @@ function renderMeasurementPanel() {
         elements.measurementConvolverCreateBtn.disabled = !hasConvolverDraft || !!draftPhaseMismatch || !String(conv.draft?.presetName || '').trim() || isCreatingConvolverPreset;
         elements.measurementConvolverCreateBtn.textContent = isCreatingConvolverPreset ? 'Creating...' : 'Create Convolver Preset';
     }
+}
 
+function renderMeasurementPanelSavedListSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     const selectedSavedCount = measurements.filter(measurement => measurementState.visibilityById?.[measurement.id]).length;
     const allSavedSelected = measurements.length > 0 && selectedSavedCount === measurements.length;
     const visibleMeasurementColorById = getVisibleMeasurementColorById();
@@ -11253,53 +11189,187 @@ function renderMeasurementPanel() {
         : '';
 
     elements.measurementList.innerHTML = savedHtml;
-    elements.measurementList.querySelectorAll('.measurement-saved-group').forEach((details) => {
-        details.addEventListener('toggle', () => {
-            state.measurement.savedGroupOpen = !!details.open;
-            const summary = details.querySelector('summary');
-            if (summary) {
-                summary.textContent = `${state.measurement.savedGroupOpen ? 'Close saved' : 'Open saved'} (${measurements.length})`;
-            }
-        });
+}
+
+function getSavedListMeasurements() {
+    const measurementState = state.measurement || {};
+    const current = getCurrentMeasurementEntry();
+    return (measurementState.measurements || []).filter(measurement => measurement.id !== current?.id);
+}
+
+function commitCustomHouseCurveField(input) {
+    const custom = ensureCustomHouseCurveState();
+    if (!custom.activePointId) return;
+    updateCustomHouseCurvePoint(custom.activePointId, { [input.dataset.customHouseCurveField]: Number(input.value) });
+}
+
+function commitPeqEditorField(input, reRender) {
+    const activeFilter = getMeasurementPeqActiveFilter();
+    if (!activeFilter) return;
+    const field = input.dataset.measurementPeqField;
+    const value = field === 'type' ? input.value : Number(input.value);
+    updateMeasurementPeqFilter(activeFilter.id, { [field]: value });
+    if (reRender) renderMeasurementPanel();
+    scheduleMeasurementGraphRender();
+}
+
+function handleMeasurementPeqStepClick(button) {
+    const activeFilter = getMeasurementPeqActiveFilter();
+    if (!activeFilter) return;
+    const container = elements.measurementPeqEditor;
+    if (button.dataset.measurementPeqFrequencyStep !== undefined) {
+        const input = container?.querySelector('#measurement-peq-freq');
+        const step = Number(input?.step) || 1;
+        const direction = Number(button.dataset.measurementPeqFrequencyStep || '0');
+        const nextValue = stepMeasurementPeqFrequency(activeFilter.id, direction, step);
+        if (nextValue === null) return;
+        if (input) input.value = String(nextValue);
+    } else if (button.dataset.measurementPeqGainStep !== undefined) {
+        const input = container?.querySelector('#measurement-peq-gain');
+        const step = Number(input?.step) || 0.1;
+        const direction = Number(button.dataset.measurementPeqGainStep || '0');
+        const nextValue = stepMeasurementPeqGain(activeFilter.id, direction, step);
+        if (nextValue === null) return;
+        if (input) input.value = nextValue.toFixed(1);
+    } else {
+        const input = container?.querySelector('#measurement-peq-q');
+        const step = Number(input?.step) || 0.1;
+        const direction = Number(button.dataset.measurementPeqQStep || '0');
+        const nextValue = stepMeasurementPeqQ(activeFilter.id, direction, step);
+        if (nextValue === null) return;
+        if (input) input.value = nextValue.toFixed(2);
+    }
+    scheduleMeasurementGraphRender();
+    focusMeasurementPeqPanelContext();
+}
+
+let measurementPanelDelegationBound = false;
+// Dynamic panel regions rebuild their innerHTML on every render; their
+// listeners therefore live once on the stable containers via delegation.
+function bindMeasurementPanelDelegation() {
+    if (measurementPanelDelegationBound) return;
+    measurementPanelDelegationBound = true;
+    elements.measurementPeqChips?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-measurement-peq-slot]');
+        if (!button) return;
+        const filterId = button.dataset.measurementPeqChip;
+        if (filterId) {
+            selectMeasurementPeqFilter(filterId);
+        } else {
+            const created = addMeasurementPeqFilter();
+            if (!created) return;
+        }
+        renderMeasurementPanel();
+        scheduleMeasurementGraphRender();
+        focusMeasurementPeqPanelContext();
     });
-    elements.measurementList.querySelectorAll('[data-measurement-toggle]').forEach((input) => {
-        input.addEventListener('change', () => {
+    elements.measurementCustomHouseCurveChips?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-custom-house-curve-slot]');
+        if (!button) return;
+        const custom = ensureCustomHouseCurveState();
+        const pointId = button.dataset.customHouseCurvePoint;
+        if (pointId) custom.activePointId = pointId;
+        else if (!addCustomHouseCurvePoint({ slot: Number(button.dataset.customHouseCurveSlot) })) return;
+        renderMeasurementPanel();
+        scheduleMeasurementGraphRender();
+    });
+    elements.measurementCustomHouseCurveEditor?.addEventListener('input', (event) => {
+        const input = event.target.closest('[data-custom-house-curve-field]');
+        if (!input) return;
+        commitCustomHouseCurveField(input);
+        scheduleMeasurementGraphRender();
+    });
+    elements.measurementCustomHouseCurveEditor?.addEventListener('change', (event) => {
+        const input = event.target.closest('[data-custom-house-curve-field]');
+        if (!input) return;
+        commitCustomHouseCurveField(input);
+        renderMeasurementPanel();
+        scheduleMeasurementGraphRender();
+    });
+    elements.measurementCustomHouseCurveEditor?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-custom-house-curve-delete]');
+        if (!button) return;
+        deleteCustomHouseCurvePoint(button.dataset.customHouseCurveDelete);
+        renderMeasurementPanel();
+        scheduleMeasurementGraphRender();
+    });
+    elements.measurementPeqEditor?.addEventListener('keydown', (event) => {
+        if (!(event.target instanceof HTMLInputElement) || event.target.type !== 'number') return;
+        if (!event.target.matches('[data-measurement-peq-field]')) return;
+        handleMeasurementPeqNumberInputArrowKey(event);
+    });
+    elements.measurementPeqEditor?.addEventListener('input', (event) => {
+        const input = event.target.closest('[data-measurement-peq-field]');
+        if (!input) return;
+        commitPeqEditorField(input, input.dataset.measurementPeqField === 'type');
+    });
+    elements.measurementPeqEditor?.addEventListener('change', (event) => {
+        const input = event.target.closest('[data-measurement-peq-field]');
+        if (!input) return;
+        commitPeqEditorField(input, true);
+    });
+    elements.measurementPeqEditor?.addEventListener('click', (event) => {
+        const stepButton = event.target.closest('[data-measurement-peq-frequency-step], [data-measurement-peq-gain-step], [data-measurement-peq-q-step]');
+        if (stepButton) {
+            handleMeasurementPeqStepClick(stepButton);
+            return;
+        }
+        const deleteButton = event.target.closest('[data-measurement-peq-delete]');
+        if (!deleteButton) return;
+        deleteMeasurementPeqFilter(deleteButton.dataset.measurementPeqDelete);
+        renderMeasurementPanel();
+        scheduleMeasurementGraphRender();
+    });
+
+    const list = elements.measurementList;
+    // <details> toggle does not bubble; capture phase still reaches ancestors.
+    list?.addEventListener('toggle', (event) => {
+        const details = event.target;
+        if (!(details instanceof HTMLDetailsElement)) return;
+        state.measurement.savedGroupOpen = !!details.open;
+        const summary = details.querySelector('summary');
+        if (summary) {
+            summary.textContent = `${state.measurement.savedGroupOpen ? 'Close saved' : 'Open saved'} (${getSavedListMeasurements().length})`;
+        }
+    }, true);
+    list?.addEventListener('change', (event) => {
+        const input = event.target;
+        if (input.matches('[data-measurement-toggle]')) {
             state.measurement.visibilityById[input.dataset.measurementToggle] = !!input.checked;
             state.measurement.savedGroupOpen = true;
             renderMeasurementPanel();
-        });
-    });
-    elements.measurementList.querySelectorAll('[data-measurement-select-all]').forEach((input) => {
-        input.addEventListener('change', () => {
-            measurements.forEach((measurement) => {
+            return;
+        }
+        if (input.matches('[data-measurement-select-all]')) {
+            getSavedListMeasurements().forEach((measurement) => {
                 state.measurement.visibilityById[measurement.id] = !!input.checked;
             });
             state.measurement.savedGroupOpen = true;
             renderMeasurementPanel();
-        });
+        }
     });
-    elements.measurementList.querySelectorAll('[data-measurement-merge-selected]').forEach((button) => {
-        button.addEventListener('click', () => {
+    list?.addEventListener('click', (event) => {
+        const mergeButton = event.target.closest('[data-measurement-merge-selected]');
+        if (mergeButton) {
             mergeSelectedMeasurements();
-        });
-    });
-    elements.measurementList.querySelectorAll('[data-measurement-delete-selected]').forEach((button) => {
-        button.addEventListener('click', () => {
+            return;
+        }
+        const deleteButton = event.target.closest('[data-measurement-delete-selected]');
+        if (deleteButton) {
             deleteSelectedMeasurements();
-        });
-    });
-    elements.measurementList.querySelectorAll('[data-measurement-close-saved]').forEach((button) => {
-        button.addEventListener('click', () => {
+            return;
+        }
+        const closeButton = event.target.closest('[data-measurement-close-saved]');
+        if (closeButton) {
             state.measurement.savedGroupOpen = false;
             renderMeasurementPanel();
-        });
+        }
     });
-    syncAutoSubButton();
-    scheduleMeasurementGraphRender();
 }
 
 function setupMeasurementActions() {
     if (!elements.measurementPanel || !elements.effectsMeasureOpenBtn || !elements.measurementCloseBtn) return;
+    bindMeasurementPanelDelegation();
     elements.effectsMeasureOpenBtn.addEventListener('click', () => toggleMeasurementPanel(true));
     elements.measurementCloseBtn.addEventListener('click', () => toggleMeasurementPanel(false));
     const backdrop = elements.measurementPanel.querySelector('.manage-overlay-backdrop');

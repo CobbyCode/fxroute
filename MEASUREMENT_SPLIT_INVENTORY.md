@@ -42,6 +42,25 @@ Stand: 2026-08-21, `static/app.js` @ 14.911 Zeilen (HEAD f25ed7b).
 
 ## Phasen-Fortschritt
 
+**Phase 3** (2026-08-21): `renderMeasurementPanel` (705 Zeilen) zerlegt in
+30-Zeilen-Orchestrator + 10 Section-Updater (Setup, Inputs, Calibration,
+HouseCurve, Actions, View, Status, Editors, Convolver, SavedList); einheitliche
+destrukturierte Signatur mit den Original-Lokalnamen hält die Statements
+byte-identisch, Ausführungsreihenfolge unverändert. Per-Render-Listener-
+Rebinding (der Briefing-Bug) entfernt: die dynamischen Regionen (PEQ-Chips,
+Custom-House-Curve-Chips/Editor, PEQ-Editor, Saved-Liste) binden jetzt einmalig
+per Delegation auf den stabilen Containern (`bindMeasurementPanelDelegation()`,
+aufgerufen aus `setupMeasurementActions`, idempotent). Sonderfälle: `<details>`
+toggle bubbelt nicht → Capture-Phase-Listener am Listen-Container;
+Saved-Handler nutzten das Render-lokale `measurements` → neuer Helper
+`getSavedListMeasurements()`; freq/gain/q-Step-Buttons über gemeinsamen Handler
+mit identischen Fallbacks/Formatten. `renderMeasurementPanelDefensively`
+unberührt als Fallback-Vollneubau. app.js v=0.9.57. Verifikation: node --check,
+Fokus-Tests grün; interaktiver Delegations-Smoke 17/17 PASS (Chips, Steps,
+Input/Change-Commits, Pfeiltasten-Q, Delete, Custom-Points, Saved-Liste inkl.
+Capture-Toggle); Walkthrough 200 Checks grün ohne strukturelle Screenshot-Diffs;
+Final Gate 200/0/10.
+
 **Phase 2** (2026-08-21): `static/measurement_graph.js` (IIFE, DI via
 `init()`, Muster streaming.js) angelegt. Verschoben: `drawMeasurementGraph`,
 `scheduleMeasurementGraphRender(+ForResize)` (rAF-Koaleszenz, Flag ist jetzt
