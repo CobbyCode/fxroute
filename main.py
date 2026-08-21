@@ -26,8 +26,12 @@ from urllib.parse import quote, unquote, urlparse
 
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
+from starlette.middleware import Middleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from config import get_settings
 from http_errors import bad_request
@@ -3263,7 +3267,44 @@ _run_coordinated_transition = playback_orchestration.configured().run_coordinate
 _playback_transition_context_is_current = playback_orchestration.configured().playback_transition_context_is_current
 
 
-app = FastAPI(lifespan=lifespan)
+# Response compression for HTML/CSS/JS/JSON. The path filter is the outermost
+# middleware (first entry in the stack) so it hides gzip support from requests
+# for already-compressed asset formats before GZipMiddleware decides;
+# on-the-fly compression there would burn CPU for negligible size gain.
+_GZIP_SKIP_SUFFIXES = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico",
+    ".woff", ".woff2",
+    ".mp3", ".flac", ".ogg", ".opus", ".m4a", ".aac", ".wav",
+    ".mp4", ".webm", ".zip", ".gz", ".br", ".zst",
+)
+
+
+class _SkipPrecompressedAssetsForGZip:
+    """Strips gzip from Accept-Encoding for pre-compressed asset paths."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["path"].lower().endswith(_GZIP_SKIP_SUFFIXES):
+            headers = MutableHeaders(scope=scope)
+            accept = headers.get("Accept-Encoding", "")
+            if "gzip" in accept.lower():
+                kept = ",".join(
+                    part.strip() for part in accept.split(",")
+                    if part.strip() and "gzip" not in part.lower()
+                )
+                headers["Accept-Encoding"] = kept
+        await self.app(scope, receive, send)
+
+
+app = FastAPI(
+    lifespan=lifespan,
+    middleware=[
+        Middleware(_SkipPrecompressedAssetsForGZip),
+        Middleware(GZipMiddleware, minimum_size=1024),
+    ],
+)
 app.include_router(radio_api_router)
 app.include_router(spl_calibration.router)
 app.include_router(library_api_router)
