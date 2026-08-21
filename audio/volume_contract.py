@@ -4,9 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Iterable
-
-from audio.system_volume import volume_percent_to_db
+from typing import Any
 
 EXCLUDED_PRESETS = frozenset({"Direct"})
 
@@ -32,19 +30,6 @@ class VolumeState:
 
 def loudness_in_path(preset: str, loudness_enabled: bool) -> bool:
     return bool(loudness_enabled) and bool(preset) and preset not in EXCLUDED_PRESETS
-
-
-def effective_db(state: VolumeState) -> float:
-    # The global master is the single level control.  Loudness volumeDb is
-    # only the ISO-226 work point of the curve and never contributes to the
-    # output level (the loudness stage net is 0 dB).
-    return volume_percent_to_db(state.master_percent) + float(state.dsp_guard_db)
-
-
-def canonical_percent(state: VolumeState) -> int:
-    # The global master is the single user-facing volume.  Loudness volumeDb
-    # is only the ISO-226 work point of the curve and never owns the master.
-    return int(state.master_percent)
 
 
 def apply_action(state: VolumeState, action: VolumeAction) -> VolumeState:
@@ -108,18 +93,3 @@ def plan_transition(start: VolumeState, target: VolumeState) -> list[VolumeActio
         else:
             actions.append(action)
     return actions
-
-
-def partition_actions(
-    actions: Iterable[VolumeAction], skip_ops: Iterable[str]
-) -> tuple[list[VolumeAction], list[VolumeAction]]:
-    skip = set(skip_ops)
-    pre: list[VolumeAction] = []
-    post: list[VolumeAction] = []
-    seen_skip = False
-    for action in actions:
-        if action.op in skip:
-            seen_skip = True
-            continue
-        (post if seen_skip else pre).append(action)
-    return pre, post

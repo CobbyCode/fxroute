@@ -32,6 +32,13 @@ def db(percent: int) -> float:
     return system_volume.volume_percent_to_db(percent)
 
 
+def _effective_db(state_obj: VolumeState) -> float:
+    # Mirrors the production level model: master + guard only.  Loudness
+    # volumeDb is only the ISO-226 work point and never contributes to the
+    # output level (the loudness stage net is 0 dB).
+    return system_volume.volume_percent_to_db(state_obj.master_percent) + float(state_obj.dsp_guard_db)
+
+
 def state(*, preset="Neutral", loudness=False, volume_db=0.0, master=100, guard=0.0):
     return VolumeState(
         preset=preset,
@@ -44,24 +51,24 @@ def state(*, preset="Neutral", loudness=False, volume_db=0.0, master=100, guard=
 
 def simulate(start: VolumeState, actions: list[VolumeAction]):
     current = start
-    samples = [volume_contract.effective_db(current)]
+    samples = [_effective_db(current)]
     for action in actions:
         current = volume_contract.apply_action(current, action)
-        samples.append(volume_contract.effective_db(current))
+        samples.append(_effective_db(current))
     return current, samples
 
 
 def assert_safe_transition(test, start, target, actions):
     final, samples = simulate(start, actions)
-    ceiling = max(volume_contract.effective_db(start), volume_contract.effective_db(target))
+    ceiling = max(_effective_db(start), _effective_db(target))
     test.assertEqual(final.preset, target.preset)
     test.assertEqual(final.loudness_enabled, target.loudness_enabled)
     test.assertEqual(final.master_percent, target.master_percent)
     test.assertAlmostEqual(final.volume_db, target.volume_db, places=9)
     test.assertAlmostEqual(final.dsp_guard_db, target.dsp_guard_db, places=9)
     test.assertAlmostEqual(
-        volume_contract.effective_db(final),
-        volume_contract.effective_db(target),
+        _effective_db(final),
+        _effective_db(target),
         places=9,
     )
     test.assertLessEqual(max(samples), ceiling + 1e-9, msg=f"peak={max(samples)} ceiling={ceiling} samples={samples}")
@@ -79,26 +86,19 @@ class VolumeContractUnitTests(unittest.TestCase):
         # the output level, so the effective gain is master + guard in every
         # state, loudness in the path or not.
         self.assertAlmostEqual(
-            volume_contract.effective_db(state(preset="Neutral", loudness=True, volume_db=-31.0, master=100)),
+            _effective_db(state(preset="Neutral", loudness=True, volume_db=-31.0, master=100)),
             0.0,
             places=9,
         )
         self.assertAlmostEqual(
-            volume_contract.effective_db(state(preset="Direct", loudness=True, volume_db=-10.0, master=30)),
+            _effective_db(state(preset="Direct", loudness=True, volume_db=-10.0, master=30)),
             db(30),
             places=9,
         )
         self.assertAlmostEqual(
-            volume_contract.effective_db(state(preset="Neutral", loudness=False, volume_db=-10.0, master=30)),
+            _effective_db(state(preset="Neutral", loudness=False, volume_db=-10.0, master=30)),
             db(30),
             places=9,
-        )
-
-    def test_canonical_percent_is_always_the_master(self):
-        self.assertEqual(volume_contract.canonical_percent(state(master=37)), 37)
-        self.assertEqual(
-            volume_contract.canonical_percent(state(preset="Neutral", loudness=True, volume_db=-20.0, master=55)),
-            55,
         )
 
     def test_preset_and_loudness_transitions_never_move_master_or_work_point(self):
@@ -179,12 +179,6 @@ class _RecordingManager:
     def get_active_preset(self):
         return self.active_preset
 
-    def loudness_db_from_percent(self, percent):
-        return system_volume.volume_percent_to_db(percent)
-
-    def loudness_percent_from_db(self, volume_db):
-        return system_volume.volume_db_to_percent(volume_db)
-
     def apply_global_extras_to_all_presets(self, extras):
         self.save_global_extras(extras)
         return {"extras": copy.deepcopy(self.extras), "updated": 1, "skipped": ["Direct"], "runtime_applied": False}
@@ -206,6 +200,7 @@ class _RecordingManager:
         return self.apply_autogain_loudness_runtime(previous, extras)
 
     def set_loudness_volume_db(self, volume_db):
+        # Guard: the footer slider must never rewrite the Loudness work point.
         self.loudness_volume_writes.append(float(volume_db))
         self.extras["loudness"]["params"]["volumeDb"] = float(volume_db)
         return {"extras": copy.deepcopy(self.extras), "runtime_applied": True, "updated": 1, "skipped": []}
@@ -282,7 +277,7 @@ class VolumePathRecorder:
             master_percent=self.master,
             dsp_guard_db=float(self.runtime.gain_db),
         )
-        self.samples.append(volume_contract.effective_db(snap))
+        self.samples.append(_effective_db(snap))
         return snap
 
 
@@ -330,7 +325,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final.preset, "Neutral")
         self.assertEqual(final.master_percent, 30)
         self.assertAlmostEqual(final.volume_db, 0.0, places=6)
-        self.assertLessEqual(self.peak(), volume_contract.effective_db(start) + 1e-9)
+        self.assertLessEqual(self.peak(), _effective_db(start) + 1e-9)
 
     async def test_preset_round_trip_never_moves_master(self):
         self.manager.active_preset = "Direct"

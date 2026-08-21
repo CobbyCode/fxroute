@@ -408,17 +408,9 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             def load_global_extras(self):
                 return copy.deepcopy(self.extras)
 
-            def loudness_db_from_percent(self, percent):
-                return -float(percent)
-
             def apply_autogain_loudness_runtime(self, previous, extras):
                 self.extras = copy.deepcopy(extras)
                 return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
-
-            def set_loudness_volume_db(self, volume_db):
-                self.extras["loudness"]["params"]["volumeDb"] = float(volume_db)
-                return {"extras": copy.deepcopy(self.extras), "runtime_applied": True,
-                        "updated": 1, "skipped": []}
 
             def normalize_effects_extras(self, extras):
                 return extras
@@ -639,9 +631,6 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
             def load_global_extras(self):
                 return {"loudness": {"enabled": False, "params": {}}}
-
-            def loudness_db_from_percent(self, percent):
-                return -float(percent)
 
             def apply_global_extras_to_all_presets(self, extras):
                 return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}

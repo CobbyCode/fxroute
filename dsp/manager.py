@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from dsp.persistence import DSPPresetStore, DSPStateStore, clean_name
-from audio.system_volume import volume_db_to_percent, volume_percent_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +69,6 @@ class DSPManager:
     LOUDNESS_OUTPUT_GAIN_MIN_DB = -36.0
     LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS = 0.35
     TONE_EFFECT_DEFAULTS = {"enabled": False, "mode": "crystalizer"}
-
-    loudness_db_from_percent = staticmethod(volume_percent_to_db)
-    loudness_percent_from_db = staticmethod(volume_db_to_percent)
 
     def normalize_effects_extras(self, extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         source = extras if isinstance(extras, dict) else {}
@@ -435,12 +431,6 @@ class DSPManager:
         self.temporary_runtime_transition_callback(
             self.normalize_effects_extras(previous_extras),
             self.normalize_effects_extras(extras))
-
-    def set_loudness_volume_db(self, volume_db: float) -> Dict[str, Any]:
-        previous = self.load_global_extras()
-        current = copy.deepcopy(previous)
-        current["loudness"]["params"]["volumeDb"] = max(-80.0, min(0.0, float(volume_db)))
-        return self.apply_autogain_loudness_runtime(previous, current, persist_all_presets=False)
 
     def _notify_active_config(self) -> None:
         if self.apply_callback:
