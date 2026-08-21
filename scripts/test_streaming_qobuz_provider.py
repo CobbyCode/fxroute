@@ -195,6 +195,21 @@ class QobuzStandbyFlagTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status["connected"])
         self.assertTrue(status["qbzd_standby"])
 
+    async def test_deselected_device_keeps_track_paused_and_flags_standby(self):
+        # Live-verified on .104: after the device is deselected in the app,
+        # qbzd keeps the last track paused with its metadata and session_active
+        # stays true. That state is standby, not a now-playing card.
+        payload = _status_payload(
+            playback={"state": "paused", "title": "Diamonds", "artist": "A", "track_id": 42,
+                      "duration": 194, "position": 105, "volume": 1.0, "muted": False},
+            qconnect={"device_name": "FXRoute", "enabled": True,
+                      "session_active": True, "state": "connected"},
+        )
+        status = await self._status(payload)
+        self.assertEqual(status["status"], "Paused")
+        self.assertTrue(status["connected"])
+        self.assertTrue(status["qbzd_standby"])
+
     async def test_active_session_never_flags_standby(self):
         # Playing with an active Connect session: now-playing card, not standby.
         status = await self._status(_status_payload())

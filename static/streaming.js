@@ -359,6 +359,16 @@
             return;
         }
 
+        // Standby: backend alive but FXRoute is not the active output
+        // (spotifyd hides MPRIS without a Connect session; qbzd keeps the
+        // last track paused after a device switch). Reads as "ready" instead
+        // of a stale paused/empty card.
+        if (data.spotifyd_standby || data.qbzd_standby) {
+            const empty = notPlayingContent(providerId, data);
+            showEmpty(entry, empty.title, empty.message);
+            return;
+        }
+
         // Stopped with no track.
         if ((data.status === 'Stopped' || !data.status) && !data.title) {
             const empty = notPlayingContent(providerId, data);

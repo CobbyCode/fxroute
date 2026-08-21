@@ -272,10 +272,12 @@ class QobuzProvider(StreamingProvider):
                         "artUrl": nxt.get("artwork_url") or "",
                     }
 
-        # Standby parity with spotifyd: the daemon is up but no Connect
-        # session is active, so the UI can show "ready" instead of a bare
-        # "not running". Never flagged while anything is playing.
-        result["qbzd_standby"] = result["status"] == "Stopped" and not result["connected"]
+        # Standby parity with spotifyd: the daemon is up but FXRoute is not
+        # the active Qobuz output. Live-verified on .104: after the device is
+        # deselected in the app, qbzd keeps the last track paused with its
+        # metadata (session_active stays true), so any non-playing state reads
+        # as standby. Never flagged while something is playing or loading.
+        result["qbzd_standby"] = result["status"] in ("Stopped", "Paused")
 
         return result
 

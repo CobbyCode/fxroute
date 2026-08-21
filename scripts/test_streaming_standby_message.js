@@ -49,7 +49,15 @@ assert.deepEqual(
     },
 );
 
-// Standby parity: idle qbzd (daemon up, no Connect session) reads as ready.
+// Standby parity: idle qbzd (daemon up, device deselected — the app keeps
+// the last track paused) reads as ready.
+assert.deepEqual(
+    notPlayingContent('qobuz', { status: 'Paused', title: 'Diamonds', qbzd_standby: true }),
+    {
+        title: 'Qobuz is ready.',
+        message: 'qbzd is waiting for a Qobuz Connect session. Start playback from the Qobuz app and select FXRoute.',
+    },
+);
 assert.deepEqual(
     notPlayingContent('qobuz', { status: 'Stopped', qbzd_standby: true }),
     {
