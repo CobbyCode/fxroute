@@ -504,7 +504,6 @@ const elements = {
     measurementMicInputChannelSelect: document.getElementById('measurement-mic-input-channel-select'),
     measurementReferenceInputChannelSelect: document.getElementById('measurement-reference-input-channel-select'),
     measurementReferenceWarning: document.getElementById('measurement-reference-warning'),
-    measurementChannelSelect: document.getElementById('measurement-channel-select'),
     measurementCalibrationSelect: document.getElementById('measurement-calibration-select'),
     measurementCalibrationFile: document.getElementById('measurement-calibration-file'),
     measurementCalibrationExportBtn: document.getElementById('measurement-calibration-export'),
@@ -10061,10 +10060,6 @@ function renderMeasurementPanelInputsSection({ measurementState, current, measur
         elements.measurementReferenceWarning.textContent = referenceWarning;
         elements.measurementReferenceWarning.classList.toggle('hidden', !referenceWarning);
     }
-    if (elements.measurementChannelSelect) {
-        elements.measurementChannelSelect.value = measurementState.selectedChannel || 'left';
-        elements.measurementChannelSelect.disabled = measurementState.startInFlight;
-    }
 }
 
 function renderMeasurementPanelCalibrationSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
@@ -10766,12 +10761,6 @@ function setupMeasurementActions() {
             void fetchMeasurementInputs();
         });
     }
-    if (elements.measurementChannelSelect) {
-        elements.measurementChannelSelect.addEventListener('change', (event) => {
-            state.measurement.selectedChannel = event.target.value || 'left';
-            renderMeasurementPanel();
-        });
-    }
     if (elements.measurementMicInputChannelSelect) {
         elements.measurementMicInputChannelSelect.addEventListener('change', (event) => {
             state.measurement.selectedMicInputChannel = event.target.value || '1';
@@ -10794,7 +10783,6 @@ function setupMeasurementActions() {
     document.querySelectorAll('[data-measurement-channel]').forEach((button) => {
         button.addEventListener('click', () => {
             state.measurement.selectedChannel = button.getAttribute('data-measurement-channel') || 'left';
-            if (elements.measurementChannelSelect) elements.measurementChannelSelect.value = state.measurement.selectedChannel;
             renderMeasurementPanel();
         });
     });

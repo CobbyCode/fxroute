@@ -42,6 +42,22 @@ Stand: 2026-08-21, `static/app.js` @ 14.911 Zeilen (HEAD f25ed7b).
 
 ## Phasen-Fortschritt
 
+**Phase 5 — Abschluss** (2026-08-21): Totes `#measurement-channel-select`-
+Wiring entfernt (HTML-Block, Element-Cache-Eintrag, Sync im Inputs-Section,
+Change-Listener + Chip-Klick-Reset in `setupMeasurementActions`);
+Ersatz war schon immer die Chip-Reihe (`data-measurement-channel`).
+Verbleibende `console.*`-Aufrufe sind absichtliche Diagnostik
+(WS-Lifecycle, footerDebug, Fehlerpfade) — keine toten Debug-Reste.
+app.js v=0.9.59. Verifikation: node --check, Fokus-Tests grün,
+Walkthrough 200 Checks ohne strukturelle Diffs, Final Gate 200/0/10.
+
+**Ergebnis gesamt:** app.js 14.911 → ~13.660 Zeilen; Measurement-Block
+aufgeteilt in `measurement_ui.js` (reine Helfer), `measurement_graph.js`
+(Canvas/rAF), `measurement_flows.js` (Auto-Sub + Hybrid-Wizard über api-DI);
+Panel-Rendering in Section-Updater mit Einmal-Delegation statt Per-Render-
+Neubau (Listener-Bug behoben); `renderMeasurementPanelDefensively` bleibt
+als Recovery-Vollneubau.
+
 **Phase 4** (2026-08-21): `static/measurement_flows.js` (IIFE, `init()`-DI)
 angelegt — Auto-Sub-Flow (`syncAutoSubButton`,
 `syncSubwooferControlsDuringAutoSub`, `startAutoSubOptimize`,
