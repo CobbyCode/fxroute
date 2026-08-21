@@ -13384,15 +13384,26 @@ function stopSpotifyPoll() {
         clearInterval(_spotifyPollTimer);
         _spotifyPollTimer = null;
     }
+    _spotifyPollTimerGeneration = null;
 }
 
 // Guard against stale in-flight poll responses — bump generation when source changes
 let _spotifyPollGeneration = 0;
+// Generation the running poll timer was started with. Another path may bump
+// _spotifyPollGeneration without stopping the timer, which would leave the
+// callback no-op'ing forever; startSpotifyPoll() uses this to replace it.
+let _spotifyPollTimerGeneration = null;
 
 function startSpotifyPoll() {
     if (!shouldPollSpotify()) return;
-    if (_spotifyPollTimer) return;
+    if (_spotifyPollTimer) {
+        // The timer is running but its generation was invalidated elsewhere —
+        // restart it instead of leaving a poller that can never update state.
+        if (_spotifyPollTimerGeneration !== _spotifyPollGeneration) stopSpotifyPoll();
+        else return;
+    }
     const gen = ++_spotifyPollGeneration;
+    _spotifyPollTimerGeneration = gen;
     _spotifyPollTimer = setInterval(async () => {
         if (document.hidden) return;
         if (!shouldPollSpotify()) {
