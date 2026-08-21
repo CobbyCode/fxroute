@@ -55,6 +55,21 @@ def _locked_line(percent: float) -> str:
     )
 
 
+def _fake_proc_static(lines):
+    proc = mock.Mock()
+    proc.returncode = None
+    results = [line.encode() for line in lines] + [b""]
+
+    async def readline():
+        if results:
+            return results.pop(0)
+        raise StopAsyncIteration
+
+    proc.stdout = mock.Mock()
+    proc.stdout.readline = readline
+    return proc
+
+
 class ParseTests(unittest.TestCase):
     def test_locked_line_yields_percent(self):
         self.assertEqual(parse_ignored_volume(_LOCKED_LINE), 45)
@@ -205,8 +220,18 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
                 return results.pop(0)
             raise StopAsyncIteration
 
+        async def communicate():
+            # The one-shot bootstrap scan reads nothing here; history tests
+            # build their own proc with a scripted communicate().
+            return (b"", b"")
+
+        async def wait():
+            return 0
+
         proc.stdout = mock.Mock()
         proc.stdout.readline = readline
+        proc.communicate = communicate
+        proc.wait = wait
         return proc
 
     def _fake_spawn(self, proc):
@@ -334,6 +359,103 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(applied, [])
 
 
+    async def test_loop_notifies_device_state_on_activation_lines(self):
+        applied = []
+        device_events = []
+
+        async def apply_delta(delta):
+            applied.append(delta)
+
+        proc = self._fake_proc(lines=[
+            _ACTIVATION_LINE,
+            _locked_line("0.500"),
+            _DEACTIVATION_LINE,
+        ])
+        watch = QobuzVolumeWatch(
+            QobuzVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume_delta=apply_delta,
+                on_device_active=lambda value: device_events.append(value),
+            ),
+            debounce_seconds=0.0,
+        )
+        with mock.patch("asyncio.create_subprocess_exec", new=self._fake_spawn(proc)):
+            with self._real_sleep_patch(watch):
+                try:
+                    await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    pass
+            await asyncio.sleep(0.05)
+        # Selection tracking follows the renderer commands; the volume anchor
+        # still resets on activation (50 anchors, no master write).
+        self.assertEqual(device_events, [True, False])
+        self.assertEqual(applied, [])
+
+    async def test_bootstrap_recovers_last_selection_state(self):
+        seen = []
+        applied = []
+
+        async def apply_delta(delta):
+            applied.append(delta)
+
+        history = "\n".join([
+            _ACTIVATION_LINE,
+            "unrelated line",
+            _DEACTIVATION_LINE,   # last evidence: device deselected
+        ])
+
+        class HistoryProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (history.encode(), b"")
+
+        async def spawn(*args, **kwargs):
+            return HistoryProc()
+
+        watch = QobuzVolumeWatch(
+            QobuzVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume_delta=apply_delta,
+                on_device_active=lambda value: seen.append(value),
+            ),
+            debounce_seconds=0.0,
+        )
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn):
+            await watch._bootstrap_device_state()
+        self.assertEqual(seen, [False])
+        self.assertEqual(applied, [])
+
+    async def test_bootstrap_without_history_reports_nothing(self):
+        seen = []
+        applied = []
+
+        async def apply_delta(delta):
+            applied.append(delta)
+
+        class EmptyProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"unrelated line\n", b"")
+
+        async def spawn(*args, **kwargs):
+            return EmptyProc()
+
+        watch = QobuzVolumeWatch(
+            QobuzVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume_delta=apply_delta,
+                on_device_active=lambda value: seen.append(value),
+            ),
+            debounce_seconds=0.0,
+        )
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn):
+            await watch._bootstrap_device_state()
+        self.assertEqual(seen, [])
+        self.assertEqual(applied, [])
+
+
 class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
     """The five contract scenarios, exercised end-to-end through the loop.
 
@@ -346,7 +468,7 @@ class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
         async def apply_delta(delta):
             applied.append(delta)
 
-        proc = self._fake_proc_static(lines)
+        proc = _fake_proc_static(lines)
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
@@ -355,21 +477,6 @@ class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
             debounce_seconds=0.0,
         )
         return watch, proc
-
-    @staticmethod
-    def _fake_proc_static(lines):
-        proc = mock.Mock()
-        proc.returncode = None
-        results = [line.encode() for line in lines] + [b""]
-
-        async def readline():
-            if results:
-                return results.pop(0)
-            raise StopAsyncIteration
-
-        proc.stdout = mock.Mock()
-        proc.stdout.readline = readline
-        return proc
 
     async def _run(self, watch, proc):
         async def spawn(*args, **kwargs):
@@ -423,10 +530,11 @@ class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_loudness_work_point_is_never_touched(self):
         # The bridge's only output is the canonical master delta writer; it has
         # no handle on loudness state by construction. Pin the dependency
-        # surface: exactly is_active + apply_volume_delta, nothing else.
+        # surface: exactly is_active + apply_volume_delta + the optional
+        # device-selection notifier, nothing else.
         self.assertEqual(
             set(QobuzVolumeWatchDependencies.__dataclass_fields__.keys()),
-            {"is_active", "apply_volume_delta"},
+            {"is_active", "apply_volume_delta", "on_device_active"},
         )
         applied = []
         watch, proc = self._watch(applied, [

@@ -14,7 +14,7 @@ from typing import Any, ClassVar
 
 from streaming.base.capabilities import Capabilities
 from streaming.base.provider import StreamingProvider
-from streaming.qobuz import backend
+from streaming.qobuz import backend, connect_state
 
 QOBUZ_BACKEND = "qbzd"
 
@@ -273,11 +273,15 @@ class QobuzProvider(StreamingProvider):
                     }
 
         # Standby parity with spotifyd: the daemon is up but FXRoute is not
-        # the active Qobuz output. Live-verified on .104: after the device is
-        # deselected in the app, qbzd keeps the last track paused with its
-        # metadata (session_active stays true), so any non-playing state reads
-        # as standby. Never flagged while something is playing or loading.
-        result["qbzd_standby"] = result["status"] in ("Stopped", "Paused")
+        # the actively selected Qobuz output. Selection is journal-tracked
+        # (streaming.qobuz.connect_state): qbzd keeps the last track paused
+        # with its metadata after deselection and session_active stays true,
+        # so play/pause alone must not decide. Unknown selection state (fresh
+        # start, no journal evidence) conservatively shows the card.
+        result["qbzd_standby"] = (
+            result["status"] in ("Stopped", "Paused")
+            and connect_state.is_device_active() is False
+        )
 
         return result
 

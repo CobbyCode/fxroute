@@ -116,6 +116,9 @@ class QobuzVolumeWatchDependencies:
 
     is_active: Callable[[], bool]
     apply_volume_delta: Callable[[int], Awaitable[Any]]
+    # Optional: notified when the journal shows this device becoming (True)
+    # or ceasing to be (False) the actively selected Connect renderer.
+    on_device_active: Callable[[bool], None] | None = None
 
 
 class QobuzVolumeWatch:
@@ -186,8 +189,44 @@ class QobuzVolumeWatch:
         finally:
             self._drain_task = None
 
+    async def _bootstrap_device_state(self) -> None:
+        """Recover the last selection state from recent journal history.
+
+        The tail starts at ``-n 0`` (no replay), so without this one-shot scan
+        a fresh FXRoute start would not know whether the device is currently
+        selected until the next switch happens.
+        """
+        if self._deps.on_device_active is None:
+            return
+        proc: asyncio.subprocess.Process | None = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "journalctl", "--user", "-u", "qbzd.service",
+                "-n", "500", "-o", "cat", "--no-pager",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+            last: bool | None = None
+            for line in stdout.decode("utf-8", errors="replace").splitlines():
+                if is_session_activation(line):
+                    last = True
+                elif is_session_deactivation(line):
+                    last = False
+            if last is not None:
+                self._deps.on_device_active(last)
+        except (asyncio.TimeoutError, OSError) as exc:
+            logger.debug("qbzd device-state bootstrap failed: %s", exc)
+        finally:
+            if proc is not None and proc.returncode is None:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    proc.kill()
+
     async def run_watch_loop(self) -> None:
         logger.info("Qobuz qbzd journal volume watch loop entered")
+        await self._bootstrap_device_state()
         proc: asyncio.subprocess.Process | None = None
         expect_ignore = False
         while True:
@@ -214,6 +253,8 @@ class QobuzVolumeWatch:
                     # the app's post-activation sync push must not move master.
                     expect_ignore = False
                     self._translator.observe_activation()
+                    if self._deps.on_device_active is not None:
+                        self._deps.on_device_active(is_session_activation(text))
                     continue
                 percent = parse_ignored_volume(text)
                 if percent is not None:

@@ -735,6 +735,7 @@ from audio.samplerate import (
 import streaming
 from streaming.tidal import auth as tidal_auth
 from streaming.tidal import playback as tidal_playback
+from streaming.qobuz import connect_state
 from streaming.spotify import mpris as spotify_mpris
 from streaming.spotify.mpris import playerctl_available, spotify_installed
 from streaming.spotify.provider import (
@@ -1011,6 +1012,7 @@ qobuz_player_watch = QobuzPlayerWatch(QobuzWatchDependencies(
 qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
     is_active=lambda: _resolve_playback_owner() == "qobuz",
     apply_volume_delta=lambda delta: _apply_remote_volume_delta(delta),
+    on_device_active=lambda value: connect_state.set_device_active(value),
 ))
 spotifyd_volume_watch = SpotifydVolumeWatch(SpotifydVolumeWatchDependencies(
     is_active=lambda: _resolve_playback_owner() == "spotify",
@@ -2386,6 +2388,7 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
     if not getattr(result, "committed", False):
         return qobuz_state
     await _publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
+    connect_state.set_device_active(True)
     await _qobuz_pin_unity()
     return await broadcast_qobuz_state()
 
@@ -5017,6 +5020,7 @@ async def _qobuz_ui_start_action(action: str) -> dict:
     if not getattr(result, "committed", False):
         return await broadcast_qobuz_state()
     await _publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
+    connect_state.set_device_active(True)
     await _qobuz_pin_unity()
     return await broadcast_qobuz_state()
 
