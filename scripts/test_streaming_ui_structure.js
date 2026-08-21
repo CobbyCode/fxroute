@@ -231,11 +231,10 @@ assert.ok(js.includes("const queueIds = type === 'tracks' ? items.map((item) => 
     'track search results must build a queue from all displayed tracks');
 assert.ok(js.includes('playTidalTracks(queueIds, trackId)'),
     'a track search click must start the complete search-results queue');
-assert.ok(js.includes('tidal-track-selection-toggle') && js.includes('tidal-select-all') &&
-    js.includes('tidal-clear-selection') && js.includes('tidal-play-selected'),
-    'track selection mode must expose Select all, Clear and Play selected');
-assert.ok(js.includes('tidal-track-select'),
-    'track checkboxes must be scoped to the opt-in selection mode');
+assert.ok(js.includes('tidal-select-all') && js.includes('tidal-clear-selection') && js.includes('tidal-play-selected'),
+    'track selection must expose Select all, Clear and Play selected');
+assert.ok(js.includes('trackAddButtonHtml') && js.includes('data-track-add'),
+    'track selection must use the shared Plus button instead of checkboxes');
 assert.ok(js.includes('const selectedIds = items.map((item) => String(item.id)).filter((id) => state.tidal.selectedTrackIds.has(id))'),
     'Play selected must create a queue only from checked search tracks');
 const tidalSearchRender = extractFunction(js, 'renderTidalSearchResults');
@@ -277,10 +276,8 @@ assert.ok(js.includes('playTidalTracks(ids, ids[0])'),
     'Play playlist must start the whole queue at track 1');
 assert.ok(js.includes('queue_track_ids: trackIds'),
     'playback must hand the full queue to /api/play');
-assert.ok(js.includes('trackSelectionMode'),
-    'Tidal search tracks must have an optional selection mode');
 assert.ok(js.includes('Select all') && js.includes('Clear') && js.includes('Play selected'),
-    'selection controls must be available after activating selection mode');
+    'selection controls must be available for track search results');
 
 // Catalog providers must not render a second in-tab now-playing card: the
 // global footer is the authoritative player, so the card stays hidden.

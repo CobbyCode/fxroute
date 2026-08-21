@@ -131,6 +131,7 @@ let state = {
         albumsLoaded: false,
         showFavoriteAlbums: false,
         albumDetail: null,
+        albumTrackCache: {},   // albumId -> track ids, for album-level selection state
     },
     playlists: [],
     stations: [],
@@ -468,6 +469,7 @@ const elements = {
     albumDetailArtist: document.getElementById('album-detail-artist'),
     albumDetailCount: document.getElementById('album-detail-count'),
     albumFavoriteToggle: document.getElementById('album-favorite-toggle'),
+    albumAddToggle: document.getElementById('album-add-toggle'),
     albumDetailTracks: document.getElementById('album-detail-tracks'),
     albumDiscover: document.getElementById('album-discover'),
     albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
@@ -4797,15 +4799,17 @@ function renderTracks() {
         const subline = metadataLine || (folderMode ? getTrackFilename(track) : getTrackFolder(track));
         return `
             <div class="track-item ${isSelected ? 'selected' : ''}" data-track-id="${escapeHtml(track.id)}">
-                <label class="track-select">
-                    <input type="checkbox" class="track-checkbox" data-track-id="${escapeHtml(track.id)}" ${isSelected ? 'checked' : ''}>
-                    <span class="track-select-box"></span>
-                </label>
                 <button class="track-play" data-track-id="${escapeHtml(track.id)}" type="button" title="${escapeHtml(rel)}" aria-label="Play ${escapeHtml(track.title)}">▶</button>
                 <div class="track-info">
                     <div class="track-title">${escapeHtml(track.title)}</div>
                     ${subline ? `<div class="track-artist track-sub">${escapeHtml(subline)}</div>` : ''}
                 </div>
+                <button class="track-add ${isSelected ? 'is-active' : ''}"
+                        data-track-add="${escapeHtml(track.id)}"
+                        type="button"
+                        aria-pressed="${isSelected ? 'true' : 'false'}"
+                        aria-label="${isSelected ? 'Remove track from selection' : 'Add track to selection'}"
+                        title="${isSelected ? 'Remove from selection' : 'Add to selection'}">${isSelected ? '✓' : '+'}</button>
                 <button class="track-row-favorite ${track.favorite ? 'active' : ''}"
                         data-track-favorite="${escapeHtml(track.id)}"
                         type="button"
@@ -4854,8 +4858,11 @@ function renderTracks() {
         });
     });
 
-    elements.tracksList.querySelectorAll('.track-checkbox').forEach(input => {
-        input.addEventListener('change', () => toggleTrackSelection(input.dataset.trackId, input.checked));
+    elements.tracksList.querySelectorAll('.track-add[data-track-add]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleTrackSelected(btn.dataset.trackAdd);
+        });
     });
 
     // Whole-row clicks start the row action like the album-detail rows do,
@@ -4863,7 +4870,7 @@ function renderTracks() {
     // own stopPropagation handlers.
     elements.tracksList.querySelectorAll('.track-item[data-track-id]').forEach(row => {
         row.addEventListener('click', (e) => {
-            if (e.target.closest('.track-select, .track-checkbox, .track-row-favorite, .track-fav, .track-play')) return;
+            if (e.target.closest('.track-add, .track-row-favorite, .track-fav, .track-play')) return;
             playLocal(row.dataset.trackId);
         });
     });
@@ -4996,6 +5003,10 @@ function renderAlbums() {
         const coverUrl = albumCoverUrl(album);
         const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
         const imageSrc = coverUrl || fallbackSvg;
+        const addState = getAlbumSelectionState(album.id);
+        const addCls = 'album-add' + (addState === 'all' ? ' is-active' : '') + (addState === 'partial' ? ' is-partial' : '');
+        const addGlyph = addState === 'none' ? '+' : '✓';
+        const addLabel = addState === 'all' ? 'Remove album from selection' : 'Add album tracks to selection';
         return `
         <div class="album-card" data-album-id="${escapeHtml(album.id)}" role="button" tabindex="0">
             <div class="album-art-wrap">
@@ -5003,6 +5014,7 @@ function renderAlbums() {
                      alt="${escapeHtml(album.name)}"
                      onload="this.classList.add('loaded')"
                      onerror="this.onerror=null;this.src='${fallbackSvg}'" />
+                <button class="${addCls}" data-album-add="${escapeHtml(album.id)}" type="button" aria-label="${addLabel}" title="${addLabel}">${addGlyph}</button>
             </div>
             <div class="album-name">${escapeHtml(album.name)}</div>
             <div class="album-artist">${escapeHtml(album.artist)}</div>
@@ -5011,7 +5023,8 @@ function renderAlbums() {
     elements.albumsGrid.innerHTML = smartHtml + manualHtml;
     elements.albumsGrid.classList.remove('hidden');
 
-    const openAlbumCard = (card) => () => {
+    const openAlbumCard = (card) => (event) => {
+        if (event && event.target && event.target.closest('.album-add')) return;
         if (card.dataset.smartFavorite) openSmartTopTracks();
         else openAlbumDetail(card.dataset.albumId);
     };
@@ -5023,6 +5036,12 @@ function renderAlbums() {
     elements.albumsGrid.querySelectorAll('.album-card').forEach(card => {
         card.addEventListener('click', openAlbumCard(card));
         card.addEventListener('keydown', handleAlbumCardKeydown(card));
+    });
+    elements.albumsGrid.querySelectorAll('.album-add[data-album-add]').forEach(btn => {
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            void toggleAlbumSelection(btn.dataset.albumAdd);
+        });
     });
 }
 
@@ -5073,6 +5092,7 @@ async function openAlbumDetail(albumId) {
         if (!res.ok) return;
         const tracks = await res.json();
         state.library.albumDetail = { album, tracks };
+        state.library.albumTrackCache[albumId] = tracks.map(t => t.id).filter(Boolean);
 
         // Update detail header
         const coverUrl = albumCoverUrl(album);
@@ -5081,6 +5101,7 @@ async function openAlbumDetail(albumId) {
         elements.albumDetailArtist.textContent = album.artist;
         elements.albumDetailCount.textContent = `${tracks.length} track${tracks.length === 1 ? '' : 's'}`;
         updateAlbumFavoriteButton(album);
+        syncAlbumSelectionButtons();
         elements.albumDetail.querySelectorAll('.album-detail-facts, .album-detail-about').forEach(node => node.remove());
         const factsHtml = albumFactsHtml(album);
         if (factsHtml) {
@@ -5218,6 +5239,7 @@ function renderAlbumDetailTracks() {
         elements.albumDetailTracks.innerHTML = '<div class="track-item track-item-empty">No matching tracks.</div>';
         return;
     }
+    const selectedIds = new Set(state.library.selectedTrackIds);
     elements.albumDetailTracks.innerHTML = tracks.map((track, index) => {
         const favorite = !!track.favorite;
         const favoriteButton =
@@ -5225,7 +5247,13 @@ function renderAlbumDetailTracks() {
             ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
             ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
             ' title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + (favorite ? '♥' : '♡') + '</button>';
-        return '<div class="track-item" data-track-id="' + escapeHtml(track.id) + '" data-album-context="' + escapeHtml(albumId) + '">' +
+        const isSelected = selectedIds.has(track.id);
+        const selectionButton =
+            '<button class="track-add' + (isSelected ? ' is-active' : '') + '" data-track-add="' + escapeHtml(track.id) + '" type="button"' +
+            ' aria-pressed="' + (isSelected ? 'true' : 'false') + '"' +
+            ' aria-label="' + (isSelected ? 'Remove track from selection' : 'Add track to selection') + '"' +
+            ' title="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + (isSelected ? '✓' : '+') + '</button>';
+        return '<div class="track-item' + (isSelected ? ' selected' : '') + '" data-track-id="' + escapeHtml(track.id) + '" data-album-context="' + escapeHtml(albumId) + '">' +
             detailTrackRowHtml({
                 index: index + 1,
                 title: escapeHtml(track.title || 'Unknown'),
@@ -5233,6 +5261,7 @@ function renderAlbumDetailTracks() {
                 // metadata; only the artist is repeated per track.
                 sub: escapeHtml((track.artist || '').trim()),
                 favoriteButton,
+                selectionButton,
                 duration: track.duration ? formatTime(track.duration) : '',
             }) +
         '</div>';
@@ -5245,7 +5274,16 @@ function renderAlbumDetailTracks() {
             event.stopPropagation();
             play();
         });
-        row.addEventListener('click', play);
+        row.addEventListener('click', (event) => {
+            if (event.target && event.target.closest('.track-add, .track-fav, .track-row-favorite')) return;
+            play();
+        });
+    });
+    elements.albumDetailTracks.querySelectorAll('.track-add[data-track-add]').forEach(btn => {
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            toggleTrackSelected(btn.dataset.trackAdd);
+        });
     });
     bindTrackFavoriteRowButtons(elements.albumDetailTracks);
 }
@@ -5253,7 +5291,7 @@ function renderAlbumDetailTracks() {
 // Shared detail track-row body for the library album detail and the Tidal
 // album/playlist details (streaming.js receives it via the init api). One
 // row language: index, round play button, stacked title/sub, favorite, duration.
-function detailTrackRowHtml({ index, title, sub, favoriteButton, duration }) {
+function detailTrackRowHtml({ index, title, sub, favoriteButton, selectionButton, duration }) {
     return (
         '<span class="track-index">' + index + '</span>' +
         '<button type="button" class="track-play" title="Play">▶</button>' +
@@ -5261,6 +5299,7 @@ function detailTrackRowHtml({ index, title, sub, favoriteButton, duration }) {
             '<div class="track-title">' + title + '</div>' +
             (sub ? '<div class="track-sub">' + sub + '</div>' : '') +
         '</div>' +
+        (selectionButton || '') +
         favoriteButton +
         (duration ? '<span class="track-duration">' + duration + '</span>' : '')
     );
@@ -5281,6 +5320,85 @@ function updateAlbumFavoriteButton(album) {
     elements.albumFavoriteToggle.setAttribute('aria-pressed', favorite ? 'true' : 'false');
     elements.albumFavoriteToggle.setAttribute('aria-label', favorite ? 'Remove album from favorites' : 'Add album to favorites');
     elements.albumFavoriteToggle.title = favorite ? 'Remove from favorites' : 'Add to favorites';
+}
+
+// Album-level selection: a Plus on an album adds/removes all of its tracks as
+// one unit. The open album detail is authoritative for its own track list;
+// other albums reuse the cached track ids fetched when they were added.
+function albumTrackIdsFor(albumId) {
+    const detail = state.library.albumDetail;
+    if (detail && detail.album && detail.album.id === albumId) {
+        return (detail.tracks || []).map(t => t.id);
+    }
+    return state.library.albumTrackCache[albumId] || [];
+}
+
+function getAlbumSelectionState(albumId) {
+    const trackIds = albumTrackIdsFor(albumId);
+    if (!trackIds.length) return 'none';
+    const selected = new Set(state.library.selectedTrackIds);
+    const selectedCount = trackIds.filter(id => selected.has(id)).length;
+    if (selectedCount === 0) return 'none';
+    if (selectedCount === trackIds.length) return 'all';
+    return 'partial';
+}
+
+function applyAlbumAddButton(btn, stateName) {
+    if (!btn) return;
+    btn.classList.toggle('is-active', stateName === 'all');
+    btn.classList.toggle('is-partial', stateName === 'partial');
+    btn.textContent = stateName === 'none' ? '+' : '✓';
+    const label = stateName === 'all'
+        ? 'Remove album from selection'
+        : 'Add album tracks to selection';
+    btn.setAttribute('aria-label', label);
+    btn.title = label;
+    btn.setAttribute('aria-pressed', stateName === 'all' ? 'true' : 'false');
+}
+
+function syncAlbumSelectionButtons() {
+    if (elements.albumsGrid) {
+        elements.albumsGrid.querySelectorAll('.album-add[data-album-add]').forEach(btn => {
+            applyAlbumAddButton(btn, getAlbumSelectionState(btn.dataset.albumAdd));
+        });
+    }
+    const detail = state.library.albumDetail;
+    if (elements.albumAddToggle) {
+        if (detail && !detail.album?.smart) {
+            elements.albumAddToggle.classList.remove('hidden');
+            elements.albumAddToggle.disabled = false;
+            applyAlbumAddButton(elements.albumAddToggle, getAlbumSelectionState(detail.album.id));
+        } else {
+            elements.albumAddToggle.classList.add('hidden');
+            elements.albumAddToggle.disabled = true;
+        }
+    }
+}
+
+async function toggleAlbumSelection(albumId) {
+    const album = (state.library.albums || []).find(a => a.id === albumId);
+    if (!album) return;
+    try {
+        const resp = await fetch(`/api/albums/${encodeURIComponent(albumId)}/tracks`);
+        if (!resp.ok) throw new Error('Failed to load album tracks');
+        const tracks = await resp.json();
+        const trackIds = tracks.map(t => t.id).filter(Boolean);
+        state.library.albumTrackCache[albumId] = trackIds;
+        const selectedIds = new Set(state.library.selectedTrackIds);
+        const allSelected = trackIds.length > 0 && trackIds.every(id => selectedIds.has(id));
+        if (allSelected) {
+            trackIds.forEach(id => selectedIds.delete(id));
+        } else {
+            trackIds.forEach(id => selectedIds.add(id));
+        }
+        state.library.selectedTrackIds = Array.from(selectedIds);
+        updateLibrarySelectionUI();
+        syncRenderedTrackSelection();
+        scheduleActiveLocalQueueSync();
+        showToast(allSelected ? 'Album removed from selection' : `Added ${trackIds.length} album tracks`, 'info');
+    } catch (e) {
+        showToast(e.message || 'Failed to add album', 'error');
+    }
 }
 
 function updateAlbumFavoritesFilterButton() {
@@ -5471,12 +5589,12 @@ function toggleLibraryFolderSelection(folder) {
     scheduleActiveLocalQueueSync();
     showToast(allSelected ? 'Folder selection cleared' : `Selected ${folderTrackIds.length} folder tracks`, 'info');
 }
-function toggleTrackSelection(trackId, selected) {
+function toggleTrackSelected(trackId) {
     const selectedIds = new Set(state.library.selectedTrackIds);
-    if (selected) {
-        selectedIds.add(trackId);
-    } else {
+    if (selectedIds.has(trackId)) {
         selectedIds.delete(trackId);
+    } else {
+        selectedIds.add(trackId);
     }
     state.library.selectedTrackIds = Array.from(selectedIds);
     updateLibrarySelectionUI();
@@ -5554,12 +5672,21 @@ function clearLibrarySearch() {
 }
 function syncRenderedTrackSelection() {
     const selectedIds = new Set(state.library.selectedTrackIds);
-    elements.tracksList.querySelectorAll('.track-item').forEach(item => {
-        item.classList.toggle('selected', selectedIds.has(item.dataset.trackId));
+    [elements.tracksList, elements.albumDetailTracks].forEach(container => {
+        if (!container) return;
+        container.querySelectorAll('.track-item').forEach(item => {
+            item.classList.toggle('selected', selectedIds.has(item.dataset.trackId));
+        });
+        container.querySelectorAll('.track-add[data-track-add]').forEach(btn => {
+            const active = selectedIds.has(btn.dataset.trackAdd);
+            btn.classList.toggle('is-active', active);
+            btn.textContent = active ? '✓' : '+';
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+            btn.setAttribute('aria-label', active ? 'Remove track from selection' : 'Add track to selection');
+            btn.title = active ? 'Remove from selection' : 'Add to selection';
+        });
     });
-    elements.tracksList.querySelectorAll('.track-checkbox').forEach(input => {
-        input.checked = selectedIds.has(input.dataset.trackId);
-    });
+    syncAlbumSelectionButtons();
 }
 function updatePlaylistSaveRowVisibility() {
     if (!elements.playlistSaveRow) return;
@@ -12912,6 +13039,12 @@ function setupLibraryActions() {
     }
     if (elements.albumFavoriteToggle) {
         elements.albumFavoriteToggle.addEventListener('click', toggleCurrentAlbumFavorite);
+    }
+    if (elements.albumAddToggle) {
+        elements.albumAddToggle.addEventListener('click', () => {
+            const detail = state.library.albumDetail;
+            if (detail && detail.album) void toggleAlbumSelection(detail.album.id);
+        });
     }
     if (elements.downloadSelectedTracksBtn) {
         elements.downloadSelectedTracksBtn.addEventListener('click', downloadSelectedTracks);

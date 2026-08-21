@@ -66,10 +66,6 @@ FAV_JS = """
     list.classList.remove('hidden');
     list.innerHTML = `
         <div class="track-item" data-track-id="t1">
-            <label class="track-select">
-                <input type="checkbox" class="track-checkbox" data-track-id="t1">
-                <span class="track-select-box"></span>
-            </label>
             <button class="track-play" data-track-id="t1" type="button">▶</button>
             <div class="track-info">
                 <div class="track-title">Test Track</div>
