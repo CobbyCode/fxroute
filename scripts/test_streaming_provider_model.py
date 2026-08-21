@@ -23,6 +23,7 @@ from streaming.spotify.mpris import (
     detect_running_backend,
     player_name,
     spotify_installed,
+    spotifyd_standby,
 )
 from streaming.spotify.provider import SpotifyProvider
 
@@ -199,6 +200,80 @@ class SpotifyStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status["available"])
         self.assertEqual(status["status"], "Stopped")
         self.assertEqual(status["source"], "spotify")
+
+
+class SpotifydStandbyTests(unittest.IsolatedAsyncioTestCase):
+    """spotifyd 0.4.x hides MPRIS without an active Connect session; the
+    always-present controls name must still let the UI show standby."""
+
+    @staticmethod
+    def _fake_dbus_send(names):
+        class FakeProc:
+            def __init__(self):
+                self._out = "\n".join(f'      string "{n}"' for n in names).encode()
+                self.returncode = 0
+
+            async def communicate(self):
+                return (self._out, b"")
+
+            def kill(self):
+                pass
+
+            def terminate(self):
+                pass
+
+            async def wait(self):
+                return self.returncode
+
+        async def fake_exec(*args, **kwargs):
+            return FakeProc()
+
+        return fake_exec
+
+    async def test_standby_true_when_controls_name_visible(self):
+        with mock.patch("streaming.spotify.mpris._find_dbus_send", return_value="/usr/bin/dbus-send"), \
+             mock.patch("asyncio.create_subprocess_exec",
+                        new=self._fake_dbus_send(["org.mpris.MediaPlayer2.com.blitzfc.qbz",
+                                                  "rs.spotifyd.instance1681535"])):
+            self.assertTrue(await spotifyd_standby())
+
+    async def test_standby_false_without_spotifyd_name(self):
+        with mock.patch("streaming.spotify.mpris._find_dbus_send", return_value="/usr/bin/dbus-send"), \
+             mock.patch("asyncio.create_subprocess_exec",
+                        new=self._fake_dbus_send(["org.mpris.MediaPlayer2.com.blitzfc.qbz"])):
+            self.assertFalse(await spotifyd_standby())
+
+    async def test_standby_false_when_dbus_send_missing(self):
+        with mock.patch("streaming.spotify.mpris._find_dbus_send", return_value=None):
+            self.assertFalse(await spotifyd_standby())
+
+    async def test_status_flags_standby_when_no_mpris_player(self):
+        async def fake_run(*args, timeout=4.0):
+            return None
+
+        provider = SpotifyProvider()
+        with mock.patch("streaming.spotify.mpris.playerctl_available", return_value=True), \
+             mock.patch("streaming.spotify.mpris.list_players", new=_players([])), \
+             mock.patch("streaming.spotify.mpris._run", side_effect=fake_run), \
+             mock.patch("streaming.spotify.mpris.spotifyd_standby", return_value=True):
+            status = await provider.status()
+
+        self.assertEqual(status["status"], "Stopped")
+        self.assertTrue(status["spotifyd_standby"])
+
+    async def test_status_omits_standby_flag_when_daemon_absent(self):
+        async def fake_run(*args, timeout=4.0):
+            return None
+
+        provider = SpotifyProvider()
+        with mock.patch("streaming.spotify.mpris.playerctl_available", return_value=True), \
+             mock.patch("streaming.spotify.mpris.list_players", new=_players([])), \
+             mock.patch("streaming.spotify.mpris._run", side_effect=fake_run), \
+             mock.patch("streaming.spotify.mpris.spotifyd_standby", return_value=False):
+            status = await provider.status()
+
+        self.assertEqual(status["status"], "Stopped")
+        self.assertNotIn("spotifyd_standby", status)
 
 
 def _players(names):

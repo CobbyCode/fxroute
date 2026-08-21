@@ -26,6 +26,12 @@ SPOTIFY_DESKTOP_PLAYER = "spotify"
 SPOTIFYD_PLAYER = "spotifyd"
 SPOTIFYD_MPRIS_INSTANCE_PREFIX = "spotifyd."
 
+# spotifyd 0.4.x registers its controls interface under
+# ``rs.spotifyd.instance<PID>`` for the whole daemon lifetime, while the MPRIS
+# player name only exists while a Spotify Connect session is active. The
+# controls name therefore detects an idle (standby) spotifyd daemon.
+SPOTIFYD_DBUS_NAME_PREFIX = "rs.spotifyd.instance"
+
 # Bounded timeout for the running-player discovery subprocess; a stuck
 # playerctl must not stall a status read.
 PLAYER_LIST_TIMEOUT_SECONDS = 2.0
@@ -122,6 +128,50 @@ async def list_players(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> list[str
     except (asyncio.TimeoutError, OSError) as exc:
         logger.debug("playerctl -l failed: %s", exc)
         return []
+    finally:
+        await _stop_process(proc)
+
+
+_dbus_send_path: str | None = None
+
+
+def _find_dbus_send() -> str | None:
+    global _dbus_send_path
+    if _dbus_send_path is not None:
+        return _dbus_send_path
+    _dbus_send_path = shutil.which("dbus-send")
+    return _dbus_send_path
+
+
+async def spotifyd_standby(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> bool:
+    """Return whether an idle spotifyd daemon is visible on the session bus.
+
+    spotifyd 0.4.x keeps its controls interface name registered for the whole
+    daemon lifetime but only exposes MPRIS while a Connect session is active,
+    so this detects the daemon even when playerctl sees no Spotify player.
+    """
+    cmd = _find_dbus_send()
+    if cmd is None:
+        return False
+    proc: asyncio.subprocess.Process | None = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            cmd,
+            "--session",
+            "--print-reply",
+            "--dest=org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.ListNames",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode != 0:
+            return False
+        return SPOTIFYD_DBUS_NAME_PREFIX in stdout.decode(errors="ignore")
+    except (asyncio.TimeoutError, OSError) as exc:
+        logger.debug("dbus-send ListNames failed: %s", exc)
+        return False
     finally:
         await _stop_process(proc)
 

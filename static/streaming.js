@@ -361,7 +361,8 @@
 
         // Stopped with no track.
         if ((data.status === 'Stopped' || !data.status) && !data.title) {
-            showEmpty(entry, notPlayingMessage(providerId), '');
+            const empty = notPlayingContent(providerId, data);
+            showEmpty(entry, empty.title, empty.message);
             return;
         }
 
@@ -459,10 +460,19 @@
         return 'This provider is not available.';
     }
 
-    function notPlayingMessage(providerId) {
-        if (providerId === 'spotify') return 'Spotify is not running.';
-        if (providerId === 'qobuz') return 'Nothing is playing. Start a track from the Qobuz app.';
-        return 'Nothing is playing.';
+    function notPlayingContent(providerId, data) {
+        // spotifyd 0.4.x hides its MPRIS interface without an active Connect
+        // session; the backend flags standby so an idle daemon reads as
+        // "ready" instead of "not running".
+        if (providerId === 'spotify' && data && data.spotifyd_standby) {
+            return {
+                title: 'Spotify is ready.',
+                message: 'spotifyd is waiting for a Spotify Connect session. Start playback from any Spotify app and select FXRoute.',
+            };
+        }
+        if (providerId === 'spotify') return { title: 'Spotify is not running.', message: '' };
+        if (providerId === 'qobuz') return { title: 'Nothing is playing. Start a track from the Qobuz app.', message: '' };
+        return { title: 'Nothing is playing.', message: '' };
     }
 
     function connectMessage(providerId) {

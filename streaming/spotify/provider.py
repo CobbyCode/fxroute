@@ -98,6 +98,12 @@ class SpotifyProvider(StreamingProvider):
             "{{status}}|{{artist}}|{{title}}|{{album}}|{{mpris:length}}|{{mpris:trackid}}",
         )
         if meta is None:
+            # No visible MPRIS player. spotifyd 0.4.x hides its MPRIS
+            # interface without an active Connect session; surface the
+            # standby state so the UI can distinguish "backend waiting for
+            # Connect" from a plain "nothing playing".
+            if await mpris.spotifyd_standby():
+                result["spotifyd_standby"] = True
             return result
 
         parts = meta.split("|")
