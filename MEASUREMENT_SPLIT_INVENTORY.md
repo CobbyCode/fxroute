@@ -42,6 +42,23 @@ Stand: 2026-08-21, `static/app.js` @ 14.911 Zeilen (HEAD f25ed7b).
 
 ## Phasen-Fortschritt
 
+**Phase 4** (2026-08-21): `static/measurement_flows.js` (IIFE, `init()`-DI)
+angelegt — Auto-Sub-Flow (`syncAutoSubButton`,
+`syncSubwooferControlsDuringAutoSub`, `startAutoSubOptimize`,
+`cancelAutoSubOptimize`, `pollAutoSubJob`, `handleAutoSubResult`) und
+Hybrid-Wizard (13 Funktionen von `getHybridWizardState` bis
+`setupHybridMeasurementWizard`). Alle Backend-Calls laufen über das injizierte
+`api`-Objekt (6 Endpoints, streaming.js-Konvention); State/DOM über
+`getState()`/`getElements()`-Getter, UI-Feedback und Domain-Helfer als
+injizierte Referenzen. app.js: gleichnamige Wrapper, −639 Zeilen
+(14308 → 13669). index.html: Script-Tag + app.js v=0.9.58.
+Test-Follow-ups: `test_hybrid_measurement.js` und
+`test_auto_sub_target_curve_snapshot.py` greppen jetzt die neuen Module statt
+app.js (Quelltext-Asserts folgen dem Move). Verifikation: node --check,
+Fokus-Tests grün; Browser-Smoke: Wizard öffnet/schließt mit Sequenz-Aufbau,
+keine Seitenfehler; Walkthrough 200 Checks ohne strukturelle Screenshot-Diffs;
+Final Gate 200/0/10.
+
 **Phase 3** (2026-08-21): `renderMeasurementPanel` (705 Zeilen) zerlegt in
 30-Zeilen-Orchestrator + 10 Section-Updater (Setup, Inputs, Calibration,
 HouseCurve, Actions, View, Status, Editors, Convolver, SavedList); einheitliche

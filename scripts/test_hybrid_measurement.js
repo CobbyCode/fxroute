@@ -10,14 +10,16 @@ const Dsp = require('../static/measurement_dsp.js');
 const root = path.resolve(__dirname, '..');
 const indexSource = fs.readFileSync(path.join(root, 'static/index.html'), 'utf8');
 const appSource = fs.readFileSync(path.join(root, 'static/app.js'), 'utf8');
+// Hybrid wizard flow bodies live in measurement_flows.js since the phase-4 split.
+const flowsSource = fs.readFileSync(path.join(root, 'static', 'measurement_flows.js'), 'utf8');
 assert(indexSource.includes('id="measurement-hybrid-panel"'));
 assert(indexSource.indexOf('hybrid_measurement.js') < indexSource.indexOf('app.js?v='), 'hybrid model must load before app');
-assert(appSource.includes("formData.append('measurement_role', step.role)"));
-assert(appSource.includes("hybrid_constraints: model.constraints"));
-assert(appSource.includes('HybridMeasurement.isUsableDirectMeasurement(measurement)'));
+assert(flowsSource.includes("formData.append('measurement_role', step.role)"));
+assert(flowsSource.includes("hybrid_constraints: model.constraints"));
+assert(flowsSource.includes('HybridMeasurement.isUsableDirectMeasurement(measurement)'));
 assert(appSource.includes("'Cancel measurement'"));
 assert(appSource.includes('cancelHybridWizardMeasurement'));
-assert(appSource.includes("processing ? `Processing ${step.channel"));
+assert(flowsSource.includes("processing ? `Processing ${step.channel"));
 assert(indexSource.includes('hybrid-seat-cushion-left'));
 
 function points(level) {
@@ -170,9 +172,9 @@ assert.equal(phaseInverted.phaseRmsErrorDeg, 180);
 assert.equal(phaseInverted.complexResidualRms, 2);
 assert.equal(phaseInverted.status, 'poor', '180 degree complex error must never validate as OK');
 assert.deepEqual(phaseInverted.validationBandHz, [20, 500]);
-assert(appSource.includes('complex residual'));
-assert(appSource.includes('no separate integration sweep was performed'));
-assert(appSource.includes('integration.limitation'));
+assert(flowsSource.includes('complex residual'));
+assert(flowsSource.includes('no separate integration sweep was performed'));
+assert(flowsSource.includes('integration.limitation'));
 
 const poorIntegrationCaptures = profileCaptures.map(item => {
     if (item.role !== 'mlp') return item;
@@ -194,7 +196,7 @@ try {
 }
 assert.match(integrationError?.message || '', /integration check failed/i, 'poor integration must prevent profile generation');
 assert.equal(integrationError?.retryRole, 'integration', 'quality gate must identify the measurement to repeat');
-assert(appSource.includes("error.retryRole === 'integration'"));
+assert(flowsSource.includes("error.retryRole === 'integration'"));
 
 const stereoDiagram = Hybrid.getDiagramState('stereo', 'left');
 assert(!stereoDiagram.subs.left.visible && !stereoDiagram.subs.right.visible);

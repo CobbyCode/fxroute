@@ -69,9 +69,11 @@ class AutoSubTargetCurveSnapshotTests(unittest.TestCase):
 
     def test_frontend_resolves_exact_option_and_sends_full_snapshot(self):
         source = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        # The Auto-Sub start flow lives in measurement_flows.js since phase 4.
+        flows_source = (ROOT / "static" / "measurement_flows.js").read_text(encoding="utf-8")
         self.assertIn("find((option) => option.key === key)", source)
         self.assertIn("provenance: key.startsWith('house:') ? 'uploaded' : 'built_in'", source)
-        self.assertIn("JSON.stringify(targetCurveSnapshot)", source)
+        self.assertIn("JSON.stringify(targetCurveSnapshot)", flows_source)
         self.assertNotIn("function getAutoSubTargetCurveSnapshot() {\n    const conv = ensureMeasurementConvolverState();\n    const curve = getMeasurementConvolverCurve", source)
 
 
