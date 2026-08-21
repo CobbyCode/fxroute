@@ -381,8 +381,6 @@ let libraryModeSyncArmed = false;
 let lastLibraryPlaybackContextSignature = null;
 let libraryModeRequestInFlight = false;
 let effectsCompareLoadInFlight = false;
-let librarySelectionSyncTimer = null;
-let librarySelectionSyncRequestId = 0;
 let settingsStatusPollTimer = null;
 let settingsOutputScanOnFocusDone = false;
 let measurementInputScanOnFocusDone = false;
@@ -407,7 +405,6 @@ const MEASUREMENT_PEQ_TOUCH_CREATE_COOLDOWN_MS = 350;
 const SPOTIFY_POLL_INTERVAL_MS = 1000;
 const SAMPLERATE_POLL_INTERVAL_MS = 5000;
 const SAMPLERATE_BURST_POLL_DELAYS_MS = [0, 120, 280, 520, 900, 1400, 2200, 3200];
-const LIBRARY_SELECTION_SYNC_DEBOUNCE_MS = 180;
 const LIBRARY_SCAN_POLL_INTERVAL_MS = 1200;
 const DOWNLOAD_STATUS_POLL_INTERVAL_MS = 1500;
 const PEAK_STATUS_POLL_INTERVAL_MS = 1200;
@@ -3231,109 +3228,31 @@ function getLibraryPlaybackContext(playback = state.playback) {
     if (!currentTrack || currentTrack.source !== 'local') {
         return null;
     }
-    const queueTrackIds = Array.isArray(queue.tracks)
-        ? queue.tracks.map(track => track?.id).filter(Boolean)
-        : [];
-    const selectedTrackIds = queueTrackIds.length > 1
-        ? queueTrackIds
-        : (currentTrack.id ? [currentTrack.id] : []);
     return {
-        selectedTrackIds,
         shuffle: !!queue.shuffle,
         loop: !!queue.loop,
     };
 }
 function syncLibraryStateFromPlaybackContext(force = false) {
     const context = getLibraryPlaybackContext();
-    const signature = JSON.stringify(context || { selectedTrackIds: [], shuffle: false, loop: false });
+    const signature = JSON.stringify(context || { shuffle: false, loop: false });
     const changed = signature !== lastLibraryPlaybackContextSignature;
     lastLibraryPlaybackContextSignature = signature;
     if (!force && !changed) return;
     if (playbackActionInFlight) return;
 
     if (!context) {
-        if (state.library.selectedTrackIds.length || state.library.shuffle || state.library.loop) {
-            state.library.selectedTrackIds = [];
+        if (state.library.shuffle || state.library.loop) {
             state.library.shuffle = false;
             state.library.loop = false;
-            if (state.library.viewMode !== 'albums') renderLibraryView();
             renderLibraryModeButtons();
         }
         return;
     }
 
-    state.library.selectedTrackIds = [...context.selectedTrackIds];
     state.library.shuffle = context.shuffle;
     state.library.loop = context.loop;
-    if (state.library.viewMode !== 'albums') renderLibraryView();
     renderLibraryModeButtons();
-}
-function getActiveLocalTrackId() {
-    const currentTrack = state.playback?.current_track;
-    return currentTrack && currentTrack.source === 'local' ? currentTrack.id : null;
-}
-function buildLibrarySelectionPlaybackContext() {
-    const activeTrackId = getActiveLocalTrackId();
-    const selectedTrackIds = getSelectedPlayableTrackIds();
-    if (!activeTrackId || selectedTrackIds.length === 0 || !selectedTrackIds.includes(activeTrackId)) {
-        return null;
-    }
-    return {
-        selectedTrackIds,
-        shuffle: !!state.library.shuffle,
-        loop: !!state.library.loop,
-    };
-}
-function scheduleActiveLocalQueueSync() {
-    if (librarySelectionSyncTimer) {
-        clearTimeout(librarySelectionSyncTimer);
-        librarySelectionSyncTimer = null;
-    }
-    const targetContext = buildLibrarySelectionPlaybackContext();
-    if (!targetContext || playbackActionInFlight) {
-        return;
-    }
-    const currentContext = getLibraryPlaybackContext();
-    if (JSON.stringify(targetContext) === JSON.stringify(currentContext || { selectedTrackIds: [], shuffle: false, loop: false })) {
-        return;
-    }
-    librarySelectionSyncTimer = setTimeout(() => {
-        librarySelectionSyncTimer = null;
-        void syncActiveLocalQueueFromSelection();
-    }, LIBRARY_SELECTION_SYNC_DEBOUNCE_MS);
-}
-async function syncActiveLocalQueueFromSelection() {
-    const targetContext = buildLibrarySelectionPlaybackContext();
-    if (!targetContext || playbackActionInFlight || libraryModeRequestInFlight) {
-        return;
-    }
-    const currentContext = getLibraryPlaybackContext();
-    if (JSON.stringify(targetContext) === JSON.stringify(currentContext || { selectedTrackIds: [], shuffle: false, loop: false })) {
-        return;
-    }
-    const requestId = ++librarySelectionSyncRequestId;
-    try {
-        const resp = await fetch('/api/playback/selection', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                queue_track_ids: targetContext.selectedTrackIds,
-                shuffle: targetContext.shuffle,
-                loop: targetContext.loop,
-            }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (requestId !== librarySelectionSyncRequestId) return;
-        if (!resp.ok) throw new Error(data.detail || 'Queue update failed');
-        if (data.playback) {
-            mergePlaybackState(data.playback);
-            syncLibraryStateFromPlaybackContext(true);
-        }
-        updatePlaybackUI();
-    } catch (e) {
-        if (requestId !== librarySelectionSyncRequestId) return;
-        console.warn('Failed to sync active local queue from selection', e);
-    }
 }
 function applyRemoteVolume(remoteVolume) {
     const matchesOptimistic = optimisticVolume !== null && remoteVolume === optimisticVolume;
@@ -4519,11 +4438,9 @@ async function clearQueue() {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Clear queue failed');
         if (data.playback) mergePlaybackState(data.playback);
-        state.library.selectedTrackIds = [];
         state.library.shuffle = false;
         state.library.loop = false;
-        lastLibraryPlaybackContextSignature = JSON.stringify({ selectedTrackIds: [], shuffle: false, loop: false });
-        renderLibraryView();
+        lastLibraryPlaybackContextSignature = JSON.stringify({ shuffle: false, loop: false });
         renderLibraryModeButtons();
         showToast('Queue cleared', 'info');
     } catch (e) {
@@ -5267,7 +5184,8 @@ function renderAlbumDetailTracks() {
         '</div>';
     }).join('');
     // Whole-row and round play-button clicks both start the track (matching
-    // the Tidal detail rows); the favorite button stops propagation itself.
+    // the Tidal detail rows); the selection Plus and favorite button stop
+    // propagation themselves.
     elements.albumDetailTracks.querySelectorAll('.track-item').forEach(row => {
         const play = () => playTrackInAlbum(row.dataset.trackId, row.dataset.albumContext);
         row.querySelector('.track-play').addEventListener('click', (event) => {
@@ -5290,7 +5208,8 @@ function renderAlbumDetailTracks() {
 
 // Shared detail track-row body for the library album detail and the Tidal
 // album/playlist details (streaming.js receives it via the init api). One
-// row language: index, round play button, stacked title/sub, favorite, duration.
+// row language: index, round play button, stacked title/sub, optional
+// selection Plus, favorite, duration.
 function detailTrackRowHtml({ index, title, sub, favoriteButton, selectionButton, duration }) {
     return (
         '<span class="track-index">' + index + '</span>' +
@@ -5394,7 +5313,6 @@ async function toggleAlbumSelection(albumId) {
         state.library.selectedTrackIds = Array.from(selectedIds);
         updateLibrarySelectionUI();
         syncRenderedTrackSelection();
-        scheduleActiveLocalQueueSync();
         showToast(allSelected ? 'Album removed from selection' : `Added ${trackIds.length} album tracks`, 'info');
     } catch (e) {
         showToast(e.message || 'Failed to add album', 'error');
@@ -5507,10 +5425,7 @@ async function playTrackInAlbum(trackId, albumId) {
             knownIds.add(t.id);
         }
     }
-    // Replace selection with album tracks – old selection is cleared
-    state.library.selectedTrackIds = albumTrackIds;
-    updateLibrarySelectionUI();
-    await playLocal(trackId);
+    await playLocal(trackId, albumTrackIds);
 }
 
 function albumArtFallbackSvg(text) {
@@ -5530,11 +5445,7 @@ async function playLibraryFolder(folder) {
         showToast('Folder has no playable tracks', 'error');
         return;
     }
-    state.library.selectedTrackIds = tracks.map(track => track.id);
-    updateLibrarySelectionUI();
-    syncRenderedTrackSelection();
-    scheduleActiveLocalQueueSync();
-    await playLocal(tracks[0].id);
+    await playLocal(tracks[0].id, tracks.map(track => track.id));
 }
 
 async function deleteLibraryFolder(folder) {
@@ -5586,7 +5497,6 @@ function toggleLibraryFolderSelection(folder) {
     state.library.selectedTrackIds = Array.from(selectedIds);
     updateLibrarySelectionUI();
     syncRenderedTrackSelection();
-    scheduleActiveLocalQueueSync();
     showToast(allSelected ? 'Folder selection cleared' : `Selected ${folderTrackIds.length} folder tracks`, 'info');
 }
 function toggleTrackSelected(trackId) {
@@ -5599,13 +5509,11 @@ function toggleTrackSelected(trackId) {
     state.library.selectedTrackIds = Array.from(selectedIds);
     updateLibrarySelectionUI();
     syncRenderedTrackSelection();
-    scheduleActiveLocalQueueSync();
 }
 function clearTrackSelection() {
     state.library.selectedTrackIds = [];
     updateLibrarySelectionUI();
     syncRenderedTrackSelection();
-    scheduleActiveLocalQueueSync();
 }
 function selectAllVisibleTracks() {
     const selectedIds = new Set(state.library.selectedTrackIds);
@@ -5613,14 +5521,12 @@ function selectAllVisibleTracks() {
     state.library.selectedTrackIds = Array.from(selectedIds);
     updateLibrarySelectionUI();
     syncRenderedTrackSelection();
-    scheduleActiveLocalQueueSync();
 }
 function clearVisibleTrackSelection() {
     const visibleIds = new Set(getFilteredTracks().map(track => track.id));
     state.library.selectedTrackIds = state.library.selectedTrackIds.filter(id => !visibleIds.has(id));
     updateLibrarySelectionUI();
     syncRenderedTrackSelection();
-    scheduleActiveLocalQueueSync();
 }
 function toggleVisibleTrackSelection() {
     const filteredTracks = getFilteredTracks();
@@ -5869,17 +5775,12 @@ async function loadPlaylistById(playlistId, options = {}) {
         showToast(`Playlist "${playlist.name}" has no playable tracks`, 'error');
         return;
     }
-    state.library.selectedTrackIds = validTrackIds;
-    state.library.searchQuery = '';
-    if (elements.librarySearchInput) elements.librarySearchInput.value = '';
-    updateLibrarySearchControls();
-    renderTracks();
     const missingCount = playlist.track_ids.length - validTrackIds.length;
     if (autoplay) {
         if (missingCount > 0) {
             showToast(`Starting ${validTrackIds.length}/${playlist.track_ids.length} tracks from ${playlist.name}`, 'info');
         }
-        await playLocal(validTrackIds[0]);
+        await playLocal(validTrackIds[0], validTrackIds);
         return;
     }
     showToast(missingCount > 0
@@ -6076,7 +5977,7 @@ async function playRadio(stationId) {
         showToast('Failed to start playback', 'error');
     }
 }
-async function playLocal(trackId) {
+async function playLocal(trackId, queueTrackIds = null) {
     const track = state.library.tracks.find(t => t.id === trackId);
     if (!track) {
         showToast('Track not found', 'error');
@@ -6087,10 +5988,9 @@ async function playLocal(trackId) {
         pendingPlaybackRequestId++;
         playbackActionInFlight = false;
     }
-    const selectedTrackIds = getSelectedPlayableTrackIds();
-    const shouldUseSelectionQueue = selectedTrackIds.length > 1 && selectedTrackIds.includes(trackId);
+    const shouldUseQueue = Array.isArray(queueTrackIds) && queueTrackIds.length > 1 && queueTrackIds.includes(trackId);
     const requestId = ++pendingPlaybackRequestId;
-    pendingFooterSingleTrackStart = shouldUseSelectionQueue ? null : {
+    pendingFooterSingleTrackStart = shouldUseQueue ? null : {
         requestId,
         trackId: track.id,
         expiresAt: Date.now() + FOOTER_SINGLE_TRACK_START_LOCK_MS,
@@ -6104,13 +6004,13 @@ async function playLocal(trackId) {
     state.playback.live_title = null;
     state.playback.playing = true;
     state.playback.paused = false;
-    state.playback.queue = shouldUseSelectionQueue
+    state.playback.queue = shouldUseQueue
         ? {
             active: true,
-            index: Math.max(0, selectedTrackIds.indexOf(track.id)),
-            count: selectedTrackIds.length,
+            index: Math.max(0, queueTrackIds.indexOf(track.id)),
+            count: queueTrackIds.length,
             mode: state.playback.queue?.mode || 'app_replace',
-            tracks: selectedTrackIds
+            tracks: queueTrackIds
                 .map(id => state.library.tracks.find(item => item.id === id))
                 .filter(Boolean),
             loop: !!state.library.loop,
@@ -6131,7 +6031,7 @@ async function playLocal(trackId) {
             body: JSON.stringify({
                 source: 'local',
                 track_id: track.id,
-                queue_track_ids: shouldUseSelectionQueue ? selectedTrackIds : undefined,
+                queue_track_ids: shouldUseQueue ? queueTrackIds : undefined,
                 shuffle: !!state.library.shuffle,
                 loop: !!state.library.loop,
             }),

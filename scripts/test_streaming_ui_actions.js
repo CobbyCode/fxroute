@@ -76,16 +76,6 @@ function makeEl() {
                 }
                 return [el._favBtn];
             }
-            if (sel === '.streaming-add[data-track-add]') {
-                if (!el._addBtn) {
-                    const m = el.innerHTML.match(/data-track-add="([^"]+)"/);
-                    const btn = makeEl();
-                    btn.className = 'streaming-add';
-                    btn.dataset.trackAdd = m ? m[1] : '';
-                    el._addBtn = btn;
-                }
-                return [el._addBtn];
-            }
             return [];
         },
         appendChild() {},
@@ -444,9 +434,9 @@ async function main() {
     assert.ok(!sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-results'),
         'browse categories must not be visible in search results');
     assert.ok(!body.innerHTML.includes('class="tidal-track-select"'),
-        'track search results must not use checkboxes');
-    assert.ok(body.innerHTML.includes('id="tidal-select-all"') && body.innerHTML.includes('id="tidal-play-selected"'),
-        'track search results must expose Select all and Play selected');
+        'normal track search results must not show permanent checkboxes');
+    assert.ok(!body.innerHTML.includes('tidal-select-all'),
+        'selection actions must stay hidden until selection mode is activated');
 
     // A normal track click uses all currently displayed tracks as a temporary queue.
     const resultRows = createdEls.filter((el) => el.className === 'streaming-result');
@@ -458,16 +448,18 @@ async function main() {
         source: 'tidal', track_id: 's2', queue_track_ids: ['s1', 's2'],
     }, 'search track playback must queue every visible search track');
 
-    // The Plus button selects a single track; Play selected queues only it.
+    // Selection mode is opt-in and can start a queue containing only checked tracks.
+    const selectToggle = body.querySelector('#tidal-track-selection-toggle');
+    selectToggle.click();
     const selectedRows = createdEls.filter((el) => el.className === 'streaming-result').slice(-2);
-    const firstAdd = selectedRows[0].querySelectorAll('.streaming-add[data-track-add]')[0];
-    firstAdd.click();
+    const firstCheckbox = selectedRows[0].querySelector('.tidal-track-select');
+    firstCheckbox.dispatch('change', { target: { checked: true } });
     body.querySelector('#tidal-play-selected').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const selectionPlayCalls = fetchCalls.filter((c) => c.url === '/api/play');
     assert.deepEqual(JSON.parse(selectionPlayCalls.at(-1).opts.body), {
         source: 'tidal', track_id: 's1', queue_track_ids: ['s1'],
-    }, 'Play selected must queue only the Plus-selected search track');
+    }, 'Play selected must queue only checked search tracks');
 
     // Switching result types reuses the executed query without a second Search click.
     for (const type of ['artists', 'tracks', 'albums', 'playlists']) {

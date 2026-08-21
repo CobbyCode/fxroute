@@ -68,8 +68,8 @@
             searchResultType: 'tracks',
             searchResults: null,
             searchRequestId: 0,
+            trackSelectionMode: false,
             selectedTrackIds: new Set(),
-            albumTrackCache: {},   // albumId -> track ids, for album-level selection state
             detailRequestId: 0,
             detailId: null,
             detailTitle: '',
@@ -958,6 +958,8 @@
         state.tidal.searchQuery = '';
         state.tidal.searchExecuted = false;
         state.tidal.searchResults = null;
+        state.tidal.trackSelectionMode = false;
+        state.tidal.selectedTrackIds.clear();
         const input = document.getElementById('tidal-search-input');
         if (input) input.value = '';
     }
@@ -1018,6 +1020,8 @@
         const query = state.tidal.searchQuery;
         const requestId = ++state.tidal.searchRequestId;
         state.tidal.searchResultType = type;
+        state.tidal.trackSelectionMode = false;
+        state.tidal.selectedTrackIds.clear();
         body.innerHTML = contentState('loading', 'Searching…');
         try {
             const resp = await fetch('/api/streaming/tidal/search?q=' + encodeURIComponent(query) + '&types=' + encodeURIComponent(type) + '&limit=25');
@@ -1052,9 +1056,12 @@
         ).join('');
         const selectionControls = type === 'tracks'
             ? '<div class="tidal-track-selection" id="tidal-track-selection-controls">' +
-                '<button type="button" class="btn-ghost" id="tidal-select-all">Select all</button>' +
-                '<button type="button" class="btn-ghost" id="tidal-clear-selection"' + (state.tidal.selectedTrackIds.size ? '' : ' disabled') + '>Clear</button>' +
-                '<button type="button" class="btn-primary" id="tidal-play-selected"' + (state.tidal.selectedTrackIds.size ? '' : ' disabled') + '>Play selected</button>' +
+                '<button type="button" class="btn-ghost" id="tidal-track-selection-toggle">Select</button>' +
+                (state.tidal.trackSelectionMode
+                    ? '<button type="button" class="btn-ghost" id="tidal-select-all">Select all</button>' +
+                      '<button type="button" class="btn-ghost" id="tidal-clear-selection">Clear</button>' +
+                      '<button type="button" class="btn-primary" id="tidal-play-selected"' + (state.tidal.selectedTrackIds.size ? '' : ' disabled') + '>Play selected</button>'
+                    : '') +
               '</div>'
             : '';
         container.innerHTML =
@@ -1082,6 +1089,13 @@
             chipEl.addEventListener('click', () => runTidalSearch(chipEl.dataset.searchType));
         });
         if (state.tidal.searchResultType !== 'tracks') return;
+        const selectToggle = container.querySelector('#tidal-track-selection-toggle');
+        if (selectToggle) {
+            selectToggle.addEventListener('click', () => {
+                state.tidal.trackSelectionMode = true;
+                renderTidalSearchResults(container, state.tidal.searchResults || {});
+            });
+        }
         const selectAll = container.querySelector('#tidal-select-all');
         if (selectAll) {
             selectAll.addEventListener('click', () => {
@@ -1120,6 +1134,7 @@
         if (type === 'tracks') {
             const trackId = String(item.id);
             li.innerHTML =
+                (state.tidal.trackSelectionMode ? '<input type="checkbox" class="tidal-track-select"' + (state.tidal.selectedTrackIds.has(trackId) ? ' checked' : '') + ' aria-label="Select track" />' : '') +
                 '<button type="button" class="streaming-result-play" title="Play">▶</button>' +
                 '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
                 '<div class="streaming-result-info">' +
@@ -1127,18 +1142,23 @@
                     '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
                 '</div>' +
                 '<div class="streaming-result-album">' + escapeHtml(item.album || '') + '</div>' +
-                trackAddButtonHtml(trackId) +
                 favoriteButtonHtml('tracks', item.id) +
                 '<div class="streaming-result-duration">' + formatTime(item.duration) + '</div>';
             li.querySelector('.streaming-result-play').addEventListener('click', (event) => {
                 event.stopPropagation();
                 playTidalTracks(queueIds, trackId);
             });
-            li.addEventListener('click', (event) => {
-                if (event.target && event.target.closest('.streaming-add, .streaming-fav, .track-fav')) return;
-                playTidalTracks(queueIds, trackId);
-            });
-            bindTidalTrackAddButtons(li);
+            if (state.tidal.trackSelectionMode) {
+                const select = li.querySelector('.tidal-track-select');
+                select.addEventListener('click', (event) => event.stopPropagation());
+                select.addEventListener('change', (event) => {
+                    const id = trackId;
+                    if (event.target.checked) state.tidal.selectedTrackIds.add(id);
+                    else state.tidal.selectedTrackIds.delete(id);
+                    renderTidalSearchResults(document.getElementById('tidal-browse-body'), state.tidal.searchResults || {});
+                });
+            }
+            li.addEventListener('click', () => playTidalTracks(queueIds, trackId));
             bindTidalFavoriteButtons(li);
         } else if (type === 'albums') {
             li.innerHTML =
@@ -1147,13 +1167,8 @@
                     '<div class="streaming-result-title">' + escapeHtml(item.title) + '</div>' +
                     '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
                 '</div>' +
-                tidalAlbumAddHtml(item.id, 'streaming-add') +
                 favoriteButtonHtml('albums', item.id);
-            li.addEventListener('click', (event) => {
-                if (event.target && event.target.closest('.streaming-add, .streaming-fav, .track-fav')) return;
-                openTidalAlbum(item.id, item.title, item.art_url);
-            });
-            bindTidalAlbumAddButtons(li);
+            li.addEventListener('click', () => openTidalAlbum(item.id, item.title, item.art_url));
             bindTidalFavoriteButtons(li);
         } else if (type === 'artists') {
             li.innerHTML =
@@ -1268,114 +1283,6 @@
                 event.stopPropagation();
                 toggleTidalFavorite(btn.dataset.favType, btn.dataset.favId);
             });
-        });
-    }
-
-    // -- selection (shared Plus model with the local library) -----------------
-    function trackAddButtonHtml(trackId) {
-        const idStr = String(trackId);
-        const active = state.tidal.selectedTrackIds.has(idStr);
-        return '<button type="button" class="streaming-add' + (active ? ' is-active' : '') + '" data-track-add="' + escapeHtml(idStr) + '" ' +
-            'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
-            'aria-label="' + (active ? 'Remove track from selection' : 'Add track to selection') + '" ' +
-            'title="' + (active ? 'Remove from selection' : 'Add to selection') + '">' + (active ? '✓' : '+') + '</button>';
-    }
-
-    function toggleTidalTrackSelected(trackId) {
-        const idStr = String(trackId);
-        if (state.tidal.selectedTrackIds.has(idStr)) state.tidal.selectedTrackIds.delete(idStr);
-        else state.tidal.selectedTrackIds.add(idStr);
-        syncTidalSelectionUI();
-    }
-
-    function syncTidalSelectionUI() {
-        document.querySelectorAll('.streaming-add[data-track-add]').forEach((btn) => {
-            const active = state.tidal.selectedTrackIds.has(btn.dataset.trackAdd);
-            btn.classList.toggle('is-active', active);
-            btn.textContent = active ? '✓' : '+';
-            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-            btn.setAttribute('aria-label', active ? 'Remove track from selection' : 'Add track to selection');
-            btn.title = active ? 'Remove from selection' : 'Add to selection';
-        });
-        document.querySelectorAll('#tidal-play-selected').forEach((btn) => { btn.disabled = state.tidal.selectedTrackIds.size === 0; });
-        document.querySelectorAll('#tidal-clear-selection').forEach((btn) => { btn.disabled = state.tidal.selectedTrackIds.size === 0; });
-        syncTidalAlbumAddButtons();
-    }
-
-    function bindTidalTrackAddButtons(container) {
-        container.querySelectorAll('.streaming-add[data-track-add]').forEach((btn) => {
-            btn.addEventListener('click', (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                toggleTidalTrackSelected(btn.dataset.trackAdd);
-            });
-        });
-    }
-
-    function tidalAlbumSelectionState(albumId) {
-        const idStr = String(albumId);
-        const trackIds = state.tidal.albumTrackCache[idStr] || [];
-        if (!trackIds.length) return 'none';
-        const selectedCount = trackIds.filter((id) => state.tidal.selectedTrackIds.has(id)).length;
-        if (selectedCount === 0) return 'none';
-        if (selectedCount === trackIds.length) return 'all';
-        return 'partial';
-    }
-
-    function tidalAlbumAddHtml(albumId, cls) {
-        const idStr = String(albumId);
-        const stateName = tidalAlbumSelectionState(idStr);
-        const c = cls || 'streaming-add';
-        const active = stateName === 'all' ? ' is-active' : '';
-        const partial = stateName === 'partial' ? ' is-partial' : '';
-        const label = stateName === 'all' ? 'Remove album from selection' : 'Add album tracks to selection';
-        return '<button type="button" class="' + c + active + partial + '" data-album-add="' + escapeHtml(idStr) + '" ' +
-            'aria-pressed="' + (stateName === 'all' ? 'true' : 'false') + '" ' +
-            'aria-label="' + label + '" title="' + label + '">' + (stateName === 'none' ? '+' : '✓') + '</button>';
-    }
-
-    function bindTidalAlbumAddButtons(container) {
-        container.querySelectorAll('.streaming-add[data-album-add], .album-add-toggle[data-album-add]').forEach((btn) => {
-            btn.addEventListener('click', (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                void toggleTidalAlbumSelection(btn.dataset.albumAdd);
-            });
-        });
-    }
-
-    async function toggleTidalAlbumSelection(albumId) {
-        const idStr = String(albumId);
-        try {
-            const resp = await fetch('/api/streaming/tidal/albums/' + encodeURIComponent(idStr) + '/tracks');
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const items = await resp.json();
-            const trackIds = items.map((t) => String(t.id)).filter(Boolean);
-            state.tidal.albumTrackCache[idStr] = trackIds;
-            const allSelected = trackIds.length > 0 && trackIds.every((id) => state.tidal.selectedTrackIds.has(id));
-            if (allSelected) {
-                trackIds.forEach((id) => state.tidal.selectedTrackIds.delete(id));
-            } else {
-                trackIds.forEach((id) => state.tidal.selectedTrackIds.add(id));
-            }
-            syncTidalSelectionUI();
-            syncTidalAlbumAddButtons();
-            showToast(allSelected ? 'Album removed from selection' : 'Added ' + trackIds.length + ' album tracks', 'info');
-        } catch (err) {
-            showToast(friendlyError(err?.message || err), 'error');
-        }
-    }
-
-    function syncTidalAlbumAddButtons() {
-        document.querySelectorAll('.streaming-add[data-album-add], .album-add-toggle[data-album-add]').forEach((btn) => {
-            const stateName = tidalAlbumSelectionState(btn.dataset.albumAdd);
-            btn.classList.toggle('is-active', stateName === 'all');
-            btn.classList.toggle('is-partial', stateName === 'partial');
-            btn.textContent = stateName === 'none' ? '+' : '✓';
-            const label = stateName === 'all' ? 'Remove album from selection' : 'Add album tracks to selection';
-            btn.setAttribute('aria-label', label);
-            btn.title = label;
-            btn.setAttribute('aria-pressed', stateName === 'all' ? 'true' : 'false');
         });
     }
 
@@ -1584,7 +1491,6 @@
                     '<div class="streaming-detail-main tidal-detail-meta">' +
                         '<div class="tidal-detail-title-row">' +
                             '<h3 class="streaming-detail-title tidal-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
-                            tidalAlbumAddHtml(state.tidal.detailId, 'album-add-toggle') +
                             favoriteDetailHtml('albums') +
                         '</div>' +
                         '<p class="streaming-detail-artist tidal-detail-artist" id="tidal-album-artist"></p>' +
@@ -1597,7 +1503,6 @@
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteDetailButtons(content);
-        bindTidalAlbumAddButtons(content);
         loadTidalAlbum(content, requestId);
     }
 
@@ -1657,11 +1562,9 @@
             const meta = metaResp.ok ? await metaResp.json().catch(() => null) : null;
             if (!tracksResp.ok) throw new Error(await errorDetail(tracksResp));
             const items = await tracksResp.json();
-            state.tidal.albumTrackCache[String(state.tidal.detailId)] = items.map((t) => String(t.id)).filter(Boolean);
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
             renderTidalAlbumMeta(content, meta, (meta && meta.enrichment) || null);
             renderDetailTracks(results, items, null);
-            syncTidalAlbumAddButtons();
         } catch (err) {
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
             results.innerHTML = contentState('error', friendlyError(err?.message || err));
@@ -1936,7 +1839,6 @@
                 index: index + 1,
                 title: escapeHtml(item.title),
                 sub: escapeHtml(item.artist || ''),
-                selectionButton: trackAddButtonHtml(item.id),
                 favoriteButton: favoriteButtonHtml('tracks', item.id, 'track-fav'),
                 duration: formatTime(item.duration),
             });
@@ -1945,11 +1847,7 @@
                 event.stopPropagation();
                 playTidalTracks(ids, trackId);
             });
-            li.addEventListener('click', (event) => {
-                if (event.target && event.target.closest('.streaming-add, .track-fav, .streaming-fav')) return;
-                playTidalTracks(ids, trackId);
-            });
-            bindTidalTrackAddButtons(li);
+            li.addEventListener('click', () => playTidalTracks(ids, trackId));
             bindTidalFavoriteButtons(li);
             list.appendChild(li);
         });
