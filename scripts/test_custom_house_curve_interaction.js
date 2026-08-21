@@ -5,6 +5,7 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const MeasurementUI = require('../static/measurement_ui.js');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 const dspSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_dsp.js'), 'utf8');
@@ -54,6 +55,7 @@ const graph = {
     released: null,
 };
 const context = {
+    MeasurementUI,
     state,
     measurementPeqPalette: ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa'],
     measurementFrequencyToX: dsp.measurementFrequencyToX,

@@ -5,6 +5,7 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const MeasurementUI = require('../static/measurement_ui.js');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, '..', 'static', 'index.html'), 'utf8');
@@ -52,6 +53,7 @@ async function main() {
     const requests = [];
     const state = { measurement: { houseCurveOptions: [{ id: 'old', filename: 'Custom House Curve 1', points: [[20, 0], [20000, 0]] }] } };
     const context = {
+        MeasurementUI,
         state, elements: {}, File: TestFile, FormData: TestFormData, Date, Math,
         renderMeasurementPanel: () => {}, scheduleMeasurementGraphRender: () => {}, showToast: () => {},
         updateMeasurementConvolverField: (field, value) => { state.measurement.convolverAssistant = { targetCurve: value }; },

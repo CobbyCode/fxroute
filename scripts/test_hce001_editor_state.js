@@ -5,6 +5,7 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const MeasurementUI = require('../static/measurement_ui.js');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 
@@ -44,6 +45,7 @@ const state = {
     },
 };
 const context = {
+    MeasurementUI,
     state,
     renderMeasurementPanel: () => {},
     scheduleMeasurementGraphRender: () => {},

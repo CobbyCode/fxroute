@@ -40,7 +40,31 @@ Stand: 2026-08-21, `static/app.js` @ 14.911 Zeilen (HEAD f25ed7b).
   `startMeasurementWindowHeartbeat`/`stopMeasurementWindowHeartbeat`
   (9457–9488) — timingseitig NICHT ändern (`measurement_sr_session`-Locks).
 
+## Phasen-Fortschritt
+
+**Phase 0** (2026-08-21, Commit 1401fc0): dieses Inventar + Baseline.
+
+**Phase 1** (2026-08-21): `static/measurement_ui.js` (UMD) angelegt. 66 reine
+Leaf-Funktionen + 15 Konstanten aus app.js dorthin verschoben; app.js hält
+gleichnamige Delegierungs-Wrapper (`return MeasurementUI.x(…)`), Konstanten-
+Aliase nur wo bleibender Code sie nutzt (13). Nicht verschoben (bewusst):
+`formatMeasurementIrCompactRange` (destrukturierter Param) und
+`drawMeasurementIrGraph` (Canvas → Phase 2); extraction-getestete Helfer
+(`splCalibrationModeLabel`, `describeMeasurementScope`,
+`measurementModeNoteText`, `serializeCustomHouseCurvePoints`) bleiben bis auf
+Weiteres in app.js. 8 Node-Tests bekamen `MeasurementUI` in den VM-Kontext;
+`check_fir_regression.js` prüft `measurementConvolverAlignedPhaseModes`
+jetzt gegen das Modul. Verifikation: node --check ok, Fokus-Tests grün,
+Walkthrough 200 Checks grün — Screenshot-Pixel-Diffs ≤688 px ausschließlich
+in der Ecke Artwork/Avatar und innerhalb der Laufzeit-Streuung (2
+unveränderte Läufe weichen selbst in 84/169 Shots ab; strukturelle Diffs =
+0). Final Gate: 200 passed / 0 failed / 10 native Skips.
+Lektion: Walkthrough-"PASS" allein fängt Boot-Crashes nicht — der erste
+Modulstand exportierte die Konstanten nicht (Boot-TDZ-Crash im
+Measurement-Panel, nur per Screenshot-Diff sichtbar).
+
 ## Baseline (vor Phase 1, 2026-08-21)
+
 
 - `node --check static/*.js`: alle ok.
 - `scripts/run_tests.sh`: **200 passed, 0 failed, 10 skipped**

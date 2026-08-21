@@ -15,6 +15,7 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const MeasurementUI = require('../static/measurement_ui.js');
 
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
@@ -94,6 +95,7 @@ function makeContext() {
         },
     };
     const context = {
+        MeasurementUI,
         console,
         state,
         setImmediate,

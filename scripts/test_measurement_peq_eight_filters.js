@@ -5,6 +5,7 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const MeasurementUI = require('../static/measurement_ui.js');
 
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
@@ -53,6 +54,7 @@ async function main() {
     const requests = [];
     const state = { measurement: {}, dsp: {} };
     const context = {
+        MeasurementUI,
         state,
         measurementPeqPalette: ['#1', '#2', '#3', '#4'],
         MeasurementDsp: {
