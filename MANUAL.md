@@ -8,8 +8,9 @@ Use a phone, tablet, or laptop on the local network to control playback, switch 
 
 FXRoute puts these tasks on one local hi-fi control system:
 
-- play internet radio, Spotify, and local music
+- play internet radio, Spotify, Qobuz, TIDAL, and local music
 - browse local albums with artwork, artist context, and discovery hints
+- browse the TIDAL catalog and control connected players from the same tab set
 - control volume, queue, play/pause, and track position from the browser
 - route audio through FXRoute's native engine for live DSP
 - switch room-correction, PEQ, convolver, and tone presets
@@ -19,7 +20,26 @@ FXRoute puts these tasks on one local hi-fi control system:
 
 FXRoute runs in a Linux user session with an active PipeWire audio stack. That can be a desktop session or a headless CLI/minimal system with enabled user services. FXRoute is not intended to run as a system daemon.
 
-## 2. Opening FXRoute
+## 2. First-time installation
+
+Run the installer on the audio PC:
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+The installer prepares the system packages, builds the native DSP engine, creates the Python virtual environment, and enables the `fxroute.service` systemd user service. It also installs the runtime tools for playback and metadata (mpv, ffmpeg, playerctl, PipeWire/BlueZ helpers) and sets up `.local` LAN naming on supported distributions.
+
+Streaming providers are optional and selected independently. A non-interactive install selects none. Choose what you want to use, for example:
+
+```bash
+./install.sh --providers spotify-desktop,spotifyd,qobuz,tidal
+```
+
+Supported package managers are apt, dnf, zypper, and pacman. See [docs/INSTALLER.md](docs/INSTALLER.md) for the full provider matrix, first-run authentication for each provider, and uninstall behavior.
+
+## 3. Opening FXRoute
 
 Open FXRoute from a browser on the same network:
 
@@ -34,11 +54,11 @@ If the optional local HTTPS proxy is enabled, use:
 
 The top-left FXRoute logo opens **Technical settings**.
 
-## 3. Basic listening workflow
+## 4. Basic listening workflow
 
 A typical listening session:
 
-1. Start music from **Radio**, **Spotify**, or **Library**.
+1. Start music from **Radio**, **Spotify**, **Qobuz**, **TIDAL**, or **Library**.
 2. Use the bottom playback bar for play/pause, volume, seek, and queue control.
 3. Open **DSP** to choose or compare the sound profile.
 4. If you want to tune the room, open **Measure** from the DSP page.
@@ -46,7 +66,9 @@ A typical listening session:
 
 FXRoute's native engine handles live audio processing and FXRoute controls, organizes, compares, and edits its presets.
 
-## 4. Radio
+The volume slider in the playback bar is the FXRoute master volume, the main listening level. Source and app volumes (for example the Spotify client or the Qobuz app) are separate from it.
+
+## 5. Radio
 
 Use **Radio** for internet radio playback.
 
@@ -59,18 +81,24 @@ You can:
 - add your own stream URLs to the personal catalog
 - edit the name, URL, and artwork of personal stations
 - delete personal stations you no longer use
+- export the personal station list
 - see live stream info (codec, bitrate, sample rate) in the playback bar
 - open the cover detail card for the current station, with live metadata
   and artwork when the station provides them (Radio Paradise, FIP, SomaFM,
   and KEXP are enriched with dedicated providers)
 
+The radio page shows **My Stations** first and keeps the curated stations under **Station Catalog**, so the catalog stays available without cluttering your personal list.
+
 Radio is a quick way to check playback, output selection, and DSP routing.
 
-## 5. Spotify
+## 6. Spotify
 
-Use **Spotify** to control the Spotify desktop app in the same Linux user session as FXRoute.
+Use **Spotify** to control a Spotify player running in the same Linux user session as FXRoute. Two backends are supported:
 
-You can:
+- **Spotify Desktop** — the official desktop client, controlled through MPRIS. Requires an X11/Wayland desktop session.
+- **spotifyd** — a headless Spotify player that also works in a session without a desktop. It uses the PipeWire-Pulse backend and MPRIS.
+
+FXRoute detects the running backend and shows the player state in the Spotify tab. Both backends offer the same control surface:
 
 - play/pause
 - previous/next track
@@ -81,9 +109,9 @@ You can:
 
 FXRoute refreshes Spotify metadata from local desktop events and lightweight polling, so automatic next-track changes should update title, artist, cover, duration, and position without needing a manual browser action.
 
-FXRoute does not replace Spotify Connect. It controls the local Spotify client through the desktop session, so Spotify must be installed on and reachable from the audio PC.
+FXRoute does not replace Spotify Connect. It controls the local player through the session, so Spotify must be installed on, reachable from, and logged in on the audio PC. The spotifyd variant is configured with a fixed Zeroconf port so the phone can find the FXRoute player reliably.
 
-The regular Spotify desktop client also supports Spotify Lossless for eligible Premium accounts. Enable **Lossless** in a current Spotify desktop client (version 1.2.67 or newer) to stream available music at up to 24-bit/44.1 kHz FLAC while FXRoute continues to provide remote playback control. FXRoute controls the client; it does not provide the Spotify stream itself.
+The regular Spotify desktop client also supports Spotify Lossless for eligible Premium accounts. Enable **Lossless** in a current Spotify desktop client (version 1.2.67 or newer) to stream available music at up to 24-bit/44.1 kHz FLAC while FXRoute continues to provide remote playback control. FXRoute controls the client; it does not provide the Spotify stream itself. Lossless is not available through spotifyd.
 
 On fresh installs, Spotify autostart is enabled by default when a local Spotify desktop client is available. Installer reruns preserve an existing `.env`, so an already configured system keeps its current setting.
 Spotify may trigger a Linux keyring unlock prompt after login.
@@ -96,7 +124,39 @@ seahorse
 
 In Passwords and Keys, open Passwords → Login. Then change the password of the Login keyring and set a blank password by leaving the new password fields empty.
 
-## 6. Library and network shares
+Spotify volume is the provider's own volume. The playback-bar slider remains the FXRoute master volume.
+
+## 7. Qobuz
+
+The Qobuz tab controls a **Qobuz Connect** player on the audio PC. Playback starts from the Qobuz app: run `"$HOME/.local/bin/qbzd" setup` once after installation, enable Qobuz Connect, then select the FXRoute device from the Qobuz app. The FXRoute tab then shows what is playing and offers the same transport controls as the other sources:
+
+- play/pause
+- previous/next track
+- seek within a track
+- toggle shuffle and loop
+- see cover art and track metadata
+
+Stream quality follows your Qobuz account and the selected Qobuz app settings. The Qobuz client runs at unity gain; volume changes are handled through the FXRoute master slider, so you keep one volume control in the browser.
+
+## 8. TIDAL
+
+The TIDAL tab is a full catalog browser. After logging in you can browse, search, favorite, and play without leaving FXRoute.
+
+Log in from the TIDAL tab:
+
+- **Browser login** (PKCE) — copy the login link, sign in on any device, and paste the redirect URL back into FXRoute. This is the only login that unlocks Lossless and Hi-Res playback.
+- **Device login** — enter the shown code at link.tidal.com. Faster, but limited to AAC 320 kbps.
+
+The tab provides:
+
+- browse Tracks, Albums, Artists, and Playlists
+- search the catalog
+- favorite tracks, albums, artists, and playlists (favorites appear in the footer for the current track)
+- album, artist, and playlist pages with cover art and track lists
+
+TIDAL playback runs natively through FXRoute's audio engine, so the DSP chain, output mode, and sample-rate policy apply exactly as for local files. Playback control lives in the bottom playback bar, and the master volume slider applies to TIDAL playback.
+
+## 9. Library and network shares
 
 Use **Library** for local and imported music.
 
@@ -111,6 +171,7 @@ You can:
 - shuffle or loop the current queue
 - select multiple tracks
 - save selected tracks as a playlist
+- favorite albums and filter the album view to favorites
 - upload audio files or album ZIPs
 - import from a media URL when supported by the installed tools
 - download or delete selected tracks
@@ -129,11 +190,11 @@ smb://server/share
 
 FXRoute checks guest access when discovering shares, mounts the selected share when needed, and then scans it like the local library. The host needs `smbclient`, CIFS/GVFS support, and permission to mount the share. The installer provides the required packages and the CIFS mount helper on supported distributions. A share must expose one disk share; administrative and printer shares are ignored.
 
-## 7. Native DSP installation
+## 10. Native DSP installation
 
 The installer installs compiler, PipeWire development, and LV2 plugin dependencies (LSP, Zam, Calf) on supported distributions, then builds the DSP engine shipped with FXRoute. Audio applications connect through `fxroute_dsp_sink`; processing runs in the `fxroute_dsp` node.
 
-## 8. DSP
+## 11. DSP
 
 Use **DSP** to shape and correct the sound.
 
@@ -142,10 +203,9 @@ Main tools:
 - **A/B compare** — switch between two presets while listening.
 - **Combine** — build a new preset from up to three existing presets.
 - **Import filter** — import stereo or separate left/right filters.
-- **Create PEQ preset** — sketch up to 12 temporary filters, stage them for
-  Left, Right, or both channels, and create a left/right parametric EQ preset.
-- **Custom House Curve** — edit up to 8 frequency/gain points on the graph or
-  numerically, then create a reusable target curve.
+- **Create PEQ preset** — build paired left/right PEQ bands and create a
+  left/right parametric EQ preset. The EQ engine offers IIR, FIR, FFT, and
+  SPM modes; a PEQ preset can also carry a channel gain trim and a delay.
 - **Output extras** — configure the global helpers shared by all presets.
 
 Typical DSP files:
@@ -155,24 +215,33 @@ Typical DSP files:
 - WAV impulse responses
 - REW text filters for left/right PEQ-style correction
 
+FXRoute ships two built-in presets. **Direct** bypasses the whole processing
+chain, including the global helpers. **Neutral** is a clean preset without
+filters that still lets the global helpers apply. Both are always available
+and cannot be deleted. The active preset defaults to Neutral.
+
 Use A/B compare while music is playing. Switching between presets is usually more useful than comparing their numbers.
 
 ### Global helpers
 
-Global helpers affect the active DSP setup:
+The **Output extras** helpers apply on top of the active preset automatically, except for the Direct preset:
 
-- **Protection Limiter** protects the final output from peaks.
-- **Headroom** adds a controlled safety margin before the output stage.
-- **Auto Gain** adjusts programme level toward the selected loudness target.
-- **Loudness** applies a calibrated contour that follows the playback level. **Strength** controls its intensity; when Auto Gain is active, the contour also accounts for the selected Auto Gain target.
-- **Bass Enhancer** adds adjustable low-frequency enhancement.
-- **Tone Effect** provides broad tonal shaping and contains the Loudness control.
+- **Protection limiter** protects the final output from peaks.
+- **Headroom** adds a controlled safety margin before the output stage
+  (−2 dB to −6 dB).
+- **Autogain** adjusts programme level toward the selected loudness target
+  (−12, −15, −18, or −23 LUFS).
+- **Loudness** applies a calibrated contour that follows the playback level.
+  **Strength** controls its intensity; when Autogain is active, the contour
+  also accounts for the selected Autogain target. A **FFT** setting selects
+  the analysis window size.
+- **Bass enhancer** adds adjustable low-frequency enhancement.
+- **Tone effect** provides broad tonal shaping with **Crystalizer** or
+  **Maximizer** modes.
 
-Each helper can be enabled or adjusted from **Output extras**. Auto Gain and
-Loudness can be used independently or together, while the Protection Limiter
-remains the final stage.
+Each helper can be enabled or adjusted from **Output extras**. Autogain and Loudness can be used independently or together, while the Protection limiter remains the final stage.
 
-## 9. Measurement assistant
+## 12. Measurement assistant
 
 Open **Measure** from the DSP page.
 
@@ -236,14 +305,14 @@ Use the electrical reference input in **Setup** when available. It gives the tim
 
 ### SPL Calibration
 
-SPL Calibration plays calibrated **−23-LUFS pink noise** and calculates the
-level adjustment for the current output profile. With a configured UMIK-1,
-UMIK-2, or Dayton UMM-6, FXRoute can capture the microphone signal and
-determine SPL automatically.
+SPL Calibration plays calibrated **−23-LUFS pink noise** (83 dB SPL target)
+and calculates the level adjustment for the current output profile. With a
+configured UMIK-1, UMIK-2, or Dayton UMM-6, FXRoute can capture the microphone
+signal and determine SPL automatically.
 When automatic microphone measurement is unavailable, enter the reading from a
 C-weighted, Slow SPL meter manually.
 
-Only during SPL Calibration, Auto Gain and Loudness are temporarily neutral so
+Only during SPL Calibration, Autogain and Loudness are temporarily neutral so
 their previous target, Strength, and compensation do not alter the reference
 noise. Their exact prior states are restored when calibration stops, is saved,
 is cancelled, or fails. Normal sweeps and Auto Sub Optimize continue to
@@ -293,7 +362,7 @@ The optimizer does not measure the subwoofer's internal latency directly. It opt
 
 Where the active mode uses a fine scan, FXRoute checks additional candidates around the best coarse delay region. In 2.2 Mono, the matrix scan evaluates the combined dual-sub result. The selected values apply to the measured crossover, room, and microphone position; they are not universal latency figures.
 
-In **2.1** and **2.2 Mono**, candidates are evaluated against both left and right main channels so a weak result on one side affects the combined choice. In **2.2 Stereo**, the left and right sub/main branches are evaluated and optimized separately. The active polarity is protected unless another measured setting is clearly better. AutoGain then makes measured gain steps of up to ±6 dB against the selected target curve, verifies them with fresh sweeps, and restores gain changes that do not improve the result. Before and during those gain sweeps, FXRoute checks all four final Stage outputs and stops an unsafe candidate before it can exceed −1 dBFS. PEQ, target curves, and room-correction filters are not changed.
+In **2.1** and **2.2 Mono**, candidates are evaluated against both left and right main channels so a weak result on one side affects the combined choice. In **2.2 Stereo**, the left and right sub/main branches are evaluated and optimized separately. The active polarity is protected unless another measured setting is clearly better. Autogain then makes measured gain steps of up to ±6 dB against the selected target curve, verifies them with fresh sweeps, and restores gain changes that do not improve the result. Before and during those gain sweeps, FXRoute checks all four final Stage outputs and stops an unsafe candidate before it can exceed −1 dBFS. PEQ, target curves, and room-correction filters are not changed.
 
 **Recommended order with EQ or Convolver:**
 
@@ -341,7 +410,7 @@ The aligned modes require single saved L/R measurements with valid direct-arriva
 
 FXRoute blocks aligned filter creation when the measured signed L/R timing offset exceeds the safety limit in either direction. The timing summary is shown as one arrival relation, for example `L arrives 5.27 ms later than R`.
 
-## 10. Technical settings
+## 13. Technical settings
 
 Click the FXRoute logo to open **Technical settings**.
 
@@ -352,13 +421,18 @@ Useful settings:
 - follow the playback sample rate or use a fixed sample rate
 - check the current source mode
 - see Bluetooth input status when the host supports it
+- select the music library (local folder or network share)
+- control a connected amplifier hardware controller, when present
+- run maintenance updates and restore the public release
 - download the local HTTPS certificate when the optional HTTPS proxy is enabled
 
-Use this area to fix the output device, check the source mode or Bluetooth input, or download the local HTTPS certificate for a client device.
+The power menu in the header lets you **Suspend** or **Shut down** the audio PC when the host supports it through the systemd logind integration.
 
 ### Output modes
 
 Select **Stereo**, **2.1 Subwoofer**, or **2.2 Subwoofer** under **Output Mode**. The available subwoofer controls and measurement workflows depend on the selected mode. Set the crossover, levels, polarity, and alignment in the DSP output controls before running **Auto Sub Optimize**.
+
+The **Crossover / Subwoofer** card on the DSP page shows the routing (`Out 1/2 Main · Out 3/4 Sub` in 2.1 mode, `Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2` in 2.2 mode), a crossover preview, the crossover frequency (40–200 Hz), the main highpass, and per-subwoofer level, alignment, and polarity. In 2.2 mode, Sub 1 and Sub 2 are configured separately.
 
 ### Fixed Sample Rate
 
@@ -370,20 +444,19 @@ The maximum processing sample rate is 384 kHz. Lower device-specific limits are 
 
 Use a fixed rate when the DAC, DSP chain, or external hardware needs one clock. Use Auto when sources with different native rates should play without forcing conversion to one rate.
 
-### Maintenance updates
+### Amplifier hardware controller
 
-Open **Technical settings → Maintenance** to view the installed version, check
-for updates, run an update, and inspect the update log. FXRoute blocks updates
-when the installation contains uncommitted changes and reports when a
-successful update requires a reload.
+When a supported USB amplifier controller is connected, **Technical settings** shows its status and the available controls: **RCA** and **XLR** input selection, **Press Input**, and **Auto On** / **Auto Off**. The controller is optional; without it the section simply shows that no controller was detected.
+
+### Maintenance
+
+Open **Technical settings → Maintenance** to view the installed version, check for updates, run an update, and inspect the update log. FXRoute blocks updates when the installation contains uncommitted changes and reports when a successful update requires a reload.
+
+If uncommitted changes are blocking the normal update path, **Restore to Public Release** saves them as a patch and resets the checkout to the clean public release. Use it only when you no longer need the local changes.
 
 ### Home Assistant / external automation
 
-FXRoute exposes `GET /api/power/state` as a read-only hint for amplifier power
-automation. `amp_should_be_on` is true while playback is active or the
-Measurement Assistant is open. Home Assistant or another automation system can
-use this value to control a smart plug; FXRoute does not control the plug
-directly and does not require MQTT.
+FXRoute exposes `GET /api/power/state` as a read-only hint for amplifier power automation. `amp_should_be_on` is true while playback is active or the Measurement Assistant is open. Home Assistant or another automation system can use this value to control a smart plug; FXRoute does not control the plug directly and does not require MQTT.
 
 Minimal Home Assistant example:
 
@@ -396,13 +469,13 @@ rest:
         value_template: "{{ value_json.amp_should_be_on }}"
 ```
 
-## 11. Local HTTPS certificate
+## 14. Local HTTPS certificate
 
 When the optional local HTTPS proxy is enabled, FXRoute creates a local certificate authority for the audio PC.
 
 Install the downloaded certificate only on devices you trust on your own LAN. Import it into the operating system or browser trust store as a trusted certificate authority. If the FXRoute Caddy certificate authority is regenerated, client devices may need the new certificate again.
 
-## 12. Good first checks
+## 15. Good first checks
 
 If playback fails:
 
@@ -427,7 +500,7 @@ wpctl status
 pw-cli ls Node | grep fxroute_dsp
 ```
 
-## 13. What FXRoute expects
+## 16. What FXRoute expects
 
 FXRoute is designed for:
 
@@ -436,5 +509,6 @@ FXRoute is designed for:
 - the FXRoute native DSP engine in the same PipeWire user session
 - local network browser control
 - a DAC, amp, active speakers, headphones, or similar listening setup
+- optionally a local Spotify client, spotifyd, or qbzd for provider playback
 
 FXRoute depends on an active audio user session with PipeWire. Headless CLI/minimal setups are supported when the user services stay enabled; running without a user session is not supported.

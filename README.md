@@ -30,12 +30,12 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
     <td align="center"><strong>Convolver / Measurement</strong></td>
   </tr>
   <tr>
-    <td width="33%"><img src="media/screenshots/07-spotify.png" alt="FXRoute Spotify control view"></td>
+    <td width="33%"><img src="media/screenshots/07-tidal.png" alt="FXRoute TIDAL catalog browse view"></td>
     <td width="33%"><img src="media/screenshots/08-spl-calibration.png" alt="FXRoute SPL calibration view"></td>
     <td width="33%"><img src="media/screenshots/09-advanced-measurement.png" alt="FXRoute Advanced Measurement workflow"></td>
   </tr>
   <tr>
-    <td align="center"><strong>Spotify</strong></td>
+    <td align="center"><strong>TIDAL</strong></td>
     <td align="center"><strong>SPL Calibration</strong></td>
     <td align="center"><strong>Advanced Measurement</strong></td>
   </tr>
@@ -192,7 +192,9 @@ Typical URLs:
 - **Library** — local files, album browsing, cached metadata, artist info, similar-artist discovery, playlists, uploads, imports, downloads, and deletion
 - **DSP** — native DSP presets, PEQ, convolver, helpers, A/B compare, and preset creation
 - **Measure** — host-mic measurement, Advanced Measurement, subwoofer optimization, and tuning workflow
-- **Spotify** — control a local Spotify desktop client
+- **Spotify** — control a local Spotify desktop client or spotifyd player
+- **Qobuz** — control a Qobuz Connect player on the audio PC
+- **TIDAL** — full catalog browser with login, search, favorites, and native playback
 - **Technical settings** — output selection, Stereo/2.1/2.2 modes, Auto or fixed sample rate, music libraries, source state, Bluetooth status, Maintenance updates, and local certificate access
 
 ## Library metadata
