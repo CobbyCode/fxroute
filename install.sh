@@ -1558,6 +1558,9 @@ device_type = "speaker"
 backend = "pulseaudio"
 use_mpris = true
 dbus_type = "session"
+# Remote Connect volume is routed to the FXRoute master by the spotifyd
+# volume watch; the source itself must never attenuate (unity contract).
+volume_controller = "none"
 zeroconf_port = ${SPOTIFYD_ZEROCONF_PORT}
 EOF
   chmod 600 "$config_path"

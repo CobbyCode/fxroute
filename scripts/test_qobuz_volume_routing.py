@@ -77,7 +77,10 @@ class QobuzVolumeRouteTests(unittest.IsolatedAsyncioTestCase):
         provider.set_volume.assert_not_awaited()
         self.assertEqual(result["volume"], 60)
 
-    async def test_other_provider_volume_keeps_provider_dispatch(self):
+    async def test_spotify_volume_routes_to_canonical_master_too(self):
+        # spotifyd runs with volume_controller=none: its Connect volume is a
+        # reported value only, so the slider drives the FXRoute master exactly
+        # like the Qobuz slider. No source write may happen.
         provider = mock.Mock()
         provider.set_volume = mock.AsyncMock(return_value={"volume": 70})
 
@@ -85,11 +88,23 @@ class QobuzVolumeRouteTests(unittest.IsolatedAsyncioTestCase):
             async def json(self):
                 return {"volume": 70}
 
-        with mock.patch.object(main.streaming, "get_provider", return_value=provider):
+        spotify_state = {"source": "spotify", "status": "Paused", "source_volume": 55}
+        volume_result = {"volume": 70}
+        with mock.patch.object(main.streaming, "get_provider", return_value=provider), \
+             mock.patch.object(main, "_set_canonical_output_volume",
+                               new=mock.AsyncMock(return_value=volume_result)) as canon, \
+             mock.patch.object(main, "get_spotify_ui_state",
+                               new=mock.AsyncMock(return_value=dict(spotify_state))), \
+             mock.patch.object(main, "broadcast_spotify_state",
+                               new=mock.AsyncMock(side_effect=lambda data: data)), \
+             mock.patch.object(main.peak_monitor_coordinator, "sync_spotify_state",
+                               new=mock.AsyncMock()):
             result = await main.api_streaming_provider_action("spotify", "volume", _Request())
 
-        provider.set_volume.assert_awaited_once_with(70)
+        canon.assert_awaited_once_with(70)
+        provider.set_volume.assert_not_awaited()
         self.assertEqual(result["volume"], 70)
+        self.assertEqual(result["source_volume"], 55)
 
 
 class QobuzUnityPinTests(unittest.IsolatedAsyncioTestCase):

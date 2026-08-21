@@ -228,7 +228,7 @@ async def save_dsp_extras(request: Request):
 
     # A Loudness enabled-state transition owns the canonical volume write
     # lock from the live read through the Loudness mutation and the final
-    # master=100, so a parallel /api/volume or /api/spotify/volume request
+    # master=100, so a parallel /api/volume or streaming volume request
     # can never interleave.  All transferred values are (re)read under the
     # lock.  Non-Loudness extras updates never take this lock.
     #

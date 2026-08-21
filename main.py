@@ -677,6 +677,10 @@ from playback.qbzd_volume_watch import (
     QobuzVolumeWatch,
     QobuzVolumeWatchDependencies,
 )
+from playback.spotifyd_volume_watch import (
+    SpotifydVolumeWatch,
+    SpotifydVolumeWatchDependencies,
+)
 from dsp.orchestration import (
     DspOrchestrationDeps,
     DspOrchestrator,
@@ -810,7 +814,7 @@ class RuntimeResources:
     # changes that used to run serially in the event loop.
     dsp_mutation_lock: Optional[asyncio.Lock] = None
     source_transition_lock: Optional[asyncio.Lock] = None
-    # Serializes canonical volume writes (/api/volume, /api/spotify/volume) so
+    # Serializes canonical volume writes (/api/volume, streaming volume actions) so
     # concurrent requests cannot interleave their set -> verified get -> status
     # cache publish sequences.
     canonical_volume_write_lock: Optional[asyncio.Lock] = None
@@ -1006,7 +1010,11 @@ qobuz_player_watch = QobuzPlayerWatch(QobuzWatchDependencies(
 ))
 qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
     is_active=lambda: _resolve_playback_owner() == "qobuz",
-    apply_volume=lambda volume: _set_canonical_output_volume(volume),
+    apply_volume_delta=lambda delta: _apply_remote_volume_delta(delta),
+))
+spotifyd_volume_watch = SpotifydVolumeWatch(SpotifydVolumeWatchDependencies(
+    is_active=lambda: _resolve_playback_owner() == "spotify",
+    apply_volume_delta=lambda delta: _apply_remote_volume_delta(delta),
 ))
 radio_metadata_service = RadioMetadataService()
 # queue_advancing is a reentrancy/dispatch guard for
@@ -2080,7 +2088,7 @@ async def _volume_state_for_manager(
 async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
     """Apply the one global FXRoute master volume for every source.
 
-    The footer slider (and the Qobuz remote bridge) drives only the master.
+    The footer slider (and the remote Connect bridges) drives only the master.
     Loudness volumeDb is the ISO-226 work point and is never touched here.
     Writes are serialized against concurrent canonical volume writes.
     """
@@ -2088,6 +2096,17 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
         requested = max(0, min(100, int(round(float(volume)))))
         await _drain_worker(set_output_volume, requested)
         return {"volume": requested}
+
+
+async def _apply_remote_volume_delta(delta_percent: int) -> None:
+    """Apply a remote Connect volume step to the canonical master.
+
+    Remote controllers deliver relative intent on their own scale; the delta
+    lands on the current master so a desynced controller anchor can never
+    teleport it. Loudness volumeDb stays untouched (canonical writer contract).
+    """
+    current = get_output_volume_safe()
+    await _set_canonical_output_volume(current + delta_percent)
 
 
 async def _guarded_effects_transition(previous, candidate, persist_all_presets):
@@ -2208,6 +2227,24 @@ async def _qobuz_volume_action(percent: float) -> dict:
     await peak_monitor_coordinator.sync_qobuz_state(data)
     await manager.broadcast({"type": "qobuz", "data": data})
     return data
+
+
+async def _spotify_volume_action(percent: float) -> dict:
+    """Apply the Spotify UI slider as the canonical FXRoute master volume.
+
+    spotifyd runs with ``volume_controller = "none"``: its Connect volume is a
+    reported value only and never attenuates the source; the slider drives
+    only the global master, mirroring the Qobuz contract.
+    """
+    try:
+        volume_result = await _set_canonical_output_volume(percent)
+    except SystemVolumeError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
+    data = await get_spotify_ui_state()
+    data["volume"] = volume_result["volume"]
+    playback_state.latest_spotify_state = data
+    await peak_monitor_coordinator.sync_spotify_state(data)
+    return await broadcast_spotify_state(data)
 
 
 async def qobuz_play() -> dict:
@@ -3013,6 +3050,11 @@ async def lifespan(app: FastAPI):
             qobuz_volume_watch.run_watch_loop(),
             name="qobuz-journal-volume-watch",
         )
+        logger.info("Starting spotifyd remote volume watch task")
+        spotifyd_volume_watch.watch_task = asyncio.create_task(
+            spotifyd_volume_watch.run_watch_loop(),
+            name="spotifyd-volume-watch",
+        )
         logger.info("Starting Spotify metadata poll fallback task")
         runtime.spotify_state_poll_task = asyncio.create_task(
             _spotify_state_poll_loop(),
@@ -3079,6 +3121,7 @@ async def _shutdown_lifespan_resources() -> None:
     await cleanup("spotify-watch", spotify_playerctl_watch.stop)
     await cleanup("qobuz-watch", qobuz_player_watch.stop)
     await cleanup("qobuz-volume-watch", qobuz_volume_watch.stop)
+    await cleanup("spotifyd-volume-watch", spotifyd_volume_watch.stop)
     await cleanup("radio-reconnect", radio_reconnect.stop)
     await cleanup("silent-active-recovery", silent_active_recovery.stop)
     runtime.lifecycle_background_tasks.clear()
@@ -5010,8 +5053,12 @@ async def api_streaming_provider_action(provider_id: str, action: str, request: 
             body = {}
         if provider_id == "qobuz":
             # Qobuz volume is the canonical FXRoute master (qbzd gain stays
-            # pinned at 100%); other providers keep their native volume.
+            # pinned at 100%).
             return await _qobuz_volume_action(float(body.get("volume", 100)))
+        if provider_id == "spotify":
+            # spotifyd runs with volume_controller=none: its Connect volume is
+            # a reported value only, so the slider drives the FXRoute master.
+            return await _spotify_volume_action(float(body.get("volume", 100)))
         try:
             return await provider.set_volume(float(body.get("volume", 100)))
         except streaming.ProviderNotImplemented as exc:

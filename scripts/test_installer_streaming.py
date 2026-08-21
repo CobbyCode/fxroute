@@ -138,9 +138,12 @@ spotify_desktop_supported
             'backend = "pulseaudio"',
             "use_mpris = true",
             'dbus_type = "session"',
+            # Remote Connect volume is bridged to the FXRoute master; the
+            # source must never attenuate itself (unity contract).
+            'volume_controller = "none"',
         ):
             self.assertIn(setting, body)
-        for forbidden in ("username", "password", "volume_control", "volume ="):
+        for forbidden in ("username", "password", "volume ="):
             self.assertNotIn(forbidden, body)
 
     def test_qobuz_release_matrix_is_pinned(self):

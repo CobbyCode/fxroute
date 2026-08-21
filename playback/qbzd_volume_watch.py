@@ -16,9 +16,15 @@ maps each intent onto the canonical FXRoute master volume. qbzd's own gain is
 never written here; the unity pin lives at the Qobuz claim/start path
 (``set_volume(100)`` works in locked mode through the local control plane).
 
+Remote values are translated into master *deltas* (see
+:mod:`playback.remote_volume`): the first value after a Connect activation is
+the controller scale's anchor and never moves the master — live-verified on
+.104, the Qobuz app pushes its own media volume as an absolute SetVolume right
+after every activation, which previously hijacked the master (37 -> 100).
+
 The parser only recognizes locked-mode lines, so in ``software`` mode this
 watch is a silent no-op. The translator debounces the drag burst (a phone drag
-emits one line per step) so the last value of a gesture is applied exactly once.
+emits one line per step) so the net delta of a gesture is applied exactly once.
 """
 
 from __future__ import annotations
@@ -29,6 +35,8 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
+
+from playback.remote_volume import RemoteVolumeDeltaTranslator
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +54,12 @@ _IGNORED_VOLUME_RE = re.compile(
     r"volume_mode=locked:\s*ignoring remote SetVolume\(((?:0(?:\.\d+)?)|(?:1(?:\.0+)?))\)"
     r";\s*player stays at 100%"
 )
+
+# Connect session activation/deactivation. The app pushes its own media volume
+# as an absolute remote SetVolume shortly after every activation; that value is
+# a scale anchor, not user intent, so both transitions reset the anchor.
+_SESSION_ACTIVE_RE = re.compile(r"SET_ACTIVE payload=\{\"active\":true\}")
+_SESSION_INACTIVE_RE = re.compile(r"SET_ACTIVE payload=\{\"active\":false\}")
 
 # Software-mode line: qbzd applies the remote volume itself. The journal
 # coupling needs locked mode, so seeing this line means the config drifted.
@@ -70,6 +84,20 @@ def parse_ignored_volume(line: str | None) -> int | None:
     return max(0, min(100, percent))
 
 
+def is_session_activation(line: str | None) -> bool:
+    """Return whether the line activates the Connect session on this device."""
+    if not line:
+        return False
+    return _SESSION_ACTIVE_RE.search(line) is not None
+
+
+def is_session_deactivation(line: str | None) -> bool:
+    """Return whether the line deactivates the Connect session on this device."""
+    if not line:
+        return False
+    return _SESSION_INACTIVE_RE.search(line) is not None
+
+
 def is_software_volume_apply(line: str | None) -> bool:
     """Return whether the line shows qbzd applying volume itself (software mode)."""
     if not line:
@@ -77,52 +105,9 @@ def is_software_volume_apply(line: str | None) -> bool:
     return _APPLIED_VOLUME_RE.search(line) is not None
 
 
-class QobuzRemoteVolumeTranslator:
-    """Coalesce phone slider intents into one canonical master write.
-
-    ``submit`` records the latest intent; ``flush`` applies the latest pending
-    value exactly once. Bursts (one line per drag step) therefore apply the
-    gesture's final value instead of every intermediate step.
-    """
-
-    def __init__(
-        self,
-        is_active: Callable[[], bool],
-        apply_volume: Callable[[int], Awaitable[Any]],
-    ) -> None:
-        self.is_active = is_active
-        self.apply_volume = apply_volume
-        self._pending: int | None = None
-
-    @property
-    def pending(self) -> int | None:
-        return self._pending
-
-    def submit(self, percent: int) -> bool:
-        """Record a remote volume intent; ``False`` when Qobuz does not own
-        the playback context (e.g. radio is playing) and the intent is dropped.
-
-        The owner is re-checked again in :meth:`flush` right before the master
-        write: an owner switch inside the debounce window must discard the
-        stale pending value instead of applying a Qobuz intent afterwards.
-        """
-        if not self.is_active():
-            return False
-        self._pending = percent
-        return True
-
-    async def flush(self) -> None:
-        if self._pending is None:
-            return
-        if not self.is_active():
-            # The owner changed inside the debounce window (e.g. to Tidal or
-            # Spotify): the pending Qobuz intent is stale and must never touch
-            # the FXRoute master anymore.
-            self._pending = None
-            return
-        percent = self._pending
-        self._pending = None
-        await self.apply_volume(percent)
+# Historical name for the shared delta translator; the Qobuz bridge was the
+# first consumer and tests reference it by this name.
+QobuzRemoteVolumeTranslator = RemoteVolumeDeltaTranslator
 
 
 @dataclass
@@ -130,11 +115,11 @@ class QobuzVolumeWatchDependencies:
     """Live services the qbzd journal volume watch needs."""
 
     is_active: Callable[[], bool]
-    apply_volume: Callable[[int], Awaitable[Any]]
+    apply_volume_delta: Callable[[int], Awaitable[Any]]
 
 
 class QobuzVolumeWatch:
-    """Tail qbzd's journal and route locked-mode remote volume intents to master."""
+    """Tail qbzd's journal and route locked-mode remote volume deltas to master."""
 
     def __init__(
         self,
@@ -146,9 +131,9 @@ class QobuzVolumeWatch:
         self._deps = deps
         self._journal_command = list(journal_command or JOURNALCTL_COMMAND)
         self._debounce_seconds = debounce_seconds
-        self._translator = QobuzRemoteVolumeTranslator(
+        self._translator = RemoteVolumeDeltaTranslator(
             is_active=deps.is_active,
-            apply_volume=deps.apply_volume,
+            apply_volume_delta=deps.apply_volume_delta,
         )
         self.watch_task: asyncio.Task | None = None
         self._drain_task: asyncio.Task | None = None
@@ -224,13 +209,18 @@ class QobuzVolumeWatch:
                     continue
                 self._backoff_seconds = 0.0
                 text = line.decode("utf-8", errors="replace")
+                if is_session_activation(text) or is_session_deactivation(text):
+                    # A fresh Connect session re-anchors the controller scale;
+                    # the app's post-activation sync push must not move master.
+                    expect_ignore = False
+                    self._translator.observe_activation()
+                    continue
                 percent = parse_ignored_volume(text)
                 if percent is not None:
                     # Locked-mode pair: the engine ignore line right after the
                     # sink apply line proves qbzd stays at unity.
                     expect_ignore = False
-                    if self._deps.is_active():
-                        self._translator.submit(percent)
+                    if self._deps.is_active() and self._translator.submit(percent):
                         self._schedule_drain()
                 elif is_software_volume_apply(text):
                     if expect_ignore:
