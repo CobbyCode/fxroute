@@ -901,11 +901,7 @@ function resolveEffectsCompareState(compare, presets = [], activePreset = '') {
 
 async function saveEffectsCompareState(compare) {
     try {
-        await fetch('/api/dsp/compare', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(compare),
-        });
+        await apiPostJson('/api/dsp/compare', compare);
     } catch (e) {
         console.warn('Failed to persist effects compare state', e);
     }
@@ -1214,6 +1210,26 @@ function setupTabNavigation() {
         tab.addEventListener('click', () => {
             const tabId = tab.dataset.tab;
             switchTab(tabId);
+        });
+        // ARIA tabs pattern: Left/Right move focus and activate the previous/
+        // next visible tab (Home/End jump to the ends).
+        tab.addEventListener('keydown', (event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            const visible = Array.from(document.querySelectorAll('.tab-btn'))
+                .filter(btn => !btn.hidden && btn.style.display !== 'none');
+            if (visible.length === 0) return;
+            const currentIndex = visible.indexOf(tab);
+            let targetIndex = -1;
+            if (event.key === 'ArrowLeft') targetIndex = Math.max(0, currentIndex - 1);
+            else if (event.key === 'ArrowRight') targetIndex = Math.min(visible.length - 1, currentIndex + 1);
+            else if (event.key === 'Home') targetIndex = 0;
+            else targetIndex = visible.length - 1;
+            event.preventDefault();
+            const target = visible[targetIndex];
+            if (target && target !== tab) {
+                target.focus();
+                switchTab(target.dataset.tab);
+            }
         });
     });
 }
@@ -1661,6 +1677,9 @@ function collectRuntimeDebugUiState(extra = {}) {
 }
 
 async function postRuntimeDebugSnapshot(label, extra = {}) {
+    // Runtime snapshots are a debugging aid, not telemetry: they stay off
+    // unless explicitly enabled in the console via this flag.
+    if (window.__fxDebugRuntimeSnapshots !== true) return;
     try {
         await fetch('/api/debug/21-runtime-state', {
             method: 'POST',
@@ -3310,6 +3329,11 @@ let sampleratePollTimer = null;
 let samplerateBurstPollTimers = [];
 let lastSampleratePlaybackSignature = null;
 let peakStatusPollTimer = null;
+// Poll timers keep running while the tab is hidden but skip their network
+// work, so a hidden tab stops hammering /api/status until it is visible again.
+function isPageHidden() {
+    return document.hidden === true;
+}
 function startMetadataPolling() {
     if (metadataPollTimer !== null) return;
     metadataPollTimer = setInterval(fetchMetadata, 10000);
@@ -3352,6 +3376,7 @@ function triggerSamplerateBurstPolling() {
     });
 }
 async function fetchMetadata() {
+    if (isPageHidden()) return;
     if (!state.playback.playing && !state.playback.paused && !isStreamingFooterSource(window.__footerSource)) return;
     try {
         const resp = await fetch('/api/status');
@@ -4271,6 +4296,7 @@ function startPlaybackPositionPoll() {
     if (playbackPositionPollTimer !== null) return;
     playbackPositionPollTimer = setInterval(async () => {
         try {
+            if (isPageHidden()) return;
             if (isStreamingFooterSource(window.__footerSource)) {
                 stopPlaybackPositionPoll();
                 return;
@@ -4360,6 +4386,7 @@ async function fetchPlaybackStatus() {
     }
 }
 async function fetchSamplerateStatus() {
+    if (isPageHidden()) return;
     try {
         const resp = await fetch('/api/audio/samplerate');
         if (!resp.ok) throw new Error('Failed to fetch samplerate status');
@@ -6617,6 +6644,7 @@ async function cancelDownload() {
     }
 }
 async function fetchDownloadStatus() {
+    if (isPageHidden()) return;
     try {
         const resp = await fetch('/api/download/status');
         if (!resp.ok) throw new Error('Failed to fetch download status');
@@ -14252,6 +14280,26 @@ function updateSeekUI() {
     }
 }
 // Utilities
+// Shared JSON fetch helpers: non-2xx responses throw with the server's
+// detail message (when present) instead of silently resolving to null.
+async function apiFetchJson(url, options = {}) {
+    const resp = await fetch(url, options);
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok) {
+        const detail = data && (data.detail || data.error || data.message);
+        throw new Error(detail || `HTTP ${resp.status} ${url}`);
+    }
+    return data;
+}
+
+function apiPostJson(url, body) {
+    return apiFetchJson(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+    });
+}
+
 function escapeHtml(text) {
     if (!text) return '';
     // Escapes quotes too so the result is safe inside double-quoted attributes.
@@ -14504,12 +14552,7 @@ async function forceSpotifyRefreshBurst() {
 
 async function qobuzCommand(action) {
     try {
-        const resp = await fetch(`/api/streaming/qobuz/${action}`, { method: 'POST' });
-        const data = await resp.json().catch(() => null);
-        if (!resp.ok || !data) {
-            showToast('Qobuz transport failed', 'error');
-            return data;
-        }
+        const data = await apiPostJson(`/api/streaming/qobuz/${action}`);
         window.__qobuzLastData = data;
         reconcileFooterSource();
         updateFooterForStreamingOwner(data);
@@ -14522,17 +14565,14 @@ async function qobuzCommand(action) {
 
 async function qobuzSeek(positionSec) {
     try {
-        const resp = await fetch('/api/streaming/qobuz/seek', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ position: positionSec }),
-        });
-        const data = await resp.json().catch(() => null);
+        const data = await apiPostJson('/api/streaming/qobuz/seek', { position: positionSec });
         if (data) {
             window.__qobuzLastData = data;
             if (window.__footerSource === 'qobuz') updateFooterForStreamingOwner(data);
         }
-    } catch { /* ignore */ }
+    } catch (e) {
+        console.debug('Qobuz seek failed', e);
+    }
 }
 
 async function spotifyCommand(action) {
@@ -14544,16 +14584,9 @@ async function spotifyCommand(action) {
     const gen = _spotifyPollGeneration;
     _spotifyCommandInFlight = true;
     try {
-        const resp = await fetch(`/api/spotify/${action}`, { method: 'POST' });
-        const data = await resp.json().catch(() => null);
+        const data = await apiPostJson(`/api/spotify/${action}`);
         if (gen !== _spotifyPollGeneration) return;
-        if (data) {
-            handleIncomingSpotifyState(data, { renderTab: true, renderFooter: true });
-        } else {
-            const fresh = await fetchSpotifyStatus();
-            if (gen !== _spotifyPollGeneration) return;
-            handleIncomingSpotifyState(fresh, { renderTab: true, renderFooter: true });
-        }
+        handleIncomingSpotifyState(data, { renderTab: true, renderFooter: true });
         if ((data || {}).status === 'Playing') {
             syncSpotifySourceOwnership(data);
             startSpotifyPoll();
@@ -14561,7 +14594,8 @@ async function spotifyCommand(action) {
         if (interactiveTakeover) {
             forceSpotifyRefreshBurst();
         }
-    } catch {
+    } catch (e) {
+        console.debug('Spotify transport failed, refreshing state', e);
         const fresh = await fetchSpotifyStatus();
         if (gen !== _spotifyPollGeneration) return;
         handleIncomingSpotifyState(fresh, { renderTab: true, renderFooter: true });
@@ -14583,16 +14617,13 @@ async function spotifySeek(positionSec) {
         _spotifySeekCommitTimer = null;
     }
     try {
-        const resp = await fetch('/api/spotify/seek', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ position: positionSec }),
-        });
-        const data = await resp.json().catch(() => null);
+        const data = await apiPostJson('/api/spotify/seek', { position: positionSec });
         if (data) {
             handleIncomingSpotifyState(data, { renderTab: true, renderFooter: true });
         }
-    } catch { /* ignore */ }
+    } catch (e) {
+        console.debug('Spotify seek failed', e);
+    }
     _spotifySeekCommitTimer = setTimeout(async () => {
         const fresh = await fetchSpotifyStatus();
         handleIncomingSpotifyState(fresh, { renderTab: true, renderFooter: true });

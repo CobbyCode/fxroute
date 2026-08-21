@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>FXRoute</title>
+    <meta name="description" content="FXRoute: local audio control for routing, DSP and multi-provider playback.">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.9.11">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=0.9.11">
     <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png?v=0.9.11">
@@ -15,6 +16,7 @@
     <link rel="stylesheet" href="/static/style.css?v=0.9.99">
 </head>
 <body>
+    <h1 class="visually-hidden">FXRoute</h1>
     <a class="skip-link" href="#tab-content">Skip to content</a>
 
     <!-- Offline indicator -->
@@ -193,13 +195,15 @@
         </div>
 
         <!-- Main navigation. Streaming providers come first and may be hidden dynamically. -->
-        <nav class="tabs" aria-label="Primary" role="tablist">
+        <nav class="tabs" aria-label="Primary">
+            <div class="tabs-list" role="tablist">
             <button class="tab-btn" data-tab="spotify" hidden style="display:none" role="tab" id="tab-btn-spotify" aria-controls="tab-spotify" aria-selected="false"><span class="tab-glyph" aria-hidden="true">♪</span><span>Spotify</span></button>
             <button class="tab-btn" data-tab="qobuz" hidden style="display:none" role="tab" id="tab-btn-qobuz" aria-controls="tab-qobuz" aria-selected="false"><span class="tab-glyph" aria-hidden="true">◈</span><span>Qobuz</span></button>
             <button class="tab-btn" data-tab="tidal" hidden style="display:none" role="tab" id="tab-btn-tidal" aria-controls="tab-tidal" aria-selected="false"><span class="tab-glyph" aria-hidden="true">≋</span><span>Tidal</span></button>
             <button class="tab-btn active" data-tab="radio" role="tab" id="tab-btn-radio" aria-controls="tab-radio" aria-selected="true"><span class="tab-glyph" aria-hidden="true">▣</span><span>Radio</span></button>
             <button class="tab-btn" data-tab="library" role="tab" id="tab-btn-library" aria-controls="tab-library" aria-selected="false"><span class="tab-glyph" aria-hidden="true">♫</span><span>Library</span></button>
             <button class="tab-btn" data-tab="effects" role="tab" id="tab-btn-effects" aria-controls="tab-effects" aria-selected="false"><span class="tab-glyph" aria-hidden="true">⌁</span><span>DSP</span></button>
+            </div>
         </nav>
 
         <!-- Tab content -->
@@ -219,7 +223,7 @@
                             </div>
                         </div>
                         <div class="radio-header-right">
-                            <button id="station-export-all" class="btn-ghost btn-icon-only" type="button" title="Export all stations">
+                            <button id="station-export-all" class="btn-ghost btn-icon-only" type="button" title="Export all stations" aria-label="Export all stations">
                                 <span class="btn-ghost-icon">⤓</span>
                             </button>
                             <button id="toggle-station-manage" class="btn-ghost btn-manage-trigger">
@@ -407,6 +411,7 @@
                             id="playlist-name"
                             class="url-input"
                             placeholder="Save as playlist…"
+                            aria-label="Save as playlist"
                             autocomplete="off"
                         >
                         <button id="save-playlist" class="btn-secondary">Save</button>
@@ -495,7 +500,7 @@
                                 </div>
                             </div>
                             <div class="effects-actions-row effects-actions-right effects-actions-rew-dual">
-                                <input type="text" id="effects-rew-dual-preset-name" placeholder="Preset name" class="url-input effects-rew-dual-name-input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                                <input type="text" id="effects-rew-dual-preset-name" placeholder="Preset name" aria-label="Preset name" class="url-input effects-rew-dual-name-input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
                                 <button id="effects-rew-dual-create-preset" class="btn-primary" type="button">Create</button>
                             </div>
                         </div>
@@ -512,7 +517,7 @@
                             </div>
                             <div class="effects-stack effects-subwoofer-stack">
                                 <div class="effects-subwoofer-preview-wrap">
-                                    <canvas id="effects-subwoofer-preview" class="effects-subwoofer-preview" width="560" height="160" aria-label="Crossover preview"></canvas>
+                                    <canvas id="effects-subwoofer-preview" class="effects-subwoofer-preview" width="560" height="160" role="img" aria-label="Crossover preview"></canvas>
                                 </div>
                                 <div class="effects-subwoofer-controls">
                                     <div class="effects-subwoofer-control-group effects-subwoofer-global-group">
@@ -734,7 +739,7 @@
                                     </div>
                                 </div>
                                 <div class="effects-actions-row effects-actions-right effects-actions-combine">
-                                    <input type="text" id="effects-combine-preset-name" placeholder="New preset name" class="url-input effects-combine-name-input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                                    <input type="text" id="effects-combine-preset-name" placeholder="New preset name" aria-label="New preset name" class="url-input effects-combine-name-input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
                                     <button id="effects-combine-save" class="btn-primary" type="button">Save</button>
                                 </div>
                             </div>
@@ -826,7 +831,7 @@
                                 <div class="measurement-workflow-list">
                                     <div class="measurement-workflow-group measurement-workflow-single">
                                         <button id="measurement-start" class="btn-primary" type="button">Start Single Sweep</button>
-                                        <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" aria-label="Single sweep speaker selection">
+                                        <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" role="group" aria-label="Single sweep speaker selection">
                                             <button type="button" class="measurement-chip is-active" data-measurement-channel="left">L</button>
                                             <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
                                             <button type="button" class="measurement-chip" data-measurement-channel="stereo">Stereo</button>
@@ -954,9 +959,9 @@
                                 </div>
                             </div>
                             <div id="measurement-graph-controls" class="effects-info measurement-inline-status"></div>
-                            <div id="measurement-ir-diagnostics" class="measurement-ir-diagnostics hidden" aria-label="Impulse response diagnostics"></div>
+                            <div id="measurement-ir-diagnostics" class="measurement-ir-diagnostics hidden" role="group" aria-label="Impulse response diagnostics"></div>
                             <div class="measurement-graph-wrap">
-                                <canvas id="measurement-graph" class="measurement-graph" width="960" height="420"></canvas>
+                                <canvas id="measurement-graph" class="measurement-graph" width="960" height="420" role="img" aria-label="Measurement frequency response graph"></canvas>
                             </div>
                             <div id="measurement-empty" class="measurement-empty hidden">No current or saved measurements yet.</div>
                             <div class="measurement-save-row">
@@ -966,7 +971,7 @@
                                     <button type="button" class="measurement-chip" data-measurement-smoothing="1/3-oct">1/3</button>
                                     <button type="button" class="measurement-chip" data-measurement-smoothing="1/1-oct">1/1</button>
                                 </div>
-                                <input type="text" id="measurement-name" class="url-input measurement-name-input" placeholder="Measurement name" autocomplete="off" spellcheck="false">
+                                <input type="text" id="measurement-name" class="url-input measurement-name-input" placeholder="Measurement name" aria-label="Measurement name" autocomplete="off" spellcheck="false">
                                 <button id="measurement-save" class="btn-secondary" type="button">Save current</button>
                             </div>
                             <section id="measurement-peq-panel" class="measurement-peq-panel hidden" aria-label="Measurement PEQ assistant" tabindex="-1">
@@ -1158,7 +1163,7 @@
                     </button>
                 </div>
                 <div class="hybrid-wizard-grid">
-                    <div class="hybrid-room-view" aria-label="Top view of speakers and listening positions">
+                    <div class="hybrid-room-view" role="group" aria-label="Top view of speakers and listening positions">
                         <div class="hybrid-speaker hybrid-speaker-left" data-hybrid-speaker="left">L</div>
                         <div class="hybrid-speaker hybrid-speaker-right" data-hybrid-speaker="right">R</div>
                         <div class="hybrid-sub hybrid-sub-left" data-hybrid-sub="left">SUB 1</div>
@@ -1245,7 +1250,7 @@
             </div>
         </div>
 
-        <div id="playback-meter" class="playback-meter" aria-label="Stereo output level">
+        <div id="playback-meter" class="playback-meter" role="group" aria-label="Stereo output level">
             <div class="meter-row" data-channel="left">
                 <span class="meter-channel">L</span>
                 <span id="meter-l" class="meter-segments" aria-hidden="true">
@@ -1316,7 +1321,7 @@
     <script src="/static/measurement_dsp.js?v=0.9.12"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.12"></script>
     <script src="/static/radio.js?v=0.9.14"></script>
-    <script src="/static/app.js?v=0.9.53"></script>
+    <script src="/static/app.js?v=0.9.54"></script>
     <script src="/static/streaming.js?v=0.9.31"></script>
 </body>
 </html>

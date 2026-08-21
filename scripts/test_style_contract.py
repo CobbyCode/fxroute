@@ -48,12 +48,16 @@ CSS_SOURCES_DIR = ROOT / "static/css"
 #  - ".streaming-provider [hidden]"     streaming.js toggles the hidden
 #                                       attribute; per-element display rules
 #                                       (flex/grid) must never override it
+#  - ".visually-hidden"                 screen-reader-only utility (page h1);
+#                                       must beat element-specific position
+#                                       and overflow rules everywhere
 #  - prefers-reduced-motion block       accessibility override; the generic
 #                                       star rule must beat every specific
 #                                       animation/transition rule
 IMPORTANT_ALLOWED_SELECTORS = (
     ".hidden",
     ".streaming-provider [hidden]",
+    ".visually-hidden",
 )
 IMPORTANT_REDUCED_MOTION = (
     "animation-duration",

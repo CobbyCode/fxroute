@@ -283,6 +283,16 @@
     background: linear-gradient(90deg, transparent, var(--bg-surface));
 }
 .tabs::-webkit-scrollbar { display: none; }
+/* ARIA tablist wrapper inside the nav landmark; inherits the responsive
+   gap/justify tweaks applied to .tabs so button spacing stays consistent. */
+.tabs-list {
+    display: flex;
+    gap: inherit;
+    justify-content: inherit;
+    align-items: center;
+    flex: 1 1 auto;
+    min-width: max-content;
+}
 .tab-btn {
     flex: 0 0 auto;
     min-width: 112px;
