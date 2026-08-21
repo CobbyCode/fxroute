@@ -13157,6 +13157,9 @@ function mergeSpotifyState(data) {
     if (!sameTrack) return { ...incoming };
 
     const merged = { ...previous, ...incoming };
+    // Backend sets spotifyd_standby only while idle; a playing/paused read
+    // omits the key, so a previous standby flag must not linger into playback.
+    if (incoming.spotifyd_standby !== true) delete merged.spotifyd_standby;
     const stableFields = [
         'artist', 'title', 'album', 'trackId', 'trackid', 'artUrl',
         'artwork_url', 'artwork_available', 'artwork_source', 'duration',
