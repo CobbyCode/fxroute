@@ -20,8 +20,6 @@ from typing import Any, Callable
 import audio.samplerate as samplerate
 from streaming.spotify.mpris import (
     _stop_process,
-    detect_backend,
-    resolve_player_name,
     spotify_installed,
 )
 from streaming.spotify.provider import SPOTIFY_PREARM_SAMPLE_RATE_HZ
@@ -200,11 +198,15 @@ class SpotifyPlayerctlWatch:
         while True:
             proc = None
             try:
-                player = await resolve_player_name(await detect_backend())
-                logger.info("Spotify playerctl watch spawning follow process: player=%s", player)
+                # Follow both Spotify backends. The selector is fixed for the
+                # lifetime of the follow process: the desktop client publishes
+                # ``spotify``, spotifyd publishes ``spotifyd.instance<PID>``
+                # only while a Connect session is active, and a name resolved
+                # once at spawn would miss the other backend forever (a
+                # spotifyd session then never claimed ownership).
                 proc = await asyncio.create_subprocess_exec(
                     playerctl_path,
-                    f"--player={player}",
+                    "--player=spotify,spotifyd",
                     "metadata",
                     "--follow",
                     "--format",
