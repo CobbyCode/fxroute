@@ -75,7 +75,7 @@
             detailTitle: '',
             detailArt: '',
             contentKey: null,   // availability/auth mode last rendered into .streaming-content
-            browseCategory: 'tracks',   // 'tracks' | 'albums' | 'artists' | 'playlists'; search results are a separate temporary overlay
+            browseCategory: 'albums',   // 'albums' | 'tracks' | 'artists' | 'playlists'; search results are a separate temporary overlay
             favoriteIds: { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
             favoritesLoaded: false,   // true after at least one successful favorites/ids load
@@ -851,7 +851,7 @@
     // component. Search results only ever replace the browse body; the bar
     // itself survives every status refresh (contentKey guard in
     // renderTidalContent), so a poll never resets an in-progress query.
-    const TIDAL_BROWSE_CATEGORIES = ['tracks', 'albums', 'artists', 'playlists'];
+    const TIDAL_BROWSE_CATEGORIES = ['albums', 'tracks', 'artists', 'playlists'];
     const TIDAL_BROWSE_LABELS = { tracks: 'Tracks', albums: 'Albums', artists: 'Artists', playlists: 'Playlists' };
 
     function renderTidalBrowse(entry) {
@@ -1297,9 +1297,9 @@
         });
     }
 
-    // Detail headers (album + playlist) use the library's star favorite (not a
-    // heart). It shares the same authoritative favorites state as the hearts.
-    function favoriteStarHtml(type) {
+    // Detail headers (album / artist / playlist) use the same heart favorite
+    // as the track rows, sharing the same authoritative favorites state.
+    function favoriteDetailHtml(type) {
         const idStr = String(state.tidal.detailId || '');
         const active = isTidalFavorite(type, idStr);
         return '<button type="button" class="album-favorite-toggle' + (active ? ' active' : '') + '" ' +
@@ -1307,10 +1307,10 @@
             'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
             'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
             'title="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
-            (active ? '★' : '☆') + '</button>';
+            (active ? '♥' : '♡') + '</button>';
     }
 
-    function bindFavoriteStars(container) {
+    function bindFavoriteDetailButtons(container) {
         container.querySelectorAll('.album-favorite-toggle[data-fav-type]').forEach((btn) => {
             btn.addEventListener('click', (event) => {
                 event.preventDefault();
@@ -1320,11 +1320,11 @@
         });
     }
 
-    function syncFavoriteStars(type, idStr) {
+    function syncFavoriteDetailButtons(type, idStr) {
         const active = state.tidal.favoriteIds[type].has(idStr);
         document.querySelectorAll('.album-favorite-toggle[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"]').forEach((btn) => {
             btn.classList.toggle('active', active);
-            btn.textContent = active ? '★' : '☆';
+            btn.textContent = active ? '♥' : '♡';
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove from favorites' : 'Add to favorites');
             btn.title = active ? 'Remove from favorites' : 'Add to favorites';
@@ -1346,7 +1346,7 @@
             if (data.favorite) state.tidal.favoriteIds[type].add(idStr);
             else state.tidal.favoriteIds[type].delete(idStr);
             syncTidalFavoriteButtons(type, idStr);
-            syncFavoriteStars(type, idStr);
+            syncFavoriteDetailButtons(type, idStr);
             notifyFavoritesChanged();
             showToast(data.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
             // The favorites list must stay authoritative: refresh it so an
@@ -1491,7 +1491,7 @@
                     '<div class="streaming-detail-main tidal-detail-meta">' +
                         '<div class="tidal-detail-title-row">' +
                             '<h3 class="streaming-detail-title tidal-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
-                            favoriteStarHtml('albums') +
+                            favoriteDetailHtml('albums') +
                         '</div>' +
                         '<p class="streaming-detail-artist tidal-detail-artist" id="tidal-album-artist"></p>' +
                         '<div class="streaming-detail-facts tidal-detail-facts" id="tidal-album-facts"></div>' +
@@ -1502,7 +1502,7 @@
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
-        bindFavoriteStars(content);
+        bindFavoriteDetailButtons(content);
         loadTidalAlbum(content, requestId);
     }
 
@@ -1528,7 +1528,7 @@
                 }
             }
         }
-        syncFavoriteStars('albums', state.tidal.detailId);
+        syncFavoriteDetailButtons('albums', state.tidal.detailId);
     }
 
     // TIDAL album facts: the operator's own year/quality/track count come
@@ -1584,7 +1584,7 @@
                     '<div class="streaming-detail-main tidal-detail-meta">' +
                         '<div class="tidal-detail-title-row">' +
                             '<h3 class="streaming-detail-title tidal-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
-                            favoriteStarHtml('artists') +
+                            favoriteDetailHtml('artists') +
                         '</div>' +
                         '<p class="streaming-detail-artist tidal-detail-artist" id="tidal-artist-facts"></p>' +
                         '<div class="album-detail-about tidal-artist-about" id="tidal-artist-about" hidden></div>' +
@@ -1594,7 +1594,7 @@
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
-        bindFavoriteStars(content);
+        bindFavoriteDetailButtons(content);
         loadTidalArtist(content, requestId);
     }
 
@@ -1644,7 +1644,7 @@
                 factsEl.textContent = facts.join(' · ');
             }
             renderArtistAbout(content.querySelector('#tidal-artist-about'), data.enrichment && data.enrichment.about);
-            syncFavoriteStars('artists', state.tidal.detailId);
+            syncFavoriteDetailButtons('artists', state.tidal.detailId);
             const tracks = Array.isArray(data.top_tracks) ? data.top_tracks : [];
             const albums = Array.isArray(data.albums) ? data.albums : [];
             if (tracks.length) {
@@ -1770,7 +1770,7 @@
                     '<div class="streaming-detail-main tidal-detail-meta">' +
                         '<div class="tidal-detail-title-row">' +
                             '<h3 class="streaming-detail-title tidal-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
-                            favoriteStarHtml('playlists') +
+                            favoriteDetailHtml('playlists') +
                         '</div>' +
                         '<div class="streaming-detail-facts tidal-detail-facts" id="tidal-playlist-facts"></div>' +
                         '<button type="button" class="btn-primary" id="tidal-detail-play">Play playlist</button>' +
@@ -1780,7 +1780,7 @@
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
-        bindFavoriteStars(content);
+        bindFavoriteDetailButtons(content);
         loadTidalPlaylistTracks(content, requestId);
     }
 
@@ -1810,7 +1810,7 @@
             if (factsEl && Array.isArray(items)) {
                 factsEl.textContent = items.length + ' track' + (items.length === 1 ? '' : 's');
             }
-            syncFavoriteStars('playlists', state.tidal.detailId);
+            syncFavoriteDetailButtons('playlists', state.tidal.detailId);
             renderDetailTracks(results, items, content.querySelector('#tidal-detail-play'));
         } catch (err) {
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'playlist') return;

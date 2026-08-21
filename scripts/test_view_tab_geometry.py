@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Playwright geometry contract for the shared compact view tabs.
 
-Library ``Tracks / Folders / Albums`` and the TIDAL browse navigation
-``Tracks / Albums / Artists / Playlists`` (one shared row) plus the search
+Library ``Albums / Tracks / Folders`` and the TIDAL browse navigation
+``Albums / Tracks / Artists / Playlists`` (one shared row) plus the search
 result types must render through one shared ``.view-tab`` component: equal
 visible height, equal horizontal padding and one identical mint active
 state.  The old ``Favorites`` over-tab and its inner category chips are
@@ -150,8 +150,8 @@ def _run():
                 check(f"[{width}px] library and TIDAL browse tabs are equally padded",
                       tuple(lib_pads[0]) == tuple(browse_pads[0]))
 
-                # Identical mint active state (default browse category Tracks).
-                lib_active = bg("#library-view-tracks")
+                # Identical mint active state (default browse category Albums).
+                lib_active = bg("#library-view-albums")
                 browse_active = bg(".tidal-subbar .view-tab[data-browse].is-active")
                 check(f"[{width}px] library and TIDAL active states match ({lib_active})",
                       lib_active == browse_active)
@@ -167,7 +167,7 @@ def _run():
 
                 check(f"[{width}px] no horizontal overflow",
                       page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
-                # Clear the executed search so the next width starts on Tracks.
+                # Clear the executed search so the next width starts on Albums.
                 page.fill("#tidal-search-input", "")
                 page.wait_for_timeout(200)
 

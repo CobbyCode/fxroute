@@ -120,11 +120,11 @@ assert.ok(js.includes("tidal: { name: 'Tidal', canConnect: true, catalog: true }
 assert.ok(js.includes('catalogProvider'),
     'Tidal must be identified as a catalog provider whose player is the footer');
 // --- TIDAL browse: one shared navigation row, search is a permanent bar ----
-// Tracks is the default browse category. The four categories live in one
+// Albums is the default browse category. The four categories live in one
 // navigation row; search categories only exist in the result state and never
 // compete with them.
-assert.ok(js.includes("browseCategory: 'tracks'"),
-    'TIDAL browse must default to Tracks');
+assert.ok(js.includes("browseCategory: 'albums'"),
+    'TIDAL browse must default to Albums');
 assert.ok(js.includes("state.tidal.searchQuery = query"),
     'executed Tidal searches must record the query');
 assert.ok(js.includes("state.tidal.searchQuery = ''"),
@@ -153,10 +153,10 @@ assert.ok(!tidalBrowseRender.includes('data-browse="search"'),
     'Search must not be a browse tab anymore');
 assert.ok(tidalBrowseRender.includes('data-browse="') && tidalBrowseRender.includes('TIDAL_BROWSE_LABELS[cat]'),
     'browse tabs must render through the shared category map');
-assert.ok(js.includes("const TIDAL_BROWSE_CATEGORIES = ['tracks', 'albums', 'artists', 'playlists'];"),
-    'browse navigation must be Tracks, Albums, Artists and Playlists only');
+assert.ok(js.includes("const TIDAL_BROWSE_CATEGORIES = ['albums', 'tracks', 'artists', 'playlists'];"),
+    'browse navigation must be Albums, Tracks, Artists and Playlists only');
 assert.ok(js.includes('renderTidalBrowseSection(state.tidal.browseCategory)'),
-    'first authenticated render must show the current browse category (Tracks by default)');
+    'first authenticated render must show the current browse category (Albums by default)');
 
 // --- TIDAL toolbar/search state --------------------------------------------
 // Row 1 is the page title with Connected + refresh on the right; the search
@@ -341,19 +341,19 @@ assert.ok(css.includes('.streaming-detail-facts') && css.includes('.streaming-fa
     'album facts and favorite heart styles must ship in style.css');
 
 // Both detail headers (album + playlist) reuse the library's back button and
-// star favorite and scale the cover to library proportions.
+// heart favorite and scale the cover to library proportions.
 assert.ok(js.includes('class="album-detail-back"'),
     'Tidal detail back button must reuse the library back style');
-assert.ok(js.includes('favoriteStarHtml') && js.includes('album-favorite-toggle'),
-    'Tidal detail favorite must be a library-style star, not a heart');
-assert.ok(js.includes("'★' : '☆'"),
-    'the detail star must render filled/outline like the library');
-assert.ok(js.includes("favoriteStarHtml('albums')") && js.includes("favoriteStarHtml('playlists')"),
-    'album and playlist headers must both carry the star favorite');
+assert.ok(js.includes('favoriteDetailHtml') && js.includes('album-favorite-toggle'),
+    'Tidal detail favorite must be a library-style heart');
+assert.ok(js.includes("'♥' : '♡'"),
+    'the detail heart must render filled/outline like the library');
+assert.ok(js.includes("favoriteDetailHtml('albums')") && js.includes("favoriteDetailHtml('playlists')"),
+    'album and playlist headers must both carry the heart favorite');
 assert.ok(js.includes('tidal-detail'),
     'Tidal album and playlist detail must share the library-mirroring layout');
-assert.ok(js.includes("favoriteStarHtml('playlists')") && js.includes('tidal-playlist-facts'),
-    'the playlist detail must show a star and a track-count facts line');
+assert.ok(js.includes("favoriteDetailHtml('playlists')") && js.includes('tidal-playlist-facts'),
+    'the playlist detail must show a heart and a track-count facts line');
 assert.ok(css.includes('.tidal-detail-header .streaming-detail-cover') && /width: 160px/.test(css),
     'Tidal detail cover must match the library 160px proportion');
 
@@ -364,8 +364,8 @@ assert.ok(js.includes('favoriteButtonHtml') && js.includes('data-fav-type') && j
     'tracks and albums must render a favorite heart button');
 assert.ok(js.includes('set_track_favorite') === false && js.includes('/favorite'),
     'the heart must write back through the provider favorite endpoint');
-assert.ok(js.includes("const TIDAL_BROWSE_CATEGORIES = ['tracks', 'albums', 'artists', 'playlists'];"),
-    'the four browse categories must be Tracks, Albums, Artists and Playlists in one row');
+assert.ok(js.includes("const TIDAL_BROWSE_CATEGORIES = ['albums', 'tracks', 'artists', 'playlists'];"),
+    'the four browse categories must be Albums, Tracks, Artists and Playlists in one row');
 assert.ok(js.includes("TIDAL_BROWSE_LABELS = { tracks: 'Tracks', albums: 'Albums', artists: 'Artists', playlists: 'Playlists' }"),
     'Tracks, Albums, Artists and Playlists must be the four labelled browse tabs');
 assert.ok(js.includes('data-browse="\' + cat + \'"'),
@@ -444,8 +444,8 @@ assert.ok(js.includes("favoriteButtonHtml('artists', item.id)"),
 assert.ok(js.includes("artists: new Set((data.artists || []).map(String))"),
     'favorites/ids must feed artist follow state');
 const artistRender = extractFunction(js, 'renderTidalArtist');
-assert.ok(artistRender.includes("favoriteStarHtml('artists')"),
-    'the artist detail header must carry the follow star');
+assert.ok(artistRender.includes("favoriteDetailHtml('artists')"),
+    'the artist detail header must carry the follow heart');
 const artistLoad = extractFunction(js, 'loadTidalArtist');
 assert.ok(artistLoad.includes("'/api/streaming/tidal/artists/' + encodeURIComponent(state.tidal.detailId)"),
     'the artist detail must fetch through the artist endpoint');

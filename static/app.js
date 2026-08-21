@@ -120,7 +120,7 @@ let state = {
         tracks: [],
         scanning: false,
         scanStatus: null,
-        viewMode: 'tracks',
+        viewMode: 'albums',
         currentFolder: '',
         selectedTrackIds: [],
         searchQuery: '',
@@ -1129,7 +1129,7 @@ function handleWebSocketMessage(msg) {
             }
             if (data.library) {
                 state.library.tracks = [];
-                renderTracks();
+                renderLibraryView();
             }
             if (data.stations) {
                 radioModule.setStations(data.stations);
@@ -4539,7 +4539,7 @@ async function fetchLibraryStatus() {
         const wasScanning = !!state.library.scanning;
         state.library.scanStatus = status;
         state.library.scanning = !!status.scanning;
-        renderTracks();
+        renderLibraryView();
         if (status.scanning) {
             setTimeout(fetchLibraryStatus, LIBRARY_SCAN_POLL_INTERVAL_MS);
         } else if (wasScanning) {
@@ -4558,7 +4558,7 @@ async function fetchTracks() {
         state.library.tracks = await resp.json();
         const status = await fetchLibraryStatus();
         state.library.scanning = !!status?.scanning;
-        renderTracks();
+        renderLibraryView();
         // Non-blocking: also load albums in background
         fetchAlbums();
     } catch (e) {
@@ -4571,7 +4571,7 @@ async function fetchPlaylists() {
         const resp = await fetch('/api/playlists');
         if (!resp.ok) throw new Error('Failed to fetch playlists');
         state.playlists = await resp.json();
-        renderTracks();
+        renderLibraryView();
     } catch (e) {
         console.debug('Failed to fetch playlists', e);
     }
@@ -5276,7 +5276,7 @@ function updateAlbumFavoriteButton(album) {
     elements.albumFavoriteToggle.classList.remove('hidden');
     elements.albumFavoriteToggle.disabled = false;
     const favorite = !!album?.favorite;
-    elements.albumFavoriteToggle.textContent = favorite ? '★' : '☆';
+    elements.albumFavoriteToggle.textContent = favorite ? '♥' : '♡';
     elements.albumFavoriteToggle.classList.toggle('active', favorite);
     elements.albumFavoriteToggle.setAttribute('aria-pressed', favorite ? 'true' : 'false');
     elements.albumFavoriteToggle.setAttribute('aria-label', favorite ? 'Remove album from favorites' : 'Add album to favorites');

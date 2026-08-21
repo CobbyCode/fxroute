@@ -387,7 +387,7 @@ async function main() {
     assert.equal(statusLine.hidden, false, 'back navigation must restore the status line');
 }
 
-// --- 5. TIDAL browse: Tracks default + persistent search bar --------------
+// --- 5. TIDAL browse: Albums default + persistent search bar --------------
 
 {
     const { sandbox, shells, fetchCalls, createdEls } = runStreaming();
@@ -397,7 +397,7 @@ async function main() {
     const content = shells.tidal.querySelector('.streaming-content');
     const body = sandbox.document.getElementById('tidal-browse-body');
 
-    // First authenticated render lands on Tracks, not an empty Search screen.
+    // First authenticated render lands on Albums, not an empty Search screen.
     assert.ok(content.innerHTML.includes('streaming-browse'), 'browse surface must render');
     assert.ok(content.innerHTML.includes('id="tidal-search-input"'), 'search bar must be part of the browse surface');
     assert.ok(content.innerHTML.indexOf('tidal-search-input') > content.innerHTML.indexOf('tidal-subbar') &&
@@ -409,7 +409,7 @@ async function main() {
         content.innerHTML.includes('data-browse="artists"') && content.innerHTML.includes('data-browse="playlists"'),
         'browse navigation must be Tracks, Albums, Artists and Playlists in one row');
     assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-results'),
-        'first authenticated render must show Tracks content');
+        'first authenticated render must show Albums content');
 
     // Keep the last browse category while switching into and out of search.
     content.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'albums').click();
@@ -524,10 +524,16 @@ async function main() {
         { id: 'f3', title: 'Favorite Three', artist: 'Artist', duration: 12 },
         { id: 'f4', title: 'Favorite Four', artist: 'Artist', duration: 13 },
     ];
-    const { sandbox, fetchCalls, createdEls } = runStreaming({ tidalFavoriteTracks: favoriteTracks });
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming({ tidalFavoriteTracks: favoriteTracks });
     const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
 
     sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Albums is the default browse category; switch to Tracks to exercise the
+    // favorite-track queue.
+    shells.tidal.querySelector('.streaming-content').querySelectorAll('.view-tab')
+        .find((tab) => tab.dataset.browse === 'tracks').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const favoriteRows = createdEls.filter((el) => el.className === 'streaming-result');
@@ -635,7 +641,7 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const content = shells.tidal.querySelector('.streaming-content');
     const body = sandbox.document.getElementById('tidal-browse-body');
-    assert.ok(body.innerHTML.includes('tidal-fav-results'), 'browse must start on Tracks');
+    assert.ok(body.innerHTML.includes('tidal-fav-results'), 'browse must start on Albums');
 
     fetchCalls.length = 0;
     content.querySelector('#tidal-refresh-btn').click();
@@ -648,8 +654,8 @@ async function main() {
         'refresh must force a fresh favorites/ids load (refresh + browse re-render)');
     assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/status'),
         'refresh must reload the provider status');
-    assert.ok(fetchCalls.some((c) => c.url.startsWith('/api/streaming/tidal/favorites?type=tracks')),
-        'refresh must re-render the active Tracks category');
+    assert.ok(fetchCalls.some((c) => c.url.startsWith('/api/streaming/tidal/favorites?type=albums')),
+        'refresh must re-render the active Albums category');
     // It must never log out, reset the session or touch playback.
     assert.ok(!fetchCalls.some((c) => c.url.includes('/auth/logout')), 'refresh must never log out');
     assert.ok(!fetchCalls.some((c) => c.url === '/api/play'), 'refresh must never touch playback');
