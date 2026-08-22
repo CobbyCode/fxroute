@@ -82,6 +82,18 @@ const measurementConvolverAlignedPhaseModes = MeasurementUI.measurementConvolver
 const measurementConvolverCurves = MeasurementUI.measurementConvolverCurves;
 const measurementConvolverTapOptions = MeasurementUI.measurementConvolverTapOptions;
 let radioModule = null;
+// Grid/list layout persistence (Library albums + TIDAL tile surfaces), read
+// before state init. Same localStorage mechanism as fx-debug-footer; grid is
+// the default when the key is absent or storage is unavailable.
+const VIEW_MODE_STORAGE_KEY = 'fx-view-mode-';
+function readStoredViewMode(surface) {
+    try {
+        return localStorage.getItem(VIEW_MODE_STORAGE_KEY + surface) === 'list' ? 'list' : 'grid';
+    } catch (e) {
+        // Storage may be unavailable (private mode); grid stays the default.
+        return 'grid';
+    }
+}
 // State
 let state = {
     playback: {
@@ -129,6 +141,7 @@ let state = {
         selectionDownloadPending: false,
         albums: [],
         albumsLoaded: false,
+        albumLayout: readStoredViewMode('library-albums'),
         showFavoriteAlbums: false,
         albumDetail: null,
         playlistDetail: null,
@@ -459,6 +472,9 @@ const elements = {
     librarySearchInput: document.getElementById('library-search'),
     librarySearchClear: document.getElementById('library-search-clear'),
     albumsGrid: document.getElementById('albums-grid'),
+    libraryViewModeToggle: document.getElementById('library-view-mode-toggle'),
+    libraryViewModeGridBtn: document.getElementById('library-view-mode-grid'),
+    libraryViewModeListBtn: document.getElementById('library-view-mode-list'),
     albumDetail: document.getElementById('album-detail'),
     albumDetailBack: document.getElementById('album-detail-back'),
     albumDetailCover: document.getElementById('album-detail-cover'),
@@ -4864,6 +4880,34 @@ function setLibraryFolder(folder) {
 }
 // ── Albums ──────────────────────────────────────────────────────
 
+// Grid/list layout for tile collections (Library albums + TIDAL
+// Albums/Artists/Playlists); storage helpers live above state init so the
+// stored layout is available when state is first built.
+function storeViewMode(surface, mode) {
+    try {
+        localStorage.setItem(VIEW_MODE_STORAGE_KEY + surface, mode);
+    } catch (e) { /* keep working without persistence */ }
+}
+function setAlbumLayout(mode) {
+    const layout = mode === 'list' ? 'list' : 'grid';
+    storeViewMode('library-albums', layout);
+    state.library.albumLayout = layout;
+    renderAlbums();
+}
+function updateLibraryViewModeToggle() {
+    const active = state.library.viewMode === 'albums';
+    if (elements.libraryViewModeToggle) elements.libraryViewModeToggle.classList.toggle('hidden', !active);
+    const layout = state.library.albumLayout || 'grid';
+    if (elements.libraryViewModeGridBtn) {
+        elements.libraryViewModeGridBtn.classList.toggle('active', layout === 'grid');
+        elements.libraryViewModeGridBtn.setAttribute('aria-pressed', layout === 'grid' ? 'true' : 'false');
+    }
+    if (elements.libraryViewModeListBtn) {
+        elements.libraryViewModeListBtn.classList.toggle('active', layout === 'list');
+        elements.libraryViewModeListBtn.setAttribute('aria-pressed', layout === 'list' ? 'true' : 'false');
+    }
+}
+
 let albumsFetchInFlight = false;
 async function fetchAlbums() {
     if (state.library.albumsLoaded && state.library.albums.length > 0) return;
@@ -4889,6 +4933,7 @@ async function fetchAlbums() {
 
 function renderAlbums() {
     renderLibraryViewButtons();
+    updateLibraryViewModeToggle();
     updateLibrarySelectionUI();
     const loadingEl = document.querySelector('#tab-library .content-state');
     const query = (state.library.searchQuery || '').trim().toLowerCase();
@@ -4944,6 +4989,8 @@ function renderAlbums() {
             <div class="album-artist">Most Played Tracks</div>
         </div>
     ` : '';
+    // Grid and list show the same cards; only the container class changes.
+    elements.albumsGrid.classList.toggle('is-list', (state.library.albumLayout || 'grid') === 'list');
     const playlistHtml = playlists.map(playlist => `
         <div class="album-card playlist-card" data-playlist-id="${escapeHtml(playlist.id)}" role="button" tabindex="0">
             <div class="album-art-wrap">${playlistCoverHtml(playlist)}</div>
@@ -13030,6 +13077,12 @@ function setupLibraryActions() {
     }
     if (elements.libraryViewAlbumsBtn) {
         elements.libraryViewAlbumsBtn.addEventListener('click', () => setLibraryViewMode('albums'));
+    }
+    if (elements.libraryViewModeGridBtn) {
+        elements.libraryViewModeGridBtn.addEventListener('click', () => setAlbumLayout('grid'));
+    }
+    if (elements.libraryViewModeListBtn) {
+        elements.libraryViewModeListBtn.addEventListener('click', () => setAlbumLayout('list'));
     }
     if (elements.albumDetailBack) {
         elements.albumDetailBack.addEventListener('click', () => closeAlbumDetail());

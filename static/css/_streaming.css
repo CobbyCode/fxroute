@@ -599,9 +599,11 @@
    keep the compact streaming-result rows. */
 .tidal-tiles {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(192px, 192px));
+    /* Same shared tile basis as the Library albums grid so both surfaces
+       keep one tile rhythm; radio reads its narrower derivative token. */
+    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)));
     justify-content: center;
-    gap: 1rem;
+    gap: var(--tile-gap);
     margin-top: 1.25rem;
     list-style: none;
     padding: 0;
@@ -616,6 +618,19 @@
     min-height: 32px;
     background: rgba(8, 18, 26, 0.72);
     backdrop-filter: blur(4px);
+}
+/* List view: the heart leaves the cover corner and joins the row end
+   (same canonical favorite control, only repositioned). */
+.tidal-tiles.is-list .album-card .streaming-fav {
+    position: static;
+    order: 5;
+    z-index: auto;
+    width: 34px;
+    height: 34px;
+    min-height: 34px;
+    margin-left: auto;
+    background: transparent;
+    backdrop-filter: none;
 }
 
 /* Discover Similar artist tiles: cover placeholder (reuses the shared

@@ -26,6 +26,13 @@
     --radius-xl:  20px;
     --action-gap: 12px;
     --action-gap-mobile: 8px;
+    /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
+       cards derive their column sizing from these two values so all three
+       surfaces keep one tile rhythm across breakpoints. Radio reads a
+       narrower derivative; vertical scroll comfort beats horizontal fill. */
+    --tile-min: 208px;
+    --tile-min-radio: 164px;
+    --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
     --font-sans: -apple-system, BlinkMacSystemFont, "Geist", "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -235,6 +242,45 @@ body {
     background: var(--accent-dim);
     border-color: var(--accent);
     box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.2);
+}
+
+/* Shared compact grid/list toggle (Library albums + TIDAL Albums/Artists/
+   Playlists). One segmented icon pair; the active mode keeps the same mint
+   accent language as .view-tab. Grid stays the default. */
+.view-mode-toggle {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+}
+.view-mode-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    font-size: 0.95rem;
+    line-height: 1;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+.view-mode-btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.view-mode-btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.view-mode-btn + .view-mode-btn { border-left: none; }
+.view-mode-btn:hover {
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+}
+.view-mode-btn.active {
+    color: var(--accent);
+    background: var(--accent-dim);
+    border-color: var(--accent);
 }
 
 /* Visually hidden but available to screen readers (page h1, live labels). */
@@ -1021,11 +1067,14 @@ body {
     to { opacity: 0; transform: translateX(30px); }
 }
 /* ── Albums grid ─────────────────────────────────────────────── */
+/* Shared tile basis with TIDAL tiles and radio station cards
+   (see --tile-* tokens); auto-fit keeps columns equal-width and
+   centered instead of stretching the last row edge-to-edge. */
 .albums-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(192px, 192px));
+    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)));
     justify-content: center;
-    gap: 1rem;
+    gap: var(--tile-gap);
     margin-top: 1.25rem;
 }
 .album-card {
@@ -1119,6 +1168,50 @@ body {
     -webkit-box-orient: vertical;
     overflow: hidden;
     margin-top: -0.4rem;
+}
+
+/* ── Albums list view (shared with TIDAL tiles) ──────────────── */
+/* Same objects, compact-row presentation: square mini cover left,
+   name + subtitle beside it. Only the container layout changes. */
+.albums-grid.is-list,
+.tidal-tiles.is-list {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 860px;
+    margin-left: auto;
+    margin-right: auto;
+    gap: 0.55rem;
+    margin-top: 1rem;
+}
+.albums-grid.is-list .album-card,
+.tidal-tiles.is-list .album-card {
+    flex-direction: row;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-md);
+    gap: 0.85rem;
+}
+.albums-grid.is-list .album-art-wrap,
+.tidal-tiles.is-list .album-art-wrap {
+    width: 52px;
+    height: 52px;
+    flex: 0 0 52px;
+    border-radius: 10px;
+}
+.albums-grid.is-list .album-art,
+.tidal-tiles.is-list .album-art { padding: 2px; }
+.albums-grid.is-list .album-name,
+.tidal-tiles.is-list .album-name {
+    min-height: 0;
+    -webkit-line-clamp: 1;
+    font-size: 0.95rem;
+}
+.albums-grid.is-list .playlist-collage-cell.is-fallback { padding: 8%; }
+.albums-grid.is-list .album-smart-badge {
+    top: 0.3rem;
+    left: 0.3rem;
+    font-size: 0.58rem;
 }
 
 /* ── Playlist cards + cover collage ─────────────────────────────── */
@@ -2507,9 +2600,11 @@ body {
 }
 .stations-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(174px, 1fr));
+    /* Shared tile basis (narrower radio derivative token) so stations,
+       albums and TIDAL tiles keep one size rhythm across breakpoints. */
+    grid-template-columns: repeat(auto-fill, minmax(var(--tile-min-radio), 1fr));
     justify-content: stretch;
-    gap: clamp(.8rem, 1.25vw, 1.15rem);
+    gap: var(--tile-gap);
 }
 .station-card {
     background: linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.012));
@@ -3282,9 +3377,11 @@ body {
    keep the compact streaming-result rows. */
 .tidal-tiles {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(192px, 192px));
+    /* Same shared tile basis as the Library albums grid so both surfaces
+       keep one tile rhythm; radio reads its narrower derivative token. */
+    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)));
     justify-content: center;
-    gap: 1rem;
+    gap: var(--tile-gap);
     margin-top: 1.25rem;
     list-style: none;
     padding: 0;
@@ -3299,6 +3396,19 @@ body {
     min-height: 32px;
     background: rgba(8, 18, 26, 0.72);
     backdrop-filter: blur(4px);
+}
+/* List view: the heart leaves the cover corner and joins the row end
+   (same canonical favorite control, only repositioned). */
+.tidal-tiles.is-list .album-card .streaming-fav {
+    position: static;
+    order: 5;
+    z-index: auto;
+    width: 34px;
+    height: 34px;
+    min-height: 34px;
+    margin-left: auto;
+    background: transparent;
+    backdrop-filter: none;
 }
 
 /* Discover Similar artist tiles: cover placeholder (reuses the shared
@@ -7242,7 +7352,7 @@ input[type="number"]::-webkit-outer-spin-button {
         .tab-content { padding: 1rem .75rem calc(1.5rem + var(--playback-footer-space)); }
         .radio-panel { padding: .9rem; border-radius: 18px; }
         .radio-panel-header { gap: .65rem; }
-        .stations-grid { grid-template-columns: repeat(2, minmax(0,1fr)); gap: .72rem; }
+        .stations-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
         .station-card { padding: .58rem; border-radius: 15px; }
         .station-name { font-size: .88rem; }
 
@@ -7560,8 +7670,9 @@ input[type="number"]::-webkit-outer-spin-button {
         }
 
     /* from _library.css */
-    .albums-grid {
-            grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    .albums-grid,
+        .tidal-tiles {
+            grid-template-columns: repeat(auto-fit, minmax(160px, 160px));
         }
         .track-duration {
             flex-basis: 3.8rem;

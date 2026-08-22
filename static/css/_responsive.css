@@ -1328,7 +1328,7 @@
         .tab-content { padding: 1rem .75rem calc(1.5rem + var(--playback-footer-space)); }
         .radio-panel { padding: .9rem; border-radius: 18px; }
         .radio-panel-header { gap: .65rem; }
-        .stations-grid { grid-template-columns: repeat(2, minmax(0,1fr)); gap: .72rem; }
+        .stations-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
         .station-card { padding: .58rem; border-radius: 15px; }
         .station-name { font-size: .88rem; }
 
@@ -1646,8 +1646,9 @@
         }
 
     /* from _library.css */
-    .albums-grid {
-            grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    .albums-grid,
+        .tidal-tiles {
+            grid-template-columns: repeat(auto-fit, minmax(160px, 160px));
         }
         .track-duration {
             flex-basis: 3.8rem;

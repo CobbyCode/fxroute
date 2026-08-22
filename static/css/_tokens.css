@@ -26,6 +26,13 @@
     --radius-xl:  20px;
     --action-gap: 12px;
     --action-gap-mobile: 8px;
+    /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
+       cards derive their column sizing from these two values so all three
+       surfaces keep one tile rhythm across breakpoints. Radio reads a
+       narrower derivative; vertical scroll comfort beats horizontal fill. */
+    --tile-min: 208px;
+    --tile-min-radio: 164px;
+    --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
     --font-sans: -apple-system, BlinkMacSystemFont, "Geist", "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;

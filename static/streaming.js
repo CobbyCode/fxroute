@@ -79,6 +79,13 @@
             favoriteIds: { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
             favoritesLoaded: false,   // true after at least one successful favorites/ids load
+            // Grid/list layout per browse surface; persisted in localStorage
+            // (fx-view-mode-<surface>, same mechanism as the library toggle).
+            albumLayouts: {
+                albums: readStoredViewMode('tidal-albums'),
+                artists: readStoredViewMode('tidal-artists'),
+                playlists: readStoredViewMode('tidal-playlists'),
+            },
         },
     };
 
@@ -853,6 +860,92 @@
     // renderTidalContent), so a poll never resets an in-progress query.
     const TIDAL_BROWSE_CATEGORIES = ['albums', 'tracks', 'artists', 'playlists'];
     const TIDAL_BROWSE_LABELS = { tracks: 'Tracks', albums: 'Albums', artists: 'Artists', playlists: 'Playlists' };
+    // Surfaces that offer the grid/list toggle; tracks stay row-only.
+    const TIDAL_LAYOUT_SURFACES = { albums: 'tidal-albums', artists: 'tidal-artists', playlists: 'tidal-playlists' };
+
+    // -- shared grid/list toggle ------------------------------------------------
+    // Same component and persistence mechanism as the library albums toggle:
+    // fx-view-mode-<surface> in localStorage, grid is the default. The toggle
+    // only flips a container class, so grid and list render the same objects
+    // with the same actions.
+    function readStoredViewMode(surface) {
+        try {
+            return localStorage.getItem('fx-view-mode-' + surface) === 'list' ? 'list' : 'grid';
+        } catch (e) {
+            return 'grid';
+        }
+    }
+
+    function storeViewMode(surface, mode) {
+        try {
+            localStorage.setItem('fx-view-mode-' + surface, mode);
+        } catch (e) { /* keep working without persistence */ }
+    }
+
+    function viewModeButtonsHtml(storageSurface) {
+        const key = Object.keys(TIDAL_LAYOUT_SURFACES).find((k) => TIDAL_LAYOUT_SURFACES[k] === storageSurface);
+        const layout = (key && state.tidal.albumLayouts[key]) || 'grid';
+        return '<button type="button" class="view-mode-btn' + (layout === 'grid' ? ' active' : '') + '" data-layout-toggle="grid" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'grid' ? 'true' : 'false') + '" title="Grid view" aria-label="Grid view">▦</button>' +
+            '<button type="button" class="view-mode-btn' + (layout === 'list' ? ' active' : '') + '" data-layout-toggle="list" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'list' ? 'true' : 'false') + '" title="List view" aria-label="List view">☰</button>';
+    }
+
+    function bindViewModeToggle(root) {
+        root.querySelectorAll('.view-mode-btn[data-layout-toggle]').forEach((btn) => {
+            btn.addEventListener('click', () => setTidalLayout(btn.dataset.layoutSurface, btn.dataset.layoutToggle));
+        });
+    }
+
+    // The toggle controls whichever tile surface is currently displayed:
+    // the active browse category, or — during an executed search — the
+    // matching search result type. Tracks never get a toggle.
+    function tidalActiveStorageSurface() {
+        if (state.tidal.searchExecuted) return TIDAL_LAYOUT_SURFACES[state.tidal.searchResultType] || '';
+        return TIDAL_LAYOUT_SURFACES[state.tidal.browseCategory] || '';
+    }
+
+    function syncTidalViewModeToggle() {
+        const toggle = document.getElementById('tidal-view-mode-toggle');
+        if (!toggle) return;
+        const storageSurface = tidalActiveStorageSurface();
+        toggle.hidden = !storageSurface;
+        const key = Object.keys(TIDAL_LAYOUT_SURFACES).find((k) => TIDAL_LAYOUT_SURFACES[k] === storageSurface);
+        const layout = (key && state.tidal.albumLayouts[key]) || 'grid';
+        toggle.querySelectorAll('.view-mode-btn').forEach((btn) => {
+            const active = btn.dataset.layoutToggle === layout;
+            btn.classList.toggle('active', active);
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+            btn.dataset.layoutSurface = storageSurface;
+        });
+    }
+
+    // External callers (shared toggle logic in app.js) address surfaces by
+    // their storage key; internally the browse category is used.
+    function setTidalLayout(storageSurface, mode) {
+        const surface = Object.keys(TIDAL_LAYOUT_SURFACES).find((key) => TIDAL_LAYOUT_SURFACES[key] === storageSurface);
+        if (!surface) return;
+        const layout = mode === 'list' ? 'list' : 'grid';
+        if (state.tidal.albumLayouts[surface] === layout) return;
+        state.tidal.albumLayouts[surface] = layout;
+        storeViewMode(storageSurface, layout);
+        applyTidalLayout(surface);
+    }
+
+    // Re-render the active browse surface (or running search results) so the
+    // new layout applies without touching search state or favorites.
+    function applyTidalLayout(surface) {
+        if (state.tidal.browseCategory !== surface) return;
+        const body = document.getElementById('tidal-browse-body');
+        if (!body) return;
+        if (state.tidal.searchExecuted && state.tidal.searchResults && state.tidal.searchResultType === surface) {
+            renderTidalSearchResults(body, state.tidal.searchResults);
+        } else {
+            renderTidalBrowseSection(surface);
+        }
+    }
+
+    function tidalLayoutClass(surface) {
+        return (state.tidal.albumLayouts[surface] || 'grid') === 'list' ? 'tidal-tiles is-list' : 'tidal-tiles';
+    }
 
     function renderTidalBrowse(entry) {
         const content = entry.els.content;
@@ -875,6 +968,9 @@
                     '<h2 class="section-title tidal-toolbar-title">Tidal</h2>' +
                     '<div class="tidal-toolbar-actions">' +
                         '<button type="button" class="btn-secondary btn-icon" id="tidal-refresh-btn" title="Refresh TIDAL" aria-label="Refresh TIDAL">⟳</button>' +
+                        '<div class="view-mode-toggle" id="tidal-view-mode-toggle" role="group" aria-label="View mode">' +
+                            viewModeButtonsHtml(tidalActiveStorageSurface()) +
+                        '</div>' +
                     '</div>' +
                 '</div>' +
                 '<div class="tidal-subbar">' +
@@ -896,6 +992,8 @@
         if (actions && entry.els.statusLine) actions.prepend(entry.els.statusLine);
         bindTidalSearchBar(content);
         bindTidalRefresh(content);
+        bindViewModeToggle(content);
+        syncTidalViewModeToggle();
         const input = content.querySelector('#tidal-search-input');
         if (input && state.tidal.searchExecuted) input.value = state.tidal.searchQuery;
         const tabs = content.querySelectorAll('.tidal-subbar .view-tab[data-browse]');
@@ -915,6 +1013,7 @@
         const body = document.getElementById('tidal-browse-body');
         if (!body) return;
         state.tidal.browseCategory = section;
+        syncTidalViewModeToggle();
         if (section === 'playlists') renderTidalPlaylists(body);
         else renderTidalFavorites(body, section);
     }
@@ -1051,6 +1150,7 @@
         const items = data[type] || [];
         state.tidal.searchResults = data;
         container.innerHTML = '';
+        syncTidalViewModeToggle();
         const typeButtons = TIDAL_SEARCH_TYPES.map((value) =>
             '<button type="button" class="view-tab' + (value === type ? ' is-active' : '') + '" id="tidal-search-type-' + value + '" data-search-type="' + value + '">' + TIDAL_SEARCH_TYPE_LABELS[value] + '</button>'
         ).join('');
@@ -1079,7 +1179,7 @@
         }
         const queueIds = type === 'tracks' ? items.map((item) => String(item.id)).filter(Boolean) : [];
         const list = document.createElement('ul');
-        list.className = type === 'tracks' ? 'streaming-results-list' : 'tidal-tiles';
+        list.className = type === 'tracks' ? 'streaming-results-list' : tidalLayoutClass(type);
         items.forEach((item) => list.appendChild(renderSearchItem(type, item, queueIds)));
         itemsContainer.appendChild(list);
     }
@@ -1122,7 +1222,7 @@
     function renderTidalFavoriteResults(container, type, items) {
         container.innerHTML = '';
         const list = document.createElement('ul');
-        list.className = type === 'tracks' ? 'streaming-results-list' : 'tidal-tiles';
+        list.className = type === 'tracks' ? 'streaming-results-list' : tidalLayoutClass(type);
         const queueIds = type === 'tracks' ? items.map((item) => String(item.id)).filter(Boolean) : [];
         items.forEach((item) => list.appendChild(renderSearchItem(type, item, queueIds)));
         container.appendChild(list);
@@ -1430,7 +1530,7 @@
                 return;
             }
             const list = document.createElement('ul');
-            list.className = 'tidal-tiles';
+            list.className = tidalLayoutClass('playlists');
             for (const item of items) {
                 const li = document.createElement('li');
                 li.className = 'album-card';
@@ -1918,5 +2018,7 @@
         tidalFavoritesReady,
         ensureTidalFavoritesLoaded,
         toggleTidalFavorite,
+        // Shared grid/list layout control (library toggle bridges here).
+        setTidalLayout,
     };
 })();

@@ -1,9 +1,12 @@
 /* ── Albums grid ─────────────────────────────────────────────── */
+/* Shared tile basis with TIDAL tiles and radio station cards
+   (see --tile-* tokens); auto-fit keeps columns equal-width and
+   centered instead of stretching the last row edge-to-edge. */
 .albums-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(192px, 192px));
+    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)));
     justify-content: center;
-    gap: 1rem;
+    gap: var(--tile-gap);
     margin-top: 1.25rem;
 }
 .album-card {
@@ -97,6 +100,50 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
     margin-top: -0.4rem;
+}
+
+/* ── Albums list view (shared with TIDAL tiles) ──────────────── */
+/* Same objects, compact-row presentation: square mini cover left,
+   name + subtitle beside it. Only the container layout changes. */
+.albums-grid.is-list,
+.tidal-tiles.is-list {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 860px;
+    margin-left: auto;
+    margin-right: auto;
+    gap: 0.55rem;
+    margin-top: 1rem;
+}
+.albums-grid.is-list .album-card,
+.tidal-tiles.is-list .album-card {
+    flex-direction: row;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-md);
+    gap: 0.85rem;
+}
+.albums-grid.is-list .album-art-wrap,
+.tidal-tiles.is-list .album-art-wrap {
+    width: 52px;
+    height: 52px;
+    flex: 0 0 52px;
+    border-radius: 10px;
+}
+.albums-grid.is-list .album-art,
+.tidal-tiles.is-list .album-art { padding: 2px; }
+.albums-grid.is-list .album-name,
+.tidal-tiles.is-list .album-name {
+    min-height: 0;
+    -webkit-line-clamp: 1;
+    font-size: 0.95rem;
+}
+.albums-grid.is-list .playlist-collage-cell.is-fallback { padding: 8%; }
+.albums-grid.is-list .album-smart-badge {
+    top: 0.3rem;
+    left: 0.3rem;
+    font-size: 0.58rem;
 }
 
 /* ── Playlist cards + cover collage ─────────────────────────────── */

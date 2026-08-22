@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.111">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.112">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -340,6 +340,10 @@
                     <h2 class="section-title">Library</h2>
                     <div class="library-toolbar">
                         <button id="toggle-import" class="btn-secondary">Import</button>
+                        <div id="library-view-mode-toggle" class="view-mode-toggle" role="group" aria-label="Album view mode">
+                            <button type="button" id="library-view-mode-grid" class="view-mode-btn" aria-pressed="true" title="Grid view" aria-label="Grid view">▦</button>
+                            <button type="button" id="library-view-mode-list" class="view-mode-btn" aria-pressed="false" title="List view" aria-label="List view">☰</button>
+                        </div>
                         <button id="refresh-library" class="btn-secondary btn-icon" title="Refresh library" aria-label="Refresh library">⟳</button>
                         <button id="download-selected-tracks" class="btn-secondary btn-icon hidden" title="Download selected" aria-label="Download selected"><span class="btn-spinner" aria-hidden="true"></span>⬇</button>
                         <button id="delete-selected-tracks" class="btn-secondary btn-icon hidden" title="Delete selected" aria-label="Delete selected">🗑</button>
@@ -1328,7 +1332,7 @@
     <script src="/static/measurement_graph.js?v=0.9.12"></script>
     <script src="/static/measurement_flows.js?v=0.9.12"></script>
     <script src="/static/radio.js?v=0.9.14"></script>
-    <script src="/static/app.js?v=0.9.71"></script>
-    <script src="/static/streaming.js?v=0.9.35"></script>
+    <script src="/static/app.js?v=0.9.72"></script>
+    <script src="/static/streaming.js?v=0.9.36"></script>
 </body>
 </html>

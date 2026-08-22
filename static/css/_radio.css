@@ -275,9 +275,11 @@
 }
 .stations-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(174px, 1fr));
+    /* Shared tile basis (narrower radio derivative token) so stations,
+       albums and TIDAL tiles keep one size rhythm across breakpoints. */
+    grid-template-columns: repeat(auto-fill, minmax(var(--tile-min-radio), 1fr));
     justify-content: stretch;
-    gap: clamp(.8rem, 1.25vw, 1.15rem);
+    gap: var(--tile-gap);
 }
 .station-card {
     background: linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.012));
