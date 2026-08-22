@@ -1142,6 +1142,72 @@ async function main() {
         'a failed save must surface an understandable error state');
 }
 
+// --- 18. re-opening the TIDAL tab re-syncs the active browse section -------
+// The last-known library stays visible while a fresh TIDAL fetch replaces it
+// in the background; searches and detail views are left untouched.
+
+{
+    const snapshot = {
+        user_id: '42',
+        ids: { tracks: [], albums: ['c1'], artists: [], playlists: [] },
+        tracks: [],
+        albums: [{ id: 'c1', title: 'Cached Album', artist: 'Cached Artist', art_url: '' }],
+        artists: [],
+        playlists: [],
+    };
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming({
+        tidalSnapshot: snapshot,
+        tidalUser: '42',
+        tidalFavoriteAlbums: [{ id: 'f1', title: 'Fresh Album', artist: 'Fresh Artist', art_url: '' }],
+        delayFavorites: 40,
+    });
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0, user: { id: '42' } };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const albumCards = () => createdEls.filter((el) => el.className === 'album-card');
+    assert.ok(albumCards().some((el) => el.innerHTML.includes('Cached Album')),
+        'the cached library must render on first open');
+    // Let the initial background refresh finish and settle on fresh data.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.ok(albumCards().some((el) => el.innerHTML.includes('Fresh Album')),
+        'the first background refresh must adopt fresh data');
+
+    // Re-entering the tab (as if switching away and back) re-syncs the active
+    // Albums section: the visible library stays, a fresh fetch is triggered.
+    fetchCalls.length = 0;
+    sandbox.window.FXRouteStreaming.onTabVisible('tidal');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(albumCards().some((el) => el.innerHTML.includes('Fresh Album')),
+        're-entering the tab must keep the visible library (no blanking)');
+    assert.ok(fetchCalls.some((c) => c.url.startsWith('/api/streaming/tidal/favorites?type=albums')),
+        're-entering the tab must re-sync the active browse section in the background');
+    assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/status'),
+        're-entering the tab must also restart the status poll');
+
+    // A search is live and must not be clobbered by the re-sync.
+    const { sandbox: s2, shells: shells2, fetchCalls: fc2, createdEls: ce2 } = runStreaming({
+        tidalSnapshot: snapshot,
+        tidalUser: '42',
+        delayFavorites: 40,
+    });
+    s2.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const input = shells2.tidal.querySelector('.streaming-content').querySelector('#tidal-search-input');
+    input.value = 'found';
+    input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(s2.document.getElementById('tidal-browse-body').innerHTML.includes('Search results for'),
+        'search must be active before re-entering the tab');
+    fc2.length = 0;
+    s2.window.FXRouteStreaming.onTabVisible('tidal');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(s2.document.getElementById('tidal-browse-body').innerHTML.includes('Search results for'),
+        're-entering the tab must never clobber live search results');
+    assert.ok(!fc2.some((c) => c.url.startsWith('/api/streaming/tidal/favorites?type=')),
+        're-entering the tab must skip the section re-sync while a search is showing');
+}
+
 console.log('PASS  scripts/test_streaming_ui_actions.js');
 }
 

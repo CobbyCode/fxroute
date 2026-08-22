@@ -168,6 +168,13 @@
             // TIDAL-backed status poll) so the browse renders from cache.
             void loadTidalSnapshot();
             startPoll('tidal', TIDAL_POLL_INTERVAL_MS);
+            // Re-opening the tab re-syncs the active browse section in the
+            // background: the last-known state stays visible and fresh TIDAL
+            // data replaces it in place when it arrives. Live search results
+            // and open detail views are left untouched.
+            if (state.tidal.contentKey === 'browse' && !state.tidal.searchExecuted && !isTidalDetailView()) {
+                renderTidalBrowseSection(state.tidal.browseCategory);
+            }
         }
     }
 
