@@ -209,6 +209,59 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"volume": 60})
         sync.assert_not_awaited()
 
+    async def test_remote_delta_rejects_non_owner_before_canonical_write(self):
+        with mock.patch.object(main, "_resolve_playback_owner", return_value="spotify"), mock.patch.object(
+            main, "set_output_volume"
+        ) as set_volume:
+            await main._apply_remote_volume_delta(5, owner="qobuz")
+
+        set_volume.assert_not_called()
+
+    async def test_qobuz_remote_delta_rejects_deselected_renderer(self):
+        with mock.patch.object(main, "_resolve_playback_owner", return_value="qobuz"), mock.patch.object(
+            main, "set_output_volume"
+        ) as set_volume:
+            await main._apply_remote_volume_delta(
+                5,
+                owner="qobuz",
+                source_active=lambda: False,
+            )
+
+        set_volume.assert_not_called()
+
+    async def test_remote_delta_restores_master_when_owner_changes_during_write(self):
+        entered = threading.Event()
+        release = threading.Event()
+        source_active = True
+        calls = []
+
+        def fake_set_output_volume(value):
+            calls.append(value)
+            if value == 45:
+                entered.set()
+                release.wait(timeout=5)
+            return value
+
+        def current_owner():
+            return "qobuz"
+
+        with mock.patch.object(main, "_resolve_playback_owner", side_effect=current_owner), mock.patch.object(
+            main, "get_output_volume_safe", return_value=40
+        ), mock.patch.object(main, "set_output_volume", side_effect=fake_set_output_volume):
+            write_task = asyncio.create_task(
+                main._apply_remote_volume_delta(
+                    5,
+                    owner="qobuz",
+                    source_active=lambda: source_active,
+                )
+            )
+            self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+            source_active = False
+            release.set()
+            await write_task
+
+        self.assertEqual(calls, [45, 40])
+
     async def test_set_readback_sequence_never_interleaves(self):
         entered = threading.Event()
         release = threading.Event()

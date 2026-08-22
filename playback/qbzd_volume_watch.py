@@ -48,6 +48,7 @@ JOURNALCTL_COMMAND = [
 RESTART_BACKOFF_BASE_SECONDS = 1.0
 RESTART_BACKOFF_MAX_SECONDS = 30.0
 DEBOUNCE_SECONDS = 0.15
+OWNER_STATE_POLL_INTERVAL_SECONDS = 0.1
 
 # qbzd 2.0.2 locked-mode line. The captured group is the remote volume in 0..1.
 _IGNORED_VOLUME_RE = re.compile(
@@ -140,6 +141,7 @@ class QobuzVolumeWatch:
         )
         self.watch_task: asyncio.Task | None = None
         self._drain_task: asyncio.Task | None = None
+        self._owner_monitor_task: asyncio.Task | None = None
         self._backoff_seconds = 0.0
         # None means "never warned"; 0.0 would suppress the first warning while
         # the monotonic uptime is still below the rate-limit window.
@@ -159,6 +161,22 @@ class QobuzVolumeWatch:
     async def _sleep(self, delay: float) -> None:
         await asyncio.sleep(delay)
 
+    async def _monitor_owner_state(self) -> None:
+        """Reset the remote scale when playback ownership changes silently."""
+        try:
+            previous = bool(self._deps.is_active())
+        except Exception:
+            previous = False
+        while True:
+            await asyncio.sleep(OWNER_STATE_POLL_INTERVAL_SECONDS)
+            try:
+                current = bool(self._deps.is_active())
+            except Exception:
+                continue
+            if current != previous:
+                previous = current
+                self._translator.observe_activation()
+
     def _next_backoff(self) -> float:
         if self._backoff_seconds <= 0.0:
             self._backoff_seconds = RESTART_BACKOFF_BASE_SECONDS
@@ -176,9 +194,24 @@ class QobuzVolumeWatch:
 
     async def _drain_pending(self) -> None:
         try:
-            if self._debounce_seconds > 0:
-                await self._sleep(self._debounce_seconds)
-            await self._translator.flush()
+            while True:
+                if self._debounce_seconds > 0:
+                    await self._sleep(self._debounce_seconds)
+                try:
+                    await self._translator.flush()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # Keep the latest intent pending and retry after a bounded
+                    # delay; a transient master-write failure must not strand it.
+                    logger.warning("Qobuz journal volume drain failed: %s", exc)
+                    await self._sleep(max(self._debounce_seconds, 0.5))
+                    continue
+                # A journal event can arrive while the async canonical write
+                # above is still in flight. Drain that final delta before the
+                # active drain task is released.
+                if self._translator.pending is None:
+                    break
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -227,70 +260,92 @@ class QobuzVolumeWatch:
     async def run_watch_loop(self) -> None:
         logger.info("Qobuz qbzd journal volume watch loop entered")
         await self._bootstrap_device_state()
+        owner_monitor = asyncio.create_task(
+            self._monitor_owner_state(),
+            name="qobuz-volume-owner-monitor",
+        )
+        self._owner_monitor_task = owner_monitor
         proc: asyncio.subprocess.Process | None = None
         expect_ignore = False
-        while True:
-            try:
-                if proc is None or proc.returncode is not None:
-                    proc = await asyncio.create_subprocess_exec(
-                        *self._journal_command,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                line = await proc.stdout.readline()
-                if not line:
-                    # EOF: journalctl exited (e.g. after a journal rotation);
-                    # respawn after a bounded backoff so a wedged journalctl
-                    # cannot busy-loop the event loop.
+        try:
+            while True:
+                try:
+                    if proc is None or proc.returncode is not None:
+                        proc = await asyncio.create_subprocess_exec(
+                            *self._journal_command,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                    line = await proc.stdout.readline()
+                    if not line:
+                        # EOF: journalctl exited (e.g. after a journal rotation);
+                        # respawn after a bounded backoff so a wedged journalctl
+                        # cannot busy-loop the event loop.
+                        proc = None
+                        expect_ignore = False
+                        await self._sleep(self._next_backoff())
+                        continue
+                    self._backoff_seconds = 0.0
+                    text = line.decode("utf-8", errors="replace")
+                    if is_session_activation(text) or is_session_deactivation(text):
+                        # A fresh Connect session re-anchors the controller scale;
+                        # the app's post-activation sync push must not move master.
+                        expect_ignore = False
+                        self._translator.observe_activation()
+                        if self._deps.on_device_active is not None:
+                            self._deps.on_device_active(is_session_activation(text))
+                        continue
+                    percent = parse_ignored_volume(text)
+                    if percent is not None:
+                        # Locked-mode pair: the engine ignore line right after the
+                        # sink apply line proves qbzd stays at unity.
+                        expect_ignore = False
+                        if self._translator.submit(percent):
+                            self._schedule_drain()
+                    elif is_software_volume_apply(text):
+                        if expect_ignore:
+                            # A second apply before any ignore line: real
+                            # software-mode burst (qbzd attenuates itself).
+                            self._warn_software_mode_once(time.monotonic())
+                        expect_ignore = True
+                    elif expect_ignore:
+                        # The apply line was not followed by its locked-mode
+                        # ignore pair: qbzd applied the volume itself.
+                        self._warn_software_mode_once(time.monotonic())
+                        expect_ignore = False
+                except asyncio.CancelledError:
+                    if proc is not None:
+                        try:
+                            proc.terminate()
+                        except ProcessLookupError:
+                            pass
+                    raise
+                except Exception as exc:
+                    logger.warning("Qobuz qbzd journal volume watch pass failed: %s", exc)
                     proc = None
                     expect_ignore = False
                     await self._sleep(self._next_backoff())
-                    continue
-                self._backoff_seconds = 0.0
-                text = line.decode("utf-8", errors="replace")
-                if is_session_activation(text) or is_session_deactivation(text):
-                    # A fresh Connect session re-anchors the controller scale;
-                    # the app's post-activation sync push must not move master.
-                    expect_ignore = False
-                    self._translator.observe_activation()
-                    if self._deps.on_device_active is not None:
-                        self._deps.on_device_active(is_session_activation(text))
-                    continue
-                percent = parse_ignored_volume(text)
-                if percent is not None:
-                    # Locked-mode pair: the engine ignore line right after the
-                    # sink apply line proves qbzd stays at unity.
-                    expect_ignore = False
-                    if self._deps.is_active() and self._translator.submit(percent):
-                        self._schedule_drain()
-                elif is_software_volume_apply(text):
-                    if expect_ignore:
-                        # A second apply before any ignore line: real
-                        # software-mode burst (qbzd attenuates itself).
-                        self._warn_software_mode_once(time.monotonic())
-                    expect_ignore = True
-                elif expect_ignore:
-                    # The apply line was not followed by its locked-mode
-                    # ignore pair: qbzd applied the volume itself.
-                    self._warn_software_mode_once(time.monotonic())
-                    expect_ignore = False
-            except asyncio.CancelledError:
-                if proc is not None:
-                    try:
-                        proc.terminate()
-                    except ProcessLookupError:
-                        pass
-                raise
-            except Exception as exc:
-                logger.warning("Qobuz qbzd journal volume watch pass failed: %s", exc)
-                proc = None
-                expect_ignore = False
-                await self._sleep(self._next_backoff())
+        finally:
+            if self._owner_monitor_task is owner_monitor:
+                self._owner_monitor_task = None
+            if not owner_monitor.done():
+                owner_monitor.cancel()
+            await asyncio.gather(owner_monitor, return_exceptions=True)
 
     async def stop(self) -> None:
-        if self._drain_task is not None and not self._drain_task.done():
-            self._drain_task.cancel()
+        drain_task = self._drain_task
+        watch_task = self.watch_task
+        owner_monitor_task = self._owner_monitor_task
+        for task in (drain_task, watch_task, owner_monitor_task):
+            if task is not None and not task.done():
+                task.cancel()
+        tasks = [
+            task for task in (drain_task, watch_task, owner_monitor_task)
+            if task is not None
+        ]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._translator.observe_activation()
         self._drain_task = None
-        if self.watch_task is not None and not self.watch_task.done():
-            self.watch_task.cancel()
+        self._owner_monitor_task = None
         self.watch_task = None

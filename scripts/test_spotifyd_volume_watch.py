@@ -82,6 +82,158 @@ class SpotifydVolumeWatchTests(unittest.IsolatedAsyncioTestCase):
         await scripted.poll()
         self.assertEqual(scripted.applied, [-4])
 
+    async def test_value_seen_during_master_write_is_drained_without_next_poll(self):
+        applied = []
+        write_started = asyncio.Event()
+        release_write = asyncio.Event()
+        values = iter([40, 70, 100])
+
+        async def apply_delta(delta):
+            applied.append(delta)
+            if len(applied) == 1:
+                write_started.set()
+                await release_write.wait()
+
+        async def resolve_player():
+            return "spotifyd.instance123"
+
+        async def read_source_volume(_player):
+            return next(values)
+
+        watch = SpotifydVolumeWatch(
+            SpotifydVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume_delta=apply_delta,
+                resolve_player=resolve_player,
+                read_source_volume=read_source_volume,
+            ),
+            debounce_seconds=0.0,
+        )
+
+        self.assertFalse(await watch.poll_once())  # anchor at 40
+        self.assertTrue(await watch.poll_once())   # pending 40 -> 70
+        watch._schedule_drain()
+        drain_task = watch._drain_task
+        self.assertIsNotNone(drain_task)
+        await write_started.wait()
+
+        self.assertTrue(await watch.poll_once())  # final 70 -> 100 arrives mid-write
+        watch._schedule_drain()  # the active drain must retain this pending value
+        release_write.set()
+        await drain_task
+
+        self.assertEqual(applied, [30, 30])
+
+    async def test_failed_master_write_is_retried(self):
+        applied = []
+        attempts = 0
+
+        async def resolve_player():
+            return "spotifyd.instance123"
+
+        async def read_source_volume(_player):
+            return 40
+
+        async def apply_delta(delta):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("temporary volume failure")
+            applied.append(delta)
+
+        watch = SpotifydVolumeWatch(
+            SpotifydVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume_delta=apply_delta,
+                resolve_player=resolve_player,
+                read_source_volume=read_source_volume,
+            ),
+            debounce_seconds=0.0,
+        )
+
+        watch._translator.submit(40)
+        watch._translator.submit(70)
+        watch._schedule_drain()
+        await watch._drain_task
+
+        self.assertEqual(applied, [30])
+
+    async def test_owner_loss_cancels_inflight_master_write(self):
+        active = True
+        applied = []
+        write_started = asyncio.Event()
+        write_cancelled = asyncio.Event()
+
+        async def resolve_player():
+            return "spotifyd.instance123"
+
+        async def read_source_volume(_player):
+            return 40
+
+        async def apply_delta(delta):
+            write_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                write_cancelled.set()
+                raise
+            applied.append(delta)
+
+        watch = SpotifydVolumeWatch(
+            SpotifydVolumeWatchDependencies(
+                is_active=lambda: active,
+                apply_volume_delta=apply_delta,
+                resolve_player=resolve_player,
+                read_source_volume=read_source_volume,
+            ),
+            debounce_seconds=0.0,
+        )
+        watch._translator.submit(40)
+        watch._translator.submit(70)
+        watch._schedule_drain()
+        drain_task = watch._drain_task
+        await write_started.wait()
+
+        active = False
+        await asyncio.wait_for(write_cancelled.wait(), timeout=1.0)
+        await drain_task
+
+        self.assertEqual(applied, [])
+        self.assertFalse(watch._translator.anchored)
+        self.assertIsNone(watch._translator.pending)
+
+    async def test_stop_resets_translator_after_cancelling_drain(self):
+        write_started = asyncio.Event()
+
+        async def resolve_player():
+            return "spotifyd.instance123"
+
+        async def read_source_volume(_player):
+            return 40
+
+        async def apply_delta(_delta):
+            write_started.set()
+            await asyncio.Event().wait()
+
+        watch = SpotifydVolumeWatch(
+            SpotifydVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume_delta=apply_delta,
+                resolve_player=resolve_player,
+                read_source_volume=read_source_volume,
+            ),
+            debounce_seconds=0.0,
+        )
+        watch._translator.submit(40)
+        watch._translator.submit(70)
+        watch._schedule_drain()
+        await write_started.wait()
+
+        await watch.stop()
+
+        self.assertFalse(watch._translator.anchored)
+        self.assertIsNone(watch._translator.pending)
+
     async def test_drag_between_polls_nets_into_one_write(self):
         # A drag that completes inside one poll interval is observed only at
         # its end state: one observation, one canonical write.

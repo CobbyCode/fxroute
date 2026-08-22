@@ -107,6 +107,34 @@ class SystemVolumeCommandTests(unittest.TestCase):
             [args[1] for args in calls], ["set-volume", "get-volume"]
         )
 
+    def test_readback_failure_marks_set_as_already_applied(self):
+        def fake_run(args, **kwargs):
+            if args[1] == "get-volume":
+                return _completed(0, "unreadable")
+            return _completed(0, "")
+
+        with mock.patch("audio.system_volume.subprocess.run", side_effect=fake_run):
+            with self.assertRaises(system_volume.SystemVolumeReadbackError) as raised:
+                system_volume.set_output_volume(37)
+        self.assertTrue(raised.exception.volume_write_applied)
+        self.assertEqual(system_volume.get_status_volume(), 37)
+
+    def test_unexpected_readback_failure_marks_set_as_already_applied(self):
+        calls = 0
+
+        def fake_run(args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if args[1] == "get-volume":
+                raise OSError("readback transport failed")
+            return _completed(0, "")
+
+        with mock.patch("audio.system_volume.subprocess.run", side_effect=fake_run):
+            with self.assertRaises(system_volume.SystemVolumeReadbackError) as raised:
+                system_volume.set_output_volume(37)
+        self.assertTrue(raised.exception.volume_write_applied)
+        self.assertEqual(calls, 2)
+
 
 class SystemVolumeStatusCacheTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):

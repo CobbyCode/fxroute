@@ -101,9 +101,24 @@ class SpotifydVolumeWatch:
 
     async def _drain_pending(self) -> None:
         try:
-            if self._debounce_seconds > 0:
-                await self._sleep(self._debounce_seconds)
-            await self._translator.flush()
+            while True:
+                if self._debounce_seconds > 0:
+                    await self._sleep(self._debounce_seconds)
+                try:
+                    await self._translator.flush()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # Keep the latest intent pending and retry after a bounded
+                    # delay; a transient wpctl failure must not strand it.
+                    logger.warning("spotifyd volume drain failed: %s", exc)
+                    await self._sleep(max(self._debounce_seconds, 0.5))
+                    continue
+                # A poll can observe the next remote value while the async
+                # canonical write above is still in flight. Do not leave that
+                # final delta stranded behind the active drain task.
+                if self._translator.pending is None:
+                    break
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -147,9 +162,14 @@ class SpotifydVolumeWatch:
             await self._sleep(self._poll_interval_seconds)
 
     async def stop(self) -> None:
-        if self._drain_task is not None and not self._drain_task.done():
-            self._drain_task.cancel()
+        drain_task = self._drain_task
+        watch_task = self.watch_task
+        for task in (drain_task, watch_task):
+            if task is not None and not task.done():
+                task.cancel()
+        tasks = [task for task in (drain_task, watch_task) if task is not None]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._translator.observe_activation()
         self._drain_task = None
-        if self.watch_task is not None and not self.watch_task.done():
-            self.watch_task.cancel()
         self.watch_task = None

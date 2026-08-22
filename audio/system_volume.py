@@ -18,6 +18,12 @@ class SystemVolumeError(RuntimeError):
     """Raised when output volume cannot be read or changed."""
 
 
+class SystemVolumeReadbackError(SystemVolumeError):
+    """Raised when the set completed but its verification read failed."""
+
+    volume_write_applied = True
+
+
 TARGET_SINK = "@DEFAULT_AUDIO_SINK@"
 
 # Conservative bound for every wpctl invocation: a wedged PipeWire must
@@ -68,8 +74,19 @@ def _get_target_volume(target: str) -> int:
 
 def _set_target_volume(target: str, percent: int | float) -> int:
     clamped = max(0, min(100, round(float(percent))))
+    write_started_at = time.monotonic()
     _run_command(["wpctl", "set-volume", target, f"{clamped}%"])
-    verified = _get_target_volume(target)
+    if target == TARGET_SINK:
+        # Publish the committed command value before verification so an
+        # unreadable readback cannot make a later relative write reuse stale
+        # status state.
+        _publish_status_volume(clamped, write_started_at)
+    try:
+        verified = _get_target_volume(target)
+    except Exception as exc:
+        raise SystemVolumeReadbackError(
+            f"Volume set completed but readback failed: {exc}"
+        ) from exc
     if target == TARGET_SINK:
         _publish_status_volume(verified, time.monotonic())
     return verified
