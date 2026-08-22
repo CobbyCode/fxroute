@@ -79,6 +79,12 @@
             favoriteIds: { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
             favoritesLoaded: false,   // true after at least one successful favorites/ids load
+            // Similar artists often arrive from MusicBrainz without a TIDAL
+            // mapping. Keep successful name lookups in the browser so a later
+            // card can use the result immediately and concurrent cards share
+            // one request.
+            artistLookupCache: new Map(),
+            artistLookupPromises: new Map(),
             // Grid/list layout per browse surface; persisted in localStorage
             // (fx-view-mode-<surface>, same mechanism as the library toggle).
             albumLayouts: {
@@ -1230,6 +1236,7 @@
 
     function renderSearchItem(type, item, queueIds) {
         const li = document.createElement('li');
+        if (type === 'artists') rememberTidalArtist(item);
         if (type === 'tracks') {
             const trackId = String(item.id);
             li.className = 'streaming-result';
@@ -1312,13 +1319,26 @@
         return 'data:image/svg+xml,' + encodeURIComponent(svg);
     }
 
+    function tidalImageFallbackUrl(url) {
+        const value = String(url || '');
+        return /\/480x480\.jpg$/i.test(value)
+            ? value.replace(/\/480x480\.jpg$/i, '/320x320.jpg')
+            : '';
+    }
+
     function coverImg(url, loading = 'lazy') {
         if (!url) return '';
-        // A cover that fails to load (stale/missing TIDAL picture) removes
-        // itself so the row falls back to the neutral :empty placeholder
-        // instead of showing a broken-image icon.
+        // Some valid TIDAL picture ids reject only the 480px rendition. Retry
+        // the smaller rendition once, then fall back to the neutral tile.
+        const fallbackUrl = tidalImageFallbackUrl(url);
+        const fallbackAttr = fallbackUrl
+            ? ' data-fallback-src="' + escapeHtml(fallbackUrl) + '"'
+            : '';
+        const errorAttr = fallbackUrl
+            ? ' onerror="if (this.dataset.fallbackSrc && this.src !== this.dataset.fallbackSrc) { this.src = this.dataset.fallbackSrc; } else { this.remove(); }"'
+            : ' onerror="this.remove()"';
         const loadingAttr = loading ? ' loading="' + escapeHtml(loading) + '"' : '';
-        return '<img src="' + escapeHtml(url) + '" alt=""' + loadingAttr + ' decoding="async" onerror="this.remove()" />';
+        return '<img src="' + escapeHtml(url) + '" alt=""' + loadingAttr + fallbackAttr + ' decoding="async"' + errorAttr + ' />';
     }
 
     function tidalTrackThumbHtml(url) {
@@ -1585,6 +1605,7 @@
     }
 
     function openTidalArtist(id, name, artUrl) {
+        rememberTidalArtist({ id: id, name: name, art_url: artUrl });
         openTidalDetail('artist', id, name, artUrl);
     }
 
@@ -1697,6 +1718,7 @@
             if (Array.isArray(items) && items.length) renderDetailTracks(results, items, null);
             else results.innerHTML = '';
             const hasSimilar = renderSimilarArtists(results, similar);
+            if (hasSimilar) void hydrateSimilarArtistImages(results, similar, requestId, 'album');
             if ((!Array.isArray(items) || !items.length) && !hasSimilar) {
                 results.innerHTML = contentState('empty', 'No tracks or similar artists available.');
             }
@@ -1767,6 +1789,12 @@
             const data = await resp.json();
             try { await loadTidalFavoriteIds(); } catch (e) { /* hearts degrade to unfilled */ }
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'artist') return;
+            rememberTidalArtist(data);
+            if (data.art_url && data.art_url !== state.tidal.detailArt) {
+                state.tidal.detailArt = data.art_url;
+                const cover = content.querySelector('.tidal-detail-cover');
+                if (cover) cover.innerHTML = coverImg(data.art_url);
+            }
             const factsEl = content.querySelector('#tidal-artist-facts');
             if (factsEl) {
                 const facts = [];
@@ -1800,8 +1828,9 @@
                 results.appendChild(list);
             }
             const similar = (data.enrichment && data.enrichment.similar) || [];
-            renderSimilarArtists(results, similar);
-            if (!tracks.length && !albums.length && !similar.length) {
+            const hasSimilar = renderSimilarArtists(results, similar);
+            if (hasSimilar) void hydrateSimilarArtistImages(results, similar, requestId, 'artist');
+            if (!tracks.length && !albums.length && !hasSimilar) {
                 results.innerHTML = contentState('empty', 'No tracks or albums available.');
             }
         } catch (err) {
@@ -1811,7 +1840,7 @@
     }
 
     // One Discover Similar card: cover tile (mapped artists reuse their stored
-    // art URL without a new request; everything else falls back to the shared
+    // art URL without a new request; everything else starts with the shared
     // neutral placeholder) plus the artist name.
     function renderSimilarArtistItem(item) {
         const li = document.createElement('li');
@@ -1843,9 +1872,100 @@
         container.appendChild(heading);
         const list = document.createElement('ul');
         list.className = 'streaming-similar-grid';
-        similar.forEach((item) => list.appendChild(renderSimilarArtistItem(item)));
+        similar.forEach((item, index) => {
+            const card = renderSimilarArtistItem(item);
+            card.dataset.similarIndex = String(index);
+            list.appendChild(card);
+        });
         container.appendChild(list);
         return true;
+    }
+
+    function rememberTidalArtist(item) {
+        if (!item) return null;
+        const id = String(item.id || item.provider_artist_id || '').trim();
+        const name = String(item.name || item.artist || '').trim();
+        if (!id || !name) return null;
+        const match = {
+            id: id,
+            name: name,
+            art_url: String(item.art_url || ''),
+            ambiguous: Boolean(item.ambiguous),
+        };
+        const key = tidalNameKey(name);
+        if (!key) return match;
+        const existing = state.tidal.artistLookupCache.get(key);
+        if (!existing) {
+            state.tidal.artistLookupCache.set(key, match);
+            return match;
+        }
+        if (!existing.art_url && match.art_url) existing.art_url = match.art_url;
+        if (!existing.id && match.id) existing.id = match.id;
+        return existing;
+    }
+
+    async function resolveTidalArtistMatch(name) {
+        const key = tidalNameKey(name);
+        if (!key) return null;
+        const cached = state.tidal.artistLookupCache.get(key);
+        if (cached) return cached;
+        const pending = state.tidal.artistLookupPromises.get(key);
+        if (pending) return pending;
+
+        const promise = (async () => {
+            const resp = await fetch('/api/streaming/tidal/search?q=' + encodeURIComponent(name) + '&types=artists&limit=10');
+            if (!resp.ok) throw new Error(await errorDetail(resp));
+            const data = await resp.json();
+            const artists = Array.isArray(data.artists) ? data.artists : [];
+            let matches = artists.filter((artist) => tidalNameKey(artist.name) === key);
+            if (!matches.length && artists.length === 1) matches = artists;
+            if (!matches.length) return null;
+            const preferred = matches.find((artist) => artist && artist.art_url) || matches[0];
+            return rememberTidalArtist({
+                id: preferred.id,
+                name: preferred.name || name,
+                art_url: preferred.art_url || '',
+                ambiguous: matches.length !== 1,
+            });
+        })();
+        state.tidal.artistLookupPromises.set(key, promise);
+        try {
+            return await promise;
+        } finally {
+            if (state.tidal.artistLookupPromises.get(key) === promise) {
+                state.tidal.artistLookupPromises.delete(key);
+            }
+        }
+    }
+
+    // Resolve missing covers independently so each card is patched as soon as
+    // its own TIDAL search returns. The detail request guard prevents a late
+    // response from modifying a different view.
+    function hydrateSimilarArtistImages(container, items, requestId, view) {
+        const similar = Array.isArray(items)
+            ? items.filter((item) => item && item.artist).slice(0, 6)
+            : [];
+        const cards = container ? container.querySelectorAll('.streaming-similar-item') : [];
+        similar.forEach((item, index) => {
+            if (item.art_url) {
+                rememberTidalArtist({
+                    id: item.provider_artist_id,
+                    name: item.artist,
+                    art_url: item.art_url,
+                });
+                return;
+            }
+            void resolveTidalArtistMatch(item.artist).then((match) => {
+                if (!match || !match.art_url) return;
+                item.provider_artist_id = item.provider_artist_id || match.id;
+                item.art_url = match.art_url;
+                if (requestId !== state.tidal.detailRequestId || state.tidal.view !== view) return;
+                const card = cards[index];
+                if (!card || !card.isConnected) return;
+                const cover = card.querySelector('.streaming-result-cover');
+                if (cover) cover.innerHTML = coverImg(match.art_url, 'eager');
+            }).catch(() => {});
+        });
     }
 
     // Similar-artist navigation. A cached/mapped provider artist id opens the
@@ -1864,14 +1984,9 @@
 
     async function resolveTidalArtistByName(name) {
         try {
-            const resp = await fetch('/api/streaming/tidal/search?q=' + encodeURIComponent(name) + '&types=artists&limit=10');
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const data = await resp.json();
-            const artists = Array.isArray(data.artists) ? data.artists : [];
-            let matches = artists.filter((a) => tidalNameKey(a.name) === tidalNameKey(name));
-            if (!matches.length && artists.length === 1) matches = artists;
-            if (matches.length === 1) {
-                openTidalArtist(matches[0].id, matches[0].name || name, matches[0].art_url || '');
+            const match = await resolveTidalArtistMatch(name);
+            if (match && !match.ambiguous) {
+                openTidalArtist(match.id, match.name || name, match.art_url || '');
                 return;
             }
             throw new Error('no unique artist match');
@@ -1881,7 +1996,8 @@
     }
 
     function tidalNameKey(value) {
-        return String(value == null ? '' : value).toLowerCase().replace(/\s+/g, ' ').trim();
+        return String(value == null ? '' : value).normalize('NFKC').toLowerCase()
+            .replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
     }
 
     // Reuse the existing TIDAL executed-search flow: close the detail, seed the

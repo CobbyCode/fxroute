@@ -7,6 +7,8 @@
 //  * TIDAL album keeps About collapsible through the shared library component,
 //  * TIDAL album facts stay provider-primary and never duplicate,
 //  * Discover Similar uses mapped artist ids or exactly one artist search,
+//  * missing artist art is hydrated asynchronously and patches the existing
+//    card when the search result arrives,
 //  * a cached provider mapping avoids a re-search.
 
 const assert = require('assert/strict');
@@ -114,6 +116,8 @@ assert.ok(similarRender.includes('renderSimilarArtists(results, similar)'),
 const similarGrid = extractFunction(js, 'renderSimilarArtists');
 assert.ok(similarGrid.includes("'Discover Similar'") && similarGrid.includes('streaming-similar-grid') && similarGrid.includes('renderSimilarArtistItem(item)'),
     'similar artists must render as a card grid through one shared helper');
+assert.ok(artistLoad.includes("hydrateSimilarArtistImages(results, similar, requestId, 'artist')"),
+    'artist detail must hydrate missing similar-artist art after the first render');
 const similarItem = extractFunction(js, 'renderSimilarArtistItem');
 assert.ok(similarItem.includes("coverImg(item.art_url, 'eager')"),
     'similar cards must request available covers during the first render');
@@ -126,6 +130,18 @@ assert.ok(cover.includes('loading'),
 const albumLoad = extractFunction(js, 'loadTidalAlbum');
 assert.ok(albumLoad.includes('renderSimilarArtists(results, similar)') && albumLoad.includes('enrichment.similar'),
     'album detail must reuse the same Discover Similar card renderer');
+assert.ok(albumLoad.includes("hydrateSimilarArtistImages(results, similar, requestId, 'album')"),
+    'album detail must hydrate missing similar-artist art after the first render');
+
+const hydrateSimilar = extractFunction(js, 'hydrateSimilarArtistImages');
+assert.ok(hydrateSimilar.includes('resolveTidalArtistMatch(item.artist)'),
+    'similar-art hydration must resolve each missing artist through the shared lookup');
+assert.ok(hydrateSimilar.includes('.streaming-similar-item') && hydrateSimilar.includes('.streaming-result-cover'),
+    'similar-art hydration must target the existing card instead of replacing the grid');
+assert.ok(hydrateSimilar.includes("cover.innerHTML = coverImg(match.art_url, 'eager')"),
+    'similar-art hydration must patch the card cover when the result arrives');
+assert.ok(hydrateSimilar.includes('state.tidal.detailRequestId') && hydrateSimilar.includes('state.tidal.view'),
+    'late similar-art responses must be ignored after leaving the detail');
 
 const openSimilar = extractFunction(js, 'openTidalSimilarArtist');
 assert.ok(openSimilar.includes('item.provider_artist_id'),
@@ -136,14 +152,18 @@ assert.ok(openSimilar.includes('resolveTidalArtistByName(name)'),
     'unmapped similar artists trigger exactly one name resolver');
 
 const resolveByName = extractFunction(js, 'resolveTidalArtistByName');
-assert.ok(resolveByName.includes("'/api/streaming/tidal/search?q='"),
-    'similar-artist fallback must reuse the existing TIDAL search endpoint');
-assert.ok(resolveByName.includes('types=artists&limit=10'),
-    'the fallback must be exactly one artist-typed search');
-assert.ok(resolveByName.includes("openTidalArtist(matches[0].id"),
+assert.ok(resolveByName.includes('resolveTidalArtistMatch(name)'),
+    'similar-artist navigation must reuse the shared artist lookup');
+assert.ok(resolveByName.includes("openTidalArtist(match.id"),
     'a single unique match must open the matching TIDAL artist');
 assert.ok(resolveByName.includes('showTidalSearchResultsFor(name)'),
     'an ambiguous fallback must reuse the existing search-result flow');
+
+const resolveMatch = extractFunction(js, 'resolveTidalArtistMatch');
+assert.ok(resolveMatch.includes('artistLookupCache') && resolveMatch.includes('artistLookupPromises'),
+    'similar-art lookup must cache resolved artists and deduplicate concurrent searches');
+assert.ok(resolveMatch.includes("'/api/streaming/tidal/search?q='"),
+    'similar-art lookup must use the normal TIDAL artist search endpoint');
 
 const searchFallback = extractFunction(js, 'showTidalSearchResultsFor');
 assert.ok(searchFallback.includes('searchQuery = name') && searchFallback.includes("searchResultType = 'artists'"),

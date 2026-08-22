@@ -494,6 +494,8 @@ assert.ok(albumTracksRender.includes('.track-play'),
 // instead of a broken-image icon or an empty box.
 assert.ok(js.includes('onerror="this.remove()"'),
     'result covers must self-remove on image load failure');
+assert.ok(js.includes('function tidalImageFallbackUrl(') && js.includes('data-fallback-src'),
+    'TIDAL result covers must retry a reachable smaller image variant before removal');
 assert.ok(css.includes('.streaming-result-cover:empty'),
     'empty result covers must render the neutral placeholder tile');
 
