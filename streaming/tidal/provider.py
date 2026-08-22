@@ -240,6 +240,12 @@ class TidalProvider(StreamingProvider):
     async def playlist_tracks(self, playlist_id: str) -> list[dict]:
         return await _to_thread(catalog.playlist_tracks, playlist_id)
 
+    async def create_playlist(self, title: str, description: str = "", track_ids: list[str] | None = None) -> dict:
+        return await _to_thread(catalog.create_playlist, title, description, track_ids)
+
+    async def add_playlist_tracks(self, playlist_id: str, track_ids: list[str]) -> dict:
+        return await _to_thread(catalog.add_playlist_tracks, playlist_id, track_ids)
+
     async def resolve_stream(self, track_id: str) -> dict:
         return await _to_thread(playback.resolve_stream_for_id, track_id)
 

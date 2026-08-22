@@ -179,6 +179,24 @@ class TidalLibraryCache:
             return None
         return out
 
+    def delete(self, user_id: str, kind: str) -> None:
+        """Drop one kind's row so the next successful fetch repopulates it.
+
+        Used by playlist writes: after creating a playlist or adding tracks the
+        cached playlist list is stale, and the next live ``user_playlists``
+        fetch (which caches again on success) serves the fresh state.
+        """
+        if not user_id or kind not in CACHE_KINDS:
+            return
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM library_cache WHERE user_id = ? AND kind = ?",
+                    (user_id, kind),
+                )
+        except sqlite3.Error as exc:
+            logger.warning("TIDAL cache delete failed for %s/%s: %s", user_id, kind, exc)
+
     def clear_user(self, user_id: str) -> None:
         """Remove every cache row of one account (logout/account switch)."""
         if not user_id:

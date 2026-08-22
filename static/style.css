@@ -190,6 +190,8 @@ body {
 .track-row:hover,
 .streaming-result:hover,
 .album-detail-tracks .track-item:hover{background:var(--bg-hover);border-color:var(--border-strong)}
+/* Selected TIDAL rows mirror the library .track-item.selected highlight. */
+.streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,255,.08)}
 .track-play,
 .streaming-result-play{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;justify-content:center;transition:color 0.12s,border-color 0.12s,background 0.12s}
 .track-play:hover,
@@ -1891,6 +1893,28 @@ body {
     min-width: 0;
     font-size: 0.88rem;
     padding: 0.3rem 0.6rem;
+}
+/* TIDAL save row: the library save concept extended with the "add to
+   existing playlist" target, so the row wraps instead of clipping. */
+.tidal-playlist-save-row {
+    flex-wrap: wrap;
+    overflow: visible;
+}
+.tidal-playlist-save-row .playlist-save-controls {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+}
+.tidal-playlist-save-row .url-input[type="text"] {
+    flex: 0 1 200px;
+}
+.tidal-playlist-save-row select.url-input {
+    flex: 1 1 190px;
+}
+.tidal-playlist-save-error {
+    flex: 0 0 100%;
+    color: var(--danger);
+    font-size: 0.84rem;
+    margin-top: 0.15rem;
 }
 .playlist-item {
     position: relative;

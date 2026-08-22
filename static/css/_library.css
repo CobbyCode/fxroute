@@ -824,6 +824,28 @@
     font-size: 0.88rem;
     padding: 0.3rem 0.6rem;
 }
+/* TIDAL save row: the library save concept extended with the "add to
+   existing playlist" target, so the row wraps instead of clipping. */
+.tidal-playlist-save-row {
+    flex-wrap: wrap;
+    overflow: visible;
+}
+.tidal-playlist-save-row .playlist-save-controls {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+}
+.tidal-playlist-save-row .url-input[type="text"] {
+    flex: 0 1 200px;
+}
+.tidal-playlist-save-row select.url-input {
+    flex: 1 1 190px;
+}
+.tidal-playlist-save-error {
+    flex: 0 0 100%;
+    color: var(--danger);
+    font-size: 0.84rem;
+    margin-top: 0.15rem;
+}
 .playlist-item {
     position: relative;
 }

@@ -519,5 +519,202 @@ class AuthResilienceTests(unittest.TestCase):
         self.assertEqual(payload["id"], "7")
 
 
+# ---------------------------------------------------------------------------
+# playlist writes (create + add tracks, ETag, cache invalidation)
+# ---------------------------------------------------------------------------
+
+class FakePlaylistObj:
+    """Minimal tidalapi Playlist stand-in carrying the v1 write ETag."""
+
+    def __init__(self, playlist_id="pl9", name="New Mix"):
+        self.id = playlist_id
+        self.name = name
+        self.num_tracks = 0
+        self.description = ""
+        self.square_picture = lambda size=640: ""
+        self.image = None
+        self.picture = None
+        self._etag = '"etag-1"'
+
+
+class FakeJsonResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class FakeWriteSession:
+    """Session faking the write path: create_playlist, playlist(), request layer."""
+
+    def __init__(self, user_id=42, add_payload=None, fail=None):
+        self.user = SimpleNamespace(id=user_id, create_playlist=self.create_playlist)
+        self.request = SimpleNamespace(request=self._request)
+        self._add_payload = add_payload if add_payload is not None else {"addedItemIds": ["1", "2"]}
+        self._fail = fail  # 'create' | 'playlist' | 'add' | None
+        self.calls = []
+
+    def create_playlist(self, title, description=""):
+        self.calls.append(("create", title, description))
+        if self._fail == "create":
+            raise ConnectionError("tidal unreachable")
+        return FakePlaylistObj("pl9", title)
+
+    def playlist(self, playlist_id):
+        self.calls.append(("playlist", playlist_id))
+        if self._fail == "playlist":
+            raise ConnectionError("tidal unreachable")
+        return FakePlaylistObj(str(playlist_id), "Existing")
+
+    def _request(self, method, path, data=None, headers=None):
+        self.calls.append(("request", method, path, data, headers))
+        if self._fail == "add":
+            raise ConnectionError("tidal unreachable")
+        return FakeJsonResp(self._add_payload)
+
+
+class PlaylistWriteTests(unittest.TestCase):
+    def _store(self):
+        return TidalLibraryCache(db_path=pathlib.Path(tempfile.mkdtemp()) / "cache.sqlite")
+
+    def _patch_catalog(self, session, store):
+        manager = SimpleNamespace(session=lambda: session, last_user_id=lambda: "")
+        return (
+            mock.patch.object(auth, "tidalapi_available", return_value=True),
+            mock.patch.object(auth, "manager", manager),
+            mock.patch.object(catalog, "library_cache", store),
+        )
+
+    def test_create_playlist_with_tracks_sends_etag_and_invalidates_cache(self):
+        store = self._store()
+        store.put("42", "playlists", [{"id": "old"}])
+        session = FakeWriteSession()
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            result = catalog.create_playlist("  My Mix  ", "", ["1", "2"])
+        self.assertEqual(result["id"], "pl9")
+        self.assertEqual(result["name"], "My Mix")
+        self.assertEqual(session.calls[0], ("create", "My Mix", ""))
+        kind, method, path, data, headers = session.calls[1]
+        self.assertEqual((kind, method, path), ("request", "POST", "playlists/pl9/items"))
+        self.assertEqual(data["trackIds"], "1,2")
+        self.assertEqual(headers, {"If-None-Match": '"etag-1"'})
+        # The stale cached playlist list is dropped so the next load refreshes.
+        self.assertIsNone(store.get("42", "playlists"))
+
+    def test_create_playlist_without_tracks_skips_items_write(self):
+        store = self._store()
+        session = FakeWriteSession()
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            result = catalog.create_playlist("Empty Mix")
+        self.assertEqual(result["id"], "pl9")
+        self.assertEqual([c[0] for c in session.calls], ["create"])
+
+    def test_create_playlist_failure_raises_and_keeps_cache(self):
+        store = self._store()
+        store.put("42", "playlists", [{"id": "old"}])
+        session = FakeWriteSession(fail="create")
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            with self.assertRaises(auth.TidalAuthError):
+                catalog.create_playlist("My Mix")
+        self.assertEqual(store.get("42", "playlists"), [{"id": "old"}])
+
+    def test_add_playlist_tracks_success(self):
+        store = self._store()
+        store.put("42", "playlists", [{"id": "p1"}])
+        session = FakeWriteSession(add_payload={"addedItemIds": ["1", "2"]})
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            result = catalog.add_playlist_tracks("pl9", ["1", "2"])
+        self.assertEqual(result["playlist_id"], "pl9")
+        self.assertEqual(result["added_track_ids"], ["1", "2"])
+        self.assertEqual(session.calls[0], ("playlist", "pl9"))
+        self.assertEqual(session.calls[1][4], {"If-None-Match": '"etag-1"'})
+        self.assertIsNone(store.get("42", "playlists"))
+
+    def test_add_playlist_tracks_requires_ids(self):
+        store = self._store()
+        session = FakeWriteSession()
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            with self.assertRaises(auth.TidalAuthError):
+                catalog.add_playlist_tracks("pl9", [])
+
+    def test_add_playlist_tracks_failure_keeps_cache(self):
+        store = self._store()
+        store.put("42", "playlists", [{"id": "p1"}])
+        session = FakeWriteSession(fail="add")
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            with self.assertRaises(auth.TidalAuthError):
+                catalog.add_playlist_tracks("pl9", ["1"])
+        self.assertEqual(store.get("42", "playlists"), [{"id": "p1"}])
+
+
+class PlaylistWriteEndpointTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main_module.app)
+
+    class FakeWriteProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def create_playlist(self, title, description="", track_ids=None):
+            self.calls.append(("create", title, description, track_ids))
+            return {"id": "pl9", "name": title, "track_count": len(track_ids or []), "art_url": "", "description": ""}
+
+        async def add_playlist_tracks(self, playlist_id, track_ids):
+            self.calls.append(("add", playlist_id, track_ids))
+            return {"playlist_id": playlist_id, "added_track_ids": list(track_ids)}
+
+    def test_create_playlist_endpoint(self):
+        provider = self.FakeWriteProvider()
+        with mock.patch.object(main_module, "_streaming_provider", return_value=provider):
+            resp = self.client.post(
+                "/api/streaming/tidal/playlists/create",
+                json={"name": "My Mix", "track_ids": ["1", "2"]},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["name"], "My Mix")
+        self.assertEqual(provider.calls, [("create", "My Mix", "", ["1", "2"])])
+
+    def test_create_playlist_requires_name(self):
+        provider = self.FakeWriteProvider()
+        with mock.patch.object(main_module, "_streaming_provider", return_value=provider):
+            resp = self.client.post("/api/streaming/tidal/playlists/create", json={"track_ids": ["1"]})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(provider.calls, [])
+
+    def test_add_tracks_endpoint(self):
+        provider = self.FakeWriteProvider()
+        with mock.patch.object(main_module, "_streaming_provider", return_value=provider):
+            resp = self.client.post(
+                "/api/streaming/tidal/playlists/pl9/tracks",
+                json={"track_ids": ["1", "2"]},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(provider.calls, [("add", "pl9", ["1", "2"])])
+
+    def test_add_tracks_requires_ids(self):
+        provider = self.FakeWriteProvider()
+        with mock.patch.object(main_module, "_streaming_provider", return_value=provider):
+            resp = self.client.post("/api/streaming/tidal/playlists/pl9/tracks", json={"track_ids": []})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(provider.calls, [])
+
+    def test_write_error_maps_to_401(self):
+        class FailingProvider:
+            async def create_playlist(self, *args, **kwargs):
+                raise auth.TidalAuthError("TIDAL playlist creation failed: boom")
+
+        with mock.patch.object(main_module, "_streaming_provider", return_value=FailingProvider()):
+            resp = self.client.post("/api/streaming/tidal/playlists/create", json={"name": "X"})
+        self.assertEqual(resp.status_code, 401)
+
+
 if __name__ == "__main__":
     unittest.main()

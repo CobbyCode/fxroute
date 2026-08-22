@@ -71,7 +71,11 @@
             searchRequestId: 0,
             searchDebounceTimer: null,
             searchInFlight: false,
-            trackSelectionMode: false,
+            // Persistent playlist-build selection: tracks consciously added
+            // via the row + button. Survives navigation between search
+            // results, favorites and detail views; play and favorite actions
+            // never touch it. Saved as a new TIDAL playlist or added to an
+            // existing one via the save row.
             selectedTrackIds: new Set(),
             detailRequestId: 0,
             detailId: null,
@@ -1006,6 +1010,7 @@
                         '</div>' +
                     '</div>' +
                 '</div>' +
+                tidalPlaylistSaveRowHtml() +
                 '<div class="streaming-browse-body" id="tidal-browse-body"></div>' +
             '</div>';
         const actions = content.querySelector('.tidal-toolbar-actions');
@@ -1013,7 +1018,9 @@
         bindTidalSearchBar(content);
         bindTidalRefresh(content);
         bindViewModeToggle(content);
+        bindTidalPlaylistSaveRow(content);
         syncTidalViewModeToggle();
+        updateTidalPlaylistSaveRow();
         const input = content.querySelector('#tidal-search-input');
         if (input && state.tidal.searchExecuted) input.value = state.tidal.searchQuery;
         const tabs = content.querySelectorAll('.tidal-subbar .view-tab[data-browse]');
@@ -1093,8 +1100,6 @@
             state.tidal.searchExecuted = true;
             state.tidal.searchResults = null;
             state.tidal.searchInFlight = false;
-            state.tidal.trackSelectionMode = false;
-            state.tidal.selectedTrackIds.clear();
             const body = root.querySelector('#tidal-browse-body');
             if (body) body.innerHTML = contentState('loading', immediate ? 'Searching…' : 'Waiting to search…');
             if (immediate) {
@@ -1126,8 +1131,6 @@
         state.tidal.searchExecuted = false;
         state.tidal.searchResults = null;
         state.tidal.searchInFlight = false;
-        state.tidal.trackSelectionMode = false;
-        state.tidal.selectedTrackIds.clear();
         const input = document.getElementById('tidal-search-input');
         if (input) input.value = '';
     }
@@ -1190,8 +1193,6 @@
         const requestId = ++state.tidal.searchRequestId;
         state.tidal.searchResultType = type;
         state.tidal.searchInFlight = true;
-        state.tidal.trackSelectionMode = false;
-        state.tidal.selectedTrackIds.clear();
         body.innerHTML = contentState('loading', 'Searching…');
         try {
             const resp = await fetch('/api/streaming/tidal/search?q=' + encodeURIComponent(query) + '&types=' + encodeURIComponent(type) + '&limit=25');
@@ -1227,25 +1228,14 @@
         const typeButtons = TIDAL_SEARCH_TYPES.map((value) =>
             '<button type="button" class="view-tab' + (value === type ? ' is-active' : '') + '" id="tidal-search-type-' + value + '" data-search-type="' + value + '">' + TIDAL_SEARCH_TYPE_LABELS[value] + '</button>'
         ).join('');
-        const selectionControls = type === 'tracks'
-            ? '<div class="tidal-track-selection" id="tidal-track-selection-controls">' +
-                '<button type="button" class="btn-ghost" id="tidal-track-selection-toggle">Select</button>' +
-                (state.tidal.trackSelectionMode
-                    ? '<button type="button" class="btn-ghost" id="tidal-select-all">Select all</button>' +
-                      '<button type="button" class="btn-ghost" id="tidal-clear-selection">Clear</button>' +
-                      '<button type="button" class="btn-primary" id="tidal-play-selected"' + (state.tidal.selectedTrackIds.size ? '' : ' disabled') + '>Play selected</button>'
-                    : '') +
-              '</div>'
-            : '';
         container.innerHTML =
             '<div class="tidal-search-results-header">' +
                 '<h3 class="streaming-results-title">Search results for &quot;' + escapeHtml(state.tidal.searchQuery) + '&quot;</h3>' +
                 '<div class="view-tabs" id="tidal-search-result-types" aria-label="Search result type">' + typeButtons + '</div>' +
-                selectionControls +
             '</div>' +
             '<div class="streaming-results" id="tidal-search-items"></div>';
         const itemsContainer = container.querySelector('#tidal-search-items');
-        bindTidalSearchResultControls(container, items);
+        bindTidalSearchResultControls(container);
         if (!items.length) {
             itemsContainer.innerHTML = contentState('empty', 'No results.');
             return;
@@ -1257,39 +1247,10 @@
         itemsContainer.appendChild(list);
     }
 
-    function bindTidalSearchResultControls(container, items) {
+    function bindTidalSearchResultControls(container) {
         container.querySelectorAll('#tidal-search-result-types .view-tab').forEach((chipEl) => {
             chipEl.addEventListener('click', () => runTidalSearch(chipEl.dataset.searchType));
         });
-        if (state.tidal.searchResultType !== 'tracks') return;
-        const selectToggle = container.querySelector('#tidal-track-selection-toggle');
-        if (selectToggle) {
-            selectToggle.addEventListener('click', () => {
-                state.tidal.trackSelectionMode = true;
-                renderTidalSearchResults(container, state.tidal.searchResults || {});
-            });
-        }
-        const selectAll = container.querySelector('#tidal-select-all');
-        if (selectAll) {
-            selectAll.addEventListener('click', () => {
-                state.tidal.selectedTrackIds = new Set(items.map((item) => String(item.id)));
-                renderTidalSearchResults(container, state.tidal.searchResults || {});
-            });
-        }
-        const clear = container.querySelector('#tidal-clear-selection');
-        if (clear) {
-            clear.addEventListener('click', () => {
-                state.tidal.selectedTrackIds.clear();
-                renderTidalSearchResults(container, state.tidal.searchResults || {});
-            });
-        }
-        const playSelected = container.querySelector('#tidal-play-selected');
-        if (playSelected) {
-            playSelected.addEventListener('click', () => {
-                const selectedIds = items.map((item) => String(item.id)).filter((id) => state.tidal.selectedTrackIds.has(id));
-                if (selectedIds.length) void playTidalTracks(selectedIds, selectedIds[0]);
-            });
-        }
     }
 
     function renderTidalFavoriteResults(container, type, items) {
@@ -1306,9 +1267,10 @@
         if (type === 'artists') rememberTidalArtist(item);
         if (type === 'tracks') {
             const trackId = String(item.id);
-            li.className = 'streaming-result';
+            const isSelected = state.tidal.selectedTrackIds.has(trackId);
+            li.className = 'streaming-result' + (isSelected ? ' is-selected' : '');
+            li.setAttribute('data-track-id', trackId);
             li.innerHTML =
-                (state.tidal.trackSelectionMode ? '<input type="checkbox" class="tidal-track-select"' + (state.tidal.selectedTrackIds.has(trackId) ? ' checked' : '') + ' aria-label="Select track" />' : '') +
                 '<button type="button" class="streaming-result-play" title="Play">▶</button>' +
                 '<div class="track-thumb" aria-hidden="true">' + coverImg(item.art_url) + '</div>' +
                 '<div class="streaming-result-info">' +
@@ -1316,23 +1278,19 @@
                     '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
                 '</div>' +
                 '<div class="streaming-result-album">' + escapeHtml(item.album || '') + '</div>' +
+                tidalTrackAddButtonHtml(trackId, isSelected) +
                 favoriteButtonHtml('tracks', item.id) +
                 '<div class="streaming-result-duration">' + formatTime(item.duration) + '</div>';
             li.querySelector('.streaming-result-play').addEventListener('click', (event) => {
                 event.stopPropagation();
                 playTidalTracks(queueIds, trackId);
             });
-            if (state.tidal.trackSelectionMode) {
-                const select = li.querySelector('.tidal-track-select');
-                select.addEventListener('click', (event) => event.stopPropagation());
-                select.addEventListener('change', (event) => {
-                    const id = trackId;
-                    if (event.target.checked) state.tidal.selectedTrackIds.add(id);
-                    else state.tidal.selectedTrackIds.delete(id);
-                    renderTidalSearchResults(document.getElementById('tidal-browse-body'), state.tidal.searchResults || {});
-                });
-            }
-            li.addEventListener('click', () => playTidalTracks(queueIds, trackId));
+            const addBtn = li.querySelector('.streaming-add[data-streaming-add]');
+            if (addBtn) addBtn.addEventListener('click', (event) => toggleTidalPlaylistTrack(event, trackId));
+            li.addEventListener('click', (event) => {
+                if (event.target && event.target.closest('.streaming-add, .streaming-fav, .track-fav')) return;
+                playTidalTracks(queueIds, trackId);
+            });
             bindTidalFavoriteButtons(li);
         } else {
             // Albums / Artists / Playlists render as tiles that reuse the
@@ -1366,6 +1324,194 @@
             bindTidalFavoriteButtons(li);
         }
         return li;
+    }
+
+    // -- playlist-build selection (persistent + selection, shared save row) --
+    // One selection language across every TIDAL track surface (search results,
+    // favorites, album/playlist/artist details): the row + toggles the track
+    // in the playlist-build selection. Playback and favorite actions never
+    // touch it. The selection survives view navigation and is saved either as
+    // a new TIDAL playlist (name) or appended to an existing one.
+    function tidalTrackAddButtonHtml(trackId, isSelected) {
+        return '<button class="streaming-add' + (isSelected ? ' is-active' : '') + '" data-streaming-add="' + escapeHtml(trackId) + '" type="button"' +
+            ' aria-pressed="' + (isSelected ? 'true' : 'false') + '"' +
+            ' aria-label="' + (isSelected ? 'Remove track from playlist selection' : 'Add track to playlist selection') + '"' +
+            ' title="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + (isSelected ? '✓' : '+') + '</button>';
+    }
+
+    function toggleTidalPlaylistTrack(event, trackId) {
+        event.stopPropagation();
+        if (state.tidal.selectedTrackIds.has(trackId)) state.tidal.selectedTrackIds.delete(trackId);
+        else state.tidal.selectedTrackIds.add(trackId);
+        syncTidalTrackSelection();
+    }
+
+    function syncTidalTrackSelection() {
+        document.querySelectorAll('.streaming-add[data-streaming-add]').forEach((btn) => {
+            const active = state.tidal.selectedTrackIds.has(btn.dataset.streamingAdd);
+            btn.classList.toggle('is-active', active);
+            btn.textContent = active ? '✓' : '+';
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+            btn.setAttribute('aria-label', active ? 'Remove track from playlist selection' : 'Add track to playlist selection');
+            btn.title = active ? 'Remove from selection' : 'Add to selection';
+        });
+        document.querySelectorAll('.streaming-result[data-track-id]').forEach((row) => {
+            row.classList.toggle('is-selected', state.tidal.selectedTrackIds.has(row.dataset.trackId));
+        });
+        updateTidalPlaylistSaveRow();
+    }
+
+    function clearTidalPlaylistSelection() {
+        state.tidal.selectedTrackIds.clear();
+        const nameInput = document.getElementById('tidal-playlist-name');
+        if (nameInput) nameInput.value = '';
+        clearTidalPlaylistSaveError();
+        syncTidalTrackSelection();
+    }
+
+    function tidalPlaylistSaveRowHtml() {
+        return '<div class="playlist-save-row tidal-playlist-save-row hidden" id="tidal-playlist-save-row">' +
+            '<div class="playlist-save-controls">' +
+                '<input type="text" id="tidal-playlist-name" class="url-input" placeholder="New playlist name…" aria-label="New TIDAL playlist name" autocomplete="off" />' +
+                '<button id="tidal-save-playlist" class="btn-secondary" type="button">Save as new</button>' +
+                '<select id="tidal-playlist-target" class="url-input" aria-label="Add to existing TIDAL playlist">' +
+                    '<option value="">Add to existing playlist…</option>' +
+                '</select>' +
+                '<button id="tidal-add-to-playlist" class="btn-secondary" type="button">Add</button>' +
+                '<button id="tidal-cancel-playlist-selection" class="btn-secondary" type="button">Cancel</button>' +
+            '</div>' +
+            '<div class="tidal-playlist-save-error" id="tidal-playlist-save-error" hidden></div>' +
+        '</div>';
+    }
+
+    function setTidalPlaylistSaveError(message) {
+        const el = document.getElementById('tidal-playlist-save-error');
+        if (!el) return;
+        el.textContent = message || '';
+        el.hidden = !message;
+    }
+
+    function clearTidalPlaylistSaveError() {
+        setTidalPlaylistSaveError('');
+    }
+
+    function updateTidalPlaylistSaveRow() {
+        const row = document.getElementById('tidal-playlist-save-row');
+        if (!row) return;
+        const hasSelection = state.tidal.selectedTrackIds.size > 0;
+        row.classList.toggle('hidden', !hasSelection);
+        if (!hasSelection) clearTidalPlaylistSaveError();
+        if (hasSelection) void ensureTidalPlaylistTargetOptions();
+    }
+
+    function populateTidalPlaylistTarget(items) {
+        const select = document.getElementById('tidal-playlist-target');
+        if (!select) return;
+        const current = select.value;
+        const lists = Array.isArray(items) ? items : [];
+        select.innerHTML = '<option value="">Add to existing playlist…</option>' +
+            lists.map((item) => '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name || 'Playlist') + '</option>').join('');
+        if (current) select.value = current;
+    }
+
+    let tidalPlaylistTargetPromise = null;
+    async function ensureTidalPlaylistTargetOptions() {
+        if (tidalPlaylistTargetPromise) return tidalPlaylistTargetPromise;
+        const select = document.getElementById('tidal-playlist-target');
+        if (!select || (select.options && select.options.length > 1)) return;
+        tidalPlaylistTargetPromise = (async () => {
+            try {
+                const resp = await fetch('/api/streaming/tidal/playlists');
+                if (!resp.ok) return;
+                const items = await resp.json();
+                if (Array.isArray(items)) populateTidalPlaylistTarget(items);
+            } catch (e) { /* options stay minimal; new-playlist save still works */ }
+            finally { tidalPlaylistTargetPromise = null; }
+        })();
+        return tidalPlaylistTargetPromise;
+    }
+
+    function bindTidalPlaylistSaveRow(root) {
+        const row = root.querySelector('#tidal-playlist-save-row');
+        if (!row) return;
+        const nameInput = row.querySelector('#tidal-playlist-name');
+        const saveNew = row.querySelector('#tidal-save-playlist');
+        const target = row.querySelector('#tidal-playlist-target');
+        const addBtn = row.querySelector('#tidal-add-to-playlist');
+        const cancel = row.querySelector('#tidal-cancel-playlist-selection');
+        if (saveNew) saveNew.addEventListener('click', () => void saveNewTidalPlaylist(nameInput, saveNew));
+        if (addBtn) addBtn.addEventListener('click', () => void addTidalPlaylistTracks(target, addBtn));
+        if (cancel) cancel.addEventListener('click', () => { clearTidalPlaylistSelection(); showToast('TIDAL selection cleared', 'info'); });
+        if (nameInput) {
+            nameInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (saveNew) saveNew.click();
+                }
+            });
+        }
+    }
+
+    async function saveNewTidalPlaylist(nameInput, btn) {
+        const name = (nameInput?.value || '').trim();
+        const trackIds = Array.from(state.tidal.selectedTrackIds);
+        if (!name) { setTidalPlaylistSaveError('Enter a playlist name'); return; }
+        if (!trackIds.length) { setTidalPlaylistSaveError('Select at least one track with +'); return; }
+        btn.disabled = true;
+        try {
+            const resp = await fetch('/api/streaming/tidal/playlists/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, track_ids: trackIds }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || 'Failed to save TIDAL playlist');
+            clearTidalPlaylistSelection();
+            showToast('Saved: ' + (data.name || name), 'success');
+            void reloadTidalPlaylists();
+        } catch (err) {
+            setTidalPlaylistSaveError(friendlyError(err?.message || err));
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function addTidalPlaylistTracks(target, btn) {
+        const playlistId = target?.value || '';
+        const trackIds = Array.from(state.tidal.selectedTrackIds);
+        if (!playlistId) { setTidalPlaylistSaveError('Choose a TIDAL playlist'); return; }
+        if (!trackIds.length) { setTidalPlaylistSaveError('Select at least one track with +'); return; }
+        btn.disabled = true;
+        try {
+            const resp = await fetch('/api/streaming/tidal/playlists/' + encodeURIComponent(playlistId) + '/tracks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ track_ids: trackIds }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || 'Failed to add tracks to TIDAL playlist');
+            clearTidalPlaylistSelection();
+            const label = target.options?.[target.selectedIndex]?.textContent || 'playlist';
+            showToast('Added ' + trackIds.length + ' track' + (trackIds.length === 1 ? '' : 's') + ' to ' + label, 'success');
+            void reloadTidalPlaylists();
+        } catch (err) {
+            setTidalPlaylistSaveError(friendlyError(err?.message || err));
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function reloadTidalPlaylists() {
+        try {
+            const resp = await fetch('/api/streaming/tidal/playlists');
+            if (!resp.ok) return;
+            const items = await resp.json();
+            state.tidal.lastItems.playlists = Array.isArray(items) ? items : [];
+            populateTidalPlaylistTarget(state.tidal.lastItems.playlists);
+            if (!state.tidal.searchExecuted && state.tidal.browseCategory === 'playlists' && !isTidalDetailView()) {
+                renderTidalBrowseSection('playlists');
+            }
+        } catch (e) { /* keep the already-visible playlists */ }
     }
 
     function tidalCardArt(url, fallbackText) {
@@ -1744,6 +1890,7 @@
             results.innerHTML = contentState('empty', 'No playlists yet.');
             return;
         }
+        populateTidalPlaylistTarget(items);
         const list = document.createElement('ul');
         list.className = tidalLayoutClass('playlists');
         for (const item of items) {
@@ -1856,10 +2003,13 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
+                tidalPlaylistSaveRowHtml() +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteDetailButtons(content);
+        bindTidalPlaylistSaveRow(content);
+        updateTidalPlaylistSaveRow();
         loadTidalAlbum(content, requestId);
     }
 
@@ -1958,10 +2108,13 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
+                tidalPlaylistSaveRowHtml() +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteDetailButtons(content);
+        bindTidalPlaylistSaveRow(content);
+        updateTidalPlaylistSaveRow();
         loadTidalArtist(content, requestId);
     }
 
@@ -2252,10 +2405,13 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
+                tidalPlaylistSaveRowHtml() +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteDetailButtons(content);
+        bindTidalPlaylistSaveRow(content);
+        updateTidalPlaylistSaveRow();
         loadTidalPlaylistTracks(content, requestId);
     }
 
@@ -2309,21 +2465,29 @@
         list.className = 'streaming-results-list';
         items.forEach((item, index) => {
             const li = document.createElement('li');
-            li.className = 'streaming-result';
+            const trackId = String(item.id);
+            const isSelected = state.tidal.selectedTrackIds.has(trackId);
+            li.className = 'streaming-result' + (isSelected ? ' is-selected' : '');
+            li.setAttribute('data-track-id', trackId);
             li.innerHTML = trackRowHtml({
                 index: index + 1,
                 title: escapeHtml(item.title),
                 sub: escapeHtml(item.artist || ''),
                 thumb: tidalTrackThumbHtml(item.art_url),
+                selectionButton: tidalTrackAddButtonHtml(trackId, isSelected),
                 favoriteButton: favoriteButtonHtml('tracks', item.id, 'track-fav'),
                 duration: formatTime(item.duration),
             });
-            const trackId = String(item.id);
             li.querySelector('.track-play').addEventListener('click', (event) => {
                 event.stopPropagation();
                 playTidalTracks(ids, trackId);
             });
-            li.addEventListener('click', () => playTidalTracks(ids, trackId));
+            const addBtn = li.querySelector('.streaming-add[data-streaming-add]');
+            if (addBtn) addBtn.addEventListener('click', (event) => toggleTidalPlaylistTrack(event, trackId));
+            li.addEventListener('click', (event) => {
+                if (event.target && event.target.closest('.streaming-add, .streaming-fav, .track-fav')) return;
+                playTidalTracks(ids, trackId);
+            });
             bindTidalFavoriteButtons(li);
             list.appendChild(li);
         });

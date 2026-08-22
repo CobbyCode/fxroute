@@ -58,6 +58,12 @@ function makeEl() {
         setAttribute(name, value) { el[name] = value; },
         getAttribute(name) { return el[name] != null ? String(el[name]) : null; },
         querySelector(sel) {
+            // The + selection button is bound via li.querySelector in the
+            // production code; surface the same object querySelectorAll builds
+            // so the bound listener and the test click target match.
+            if (sel === '.streaming-add[data-streaming-add]') {
+                return el.querySelectorAll('.streaming-add[data-streaming-add]')[0];
+            }
             if (!childEls[sel]) childEls[sel] = makeEl();
             return childEls[sel];
         },
@@ -75,6 +81,16 @@ function makeEl() {
                     el._favBtn = btn;
                 }
                 return [el._favBtn];
+            }
+            if (sel === '.streaming-add[data-streaming-add]') {
+                if (!el._addBtn) {
+                    const m = el.innerHTML.match(/data-streaming-add="([^"]+)"/);
+                    const btn = makeEl();
+                    btn.className = 'streaming-add';
+                    btn.dataset.streamingAdd = m ? m[1] : '';
+                    el._addBtn = btn;
+                }
+                return [el._addBtn];
             }
             return [];
         },
@@ -180,6 +196,10 @@ function runStreaming(options = {}) {
     // Per-account cached snapshots (keyed by the ?user= query param);
     // ``tidalSnapshot`` serves one snapshot for any account.
     const tidalSnapshots = options.tidalSnapshots || (options.tidalSnapshot ? { '*': options.tidalSnapshot } : {});
+    // Playlist writes: a created playlist is appended to the playlists list
+    // (mirroring the backend cache invalidation + refetch); ``failPlaylistWrite``
+    // makes the write endpoints fail so the error path keeps the selection.
+    let createdPlaylist = null;
 
     const sandbox = {
         document,
@@ -203,8 +223,23 @@ function runStreaming(options = {}) {
                 const userMatch = u.match(/[?&]user=([^&]*)/);
                 const userId = userMatch ? decodeURIComponent(userMatch[1]) : '';
                 body = tidalSnapshots[userId] || tidalSnapshots['*'] || {};
+            } else if (u === '/api/streaming/tidal/playlists/create' && (opts && opts.method) === 'POST') {
+                if (options.failPlaylistWrite) {
+                    failed = true;
+                } else {
+                    const req = JSON.parse((opts && opts.body) || '{}');
+                    createdPlaylist = { id: 'pl-new', name: req.name || 'New Mix', art_url: '', track_count: (req.track_ids || []).length };
+                    body = createdPlaylist;
+                }
+            } else if (u === '/api/streaming/tidal/playlists/pl-1/tracks' && (opts && opts.method) === 'POST') {
+                if (options.failPlaylistWrite) {
+                    failed = true;
+                } else {
+                    const req = JSON.parse((opts && opts.body) || '{}');
+                    body = { playlist_id: 'pl-1', added_track_ids: req.track_ids || [] };
+                }
             } else if (u === '/api/streaming/tidal/playlists') {
-                body = [{ id: 'pl-1', name: 'Test Playlist', art_url: '', track_count: 2 }];
+                body = [{ id: 'pl-1', name: 'Test Playlist', art_url: '', track_count: 2 }].concat(createdPlaylist ? [createdPlaylist] : []);
             } else if (u === '/api/streaming/tidal/playlists/pl-1/tracks') {
                 body = [
                     { id: 'p1', title: 'Playlist One', artist: 'Found Artist', duration: 10 },
@@ -271,11 +306,11 @@ function runStreaming(options = {}) {
         escapeHtml: (v) => String(v),
         formatTime: () => '0:00',
         formatRateKhz: (v) => String(v),
-        trackRowHtml: ({ index, title, sub, favoriteButton, duration }) =>
+        trackRowHtml: ({ index, title, sub, favoriteButton, selectionButton, duration }) =>
             `<span class="track-index">${index}</span><button class="track-play">▶</button>` +
             `<div class="track-info"><div class="track-title">${title}</div>` +
             (sub ? `<div class="track-sub">${sub}</div>` : '') + `</div>` +
-            favoriteButton + (duration ? `<span class="track-duration">${duration}</span>` : ''),
+            (selectionButton || '') + favoriteButton + (duration ? `<span class="track-duration">${duration}</span>` : ''),
         spotifyCommand: (...a) => { spotifyCommandCalls.push(a); return Promise.resolve(); },
         spotifySeek: (...a) => { spotifySeekCalls.push(a); return Promise.resolve(); },
     };
@@ -476,18 +511,21 @@ async function main() {
         source: 'tidal', track_id: 's2', queue_track_ids: ['s1', 's2'],
     }, 'search track playback must queue every visible search track');
 
-    // Selection mode is opt-in and can start a queue containing only checked tracks.
-    const selectToggle = body.querySelector('#tidal-track-selection-toggle');
-    selectToggle.click();
-    const selectedRows = createdEls.filter((el) => el.className === 'streaming-result').slice(-2);
-    const firstCheckbox = selectedRows[0].querySelector('.tidal-track-select');
-    firstCheckbox.dispatch('change', { target: { checked: true } });
-    body.querySelector('#tidal-play-selected').click();
+    // The + button collects a persistent playlist selection without playing;
+    // a later plain row click still starts playback with the visible queue.
+    fetchCalls.length = 0;
+    const firstRow = createdEls.filter((el) => el.className === 'streaming-result')[0];
+    firstRow.querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
+    assert.equal(fetchCalls.filter((c) => c.url === '/api/play').length, 0,
+        'the + button must never start playback');
+    assert.ok(!sandbox.document.getElementById('tidal-playlist-save-row').classList.contains('hidden'),
+        'the + button must reveal the playlist save row');
+    firstRow.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const selectionPlayCalls = fetchCalls.filter((c) => c.url === '/api/play');
     assert.deepEqual(JSON.parse(selectionPlayCalls.at(-1).opts.body), {
-        source: 'tidal', track_id: 's1', queue_track_ids: ['s1'],
-    }, 'Play selected must queue only checked search tracks');
+        source: 'tidal', track_id: 's1', queue_track_ids: ['s1', 's2'],
+    }, 'a plain row click must still play with the full visible queue');
 
     // Switching result types reuses the executed query without a second Search click.
     for (const type of ['artists', 'tracks', 'albums', 'playlists']) {
@@ -911,6 +949,197 @@ async function main() {
     // Account B has no cache yet: the live favorites path renders its state.
     assert.ok(sandbox.document.getElementById('tidal-fav-results').innerHTML.includes('No favorites yet.'),
         'account B with no cache must fall back to the live favorites state');
+}
+
+// --- 14. + selection persists across surfaces; play/favorite never touch it -
+
+{
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming({
+        tidalUser: '42',
+        tidalFavoriteTracks: [{ id: 's2', title: 'Fav Song', artist: 'Fav Artist', album: 'Fav Album', art_url: '', duration: 10 }],
+    });
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0, user: { id: '42' } };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const content = shells.tidal.querySelector('.streaming-content');
+    const saveRow = () => sandbox.document.getElementById('tidal-playlist-save-row');
+    const trackRows = () => createdEls.filter((el) => el.className === 'streaming-result' || el.className.startsWith('streaming-result '));
+
+    // Favorites -> Tracks: select s2 with the row +.
+    content.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'tracks').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(trackRows().length, 1, 'favorites tracks must render one row');
+    const favRow = trackRows().at(-1);
+    assert.ok(favRow.innerHTML.includes('aria-pressed="false"'), 'unselected rows must show an inactive +');
+    favRow.querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
+    assert.ok(!saveRow().classList.contains('hidden'), 'a + click must reveal the playlist save row');
+
+    // Playback does not touch the selection.
+    fetchCalls.length = 0;
+    favRow.querySelector('.streaming-result-play').click();
+    assert.ok(fetchCalls.some((c) => c.url === '/api/play'), 'the row play button must dispatch playback');
+    assert.ok(!saveRow().classList.contains('hidden'), 'playback must never clear the playlist selection');
+
+    // Favoriting does not touch the selection.
+    fetchCalls.length = 0;
+    favRow.querySelectorAll('.streaming-fav, .track-fav')[0].click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/tracks/s2/favorite'),
+        'the row heart must dispatch the favorite write-back');
+    assert.ok(!saveRow().classList.contains('hidden'), 'favoriting must never clear the playlist selection');
+
+    // Search results: the same + language, selection carried over (s2 active).
+    const rowBase = trackRows().length;
+    const input = content.querySelector('#tidal-search-input');
+    input.value = 'found';
+    input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const searchRows = trackRows().slice(rowBase);
+    assert.equal(searchRows.length, 2, 'search must render two track rows');
+    assert.ok(searchRows[0].innerHTML.includes('data-streaming-add="s1"') && !searchRows[0].innerHTML.includes('aria-pressed="true"'),
+        'the newly-searched s1 row must render unselected');
+    assert.ok(searchRows[1].innerHTML.includes('data-streaming-add="s2"') && searchRows[1].innerHTML.includes('aria-pressed="true"'),
+        'the s2 selection must survive the view switch and render active');
+    searchRows[0].querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
+    assert.ok(!saveRow().classList.contains('hidden'), 'adding s1 must keep the save row visible');
+
+    // Browse-tab navigation (back to favorites) keeps the selection too.
+    const navBase = trackRows().length;
+    content.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'tracks').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(trackRows().slice(navBase).at(-1).innerHTML.includes('aria-pressed="true"'),
+        'the selection must survive browse-tab navigation');
+}
+
+// --- 15. save as a new TIDAL playlist: exact selection, then cleanup --------
+
+{
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming({
+        tidalUser: '42',
+        tidalFavoriteTracks: [{ id: 's2', title: 'Fav Song', artist: 'Fav Artist', album: 'Fav Album', art_url: '', duration: 10 }],
+    });
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0, user: { id: '42' } };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const content = shells.tidal.querySelector('.streaming-content');
+    const saveRow = () => sandbox.document.getElementById('tidal-playlist-save-row');
+    const trackRows = () => createdEls.filter((el) => el.className === 'streaming-result' || el.className.startsWith('streaming-result '));
+
+    // Select s2 in favorites, then s1 in search, then remove s1 again in the
+    // album detail (toggle-off) — the save must contain exactly s2.
+    content.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'tracks').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    trackRows()[0].querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
+    const input = content.querySelector('#tidal-search-input');
+    input.value = 'found';
+    input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    trackRows().find((row) => row.innerHTML.includes('data-streaming-add="s1"')).querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
+    // Album detail: the same + renders inside the shared track row.
+    sandbox.document.getElementById('tidal-browse-body').querySelector('#tidal-search-type-albums').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    createdEls.filter((el) => el.className === 'album-card').at(-1).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const detailRow = createdEls
+        .filter((el) => (el.className === 'streaming-result' || el.className.startsWith('streaming-result ')) && el.innerHTML.includes('data-streaming-add="s1"'))
+        .at(-1);
+    assert.ok(detailRow && detailRow.innerHTML.includes('aria-pressed="true"'),
+        'the album detail row must render the existing s1 selection active');
+    detailRow.querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
+
+    // Save as a new playlist: exactly the remaining selection is sent.
+    fetchCalls.length = 0;
+    const saveControls = content.querySelector('#tidal-playlist-save-row');
+    const nameInput = saveControls.querySelector('#tidal-playlist-name');
+    nameInput.value = 'Test Mix';
+    saveControls.querySelector('#tidal-save-playlist').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const createCall = fetchCalls.find((c) => c.url === '/api/streaming/tidal/playlists/create');
+    assert.ok(createCall, 'save-as-new must POST to the create endpoint');
+    assert.deepEqual(JSON.parse(createCall.opts.body),
+        { name: 'Test Mix', track_ids: ['s2'] },
+        'the created playlist must contain exactly the selected tracks');
+    assert.ok(saveRow().classList.contains('hidden'), 'a successful save must clear the selection and hide the save row');
+    assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/playlists' && !c.opts.method),
+        'a successful save must refetch the playlists list');
+
+    // The new playlist appears in the Playlists section.
+    content.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'playlists').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(createdEls.some((el) => el.className === 'album-card' && el.innerHTML.includes('Test Mix')),
+        'the freshly created playlist must be visible in the Playlists section');
+}
+
+// --- 16. add the selection to an existing TIDAL playlist --------------------
+
+{
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming({ tidalUser: '42' });
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0, user: { id: '42' } };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const content = shells.tidal.querySelector('.streaming-content');
+    const saveRow = () => sandbox.document.getElementById('tidal-playlist-save-row');
+    const trackRows = () => createdEls.filter((el) => el.className === 'streaming-result' || el.className.startsWith('streaming-result '));
+
+    const input = content.querySelector('#tidal-search-input');
+    input.value = 'found';
+    input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    trackRows().find((row) => row.innerHTML.includes('data-streaming-add="s1"')).querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
+
+    fetchCalls.length = 0;
+    const saveControls = content.querySelector('#tidal-playlist-save-row');
+    const target = saveControls.querySelector('#tidal-playlist-target');
+    target.value = 'pl-1';
+    target.options = [{ textContent: 'Test Playlist' }];
+    target.selectedIndex = 0;
+    saveControls.querySelector('#tidal-add-to-playlist').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const addCall = fetchCalls.find((c) => c.url === '/api/streaming/tidal/playlists/pl-1/tracks' && c.opts.method === 'POST');
+    assert.ok(addCall, 'add-to-playlist must POST to the playlist tracks endpoint');
+    assert.deepEqual(JSON.parse(addCall.opts.body), { track_ids: ['s1'] },
+        'add-to-playlist must send exactly the selected tracks');
+    assert.ok(saveRow().classList.contains('hidden'), 'a successful add must clear the selection and hide the save row');
+}
+
+// --- 17. failed write keeps the selection and the entered name -------------
+
+{
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming({ tidalUser: '42', failPlaylistWrite: true });
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0, user: { id: '42' } };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const content = shells.tidal.querySelector('.streaming-content');
+    const saveRow = () => sandbox.document.getElementById('tidal-playlist-save-row');
+    const trackRows = () => createdEls.filter((el) => el.className === 'streaming-result' || el.className.startsWith('streaming-result '));
+
+    const input = content.querySelector('#tidal-search-input');
+    input.value = 'found';
+    input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    trackRows()[0].querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
+
+    fetchCalls.length = 0;
+    const saveControls = content.querySelector('#tidal-playlist-save-row');
+    const nameInput = saveControls.querySelector('#tidal-playlist-name');
+    nameInput.value = 'Keep Mix';
+    saveControls.querySelector('#tidal-save-playlist').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/playlists/create'),
+        'the failed save must still attempt the create write');
+    assert.ok(!saveRow().classList.contains('hidden'), 'a failed save must keep the selection and the save row');
+    assert.equal(nameInput.value, 'Keep Mix', 'a failed save must keep the entered playlist name');
+    const errorEl = sandbox.document.getElementById('tidal-playlist-save-error');
+    assert.ok(errorEl && errorEl.hidden === false && errorEl.textContent,
+        'a failed save must surface an understandable error state');
 }
 
 console.log('PASS  scripts/test_streaming_ui_actions.js');

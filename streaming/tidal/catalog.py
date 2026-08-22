@@ -598,3 +598,72 @@ def playlist_tracks(playlist_id: str) -> list[dict]:
     except Exception as exc:  # noqa: BLE001
         raise auth.TidalAuthError(f"TIDAL playlist {playlist_id} lookup failed: {exc}") from exc
     return [normalize_track(t) for t in tracks]
+
+
+def create_playlist(title: str, description: str = "", track_ids: list[str] | None = None) -> dict:
+    """Create a new TIDAL playlist (v2 my-collection API, live-verified).
+
+    ``track_ids`` are added right after creation via the same v1 items write
+    used by :func:`add_playlist_tracks` (ETag included).  The created playlist
+    is normalized like every other playlist payload; the cached playlist list
+    is dropped so the next load reflects the new entry.
+    """
+    _require_tidalapi()
+    session = _session()
+    user_id = _cache_user_id(session)
+    try:
+        playlist = session.user.create_playlist(str(title).strip(), str(description or ""))
+    except Exception as exc:  # noqa: BLE001
+        raise auth.TidalAuthError(f"TIDAL playlist creation failed: {exc}") from exc
+    ids = [str(i) for i in (track_ids or []) if str(i).strip()]
+    if ids:
+        _add_items(session, playlist, ids)
+    library_cache.delete(user_id, "playlists")
+    return normalize_playlist(playlist)
+
+
+def _add_items(session: Any, playlist: Any, track_ids: list[str]) -> list[str]:
+    """Append tracks to a playlist via the v1 items endpoint (live-verified).
+
+    The v1 write requires the playlist ETag as ``If-None-Match`` (optimistic
+    concurrency; without it the API answers 412).  Returns the ids TIDAL
+    confirmed as added (``addedItemIds``).
+    """
+    etag = getattr(playlist, "_etag", None)
+    headers = {"If-None-Match": etag} if etag else None
+    response = session.request.request(
+        "POST",
+        "playlists/%s/items" % getattr(playlist, "id", ""),
+        data={
+            "onArtifactNotFound": "SKIP",
+            "onDupes": "SKIP",
+            "trackIds": ",".join(track_ids),
+        },
+        headers=headers,
+    )
+    payload = response.json() if response is not None else {}
+    return [str(i) for i in (payload.get("addedItemIds") or [])]
+
+
+def add_playlist_tracks(playlist_id: str, track_ids: list[str]) -> dict:
+    """Add tracks to an existing TIDAL playlist (v1 items endpoint, live-verified).
+
+    The cached playlist list is dropped afterwards so the next load reflects
+    the updated track counts.
+    """
+    _require_tidalapi()
+    session = _session()
+    user_id = _cache_user_id(session)
+    ids = [str(i) for i in track_ids if str(i).strip()]
+    if not ids:
+        raise auth.TidalAuthError("TIDAL playlist add requires at least one track id")
+    try:
+        playlist = session.playlist(str(playlist_id))
+        added = _add_items(session, playlist, ids)
+    except Exception as exc:  # noqa: BLE001
+        raise auth.TidalAuthError(f"TIDAL playlist update failed: {exc}") from exc
+    library_cache.delete(user_id, "playlists")
+    return {
+        "playlist_id": str(playlist_id),
+        "added_track_ids": added,
+    }

@@ -5306,6 +5306,41 @@ async def api_streaming_provider_playlist_favorite(provider_id: str, playlist_id
         raise _tidal_http_error(exc) from exc
 
 
+@app.post("/api/streaming/{provider_id}/playlists/create")
+async def api_streaming_provider_create_playlist(provider_id: str, request: Request):
+    """Create a TIDAL playlist, optionally seeded with the given tracks."""
+    fn = _provider_catalog_method(provider_id, "create_playlist")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = str(body.get("name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="playlist name is required")
+    track_ids = [str(i) for i in (body.get("track_ids") or []) if str(i).strip()]
+    try:
+        return await fn(name, str(body.get("description", "")), track_ids)
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.post("/api/streaming/{provider_id}/playlists/{playlist_id}/tracks")
+async def api_streaming_provider_add_playlist_tracks(provider_id: str, playlist_id: str, request: Request):
+    """Add tracks to an existing TIDAL playlist."""
+    fn = _provider_catalog_method(provider_id, "add_playlist_tracks")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    track_ids = [str(i) for i in (body.get("track_ids") or []) if str(i).strip()]
+    if not track_ids:
+        raise HTTPException(status_code=400, detail="track_ids is required")
+    try:
+        return await fn(playlist_id, track_ids)
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
 @app.post("/api/streaming/tidal/auth/device")
 async def api_tidal_start_device_login():
     provider = _streaming_provider("tidal")

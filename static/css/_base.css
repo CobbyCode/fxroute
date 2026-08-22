@@ -147,6 +147,8 @@ body {
 .track-row:hover,
 .streaming-result:hover,
 .album-detail-tracks .track-item:hover{background:var(--bg-hover);border-color:var(--border-strong)}
+/* Selected TIDAL rows mirror the library .track-item.selected highlight. */
+.streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,255,.08)}
 .track-play,
 .streaming-result-play{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;justify-content:center;transition:color 0.12s,border-color 0.12s,background 0.12s}
 .track-play:hover,

@@ -233,20 +233,29 @@ assert.ok(tabMinHeight >= 36 && tabMinHeight <= 40,
 assert.ok(!viewTabCss.includes('999px') && viewTabCss.includes('var(--radius-sm)'),
     'the shared view-tab must use the standard radius, not a pill shape');
 
-// Track search results are a temporary queue, while playlist/detail queues keep
-// their existing ids path. Selection controls are opt-in and disappear from the
-// normal result presentation.
+// Track search results are a temporary queue, while the row + builds a
+// persistent playlist selection (saved as a new TIDAL playlist or appended to
+// an existing one). Playback and favorite actions never touch the selection,
+// and the old opt-in "Play selected" placeholder mode is gone.
 assert.ok(js.includes("const queueIds = type === 'tracks' ? items.map((item) => String(item.id)).filter(Boolean) : [];"),
     'track search results must build a queue from all displayed tracks');
 assert.ok(js.includes('playTidalTracks(queueIds, trackId)'),
     'a track search click must start the complete search-results queue');
-assert.ok(js.includes('tidal-track-selection-toggle') && js.includes('tidal-select-all') &&
-    js.includes('tidal-clear-selection') && js.includes('tidal-play-selected'),
-    'track selection mode must expose Select all, Clear and Play selected');
-assert.ok(js.includes('tidal-track-select'),
-    'track checkboxes must be scoped to the opt-in selection mode');
-assert.ok(js.includes('const selectedIds = items.map((item) => String(item.id)).filter((id) => state.tidal.selectedTrackIds.has(id))'),
-    'Play selected must create a queue only from checked search tracks');
+assert.ok(!js.includes('tidal-track-selection-toggle') && !js.includes('tidal-play-selected') &&
+    !js.includes('tidal-select-all') && !js.includes('tidal-track-select'),
+    'the old opt-in Select/Play-selected placeholder mode must be gone');
+assert.ok(js.includes('tidalTrackAddButtonHtml') && js.includes('data-streaming-add'),
+    'every TIDAL track row must expose the persistent + playlist-selection button');
+assert.ok(js.includes('selectedTrackIds') && js.includes('syncTidalTrackSelection'),
+    'the + selection must keep one shared cross-view selection state');
+assert.ok(js.includes("event.target && event.target.closest('.streaming-add, .streaming-fav, .track-fav')"),
+    'row clicks must skip the + and heart buttons instead of playing');
+assert.ok(js.includes('tidal-playlist-save-row') && js.includes('tidal-save-playlist') &&
+    js.includes('tidal-playlist-target') && js.includes('tidal-add-to-playlist'),
+    'the shared save row must offer new-playlist save and add-to-existing');
+assert.ok(js.includes('/api/streaming/tidal/playlists/create') &&
+    js.includes("'/api/streaming/tidal/playlists/' + encodeURIComponent(playlistId) + '/tracks'"),
+    'the save actions must write through the TIDAL playlist endpoints');
 const tidalSearchRender = extractFunction(js, 'renderTidalSearchResults');
 assert.ok(tidalSearchRender.includes('Search results for'),
     'search results must have a distinct heading');
@@ -286,10 +295,10 @@ assert.ok(js.includes('playTidalTracks(ids, ids[0])'),
     'Play playlist must start the whole queue at track 1');
 assert.ok(js.includes('queue_track_ids: trackIds'),
     'playback must hand the full queue to /api/play');
-assert.ok(js.includes('trackSelectionMode'),
-    'Tidal search tracks must have an optional selection mode');
-assert.ok(js.includes('Select all') && js.includes('Clear') && js.includes('Play selected'),
-    'selection controls must be available after activating selection mode');
+assert.ok(!js.includes('trackSelectionMode'),
+    'the old opt-in selection mode must be gone (the + button is always present)');
+assert.ok(js.includes('tidalTrackAddButtonHtml'),
+    'TIDAL track rows must always expose the + playlist-selection button');
 
 // Catalog providers must not render a second in-tab now-playing card: the
 // global footer is the authoritative player, so the card stays hidden.
