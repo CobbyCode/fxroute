@@ -1777,32 +1777,16 @@
 
 }
 
-/* Detail heroes: a balanced two-column composition for tablets. The cover
-   keeps its visual weight while the metadata gets a full-width reading lane. */
+/* Detail heroes keep the shared single-row composition on tablets; only the
+   cover column narrows to preserve the available reading width. */
 @media (min-width: 601px) and (max-width: 1099px) {
     .album-detail--hero .detail-hero-header,
     .streaming-detail--hero .detail-hero-header {
-        grid-template-columns: minmax(170px, 24vw) minmax(0, 1fr);
-        grid-template-areas:
-            "cover back"
-            "cover meta";
-        align-items: start;
+        grid-template-columns: minmax(170px, 24vw) minmax(0, 1fr) auto;
+        grid-template-areas: "cover meta back";
         gap: 0.75rem 1.1rem;
         min-height: 0;
         padding: 1rem;
-    }
-    .album-detail--hero .detail-hero-header .detail-hero-cover,
-    .streaming-detail--hero .detail-hero-header .detail-hero-cover {
-        align-self: start;
-    }
-    .album-detail--hero .detail-hero-meta,
-    .streaming-detail--hero .detail-hero-meta {
-        align-self: end;
-        padding: 0.7rem 0 0.2rem;
-    }
-    .album-detail--hero .detail-hero-title,
-    .streaming-detail--hero .detail-hero-title {
-        font-size: clamp(1.45rem, 2.8vw, 2.15rem);
     }
 }
 
@@ -1812,7 +1796,6 @@
 @media (min-width: 601px) {
     .album-detail--hero .detail-hero-meta,
     .streaming-detail--hero .detail-hero-meta {
-        align-self: center;
         transform: translateY(calc(0px - clamp(0.5rem, 1.2vw, 0.9rem)));
     }
     .album-detail--hero .detail-hero-title-row,
@@ -1828,13 +1811,6 @@
     .streaming-detail--hero .album-favorite-toggle {
         align-self: flex-start;
         margin-top: 0.15rem;
-    }
-}
-
-@media (min-width: 601px) and (max-width: 1099px) {
-    .album-detail--hero .detail-hero-meta,
-    .streaming-detail--hero .detail-hero-meta {
-        transform: translateY(calc(0px - clamp(1rem, 2.4vw, 1.6rem)));
     }
 }
 
@@ -1878,7 +1854,7 @@
     }
     .album-detail--hero .detail-hero-title,
     .streaming-detail--hero .detail-hero-title {
-        font-size: clamp(1.4rem, 6.5vw, 1.9rem);
+        font-size: clamp(1.3rem, 6.2vw, 1.8rem);
     }
     .album-detail--hero .detail-hero-header .album-detail-back,
     .streaming-detail--hero .detail-hero-header .album-detail-back {

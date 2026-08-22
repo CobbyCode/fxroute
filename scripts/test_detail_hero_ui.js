@@ -97,18 +97,20 @@ assert.ok(css.includes('@media (min-width: 601px) and (max-width: 1099px)'),
     'detail heroes must define a tablet composition');
 assert.ok(css.includes('grid-template-columns: clamp(200px, 22vw, 280px)'),
     'desktop detail heroes must use a restrained cover column');
-assert.ok(css.includes('font-size: clamp(1.55rem, 2.55vw, 2.75rem)'),
-    'desktop detail titles must use a restrained scale');
-assert.ok(css.includes('grid-template-columns: minmax(170px, 24vw) minmax(0, 1fr)'),
-    'tablet detail heroes must use a narrower cover column');
-assert.ok(css.includes('font-size: clamp(1.45rem, 2.8vw, 2.15rem)'),
-    'tablet detail titles must use a slightly smaller scale');
+assert.ok(css.includes('font-size: clamp(1.4rem, 2.4vw, 2.6rem)'),
+    'larger detail titles must use one restrained shared scale');
+assert.ok(css.includes('grid-template-columns: minmax(170px, 24vw) minmax(0, 1fr) auto'),
+    'tablet detail heroes must preserve the shared three-column composition');
+assert.ok(css.includes('grid-template-areas: "cover meta back"'),
+    'tablet detail heroes must keep metadata and back action on one grid row');
+assert.ok(!css.includes('"cover back"'),
+    'tablet detail heroes must not split the header into separate back and metadata rows');
 assert.ok(css.includes('width: min(62vw, 220px)'),
     'phone detail covers must stay prominent without dominating the hero');
-assert.ok(css.includes('font-size: clamp(1.4rem, 6.5vw, 1.9rem)'),
+assert.ok(css.includes('font-size: clamp(1.3rem, 6.2vw, 1.8rem)'),
     'phone detail titles must use a smaller scale than tablets');
-assert.ok(css.includes('transform: translateY(calc(0px - clamp(1rem, 2.4vw, 1.6rem)))'),
-    'tablet detail metadata must sit noticeably higher beside the cover');
+assert.ok(!css.includes('clamp(1rem, 2.4vw, 1.6rem)'),
+    'tablet detail metadata must not rely on a special expansion offset');
 assert.ok(css.includes('transform: translateY(calc(0px - clamp(0.5rem, 1.2vw, 0.9rem)))'),
     'larger detail heroes must lift the metadata block without pinning it to the top');
 assert.ok(css.includes('width: fit-content;') && css.includes('flex: 0 1 auto;'),

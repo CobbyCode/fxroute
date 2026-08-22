@@ -398,7 +398,7 @@
     display: grid;
     grid-template-columns: clamp(200px, 22vw, 280px) minmax(0, 1fr) auto;
     grid-template-areas: "cover meta back";
-    align-items: end;
+    align-items: center;
     gap: clamp(1.1rem, 2.4vw, 2.4rem);
     min-height: clamp(280px, 24vw, 360px);
     padding: clamp(1rem, 2.2vw, 2rem);
@@ -462,7 +462,7 @@
     height: auto;
     aspect-ratio: 1 / 1;
     min-width: 0;
-    align-self: end;
+    align-self: center;
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 20px;
@@ -503,7 +503,7 @@
 .album-detail--hero .detail-hero-meta,
 .streaming-detail--hero .detail-hero-meta {
     grid-area: meta;
-    align-self: end;
+    align-self: center;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -525,7 +525,7 @@
     flex: 1 1 auto;
     min-width: 0;
     color: var(--text-primary);
-    font-size: clamp(1.55rem, 2.55vw, 2.75rem);
+    font-size: clamp(1.4rem, 2.4vw, 2.6rem);
     font-weight: 720;
     line-height: 1.08;
     letter-spacing: -0.045em;
