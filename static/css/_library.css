@@ -804,6 +804,31 @@
     opacity: 1;
 }
 
+/* Small square album-cover thumbnail on the left of a track row, shared
+   with the streaming track rows. Keeps the compact row height; falls back
+   to the neutral note-glyph placeholder when there is no artwork. */
+.track-thumb {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 auto;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--bg-elevated);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.track-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.track-thumb:empty {
+    background: linear-gradient(135deg, var(--bg-elevated), var(--bg-hover));
+}
+.track-thumb:empty::after {
+    content: '♫';
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    opacity: 0.55;
+}
+
 /* ============================================================
    Download / import shared
    ============================================================ */

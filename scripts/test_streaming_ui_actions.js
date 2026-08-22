@@ -366,8 +366,8 @@ async function main() {
     tabs.find((t) => t.dataset.browse === 'playlists').click();
     // renderTidalPlaylists fetches asynchronously; let the microtasks run.
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const playlistRow = createdEls.find((el) => el.className === 'streaming-result');
-    assert.ok(playlistRow, 'a playlist row must be created for the playlists tab');
+    const playlistRow = createdEls.find((el) => el.className === 'album-card');
+    assert.ok(playlistRow, 'a playlist tile must be created for the playlists tab');
     playlistRow.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(content.innerHTML.includes('tidal-detail'), 'playlist detail view must render');
@@ -472,7 +472,8 @@ async function main() {
     // Returning from a detail opened by search restores the executed search view.
     body.querySelector('#tidal-search-type-albums').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
+    // Album search results render as album-card tiles.
+    createdEls.filter((el) => el.className === 'album-card').at(-1).click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     content.querySelector('#tidal-detail-back').click();
     assert.ok(body.innerHTML.includes('Search results for'),
@@ -565,7 +566,8 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 0));
     body.querySelector('#tidal-search-type-artists').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
+    // Artists render as album-card tiles (not streaming-result rows).
+    createdEls.filter((el) => el.className === 'album-card').at(-1).click();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/artists/a1'),
@@ -579,18 +581,18 @@ async function main() {
     assert.ok(headings.some((el) => el.textContent === 'Albums'),
         'artist detail must list albums');
 
-    // Track click from the artist detail uses the existing queue logic (the
-    // album row is rendered last, so the top track is the second-to-last row).
-    createdEls.filter((el) => el.className === 'streaming-result').at(-2).click();
+    // Track click from the artist detail: top tracks are streaming-result rows;
+    // the single top track is the last such row.
+    createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const artistTrackPlay = fetchCalls.filter((c) => c.url === '/api/play').at(-1);
     assert.deepEqual(JSON.parse(artistTrackPlay.opts.body), {
         source: 'tidal', track_id: 's1', queue_track_ids: ['s1'],
     }, 'artist top-track click must play through the native queue');
 
-    // Album click from the artist detail opens the existing album detail
-    // (the album row is the last row rendered after the top tracks).
-    const albumRow = createdEls.filter((el) => el.className === 'streaming-result').at(-1);
+    // Album click from the artist detail opens the existing album detail.
+    // Albums render as album-card tiles after the top-track rows.
+    const albumRow = createdEls.filter((el) => el.className === 'album-card').at(-1);
     albumRow.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/albums/al1'),
@@ -622,7 +624,8 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 0));
     body.querySelector('#tidal-search-type-artists').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
+    // Artist search results render as album-card tiles.
+    createdEls.filter((el) => el.className === 'album-card').at(-1).click();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Back from the artist returns exactly to the executed search results.
@@ -703,7 +706,8 @@ async function main() {
     const favContent = favRun.shells.tidal.querySelector('.streaming-content');
     favContent.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'artists').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    favRun.createdEls.filter((el) => el.className === 'streaming-result').at(-1).click();
+    // Artists favorites render as album-card tiles.
+    favRun.createdEls.filter((el) => el.className === 'album-card').at(-1).click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(favRun.fetchCalls.some((c) => c.url === '/api/streaming/tidal/artists/a1'),
         'clicking a favorited artist must open the same artist detail');
@@ -733,9 +737,10 @@ async function main() {
     body.querySelector('#tidal-search-type-artists').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const artistRow = createdEls.filter((el) => el.className === 'streaming-result').at(-1);
+    // Artist search results render as album-card tiles.
+    const artistRow = createdEls.filter((el) => el.className === 'album-card').at(-1);
     const heart = artistRow.querySelectorAll('.streaming-fav, .track-fav')[0];
-    assert.ok(heart, 'artist rows must render a favorite heart');
+    assert.ok(heart, 'artist tiles must render a favorite heart');
     assert.equal(heart.dataset.favType, 'artists', 'the artist heart must carry the artists favorite type');
     assert.equal(heart.dataset.favId, 'a1', 'the artist heart must carry the artist id');
 
@@ -763,9 +768,9 @@ async function main() {
     const favContent = favRun.shells.tidal.querySelector('.streaming-content');
     favContent.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'artists').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const favRow = favRun.createdEls.filter((el) => el.className === 'streaming-result').at(-1);
+    const favRow = favRun.createdEls.filter((el) => el.className === 'album-card').at(-1);
     const favHeart = favRow.querySelectorAll('.streaming-fav, .track-fav')[0];
-    assert.ok(favHeart, 'favorite artist rows must render a favorite heart');
+    assert.ok(favHeart, 'favorite artist tiles must render a favorite heart');
     assert.equal(favHeart.dataset.favType, 'artists', 'the favorites artist heart must carry the artists type');
     assert.equal(favHeart.dataset.favId, 'a1', 'the favorites artist heart must carry the artist id');
     favHeart.click();

@@ -4724,9 +4724,11 @@ function renderTracks() {
         const rel = getTrackRelativePath(track);
         const metadataLine = [artist, album].filter(Boolean).join(' · ');
         const subline = metadataLine || (folderMode ? getTrackFilename(track) : getTrackFolder(track));
+        const thumbHtml = trackThumbHtml(track);
         return `
             <div class="track-item ${isSelected ? 'selected' : ''}" data-track-id="${escapeHtml(track.id)}">
                 <button class="track-play" data-track-id="${escapeHtml(track.id)}" type="button" title="${escapeHtml(rel)}" aria-label="Play ${escapeHtml(track.title)}">▶</button>
+                ${thumbHtml}
                 <div class="track-info">
                     <div class="track-title">${escapeHtml(track.title)}</div>
                     ${subline ? `<div class="track-artist track-sub">${escapeHtml(subline)}</div>` : ''}
@@ -5019,6 +5021,18 @@ function setAlbumCoverImage(img, coverUrl, fallbackText) {
     img.src = coverUrl || fallbackSvg;
 }
 
+// Square cover thumbnail for the left of a track row. Resolves the track's
+// album cover (same lookup the playlist collage uses) and falls back to the
+// neutral :empty placeholder when there is no artwork.
+function trackThumbHtml(track) {
+    const album = findAlbumForTrack(track);
+    const coverUrl = album ? albumCoverUrl(album) : '';
+    if (!coverUrl) return '<div class="track-thumb" aria-hidden="true"></div>';
+    const fallback = albumArtFallbackSvg(album?.name || album?.artist || track?.title || 'Album');
+    return '<div class="track-thumb" aria-hidden="true"><img src="' + escapeHtml(coverUrl) +
+        '" alt="" loading="lazy" onerror="this.onerror=null;this.remove()" /></div>';
+}
+
 function findAlbumForTrack(track) {
     const name = (track?.album || '').trim();
     if (!name) return null;
@@ -5258,6 +5272,7 @@ function renderAlbumDetailTracks() {
                 // In an open album the album name is page context, not row
                 // metadata; only the artist is repeated per track.
                 sub: escapeHtml((track.artist || '').trim()),
+                thumb: trackThumbHtml(track),
                 favoriteButton,
                 selectionButton,
                 duration: track.duration ? formatTime(track.duration) : '',
@@ -5291,10 +5306,11 @@ function renderAlbumDetailTracks() {
 // album/playlist details (streaming.js receives it via the init api). One
 // row language: index, round play button, stacked title/sub, optional
 // selection Plus, favorite, duration.
-function detailTrackRowHtml({ index, title, sub, favoriteButton, selectionButton, duration }) {
+function detailTrackRowHtml({ index, title, sub, favoriteButton, selectionButton, duration, thumb }) {
     return (
         '<span class="track-index">' + index + '</span>' +
         '<button type="button" class="track-play" title="Play">▶</button>' +
+        (thumb || '') +
         '<div class="track-info">' +
             '<div class="track-title">' + title + '</div>' +
             (sub ? '<div class="track-sub">' + sub + '</div>' : '') +
@@ -5492,6 +5508,7 @@ function renderPlaylistDetailTracks() {
                 index: index + 1,
                 title: escapeHtml(track.title || 'Unknown'),
                 sub,
+                thumb: trackThumbHtml(track),
                 favoriteButton,
                 selectionButton,
                 duration: track.duration ? formatTime(track.duration) : '',

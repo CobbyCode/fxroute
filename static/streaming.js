@@ -1079,7 +1079,7 @@
         }
         const queueIds = type === 'tracks' ? items.map((item) => String(item.id)).filter(Boolean) : [];
         const list = document.createElement('ul');
-        list.className = 'streaming-results-list';
+        list.className = type === 'tracks' ? 'streaming-results-list' : 'tidal-tiles';
         items.forEach((item) => list.appendChild(renderSearchItem(type, item, queueIds)));
         itemsContainer.appendChild(list);
     }
@@ -1122,7 +1122,7 @@
     function renderTidalFavoriteResults(container, type, items) {
         container.innerHTML = '';
         const list = document.createElement('ul');
-        list.className = 'streaming-results-list';
+        list.className = type === 'tracks' ? 'streaming-results-list' : 'tidal-tiles';
         const queueIds = type === 'tracks' ? items.map((item) => String(item.id)).filter(Boolean) : [];
         items.forEach((item) => list.appendChild(renderSearchItem(type, item, queueIds)));
         container.appendChild(list);
@@ -1130,13 +1130,13 @@
 
     function renderSearchItem(type, item, queueIds) {
         const li = document.createElement('li');
-        li.className = 'streaming-result';
         if (type === 'tracks') {
             const trackId = String(item.id);
+            li.className = 'streaming-result';
             li.innerHTML =
                 (state.tidal.trackSelectionMode ? '<input type="checkbox" class="tidal-track-select"' + (state.tidal.selectedTrackIds.has(trackId) ? ' checked' : '') + ' aria-label="Select track" />' : '') +
                 '<button type="button" class="streaming-result-play" title="Play">▶</button>' +
-                '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
+                '<div class="track-thumb" aria-hidden="true">' + coverImg(item.art_url) + '</div>' +
                 '<div class="streaming-result-info">' +
                     '<div class="streaming-result-title">' + escapeHtml(item.title) + '</div>' +
                     '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
@@ -1160,37 +1160,56 @@
             }
             li.addEventListener('click', () => playTidalTracks(queueIds, trackId));
             bindTidalFavoriteButtons(li);
-        } else if (type === 'albums') {
+        } else {
+            // Albums / Artists / Playlists render as tiles that reuse the
+            // Library album-card look (large square cover + name + subtitle),
+            // with the TIDAL heart in the cover corner.
+            li.className = 'album-card';
+            const title = type === 'albums' ? item.title : item.name;
+            const sub = type === 'albums' ? (item.artist || '')
+                : type === 'artists' ? 'Artist'
+                : (item.track_count ? item.track_count + ' tracks' : 'Playlist');
+            const fallbackText = title || sub || 'Tidal';
+            // Render the per-type heart inline so favorite state stays the
+            // canonical tracks/albums/artists/playlists hearts.
+            const heart = type === 'albums'
+                ? favoriteButtonHtml('albums', item.id)
+                : type === 'artists'
+                ? favoriteButtonHtml('artists', item.id)
+                : favoriteButtonHtml('playlists', item.id);
             li.innerHTML =
-                '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
-                '<div class="streaming-result-info">' +
-                    '<div class="streaming-result-title">' + escapeHtml(item.title) + '</div>' +
-                    '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
-                '</div>' +
-                favoriteButtonHtml('albums', item.id);
-            li.addEventListener('click', () => openTidalAlbum(item.id, item.title, item.art_url));
-            bindTidalFavoriteButtons(li);
-        } else if (type === 'artists') {
-            li.innerHTML =
-                '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
-                '<div class="streaming-result-info">' +
-                    '<div class="streaming-result-title">' + escapeHtml(item.name) + '</div>' +
-                '</div>' +
-                favoriteButtonHtml('artists', item.id);
-            li.addEventListener('click', () => openTidalArtist(item.id, item.name, item.art_url));
-            bindTidalFavoriteButtons(li);
-        } else if (type === 'playlists') {
-            li.innerHTML =
-                '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
-                '<div class="streaming-result-info">' +
-                    '<div class="streaming-result-title">' + escapeHtml(item.name) + '</div>' +
-                    '<div class="streaming-result-sub">' + (item.track_count ? item.track_count + ' tracks' : '') + '</div>' +
-                '</div>' +
-                favoriteButtonHtml('playlists', item.id);
-            li.addEventListener('click', () => openTidalPlaylist(item.id, item.name, item.art_url));
+                '<div class="album-art-wrap">' + tidalCardArt(item.art_url, fallbackText) + '</div>' +
+                heart +
+                '<div class="album-name">' + escapeHtml(title) + '</div>' +
+                '<div class="album-artist">' + escapeHtml(sub) + '</div>';
+            li.setAttribute('role', 'button');
+            li.setAttribute('tabindex', '0');
+            if (type === 'albums') li.addEventListener('click', () => openTidalAlbum(item.id, item.title, item.art_url));
+            else if (type === 'artists') li.addEventListener('click', () => openTidalArtist(item.id, item.name, item.art_url));
+            else li.addEventListener('click', () => openTidalPlaylist(item.id, item.name, item.art_url));
+            const onKey = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); li.click(); } };
+            li.addEventListener('keydown', onKey);
             bindTidalFavoriteButtons(li);
         }
         return li;
+    }
+
+    function tidalCardArt(url, fallbackText) {
+        const fallback = tidalArtFallback(fallbackText || 'Tidal');
+        if (!url) return '<img class="album-art" src="' + fallback + '" alt="" loading="lazy" />';
+        return '<img class="album-art" src="' + escapeHtml(url) + '" alt="" loading="lazy" ' +
+            'onerror="this.onerror=null;this.src=\'' + fallback + '\'" />';
+    }
+
+    function tidalArtFallback(text) {
+        // Subtle tile fallback matching the library album fallback (no
+        // initials block), reusing the existing accent gradient language.
+        const initials = (text || 'TIDAL').split(/\s+/).map(w => w[0]).join('').substring(0, 2).toUpperCase();
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">' +
+            '<rect width="200" height="200" rx="16" fill="#0e1b27"/>' +
+            '<text x="100" y="112" text-anchor="middle" fill="#6ee7b7" opacity="0.85" font-size="64" font-weight="bold" font-family="system-ui,sans-serif">' + escapeHtml(initials) + '</text>' +
+            '</svg>';
+        return 'data:image/svg+xml,' + encodeURIComponent(svg);
     }
 
     function coverImg(url) {
@@ -1199,6 +1218,12 @@
         // itself so the row falls back to the neutral :empty placeholder
         // instead of showing a broken-image icon.
         return '<img src="' + escapeHtml(url) + '" alt="" loading="lazy" onerror="this.remove()" />';
+    }
+
+    function tidalTrackThumbHtml(url) {
+        // Reuse the shared .track-thumb container; coverImg handles missing/
+        // failed art so the row falls back to the neutral note glyph.
+        return '<div class="track-thumb" aria-hidden="true">' + coverImg(url) + '</div>';
     }
 
     // -- favorites (authoritative TIDAL state; no FXRoute shadow) -------------
@@ -1405,18 +1430,21 @@
                 return;
             }
             const list = document.createElement('ul');
-            list.className = 'streaming-results-list';
+            list.className = 'tidal-tiles';
             for (const item of items) {
                 const li = document.createElement('li');
-                li.className = 'streaming-result';
+                li.className = 'album-card';
+                li.setAttribute('role', 'button');
+                li.setAttribute('tabindex', '0');
+                const sub = item.track_count ? item.track_count + ' tracks' : 'Playlist';
                 li.innerHTML =
-                    '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
-                    '<div class="streaming-result-info">' +
-                        '<div class="streaming-result-title">' + escapeHtml(item.name) + '</div>' +
-                        '<div class="streaming-result-sub">' + (item.track_count ? item.track_count + ' tracks' : '') + '</div>' +
-                    '</div>' +
-                    favoriteButtonHtml('playlists', item.id);
-                li.addEventListener('click', () => openTidalPlaylist(item.id, item.name, item.art_url));
+                    '<div class="album-art-wrap">' + tidalCardArt(item.art_url, item.name || 'Playlist') + '</div>' +
+                    favoriteButtonHtml('playlists', item.id) +
+                    '<div class="album-name">' + escapeHtml(item.name) + '</div>' +
+                    '<div class="album-artist">' + escapeHtml(sub) + '</div>';
+                const open = () => openTidalPlaylist(item.id, item.name, item.art_url);
+                li.addEventListener('click', open);
+                li.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
                 bindTidalFavoriteButtons(li);
                 list.appendChild(li);
             }
@@ -1660,7 +1688,7 @@
                 heading.textContent = 'Albums';
                 results.appendChild(heading);
                 const list = document.createElement('ul');
-                list.className = 'streaming-results-list';
+                list.className = 'tidal-tiles';
                 albums.forEach((item) => list.appendChild(renderSearchItem('albums', item, [])));
                 results.appendChild(list);
             }
@@ -1839,6 +1867,7 @@
                 index: index + 1,
                 title: escapeHtml(item.title),
                 sub: escapeHtml(item.artist || ''),
+                thumb: tidalTrackThumbHtml(item.art_url),
                 favoriteButton: favoriteButtonHtml('tracks', item.id, 'track-fav'),
                 duration: formatTime(item.duration),
             });
