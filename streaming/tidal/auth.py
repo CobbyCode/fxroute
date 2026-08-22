@@ -88,6 +88,9 @@ class TidalSession:
         self._session: Any | None = None
         self._pending: Any | None = None  # LinkLogin for the device flow
         self._pending_session: Any | None = None
+        # Last successfully verified user payload; kept across transient TIDAL
+        # outages so the UI never flips to login just because a check failed.
+        self._last_user: dict | None = None
         self._lock = asyncio.Lock()
 
     # -- session access -----------------------------------------------------
@@ -105,8 +108,90 @@ class TidalSession:
         return await asyncio.to_thread(self.session)
 
     def authenticated(self) -> bool:
+        """Return whether the session is authenticated, resilient to outages.
+
+        A verified login check refreshes the last-known user payload; a
+        transient transport failure (TIDAL unreachable) keeps the last known
+        good state instead of logging the user out, while an explicit auth
+        rejection (revoked/expired token) clears it.  Server-side failures
+        (5xx) are treated as transient too.
+        """
         s = self.session()
-        return bool(s is not None and s.check_login())
+        if s is None or getattr(s, "access_token", None) is None:
+            return False
+        user = getattr(s, "user", None)
+        user_id = getattr(user, "id", None) if user is not None else None
+        basic = getattr(getattr(s, "request", None), "basic_request", None)
+        if not callable(basic) or not user_id:
+            return self._authenticated_fallback(s)
+        try:
+            resp = basic("GET", "users/%s/subscription" % user_id)
+        except Exception as exc:  # noqa: BLE001 - network/transport failures
+            logger.debug("TIDAL login check failed transiently: %s", exc)
+            return bool(self._last_user)
+        status = int(getattr(resp, "status_code", 0) or 0)
+        if resp is not None and getattr(resp, "ok", False):
+            self._last_user = self._read_user_payload(s, user)
+            return True
+        if 500 <= status < 600:
+            # TIDAL server trouble is not an auth failure.
+            return bool(self._last_user)
+        self._last_user = None
+        return False
+
+    def _authenticated_fallback(self, s: Any) -> bool:
+        """Login check via ``check_login`` for older tidalapi request layers."""
+        try:
+            ok = bool(s.check_login())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("TIDAL login check failed transiently: %s", exc)
+            return bool(self._last_user)
+        if ok:
+            user = getattr(s, "user", None)
+            self._last_user = self._read_user_payload(s, user)
+            return True
+        self._last_user = None
+        return False
+
+    @staticmethod
+    def _read_user_payload(s: Any, user: Any) -> dict:
+        """Normalized last-known user info from the session/user objects."""
+        user_id = getattr(user, "id", None) if user is not None else None
+        return {
+            "id": str(user_id) if user_id is not None else None,
+            "email": str(getattr(user, "email", "") or "") if user is not None else "",
+            "country_code": str(getattr(s, "country_code", "") or "") or None,
+        }
+
+    def last_user_id(self) -> str:
+        """Last verified TIDAL user id ('' when unknown); never touches the network."""
+        if self._last_user:
+            return str(self._last_user.get("id") or "")
+        return ""
+
+    def user_payload(self) -> dict:
+        """Last-known user payload without network access.
+
+        The verified payload from :meth:`authenticated` is authoritative;
+        before the first check the session object's user is used (only when
+        already materialized, never triggering a fetch).
+        """
+        if self._last_user:
+            return dict(self._last_user)
+        s = self.session()
+        if s is None:
+            return {"id": None, "email": "", "country_code": None}
+        try:
+            user = getattr(s, "user", None)
+        except Exception:  # noqa: BLE001 - lazy user fetch can hit the network
+            user = None
+        if user is not None:
+            self._last_user = self._read_user_payload(s, user)
+            return dict(self._last_user)
+        return {"id": None, "email": "", "country_code": None}
+
+    async def user_payload_async(self) -> dict:
+        return await asyncio.to_thread(self.user_payload)
 
     async def is_authenticated(self) -> bool:
         """Offload the (network-backed) login check off the event loop."""
@@ -118,6 +203,7 @@ class TidalSession:
             self._session = None
             self._pending = None
             self._pending_session = None
+            self._last_user = None
             try:
                 if SESSION_FILE.exists():
                     SESSION_FILE.unlink()
@@ -168,8 +254,9 @@ class TidalSession:
         if not session.check_login():
             raise TidalAuthError("device login expired before authorization")
         self._session = session
+        self._last_user = _session_payload(session)
         self._save_session(session)
-        return _session_payload(session)
+        return self._last_user
 
     async def start_device_login_async(self, quality: str | None = None) -> DeviceLogin:
         async with self._lock:
@@ -212,8 +299,9 @@ class TidalSession:
         if not session.check_login():
             raise TidalAuthError("PKCE login did not produce a valid session")
         self._session = session
+        self._last_user = _session_payload(session)
         self._save_session(session)
-        return _session_payload(session)
+        return self._last_user
 
     async def pkce_login_url_async(self) -> str:
         async with self._lock:
@@ -232,6 +320,7 @@ class TidalSession:
             "refresh_token": session.refresh_token,
             "expiry_time": session.expiry_time.isoformat() if session.expiry_time else None,
             "is_pkce": bool(getattr(session, "is_pkce", False)),
+            "user": self._last_user,
         }
         SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = SESSION_FILE.with_suffix(".json.tmp")
@@ -250,6 +339,7 @@ class TidalSession:
         except (OSError, ValueError) as exc:
             logger.warning("Failed to read TIDAL session file: %s", exc)
             return None
+        self._last_user = _parse_user_payload(data.get("user"))
         session = _new_session()
         try:
             ok = session.load_oauth_session(
@@ -260,9 +350,13 @@ class TidalSession:
                 is_pkce=bool(data.get("is_pkce")),
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to load TIDAL session: %s", exc)
-            return None
-        return session if ok and session.check_login() else None
+            # The user resolution inside load_oauth_session needs the network;
+            # during an outage keep the loaded token state so the resilient
+            # authenticated() check can still validate it once TIDAL returns,
+            # and the cached library stays usable in the meantime.
+            logger.warning("TIDAL session load incomplete (%s); keeping token state", exc)
+            ok = bool(getattr(session, "access_token", None))
+        return session if ok else None
 
 
 def _parse_expiry(value: Any) -> Any:
@@ -274,6 +368,18 @@ def _parse_expiry(value: Any) -> Any:
         return datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _parse_user_payload(value: Any) -> dict | None:
+    """Read the persisted last-known user payload, tolerating legacy files."""
+    if not isinstance(value, dict):
+        return None
+    user_id = value.get("id")
+    return {
+        "id": str(user_id) if user_id is not None else None,
+        "email": str(value.get("email") or ""),
+        "country_code": str(value.get("country_code") or "") or None,
+    }
 
 
 def _session_payload(session: Any) -> dict:

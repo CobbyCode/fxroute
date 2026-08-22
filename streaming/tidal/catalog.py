@@ -15,9 +15,13 @@ only exposes those once a stream is resolved, which is owned by
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from streaming.tidal import auth
+from streaming.tidal.cache import library_cache
+
+logger = logging.getLogger(__name__)
 
 # tidalapi is imported lazily (see streaming.tidal.auth) so this module stays
 # importable without the dependency; helpers raise TidalAuthError then.
@@ -28,6 +32,25 @@ def _session() -> Any:
     if s is None:
         raise auth.TidalAuthError("TIDAL is not authenticated")
     return s
+
+
+def _cache_user_id(session: Any) -> str:
+    """Stable TIDAL user id used to key the browse cache ('' when unknown).
+
+    ``session.user`` is already materialized by the caller's own catalog
+    access, so this is a cheap read; when it is not available (e.g. a
+    partially restored session), fall back to the last-known user id from the
+    auth manager.  An unknown user id disables cache I/O, never raising.
+    """
+    try:
+        user = getattr(session, "user", None)
+        if user is not None:
+            value = getattr(user, "id", None)
+            if value is not None and str(value).strip():
+                return str(value)
+    except Exception:  # noqa: BLE001 - a lazy user fetch can hit the network
+        pass
+    return auth.manager.last_user_id() or ""
 
 
 def _require_tidalapi() -> None:
@@ -291,39 +314,62 @@ def get_album_tracks(album_id: str) -> list[dict]:
     return [normalize_track(t) for t in tracks]
 
 
+def _cached_or_raise(user_id: str, kind: str, message: str, cause: Exception) -> list | dict:
+    """Return the cached payload for ``kind`` or raise ``TidalAuthError(message)``.
+
+    A failed live fetch must not empty the visible library: when the last
+    successful payload is cached for this account it is served instead, and
+    the cache row itself is never touched by the failure.
+    """
+    cached = library_cache.get(user_id, kind) if user_id else None
+    if cached is not None:
+        logger.warning("TIDAL %s fetch failed (%s); serving cached data", kind, cause)
+        return cached
+    raise auth.TidalAuthError(message) from cause
+
+
 def favorites_tracks(limit: int = 50) -> list[dict]:
-    """Return the user's favorited tracks (normalized)."""
+    """Return the user's favorited tracks (normalized); last-known state on failure."""
     _require_tidalapi()
     session = _session()
+    user_id = _cache_user_id(session)
     try:
         user = session.user
         favorites = user.favorites
         tracks = favorites.tracks(limit=limit)
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL favorites failed: {exc}") from exc
-    return [normalize_track(t) for t in tracks]
+        return _cached_or_raise(user_id, "tracks", f"TIDAL favorites failed: {exc}", exc)
+    payload = [normalize_track(t) for t in tracks]
+    library_cache.put(user_id, "tracks", payload)
+    return payload
 
 
 def favorites_albums(limit: int = 50) -> list[dict]:
-    """Return the user's favorited albums (normalized)."""
+    """Return the user's favorited albums (normalized); last-known state on failure."""
     _require_tidalapi()
     session = _session()
+    user_id = _cache_user_id(session)
     try:
         albums = session.user.favorites.albums(limit=limit)
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL favorite albums failed: {exc}") from exc
-    return _dedupe_albums([normalize_album(a) for a in albums])
+        return _cached_or_raise(user_id, "albums", f"TIDAL favorite albums failed: {exc}", exc)
+    payload = _dedupe_albums([normalize_album(a) for a in albums])
+    library_cache.put(user_id, "albums", payload)
+    return payload
 
 
 def favorites_artists(limit: int = 50) -> list[dict]:
-    """Return the user's favorited artists (normalized)."""
+    """Return the user's favorited artists (normalized); last-known state on failure."""
     _require_tidalapi()
     session = _session()
+    user_id = _cache_user_id(session)
     try:
         artists = session.user.favorites.artists(limit=limit)
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL favorite artists failed: {exc}") from exc
-    return [normalize_artist(a) for a in artists]
+        return _cached_or_raise(user_id, "artists", f"TIDAL favorite artists failed: {exc}", exc)
+    payload = [normalize_artist(a) for a in artists]
+    library_cache.put(user_id, "artists", payload)
+    return payload
 
 
 def _favorite_items(favorites: Any, kind: str, page_size: int = 50) -> list:
@@ -364,9 +410,13 @@ def favorite_state() -> dict:
     which tracks/albums/artists/playlists are favorited; the UI compares ids
     against it.  Playlist ids are the same UUIDs the playlists endpoints
     return.
+
+    The last successful result is cached per account; on a failed live fetch
+    the cached ids are served instead so hearts never regress to unknown.
     """
     _require_tidalapi()
     session = _session()
+    user_id = _cache_user_id(session)
     try:
         favorites = session.user.favorites
         tracks = _favorite_items(favorites, "tracks")
@@ -374,19 +424,45 @@ def favorite_state() -> dict:
         artists = _favorite_items(favorites, "artists")
         playlists = _favorite_items(favorites, "playlists")
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL favorite state failed: {exc}") from exc
-    return {
+        return _cached_or_raise(user_id, "ids", f"TIDAL favorite state failed: {exc}", exc)
+    payload = {
         "tracks": [_id_str(getattr(t, "id", None)) for t in tracks],
         "albums": [_id_str(getattr(a, "id", None)) for a in albums],
         "artists": [_id_str(getattr(a, "id", None)) for a in artists],
         "playlists": [_id_str(getattr(p, "id", None)) for p in playlists],
     }
+    library_cache.put(user_id, "ids", payload)
+    return payload
+
+
+def _update_cached_favorite_id(user_id: str, kind: str, item_id: str, favorite: bool) -> None:
+    """Apply a successful favorite toggle to the cached id state.
+
+    The cached ids are the heart source shown before a background refresh;
+    keeping them in sync means a toggle is still reflected the next time the
+    tab opens, even when the live refresh fails afterwards.
+    """
+    if not user_id:
+        return
+    cached = library_cache.get(user_id, "ids")
+    if cached is None or not isinstance(cached, dict):
+        return
+    values = [str(v) for v in cached.get(kind, [])]
+    item = str(item_id)
+    if favorite:
+        if item not in values:
+            values.append(item)
+    else:
+        values = [v for v in values if v != item]
+    cached[kind] = values
+    library_cache.put(user_id, "ids", cached)
 
 
 def set_track_favorite(track_id: str, favorite: bool) -> dict:
     """Add/remove a track from the user's TIDAL favorites."""
     _require_tidalapi()
     session = _session()
+    user_id = _cache_user_id(session)
     try:
         favorites = session.user.favorites
         ok = favorites.add_track(str(track_id)) if favorite else favorites.remove_track(str(track_id))
@@ -394,6 +470,7 @@ def set_track_favorite(track_id: str, favorite: bool) -> dict:
         raise auth.TidalAuthError(f"TIDAL track favorite update failed: {exc}") from exc
     if not ok:
         raise auth.TidalAuthError("TIDAL track favorite update failed")
+    _update_cached_favorite_id(user_id, "tracks", str(track_id), bool(favorite))
     return {"type": "track", "id": str(track_id), "favorite": bool(favorite)}
 
 
@@ -401,6 +478,7 @@ def set_album_favorite(album_id: str, favorite: bool) -> dict:
     """Add/remove an album from the user's TIDAL favorites."""
     _require_tidalapi()
     session = _session()
+    user_id = _cache_user_id(session)
     try:
         favorites = session.user.favorites
         ok = favorites.add_album(str(album_id)) if favorite else favorites.remove_album(str(album_id))
@@ -408,6 +486,7 @@ def set_album_favorite(album_id: str, favorite: bool) -> dict:
         raise auth.TidalAuthError(f"TIDAL album favorite update failed: {exc}") from exc
     if not ok:
         raise auth.TidalAuthError("TIDAL album favorite update failed")
+    _update_cached_favorite_id(user_id, "albums", str(album_id), bool(favorite))
     return {"type": "album", "id": str(album_id), "favorite": bool(favorite)}
 
 
@@ -415,6 +494,7 @@ def set_artist_favorite(artist_id: str, favorite: bool) -> dict:
     """Add/remove an artist from the user's TIDAL favorites."""
     _require_tidalapi()
     session = _session()
+    user_id = _cache_user_id(session)
     try:
         favorites = session.user.favorites
         ok = favorites.add_artist(str(artist_id)) if favorite else favorites.remove_artist(str(artist_id))
@@ -422,6 +502,7 @@ def set_artist_favorite(artist_id: str, favorite: bool) -> dict:
         raise auth.TidalAuthError(f"TIDAL artist favorite update failed: {exc}") from exc
     if not ok:
         raise auth.TidalAuthError("TIDAL artist favorite update failed")
+    _update_cached_favorite_id(user_id, "artists", str(artist_id), bool(favorite))
     return {"type": "artist", "id": str(artist_id), "favorite": bool(favorite)}
 
 
@@ -429,6 +510,7 @@ def set_playlist_favorite(playlist_id: str, favorite: bool) -> dict:
     """Add/remove a playlist from the user's TIDAL favorites."""
     _require_tidalapi()
     session = _session()
+    user_id = _cache_user_id(session)
     try:
         favorites = session.user.favorites
         if favorite:
@@ -439,6 +521,7 @@ def set_playlist_favorite(playlist_id: str, favorite: bool) -> dict:
         raise auth.TidalAuthError(f"TIDAL playlist favorite update failed: {exc}") from exc
     if not ok:
         raise auth.TidalAuthError("TIDAL playlist favorite update failed")
+    _update_cached_favorite_id(user_id, "playlists", str(playlist_id), bool(favorite))
     return {"type": "playlist", "id": str(playlist_id), "favorite": bool(favorite)}
 
 
@@ -477,10 +560,12 @@ def user_playlists(limit: int = 200) -> list[dict]:
     playlists saved from the TIDAL app (editorial/user playlists in the
     favorites collection) would be invisible.  ``playlist_and_favorite_playlists``
     returns both in one list; dedupe on id in case a playlist is both owned
-    and favorited.
+    and favorited.  The last successful result is cached per account and
+    served when a live fetch fails.
     """
     _require_tidalapi()
     session = _session()
+    user_id = _cache_user_id(session)
     try:
         page_size = 50
         seen: dict[str, dict] = {}
@@ -497,8 +582,10 @@ def user_playlists(limit: int = 200) -> list[dict]:
             if offset >= limit:
                 break
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL playlists failed: {exc}") from exc
-    return list(seen.values())
+        return _cached_or_raise(user_id, "playlists", f"TIDAL playlists failed: {exc}", exc)
+    payload = list(seen.values())
+    library_cache.put(user_id, "playlists", payload)
+    return payload
 
 
 def playlist_tracks(playlist_id: str) -> list[dict]:

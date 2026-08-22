@@ -74,6 +74,11 @@ window.fetch = (url, opts) => {
     }
     if (u.includes('/api/streaming/tidal/')) return json({});
     if (u.includes('/api/streaming/')) return json({ installed: false, available: false });
+    // Boot fetches: without answers the app shows transient error toasts that
+    // overlap the TIDAL toolbar and delay Playwright clicks past the search
+    // debounce, making the refresh checks racy.
+    if (u.includes('/api/stations') || u.includes('/api/station-catalog') ||
+        u.includes('/api/tracks') || u.includes('/api/playlists')) return json([]);
     return realFetch(url, opts);
 };
 """

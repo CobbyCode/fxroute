@@ -112,14 +112,12 @@ class TidalProvider(StreamingProvider):
 
         if await auth.manager.is_authenticated():
             result["authenticated"] = True
+            # Last-known user payload: no network access here, so an outage
+            # never breaks the status poll (and the UI keeps the account it
+            # can render the cached library for).
+            result["user"] = await auth.manager.user_payload_async()
             session = await auth.manager.get_session()
-            user = getattr(session, "user", None)
-            result["user"] = {
-                "id": getattr(user, "id", None),
-                "email": getattr(user, "email", "") if user is not None else "",
-                "country_code": getattr(session, "country_code", None),
-            }
-            result["is_pkce"] = bool(getattr(session, "is_pkce", False))
+            result["is_pkce"] = bool(getattr(session, "is_pkce", False)) if session is not None else False
 
         # Reflect the committed FXRoute playback context for the tidal source.
         if self._get_active_playback is not None:

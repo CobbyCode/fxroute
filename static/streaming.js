@@ -82,6 +82,13 @@
             favoriteIds: { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
             favoritesLoaded: false,   // true after at least one successful favorites/ids load
+            // Persistent browse cache (server-side SQLite snapshot of the last
+            // successful library load, keyed by TIDAL account). Rendered first
+            // on open; a background refresh then replaces it in place.
+            cache: null,            // snapshot payload {user_id, ids, tracks, albums, artists, playlists}
+            cacheUser: null,        // account the snapshot/lastItems belong to
+            snapshotPromise: null,  // in-flight snapshot fetch (one per account)
+            lastItems: {},          // account-keyed last rendered browse payloads (per category)
             // Similar artists often arrive from MusicBrainz without a TIDAL
             // mapping. Keep successful name lookups in the browser so a later
             // card can use the result immediately and concurrent cards share
@@ -152,7 +159,12 @@
     function onTabVisible(tabId) {
         stopAllPolls();
         if (tabId === 'qobuz') startPoll('qobuz', POLL_INTERVAL_MS);
-        else if (tabId === 'tidal') startPoll('tidal', TIDAL_POLL_INTERVAL_MS);
+        else if (tabId === 'tidal') {
+            // Kick the local snapshot read early (it is faster than the
+            // TIDAL-backed status poll) so the browse renders from cache.
+            void loadTidalSnapshot();
+            startPoll('tidal', TIDAL_POLL_INTERVAL_MS);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1010,6 +1022,9 @@
             resetTidalSearch();
             renderTidalBrowseSection(tab.dataset.browse);
         }));
+        // Preload the last-known library state so the first section render is
+        // instant; the section load itself refreshes in the background.
+        void loadTidalSnapshot();
         if (state.tidal.searchExecuted && state.tidal.searchResults) {
             renderTidalSearchResults(document.getElementById('tidal-browse-body'), state.tidal.searchResults);
         } else if (state.tidal.searchExecuted && state.tidal.searchQuery) {
@@ -1399,6 +1414,65 @@
         return '<div class="track-thumb" aria-hidden="true">' + coverImg(url) + '</div>';
     }
 
+    // -- browse cache (last successful library state per account) -------------
+    function tidalUserId() {
+        const user = (state.lastData.tidal || {}).user || {};
+        return user.id != null ? String(user.id) : '';
+    }
+
+    // A different TIDAL account must never see another account's cached
+    // library: reset the in-memory cache/heart state when the account changes.
+    function ensureTidalAccountState() {
+        const userId = tidalUserId();
+        if (!userId || state.tidal.cacheUser === userId) return;
+        state.tidal.cache = null;
+        state.tidal.snapshotPromise = null;
+        state.tidal.lastItems = {};
+        state.tidal.favoriteIds = { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() };
+        state.tidal.favoritesLoaded = false;
+        state.tidal.favoriteIdsPromise = null;
+        state.tidal.cacheUser = userId;
+        notifyFavoritesChanged();
+    }
+
+    // Load the server-side snapshot (fast local read, no TIDAL network) once
+    // per account. Adopting it populates the last-known favorite ids (hearts)
+    // and per-category payloads so the first render is instant.
+    function loadTidalSnapshot() {
+        ensureTidalAccountState();
+        const userId = tidalUserId();
+        if (!userId || state.tidal.cacheUser !== userId) return Promise.resolve(null);
+        if (state.tidal.cache) return Promise.resolve(state.tidal.cache);
+        if (state.tidal.snapshotPromise) return state.tidal.snapshotPromise;
+        state.tidal.snapshotPromise = (async () => {
+            try {
+                const resp = await fetch('/api/streaming/tidal/library/snapshot?user=' + encodeURIComponent(userId));
+                if (!resp.ok) return null;
+                const data = await resp.json();
+                if (!data || String(data.user_id || '') !== userId || !data.ids) {
+                    state.tidal.cache = null;
+                    return null;
+                }
+                state.tidal.cache = data;
+                ['tracks', 'albums', 'artists', 'playlists'].forEach((kind) => {
+                    if (Array.isArray(data[kind])) state.tidal.lastItems[kind] = data[kind];
+                });
+                state.tidal.favoriteIds = {
+                    tracks: new Set((data.ids.tracks || []).map(String)),
+                    albums: new Set((data.ids.albums || []).map(String)),
+                    artists: new Set((data.ids.artists || []).map(String)),
+                    playlists: new Set((data.ids.playlists || []).map(String)),
+                };
+                state.tidal.favoritesLoaded = true;
+                notifyFavoritesChanged();
+                return data;
+            } catch (err) {
+                return null;
+            }
+        })();
+        return state.tidal.snapshotPromise;
+    }
+
     // -- favorites (authoritative TIDAL state; no FXRoute shadow) -------------
     function notifyFavoritesChanged() {
         if (typeof window.dispatchEvent !== 'function') return;
@@ -1428,6 +1502,11 @@
     }
 
     function loadTidalFavoriteIds(force) {
+        // Last-known ids (snapshot or earlier load) serve without network;
+        // forced calls always re-read the authoritative state.
+        if (!force && state.tidal.favoritesLoaded) {
+            return Promise.resolve(state.tidal.favoriteIds);
+        }
         if (!state.tidal.favoriteIdsPromise || force) {
             state.tidal.favoriteIdsPromise = (async () => {
                 const resp = await fetch('/api/streaming/tidal/favorites/ids');
@@ -1568,64 +1647,124 @@
         loadTidalFavorites();
     }
 
+    function renderTidalFavoritesContent(results, type, items) {
+        if (!Array.isArray(items) || !items.length) {
+            results.innerHTML = contentState('empty', 'No favorites yet.');
+            return;
+        }
+        renderTidalFavoriteResults(results, type, items);
+    }
+
     async function loadTidalFavorites() {
         const results = document.getElementById('tidal-fav-results');
         if (!results) return;
         const type = state.tidal.browseCategory;
-        results.innerHTML = contentState('loading', 'Loading…');
+        ensureTidalAccountState();
+        // Render the last-known payload instantly; the live refresh below
+        // replaces it in place when fresh data arrives.
+        const cached = state.tidal.lastItems[type];
+        let rendered = false;
+        if (cached !== undefined) {
+            renderTidalFavoritesContent(results, type, cached);
+            rendered = true;
+        } else {
+            results.innerHTML = contentState('loading', 'Loading…');
+        }
         try {
+            // Adopt last-known ids (hearts) before the authoritative load.
+            if (state.tidal.favoritesLoaded !== true) await loadTidalSnapshot();
+            if (state.tidal.searchExecuted || state.tidal.browseCategory !== type) return;
+            // The snapshot may have arrived while we waited: render it now so
+            // the last-known library appears before the live refresh returns.
+            if (!rendered) {
+                const late = state.tidal.lastItems[type];
+                if (late !== undefined) {
+                    renderTidalFavoritesContent(results, type, late);
+                    rendered = true;
+                }
+            }
             // Re-read the real TIDAL favorite state so external app changes
             // appear on refresh (no shadow state).
             await loadTidalFavoriteIds(true);
+            if (state.tidal.searchExecuted || state.tidal.browseCategory !== type) return;
             const resp = await fetch('/api/streaming/tidal/favorites?type=' + encodeURIComponent(type) + '&limit=50');
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const items = await resp.json();
-            if (!Array.isArray(items) || !items.length) {
-                results.innerHTML = contentState('empty', 'No favorites yet.');
-                return;
-            }
-            renderTidalFavoriteResults(results, type, items);
+            if (state.tidal.searchExecuted || state.tidal.browseCategory !== type) return;
+            state.tidal.lastItems[type] = Array.isArray(items) ? items : [];
+            renderTidalFavoritesContent(results, type, state.tidal.lastItems[type]);
         } catch (err) {
-            results.innerHTML = contentState('error', friendlyError(err?.message || err));
+            // A failed refresh must never empty the visible library: keep the
+            // content that is already rendered (cache or earlier load).
+            if (!rendered) {
+                results.innerHTML = contentState('error', friendlyError(err?.message || err));
+            }
         }
     }
 
     // -- playlists ------------------------------------------------------------
     async function renderTidalPlaylists(body) {
-        body.innerHTML = '<div class="streaming-results" id="tidal-playlists-results">' + contentState('loading', 'Loading…') + '</div>';
+        body.innerHTML = '<div class="streaming-results" id="tidal-playlists-results"></div>';
         const results = body.querySelector('#tidal-playlists-results');
+        ensureTidalAccountState();
+        const cached = state.tidal.lastItems.playlists;
+        let rendered = false;
+        if (cached !== undefined) {
+            renderTidalPlaylistsContent(results, cached);
+            rendered = true;
+        } else {
+            results.innerHTML = contentState('loading', 'Loading…');
+        }
         try {
+            if (state.tidal.favoritesLoaded !== true) await loadTidalSnapshot();
+            if (state.tidal.searchExecuted || state.tidal.browseCategory !== 'playlists') return;
+            if (!rendered) {
+                const late = state.tidal.lastItems.playlists;
+                if (late !== undefined) {
+                    renderTidalPlaylistsContent(results, late);
+                    rendered = true;
+                }
+            }
             const resp = await fetch('/api/streaming/tidal/playlists');
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const items = await resp.json();
-            if (!Array.isArray(items) || !items.length) {
-                results.innerHTML = contentState('empty', 'No playlists yet.');
-                return;
-            }
-            const list = document.createElement('ul');
-            list.className = tidalLayoutClass('playlists');
-            for (const item of items) {
-                const li = document.createElement('li');
-                li.className = 'album-card';
-                li.setAttribute('role', 'button');
-                li.setAttribute('tabindex', '0');
-                const sub = item.track_count ? item.track_count + ' tracks' : 'Playlist';
-                li.innerHTML =
-                    '<div class="album-art-wrap">' + tidalCardArt(item.art_url, item.name || 'Playlist') + '</div>' +
-                    favoriteButtonHtml('playlists', item.id) +
-                    '<div class="album-name">' + escapeHtml(item.name) + '</div>' +
-                    '<div class="album-artist">' + escapeHtml(sub) + '</div>';
-                const open = () => openTidalPlaylist(item.id, item.name, item.art_url);
-                li.addEventListener('click', open);
-                li.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
-                bindTidalFavoriteButtons(li);
-                list.appendChild(li);
-            }
-            results.innerHTML = '';
-            results.appendChild(list);
+            if (state.tidal.searchExecuted || state.tidal.browseCategory !== 'playlists') return;
+            state.tidal.lastItems.playlists = Array.isArray(items) ? items : [];
+            renderTidalPlaylistsContent(results, state.tidal.lastItems.playlists);
         } catch (err) {
-            results.innerHTML = contentState('error', friendlyError(err?.message || err));
+            // Keep the already-rendered playlists on a failed refresh.
+            if (!rendered) {
+                results.innerHTML = contentState('error', friendlyError(err?.message || err));
+            }
         }
+    }
+
+    function renderTidalPlaylistsContent(results, items) {
+        if (!Array.isArray(items) || !items.length) {
+            results.innerHTML = contentState('empty', 'No playlists yet.');
+            return;
+        }
+        const list = document.createElement('ul');
+        list.className = tidalLayoutClass('playlists');
+        for (const item of items) {
+            const li = document.createElement('li');
+            li.className = 'album-card';
+            li.setAttribute('role', 'button');
+            li.setAttribute('tabindex', '0');
+            const sub = item.track_count ? item.track_count + ' tracks' : 'Playlist';
+            li.innerHTML =
+                '<div class="album-art-wrap">' + tidalCardArt(item.art_url, item.name || 'Playlist') + '</div>' +
+                favoriteButtonHtml('playlists', item.id) +
+                '<div class="album-name">' + escapeHtml(item.name) + '</div>' +
+                '<div class="album-artist">' + escapeHtml(sub) + '</div>';
+            const open = () => openTidalPlaylist(item.id, item.name, item.art_url);
+            li.addEventListener('click', open);
+            li.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
+            bindTidalFavoriteButtons(li);
+            list.appendChild(li);
+        }
+        results.innerHTML = '';
+        results.appendChild(list);
     }
 
     // -- album / playlist detail ----------------------------------------------

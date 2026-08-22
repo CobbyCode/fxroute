@@ -176,6 +176,10 @@ function runStreaming(options = {}) {
     const spotifyCommandCalls = [];
     const spotifySeekCalls = [];
     const tidalFavoriteTracks = options.tidalFavoriteTracks || [];
+    const tidalFavoriteAlbums = options.tidalFavoriteAlbums || [];
+    // Per-account cached snapshots (keyed by the ?user= query param);
+    // ``tidalSnapshot`` serves one snapshot for any account.
+    const tidalSnapshots = options.tidalSnapshots || (options.tidalSnapshot ? { '*': options.tidalSnapshot } : {});
 
     const sandbox = {
         document,
@@ -194,7 +198,12 @@ function runStreaming(options = {}) {
             fetchCalls.push({ url: String(url), opts: opts || {} });
             const u = String(url);
             let body = {};
-            if (u === '/api/streaming/tidal/playlists') {
+            let failed = false;
+            if (u.startsWith('/api/streaming/tidal/library/snapshot')) {
+                const userMatch = u.match(/[?&]user=([^&]*)/);
+                const userId = userMatch ? decodeURIComponent(userMatch[1]) : '';
+                body = tidalSnapshots[userId] || tidalSnapshots['*'] || {};
+            } else if (u === '/api/streaming/tidal/playlists') {
                 body = [{ id: 'pl-1', name: 'Test Playlist', art_url: '', track_count: 2 }];
             } else if (u === '/api/streaming/tidal/playlists/pl-1/tracks') {
                 body = [
@@ -222,13 +231,25 @@ function runStreaming(options = {}) {
             } else if (u === '/api/streaming/tidal/favorites/ids') {
                 body = { tracks: [], albums: [], artists: [], playlists: [] };
             } else if (u.startsWith('/api/streaming/tidal/favorites?type=')) {
-                if (u.includes('type=tracks')) body = tidalFavoriteTracks;
-                else if (u.includes('type=artists')) body = [{ id: 'a1', name: 'Found Artist', art_url: '' }];
+                if (options.delayFavorites) {
+                    await new Promise((resolve) => setTimeout(resolve, options.delayFavorites));
+                }
+                if (options.failFavorites) {
+                    failed = true;
+                } else if (u.includes('type=tracks')) {
+                    body = tidalFavoriteTracks;
+                } else if (u.includes('type=albums')) {
+                    body = tidalFavoriteAlbums;
+                } else if (u.includes('type=artists')) {
+                    body = [{ id: 'a1', name: 'Found Artist', art_url: '' }];
+                }
             } else if (u === '/api/streaming/tidal/status') {
                 body = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+                if (options.tidalUser) body.user = { id: options.tidalUser };
             } else if (u.startsWith('/api/streaming/tidal/') && u.endsWith('/favorite')) {
                 body = { favorite: !!JSON.parse((opts && opts.body) || '{}').favorite };
             }
+            if (failed) return { ok: false, status: 502, json: async () => ({ detail: 'TIDAL unreachable' }) };
             return { ok: true, json: async () => body };
         },
         console,
@@ -239,6 +260,7 @@ function runStreaming(options = {}) {
         JSON,
         RegExp,
         encodeURIComponent,
+        decodeURIComponent,
         navigator: undefined,
     };
     vm.createContext(sandbox);
@@ -787,6 +809,108 @@ async function main() {
         'the favorites artist heart must add through the same endpoint');
     assert.equal(favRun.fetchCalls.filter((c) => c.url === '/api/streaming/tidal/artists/a1').length, 0,
         'the favorites artist heart click must not open the artist detail');
+}
+
+// --- 11. cached library renders first, refresh replaces it in background ---
+
+{
+    const snapshot = {
+        user_id: '42',
+        ids: { tracks: [], albums: ['c1'], artists: [], playlists: [] },
+        tracks: [],
+        albums: [{ id: 'c1', title: 'Cached Album', artist: 'Cached Artist', art_url: '' }],
+        artists: [],
+        playlists: [],
+    };
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming({
+        tidalSnapshot: snapshot,
+        tidalUser: '42',
+        tidalFavoriteAlbums: [{ id: 'f1', title: 'Fresh Album', artist: 'Fresh Artist', art_url: '' }],
+        delayFavorites: 40,
+    });
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0, user: { id: '42' } };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const body = sandbox.document.getElementById('tidal-browse-body');
+    const albumCards = () => createdEls.filter((el) => el.className === 'album-card');
+
+    // The last-known library renders before the (delayed) live fetch returns.
+    assert.ok(albumCards().some((el) => el.innerHTML.includes('Cached Album')),
+        'the cached library must render immediately on open');
+    assert.ok(!albumCards().some((el) => el.innerHTML.includes('Fresh Album')),
+        'the fresh payload must not replace the cache before it arrives');
+    assert.ok(fetchCalls.some((c) => c.url.startsWith('/api/streaming/tidal/favorites?type=albums')),
+        'the background refresh must still fetch fresh favorites');
+    // Cached favorite ids drive the hearts immediately.
+    const cachedCard = albumCards().find((el) => el.innerHTML.includes('Cached Album'));
+    assert.ok(cachedCard, 'cached albums must render as tiles');
+    const cachedHeart = cachedCard.querySelectorAll('.streaming-fav, .track-fav')[0];
+    assert.equal(cachedHeart.dataset.favId, 'c1', 'cached album tile must carry the album id');
+    assert.ok(cachedCard.innerHTML.includes('aria-pressed="true"') && cachedCard.innerHTML.includes('is-active'),
+        'cached favorite ids must render the heart active');
+
+    // Once the live fetch resolves, fresh data replaces the cache in place.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.ok(albumCards().some((el) => el.innerHTML.includes('Fresh Album')),
+        'the background refresh must update the visible library');
+    assert.equal(albumCards().filter((el) => el.innerHTML.includes('Cached Album')).length, 1,
+        'the stale cached payload must be replaced (not duplicated) by the fresh one');
+}
+
+// --- 12. failed background refresh keeps the visible library ----------------
+
+{
+    const snapshot = {
+        user_id: '42',
+        ids: { tracks: [], albums: ['c1'], artists: [], playlists: [] },
+        tracks: [],
+        albums: [{ id: 'c1', title: 'Cached Album', artist: 'Cached Artist', art_url: '' }],
+        artists: [],
+        playlists: [],
+    };
+    const { sandbox, createdEls } = runStreaming({ tidalSnapshot: snapshot, tidalUser: '42', failFavorites: true });
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0, user: { id: '42' } };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const body = sandbox.document.getElementById('tidal-browse-body');
+    assert.ok(createdEls.some((el) => el.className === 'album-card' && el.innerHTML.includes('Cached Album')),
+        'the cached library must render on open');
+
+    // The background refresh fails: the visible library stays, nothing is wiped.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(createdEls.some((el) => el.className === 'album-card' && el.innerHTML.includes('Cached Album')),
+        'a failed refresh must keep the visible library');
+    assert.ok(!sandbox.document.getElementById('tidal-fav-results').innerHTML.includes('content-state--error'),
+        'a failed refresh must not replace the library with an error state');
+}
+
+// --- 13. account switch never shows another account's cached library -------
+
+{
+    const snapshots = {
+        '42': {
+            user_id: '42',
+            ids: { tracks: [], albums: ['old'], artists: [], playlists: [] },
+            tracks: [],
+            albums: [{ id: 'old', title: 'Old Account Album', artist: 'Old Artist', art_url: '' }],
+            artists: [],
+            playlists: [],
+        },
+        '99': null,
+    };
+    const { sandbox, createdEls } = runStreaming({ tidalSnapshots: snapshots, tidalUser: '99' });
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0, user: { id: '99' } };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const body = sandbox.document.getElementById('tidal-browse-body');
+    assert.ok(!createdEls.some((el) => el.className === 'album-card' && el.innerHTML.includes('Old Account Album')),
+        'account B must never see account A cached library');
+    // Account B has no cache yet: the live favorites path renders its state.
+    assert.ok(sandbox.document.getElementById('tidal-fav-results').innerHTML.includes('No favorites yet.'),
+        'account B with no cache must fall back to the live favorites state');
 }
 
 console.log('PASS  scripts/test_streaming_ui_actions.js');

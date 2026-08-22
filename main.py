@@ -735,6 +735,7 @@ from audio.samplerate import (
 import streaming
 from streaming.tidal import auth as tidal_auth
 from streaming.tidal import playback as tidal_playback
+from streaming.tidal.cache import library_cache as tidal_library_cache
 from streaming.qobuz import connect_state
 from streaming.spotify import mpris as spotify_mpris
 from streaming.spotify.mpris import playerctl_available, spotify_installed
@@ -5225,6 +5226,32 @@ async def api_streaming_provider_favorite_ids(provider_id: str):
         return await fn()
     except Exception as exc:
         raise _tidal_http_error(exc) from exc
+
+
+@app.get("/api/streaming/tidal/library/snapshot")
+async def api_tidal_library_snapshot(user: str = ""):
+    """Last successfully fetched TIDAL library/browse state (cache-only).
+
+    Reads the per-account SQLite cache without any TIDAL network traffic, so
+    the UI can render the last-known albums/tracks/artists/playlists/favorite
+    ids immediately and refresh in the background afterwards.  A ``user`` id
+    that has no cache yet yields an empty payload (``ids`` empty, all lists
+    empty), never an error — the UI treats that as "nothing cached yet".
+    """
+    user_id = (user or "").strip()
+    empty = {
+        "user_id": user_id,
+        "fetched_at": None,
+        "ids": {},
+        "tracks": [],
+        "albums": [],
+        "artists": [],
+        "playlists": [],
+    }
+    if not user_id:
+        return empty
+    snapshot = tidal_library_cache.snapshot(user_id)
+    return snapshot if snapshot is not None else empty
 
 
 @app.post("/api/streaming/{provider_id}/tracks/{track_id}/favorite")

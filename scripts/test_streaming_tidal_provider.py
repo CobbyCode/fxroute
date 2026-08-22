@@ -883,9 +883,11 @@ class ProviderStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_authenticated(self):
         provider = TidalProvider()
         session = FakeSession(logged_in=True)
+        user_payload = {"id": 42, "email": "u@example.com", "country_code": "US"}
         with mock.patch.object(auth, "tidalapi_available", return_value=True), \
              mock.patch.object(auth.manager, "is_authenticated", new=_async_true()), \
-             mock.patch.object(auth.manager, "get_session", new=_async_return(session)):
+             mock.patch.object(auth.manager, "get_session", new=_async_return(session)), \
+             mock.patch.object(auth.manager, "user_payload_async", new=_async_return(user_payload)):
             status = await provider.status()
         self.assertTrue(status["available"])
         self.assertTrue(status["authenticated"])
