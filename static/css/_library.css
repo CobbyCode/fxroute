@@ -120,8 +120,9 @@
 }
 .playlist-collage-cell.is-fallback {
     object-fit: contain;
-    padding: 18%;
-    opacity: 0.55;
+    padding: 12%;
+    opacity: 0.9;
+    background: rgba(9, 17, 27, 0.85);
 }
 .playlist-collage--1 {
     grid-template-columns: 1fr;
@@ -148,13 +149,20 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(0, 0, 0, 0.35);
+    background:
+        radial-gradient(circle at 50% 42%, rgba(110, 231, 183, 0.16), rgba(9, 17, 27, 0.55) 74%);
+    color: var(--accent);
 }
-.playlist-collage-fallback img {
-    width: 58%;
-    height: auto;
-    opacity: 0.5;
-    object-fit: contain;
+.playlist-collage-fallback-mark {
+    width: 54%;
+    height: 54%;
+    opacity: 0.9;
+    filter: drop-shadow(0 0 10px rgba(110, 231, 183, 0.4));
+}
+.playlist-detail-cover {
+    position: relative;
+    overflow: hidden;
+    flex-shrink: 0;
 }
 
 /* ── Album detail ────────────────────────────────────────────── */

@@ -131,6 +131,7 @@ let state = {
         albumsLoaded: false,
         showFavoriteAlbums: false,
         albumDetail: null,
+        playlistDetail: null,
     },
     playlists: [],
     stations: [],
@@ -467,6 +468,12 @@ const elements = {
     albumFavoriteToggle: document.getElementById('album-favorite-toggle'),
     albumDetailTracks: document.getElementById('album-detail-tracks'),
     albumDiscover: document.getElementById('album-discover'),
+    playlistDetail: document.getElementById('playlist-detail'),
+    playlistDetailBack: document.getElementById('playlist-detail-back'),
+    playlistDetailCover: document.getElementById('playlist-detail-cover'),
+    playlistDetailName: document.getElementById('playlist-detail-name'),
+    playlistDetailCount: document.getElementById('playlist-detail-count'),
+    playlistDetailTracks: document.getElementById('playlist-detail-tracks'),
     albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
@@ -4571,6 +4578,10 @@ function renderLibraryView() {
             const albumId = state.library.albumDetail.album.id;
             state.library.albumDetail = null;
             openAlbumDetail(albumId);
+        } else if (state.library.playlistDetail) {
+            const playlistId = state.library.playlistDetail.playlist.id;
+            state.library.playlistDetail = null;
+            openPlaylistDetail(playlistId);
         } else {
             renderAlbums();
         }
@@ -4634,9 +4645,10 @@ function formatLibraryScanStatus() {
 function renderTracks() {
     renderLibraryViewButtons();
     renderLibraryFolderPath();
-    // Hide album views when in tracks/folders mode
+    // Hide album/playlist views when in tracks/folders mode
     if (elements.albumsGrid) elements.albumsGrid.classList.add('hidden');
     if (elements.albumDetail) elements.albumDetail.classList.add('hidden');
+    if (elements.playlistDetail) elements.playlistDetail.classList.add('hidden');
     updatePlaylistSaveRowVisibility();
     elements.tracksList.classList.remove('hidden');
     const allTracks = state.library.tracks || [];
@@ -4828,6 +4840,7 @@ function setLibraryViewMode(mode) {
     if (state.library.viewMode === 'tracks') state.library.currentFolder = '';
     if (state.library.viewMode === 'albums') {
         state.library.albumDetail = null;
+        state.library.playlistDetail = null;
         if (!state.library.albumsLoaded) {
             fetchAlbums();
         } else {
@@ -4847,17 +4860,26 @@ function setLibraryFolder(folder) {
 }
 // ── Albums ──────────────────────────────────────────────────────
 
+let albumsFetchInFlight = false;
 async function fetchAlbums() {
     if (state.library.albumsLoaded && state.library.albums.length > 0) return;
+    if (albumsFetchInFlight) return;
+    albumsFetchInFlight = true;
     try {
         const res = await fetch('/api/albums');
         if (!res.ok) return;
         state.library.albums = await res.json();
         state.library.albumsLoaded = true;
         state.library.albumsCacheToken = Date.now();
-        if (state.library.viewMode === 'albums') renderAlbums();
+        // Never clobber an open album/playlist detail with a background
+        // re-render; the late init fetch would otherwise close the detail.
+        if (state.library.viewMode === 'albums' && !state.library.albumDetail && !state.library.playlistDetail) {
+            renderAlbums();
+        }
     } catch (e) {
         console.warn('Failed to fetch albums', e);
+    } finally {
+        albumsFetchInFlight = false;
     }
 }
 
@@ -4867,9 +4889,10 @@ function renderAlbums() {
     const loadingEl = document.querySelector('#tab-library .content-state');
     const query = (state.library.searchQuery || '').trim().toLowerCase();
 
-    // Hide tracks list, show albums grid
+    // Hide tracks list + detail views, show albums grid
     elements.tracksList.classList.add('hidden');
     elements.albumDetail.classList.add('hidden');
+    if (elements.playlistDetail) elements.playlistDetail.classList.add('hidden');
     updatePlaylistSaveRowVisibility();
     if (elements.libraryFolderPath) elements.libraryFolderPath.classList.add('hidden');
 
@@ -4889,13 +4912,15 @@ function renderAlbums() {
         albums = albums.filter(album => !!album.favorite);
     }
     const showSmartFavorites = state.library.showFavoriteAlbums;
-    const playlists = getFilteredPlaylists();
+    // Playlists live with the personal collections (Favorites), not in the
+    // plain albums overview.
+    const playlists = showSmartFavorites ? getFilteredPlaylists() : [];
 
     if (albums.length === 0 && playlists.length === 0 && !showSmartFavorites) {
         window.FXRouteContentState.set(loadingEl, 'empty',
             state.library.showFavoriteAlbums
                 ? 'No favorite albums.'
-                : query ? 'No matching albums or playlists.' : 'No albums found. Import music with album tags.');
+                : query ? 'No matching albums.' : 'No albums found. Import music with album tags.');
         elements.albumsGrid.innerHTML = '';
         elements.albumsGrid.classList.remove('hidden');
         return;
@@ -4941,7 +4966,7 @@ function renderAlbums() {
     elements.albumsGrid.classList.remove('hidden');
 
     const openAlbumCard = (card) => () => {
-        if (card.dataset.playlistId) loadPlaylistById(card.dataset.playlistId, { autoplay: true });
+        if (card.dataset.playlistId) openPlaylistDetail(card.dataset.playlistId);
         else if (card.dataset.smartFavorite) openSmartTopTracks();
         else openAlbumDetail(card.dataset.albumId);
     };
@@ -5029,19 +5054,29 @@ function playlistDistinctAlbums(playlist) {
 function playlistCoverHtml(playlist) {
     const albums = playlistDistinctAlbums(playlist).filter(a => a?.id);
     if (albums.length === 0) {
-        return '<div class="playlist-collage-fallback" aria-hidden="true"><img src="/static/fxroute-logo.png" alt="" /></div>';
+        return `<div class="playlist-collage-fallback" aria-hidden="true">${playlistFallbackMarkSvg()}</div>`;
     }
     const count = Math.min(albums.length, 4);
     const cells = albums.slice(0, count).map(album => {
         const coverUrl = albumCoverUrl(album);
         const isFallback = !coverUrl;
         return `<img class="playlist-collage-cell${isFallback ? ' is-fallback' : ''}"
-            src="${escapeHtml(coverUrl || '/static/fxroute-logo.png')}"
+            src="${escapeHtml(coverUrl || '/static/favicon.svg')}"
             alt="${escapeHtml(album.name || '')}"
             loading="lazy"
-            onerror="this.onerror=null;this.classList.add('is-fallback');this.src='/static/fxroute-logo.png';" />`;
+            onerror="this.onerror=null;this.classList.add('is-fallback');this.src='/static/favicon.svg';" />`;
     }).join('');
     return `<div class="playlist-collage playlist-collage--${count}">${cells}</div>`;
+}
+
+function playlistFallbackMarkSvg() {
+    // Existing FXRoute brand glyph (green FX + waveform from favicon.svg),
+    // used as a clearly visible fallback when a playlist has no artwork.
+    return `<svg class="playlist-collage-fallback-mark" viewBox="0 0 512 512" aria-hidden="true">
+        <path d="M108 352V160h168v54H170v30h96v52h-96v56z" fill="currentColor"/>
+        <path d="M312 158h70l-58 92 78 104h-74l-41-58-42 58h-74l80-106-58-90h71l25 42z" fill="currentColor"/>
+        <path d="M82 386c46 0 46-32 92-32s46 32 92 32 46-32 92-32 46 32 92 32" fill="none" stroke="currentColor" stroke-opacity="0.55" stroke-width="14" stroke-linecap="round"/>
+    </svg>`;
 }
 
 async function openAlbumDetail(albumId) {
@@ -5053,6 +5088,7 @@ async function openAlbumDetail(albumId) {
         if (!res.ok) return;
         const tracks = await res.json();
         state.library.albumDetail = { album, tracks };
+        state.library.playlistDetail = null;
 
         // Update detail header
         const coverUrl = albumCoverUrl(album);
@@ -5077,6 +5113,7 @@ async function openAlbumDetail(albumId) {
 
         // Show detail, hide grid
         elements.albumsGrid.classList.add('hidden');
+        if (elements.playlistDetail) elements.playlistDetail.classList.add('hidden');
         elements.albumDetail.classList.remove('hidden');
         updatePlaylistSaveRowVisibility();
     } catch (e) {
@@ -5097,6 +5134,7 @@ async function openSmartTopTracks() {
             coverUrl: '/static/Top40.png',
         };
         state.library.albumDetail = { album, tracks: Array.isArray(tracks) ? tracks : [] };
+        state.library.playlistDetail = null;
         const knownIds = new Set(state.library.tracks.map(t => t.id));
         for (const track of state.library.albumDetail.tracks) {
             if (track?.id && !knownIds.has(track.id)) {
@@ -5120,6 +5158,7 @@ async function openSmartTopTracks() {
             elements.albumDiscover.innerHTML = '';
         }
         elements.albumsGrid.classList.add('hidden');
+        if (elements.playlistDetail) elements.playlistDetail.classList.add('hidden');
         elements.albumDetail.classList.remove('hidden');
         updatePlaylistSaveRowVisibility();
     } catch (e) {
@@ -5296,6 +5335,7 @@ function updateAlbumFavoritesFilterButton() {
 function toggleAlbumFavoritesFilter() {
     state.library.showFavoriteAlbums = !state.library.showFavoriteAlbums;
     state.library.albumDetail = null;
+    state.library.playlistDetail = null;
     updateAlbumFavoritesFilterButton();
     renderAlbums();
 }
@@ -5386,6 +5426,116 @@ async function playTrackInAlbum(trackId, albumId) {
         }
     }
     await playLocal(trackId, albumTrackIds);
+}
+
+// ── Playlist detail ────────────────────────────────────────────
+
+function resolvePlaylistTracks(playlist) {
+    const ids = getTrackIdsInLibraryOrder(playlist?.track_ids || []);
+    const byId = new Map((state.library.tracks || []).map(t => [t.id, t]));
+    return ids.map(id => byId.get(id)).filter(Boolean);
+}
+
+function openPlaylistDetail(playlistId) {
+    const playlist = (state.playlists || []).find(p => p.id === playlistId);
+    if (!playlist) return;
+    const tracks = resolvePlaylistTracks(playlist);
+    state.library.playlistDetail = { playlist, tracks };
+    state.library.albumDetail = null;
+
+    if (elements.playlistDetailCover) {
+        elements.playlistDetailCover.innerHTML = playlistCoverHtml(playlist);
+    }
+    if (elements.playlistDetailName) elements.playlistDetailName.textContent = playlist.name;
+    renderPlaylistDetailTracks();
+
+    elements.albumsGrid.classList.add('hidden');
+    elements.albumDetail.classList.add('hidden');
+    if (elements.playlistDetail) elements.playlistDetail.classList.remove('hidden');
+    updatePlaylistSaveRowVisibility();
+}
+
+function renderPlaylistDetailTracks() {
+    const detail = state.library.playlistDetail;
+    if (!detail || !elements.playlistDetailTracks) return;
+    const query = (state.library.searchQuery || '').trim().toLowerCase();
+    const tracks = query
+        ? (detail.tracks || []).filter(track => trackMatchesLibraryQuery(track, query))
+        : (detail.tracks || []);
+    const total = (detail.tracks || []).length;
+    if (elements.playlistDetailCount) {
+        elements.playlistDetailCount.textContent = query
+            ? `${tracks.length} of ${total} track${total === 1 ? '' : 's'}`
+            : `${total} track${total === 1 ? '' : 's'}`;
+    }
+    if (tracks.length === 0) {
+        elements.playlistDetailTracks.innerHTML = '<div class="track-item track-item-empty">No matching tracks.</div>';
+        return;
+    }
+    const selectedIds = new Set(state.library.selectedTrackIds);
+    elements.playlistDetailTracks.innerHTML = tracks.map((track, index) => {
+        const favorite = !!track.favorite;
+        const favoriteButton =
+            '<button class="track-fav' + (favorite ? ' active' : '') + '" data-track-favorite="' + escapeHtml(track.id) + '" type="button"' +
+            ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
+            ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
+            ' title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + (favorite ? '♥' : '♡') + '</button>';
+        const isSelected = selectedIds.has(track.id);
+        const selectionButton =
+            '<button class="track-add' + (isSelected ? ' is-active' : '') + '" data-track-add="' + escapeHtml(track.id) + '" type="button"' +
+            ' aria-pressed="' + (isSelected ? 'true' : 'false') + '"' +
+            ' aria-label="' + (isSelected ? 'Remove track from selection' : 'Add track to selection') + '"' +
+            ' title="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + (isSelected ? '✓' : '+') + '</button>';
+        const sub = escapeHtml([(track.artist || '').trim(), (track.album || '').trim()].filter(Boolean).join(' · '));
+        return '<div class="track-item' + (isSelected ? ' selected' : '') + '" data-track-id="' + escapeHtml(track.id) + '">' +
+            detailTrackRowHtml({
+                index: index + 1,
+                title: escapeHtml(track.title || 'Unknown'),
+                sub,
+                favoriteButton,
+                selectionButton,
+                duration: track.duration ? formatTime(track.duration) : '',
+            }) +
+        '</div>';
+    }).join('');
+    elements.playlistDetailTracks.querySelectorAll('.track-item').forEach(row => {
+        const play = () => playTrackInPlaylist(row.dataset.trackId);
+        row.querySelector('.track-play').addEventListener('click', (event) => {
+            event.stopPropagation();
+            play();
+        });
+        row.addEventListener('click', (event) => {
+            if (event.target && event.target.closest('.track-add, .track-fav, .track-row-favorite')) return;
+            play();
+        });
+    });
+    elements.playlistDetailTracks.querySelectorAll('.track-add[data-track-add]').forEach(btn => {
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            toggleTrackSelected(btn.dataset.trackAdd);
+        });
+    });
+    bindTrackFavoriteRowButtons(elements.playlistDetailTracks);
+}
+
+function closePlaylistDetail() {
+    state.library.playlistDetail = null;
+    renderAlbums();
+}
+
+async function playTrackInPlaylist(trackId) {
+    const detail = state.library.playlistDetail;
+    if (!detail) return;
+    const trackIds = (detail.tracks || []).map(t => t.id);
+    // Make sure playlist tracks are known to the library state
+    const knownIds = new Set(state.library.tracks.map(t => t.id));
+    for (const t of (detail.tracks || [])) {
+        if (!knownIds.has(t.id)) {
+            state.library.tracks.push(t);
+            knownIds.add(t.id);
+        }
+    }
+    await playLocal(trackId, trackIds);
 }
 
 function albumArtFallbackSvg(text) {
@@ -5504,6 +5654,8 @@ function setLibrarySearchQuery(value) {
     updateLibrarySearchControls();
     if (state.library.viewMode === 'albums' && state.library.albumDetail) {
         renderAlbumDetailTracks();
+    } else if (state.library.viewMode === 'albums' && state.library.playlistDetail) {
+        renderPlaylistDetailTracks();
     } else if (state.library.viewMode === 'albums') {
         renderAlbums();
     } else {
@@ -5538,7 +5690,7 @@ function clearLibrarySearch() {
 }
 function syncRenderedTrackSelection() {
     const selectedIds = new Set(state.library.selectedTrackIds);
-    [elements.tracksList, elements.albumDetailTracks].forEach(container => {
+    [elements.tracksList, elements.albumDetailTracks, elements.playlistDetailTracks].forEach(container => {
         if (!container) return;
         container.querySelectorAll('.track-item').forEach(item => {
             item.classList.toggle('selected', selectedIds.has(item.dataset.trackId));
@@ -12851,6 +13003,9 @@ function setupLibraryActions() {
     }
     if (elements.albumDetailBack) {
         elements.albumDetailBack.addEventListener('click', () => closeAlbumDetail());
+    }
+    if (elements.playlistDetailBack) {
+        elements.playlistDetailBack.addEventListener('click', () => closePlaylistDetail());
     }
     elements.toggleImportBtn.addEventListener('click', () => {
         const shouldOpen = elements.libraryImportPanel.classList.contains('hidden');

@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.106">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.108">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -433,6 +433,20 @@
                     </div>
                     <div id="album-detail-tracks" class="album-detail-tracks tracks-list"></div>
                     <div id="album-discover" class="album-discover hidden"></div>
+                </div>
+                <div id="playlist-detail" class="album-detail hidden">
+                    <div class="album-detail-header">
+                        <div id="playlist-detail-cover" class="album-detail-cover playlist-detail-cover"></div>
+                        <div class="album-detail-meta">
+                            <div class="album-detail-title-row">
+                                <h2 id="playlist-detail-name" class="album-detail-name"></h2>
+                            </div>
+                            <p id="playlist-detail-artist" class="album-detail-artist">Playlist</p>
+                            <p id="playlist-detail-count" class="album-detail-count"></p>
+                        </div>
+                        <button id="playlist-detail-back" class="album-detail-back" type="button" aria-label="Back">← Back</button>
+                    </div>
+                    <div id="playlist-detail-tracks" class="album-detail-tracks tracks-list"></div>
                 </div>
                 <div id="library-info"></div>
             </div>
@@ -1312,7 +1326,7 @@
     <script src="/static/measurement_graph.js?v=0.9.12"></script>
     <script src="/static/measurement_flows.js?v=0.9.12"></script>
     <script src="/static/radio.js?v=0.9.14"></script>
-    <script src="/static/app.js?v=0.9.66"></script>
+    <script src="/static/app.js?v=0.9.68"></script>
     <script src="/static/streaming.js?v=0.9.34"></script>
 </body>
 </html>
