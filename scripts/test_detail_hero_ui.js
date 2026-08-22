@@ -111,8 +111,10 @@ assert.ok(css.includes('font-size: clamp(1.3rem, 6.2vw, 1.8rem)'),
     'phone detail titles must use a smaller scale than tablets');
 assert.ok(!css.includes('clamp(1rem, 2.4vw, 1.6rem)'),
     'tablet detail metadata must not rely on a special expansion offset');
-assert.ok(css.includes('transform: translateY(calc(0px - clamp(0.5rem, 1.2vw, 0.9rem)))'),
-    'larger detail heroes must lift the metadata block without pinning it to the top');
+assert.ok(css.includes('margin-block-start: clamp(0.5rem, calc(12vw - 5.1rem), 3.2rem);'),
+    'larger detail metadata must use a stable closed-state anchor');
+assert.ok(!css.includes('transform: translateY(calc(0px - clamp(0.5rem, 1.2vw, 0.9rem)))'),
+    'larger detail metadata must not move with content-height-dependent transforms');
 assert.ok(css.includes('width: fit-content;') && css.includes('flex: 0 1 auto;'),
     'larger detail title rows must keep the favorite close to the title zone');
 assert.ok(css.includes('margin-top: 0.15rem;'),

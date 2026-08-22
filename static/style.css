@@ -8028,7 +8028,8 @@ input[type="number"]::-webkit-outer-spin-button {
 @media (min-width: 601px) {
     .album-detail--hero .detail-hero-meta,
     .streaming-detail--hero .detail-hero-meta {
-        transform: translateY(calc(0px - clamp(0.5rem, 1.2vw, 0.9rem)));
+        align-self: start;
+        margin-block-start: clamp(0.5rem, calc(12vw - 5.1rem), 3.2rem);
     }
     .album-detail--hero .detail-hero-title-row,
     .streaming-detail--hero .detail-hero-title-row {
