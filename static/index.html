@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.127">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.129">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -214,12 +214,9 @@
                     <div class="radio-panel-header">
                         <h2 class="section-title">Radio</h2>
                         <div class="radio-search-field">
-                            <div class="radio-search-main-row">
-                                <div class="radio-search-input-wrap">
-                                    <input type="search" id="station-search" class="station-search-input" placeholder="Station, genre or country…" autocomplete="off" />
-                                    <button id="station-search-clear" class="station-search-clear" type="button" aria-label="Clear station search" disabled>×</button>
-                                </div>
-                                <button id="station-search-online" class="btn-secondary radio-search-online" type="button">Web Search</button>
+                            <div class="radio-search-input-wrap">
+                                <input type="search" id="station-search" class="station-search-input" placeholder="Station, genre or country…" aria-label="Search radio stations" autocomplete="off" />
+                                <button id="station-search-clear" class="station-search-clear" type="button" aria-label="Clear station search" disabled>×</button>
                             </div>
                         </div>
                         <div class="radio-header-right">
@@ -236,8 +233,8 @@
                         <div class="radio-station-section-header">
                             <h3 id="station-search-results-title">Search Results</h3>
                         </div>
-                        <div id="station-search-status" class="station-browser-status"></div>
-                        <div id="station-search-grid" class="stations-grid"></div>
+                        <div id="station-search-status" class="station-browser-status" role="status" aria-live="polite"></div>
+                        <div id="station-search-grid" class="radio-search-groups"></div>
                     </section>
                     <div id="radio-station-sections" class="radio-station-sections">
                         <section class="radio-station-section">
@@ -1334,7 +1331,7 @@
     <script src="/static/measurement_ui.js?v=0.9.12"></script>
     <script src="/static/measurement_graph.js?v=0.9.12"></script>
     <script src="/static/measurement_flows.js?v=0.9.12"></script>
-    <script src="/static/radio.js?v=0.9.14"></script>
+    <script src="/static/radio.js?v=0.9.15"></script>
     <script src="/static/app.js?v=0.9.74"></script>
     <script src="/static/streaming.js?v=0.9.44"></script>
 </body>

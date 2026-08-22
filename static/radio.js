@@ -7,6 +7,8 @@
     let initialized = false;
     let api = null;
     let elements = null;
+    const ONLINE_SEARCH_DEBOUNCE_MS = 350;
+    const MAX_ONLINE_SEARCH_RESULTS = 30;
     const state = {
         get stations() { return api.getStations(); },
         set stations(value) { api.setStations(value); },
@@ -14,6 +16,7 @@
         onlineStations: null,
         onlineStatus: '',
         onlineRequestId: 0,
+        onlineSearchTimer: null,
     };
     let showToast;
     let escapeHtml;
@@ -34,7 +37,6 @@
         stationsGrid: document.getElementById('stations-grid'),
         stationSearchInput: document.getElementById('station-search'),
         stationSearchClear: document.getElementById('station-search-clear'),
-        stationSearchOnline: document.getElementById('station-search-online'),
         stationExportAllBtn: document.getElementById('station-export-all'),
         stationsEmptySearch: document.getElementById('stations-empty-search'),
         stationCatalogGrid: document.getElementById('station-catalog-grid'),
@@ -167,14 +169,9 @@
                 if (elements.stationSearchClear) {
                     elements.stationSearchClear.disabled = !elements.stationSearchInput.value;
                 }
-                clearOnlineResults();
+                clearOnlineResults(false);
                 renderStations();
-            });
-            elements.stationSearchInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    searchOnlineStations();
-                }
+                scheduleOnlineStationSearch();
             });
         }
         if (elements.stationSearchClear) {
@@ -182,12 +179,8 @@
                 elements.stationSearchInput.value = '';
                 elements.stationSearchClear.disabled = true;
                 clearOnlineResults();
-                renderStations();
                 elements.stationSearchInput.focus();
             });
-        }
-        if (elements.stationSearchOnline) {
-            elements.stationSearchOnline.addEventListener('click', searchOnlineStations);
         }
         if (elements.stationExportAllBtn) {
             elements.stationExportAllBtn.addEventListener('click', exportAllStations);
@@ -565,12 +558,28 @@
         button.title = 'Added to My Stations';
     }
 
-    function clearOnlineResults() {
+    function clearOnlineResults(shouldRender = true) {
+        if (state.onlineSearchTimer !== null) {
+            clearTimeout(state.onlineSearchTimer);
+            state.onlineSearchTimer = null;
+        }
         state.onlineRequestId++;
         state.onlineStations = null;
         state.onlineStatus = '';
-        if (elements.stationSearchOnline) elements.stationSearchOnline.disabled = false;
-        renderStations();
+        if (shouldRender) renderStations();
+    }
+
+    function scheduleOnlineStationSearch() {
+        if (state.onlineSearchTimer !== null) {
+            clearTimeout(state.onlineSearchTimer);
+            state.onlineSearchTimer = null;
+        }
+        const query = (elements.stationSearchInput?.value || '').trim();
+        if (!query) return;
+        state.onlineSearchTimer = setTimeout(() => {
+            state.onlineSearchTimer = null;
+            searchOnlineStations(query);
+        }, ONLINE_SEARCH_DEBOUNCE_MS);
     }
 
     function syncOnlineSavedState() {
@@ -587,11 +596,10 @@
         });
     }
 
-    async function searchOnlineStations() {
-        const query = (elements.stationSearchInput?.value || '').trim();
+    async function searchOnlineStations(queryOverride = '') {
+        const query = (queryOverride || elements.stationSearchInput?.value || '').trim();
         if (!query) {
-            showToast('Enter a search term', 'warning');
-            elements.stationSearchInput?.focus();
+            clearOnlineResults();
             return;
         }
         const params = new URLSearchParams({ query });
@@ -599,7 +607,6 @@
         state.onlineStations = [];
         state.onlineStatus = 'searching';
         renderSearchResults();
-        if (elements.stationSearchOnline) elements.stationSearchOnline.disabled = true;
         try {
             const resp = await fetch(`/api/station-browser/search?${params.toString()}`);
             const data = await resp.json().catch(() => ({}));
@@ -614,7 +621,6 @@
             state.onlineStatus = 'error';
         } finally {
             if (requestId === state.onlineRequestId) {
-                if (elements.stationSearchOnline) elements.stationSearchOnline.disabled = false;
                 renderSearchResults();
             }
         }
@@ -655,15 +661,16 @@
         const online = onlineMatches
             .filter(station => !personal.some(saved => stationsMatch(saved, station)))
             .filter(station => !catalog.some(item => stationsMatch(item, station)))
-            .map(station => ({ ...station, searchSource: 'online' }));
-        return [...personal, ...catalog, ...online].slice(0, 30);
+            .map(station => ({ ...station, searchSource: 'online' }))
+            .slice(0, MAX_ONLINE_SEARCH_RESULTS);
+        return [...personal, ...catalog, ...online];
     }
 
     function renderSearchResults() {
         if (!elements.stationSearchGrid || !elements.stationSearchStatus) return;
         const results = searchResultStations();
         if (state.onlineStatus === 'searching') {
-            elements.stationSearchStatus.textContent = 'Searching…';
+            elements.stationSearchStatus.textContent = 'Searching the web…';
         } else if (state.onlineStatus === 'error') {
             elements.stationSearchStatus.textContent = 'Online search is currently unavailable. Local results are shown.';
         } else if (!results.length) {
@@ -671,38 +678,53 @@
         } else {
             elements.stationSearchStatus.textContent = '';
         }
-        elements.stationSearchGrid.innerHTML = results.map(station => {
-            const artCandidates = stationArtCandidates(station);
-            const artSrc = artCandidates[0] || stationArtFallbackSvg(station);
-            const isFallbackArt = artSrc.startsWith('data:image/svg+xml');
-            const wrapClass = isFallbackArt ? 'station-art-wrap station-art-wrap--fallback' : 'station-art-wrap station-art-wrap--real';
-            const imgClass = isFallbackArt ? 'station-art station-art--fallback' : 'station-art station-art--real';
-            let action = '';
-            if (station.searchSource === 'catalog') {
-                action = station.is_saved
-                    ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-catalog-id="${escapeHtml(station.id)}" disabled>Saved</button>`
-                    : `<button class="catalog-station-action" type="button" data-catalog-id="${escapeHtml(station.id)}">Add to My Stations</button>`;
-            } else if (station.searchSource === 'online') {
-                action = station.is_saved
-                    ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}" disabled>Saved</button>`
-                    : `<button class="catalog-station-action" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}">Add to My Stations</button>`;
-            }
-            const cardAttrs = station.searchSource === 'personal'
-                ? ` data-station-id="${escapeHtml(station.id)}" role="button" tabindex="0"`
-                : '';
-            const meta = station.searchSource === 'online'
-                ? `<div class="online-station-meta">${escapeHtml(onlineStationMeta(station))}</div>`
-                : '';
-            return `
-            <div class="station-card ${station.searchSource === 'personal' ? '' : 'catalog-station-card'}"${cardAttrs}>
-                <div class="${wrapClass}">
-                    <img class="${imgClass}" src="${escapeHtml(artSrc)}" data-art-candidates="${stationArtCandidatesAttribute(artCandidates)}" data-art-index="0" alt="${escapeHtml(station.title)}" loading="lazy" />
+        const resultGroups = [
+            { source: 'personal', title: 'My Stations', hint: 'Saved locally' },
+            { source: 'catalog', title: 'Station Catalog', hint: 'Curated local stations' },
+            { source: 'online', title: 'Web Results', hint: 'Radio Browser' },
+        ].map(group => ({
+            ...group,
+            stations: results.filter(station => station.searchSource === group.source),
+        })).filter(group => group.stations.length);
+        elements.stationSearchGrid.innerHTML = resultGroups.map(group => `
+            <section class="station-result-group station-result-group--${group.source}">
+                <div class="station-result-group-header">
+                    <h4>${group.title}</h4>
+                    <span>${group.hint}</span>
                 </div>
-                <div class="station-name">${escapeHtml(station.title)}</div>
-                ${meta}
-                ${action}
-            </div>`;
-        }).join('');
+                <div class="stations-grid">${group.stations.map(station => {
+                    const artCandidates = stationArtCandidates(station);
+                    const artSrc = artCandidates[0] || stationArtFallbackSvg(station);
+                    const isFallbackArt = artSrc.startsWith('data:image/svg+xml');
+                    const wrapClass = isFallbackArt ? 'station-art-wrap station-art-wrap--fallback' : 'station-art-wrap station-art-wrap--real';
+                    const imgClass = isFallbackArt ? 'station-art station-art--fallback' : 'station-art station-art--real';
+                    let action = '';
+                    if (station.searchSource === 'catalog') {
+                        action = station.is_saved
+                            ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-catalog-id="${escapeHtml(station.id)}" disabled>Saved</button>`
+                            : `<button class="catalog-station-action" type="button" data-catalog-id="${escapeHtml(station.id)}">Add to My Stations</button>`;
+                    } else if (station.searchSource === 'online') {
+                        action = station.is_saved
+                            ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}" disabled>Saved</button>`
+                            : `<button class="catalog-station-action" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}">Add to My Stations</button>`;
+                    }
+                    const cardAttrs = station.searchSource === 'personal'
+                        ? ` data-station-id="${escapeHtml(station.id)}" role="button" tabindex="0"`
+                        : '';
+                    const meta = station.searchSource === 'online'
+                        ? `<div class="online-station-meta">${escapeHtml(onlineStationMeta(station))}</div>`
+                        : '';
+                    return `
+                    <div class="station-card ${station.searchSource === 'personal' ? '' : 'catalog-station-card'}"${cardAttrs}>
+                        <div class="${wrapClass}">
+                            <img class="${imgClass}" src="${escapeHtml(artSrc)}" data-art-candidates="${stationArtCandidatesAttribute(artCandidates)}" data-art-index="0" alt="${escapeHtml(station.title)}" loading="lazy" />
+                        </div>
+                        <div class="station-name">${escapeHtml(station.title)}</div>
+                        ${meta}
+                        ${action}
+                    </div>`;
+                }).join('')}</div>
+            </section>`).join('');
         bindStationCardPlayback(elements.stationSearchGrid);
         elements.stationSearchGrid.querySelectorAll('.catalog-station-action[data-catalog-id]').forEach(button => {
             button.addEventListener('click', () => addCatalogStation(button.dataset.catalogId, button));

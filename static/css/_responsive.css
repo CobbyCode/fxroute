@@ -1100,9 +1100,6 @@
             gap: 0.06rem;
             padding-top: 0;
         }
-        .radio-search-main-row {
-            grid-template-columns: minmax(0, 1fr) auto;
-        }
         .manage-overlay {
             padding: 0.75rem;
             align-items: flex-end;
@@ -1642,14 +1639,6 @@
         .tab-btn { min-width: 74px; font-size: .78rem; gap: .22rem; }
         .tab-glyph { width: .8rem; font-size: .8rem; }
         .stations-grid { gap: .58rem; }
-
-    /* from _tokens.css */
-    .radio-search-field .radio-search-main-row {
-            grid-template-columns: 1fr;
-        }
-        .radio-search-main-row .radio-search-online {
-            width: 100%;
-        }
 
 }
 
