@@ -115,9 +115,13 @@ assert.ok(css.includes('margin-block-start: clamp(0.5rem, calc(12vw - 5.1rem), 3
     'larger detail metadata must use a stable closed-state anchor');
 assert.ok(!css.includes('transform: translateY(calc(0px - clamp(0.5rem, 1.2vw, 0.9rem)))'),
     'larger detail metadata must not move with content-height-dependent transforms');
-assert.ok(css.includes('width: fit-content;') && css.includes('flex: 0 1 auto;'),
-    'larger detail title rows must keep the favorite close to the title zone');
-assert.ok(css.includes('margin-top: 0.15rem;'),
-    'larger detail favorites must align gently with the title baseline');
+assert.ok(css.includes('gap: 0.7rem;') && css.includes('max-width: 100%;'),
+    'detail title rows must use one shared title-to-favorite gap');
+assert.ok(css.includes('.album-detail--hero .detail-hero-title-row > .album-favorite-toggle'),
+    'library detail favorites must use the shared title-row alignment');
+assert.ok(css.includes('.streaming-detail--hero .detail-hero-title-row > .album-favorite-toggle'),
+    'TIDAL detail favorites must use the shared title-row alignment');
+assert.ok(css.includes('align-self: flex-start;\n    margin: 0;'),
+    'detail favorites must align to the first title line without viewport margins');
 
 console.log('PASS test_detail_hero_ui.js');

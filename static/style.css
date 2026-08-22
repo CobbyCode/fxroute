@@ -1585,12 +1585,13 @@ body {
     display: flex;
     align-items: flex-start;
     gap: 0.7rem;
-    width: 100%;
+    width: fit-content;
+    max-width: 100%;
     min-width: 0;
 }
 .album-detail--hero .detail-hero-title,
 .streaming-detail--hero .detail-hero-title {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     color: var(--text-primary);
     font-size: clamp(1.4rem, 2.4vw, 2.6rem);
@@ -1635,6 +1636,11 @@ body {
     color: var(--text-secondary);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
+}
+.album-detail--hero .detail-hero-title-row > .album-favorite-toggle,
+.streaming-detail--hero .detail-hero-title-row > .album-favorite-toggle {
+    align-self: flex-start;
+    margin: 0;
 }
 .album-detail--hero .album-favorite-toggle:hover,
 .streaming-detail--hero .album-favorite-toggle:hover,
@@ -8031,20 +8037,6 @@ input[type="number"]::-webkit-outer-spin-button {
         align-self: start;
         margin-block-start: clamp(0.5rem, calc(12vw - 5.1rem), 3.2rem);
     }
-    .album-detail--hero .detail-hero-title-row,
-    .streaming-detail--hero .detail-hero-title-row {
-        width: fit-content;
-        max-width: 100%;
-    }
-    .album-detail--hero .detail-hero-title,
-    .streaming-detail--hero .detail-hero-title {
-        flex: 0 1 auto;
-    }
-    .album-detail--hero .album-favorite-toggle,
-    .streaming-detail--hero .album-favorite-toggle {
-        align-self: flex-start;
-        margin-top: 0.15rem;
-    }
 }
 
 /* Phones use the cover as the first visual beat instead of forcing a narrow
@@ -8075,11 +8067,6 @@ input[type="number"]::-webkit-outer-spin-button {
     .streaming-detail--hero .detail-hero-meta {
         align-self: stretch;
         padding: 0.1rem 0 0.2rem;
-    }
-    .album-detail--hero .detail-hero-title-row,
-    .streaming-detail--hero .detail-hero-title-row {
-        display: flex;
-        gap: 0.55rem;
     }
     .album-detail--hero .album-detail-name,
     .streaming-detail--hero .tidal-detail-title {

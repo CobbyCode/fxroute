@@ -1799,20 +1799,6 @@
         align-self: start;
         margin-block-start: clamp(0.5rem, calc(12vw - 5.1rem), 3.2rem);
     }
-    .album-detail--hero .detail-hero-title-row,
-    .streaming-detail--hero .detail-hero-title-row {
-        width: fit-content;
-        max-width: 100%;
-    }
-    .album-detail--hero .detail-hero-title,
-    .streaming-detail--hero .detail-hero-title {
-        flex: 0 1 auto;
-    }
-    .album-detail--hero .album-favorite-toggle,
-    .streaming-detail--hero .album-favorite-toggle {
-        align-self: flex-start;
-        margin-top: 0.15rem;
-    }
 }
 
 /* Phones use the cover as the first visual beat instead of forcing a narrow
@@ -1843,11 +1829,6 @@
     .streaming-detail--hero .detail-hero-meta {
         align-self: stretch;
         padding: 0.1rem 0 0.2rem;
-    }
-    .album-detail--hero .detail-hero-title-row,
-    .streaming-detail--hero .detail-hero-title-row {
-        display: flex;
-        gap: 0.55rem;
     }
     .album-detail--hero .album-detail-name,
     .streaming-detail--hero .tidal-detail-title {
