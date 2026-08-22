@@ -1647,7 +1647,8 @@
 
     /* from _library.css */
     .albums-grid,
-        .tidal-tiles {
+        .tidal-tiles,
+        .streaming-similar-grid {
             grid-template-columns: repeat(auto-fit, minmax(160px, 160px));
         }
         .track-duration {

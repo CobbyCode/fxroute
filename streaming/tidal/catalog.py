@@ -91,6 +91,60 @@ def normalize_album(album: Any) -> dict:
     }
 
 
+def _album_quality_rank(value: Any) -> int:
+    quality = _name(value).upper().replace("-", "_").replace(" ", "_")
+    if "HI_RES" in quality or "MASTER" in quality or quality == "MQA":
+        return 3
+    if "LOSSLESS" in quality:
+        return 2
+    if quality in {"HIGH", "AAC"}:
+        return 1
+    return 0
+
+
+def _album_release_key(album: dict) -> tuple | None:
+    """Identify quality variants without collapsing distinct editions."""
+    title = " ".join(str(album.get("title") or "").casefold().split())
+    artist = " ".join(str(album.get("artist_id") or album.get("artist") or "").casefold().split())
+    year = album.get("year")
+    num_tracks = album.get("num_tracks")
+    if not title or not artist or not year or not num_tracks:
+        return None
+    return artist, title, int(year), int(num_tracks)
+
+
+def _album_preference(album: dict) -> tuple[int, int]:
+    return _album_quality_rank(album.get("audio_quality")), int(bool(album.get("available", True)))
+
+
+def _dedupe_albums(albums: list[dict]) -> list[dict]:
+    """Drop duplicate album identities while retaining the best quality."""
+    result: list[dict] = []
+    indexes: dict[tuple, int] = {}
+    for album in albums:
+        keys: list[tuple] = []
+        album_id = str(album.get("id") or "").strip()
+        if album_id:
+            keys.append(("id", album_id))
+        release_key = _album_release_key(album)
+        if release_key is not None:
+            keys.append(("release", release_key))
+
+        existing_index = None
+        for key in keys:
+            if key in indexes:
+                existing_index = indexes[key]
+                break
+        if existing_index is None:
+            existing_index = len(result)
+            result.append(album)
+        elif _album_preference(album) > _album_preference(result[existing_index]):
+            result[existing_index] = album
+        for key in keys:
+            indexes[key] = existing_index
+    return result
+
+
 # TIDAL picture UUID -> CDN URL template (same one tidalapi uses for
 # album/playlist images). 480px is a valid artist resolution in tidalapi
 # (160/320/480/750); 640 is album-only and 403s for artists.
@@ -205,7 +259,8 @@ def search(query: str, types: list[str] | None = None, limit: int = 25) -> dict:
             out[key] = []
             continue
         normalizer = _SEARCH_NORMALIZERS[key]
-        out[key] = [normalizer(item) for item in items]
+        normalized = [normalizer(item) for item in items]
+        out[key] = _dedupe_albums(normalized) if key == "albums" else normalized
     return out
 
 
@@ -257,7 +312,7 @@ def favorites_albums(limit: int = 50) -> list[dict]:
         albums = session.user.favorites.albums(limit=limit)
     except Exception as exc:  # noqa: BLE001
         raise auth.TidalAuthError(f"TIDAL favorite albums failed: {exc}") from exc
-    return [normalize_album(a) for a in albums]
+    return _dedupe_albums([normalize_album(a) for a in albums])
 
 
 def favorites_artists(limit: int = 50) -> list[dict]:
@@ -399,7 +454,7 @@ def get_artist(artist_id: str) -> dict:
         raise auth.TidalAuthError(f"TIDAL artist {artist_id} lookup failed: {exc}") from exc
     return {
         **normalize_artist(artist),
-        "albums": [normalize_album(a) for a in albums],
+        "albums": _dedupe_albums([normalize_album(a) for a in albums]),
         "top_tracks": [normalize_track(t) for t in top_tracks],
     }
 

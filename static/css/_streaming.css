@@ -637,9 +637,12 @@
    .streaming-result-cover tile) + name, responsive grid. */
 .streaming-similar-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-    gap: 0.7rem;
-    margin: 0.5rem 0 0;
+    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)));
+    justify-content: center;
+    gap: var(--tile-gap);
+    width: 100%;
+    max-width: calc(100% - 2rem);
+    margin: 0.5rem auto 0;
     padding: 0;
     list-style: none;
 }

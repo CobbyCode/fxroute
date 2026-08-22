@@ -503,6 +503,53 @@ class CatalogFavoritesTests(unittest.TestCase):
         self.assertEqual(data["top_tracks"][0]["title"], "Track")
         self.assertEqual(data["top_tracks"][0]["id"], "5")
 
+    def test_artist_and_search_album_results_deduplicate_release_variants(self):
+        from streaming.tidal import catalog
+
+        def make_album(album_id, title, quality, year=1996, tracks=10):
+            return SimpleNamespace(
+                id=album_id,
+                name=title,
+                artist=SimpleNamespace(id=77, name="Artist"),
+                image=lambda size=640, album_id=album_id: f"https://c/{album_id}.jpg",
+                num_tracks=tracks,
+                audio_quality=quality,
+                available=True,
+                year=year,
+            )
+
+        artist = SimpleNamespace(
+            id=77,
+            name="Artist",
+            picture=None,
+            get_albums=lambda limit=50, offset=0: [
+                make_album("low", "Album", "LOW"),
+                make_album("lossless", "Album", "LOSSLESS"),
+                make_album("edition", "Album (Deluxe)", "LOSSLESS", tracks=14),
+                make_album("edition", "Album (Deluxe)", "LOSSLESS", tracks=14),
+            ],
+            get_top_tracks=lambda limit=10, offset=0: [],
+        )
+        session = _favorites_session(FakeFavorites())
+        session.artist = lambda artist_id: artist
+        session.search = lambda query, models=None, limit=50: _FakeSearchResults({
+            "albums": [
+                make_album("lossless", "Album", "LOSSLESS"),
+                make_album("low", "Album", "LOW"),
+                make_album("edition", "Album (Deluxe)", "LOSSLESS", tracks=14),
+            ],
+        })
+        fake_mod = _fake_tidalapi_module()
+        with mock.patch.object(auth, "tidalapi", fake_mod), \
+             mock.patch.object(auth, "tidalapi_available", return_value=True), \
+             mock.patch.object(auth.manager, "session", return_value=session), \
+             mock.patch.dict(sys.modules, {"tidalapi": fake_mod}):
+            artist_data = catalog.get_artist("77")
+            search_data = catalog.search("Artist", types=["albums"])
+
+        self.assertEqual([album["id"] for album in artist_data["albums"]], ["lossless", "edition"])
+        self.assertEqual([album["id"] for album in search_data["albums"]], ["lossless", "edition"])
+
     def test_set_playlist_favorite_add_and_remove(self):
         from streaming.tidal import catalog
 

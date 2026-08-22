@@ -728,7 +728,7 @@ class ArtistEnrichmentService:
             artist_name,
             art_url=art_url,
             album_titles=[album_title] if album_title else None,
-            load_similar=False,
+            load_similar=True,
         )
         supplement: dict[str, Any] = {}
         if artist.get("available") and artist.get("mb_artist_id"):
@@ -753,6 +753,7 @@ class ArtistEnrichmentService:
                 "mapped": artist.get("available") is True,
                 "cached": bool(artist.get("cached")),
             },
+            "similar": artist.get("similar") or [],
             "supplement": supplement,
             "error": artist.get("error"),
         }

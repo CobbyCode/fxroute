@@ -4662,6 +4662,7 @@ function formatLibraryScanStatus() {
 }
 function renderTracks() {
     renderLibraryViewButtons();
+    updateLibraryViewModeToggle();
     renderLibraryFolderPath();
     // Hide album/playlist views when in tracks/folders mode
     if (elements.albumsGrid) elements.albumsGrid.classList.add('hidden');
@@ -4889,13 +4890,14 @@ function storeViewMode(surface, mode) {
     } catch (e) { /* keep working without persistence */ }
 }
 function setAlbumLayout(mode) {
+    if (state.library.viewMode !== 'albums' || state.library.albumDetail || state.library.playlistDetail) return;
     const layout = mode === 'list' ? 'list' : 'grid';
     storeViewMode('library-albums', layout);
     state.library.albumLayout = layout;
     renderAlbums();
 }
 function updateLibraryViewModeToggle() {
-    const active = state.library.viewMode === 'albums';
+    const active = state.library.viewMode === 'albums' && !state.library.albumDetail && !state.library.playlistDetail;
     if (elements.libraryViewModeToggle) elements.libraryViewModeToggle.classList.toggle('hidden', !active);
     const layout = state.library.albumLayout || 'grid';
     if (elements.libraryViewModeGridBtn) {
@@ -5152,6 +5154,7 @@ async function openAlbumDetail(albumId) {
         const tracks = await res.json();
         state.library.albumDetail = { album, tracks };
         state.library.playlistDetail = null;
+        updateLibraryViewModeToggle();
 
         // Update detail header
         const coverUrl = albumCoverUrl(album);
@@ -5198,6 +5201,7 @@ async function openSmartTopTracks() {
         };
         state.library.albumDetail = { album, tracks: Array.isArray(tracks) ? tracks : [] };
         state.library.playlistDetail = null;
+        updateLibraryViewModeToggle();
         const knownIds = new Set(state.library.tracks.map(t => t.id));
         for (const track of state.library.albumDetail.tracks) {
             if (track?.id && !knownIds.has(track.id)) {
@@ -5507,6 +5511,7 @@ function openPlaylistDetail(playlistId) {
     const tracks = resolvePlaylistTracks(playlist);
     state.library.playlistDetail = { playlist, tracks };
     state.library.albumDetail = null;
+    updateLibraryViewModeToggle();
 
     if (elements.playlistDetailCover) {
         elements.playlistDetailCover.innerHTML = playlistCoverHtml(playlist);

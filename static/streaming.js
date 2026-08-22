@@ -1312,12 +1312,13 @@
         return 'data:image/svg+xml,' + encodeURIComponent(svg);
     }
 
-    function coverImg(url) {
+    function coverImg(url, loading = 'lazy') {
         if (!url) return '';
         // A cover that fails to load (stale/missing TIDAL picture) removes
         // itself so the row falls back to the neutral :empty placeholder
         // instead of showing a broken-image icon.
-        return '<img src="' + escapeHtml(url) + '" alt="" loading="lazy" onerror="this.remove()" />';
+        const loadingAttr = loading ? ' loading="' + escapeHtml(loading) + '"' : '';
+        return '<img src="' + escapeHtml(url) + '" alt=""' + loadingAttr + ' decoding="async" onerror="this.remove()" />';
     }
 
     function tidalTrackThumbHtml(url) {
@@ -1692,7 +1693,13 @@
             const items = await tracksResp.json();
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
             renderTidalAlbumMeta(content, meta, (meta && meta.enrichment) || null);
-            renderDetailTracks(results, items, null);
+            const similar = (meta && meta.enrichment && meta.enrichment.similar) || [];
+            if (Array.isArray(items) && items.length) renderDetailTracks(results, items, null);
+            else results.innerHTML = '';
+            const hasSimilar = renderSimilarArtists(results, similar);
+            if ((!Array.isArray(items) || !items.length) && !hasSimilar) {
+                results.innerHTML = contentState('empty', 'No tracks or similar artists available.');
+            }
         } catch (err) {
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
             results.innerHTML = contentState('error', friendlyError(err?.message || err));
@@ -1793,16 +1800,7 @@
                 results.appendChild(list);
             }
             const similar = (data.enrichment && data.enrichment.similar) || [];
-            if (similar.length) {
-                const heading = document.createElement('h4');
-                heading.className = 'streaming-results-heading';
-                heading.textContent = 'Discover Similar';
-                results.appendChild(heading);
-                const list = document.createElement('ul');
-                list.className = 'streaming-similar-grid';
-                similar.forEach((item) => list.appendChild(renderSimilarArtistItem(item)));
-                results.appendChild(list);
-            }
+            renderSimilarArtists(results, similar);
             if (!tracks.length && !albums.length && !similar.length) {
                 results.innerHTML = contentState('empty', 'No tracks or albums available.');
             }
@@ -1822,7 +1820,7 @@
         li.setAttribute('tabindex', '0');
         li.setAttribute('aria-label', 'Open artist ' + (item.artist || ''));
         li.innerHTML =
-            '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
+            '<div class="streaming-result-cover">' + coverImg(item.art_url, 'eager') + '</div>' +
             '<span class="streaming-similar-name">' + escapeHtml(item.artist || 'Unknown artist') + '</span>';
         li.addEventListener('click', () => openTidalSimilarArtist(item));
         li.addEventListener('keydown', (event) => {
@@ -1832,6 +1830,22 @@
             }
         });
         return li;
+    }
+
+    function renderSimilarArtists(container, items) {
+        const similar = Array.isArray(items)
+            ? items.filter((item) => item && item.artist).slice(0, 6)
+            : [];
+        if (!similar.length) return false;
+        const heading = document.createElement('h4');
+        heading.className = 'streaming-results-heading';
+        heading.textContent = 'Discover Similar';
+        container.appendChild(heading);
+        const list = document.createElement('ul');
+        list.className = 'streaming-similar-grid';
+        similar.forEach((item) => list.appendChild(renderSimilarArtistItem(item)));
+        container.appendChild(list);
+        return true;
     }
 
     // Similar-artist navigation. A cached/mapped provider artist id opens the

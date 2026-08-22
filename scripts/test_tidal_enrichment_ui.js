@@ -109,15 +109,23 @@ assert.ok(!factsRender.includes('supp.year') && !factsRender.includes('supp.audi
 // Test #8 + #9: mapped id opens the artist directly; otherwise exactly one
 // normal TIDAL artist search, falling back to the existing search-result flow.
 const similarRender = extractFunction(js, 'loadTidalArtist');
-assert.ok(similarRender.includes("'Discover Similar'"),
-    'artist detail must render a Discover Similar section');
-assert.ok(similarRender.includes('streaming-similar-grid') && similarRender.includes('renderSimilarArtistItem(item)'),
-    'similar artists must render as a card grid');
+assert.ok(similarRender.includes('renderSimilarArtists(results, similar)'),
+    'artist detail must use the shared similar-artist renderer');
+const similarGrid = extractFunction(js, 'renderSimilarArtists');
+assert.ok(similarGrid.includes("'Discover Similar'") && similarGrid.includes('streaming-similar-grid') && similarGrid.includes('renderSimilarArtistItem(item)'),
+    'similar artists must render as a card grid through one shared helper');
 const similarItem = extractFunction(js, 'renderSimilarArtistItem');
-assert.ok(similarItem.includes('coverImg(item.art_url)'),
-    'similar cards reuse the shared cover (and neutral placeholder) markup');
+assert.ok(similarItem.includes("coverImg(item.art_url, 'eager')"),
+    'similar cards must request available covers during the first render');
 assert.ok(similarItem.includes("openTidalSimilarArtist(item)"),
     'similar card click must route through the similar-artist opener');
+const cover = extractFunction(js, 'coverImg');
+assert.ok(cover.includes('loading'),
+    'shared cover markup must support an explicit loading priority');
+
+const albumLoad = extractFunction(js, 'loadTidalAlbum');
+assert.ok(albumLoad.includes('renderSimilarArtists(results, similar)') && albumLoad.includes('enrichment.similar'),
+    'album detail must reuse the same Discover Similar card renderer');
 
 const openSimilar = extractFunction(js, 'openTidalSimilarArtist');
 assert.ok(openSimilar.includes('item.provider_artist_id'),
@@ -148,7 +156,13 @@ assert.ok(!js.includes("openTidalSimilarArtist((input.value || '').trim())"),
     'similar-artist navigation must never run a live per-keystroke search');
 
 // --- style for the similar grid ---------------------------------------------
-assert.ok(css.includes('.streaming-similar-grid') && css.includes('.streaming-similar-item'),
-    'similar grid and card styles must ship');
+const similarCssStart = css.indexOf('.streaming-similar-grid');
+const similarCssEnd = css.indexOf('}', similarCssStart);
+const similarCss = css.slice(similarCssStart, similarCssEnd + 1);
+assert.ok(similarCss.includes('grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)))') &&
+    similarCss.includes('justify-content: center') && similarCss.includes('margin: 0.5rem auto 0'),
+    'similar cards must use the same centered tile alignment as album cards');
+assert.ok(css.includes('.streaming-similar-item'),
+    'similar item styles must ship');
 
 console.log('PASS  scripts/test_tidal_enrichment_ui.js');

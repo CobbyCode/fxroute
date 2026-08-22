@@ -750,6 +750,7 @@ class TidalProviderEnrichmentTests(unittest.IsolatedAsyncioTestCase):
         enrich = data["enrichment"]
         self.assertTrue(enrich["available"])
         self.assertTrue(enrich["artist"]["mapped"])
+        self.assertEqual(enrich["similar"][0]["artist"], "Justice")
         self.assertIn("release_type", enrich["supplement"])
         self.assertIn("label", enrich["supplement"])
         self.assertIn("genres", enrich["supplement"])
