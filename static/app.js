@@ -478,6 +478,7 @@ const elements = {
     albumDetail: document.getElementById('album-detail'),
     albumDetailBack: document.getElementById('album-detail-back'),
     albumDetailCover: document.getElementById('album-detail-cover'),
+    albumDetailBackdrop: document.getElementById('album-detail-backdrop'),
     albumDetailName: document.getElementById('album-detail-name'),
     albumDetailArtist: document.getElementById('album-detail-artist'),
     albumDetailCount: document.getElementById('album-detail-count'),
@@ -5072,6 +5073,24 @@ function setAlbumCoverImage(img, coverUrl, fallbackText) {
     img.src = coverUrl || fallbackSvg;
 }
 
+function setAlbumDetailBackdrop(coverUrl) {
+    const image = elements.albumDetailBackdrop;
+    const backdrop = image?.closest('.detail-header-backdrop');
+    if (!image || !backdrop) return;
+    if (!coverUrl) {
+        image.removeAttribute('src');
+        backdrop.hidden = true;
+        return;
+    }
+    image.onerror = function() {
+        this.onerror = null;
+        this.removeAttribute('src');
+        backdrop.hidden = true;
+    };
+    backdrop.hidden = false;
+    image.src = coverUrl;
+}
+
 // Square cover thumbnail for the left of a track row. Resolves the track's
 // album cover (same lookup the playlist collage uses) and falls back to the
 // neutral :empty placeholder when there is no artwork.
@@ -5159,6 +5178,7 @@ async function openAlbumDetail(albumId) {
         // Update detail header
         const coverUrl = albumCoverUrl(album);
         setAlbumCoverImage(elements.albumDetailCover, coverUrl, album.name || album.artist || 'Album');
+        setAlbumDetailBackdrop(coverUrl);
         elements.albumDetailName.textContent = album.name;
         elements.albumDetailArtist.textContent = album.artist;
         elements.albumDetailCount.textContent = `${tracks.length} track${tracks.length === 1 ? '' : 's'}`;
@@ -5214,6 +5234,7 @@ async function openSmartTopTracks() {
             `${album.coverUrl}?v=${state.library.albumsCacheToken || ''}`,
             album.name
         );
+        setAlbumDetailBackdrop(`${album.coverUrl}?v=${state.library.albumsCacheToken || ''}`);
         elements.albumDetailName.textContent = album.name;
         elements.albumDetailArtist.textContent = album.artist;
         elements.albumDetailCount.textContent = `${state.library.albumDetail.tracks.length} track${state.library.albumDetail.tracks.length === 1 ? '' : 's'}`;

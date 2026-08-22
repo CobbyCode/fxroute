@@ -532,19 +532,13 @@
     margin: 0;
 }
 
-/* Tidal album and playlist detail mirror the library album view: the shared
-   header grid places the back button (library class) in the title row, the
-   cover scales to library proportions, and a star favorite (library class)
-   sits in the title row. Shared by both detail views; the playlist
-   additionally keeps its Play playlist button. */
+/* TIDAL detail-specific type and spacing sit on top of the shared artwork-led
+   hero. Album, artist and playlist retain their existing actions and facts. */
 .tidal-detail-header .streaming-detail-cover {
     width: 160px;
     height: 160px;
     border-radius: 14px;
 }
-/* The detail cover uses one responsive size for library and Tidal details:
-   160px by default, 120px on phones (no per-provider size rule). */
-
 .tidal-detail-meta { gap: 0.3rem; }
 .tidal-detail-title-row {
     display: flex;

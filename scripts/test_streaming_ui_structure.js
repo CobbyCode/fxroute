@@ -415,15 +415,14 @@ for (const fn of [albumRender, playlistRender]) {
         'Tidal back button must be inside the detail header');
 }
 // The shared header grid places cover / meta / back in one row on wide
-// screens. On narrow ones the hero stays compact side by side (cover left,
-// meta right) and only the back button moves to its own line; the hero is
-// never stacked vertically or centered.
+// screens. Tablet keeps a two-column reading flow; phones stack Back, cover,
+// and metadata so the artwork and long titles retain useful scale.
 assert.ok(/grid-template-areas:\s*"cover meta back"/.test(css),
     'detail header must be a cover/meta/back grid row');
 assert.ok(css.includes('"back back"') && css.includes('"cover meta"'),
-    'narrow detail header must keep cover/meta side by side with back on its own line');
-assert.ok(!/"back"\s*"cover"\s*"meta"/.test(css),
-    'narrow detail header must not stack back/cover/meta vertically');
+    'tablet detail header must keep cover/meta side by side with back on its own line');
+assert.ok(/"back"\s*"cover"\s*"meta"/.test(css),
+    'phone detail header must stack back/cover/meta vertically');
 
 // --- status line is a main-surface-only detail ------------------------------
 // The permanent Connected status stays on the main catalog surface; detail

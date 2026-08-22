@@ -1621,9 +1621,24 @@
 
     function detailCoverHtml(extraClass) {
         const art = state.tidal.detailArt || '';
-        if (!art) return '';
-        const cls = 'streaming-detail-cover' + (extraClass ? ' ' + extraClass : '');
-        return '<div class="' + cls + '">' + coverImg(art) + '</div>';
+        const cls = 'streaming-detail-cover detail-hero-cover' + (extraClass ? ' ' + extraClass : '');
+        const image = art ? coverImg(art, 'eager') : '<span class="detail-cover-placeholder" aria-hidden="true">♫</span>';
+        return '<div class="' + cls + '">' + image + '</div>';
+    }
+
+    function detailBackdropHtml() {
+        const art = state.tidal.detailArt || '';
+        const hidden = art ? '' : ' hidden';
+        return '<div class="detail-header-backdrop" aria-hidden="true"' + hidden + '>' +
+            (art ? coverImg(art, 'eager') : '') + '</div>';
+    }
+
+    function syncDetailBackdrop(container, artUrl) {
+        const backdrop = container && container.querySelector('.detail-header-backdrop');
+        if (!backdrop) return;
+        const art = String(artUrl || '');
+        backdrop.hidden = !art;
+        backdrop.innerHTML = art ? coverImg(art, 'eager') : '';
     }
 
     function renderTidalAlbum(content) {
@@ -1635,12 +1650,13 @@
         // label and genres when they are missing, and the artist about renders
         // as the same collapsible library "About" component.
         content.innerHTML =
-            '<div class="streaming-detail tidal-detail">' +
-                '<div class="streaming-detail-header tidal-detail-header">' +
+            '<div class="streaming-detail streaming-detail--hero tidal-detail">' +
+                '<div class="streaming-detail-header detail-hero-header tidal-detail-header">' +
+                    detailBackdropHtml() +
                     detailCoverHtml('tidal-detail-cover') +
-                    '<div class="streaming-detail-main tidal-detail-meta">' +
-                        '<div class="tidal-detail-title-row">' +
-                            '<h3 class="streaming-detail-title tidal-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
+                    '<div class="streaming-detail-main detail-hero-meta tidal-detail-meta">' +
+                        '<div class="tidal-detail-title-row detail-hero-title-row">' +
+                            '<h3 class="streaming-detail-title tidal-detail-title detail-hero-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
                             favoriteDetailHtml('albums') +
                         '</div>' +
                         '<p class="streaming-detail-artist tidal-detail-artist" id="tidal-album-artist"></p>' +
@@ -1661,8 +1677,10 @@
             const titleEl = content.querySelector('.tidal-detail-title');
             if (titleEl) titleEl.textContent = meta.title || state.tidal.detailTitle;
             if (meta.art_url) {
+                state.tidal.detailArt = meta.art_url;
                 const cover = content.querySelector('.tidal-detail-cover');
-                if (cover) cover.innerHTML = coverImg(meta.art_url);
+                if (cover) cover.innerHTML = coverImg(meta.art_url, 'eager');
+                syncDetailBackdrop(content, meta.art_url);
             }
             const artistEl = content.querySelector('#tidal-album-artist');
             if (artistEl) artistEl.textContent = meta.artist || '';
@@ -1735,12 +1753,13 @@
         // compact inside the hero, bounded with a subtle More/Less toggle for
         // long bios — followed by Top Tracks, Albums and Discover Similar.
         content.innerHTML =
-            '<div class="streaming-detail tidal-detail">' +
-                '<div class="streaming-detail-header tidal-detail-header">' +
+            '<div class="streaming-detail streaming-detail--hero tidal-detail">' +
+                '<div class="streaming-detail-header detail-hero-header tidal-detail-header">' +
+                    detailBackdropHtml() +
                     detailCoverHtml('tidal-detail-cover') +
-                    '<div class="streaming-detail-main tidal-detail-meta">' +
-                        '<div class="tidal-detail-title-row">' +
-                            '<h3 class="streaming-detail-title tidal-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
+                    '<div class="streaming-detail-main detail-hero-meta tidal-detail-meta">' +
+                        '<div class="tidal-detail-title-row detail-hero-title-row">' +
+                            '<h3 class="streaming-detail-title tidal-detail-title detail-hero-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
                             favoriteDetailHtml('artists') +
                         '</div>' +
                         '<p class="streaming-detail-artist tidal-detail-artist" id="tidal-artist-facts"></p>' +
@@ -1790,10 +1809,11 @@
             try { await loadTidalFavoriteIds(); } catch (e) { /* hearts degrade to unfilled */ }
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'artist') return;
             rememberTidalArtist(data);
-            if (data.art_url && data.art_url !== state.tidal.detailArt) {
+            if (data.art_url) {
                 state.tidal.detailArt = data.art_url;
                 const cover = content.querySelector('.tidal-detail-cover');
-                if (cover) cover.innerHTML = coverImg(data.art_url);
+                if (cover) cover.innerHTML = coverImg(data.art_url, 'eager');
+                syncDetailBackdrop(content, data.art_url);
             }
             const factsEl = content.querySelector('#tidal-artist-facts');
             if (factsEl) {
@@ -2022,12 +2042,13 @@
         // Same library-mirroring layout as the album detail; the playlist adds
         // its Play playlist action and shows the track count as the facts line.
         content.innerHTML =
-            '<div class="streaming-detail tidal-detail">' +
-                '<div class="streaming-detail-header tidal-detail-header">' +
+            '<div class="streaming-detail streaming-detail--hero tidal-detail">' +
+                '<div class="streaming-detail-header detail-hero-header tidal-detail-header">' +
+                    detailBackdropHtml() +
                     detailCoverHtml('tidal-detail-cover') +
-                    '<div class="streaming-detail-main tidal-detail-meta">' +
-                        '<div class="tidal-detail-title-row">' +
-                            '<h3 class="streaming-detail-title tidal-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
+                    '<div class="streaming-detail-main detail-hero-meta tidal-detail-meta">' +
+                        '<div class="tidal-detail-title-row detail-hero-title-row">' +
+                            '<h3 class="streaming-detail-title tidal-detail-title detail-hero-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
                             favoriteDetailHtml('playlists') +
                         '</div>' +
                         '<div class="streaming-detail-facts tidal-detail-facts" id="tidal-playlist-facts"></div>' +

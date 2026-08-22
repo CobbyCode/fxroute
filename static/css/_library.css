@@ -218,11 +218,8 @@
     flex-direction: column;
     gap: 1rem;
 }
-/* Shared detail header grid for the library album detail and the Tidal
-    album/playlist details: cover | meta (title + star, artist, facts) | back.
-    On wide screens the back button sits on the title row, top-right; on narrow
-    screens the hero stays compact (cover left, meta right) and the back button
-    takes its own line. */
+/* Baseline detail header grid for the library album/playlist and TIDAL details.
+   The artwork-led roots below opt into the larger framed hero composition. */
 .album-detail-header,
 .streaming-detail-header {
     display: grid;
@@ -387,6 +384,219 @@
 .album-detail-about p {
     margin: 0.35rem 0 0;
     max-width: 64ch;
+}
+
+/* Artwork-led detail heroes. The local playlist deliberately keeps the
+   compact header above; only the album detail and TIDAL detail roots opt in. */
+.album-detail--hero,
+.streaming-detail--hero {
+    gap: clamp(1rem, 1.8vw, 1.5rem);
+}
+.album-detail--hero .detail-hero-header,
+.streaming-detail--hero .detail-hero-header {
+    position: relative;
+    display: grid;
+    grid-template-columns: clamp(220px, 26vw, 330px) minmax(0, 1fr) auto;
+    grid-template-areas: "cover meta back";
+    align-items: end;
+    gap: clamp(1.35rem, 3vw, 3.2rem);
+    min-height: clamp(320px, 31vw, 420px);
+    padding: clamp(1.2rem, 3vw, 2.8rem);
+    overflow: hidden;
+    isolation: isolate;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 24px;
+    background: linear-gradient(135deg, rgba(23, 31, 35, 0.96), rgba(13, 14, 18, 0.98) 72%);
+    box-shadow: 0 22px 50px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+.detail-hero-header::before,
+.detail-hero-header::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+.detail-hero-header::before {
+    z-index: 1;
+    background:
+        linear-gradient(90deg, rgba(10, 13, 17, 0.5), rgba(10, 13, 17, 0.84) 54%, rgba(10, 13, 17, 0.94)),
+        linear-gradient(180deg, rgba(6, 8, 11, 0.08), rgba(6, 8, 11, 0.34));
+}
+.detail-hero-header::after {
+    z-index: 1;
+    background: radial-gradient(circle at 14% 20%, rgba(110, 231, 183, 0.12), transparent 34%);
+    mix-blend-mode: screen;
+    opacity: 0.55;
+}
+.detail-header-backdrop {
+    position: absolute;
+    z-index: 0;
+    inset: -12%;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0.34;
+    filter: blur(36px) saturate(1.25);
+    transform: scale(1.08);
+}
+.detail-header-backdrop[hidden] {
+    display: none;
+}
+.detail-header-backdrop:empty {
+    display: none;
+}
+.detail-header-backdrop img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.album-detail--hero .detail-hero-header > :not(.detail-header-backdrop),
+.streaming-detail--hero .detail-hero-header > :not(.detail-header-backdrop) {
+    position: relative;
+    z-index: 2;
+}
+.album-detail--hero .detail-hero-header .detail-hero-cover,
+.streaming-detail--hero .detail-hero-header .detail-hero-cover {
+    grid-area: cover;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    min-width: 0;
+    align-self: end;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 20px;
+    background: rgba(7, 10, 13, 0.7);
+    box-shadow: 0 22px 42px rgba(0, 0, 0, 0.42), 0 0 0 8px rgba(255, 255, 255, 0.018);
+}
+.album-detail--hero .detail-hero-cover {
+    object-fit: cover;
+    padding: 0;
+}
+.streaming-detail--hero .detail-hero-cover img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.detail-cover-placeholder {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    color: var(--accent);
+    font-size: clamp(2rem, 5vw, 4rem);
+    opacity: 0.52;
+    background: radial-gradient(circle at 50% 40%, rgba(110, 231, 183, 0.16), transparent 65%);
+}
+.streaming-detail--hero .detail-hero-cover:empty {
+    display: grid;
+    place-items: center;
+    background: radial-gradient(circle at 50% 40%, rgba(110, 231, 183, 0.16), rgba(7, 10, 13, 0.86) 68%);
+}
+.streaming-detail--hero .detail-hero-cover:empty::before {
+    content: '♫';
+    color: var(--accent);
+    font-size: clamp(2rem, 5vw, 4rem);
+    opacity: 0.52;
+}
+.album-detail--hero .detail-hero-meta,
+.streaming-detail--hero .detail-hero-meta {
+    grid-area: meta;
+    align-self: end;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.7rem;
+    min-width: 0;
+    max-width: 780px;
+    padding-bottom: 0.15rem;
+}
+.album-detail--hero .detail-hero-title-row,
+.streaming-detail--hero .detail-hero-title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.7rem;
+    width: 100%;
+    min-width: 0;
+}
+.album-detail--hero .detail-hero-title,
+.streaming-detail--hero .detail-hero-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: clamp(1.8rem, 3.6vw, 3.5rem);
+    font-weight: 760;
+    line-height: 1.02;
+    letter-spacing: -0.055em;
+    overflow-wrap: anywhere;
+}
+.album-detail--hero .album-detail-artist,
+.streaming-detail--hero .tidal-detail-artist {
+    color: rgba(236, 236, 240, 0.82);
+    font-size: clamp(1rem, 1.55vw, 1.3rem);
+    line-height: 1.25;
+}
+.album-detail--hero .album-detail-count,
+.streaming-detail--hero .streaming-detail-facts,
+.album-detail--hero .album-detail-facts {
+    margin-top: 0;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.45;
+}
+.album-detail--hero .album-detail-facts,
+.streaming-detail--hero .streaming-detail-facts {
+    gap: 0.28rem;
+}
+.album-detail--hero .album-detail-about,
+.streaming-detail--hero .album-detail-about,
+.streaming-detail--hero .tidal-artist-about {
+    margin-top: 0.15rem;
+    color: rgba(208, 211, 219, 0.82);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+.album-detail--hero .album-favorite-toggle,
+.streaming-detail--hero .album-favorite-toggle {
+    width: 42px;
+    height: 42px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 50%;
+    background: rgba(7, 10, 13, 0.38);
+    color: var(--text-secondary);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+.album-detail--hero .album-favorite-toggle:hover,
+.streaming-detail--hero .album-favorite-toggle:hover,
+.album-detail--hero .album-favorite-toggle.active,
+.streaming-detail--hero .album-favorite-toggle.active {
+    border-color: rgba(110, 231, 183, 0.62);
+    color: var(--accent);
+    background: rgba(110, 231, 183, 0.1);
+}
+.album-detail--hero .detail-hero-header .album-detail-back,
+.streaming-detail--hero .detail-hero-header .album-detail-back {
+    grid-area: back;
+    align-self: start;
+    justify-self: end;
+    min-height: 38px;
+    padding: 0.35rem 0.7rem;
+    border-color: rgba(255, 255, 255, 0.13);
+    background: rgba(7, 10, 13, 0.34);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+.streaming-detail--hero #tidal-detail-play {
+    min-height: 42px;
+    margin-top: 0.25rem;
+    padding-inline: 1.05rem;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+}
+.album-detail--hero > .album-detail-tracks,
+.streaming-detail--hero > .streaming-results {
+    margin-top: 0.2rem;
 }
 .album-detail-tracks {
     display: flex;
