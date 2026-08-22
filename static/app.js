@@ -4643,11 +4643,21 @@ function renderLibraryFolderPath() {
         path = path ? `${path}/${part}` : part;
         html += `<span>/</span><button type="button" data-folder="${escapeHtml(path)}">${escapeHtml(part)}</button>`;
     });
+    if (current) {
+        html += '<button id="library-folder-back" class="library-folder-back" type="button" aria-label="Back to parent folder" title="Back to parent folder">← Back</button>';
+    }
     elements.libraryFolderPath.innerHTML = html;
     elements.libraryFolderPath.classList.remove('hidden');
     elements.libraryFolderPath.querySelectorAll('button[data-folder]').forEach(btn => {
         btn.addEventListener('click', () => setLibraryFolder(btn.dataset.folder || ''));
     });
+    const backButton = elements.libraryFolderPath.querySelector('#library-folder-back');
+    if (backButton) {
+        backButton.addEventListener('click', () => {
+            const parentFolder = current.split('/').filter(Boolean).slice(0, -1).join('/');
+            setLibraryFolder(parentFolder);
+        });
+    }
 }
 function formatLibraryScanStatus() {
     const status = state.library.scanStatus;
