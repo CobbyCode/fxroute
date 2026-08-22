@@ -53,6 +53,7 @@
 
     const POLL_INTERVAL_MS = 2000;
     const TIDAL_POLL_INTERVAL_MS = 2500;
+    const TIDAL_SEARCH_DEBOUNCE_MS = 300;
 
     const state = {
         providers: {},          // id -> { descriptor, root, els, tabBtn, tabPanel }
@@ -68,6 +69,8 @@
             searchResultType: 'tracks',
             searchResults: null,
             searchRequestId: 0,
+            searchDebounceTimer: null,
+            searchInFlight: false,
             trackSelectionMode: false,
             selectedTrackIds: new Set(),
             detailRequestId: 0,
@@ -988,7 +991,6 @@
                     '<div class="streaming-search">' +
                         '<div class="streaming-search-row">' +
                             '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search" autocomplete="off" />' +
-                            '<button type="button" class="btn-secondary" id="tidal-search-btn">Search</button>' +
                         '</div>' +
                     '</div>' +
                 '</div>' +
@@ -1010,6 +1012,14 @@
         }));
         if (state.tidal.searchExecuted && state.tidal.searchResults) {
             renderTidalSearchResults(document.getElementById('tidal-browse-body'), state.tidal.searchResults);
+        } else if (state.tidal.searchExecuted && state.tidal.searchQuery) {
+            const body = document.getElementById('tidal-browse-body');
+            if (body) {
+                body.innerHTML = contentState('loading', 'Searching…');
+                if (state.tidal.searchDebounceTimer === null && !state.tidal.searchInFlight) {
+                    void executeTidalSearch(state.tidal.searchResultType);
+                }
+            }
         } else {
             renderTidalBrowseSection(state.tidal.browseCategory);
         }
@@ -1026,30 +1036,51 @@
 
     // -- search (permanent bar sharing the second header row) ----------------
     // Executing a search replaces the browse body with results; clearing it
-    // returns to the current browse category (Tracks by default). The bar
+    // returns to the current browse category (Albums by default). The bar
     // lives in the browse surface, so the contentKey guard keeps a running
     // search (and its results) intact across status refreshes.
+    function cancelTidalSearchDebounce() {
+        if (state.tidal.searchDebounceTimer !== null) {
+            clearTimeout(state.tidal.searchDebounceTimer);
+            state.tidal.searchDebounceTimer = null;
+        }
+    }
+
     function bindTidalSearchBar(root) {
         const input = root.querySelector('#tidal-search-input');
-        const doSearch = async () => {
+        const startSearch = (immediate) => {
             const query = (input.value || '').trim();
+            cancelTidalSearchDebounce();
             if (!query) {
                 clearTidalSearch();
                 return;
             }
+            // Invalidate the previous generation before waiting, not only when
+            // the next request starts. A late response must not render during
+            // the debounce window for a newer query.
+            state.tidal.searchRequestId += 1;
             state.tidal.searchQuery = query;
             state.tidal.searchExecuted = true;
-            await executeTidalSearch(state.tidal.searchResultType);
+            state.tidal.searchResults = null;
+            state.tidal.searchInFlight = false;
+            state.tidal.trackSelectionMode = false;
+            state.tidal.selectedTrackIds.clear();
+            const body = root.querySelector('#tidal-browse-body');
+            if (body) body.innerHTML = contentState('loading', immediate ? 'Searching…' : 'Waiting to search…');
+            if (immediate) {
+                void executeTidalSearch(state.tidal.searchResultType);
+                return;
+            }
+            state.tidal.searchDebounceTimer = setTimeout(() => {
+                state.tidal.searchDebounceTimer = null;
+                void executeTidalSearch(state.tidal.searchResultType);
+            }, TIDAL_SEARCH_DEBOUNCE_MS);
         };
-        root.querySelector('#tidal-search-btn').addEventListener('click', doSearch);
-        input.addEventListener('input', () => {
-            if ((input.value || '').trim() || !state.tidal.searchExecuted) return;
-            clearTidalSearch();
-        });
+        input.addEventListener('input', () => startSearch(false));
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
-                doSearch();
+                startSearch(true);
             } else if (e.key === 'Escape') {
                 e.preventDefault();
                 clearTidalSearch();
@@ -1059,10 +1090,12 @@
 
     function resetTidalSearch() {
         // Invalidate a response that is still resolving after clear/navigation.
+        cancelTidalSearchDebounce();
         state.tidal.searchRequestId += 1;
         state.tidal.searchQuery = '';
         state.tidal.searchExecuted = false;
         state.tidal.searchResults = null;
+        state.tidal.searchInFlight = false;
         state.tidal.trackSelectionMode = false;
         state.tidal.selectedTrackIds.clear();
         const input = document.getElementById('tidal-search-input');
@@ -1119,12 +1152,14 @@
     const TIDAL_SEARCH_TYPE_LABELS = { artists: 'Artists', tracks: 'Tracks', albums: 'Albums', playlists: 'Playlists' };
 
     async function executeTidalSearch(type) {
+        cancelTidalSearchDebounce();
         if (!state.tidal.searchExecuted || !state.tidal.searchQuery) return;
         const body = document.getElementById('tidal-browse-body');
         if (!body) return;
         const query = state.tidal.searchQuery;
         const requestId = ++state.tidal.searchRequestId;
         state.tidal.searchResultType = type;
+        state.tidal.searchInFlight = true;
         state.tidal.trackSelectionMode = false;
         state.tidal.selectedTrackIds.clear();
         body.innerHTML = contentState('loading', 'Searching…');
@@ -1134,6 +1169,7 @@
             const data = await resp.json();
             if (requestId !== state.tidal.searchRequestId) return;
             state.tidal.searchResults = data;
+            state.tidal.searchInFlight = false;
             try { await loadTidalFavoriteIds(); } catch (e) { /* hearts render unfilled until state loads */ }
             if (requestId === state.tidal.searchRequestId) {
                 const currentBody = document.getElementById('tidal-browse-body');
@@ -1141,6 +1177,7 @@
             }
         } catch (err) {
             if (requestId !== state.tidal.searchRequestId) return;
+            state.tidal.searchInFlight = false;
             const currentBody = document.getElementById('tidal-browse-body');
             if (currentBody) currentBody.innerHTML = contentState('error', friendlyError(err?.message || err));
         }
@@ -1999,18 +2036,20 @@
         }
         const name = (item && item.artist) || '';
         if (!name) return;
-        void resolveTidalArtistByName(name);
+        void resolveTidalArtistByName(name, state.tidal.detailRequestId);
     }
 
-    async function resolveTidalArtistByName(name) {
+    async function resolveTidalArtistByName(name, detailRequestId) {
         try {
             const match = await resolveTidalArtistMatch(name);
+            if (detailRequestId !== state.tidal.detailRequestId || !isTidalDetailView()) return;
             if (match && !match.ambiguous) {
                 openTidalArtist(match.id, match.name || name, match.art_url || '');
                 return;
             }
             throw new Error('no unique artist match');
         } catch (err) {
+            if (detailRequestId !== state.tidal.detailRequestId || !isTidalDetailView()) return;
             showTidalSearchResultsFor(name);
         }
     }
@@ -2030,11 +2069,14 @@
         state.tidal.searchExecuted = true;
         state.tidal.searchResultType = 'artists';
         state.tidal.searchResults = null;
+        state.tidal.searchInFlight = false;
+        cancelTidalSearchDebounce();
         const entry = entryFor('tidal');
         if (entry) {
             renderTidalBrowse(entry);
+        } else {
+            void executeTidalSearch('artists');
         }
-        void executeTidalSearch('artists');
     }
 
     function renderTidalPlaylist(content) {

@@ -148,8 +148,8 @@ assert.ok(openSimilar.includes('item.provider_artist_id'),
     'a cached provider mapping must open the artist directly');
 assert.ok(openSimilar.includes("openTidalArtist(item.provider_artist_id"),
     'mapped similar artists jump straight into the artist detail');
-assert.ok(openSimilar.includes('resolveTidalArtistByName(name)'),
-    'unmapped similar artists trigger exactly one name resolver');
+assert.ok(openSimilar.includes('resolveTidalArtistByName(name, state.tidal.detailRequestId)'),
+    'unmapped similar artists trigger one generation-scoped name resolver');
 
 const resolveByName = extractFunction(js, 'resolveTidalArtistByName');
 assert.ok(resolveByName.includes('resolveTidalArtistMatch(name)'),
@@ -158,6 +158,8 @@ assert.ok(resolveByName.includes("openTidalArtist(match.id"),
     'a single unique match must open the matching TIDAL artist');
 assert.ok(resolveByName.includes('showTidalSearchResultsFor(name)'),
     'an ambiguous fallback must reuse the existing search-result flow');
+assert.ok(resolveByName.includes('detailRequestId !== state.tidal.detailRequestId') && resolveByName.includes('isTidalDetailView()'),
+    'late similar-artist navigation must be ignored after leaving the detail');
 
 const resolveMatch = extractFunction(js, 'resolveTidalArtistMatch');
 assert.ok(resolveMatch.includes('artistLookupCache') && resolveMatch.includes('artistLookupPromises'),

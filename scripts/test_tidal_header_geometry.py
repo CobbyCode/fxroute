@@ -149,7 +149,7 @@ def _run():
                       page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
                 check(f"[{width}px] footer present", page.locator("#playback-bar").count() == 1)
 
-            # Search still works: typing + Enter executes the stored query.
+            # Enter still executes the current query immediately.
             activate()
             page.fill("#tidal-search-input", "daft punk")
             page.keyboard.press("Enter")

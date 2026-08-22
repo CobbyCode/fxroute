@@ -183,9 +183,13 @@ function runStreaming(options = {}) {
             __visibleTab: 'radio',
             setInterval: () => 0,
             clearInterval: () => {},
+            setTimeout,
+            clearTimeout,
         },
         setInterval: () => 0,
         clearInterval: () => {},
+        setTimeout,
+        clearTimeout,
         fetch: async (url, opts) => {
             fetchCalls.push({ url: String(url), opts: opts || {} });
             const u = String(url);
@@ -400,6 +404,7 @@ async function main() {
     // First authenticated render lands on Albums, not an empty Search screen.
     assert.ok(content.innerHTML.includes('streaming-browse'), 'browse surface must render');
     assert.ok(content.innerHTML.includes('id="tidal-search-input"'), 'search bar must be part of the browse surface');
+    assert.ok(!content.innerHTML.includes('tidal-search-btn'), 'direct search must not render a Search button');
     assert.ok(content.innerHTML.indexOf('tidal-search-input') > content.innerHTML.indexOf('tidal-subbar') &&
         content.innerHTML.indexOf('tidal-search-input') > content.innerHTML.indexOf('data-browse='),
         'search bar must share the second header row with the navigation');
@@ -415,18 +420,19 @@ async function main() {
     content.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'albums').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // Typing alone must not execute a search.
+    // Typing waits for the debounce interval before executing a search.
     const input = content.querySelector('#tidal-search-input');
     input.value = 'daft punk';
+    input.dispatch('input');
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(fetchCalls.filter((c) => c.url.startsWith('/api/streaming/tidal/search?')).length, 0,
-        'typing must not trigger live TIDAL search');
+        'typing must not trigger an immediate TIDAL search');
 
-    // Executing a search replaces the browse body with results.
-    input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    // Once the pause expires, the search replaces the browse body with results.
+    await new Promise((resolve) => setTimeout(resolve, 350));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(fetchCalls.some((c) => c.url.startsWith('/api/streaming/tidal/search?q=daft%20punk')),
-        'search must hit the TIDAL search endpoint');
+        'debounced search must hit the TIDAL search endpoint');
     const resultCount = createdEls.filter((el) => el.className === 'streaming-result').length;
     assert.equal(resultCount, 2, 'search must render all track result rows');
     assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('Search results for'),
@@ -496,9 +502,9 @@ async function main() {
 
     // Escape resets the search back to the browse section too.
     input.value = 'daft punk';
-    content.querySelector('#tidal-search-btn').click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    input.dispatch('input');
     input.dispatch('keydown', { key: 'Escape', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-results'),
         'Escape must clear the search back to the browse section');
 

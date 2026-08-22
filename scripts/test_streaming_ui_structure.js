@@ -136,8 +136,8 @@ assert.ok(js.includes('function bindTidalSearchBar'),
 assert.ok(js.includes('function resetTidalSearch') && js.includes('function clearTidalSearch'),
     'search reset must be explicit state, not DOM-only toggling');
 const tidalBrowseRender = extractFunction(js, 'renderTidalBrowse');
-assert.ok(tidalBrowseRender.includes('id="tidal-search-input"') && tidalBrowseRender.includes('id="tidal-search-btn"'),
-    'the search bar must be part of the browse surface');
+assert.ok(tidalBrowseRender.includes('id="tidal-search-input"') && !tidalBrowseRender.includes('tidal-search-btn'),
+    'the direct search input must be part of the browse surface without a Search button');
 assert.ok(tidalBrowseRender.includes('placeholder="Search"'),
     'the Tidal search placeholder must stay compact');
 assert.ok(tidalBrowseRender.indexOf('tidal-search-input') > tidalBrowseRender.indexOf('data-browse=') &&
@@ -192,7 +192,15 @@ assert.ok(js.includes('if (!state.tidal.searchExecuted || !state.tidal.searchQue
 assert.ok(js.includes('void executeTidalSearch(type)'),
     'changing a search type must automatically execute the stored query');
 assert.ok(js.includes("input.addEventListener('input'"),
-    'clearing the search field must leave the result state immediately');
+    'TIDAL search must react to input changes');
+assert.ok(js.includes('const TIDAL_SEARCH_DEBOUNCE_MS = 300'),
+    'TIDAL direct search must use a short debounce delay');
+assert.ok(js.includes('searchDebounceTimer'),
+    'TIDAL direct search must cancel a pending debounce timer');
+assert.ok(js.includes('state.tidal.searchRequestId += 1'),
+    'new input and clearing must invalidate older search generations');
+assert.ok(!js.includes('id="tidal-search-btn"'),
+    'the old Search button must stay removed');
 
 // --- shared compact view tabs (Library + TIDAL browse + search) ------------
 // Library Tracks/Folders/Albums and TIDAL Tracks/Albums/Artists/Playlists
