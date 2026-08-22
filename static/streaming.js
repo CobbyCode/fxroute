@@ -990,7 +990,7 @@
                     '</div>' +
                     '<div class="streaming-search">' +
                         '<div class="streaming-search-row">' +
-                            '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search" autocomplete="off" />' +
+                            '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search albums, tracks, artists, playlists…" data-placeholder-full="Search albums, tracks, artists, playlists…" data-placeholder-compact="Search…" autocomplete="off" />' +
                         '</div>' +
                     '</div>' +
                 '</div>' +
@@ -1048,6 +1048,21 @@
 
     function bindTidalSearchBar(root) {
         const input = root.querySelector('#tidal-search-input');
+        const updatePlaceholder = () => {
+            const compact = window.matchMedia && window.matchMedia('(max-width: 600px)').matches;
+            input.placeholder = compact
+                ? (input.dataset.placeholderCompact || 'Search…')
+                : (input.dataset.placeholderFull || 'Search albums, tracks, artists, playlists…');
+        };
+        updatePlaceholder();
+        if (window.matchMedia) {
+            const placeholderQuery = window.matchMedia('(max-width: 600px)');
+            if (placeholderQuery.addEventListener) {
+                placeholderQuery.addEventListener('change', updatePlaceholder);
+            } else if (placeholderQuery.addListener) {
+                placeholderQuery.addListener(updatePlaceholder);
+            }
+        }
         const startSearch = (immediate) => {
             const query = (input.value || '').trim();
             cancelTidalSearchDebounce();

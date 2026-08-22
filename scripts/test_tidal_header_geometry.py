@@ -118,7 +118,7 @@ def _run():
 
             # Desktop/tablet widths: title + Connected/refresh on row 1,
             # navigation + search on row 2, shared right edge, no overflow.
-            for width in (1440, 1024, 834):
+            for width in (1440, 1024, 834, 768):
                 page.set_viewport_size({"width": width, "height": 800})
                 page.wait_for_timeout(200)
                 activate()
@@ -130,6 +130,7 @@ def _run():
                 search_box = page.locator(".tidal-subbar .streaming-search").bounding_box()
                 title_text = page.locator(".tidal-toolbar-title").inner_text().strip()
                 status_text = page.locator(".tidal-toolbar-actions .streaming-status").inner_text()
+                placeholder = page.locator("#tidal-search-input").get_attribute("placeholder")
 
                 check(f"[{width}px] Tidal title text is 'Tidal'", title_text == "Tidal")
                 check(f"[{width}px] title and actions share one header row",
@@ -141,6 +142,11 @@ def _run():
                       abs(_right_edge(actions_box) - _right_edge(search_box)) <= 1.5)
                 check(f"[{width}px] navigation and search share one second row",
                       abs(_center(tabs_box) - _center(search_box)) <= 2)
+                check(f"[{width}px] search has the full placeholder",
+                      placeholder == "Search albums, tracks, artists, playlists…")
+                if width <= 1024:
+                    check(f"[{width}px] tablet search is compact",
+                          search_box["width"] < 430)
                 check(f"[{width}px] single navigation row (no Favorites level)",
                       page.locator("#tidal-fav-types").count() == 0)
                 check(f"[{width}px] second row sits below the title row",
@@ -189,6 +195,8 @@ def _run():
                   abs(_center(title_box) - _center(actions_box)) <= 2)
             check("[390px] search wraps below the navigation",
                   _center(search_box) - _center(tabs_box) > 8)
+            check("[390px] search uses the compact placeholder",
+                  page.locator("#tidal-search-input").get_attribute("placeholder") == "Search…")
             check("[390px] refresh button visible",
                   page.locator("#tidal-refresh-btn").is_visible())
             check("[390px] no horizontal overflow on mobile",

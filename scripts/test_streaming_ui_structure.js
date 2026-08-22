@@ -138,8 +138,9 @@ assert.ok(js.includes('function resetTidalSearch') && js.includes('function clea
 const tidalBrowseRender = extractFunction(js, 'renderTidalBrowse');
 assert.ok(tidalBrowseRender.includes('id="tidal-search-input"') && !tidalBrowseRender.includes('tidal-search-btn'),
     'the direct search input must be part of the browse surface without a Search button');
-assert.ok(tidalBrowseRender.includes('placeholder="Search"'),
-    'the Tidal search placeholder must stay compact');
+assert.ok(tidalBrowseRender.includes('data-placeholder-full="Search albums, tracks, artists, playlists…"') &&
+    tidalBrowseRender.includes('data-placeholder-compact="Search…"'),
+    'the Tidal search placeholder must have full and compact variants');
 assert.ok(tidalBrowseRender.indexOf('tidal-search-input') > tidalBrowseRender.indexOf('data-browse=') &&
     tidalBrowseRender.indexOf('tidal-search-input') > tidalBrowseRender.indexOf('tidal-subbar'),
     'the search bar must share the second header row with the browse navigation');
@@ -175,8 +176,8 @@ assert.ok(js.includes('state.tidal.searchRequestId += 1'),
     'clearing or navigating away must invalidate pending search responses');
 assert.ok(js.includes('if (input && state.tidal.searchExecuted) input.value = state.tidal.searchQuery'),
     'a content-key rebuild must restore the executed query in the search input');
-assert.ok(js.includes('placeholder="Search"'),
-    'TIDAL search must use the short Search placeholder');
+assert.ok(js.includes("window.matchMedia('(max-width: 600px)'") && js.includes('placeholderQuery.addEventListener'),
+    'TIDAL search must switch its placeholder at the compact breakpoint');
 assert.ok(!js.includes('id="tidal-search-types"'),
     'search types must not be rendered beside the browse search bar');
 assert.ok(js.includes('function renderTidalSearchResults'),
