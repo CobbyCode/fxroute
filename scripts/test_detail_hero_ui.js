@@ -101,13 +101,15 @@ assert.ok(css.includes('font-size: clamp(1.55rem, 2.55vw, 2.75rem)'),
     'desktop detail titles must use a restrained scale');
 assert.ok(css.includes('grid-template-columns: minmax(170px, 24vw) minmax(0, 1fr)'),
     'tablet detail heroes must use a narrower cover column');
-assert.ok(css.includes('font-size: clamp(1.55rem, 3.1vw, 2.3rem)'),
-    'tablet detail titles must use a calmer scale');
+assert.ok(css.includes('font-size: clamp(1.45rem, 2.8vw, 2.15rem)'),
+    'tablet detail titles must use a slightly smaller scale');
 assert.ok(css.includes('width: min(62vw, 220px)'),
     'phone detail covers must stay prominent without dominating the hero');
-assert.ok(css.includes('font-size: clamp(1.55rem, 7vw, 2rem)'),
-    'phone detail titles must use a calmer scale');
-assert.ok(css.includes('transform: translateY(-clamp(0.5rem, 1.2vw, 0.9rem))'),
+assert.ok(css.includes('font-size: clamp(1.4rem, 6.5vw, 1.9rem)'),
+    'phone detail titles must use a smaller scale than tablets');
+assert.ok(css.includes('transform: translateY(calc(0px - clamp(1rem, 2.4vw, 1.6rem)))'),
+    'tablet detail metadata must sit noticeably higher beside the cover');
+assert.ok(css.includes('transform: translateY(calc(0px - clamp(0.5rem, 1.2vw, 0.9rem)))'),
     'larger detail heroes must lift the metadata block without pinning it to the top');
 assert.ok(css.includes('width: fit-content;') && css.includes('flex: 0 1 auto;'),
     'larger detail title rows must keep the favorite close to the title zone');
