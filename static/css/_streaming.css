@@ -656,6 +656,7 @@
 }
 .streaming-similar-item .streaming-result-cover {
     width: 100%;
+    height: auto;
     aspect-ratio: 1 / 1;
     border-radius: 12px;
     background: var(--bg-elevated);

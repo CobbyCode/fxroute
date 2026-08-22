@@ -162,6 +162,11 @@ const similarCss = css.slice(similarCssStart, similarCssEnd + 1);
 assert.ok(similarCss.includes('grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)))') &&
     similarCss.includes('justify-content: center') && similarCss.includes('margin: 0.5rem auto 0'),
     'similar cards must use the same centered tile alignment as album cards');
+const similarCoverStart = css.indexOf('.streaming-similar-item .streaming-result-cover');
+const similarCoverEnd = css.indexOf('}', similarCoverStart);
+const similarCoverCss = css.slice(similarCoverStart, similarCoverEnd + 1);
+assert.ok(similarCoverCss.includes('height: auto'),
+    'similar covers must override the row cover height to stay square');
 assert.ok(css.includes('.streaming-similar-item'),
     'similar item styles must ship');
 

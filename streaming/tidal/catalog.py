@@ -86,6 +86,7 @@ def normalize_album(album: Any) -> dict:
         "art_url": _cover_url(album),
         "num_tracks": int(getattr(album, "num_tracks", 0) or 0),
         "audio_quality": _name(getattr(album, "audio_quality", None)),
+        "version": _name(getattr(album, "version", None)),
         "available": bool(getattr(album, "available", True)),
         "year": int(getattr(album, "year", 0) or 0) or None,
     }
@@ -106,11 +107,10 @@ def _album_release_key(album: dict) -> tuple | None:
     """Identify quality variants without collapsing distinct editions."""
     title = " ".join(str(album.get("title") or "").casefold().split())
     artist = " ".join(str(album.get("artist_id") or album.get("artist") or "").casefold().split())
-    year = album.get("year")
-    num_tracks = album.get("num_tracks")
-    if not title or not artist or not year or not num_tracks:
+    version = " ".join(str(album.get("version") or "").casefold().split())
+    if not title or not artist:
         return None
-    return artist, title, int(year), int(num_tracks)
+    return artist, title, version, int(album.get("year") or 0), int(album.get("num_tracks") or 0)
 
 
 def _album_preference(album: dict) -> tuple[int, int]:

@@ -506,7 +506,7 @@ class CatalogFavoritesTests(unittest.TestCase):
     def test_artist_and_search_album_results_deduplicate_release_variants(self):
         from streaming.tidal import catalog
 
-        def make_album(album_id, title, quality, year=1996, tracks=10):
+        def make_album(album_id, title, quality, year=1996, tracks=10, version=None):
             return SimpleNamespace(
                 id=album_id,
                 name=title,
@@ -516,6 +516,7 @@ class CatalogFavoritesTests(unittest.TestCase):
                 audio_quality=quality,
                 available=True,
                 year=year,
+                version=version,
             )
 
         artist = SimpleNamespace(
@@ -549,6 +550,46 @@ class CatalogFavoritesTests(unittest.TestCase):
 
         self.assertEqual([album["id"] for album in artist_data["albums"]], ["lossless", "edition"])
         self.assertEqual([album["id"] for album in search_data["albums"]], ["lossless", "edition"])
+
+    def test_album_version_preserves_editions_and_sparse_quality_variants_dedupe(self):
+        from streaming.tidal import catalog
+
+        def make_album(album_id, title, quality, year=None, tracks=0, version=None):
+            return SimpleNamespace(
+                id=album_id,
+                name=title,
+                artist=SimpleNamespace(id=77, name="Artist"),
+                image=lambda size=640, album_id=album_id: f"https://c/{album_id}.jpg",
+                num_tracks=tracks,
+                audio_quality=quality,
+                available=True,
+                year=year,
+                version=version,
+            )
+
+        artist = SimpleNamespace(
+            id=77,
+            name="Artist",
+            picture=None,
+            get_albums=lambda limit=50, offset=0: [
+                make_album("original", "Same Album", "LOSSLESS", year=2000, tracks=10, version="Original"),
+                make_album("remaster", "Same Album", "LOSSLESS", year=2000, tracks=10, version="Remastered"),
+                make_album("sparse-low", "Sparse Album", "LOW"),
+                make_album("sparse-lossless", "Sparse Album", "LOSSLESS"),
+            ],
+            get_top_tracks=lambda limit=10, offset=0: [],
+        )
+        session = _favorites_session(FakeFavorites())
+        session.artist = lambda artist_id: artist
+        fake_mod = _fake_tidalapi_module()
+        with mock.patch.object(auth, "tidalapi", fake_mod), \
+             mock.patch.object(auth, "tidalapi_available", return_value=True), \
+             mock.patch.object(auth.manager, "session", return_value=session), \
+             mock.patch.dict(sys.modules, {"tidalapi": fake_mod}):
+            albums = catalog.get_artist("77")["albums"]
+
+        self.assertEqual([album["id"] for album in albums], ["original", "remaster", "sparse-lossless"])
+        self.assertEqual([album["version"] for album in albums], ["Original", "Remastered", ""])
 
     def test_set_playlist_favorite_add_and_remove(self):
         from streaming.tidal import catalog
