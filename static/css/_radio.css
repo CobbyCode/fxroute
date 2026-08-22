@@ -7,7 +7,7 @@
 }
 .radio-panel-header {
     display: grid;
-    grid-template-columns: auto minmax(420px, 820px) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(420px, 820px) minmax(0, 1fr);
     align-items: center;
     gap: 0.8rem;
     margin-bottom: 1.45rem;
@@ -229,7 +229,10 @@
 .radio-search-results .online-station-meta {
     min-height: calc(1.3em * 2);
 }
-.radio-search-results .catalog-station-action {
+.catalog-station-card .station-name {
+    min-height: calc(1.3em * 2);
+}
+.catalog-station-card .catalog-station-action {
     margin-top: auto;
 }
 .radio-station-section {

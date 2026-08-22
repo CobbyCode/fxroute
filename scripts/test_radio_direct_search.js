@@ -63,9 +63,21 @@ assert.match(renderSearchResults, /My Stations/,
 assert.match(renderSearchResults, /Web Results/,
     'Radio Browser stations must be labelled in direct search results');
 
+assert.match(css, /\.radio-panel-header\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(420px,\s*820px\)\s+minmax\(0,\s*1fr\)/,
+    'Radio search must use equal side tracks to center the header field');
+assert.match(css, /@media\s*\(min-width:\s*1200px\)[\s\S]*?\.radio-search-input-wrap\s*\{[\s\S]*?margin-inline:\s*6\.5rem;/,
+    'desktop Radio search must preserve its width with centered margins');
+assert.match(css, /@media\s*\(min-width:\s*900px\)[\s\S]*?\.radio-search-input-wrap\s*\{[\s\S]*?margin-inline:\s*5\.125rem;/,
+    'tablet Radio search must preserve its width with centered margins');
+assert.match(css, /@media\s*\(min-width:\s*701px\)\s*and\s*\(max-width:\s*1199px\)[\s\S]*?\.radio-panel-header\s*\{[\s\S]*?minmax\(420px,\s*calc\(100%\s*-\s*13\.8rem\)\)/,
+    'tablet Radio header must preserve the previous search track width');
+assert.match(css, /\.catalog-station-card\s+\.station-name\s*\{[\s\S]*?min-height:\s*calc\(1\.3em\s*\*\s*2\);/,
+    'catalog cards must reserve two title lines');
+assert.match(css, /\.catalog-station-card\s+\.catalog-station-action\s*\{[\s\S]*?margin-top:\s*auto;/,
+    'catalog actions must share the same bottom line');
 assert.match(css, /\.radio-search-results[\s\S]*?\.station-name[\s\S]*?min-height:\s*(?:calc\([^;]+\)|[^;]+);/,
     'direct-search station names must reserve two lines');
-assert.match(css, /\.radio-search-results[\s\S]*?\.catalog-station-action[\s\S]*?margin-top:\s*auto;/,
+assert.match(css, /\.radio-search-results[\s\S]*?\.catalog-station-card\s+\.catalog-station-action[\s\S]*?margin-top:\s*auto;/,
     'direct-search actions must align at the bottom of every result card');
 
 console.log('PASS scripts/test_radio_direct_search.js');

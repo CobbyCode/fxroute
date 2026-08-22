@@ -968,7 +968,7 @@
 @media (min-width: 1200px) and (max-width: 2559px) {
     /* from _playback.css */
     .radio-search-input-wrap {
-            margin-left: 13rem;
+            margin-inline: 6.5rem;
         }
 
 }
@@ -976,7 +976,7 @@
 @media (min-width: 900px) and (max-width: 1199px) {
     /* from _playback.css */
     .radio-search-input-wrap {
-            margin-left: 10.25rem;
+            margin-inline: 5.125rem;
         }
 
 }
@@ -984,10 +984,17 @@
 @media (min-width: 2560px) {
     /* from _playback.css */
     .radio-search-input-wrap {
-            margin-left: 8.25rem;
+            margin-inline: 4.125rem;
         }
         .manage-dialog {
             width: min(620px, 100%);
+        }
+
+}
+
+@media (min-width: 701px) and (max-width: 1199px) {
+    .radio-panel-header {
+            grid-template-columns: minmax(0, 1fr) minmax(420px, calc(100% - 13.8rem)) minmax(0, 1fr);
         }
 
 }

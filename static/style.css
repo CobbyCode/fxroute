@@ -2548,7 +2548,7 @@ body {
 }
 .radio-panel-header {
     display: grid;
-    grid-template-columns: auto minmax(420px, 820px) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(420px, 820px) minmax(0, 1fr);
     align-items: center;
     gap: 0.8rem;
     margin-bottom: 1.45rem;
@@ -2770,7 +2770,10 @@ body {
 .radio-search-results .online-station-meta {
     min-height: calc(1.3em * 2);
 }
-.radio-search-results .catalog-station-action {
+.catalog-station-card .station-name {
+    min-height: calc(1.3em * 2);
+}
+.catalog-station-card .catalog-station-action {
     margin-top: auto;
 }
 .radio-station-section {
@@ -7231,7 +7234,7 @@ input[type="number"]::-webkit-outer-spin-button {
 @media (min-width: 1200px) and (max-width: 2559px) {
     /* from _playback.css */
     .radio-search-input-wrap {
-            margin-left: 13rem;
+            margin-inline: 6.5rem;
         }
 
 }
@@ -7239,7 +7242,7 @@ input[type="number"]::-webkit-outer-spin-button {
 @media (min-width: 900px) and (max-width: 1199px) {
     /* from _playback.css */
     .radio-search-input-wrap {
-            margin-left: 10.25rem;
+            margin-inline: 5.125rem;
         }
 
 }
@@ -7247,10 +7250,17 @@ input[type="number"]::-webkit-outer-spin-button {
 @media (min-width: 2560px) {
     /* from _playback.css */
     .radio-search-input-wrap {
-            margin-left: 8.25rem;
+            margin-inline: 4.125rem;
         }
         .manage-dialog {
             width: min(620px, 100%);
+        }
+
+}
+
+@media (min-width: 701px) and (max-width: 1199px) {
+    .radio-panel-header {
+            grid-template-columns: minmax(0, 1fr) minmax(420px, calc(100% - 13.8rem)) minmax(0, 1fr);
         }
 
 }
