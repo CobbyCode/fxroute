@@ -1314,6 +1314,14 @@ body {
     outline-offset: 2px;
     border-radius: 6px;
 }
+
+.playlist-delete-toggle {
+    font-size: 1.12rem;
+    color: var(--text-secondary);
+}
+.playlist-delete-toggle:hover {
+    color: #f87171;
+}
 .album-detail-facts {
     display: flex;
     flex-direction: column;

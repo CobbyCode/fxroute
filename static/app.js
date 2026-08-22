@@ -474,6 +474,7 @@ const elements = {
     playlistDetailName: document.getElementById('playlist-detail-name'),
     playlistDetailCount: document.getElementById('playlist-detail-count'),
     playlistDetailTracks: document.getElementById('playlist-detail-tracks'),
+    playlistDetailDelete: document.getElementById('playlist-detail-delete'),
     albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
@@ -5871,8 +5872,7 @@ async function savePlaylist() {
     if (trackIds.length < 2) {
         showToast('Select at least 2 tracks', 'error');
         return;
-    }
-    elements.savePlaylistBtn.disabled = true;
+    }        elements.savePlaylistBtn.disabled = true;
     try {
         const resp = await fetch('/api/playlists', {
             method: 'POST',
@@ -5881,7 +5881,10 @@ async function savePlaylist() {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save playlist');
+        // Success: finalize the action. Clear the name field, the selection
+        // (selectedTrackIds + rendered +/check marks), and the save row.
         if (elements.playlistName) elements.playlistName.value = '';
+        clearTrackSelection();
         await fetchPlaylists();
         showToast(`Saved: ${data.playlist?.name || name}`, 'success');
     } catch (e) {
@@ -13023,6 +13026,17 @@ function setupLibraryActions() {
     }
     if (elements.playlistDetailBack) {
         elements.playlistDetailBack.addEventListener('click', () => closePlaylistDetail());
+    }
+    if (elements.playlistDetailDelete) {
+        elements.playlistDetailDelete.addEventListener('click', async () => {
+            const detail = state.library.playlistDetail;
+            if (!detail || !detail.playlist) return;
+            await deletePlaylistById(detail.playlist.id);
+            // deletePlaylistById reloads playlists; close the (now gone) detail.
+            if (!state.playlists.some(p => p.id === (detail.playlist && detail.playlist.id))) {
+                closePlaylistDetail();
+            }
+        });
     }
     elements.toggleImportBtn.addEventListener('click', () => {
         const shouldOpen = elements.libraryImportPanel.classList.contains('hidden');
