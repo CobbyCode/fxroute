@@ -479,6 +479,7 @@ const elements = {
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
     savePlaylistBtn: document.getElementById('save-playlist'),
+    cancelPlaylistSelectionBtn: document.getElementById('cancel-playlist-selection'),
     playlistSaveRow: document.getElementById('playlist-save-row'),
     playlistSaveControls: document.querySelector('.playlist-save-controls'),
     libraryInfo: document.getElementById('library-info'),
@@ -5643,6 +5644,14 @@ function clearTrackSelection() {
     updateLibrarySelectionUI();
     syncRenderedTrackSelection();
 }
+// Conscious end of the playlist-build selection: clears the cross-album
+// selectedTrackIds (+/check marks), the name field, and the save row.
+// Used by the Cancel button; Save calls clearTrackSelection on success.
+function cancelPlaylistSelection() {
+    clearTrackSelection();
+    if (elements.playlistName) elements.playlistName.value = '';
+    updatePlaylistSaveRowVisibility();
+}
 function selectAllVisibleTracks() {
     const selectedIds = new Set(state.library.selectedTrackIds);
     getFilteredTracks().forEach(track => selectedIds.add(track.id));
@@ -5726,10 +5735,11 @@ function syncRenderedTrackSelection() {
 function updatePlaylistSaveRowVisibility() {
     if (!elements.playlistSaveRow) return;
     const count = state.library.selectedTrackIds.length;
-    // The playlist-build selection is independent of the view mode: whenever
-    // at least two tracks are selected (album detail, tracks or folders), the
-    // existing save-playlist row stays reachable.
-    const hasPlaylistSelection = count >= 2;
+    // The playlist-build selection is independent of the view mode: as soon
+    // as at least one track is consciously added via the + action (never via
+    // playback), the save-playlist row is reachable. Playback never touches
+    // selectedTrackIds, so this trigger stays exclusive to the + selection.
+    const hasPlaylistSelection = count >= 1;
     elements.playlistSaveRow.classList.toggle('hidden', !hasPlaylistSelection);
     if (elements.playlistSaveControls) {
         elements.playlistSaveControls.classList.toggle('hidden', !hasPlaylistSelection);
@@ -5869,8 +5879,8 @@ async function savePlaylist() {
         showToast('Please enter a playlist name', 'error');
         return;
     }
-    if (trackIds.length < 2) {
-        showToast('Select at least 2 tracks', 'error');
+    if (trackIds.length < 1) {
+        showToast('Select at least 1 track', 'error');
         return;
     }        elements.savePlaylistBtn.disabled = true;
     try {
@@ -13090,6 +13100,9 @@ function setupLibraryActions() {
     }
     if (elements.savePlaylistBtn) {
         elements.savePlaylistBtn.addEventListener('click', savePlaylist);
+    }
+    if (elements.cancelPlaylistSelectionBtn) {
+        elements.cancelPlaylistSelectionBtn.addEventListener('click', cancelPlaylistSelection);
     }
     setupUploadArea('upload-track-area', 'upload-track-file', (file) => {
         uploadTrackFile();
