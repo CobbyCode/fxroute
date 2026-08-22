@@ -483,6 +483,10 @@
     font-size: .62rem;
     font-weight: 700;
     font-variant-numeric: tabular-nums; }
+.output-level-badge.is-peak {
+    color: #ff5a5f;
+    text-shadow: 0 0 8px rgba(255,90,95,.48);
+}
 .volume-display { display: inline-flex;
     position: static;
     justify-content: flex-start;

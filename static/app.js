@@ -3689,14 +3689,20 @@ function renderPeakWarningBadge(activeOverride = null) {
             ? streamingFooterData()?.status === 'Playing'
             : !!state.playback.playing && !state.playback.paused)
         : !!activeOverride;
+    const showPeak = !!warning.detected && playbackActive;
     const showVu = !!warning.available && warning.vu_fresh === true
         && playbackActive && vuDb !== null;
 
     if (elements.outputLevelBadge) {
-        elements.outputLevelBadge.classList.toggle('hidden', !showVu);
+        elements.outputLevelBadge.classList.toggle('hidden', !(showPeak || showVu));
         elements.outputLevelBadge.style.visibility = '';
-        elements.outputLevelBadge.textContent = showVu ? formatOutputLevelBadgeDb(vuDb) : '';
-        elements.outputLevelBadge.title = showVu ? `Post-DSP output level (slow VU) on ${title}` : '';
+        elements.outputLevelBadge.classList.toggle('is-peak', showPeak);
+        elements.outputLevelBadge.textContent = showPeak
+            ? '0 dB'
+            : (showVu ? formatOutputLevelBadgeDb(vuDb) : '');
+        elements.outputLevelBadge.title = showPeak
+            ? `Post-DSP output peak detected on ${title}`
+            : (showVu ? `Post-DSP output level (slow VU) on ${title}` : '');
     }
 
     renderStereoMeter(warning, playbackActive);
