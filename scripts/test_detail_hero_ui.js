@@ -95,5 +95,17 @@ assert.ok(css.includes('@media (max-width: 600px)'),
     'detail heroes must define a phone composition');
 assert.ok(css.includes('@media (min-width: 601px) and (max-width: 1099px)'),
     'detail heroes must define a tablet composition');
+assert.ok(css.includes('grid-template-columns: clamp(200px, 22vw, 280px)'),
+    'desktop detail heroes must use a restrained cover column');
+assert.ok(css.includes('font-size: clamp(1.55rem, 2.55vw, 2.75rem)'),
+    'desktop detail titles must use a restrained scale');
+assert.ok(css.includes('grid-template-columns: minmax(170px, 24vw) minmax(0, 1fr)'),
+    'tablet detail heroes must use a narrower cover column');
+assert.ok(css.includes('font-size: clamp(1.55rem, 3.1vw, 2.3rem)'),
+    'tablet detail titles must use a calmer scale');
+assert.ok(css.includes('width: min(62vw, 220px)'),
+    'phone detail covers must stay prominent without dominating the hero');
+assert.ok(css.includes('font-size: clamp(1.55rem, 7vw, 2rem)'),
+    'phone detail titles must use a calmer scale');
 
 console.log('PASS test_detail_hero_ui.js');

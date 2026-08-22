@@ -396,12 +396,12 @@
 .streaming-detail--hero .detail-hero-header {
     position: relative;
     display: grid;
-    grid-template-columns: clamp(220px, 26vw, 330px) minmax(0, 1fr) auto;
+    grid-template-columns: clamp(200px, 22vw, 280px) minmax(0, 1fr) auto;
     grid-template-areas: "cover meta back";
     align-items: end;
-    gap: clamp(1.35rem, 3vw, 3.2rem);
-    min-height: clamp(320px, 31vw, 420px);
-    padding: clamp(1.2rem, 3vw, 2.8rem);
+    gap: clamp(1.1rem, 2.4vw, 2.4rem);
+    min-height: clamp(280px, 24vw, 360px);
+    padding: clamp(1rem, 2.2vw, 2rem);
     overflow: hidden;
     isolation: isolate;
     border: 1px solid rgba(255, 255, 255, 0.09);
@@ -467,7 +467,7 @@
     border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 20px;
     background: rgba(7, 10, 13, 0.7);
-    box-shadow: 0 22px 42px rgba(0, 0, 0, 0.42), 0 0 0 8px rgba(255, 255, 255, 0.018);
+    box-shadow: 0 18px 36px rgba(0, 0, 0, 0.42), 0 0 0 6px rgba(255, 255, 255, 0.018);
 }
 .album-detail--hero .detail-hero-cover {
     object-fit: cover;
@@ -507,7 +507,7 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.7rem;
+    gap: 0.62rem;
     min-width: 0;
     max-width: 780px;
     padding-bottom: 0.15rem;
@@ -525,10 +525,10 @@
     flex: 1 1 auto;
     min-width: 0;
     color: var(--text-primary);
-    font-size: clamp(1.8rem, 3.6vw, 3.5rem);
-    font-weight: 760;
-    line-height: 1.02;
-    letter-spacing: -0.055em;
+    font-size: clamp(1.55rem, 2.55vw, 2.75rem);
+    font-weight: 720;
+    line-height: 1.08;
+    letter-spacing: -0.045em;
     overflow-wrap: anywhere;
 }
 .album-detail--hero .album-detail-artist,
@@ -555,7 +555,7 @@
     margin-top: 0.15rem;
     color: rgba(208, 211, 219, 0.82);
     font-size: 0.9rem;
-    line-height: 1.5;
+    line-height: 1.55;
 }
 .album-detail--hero .album-favorite-toggle,
 .streaming-detail--hero .album-favorite-toggle {
