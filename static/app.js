@@ -4783,6 +4783,7 @@ function renderTracks() {
                         aria-pressed="${track.favorite ? 'true' : 'false'}"
                         aria-label="${track.favorite ? 'Remove track from favorites' : 'Add track to favorites'}"
                         title="${track.favorite ? 'Remove from favorites' : 'Add to favorites'}">${track.favorite ? '♥' : '♡'}</button>
+                <span class="track-duration">${formatTime(track.duration)}</span>
             </div>
         `;
     }).join('');

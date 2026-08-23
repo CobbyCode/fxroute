@@ -522,7 +522,7 @@ for (const cls of ['.track-index', '.track-play', '.track-info', '.track-sub', '
 }
 assert.ok(css.includes('.streaming-result-play,') && css.includes('.track-play'),
     'round play button must be one grouped CSS rule');
-assert.ok(css.includes('.streaming-result-duration,') && css.includes('.track-duration'),
-    'duration must be one grouped CSS rule');
+assert.ok(css.includes('.streaming-result-duration') && css.includes('.track-duration'),
+    'streaming and track duration CSS rules must both be present');
 
 console.log('PASS  scripts/test_streaming_ui_structure.js');

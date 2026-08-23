@@ -35,8 +35,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.streaming-result-duration,
-.track-duration {
+.streaming-result-duration {
     align-self: stretch;
     display: inline-flex;
     align-items: center;
