@@ -520,13 +520,13 @@
         if (providerId === 'spotify' && data && data.spotifyd_standby) {
             return {
                 title: 'Spotify is ready.',
-                message: 'spotifyd is waiting for a Spotify Connect session. Start playback from any Spotify app and select FXRoute.',
+                message: '',
             };
         }
         if (providerId === 'qobuz' && data && data.qbzd_standby) {
             return {
                 title: 'Qobuz is ready.',
-                message: 'qbzd is waiting for a Qobuz Connect session. Start playback from the Qobuz app and select FXRoute.',
+                message: '',
             };
         }
         if (providerId === 'spotify') return { title: 'Spotify is ready.', message: '' };

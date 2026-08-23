@@ -45,7 +45,7 @@ assert.deepEqual(
     notPlayingContent('spotify', { status: 'Stopped', spotifyd_standby: true }),
     {
         title: 'Spotify is ready.',
-        message: 'spotifyd is waiting for a Spotify Connect session. Start playback from any Spotify app and select FXRoute.',
+        message: '',
     },
 );
 
@@ -55,14 +55,14 @@ assert.deepEqual(
     notPlayingContent('qobuz', { status: 'Paused', title: 'Diamonds', qbzd_standby: true }),
     {
         title: 'Qobuz is ready.',
-        message: 'qbzd is waiting for a Qobuz Connect session. Start playback from the Qobuz app and select FXRoute.',
+        message: '',
     },
 );
 assert.deepEqual(
     notPlayingContent('qobuz', { status: 'Stopped', qbzd_standby: true }),
     {
         title: 'Qobuz is ready.',
-        message: 'qbzd is waiting for a Qobuz Connect session. Start playback from the Qobuz app and select FXRoute.',
+        message: '',
     },
 );
 
@@ -111,6 +111,13 @@ assert.ok(
     renderNowPlaying.includes('notPlayingContent(providerId, data)'),
     'renderNowPlaying must route the stopped state through notPlayingContent',
 );
+const unavailableBranch = renderNowPlaying.indexOf("data.available === false");
+const unauthenticatedBranch = renderNowPlaying.indexOf("data.authenticated === false");
+const standbyBranch = renderNowPlaying.indexOf('data.spotifyd_standby || data.qbzd_standby');
+assert.ok(unavailableBranch >= 0 && unavailableBranch < standbyBranch,
+    'real backend failures must take priority over standby copy');
+assert.ok(unauthenticatedBranch >= 0 && unauthenticatedBranch < standbyBranch,
+    'authentication failures must take priority over standby copy');
 
 // The served shell must reference a versioned streaming.js (pattern-based;
 // the concrete number is owned by static/index.html).
