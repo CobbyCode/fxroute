@@ -204,6 +204,46 @@ def _probe_sample_rate_with_ffprobe(filepath: Path) -> Optional[int]:
         return None
     return value if value > 0 else None
 
+
+def _probe_duration_with_ffprobe(filepath: Path) -> Optional[float]:
+    try:
+        completed = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(filepath),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except Exception as e:
+        logger.debug(f"ffprobe duration probe failed for {filepath}: {e}")
+        return None
+
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        if stderr:
+            logger.debug(f"ffprobe duration probe returned {completed.returncode} for {filepath}: {stderr}")
+        return None
+
+    first_line = (completed.stdout or "").strip().splitlines()
+    if not first_line:
+        return None
+
+    try:
+        value = float(first_line[0].strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0.0 else None
+
+
 # Supported audio file extensions
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav", ".wma", ".webm", ".weba"}
 
@@ -509,6 +549,8 @@ class LibraryScanner:
 
             if sample_rate_hz is None:
                 sample_rate_hz = _probe_sample_rate_with_ffprobe(filepath)
+            if duration is None:
+                duration = _probe_duration_with_ffprobe(filepath)
 
             filename_artist, filename_title = _filename_artist_title(filepath)
             if not title and filename_title:
@@ -554,6 +596,16 @@ class LibraryScanner:
 
     def _track_from_cached_metadata(self, filepath: Path, cached: Dict[str, Any]) -> Track:
         rel_path = filepath.relative_to(self.music_root)
+        duration = float(cached["duration"]) if cached.get("duration") is not None else None
+        sample_rate_hz = int(cached["sample_rate_hz"]) if cached.get("sample_rate_hz") else None
+        # Repair stale cache entries where mutagen couldn't read the duration
+        # (WebM, WAV with info=None, etc.) — probe the file and persist it.
+        if duration is None:
+            duration = _probe_duration_with_ffprobe(filepath)
+            if duration is not None:
+                self.metadata_store.upsert_track_metadata(
+                    {**cached, "duration": duration, "rel_path": str(cached.get("rel_path") or rel_path.as_posix())}
+                )
         return Track(
             id=str(cached.get("track_id") or f"local_{rel_path.as_posix()}"),
             title=str(cached.get("title") or filepath.stem),
@@ -566,9 +618,9 @@ class LibraryScanner:
             disc_number=int(cached["disc_number"]) if cached.get("disc_number") is not None else None,
             source="local",
             url=str(filepath.absolute()),
-            duration=float(cached["duration"]) if cached.get("duration") is not None else None,
+            duration=duration,
             path=filepath,
-            sample_rate_hz=int(cached["sample_rate_hz"]) if cached.get("sample_rate_hz") else None,
+            sample_rate_hz=sample_rate_hz,
             favorite=bool(cached.get("favorite")),
         )
 
