@@ -138,11 +138,7 @@ def _playlist(playlist_id, name="Mix"):
 
 
 def _session(user_id, favorites):
-    session = SimpleNamespace(user=SimpleNamespace(id=user_id, favorites=favorites))
-    session.user.playlist_and_favorite_playlists = (
-        lambda offset=0, limit=50: [] if offset else []
-    )
-    return session
+    return SimpleNamespace(user=SimpleNamespace(id=user_id, favorites=favorites))
 
 
 def _patch_catalog(session, store):
@@ -310,20 +306,15 @@ class CatalogCacheTests(unittest.TestCase):
 
     def test_playlists_cached_and_fallback(self):
         store = self._store()
-        session = _session(42, FakeFavorites())
-        session.user.playlist_and_favorite_playlists = (
-            lambda offset=0, limit=50: [_playlist("p1")] if offset == 0 else []
-        )
+        favs = FakeFavorites(playlists=[_playlist("p1")])
+        session = _session(42, favs)
         p1, p2, p3 = self._patch_catalog(session, store)
         with p1, p2, p3:
             payload = catalog.user_playlists()
         self.assertEqual([p["id"] for p in payload], ["p1"])
         self.assertEqual(store.get("42", "playlists"), payload)
 
-        def fail(offset=0, limit=50):
-            raise ConnectionError("tidal unreachable")
-
-        session.user.playlist_and_favorite_playlists = fail
+        favs._fail = True
         with p1, p2, p3:
             served = catalog.user_playlists()
         self.assertEqual([p["id"] for p in served], ["p1"])
@@ -614,7 +605,11 @@ class FakeWriteSession:
     """Session faking the write path: create_playlist, playlist(), request layer."""
 
     def __init__(self, user_id=42, add_payload=None, fail=None):
-        self.user = SimpleNamespace(id=user_id, create_playlist=self.create_playlist)
+        self.user = SimpleNamespace(
+            id=user_id,
+            create_playlist=self.create_playlist,
+            favorites=FakeFavorites(),
+        )
         self.request = SimpleNamespace(request=self._request)
         self._add_payload = add_payload if add_payload is not None else {"addedItemIds": ["1", "2"]}
         self._fail = fail  # 'create' | 'playlist' | 'add' | None

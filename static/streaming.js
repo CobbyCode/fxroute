@@ -1475,7 +1475,9 @@
             if (!resp.ok) throw new Error(data.detail || 'Failed to save TIDAL playlist');
             clearTidalPlaylistSelection();
             showToast('Saved: ' + (data.name || name), 'success');
-            void reloadTidalPlaylists();
+            // Refresh favorite ids so the new playlist heart renders active
+            // immediately; reloadPlaylists re-renders the browse view.
+            void loadTidalFavoriteIds(true).then(() => reloadTidalPlaylists());
         } catch (err) {
             setTidalPlaylistSaveError(friendlyError(err?.message || err));
         } finally {

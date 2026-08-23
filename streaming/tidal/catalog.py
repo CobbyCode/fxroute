@@ -554,36 +554,22 @@ def get_album(album_id: str) -> dict:
 
 
 def user_playlists(limit: int = 200) -> list[dict]:
-    """Return the user's own + favorited TIDAL playlists (normalized, deduped).
+    """Return the user's favorited TIDAL playlists (My Collection, normalized).
 
-    ``session.user.playlists()`` returns only playlists the user created, so
-    playlists saved from the TIDAL app (editorial/user playlists in the
-    favorites collection) would be invisible.  ``playlist_and_favorite_playlists``
-    returns both in one list; dedupe on id in case a playlist is both owned
-    and favorited.  The last successful result is cached per account and
-    served when a live fetch fails.
+    The TIDAL → Playlists view shows exactly what is in My Collection
+    (favorites).  Newly created playlists are auto-favorited so they appear
+    immediately; unfavoriting a playlist removes it from this view.  The last
+    successful result is cached per account and served when a live fetch fails.
     """
     _require_tidalapi()
     session = _session()
     user_id = _cache_user_id(session)
     try:
-        page_size = 50
-        seen: dict[str, dict] = {}
-        offset = 0
-        while True:
-            items = session.user.playlist_and_favorite_playlists(offset=offset, limit=page_size)
-            for item in items:
-                normalized = normalize_playlist(item)
-                key = normalized["id"] or normalized["name"]
-                seen.setdefault(key, normalized)
-            if len(items) < page_size:
-                break
-            offset += page_size
-            if offset >= limit:
-                break
+        favorites = session.user.favorites
+        items = favorites.playlists()
     except Exception as exc:  # noqa: BLE001
         return _cached_or_raise(user_id, "playlists", f"TIDAL playlists failed: {exc}", exc)
-    payload = list(seen.values())
+    payload = [normalize_playlist(item) for item in items]
     library_cache.put(user_id, "playlists", payload)
     return payload
 
@@ -635,12 +621,13 @@ def playlist_detail(playlist_id: str) -> dict:
 
 
 def create_playlist(title: str, description: str = "", track_ids: list[str] | None = None) -> dict:
-    """Create a new TIDAL playlist (v2 my-collection API, live-verified).
+    """Create a new TIDAL playlist, seed it with tracks, and add it to My Collection.
 
     ``track_ids`` are added right after creation via the same v1 items write
-    used by :func:`add_playlist_tracks` (ETag included).  The created playlist
-    is normalized like every other playlist payload; the cached playlist list
-    is dropped so the next load reflects the new entry.
+    used by :func:`add_playlist_tracks` (ETag included).  The new playlist is
+    also favorited so it appears in My Collection (playlist view = collection
+    state).  Both the playlist list and the favorite id caches are dropped so
+    the next loads reflect the new entry with an active heart.
     """
     _require_tidalapi()
     session = _session()
@@ -652,6 +639,15 @@ def create_playlist(title: str, description: str = "", track_ids: list[str] | No
     ids = [str(i) for i in (track_ids or []) if str(i).strip()]
     if ids:
         _add_items(session, playlist, ids)
+    # Add the new playlist to My Collection (favorites) so it appears under
+    # TIDAL → Playlists with an active heart immediately.
+    pid = str(getattr(playlist, "id", ""))
+    if pid:
+        try:
+            session.user.favorites.add_playlist(pid)
+            _update_cached_favorite_id(user_id, "playlists", pid, True)
+        except Exception:
+            pass  # playlist creation succeeded; favorite is best-effort
     library_cache.delete(user_id, "playlists")
     return normalize_playlist(playlist)
 

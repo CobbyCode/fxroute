@@ -493,7 +493,7 @@ const elements = {
     playlistDetailCount: document.getElementById('playlist-detail-count'),
     playlistDetailInfo: document.getElementById('playlist-detail-info'),
     playlistDetailTracks: document.getElementById('playlist-detail-tracks'),
-    playlistDetailDelete: document.getElementById('playlist-detail-delete'),
+    playlistDetailFavorite: document.getElementById('playlist-detail-favorite'),
     albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
@@ -5015,6 +5015,7 @@ function renderAlbums() {
     const playlistHtml = playlists.map(playlist => `
         <div class="album-card playlist-card" data-playlist-id="${escapeHtml(playlist.id)}" role="button" tabindex="0">
             <div class="album-art-wrap">${playlistCoverHtml(playlist)}</div>
+            <button type="button" class="album-card-fav is-active" data-playlist-fav="${escapeHtml(playlist.id)}" aria-label="Delete playlist" title="Delete playlist">♥</button>
             <div class="album-name">${escapeHtml(playlist.name)}</div>
             <div class="album-artist">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
         </div>`).join('');
@@ -5061,6 +5062,19 @@ function renderAlbums() {
             event.preventDefault();
             event.stopPropagation();
             toggleAlbumCardFavorite(btn.dataset.favId);
+        });
+    });
+    // Local playlist heart: always active (own playlist); heart-off deletes
+    // the playlist via the existing delete path.
+    elements.albumsGrid.querySelectorAll('[data-playlist-fav]').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const playlistId = btn.dataset.playlistFav;
+            const playlist = state.playlists.find(p => p.id === playlistId);
+            if (!playlist) return;
+            if (!confirm(`Delete playlist "${playlist.name}"?`)) return;
+            deletePlaylistById(playlistId);
         });
     });
 }
@@ -5668,6 +5682,13 @@ function openPlaylistDetail(playlistId) {
         elements.playlistDetailCover.innerHTML = playlistCoverHtml(playlist);
     }
     if (elements.playlistDetailName) elements.playlistDetailName.textContent = playlist.name;
+    // Own local playlists always show an active heart (delete on click).
+    if (elements.playlistDetailFavorite) {
+        elements.playlistDetailFavorite.classList.add('active');
+        elements.playlistDetailFavorite.textContent = '♥';
+        elements.playlistDetailFavorite.setAttribute('aria-label', 'Delete playlist');
+        elements.playlistDetailFavorite.title = 'Delete playlist';
+    }
     setPlaylistDetailBackdrop(playlist);
     renderPlaylistDetailInfo(playlist, tracks);
     renderPlaylistDetailTracks();
@@ -13248,10 +13269,11 @@ function setupLibraryActions() {
     if (elements.playlistDetailBack) {
         elements.playlistDetailBack.addEventListener('click', () => closePlaylistDetail());
     }
-    if (elements.playlistDetailDelete) {
-        elements.playlistDetailDelete.addEventListener('click', async () => {
+    if (elements.playlistDetailFavorite) {
+        elements.playlistDetailFavorite.addEventListener('click', async () => {
             const detail = state.library.playlistDetail;
             if (!detail || !detail.playlist) return;
+            if (!confirm(`Delete playlist "${detail.playlist.name}"?`)) return;
             await deletePlaylistById(detail.playlist.id);
             // deletePlaylistById reloads playlists; close the (now gone) detail.
             if (!state.playlists.some(p => p.id === (detail.playlist && detail.playlist.id))) {

@@ -695,7 +695,7 @@ class CatalogFavoritesTests(unittest.TestCase):
         self.assertEqual(data["audio_quality"], "LOSSLESS")
         self.assertEqual(data["num_tracks"], 10)
 
-    def test_user_playlists_merges_own_and_favorited_deduped(self):
+    def test_user_playlists_returns_only_favorited(self):
         from streaming.tidal import catalog
 
         def make_pl(pid, name):
@@ -704,15 +704,13 @@ class CatalogFavoritesTests(unittest.TestCase):
                 square_picture=lambda size=640: "", image=None, picture=None,
             )
 
-        items = [make_pl("u1", "Own"), make_pl("f1", "Favorited"), make_pl("u1", "Own dup")]
-        session = _favorites_session(FakeFavorites())
-        session.user.playlist_and_favorite_playlists = (
-            lambda offset=0, limit=50: items if offset == 0 else []
-        )
+        fav_playlists = [make_pl("f1", "Favorited"), make_pl("f2", "Also Favorited")]
+        favs = FakeFavorites(playlists=fav_playlists)
+        session = _favorites_session(favs)
         p1, p2 = self._patch(session)
         with p1, p2:
             result = catalog.user_playlists()
-        self.assertEqual(sorted(p["id"] for p in result), ["f1", "u1"])
+        self.assertEqual(sorted(p["id"] for p in result), ["f1", "f2"])
 
 
 class CatalogNormalizationTests(unittest.TestCase):
