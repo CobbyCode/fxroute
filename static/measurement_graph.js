@@ -60,7 +60,7 @@
             ...measurement,
             traces: traces.map((trace) => ({
                 ...trace,
-                points: ui.smoothMeasurementTracePoints(trace.points || [], smoothing),
+                points: dsp.smoothMeasurementTracePoints(trace.points || [], smoothing),
             })),
             current,
             graphColor: graphColor || (current ? ui.measurementCurrentColor : ''),
