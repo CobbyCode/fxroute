@@ -157,6 +157,22 @@ class MainCoreTransitionRuntime:
     async def pause_source_after_failure(self, request: Any) -> None:
         self.events.append("pause-after-failure")
 
+    async def abort_failed_transition(self, request: Any, snapshot: Any, *, target_staged: bool) -> dict[str, Any] | None:
+        """Mirror the production TransitionRuntime.abort_failed_transition contract.
+
+        The mock has no real player state, dependency adapter or snapshot
+        data — it cannot decide between the three production outcomes
+        (``None`` = unchanged, ``{"restore": ...}`` = physically restore the
+        committed source, ``{"invalidate": True}`` = invalidate track
+        metadata).  Returning ``None`` means the committed context is
+        treated as unchanged; the Coordinator will latch the failure gate,
+        which is the safe default for the test scenarios that reach this
+        path (post-start-graph-reconcile failure, output-mode-rate-reconcile
+        failure, handoff-shared failures).
+        """
+        self.events.append("abort-failed-transition")
+        return None
+
 
 async def run_main_handoff_through_coordinator(
     *,
