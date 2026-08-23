@@ -108,10 +108,40 @@ def _run():
                 check(f"[{width}px] subwoofer controls 2 columns (got {n})", n == 2)
 
             # Desktop >1100px: base multi-track layout unchanged.
-            page.set_viewport_size({"width": 1200, "height": 900})
-            page.wait_for_timeout(80)
-            n = column_count()
-            check(f"[1200px] subwoofer controls 8 columns (got {n})", n == 8)
+            for width in (1101, 1200, 1440):
+                page.set_viewport_size({"width": width, "height": 900})
+                page.wait_for_timeout(80)
+                n = column_count()
+                check(f"[{width}px] subwoofer controls 8 columns (got {n})", n == 8)
+                geometry = page.evaluate("""
+                    (() => {
+                        const group = document.querySelector('.effects-subwoofer-global-group');
+                        const field = document.querySelector('.effects-subwoofer-highpass-field');
+                        const select = document.querySelector('#effects-subwoofer-main-highpass');
+                        const groupRect = group.getBoundingClientRect();
+                        const fieldRect = field.getBoundingClientRect();
+                        const selectRect = select.getBoundingClientRect();
+                        return {
+                            clientWidth: group.clientWidth,
+                            scrollWidth: group.scrollWidth,
+                            groupRight: groupRect.right,
+                            fieldRight: fieldRect.right,
+                            selectRight: selectRect.right,
+                        };
+                    })()
+                """)
+                check(
+                    f"[{width}px] Global group has no hidden horizontal overflow ({geometry})",
+                    geometry["scrollWidth"] <= geometry["clientWidth"] + 1,
+                )
+                check(
+                    f"[{width}px] Main highpass field stays inside Global group ({geometry})",
+                    geometry["fieldRight"] <= geometry["groupRight"] + 1,
+                )
+                check(
+                    f"[{width}px] Main highpass select stays inside Global group ({geometry})",
+                    geometry["selectRight"] <= geometry["groupRight"] + 1,
+                )
 
             page.close()
             browser.close()

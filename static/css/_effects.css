@@ -444,7 +444,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-subwoofer-global-group {
     grid-column: 1 / span 2;
     display: grid;
-    grid-template-columns: minmax(148px, 1fr) minmax(112px, max-content);
+    grid-template-columns: minmax(0, 1fr) minmax(0, max-content);
     align-items: end;
     gap: 0.7rem;
 }
