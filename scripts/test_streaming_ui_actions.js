@@ -241,14 +241,20 @@ function runStreaming(options = {}) {
             } else if (u === '/api/streaming/tidal/playlists') {
                 body = [{ id: 'pl-1', name: 'Test Playlist', art_url: '', track_count: 2 }].concat(createdPlaylist ? [createdPlaylist] : []);
             } else if (u === '/api/streaming/tidal/playlists/pl-1/tracks') {
-                body = [
+                body = options.playlistTracks || [
                     { id: 'p1', title: 'Playlist One', artist: 'Found Artist', duration: 10 },
                     { id: 'p2', title: 'Playlist Two', artist: 'Found Artist', duration: 12 },
                 ];
+            } else if (u === '/api/streaming/tidal/playlists/pl-1') {
+                if (options.playlistDetail) {
+                    body = options.playlistDetail;
+                } else {
+                    body = { id: 'pl-1', name: 'Test Playlist', description: '', art_url: '', track_count: 2 };
+                }
             } else if (u.includes('/api/streaming/tidal/search?q=')) {
                 if (u.includes('types=artists')) body = { artists: [{ id: 'a1', name: 'Found Artist', art_url: '' }] };
                 else if (u.includes('types=albums')) body = { albums: [{ id: 'al1', title: 'Found Album', artist: 'Found Artist', art_url: '' }] };
-                else if (u.includes('types=playlists')) body = { playlists: [{ id: 'p1', name: 'Found Playlist', art_url: '' }] };
+                else if (u.includes('types=playlists')) body = { playlists: [{ id: 'pl-1', name: 'Found Playlist', art_url: '' }] };
                 else body = { tracks: [
                     { id: 's1', title: 'Found Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 10 },
                     { id: 's2', title: 'Second Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 12 },
@@ -311,6 +317,8 @@ function runStreaming(options = {}) {
             `<div class="track-info"><div class="track-title">${title}</div>` +
             (sub ? `<div class="track-sub">${sub}</div>` : '') + `</div>` +
             (selectionButton || '') + favoriteButton + (duration ? `<span class="track-duration">${duration}</span>` : ''),
+        factsHtml: (lines) => `<div class="album-detail-facts">${(lines || []).map((l) => `<div>${l}</div>`).join('')}</div>`,
+        aboutHtml: (label, text) => `<details class="album-detail-about"><summary>${label}</summary><p>${text}</p></details>`,
         spotifyCommand: (...a) => { spotifyCommandCalls.push(a); return Promise.resolve(); },
         spotifySeek: (...a) => { spotifySeekCalls.push(a); return Promise.resolve(); },
     };
@@ -1206,6 +1214,94 @@ async function main() {
         're-entering the tab must never clobber live search results');
     assert.ok(!fc2.some((c) => c.url.startsWith('/api/streaming/tidal/favorites?type=')),
         're-entering the tab must skip the section re-sync while a search is showing');
+}
+
+// --- 19. playlist detail: description, single-artist about, featuring line ---
+
+{
+    const run = (detail, extra) => runStreaming(Object.assign({ playlistDetail: detail }, extra || {}));
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+
+    // Description wins over everything and the Play playlist button is gone.
+    {
+        const { sandbox, shells, fetchCalls, createdEls } = run({
+            id: 'pl-1', name: 'Test Playlist', description: 'A curated mix', art_url: '', track_count: 2,
+            artists: [{ id: 'a1', name: 'Found Artist' }],
+            enrichment: { available: true, artist: { about: 'A long artist bio' } },
+        });
+        sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+        const content = shells.tidal.querySelector('.streaming-content');
+        const body = sandbox.document.getElementById('tidal-browse-body');
+        const input = content.querySelector('#tidal-search-input');
+        input.value = 'mix';
+        input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        body.querySelector('#tidal-search-type-playlists').click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        createdEls.filter((el) => el.className === 'album-card').at(-1).click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/playlists/pl-1'),
+            'opening a playlist must fetch the playlist detail');
+        const info = content.querySelector('#tidal-playlist-info');
+        assert.ok(info && info.innerHTML.includes('A curated mix'),
+            'the playlist description must render as the header info');
+        assert.ok(!content.innerHTML.includes('Play playlist'),
+            'the playlist detail must not offer a Play playlist button');
+        assert.ok(!content.innerHTML.includes('A long artist bio'),
+            'the description must win over the single-artist about');
+    }
+
+    // No description, single artist: the MusicBrainz about text is used.
+    {
+        const { sandbox, shells, createdEls } = run({
+            id: 'pl-1', name: 'Test Playlist', description: '', art_url: '', track_count: 2,
+            artists: [{ id: 'a1', name: 'Found Artist' }],
+            enrichment: { available: true, artist: { about: 'A long artist bio' } },
+        });
+        sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+        const content = shells.tidal.querySelector('.streaming-content');
+        const body = sandbox.document.getElementById('tidal-browse-body');
+        const input = content.querySelector('#tidal-search-input');
+        input.value = 'mix';
+        input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        body.querySelector('#tidal-search-type-playlists').click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        createdEls.filter((el) => el.className === 'album-card').at(-1).click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const info = content.querySelector('#tidal-playlist-info');
+        assert.ok(info && info.innerHTML.includes('A long artist bio'),
+            'a single-artist playlist without description must use the enriched artist about');
+    }
+
+    // Multi-artist tracks without description/enrichment: a compact featuring
+    // line built from the distinct track artists, never a fake biography.
+    {
+        const { sandbox, shells, createdEls } = run({
+            id: 'pl-1', name: 'Test Playlist', description: '', art_url: '', track_count: 3,
+            artists: [{ id: 'a1', name: 'Artist A' }, { id: 'a2', name: 'Artist B' }],
+        }, {
+            playlistTracks: [
+                { id: 'p1', title: 'One', artist: 'Artist A', duration: 10 },
+                { id: 'p2', title: 'Two', artist: 'Artist A', duration: 12 },
+                { id: 'p3', title: 'Three', artist: 'Artist B', duration: 13 },
+            ],
+        });
+        sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+        const content = shells.tidal.querySelector('.streaming-content');
+        const body = sandbox.document.getElementById('tidal-browse-body');
+        const input = content.querySelector('#tidal-search-input');
+        input.value = 'mix';
+        input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        body.querySelector('#tidal-search-type-playlists').click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        createdEls.filter((el) => el.className === 'album-card').at(-1).click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const info = content.querySelector('#tidal-playlist-info');
+        assert.ok(info && info.innerHTML.includes('Featuring'),
+            'a multi-artist playlist without description must render a featuring line');
+    }
 }
 
 console.log('PASS  scripts/test_streaming_ui_actions.js');

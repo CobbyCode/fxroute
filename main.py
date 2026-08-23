@@ -5190,6 +5190,16 @@ async def api_streaming_provider_playlist_tracks(provider_id: str, playlist_id: 
         raise _tidal_http_error(exc) from exc
 
 
+@app.get("/api/streaming/{provider_id}/playlists/{playlist_id}")
+async def api_streaming_provider_playlist(provider_id: str, playlist_id: str):
+    """Playlist detail: description, distinct artists and single-artist enrichment."""
+    fn = _provider_catalog_method(provider_id, "get_playlist")
+    try:
+        return await fn(playlist_id)
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
 @app.get("/api/streaming/{provider_id}/albums/{album_id}/tracks")
 async def api_streaming_provider_album_tracks(provider_id: str, album_id: str):
     fn = _provider_catalog_method(provider_id, "get_album_tracks")

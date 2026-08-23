@@ -488,8 +488,10 @@ const elements = {
     playlistDetail: document.getElementById('playlist-detail'),
     playlistDetailBack: document.getElementById('playlist-detail-back'),
     playlistDetailCover: document.getElementById('playlist-detail-cover'),
+    playlistDetailBackdrop: document.getElementById('playlist-detail-backdrop'),
     playlistDetailName: document.getElementById('playlist-detail-name'),
     playlistDetailCount: document.getElementById('playlist-detail-count'),
+    playlistDetailInfo: document.getElementById('playlist-detail-info'),
     playlistDetailTracks: document.getElementById('playlist-detail-tracks'),
     playlistDetailDelete: document.getElementById('playlist-detail-delete'),
     albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
@@ -5107,6 +5109,72 @@ function setAlbumDetailBackdrop(coverUrl) {
     image.src = coverUrl;
 }
 
+function setPlaylistDetailBackdrop(playlist) {
+    const image = elements.playlistDetailBackdrop;
+    const backdrop = image?.closest('.detail-header-backdrop');
+    if (!image || !backdrop) return;
+    // Reuse the first distinct album cover of the collage as the blurred
+    // backdrop, mirroring how the album detail blurs its own cover.
+    const albums = playlistDistinctAlbums(playlist).filter(a => a?.id);
+    const coverUrl = albums.length ? albumCoverUrl(albums[0]) : '';
+    if (!coverUrl) {
+        image.removeAttribute('src');
+        backdrop.hidden = true;
+        return;
+    }
+    image.onerror = function() {
+        this.onerror = null;
+        this.removeAttribute('src');
+        backdrop.hidden = true;
+    };
+    backdrop.hidden = false;
+    image.src = coverUrl;
+}
+
+// Header info line for a local playlist: a single-artist playlist reuses the
+// enriched MusicBrainz artist text (same source as the album About); a
+// multi-artist playlist gets a compact featuring line from the actual artists.
+// No artificial multi-artist biography is ever assembled.
+function renderPlaylistDetailInfo(playlist, tracks) {
+    const infoEl = elements.playlistDetailInfo;
+    if (!infoEl) return;
+    const names = [];
+    const seen = new Set();
+    for (const t of (tracks || [])) {
+        const name = String(t.artist || '').trim();
+        const key = name.toLowerCase();
+        if (name && !seen.has(key)) {
+            seen.add(key);
+            names.push(name);
+        }
+    }
+    if (names.length === 1) {
+        const album = tracks && tracks.length ? findAlbumForTrack(tracks[0]) : null;
+        const about = ((album && album.artist_description) || '').trim();
+        infoEl.innerHTML = about
+            ? detailAboutHtml('About this artist', about)
+            : '';
+        return;
+    }
+    const line = playlistFeaturingLine(names);
+    infoEl.innerHTML = line ? `<div>${escapeHtml(line)}</div>` : '';
+}
+
+function playlistFeaturingLine(names) {
+    if (!names || names.length < 2) return '';
+    const shown = names.slice(0, 3);
+    const more = names.length > 3;
+    let body;
+    if (more) {
+        body = shown.join(', ') + ' and more';
+    } else if (shown.length === 2) {
+        body = shown[0] + ' and ' + shown[1];
+    } else {
+        body = shown[0] + ', ' + shown[1] + ' and ' + shown[2];
+    }
+    return 'Featuring ' + body + '.';
+}
+
 // Square cover thumbnail for the left of a track row. Resolves the track's
 // album cover (same lookup the playlist collage uses) and falls back to the
 // neutral :empty placeholder when there is no artwork.
@@ -5554,6 +5622,8 @@ function openPlaylistDetail(playlistId) {
         elements.playlistDetailCover.innerHTML = playlistCoverHtml(playlist);
     }
     if (elements.playlistDetailName) elements.playlistDetailName.textContent = playlist.name;
+    setPlaylistDetailBackdrop(playlist);
+    renderPlaylistDetailInfo(playlist, tracks);
     renderPlaylistDetailTracks();
 
     elements.albumsGrid.classList.add('hidden');

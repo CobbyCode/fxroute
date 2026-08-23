@@ -291,8 +291,8 @@ assert.ok(js.includes('function renderDetailTracks'),
     'the shared detail track-list renderer must stay');
 assert.ok(js.includes('playTidalTracks(ids, trackId)'),
     'a track click must start the whole queue at that track');
-assert.ok(js.includes('playTidalTracks(ids, ids[0])'),
-    'Play playlist must start the whole queue at track 1');
+assert.ok(!js.includes('playTidalTracks(ids, ids[0])'),
+    'the Play playlist button must be gone (track click starts the queue)');
 assert.ok(js.includes('queue_track_ids: trackIds'),
     'playback must hand the full queue to /api/play');
 assert.ok(!js.includes('trackSelectionMode'),
@@ -347,8 +347,8 @@ assert.ok(css.includes('.tab-content') && css.includes('calc(2rem + var(--playba
 // --- TIDAL album view mirrors the library (no Play Album, facts + tracks) ------
 assert.ok(!js.includes('>Play album<'),
     'Tidal album view must not offer a Play Album button');
-assert.ok(js.includes('>Play playlist<'),
-    'Tidal playlist view keeps its Play playlist button');
+assert.ok(!js.includes('>Play playlist<'),
+    'Tidal playlist view must not offer a Play playlist button');
 assert.ok(js.includes('streaming-detail-artist') && js.includes('streaming-detail-facts'),
     'Tidal album view must bundle artist + facts next to the cover');
 assert.ok(js.includes("fetch('/api/streaming/tidal/albums/' + encodeURIComponent(state.tidal.detailId))"),

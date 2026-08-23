@@ -43,6 +43,12 @@ class _FakeProvider:
     async def playlist_tracks(self, playlist_id):
         return [{"id": "2", "title": "PT"}]
 
+    async def get_playlist(self, playlist_id):
+        return {"id": playlist_id, "name": "Playlist", "description": "A mix",
+                "tracks": [{"id": "2", "title": "PT"}],
+                "artists": [{"id": "a1", "name": "Artist"}],
+                "enrichment": {"available": True}}
+
     async def get_album_tracks(self, album_id):
         return [{"id": "3", "title": "AT"}]
 
@@ -155,6 +161,15 @@ class StreamingApiDispatchTests(unittest.TestCase):
             resp = self.client.get("/api/streaming/tidal/playlists/p1/tracks")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()[0]["title"], "PT")
+
+    def test_playlist_meta_dispatch(self):
+        with self._patch(_FakeProvider()):
+            resp = self.client.get("/api/streaming/tidal/playlists/p1")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["name"], "Playlist")
+        self.assertEqual(resp.json()["description"], "A mix")
+        self.assertEqual(len(resp.json()["tracks"]), 1)
+        self.assertEqual(resp.json()["enrichment"]["available"], True)
 
     def test_album_tracks_dispatch(self):
         with self._patch(_FakeProvider()):

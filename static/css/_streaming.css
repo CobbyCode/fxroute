@@ -555,6 +555,23 @@
 .tidal-detail-artist { font-size: 1rem; color: var(--text-secondary); margin: 0; }
 .tidal-detail-facts { font-size: 0.86rem; color: var(--text-secondary); line-height: 1.35; margin: 0; }
 
+/* TIDAL playlist header info: the description or the single-artist about
+   share the album facts rhythm; long descriptions stay bounded. */
+.tidal-playlist-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 0;
+    max-width: 64ch;
+    margin-top: 0.2rem;
+}
+.tidal-playlist-description {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    line-height: 1.45;
+}
+
 /* TIDAL artist about: directly visible in the hero, reusing the library
    .album-detail-about text styling (colors, size, max-width) without its
    accordion. Long bios clamp to a few lines with a subtle More/Less toggle. */

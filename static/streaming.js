@@ -2395,8 +2395,10 @@
 
     function renderTidalPlaylist(content) {
         const requestId = ++state.tidal.detailRequestId;
-        // Same library-mirroring layout as the album detail; the playlist adds
-        // its Play playlist action and shows the track count as the facts line.
+        // Same library-mirroring layout as the album detail: no dedicated play
+        // action (track click starts the queue), the track count is the facts
+        // line, and the info area carries the description, the single-artist
+        // enrichment about or a featuring line built from the actual artists.
         content.innerHTML =
             '<div class="streaming-detail streaming-detail--hero tidal-detail">' +
                 '<div class="streaming-detail-header detail-hero-header tidal-detail-header">' +
@@ -2408,7 +2410,7 @@
                             favoriteDetailHtml('playlists') +
                         '</div>' +
                         '<div class="streaming-detail-facts tidal-detail-facts" id="tidal-playlist-facts"></div>' +
-                        '<button type="button" class="btn-primary" id="tidal-detail-play">Play playlist</button>' +
+                        '<div class="tidal-playlist-info" id="tidal-playlist-info"></div>' +
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
@@ -2429,7 +2431,7 @@
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const items = await resp.json();
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
-            renderDetailTracks(results, items, content.querySelector('#tidal-detail-play'));
+            renderDetailTracks(results, items);
         } catch (err) {
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
             results.innerHTML = contentState('error', friendlyError(err?.message || err));
@@ -2439,35 +2441,81 @@
     async function loadTidalPlaylistTracks(content, requestId) {
         const results = content.querySelector('#tidal-detail-results');
         try {
-            const resp = await fetch('/api/streaming/tidal/playlists/' + encodeURIComponent(state.tidal.detailId) + '/tracks');
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const items = await resp.json();
+            const [detailResp, tracksResp] = await Promise.all([
+                fetch('/api/streaming/tidal/playlists/' + encodeURIComponent(state.tidal.detailId)),
+                fetch('/api/streaming/tidal/playlists/' + encodeURIComponent(state.tidal.detailId) + '/tracks'),
+            ]);
             try { await loadTidalFavoriteIds(); } catch (e) { /* hearts degrade to unfilled */ }
+            const detail = detailResp.ok ? await detailResp.json().catch(() => null) : null;
+            if (!tracksResp.ok) throw new Error(await errorDetail(tracksResp));
+            const items = await tracksResp.json();
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'playlist') return;
-            const factsEl = content.querySelector('#tidal-playlist-facts');
-            if (factsEl && Array.isArray(items)) {
-                factsEl.textContent = items.length + ' track' + (items.length === 1 ? '' : 's');
-            }
+            renderTidalPlaylistMeta(content, detail, items);
             syncFavoriteDetailButtons('playlists', state.tidal.detailId);
-            renderDetailTracks(results, items, content.querySelector('#tidal-detail-play'));
+            renderDetailTracks(results, items);
         } catch (err) {
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'playlist') return;
             results.innerHTML = contentState('error', friendlyError(err?.message || err));
         }
     }
 
-    function renderDetailTracks(container, items, playAllBtn) {
+    // Header info for a TIDAL playlist: the operator's own description first,
+    // then the single-artist MusicBrainz about, then a short featuring line
+    // built from the distinct artists actually present in the track list. No
+    // artificial multi-artist biography is ever assembled.
+    function renderTidalPlaylistMeta(content, detail, items) {
+        const tracks = Array.isArray(items) ? items : [];
+        const factsEl = content.querySelector('#tidal-playlist-facts');
+        if (factsEl) {
+            factsEl.textContent = tracks.length + ' track' + (tracks.length === 1 ? '' : 's');
+        }
+        const infoEl = content.querySelector('#tidal-playlist-info');
+        if (!infoEl) return;
+        const description = (detail && detail.description || '').trim();
+        const about = (detail && detail.enrichment && detail.enrichment.available &&
+            detail.enrichment.artist && detail.enrichment.artist.about || '').trim();
+        if (description) {
+            infoEl.innerHTML = '<p class="tidal-playlist-description">' + escapeHtml(description) + '</p>';
+        } else if (about) {
+            infoEl.innerHTML = aboutHtml('About this artist', about);
+        } else {
+            const line = tidalFeaturingLine(tracks);
+            infoEl.innerHTML = line ? '<p class="tidal-playlist-description">' + escapeHtml(line) + '</p>' : '';
+        }
+    }
+
+    function tidalFeaturingLine(tracks) {
+        const names = [];
+        const seen = new Set();
+        for (const t of (tracks || [])) {
+            const name = String(t.artist || '').trim();
+            const key = name.toLowerCase();
+            if (name && !seen.has(key)) {
+                seen.add(key);
+                names.push(name);
+            }
+        }
+        if (names.length < 2) return '';
+        const shown = names.slice(0, 3);
+        const more = names.length > 3;
+        let body;
+        if (more) {
+            body = shown.join(', ') + ' and more';
+        } else if (shown.length === 2) {
+            body = shown[0] + ' and ' + shown[1];
+        } else {
+            body = shown[0] + ', ' + shown[1] + ' and ' + shown[2];
+        }
+        return 'Featuring ' + body + '.';
+    }
+
+    function renderDetailTracks(container, items) {
         container.innerHTML = '';
         if (!Array.isArray(items) || !items.length) {
             container.innerHTML = contentState('empty', 'No tracks.');
-            if (playAllBtn) playAllBtn.disabled = true;
             return;
         }
         const ids = items.map((t) => String(t.id)).filter(Boolean);
-        if (playAllBtn) {
-            playAllBtn.disabled = false;
-            playAllBtn.onclick = () => playTidalTracks(ids, ids[0]);
-        }
         const list = document.createElement('ul');
         list.className = 'streaming-results-list';
         items.forEach((item, index) => {

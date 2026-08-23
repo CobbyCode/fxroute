@@ -600,6 +600,40 @@ def playlist_tracks(playlist_id: str) -> list[dict]:
     return [normalize_track(t) for t in tracks]
 
 
+def playlist_detail(playlist_id: str) -> dict:
+    """Return one TIDAL playlist with its tracks and distinct artist identities.
+
+    The playlist row mirrors :func:`normalize_playlist` (so description and
+    art_url stay available for the detail header); ``artists`` lists the
+    distinct track artists in first-appearance order with their TIDAL ids,
+    which the provider uses to attach the shared artist enrichment when the
+    playlist maps to exactly one artist.  Tracks are the same normalized rows
+    as :func:`playlist_tracks`.
+    """
+    _require_tidalapi()
+    session = _session()
+    try:
+        playlist = session.playlist(playlist_id)
+        tracks = playlist.tracks()
+    except Exception as exc:  # noqa: BLE001
+        raise auth.TidalAuthError(f"TIDAL playlist {playlist_id} lookup failed: {exc}") from exc
+    artists: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for track in tracks:
+        artist_obj = getattr(track, "artist", None)
+        name = getattr(artist_obj, "name", "") if artist_obj is not None else ""
+        aid = getattr(artist_obj, "id", None) if artist_obj is not None else None
+        key = str(aid) if aid is not None else name
+        if key and key not in seen:
+            seen.add(key)
+            artists.append({"id": _id_str(aid), "name": name})
+    return {
+        **normalize_playlist(playlist),
+        "tracks": [normalize_track(t) for t in tracks],
+        "artists": artists,
+    }
+
+
 def create_playlist(title: str, description: str = "", track_ids: list[str] | None = None) -> dict:
     """Create a new TIDAL playlist (v2 my-collection API, live-verified).
 

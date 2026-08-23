@@ -34,14 +34,16 @@ function extractFunction(source, name) {
     throw new Error(`unterminated ${name}`);
 }
 
-// The local playlist detail remains on its existing compact layout; only the
-// album detail receives the new artwork-led hero class.
+// The local album and playlist details both opt into the new artwork-led hero
+// layout and carry the shared backdrop image anchor.
 assert.ok(html.includes('class="album-detail album-detail--hero hidden"'),
     'local album detail must opt into the new hero layout');
 assert.ok(html.includes('id="album-detail-backdrop"'),
     'local album detail must carry a backdrop image anchor');
-assert.ok(!html.includes('id="playlist-detail" class="album-detail album-detail--hero'),
-    'local playlist detail must not opt into the album hero layout');
+assert.ok(html.includes('id="playlist-detail" class="album-detail album-detail--hero hidden"'),
+    'local playlist detail must opt into the same hero layout');
+assert.ok(html.includes('id="playlist-detail-backdrop"'),
+    'local playlist detail must carry a backdrop image anchor');
 
 const openAlbum = extractFunction(appJs, 'openAlbumDetail');
 const openTopTracks = extractFunction(appJs, 'openSmartTopTracks');
@@ -51,6 +53,10 @@ assert.ok(openTopTracks.includes('setAlbumDetailBackdrop('),
     'Top 40 album detail must synchronize the artwork backdrop');
 assert.ok(appJs.includes('albumDetailBackdrop:'),
     'app.js must retain a dedicated local album backdrop element');
+assert.ok(appJs.includes('playlistDetailBackdrop:'),
+    'app.js must carry a dedicated local playlist backdrop element');
+assert.ok(appJs.includes('renderPlaylistDetailInfo'),
+    'local playlist detail must render a header info line');
 
 const detailBackdrop = extractFunction(streamingJs, 'detailBackdropHtml');
 const syncBackdrop = extractFunction(streamingJs, 'syncDetailBackdrop');

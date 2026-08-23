@@ -386,8 +386,8 @@
     max-width: 64ch;
 }
 
-/* Artwork-led detail heroes. The local playlist deliberately keeps the
-   compact header above; only the album detail and TIDAL detail roots opt in. */
+/* Artwork-led detail heroes: the local album and playlist details and the
+   TIDAL detail roots share the same framed composition. */
 .album-detail--hero,
 .streaming-detail--hero {
     gap: clamp(1rem, 1.8vw, 1.5rem);

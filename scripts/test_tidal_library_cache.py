@@ -328,6 +328,71 @@ class CatalogCacheTests(unittest.TestCase):
             served = catalog.user_playlists()
         self.assertEqual([p["id"] for p in served], ["p1"])
 
+    def test_playlist_detail_collects_artists_and_description(self):
+        store = self._store()
+        session = _session(42, FakeFavorites())
+        tracks = [
+            SimpleNamespace(
+                id="t1", name="One", title="One", duration=200,
+                artist=SimpleNamespace(id=7, name="Artist A"), artists=[],
+                album=SimpleNamespace(name="Album", image=lambda size=640: ""),
+                audio_quality="LOSSLESS", is_hi_res_lossless=False, is_lossless=True,
+                available=True, explicit=False,
+            ),
+            SimpleNamespace(
+                id="t2", name="Two", title="Two", duration=180,
+                artist=SimpleNamespace(id=8, name="Artist B"), artists=[],
+                album=SimpleNamespace(name="Album", image=lambda size=640: ""),
+                audio_quality="LOSSLESS", is_hi_res_lossless=False, is_lossless=True,
+                available=True, explicit=False,
+            ),
+        ]
+        session.playlist = lambda pid: SimpleNamespace(
+            id=pid, name="Mix", num_tracks=2,
+            description="A curated mix",
+            square_picture=lambda size=640: "", image=None, picture=None,
+            tracks=lambda: tracks,
+        )
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            detail = catalog.playlist_detail("pl1")
+        self.assertEqual(detail["id"], "pl1")
+        self.assertEqual(detail["description"], "A curated mix")
+        self.assertEqual([t["id"] for t in detail["tracks"]], ["t1", "t2"])
+        self.assertEqual(
+            detail["artists"],
+            [{"id": "7", "name": "Artist A"}, {"id": "8", "name": "Artist B"}],
+        )
+
+    def test_playlist_detail_single_artist_dedupes(self):
+        store = self._store()
+        session = _session(42, FakeFavorites())
+        tracks = [
+            SimpleNamespace(
+                id="t1", name="One", title="One", duration=200,
+                artist=SimpleNamespace(id=7, name="Artist A"), artists=[],
+                album=SimpleNamespace(name="Album", image=lambda size=640: ""),
+                audio_quality="LOSSLESS", is_hi_res_lossless=False, is_lossless=True,
+                available=True, explicit=False,
+            ),
+            SimpleNamespace(
+                id="t2", name="Two", title="Two", duration=180,
+                artist=SimpleNamespace(id=7, name="Artist A"), artists=[],
+                album=SimpleNamespace(name="Album", image=lambda size=640: ""),
+                audio_quality="LOSSLESS", is_hi_res_lossless=False, is_lossless=True,
+                available=True, explicit=False,
+            ),
+        ]
+        session.playlist = lambda pid: SimpleNamespace(
+            id=pid, name="Mix", num_tracks=2, description="",
+            square_picture=lambda size=640: "", image=None, picture=None,
+            tracks=lambda: tracks,
+        )
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            detail = catalog.playlist_detail("pl1")
+        self.assertEqual(detail["artists"], [{"id": "7", "name": "Artist A"}])
+
     def test_accounts_never_mix(self):
         store = self._store()
         favorites_a = FakeFavorites(tracks=[_track(1)])

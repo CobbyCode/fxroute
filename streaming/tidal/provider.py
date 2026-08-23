@@ -240,6 +240,48 @@ class TidalProvider(StreamingProvider):
     async def playlist_tracks(self, playlist_id: str) -> list[dict]:
         return await _to_thread(catalog.playlist_tracks, playlist_id)
 
+    async def get_playlist(self, playlist_id: str) -> dict:
+        """Playlist detail (description, tracks, distinct artists) + enrichment.
+
+        Enrichment attaches only when the playlist maps to exactly one distinct
+        artist: then the shared MusicBrainz artist about text is offered for the
+        header.  Multi-artist playlists get no enrichment (the UI renders a
+        featuring line from the actual track artists instead) and enrichment
+        failures degrade to ``available=False`` without breaking the playlist.
+        """
+        data = await _to_thread(catalog.playlist_detail, playlist_id)
+        return await _to_thread(self._attach_playlist_enrichment, data)
+
+    def _attach_playlist_enrichment(self, data: dict) -> dict:
+        result = dict(data)
+        try:
+            artists = result.get("artists") or []
+            enrichment: dict = {"available": False}
+            if len(artists) == 1:
+                artist = artists[0]
+                if artist.get("id"):
+                    enriched = self._enrichment().enriched_artist(
+                        "tidal",
+                        str(artist["id"]),
+                        str(artist.get("name") or ""),
+                        load_similar=False,
+                    )
+                    enrichment = {
+                        "available": enriched.get("available") is True,
+                        "artist": {
+                            "mb_artist_id": enriched.get("mb_artist_id"),
+                            "about": enriched.get("about"),
+                            "mapped": enriched.get("available") is True,
+                            "cached": bool(enriched.get("cached")),
+                        },
+                        "error": enriched.get("error"),
+                    }
+            result["enrichment"] = enrichment
+        except Exception as exc:  # noqa: BLE001 - enrichment must never break the playlist
+            logger.warning("TIDAL playlist enrichment failed for %s: %s", result.get("id"), exc)
+            result["enrichment"] = {"available": False, "error": str(exc)[:200]}
+        return result
+
     async def create_playlist(self, title: str, description: str = "", track_ids: list[str] | None = None) -> dict:
         return await _to_thread(catalog.create_playlist, title, description, track_ids)
 
