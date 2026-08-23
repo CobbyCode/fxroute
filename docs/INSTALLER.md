@@ -31,13 +31,23 @@ session.
 | Provider | Release or package | Supported host | Installer result |
 | --- | --- | --- | --- |
 | Spotify Desktop | Native `spotify-client` on apt; `com.spotify.Client` Flatpak otherwise | x86_64 with X11 or Wayland desktop session | Installs the official client, keyring/Secret-Service support, and optional autostart integration |
-| spotifyd | v0.4.2 full/MPRIS build | x86_64, aarch64, armv7 | Installs `~/.local/bin/spotifyd`, a user service, and a minimal MPRIS/PipeWire-Pulse config with fixed Zeroconf TCP port 4444 |
+| spotifyd | v0.4.2 full/MPRIS build | x86_64 with a compatible runtime; aarch64/armv7 where the release libraries are available | Installs `~/.local/bin/spotifyd`, a user service, and a minimal MPRIS/PipeWire-Pulse config with fixed Zeroconf TCP port 4444 |
 | Qobuz/qbzd | v2.0.2 standalone build | amd64, aarch64 | Installs `~/.local/bin/qbzd`, Avahi/mDNS support, `qconnect.volume_mode=locked`, and a `qbzd run` user service |
 | TIDAL | `tidalapi==0.8.11` in the FXRoute venv | Any supported FXRoute Python host | Adds the optional dependency used by FXRoute's existing PKCE login flow |
 
 The base installer supports apt, dnf, zypper, and pacman. Unsupported
 architectures are reported without downloading or building replacement
 provider binaries.
+
+The v0.4.2 ARM release binaries are not compatible with Debian 13/Trixie:
+they require the obsolete `libssl.so.1.1` and `libcrypto.so.1.1`, which Debian
+13 does not provide. The installer checks the downloaded binary with `ldd`,
+records spotifyd as unavailable, and attempts to disable an FXRoute-owned user
+service, leaving it disabled, when those libraries are missing. It reports a
+warning if systemd rejects that disable operation. It does not install
+end-of-life OpenSSL 1.1
+packages or fetch an unpinned development artifact. A compatible upstream
+release is required before spotifyd can be enabled on Debian 13 ARM.
 
 ## First Run
 

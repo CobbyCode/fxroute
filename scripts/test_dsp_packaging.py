@@ -33,6 +33,10 @@ class DspPackagingTests(unittest.TestCase):
                            "lv2-calf-plugins", "zam-plugins calf"):
             self.assertIn(dependency, script)
 
+    def test_debian_native_dsp_provisions_standard_c_headers(self):
+        script = (ROOT / "install.sh").read_text()
+        self.assertRegex(script, r"apt\) dsp_packages=\([^)]*\blibc6-dev\b")
+
     def test_opensuse_builds_pinned_calf_lv2_when_package_is_unavailable(self):
         script = (ROOT / "install.sh").read_text()
         self.assertIn('install_calf_lv2_from_source()', script)
@@ -42,6 +46,12 @@ class DspPackagingTests(unittest.TestCase):
         self.assertIn('-DWANT_JACK=OFF', script)
         self.assertIn('"$HOME/.lv2/calf.lv2"', script)
         self.assertIn('mv "$candidate" "$HOME/.lv2/calf.lv2"', script)
+
+    def test_source_build_cleanup_does_not_expand_local_work_after_return(self):
+        script = (ROOT / "install.sh").read_text()
+        self.assertNotIn("trap 'rm -rf \"$work\"' RETURN", script)
+        self.assertIn("cleanup_active_temp_dir", script)
+        self.assertIn("FXROUTE_ACTIVE_TEMP_DIR", script)
 
     def test_installer_verifies_required_lv2_plugin_uris(self):
         script = (ROOT / "install.sh").read_text()

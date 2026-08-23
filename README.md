@@ -173,7 +173,7 @@ Optional streaming providers are never selected by default in a non-interactive 
 ./install.sh --providers spotify-desktop,spotifyd,qobuz,tidal
 ```
 
-Spotify Desktop and spotifyd are independent choices. Spotify Desktop is limited to x86_64 desktop sessions; spotifyd and Qobuz/qbzd also support headless user sessions where their architecture is available. The installer does not write provider credentials or session data. See [docs/INSTALLER.md](docs/INSTALLER.md) for the supported matrix, first-run authentication, and uninstall behavior.
+Spotify Desktop and spotifyd are independent choices. Spotify Desktop is limited to x86_64 desktop sessions; spotifyd and Qobuz/qbzd also support headless user sessions where their architecture and runtime are available. The current spotifyd ARM release does not run on Debian 13/Trixie because it requires OpenSSL 1.1. The installer does not write provider credentials or session data. See [docs/INSTALLER.md](docs/INSTALLER.md) for the supported matrix, first-run authentication, and uninstall behavior.
 
 Default user service:
 

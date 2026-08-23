@@ -2,7 +2,9 @@
 """Contract tests for optional streaming installation support."""
 
 import re
+import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -28,6 +30,7 @@ class InstallerStreamingStaticTests(unittest.TestCase):
     def setUpClass(cls):
         cls.install = INSTALL_SH.read_text()
         cls.uninstall = UNINSTALL_SH.read_text()
+        cls.installer_docs = (ROOT / "docs" / "INSTALLER.md").read_text()
         cls.base_requirements = (ROOT / "requirements.txt").read_text()
         tidal_requirements = ROOT / "requirements-tidal.txt"
         cls.tidal_requirements = tidal_requirements.read_text() if tidal_requirements.exists() else ""
@@ -131,6 +134,91 @@ spotify_desktop_supported
         self.assertNotIn("spotifyd-linux-x86_64-slim.tar.gz", self.install)
         self.assertIn("spotifyd_arch_for_host", self.install)
 
+    def test_spotifyd_archive_binary_is_installed_even_without_archive_exec_bit(self):
+        body = extract_function(self.install, "install_spotifyd_binary")
+        self.assertIn('find "$work" -type f -name spotifyd -print -quit', body)
+        self.assertNotIn('find "$work" -type f -name spotifyd -perm -u+x', body)
+        self.assertIn('install -m 755 "$extracted"', body)
+
+    def test_provider_archive_cleanup_does_not_expand_a_local_variable_after_return(self):
+        self.assertIn("cleanup_active_temp_dir", self.install)
+        self.assertIn("FXROUTE_ACTIVE_TEMP_DIR", self.install)
+        for function_name in ("install_spotifyd_binary", "install_qbzd_binary"):
+            body = extract_function(self.install, function_name)
+            self.assertNotIn("trap 'rm -rf \"$work\"' RETURN", body)
+            self.assertIn('trap - RETURN', body)
+            self.assertIn('rm -rf "$work"', body)
+
+    def test_active_provider_temp_dir_is_removed_on_fatal_exit(self):
+        cleanup = extract_function(self.install, "cleanup_active_temp_dir")
+        with tempfile.TemporaryDirectory() as td:
+            active_dir = Path(td) / "active-provider-work"
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f"set -Eeuo pipefail\n{cleanup}\n"
+                    f"mkdir -p {active_dir}\n"
+                    f"FXROUTE_ACTIVE_TEMP_DIR={active_dir}\n"
+                    "trap cleanup_active_temp_dir EXIT\n"
+                    "exit 17\n",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 17, result.stderr)
+            self.assertFalse(active_dir.exists())
+
+    def test_spotifyd_runtime_libraries_are_checked_before_service_setup(self):
+        runtime_check = extract_function(self.install, "spotifyd_runtime_missing_libraries")
+        installer = extract_function(self.install, "install_spotifyd")
+        self.assertIn("spotifyd_runtime_missing_libraries", installer)
+        self.assertRegex(installer, r"if ! systemctl --user disable --now spotifyd\.service")
+        self.assertLess(installer.index("spotifyd_runtime_missing_libraries"),
+                        installer.index("write_spotifyd_config"))
+        with tempfile.TemporaryDirectory() as td:
+            fake_ldd = Path(td) / "ldd"
+            fake_binary = Path(td) / "spotifyd"
+            fake_ldd.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$FAKE_LDD_OUTPUT\"\n"
+                "exit \"${FAKE_LDD_STATUS:-0}\"\n"
+            )
+            fake_binary.write_text("binary\n")
+            fake_ldd.chmod(0o755)
+            fake_binary.chmod(0o755)
+            cases = (
+                ("libssl.so.1.1 => not found", "1", "libssl.so.1.1"),
+                (
+                    "/tmp/spotifyd: /lib/libc.so.6: version `GLIBC_2.38' not found (required by /tmp/spotifyd)",
+                    "0",
+                    "/tmp/spotifyd: /lib/libc.so.6: version `GLIBC_2.38' not found (required by /tmp/spotifyd)",
+                ),
+            )
+            for output, status, expected in cases:
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        f'set -euo pipefail\n{runtime_check}\nmissing="$(spotifyd_runtime_missing_libraries {fake_binary})"\nprintf "%s\\n" "$missing"\n',
+                    ],
+                    env={
+                        **os.environ,
+                        "PATH": f"{td}:/usr/bin:/bin",
+                        "FAKE_LDD_OUTPUT": output,
+                        "FAKE_LDD_STATUS": status,
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
+
+    def test_spotifyd_debian13_arm_runtime_limit_is_documented(self):
+        for detail in ("Debian 13", "libssl.so.1.1", "libcrypto.so.1.1"):
+            self.assertIn(detail, self.installer_docs)
+        self.assertRegex(self.installer_docs, r"(?i)service.{0,80}(disabled|skipped)")
+
     def test_spotifyd_config_has_device_mpris_and_pipewire_without_credentials_or_volume(self):
         body = extract_function(self.install, "write_spotifyd_config")
         for setting in (
@@ -181,6 +269,39 @@ spotify_desktop_supported
             result.stdout,
             "gnome-keyring libsecret-1-0\nalsa libdbus-1-3 avahi libavahi-client3 nss-mdns\n",
         )
+
+    def test_qobuz_runtime_uses_debian_t64_alsa_package_when_available(self):
+        qobuz = extract_function(self.install, "qobuz_runtime_packages_for_manager")
+        with tempfile.TemporaryDirectory() as td:
+            fake_apt_cache = Path(td) / "apt-cache"
+            fake_apt_cache.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = show ] && [ \"$2\" = libasound2t64 ]; then\n"
+                "  exit \"${APT_CACHE_T64_STATUS:-1}\"\n"
+                "fi\n"
+                "exit 1\n"
+            )
+            fake_apt_cache.chmod(0o755)
+            for status, expected_alsa in (("0", "libasound2t64"), ("1", "libasound2")):
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        f'{qobuz}\nprintf "%s\\n" "$(qobuz_runtime_packages_for_manager apt)"\n',
+                    ],
+                    env={
+                        **os.environ,
+                        "PATH": f"{td}:/usr/bin:/bin",
+                        "APT_CACHE_T64_STATUS": status,
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    result.stdout.strip(),
+                    f"{expected_alsa} libdbus-1-3 avahi-daemon libavahi-client3 libnss-mdns",
+                )
 
     def test_tidal_is_an_optional_python_dependency(self):
         self.assertNotIn("tidalapi", self.base_requirements)

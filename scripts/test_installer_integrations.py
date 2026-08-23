@@ -279,9 +279,13 @@ run_case 0 0 1 0 0 0
             unit_dir.mkdir(parents=True)
             (unit_dir / "spotifyd.service").write_text("ExecStart=/opt/spotifyd/spotifyd\n")
             harness = f"""
+set -e
 {unit_exists}
 {detection}
 {guard_policy}
+spotify_desktop_install_method() {{ return 1; }}
+spotifyd_binary_path() {{ return 1; }}
+qbzd_binary_path() {{ return 1; }}
 SELECT_SPOTIFY_DESKTOP=0
 SELECT_SPOTIFYD=0
 SELECT_QOBUZ=0

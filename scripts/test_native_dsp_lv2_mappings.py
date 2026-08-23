@@ -8,9 +8,9 @@
 # at/rt/lk clamps match the plugin port maxima (20/20/20 ms), th is linear
 # 10^(db/20), slink 0..100.
 #
-# Loudness: mode 0=FFT, std 4=ISO226-2023 (plugin default), approx 2=Normal
-# (plugin default), fft 0..6 = 256..16384, volume in the -83..+7 dB port
-# range with the total attenuation invariant preserved via output-gain.
+# Loudness: std 4=ISO226-2023 (plugin default), fft 0..6 = 256..16384,
+# volume in the -83..+7 dB port range with the total attenuation invariant
+# preserved via output-gain.
 
 import sys
 from pathlib import Path
@@ -85,19 +85,21 @@ def test_limiter_sidechain_and_output_controls_match_old_payload(tmp_path):
     assert control_lines(text, "alr_at") == ["5"]
     assert control_lines(text, "alr_rt") == ["50"]
     assert control_lines(text, "knee") == ["1"]
-    assert control_lines(text, "smooth") == ["-5"]
+    assert control_lines(text, "smooth") == []
     assert control_lines(text, "ovs") == ["0"]
     assert control_lines(text, "dith") == ["0"]
     assert control_lines(text, "extsc") == ["0"]
     assert control_lines(text, "g_in") == ["1"]
     assert control_lines(text, "g_out") == ["1"]
+    for forbidden in ("smooth", "in2lk", "in2sc", "lk2in", "lk2sc", "sc2in", "sc2lk"):
+        assert control_lines(text, forbidden) == []
 
 
 def test_loudness_enums_match_installed_lsp_metadata(tmp_path):
     text = compile_loudness(tmp_path)
-    assert control_lines(text, "mode") == ["0"]
+    for forbidden in ("mode", "approx"):
+        assert control_lines(text, forbidden) == []
     assert control_lines(text, "std") == ["4"]
-    assert control_lines(text, "approx") == ["2"]
     assert control_lines(text, "fft") == ["4"]
     assert control_lines(text, "hclip") == ["0"]
     assert control_lines(text, "hcrange") == ["6"]

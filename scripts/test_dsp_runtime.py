@@ -121,8 +121,9 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         self.manager.preset_store.write("Dual", self.manager._native_preset(chain))
         text = self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}], preset_name="Dual")
+        self.assertNotIn("control clink ", text)
         for expected in ("control g_in 0.794328235", "control g_out 1.41253754",
-                          "control mode 3", "control clink 0", "control ftl_0 1",
+                          "control mode 3", "control ftl_0 1",
                           "control fml_0 0", "control sl_0 0", "control fl_0 100",
                           "control gl_0 0.501187234", "control ql_0 2",
                           "control ftr_0 3", "control fr_0 5000",
@@ -213,19 +214,24 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                          "control floor_active 0", "control floor 20"):
             self.assertIn(expected, text)
         self.assertIn("lv2 http://lsp-plug.in/plugins/lv2/loud_comp_stereo", text)
-        for expected in ("control input 1", "control mode 0", "control std 4",
-                         "control fft 5", "control approx 2", "control volume -7.5",
+        for expected in ("control input 1", "control std 4", "control fft 5",
+                         "control volume -7.5",
                          "control hclip 0", "control hcrange 6"):
             self.assertIn(expected, text)
+        self.assertNotIn("control mode 0\n", text[text.index("global-loudness"):text.index("param output_gain_db")])
+        self.assertNotIn("control approx ", text[text.index("global-loudness"):text.index("param output_gain_db")])
         self.assertIn("param output_gain_db 7.5", text)
         self.assertIn("lv2 http://lsp-plug.in/plugins/lv2/sc_limiter_stereo", text)
         for expected in ("control g_in 0.707945784", "control g_out 1.25892541",
                           "control th 0.794328235", "control at 4", "control rt 20",
                           "control lk 6", "control slink 80", "control alr 0",
                           "control boost 1", "control extsc 0", "control mode 0",
-                          "control ovs 0", "control dith 0", "control scp 1",
-                          "control in2lk 0", "control sc2lk 0"):
+                          "control ovs 0", "control dith 0", "control scp 1"):
             self.assertIn(expected, text)
+        for forbidden in ("control smooth ", "control in2lk ", "control in2sc ",
+                          "control lk2in ", "control lk2sc ", "control sc2in ",
+                          "control sc2lk "):
+            self.assertNotIn(forbidden, text)
         self.assertIn("lv2 urn:zamaudio:ZaMaximX2", text)
         self.assertIn("control thresh -0.5", text)
         self.assertIn("control rel 30", text)

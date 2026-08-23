@@ -79,6 +79,7 @@ SUDO_CMD=()
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
 INSTALL_CONFIG_FILE="$HOME/.config/fxroute/install-config.env"
 FXROUTE_BACKUP_DIR="$HOME/.config/fxroute/backups"
+FXROUTE_ACTIVE_TEMP_DIR=""
 MDNS_HOSTNAME=""
 LAN_HOSTNAME_BEFORE=""
 LAN_HOSTNAME_AFTER=""
@@ -153,6 +154,13 @@ warn() { printf '[fxroute][warn] %s\n' "$*" >&2; WARNINGS+=("$*"); }
 die() { printf '[fxroute][error] %s\n' "$*" >&2; exit 1; }
 pass() { printf '[pass] %s\n' "$*"; VALIDATION_RESULTS+=("PASS: $*"); }
 fail() { printf '[fail] %s\n' "$*"; VALIDATION_RESULTS+=("FAIL: $*"); }
+
+cleanup_active_temp_dir() {
+  local active_dir="${FXROUTE_ACTIVE_TEMP_DIR:-}"
+  FXROUTE_ACTIVE_TEMP_DIR=""
+  [[ -n "$active_dir" ]] || return 0
+  rm -rf -- "$active_dir" || true
+}
 
 determine_fxroute_target_identity() {
   if [[ ${EUID:-$(id -u)} -eq 0 && -n "${SUDO_USER:-}" ]]; then
@@ -1518,7 +1526,9 @@ detect_existing_provider_components() {
   elif [[ $SELECT_SPOTIFYD -eq 0 ]]; then
     SPOTIFYD_PROVIDER_STATUS="not selected; not installed"
   fi
-  user_unit_exists spotifyd.service && SPOTIFYD_PRESENT_BEFORE=1
+  if user_unit_exists spotifyd.service; then
+    SPOTIFYD_PRESENT_BEFORE=1
+  fi
 
   if [[ -n "$(qbzd_binary_path || true)" ]]; then
     QBZD_PRESENT_BEFORE=1
@@ -1529,7 +1539,9 @@ detect_existing_provider_components() {
   elif [[ $SELECT_QOBUZ -eq 0 ]]; then
     QOBUZ_PROVIDER_STATUS="not selected; not installed"
   fi
-  user_unit_exists qbzd.service && QBZD_PRESENT_BEFORE=1
+  if user_unit_exists qbzd.service; then
+    QBZD_PRESENT_BEFORE=1
+  fi
 }
 
 spotifyd_binary_path() {
@@ -1566,6 +1578,17 @@ EOF
   chmod 600 "$config_path"
   SPOTIFYD_CONFIG_INSTALLED_BY_FXROUTE=1
   pass "spotifyd config created for FXRoute/PipeWire-Pulse"
+}
+
+spotifyd_runtime_missing_libraries() {
+  local binary="${1:-}"
+
+  [[ -x "$binary" ]] || return 0
+  command -v ldd >/dev/null 2>&1 || return 0
+  ldd "$binary" 2>&1 | awk '
+    /not found$/ { print $1; next }
+    /version .* not found/ || /not a dynamic executable/ || /wrong ELF class/ { print }
+  ' || true
 }
 
 install_spotifyd_binary() {
@@ -1612,17 +1635,21 @@ install_spotifyd_binary() {
 
   archive_url="https://github.com/Spotifyd/spotifyd/releases/download/v${SPOTIFYD_VERSION}/${archive}"
   work="$(mktemp -d -t fxroute-spotifyd.XXXXXX)"
-  trap 'rm -rf "$work"' RETURN
+  FXROUTE_ACTIVE_TEMP_DIR="$work"
+  trap 'rm -rf "${work:-}"' RETURN
   run_cmd curl -fL --retry 3 -o "$work/$archive" "$archive_url"
   printf '%s  %s\n' "$checksum" "$work/$archive" | sha512sum -c -
   run_cmd tar -xzf "$work/$archive" -C "$work"
-  extracted="$(find "$work" -type f -name spotifyd -perm -u+x -print -quit)"
-  [[ -n "$extracted" ]] || die "spotifyd archive did not contain an executable"
+  extracted="$(find "$work" -type f -name spotifyd -print -quit)"
+  [[ -n "$extracted" ]] || die "spotifyd archive did not contain a binary"
   mkdir -p "$HOME/.local/bin"
   install -m 755 "$extracted" "$HOME/.local/bin/spotifyd"
   SPOTIFYD_BINARY_PATH="$HOME/.local/bin/spotifyd"
   SPOTIFYD_INSTALLED_BY_FXROUTE=1
   SPOTIFYD_BINARY_SHA256="$(sha256sum "$SPOTIFYD_BINARY_PATH" | awk '{print $1}')"
+  rm -rf "$work"
+  FXROUTE_ACTIVE_TEMP_DIR=""
+  trap - RETURN
   pass "spotifyd v${SPOTIFYD_VERSION} installed (${release_arch}, full/MPRIS)"
 }
 
@@ -1672,6 +1699,8 @@ EOF
 install_spotifyd() {
   local was_present=0
   local spotifyd_path=""
+  local missing_runtime=""
+  local service_disable_failed=0
 
   if ! spotifyd_arch_for_host >/dev/null 2>&1; then
     SPOTIFYD_PROVIDER_STATUS="unsupported architecture"
@@ -1684,6 +1713,22 @@ install_spotifyd() {
   [[ -n "$(spotifyd_binary_path || true)" ]] || return 0
   if [[ ! -x "$(spotifyd_binary_path || true)" ]]; then
     SPOTIFYD_PROVIDER_STATUS="existing path is not executable; preserved"
+    return 0
+  fi
+  spotifyd_path="$(spotifyd_binary_path || true)"
+  missing_runtime="$(spotifyd_runtime_missing_libraries "$spotifyd_path")"
+  if [[ -n "$missing_runtime" ]]; then
+    if [[ $SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]]; then
+      if ! systemctl --user disable --now spotifyd.service >/dev/null 2>&1; then
+        service_disable_failed=1
+        warn "spotifyd has missing runtime libraries, but its FXRoute-owned user service could not be disabled"
+      fi
+    fi
+    SPOTIFYD_PROVIDER_STATUS="unavailable; missing runtime libraries: ${missing_runtime//$'\n'/, }"
+    if [[ $service_disable_failed -eq 1 ]]; then
+      SPOTIFYD_PROVIDER_STATUS+="; service disable failed"
+    fi
+    warn "spotifyd cannot run on this host; missing runtime libraries: ${missing_runtime//$'\n'/, }."
     return 0
   fi
   write_spotifyd_config
@@ -1705,7 +1750,13 @@ install_spotifyd() {
 
 qobuz_runtime_packages_for_manager() {
   case "$1" in
-    apt) echo "libasound2 libdbus-1-3 avahi-daemon libavahi-client3 libnss-mdns" ;;
+    apt)
+      local alsa_package="libasound2"
+      if apt-cache show libasound2t64 >/dev/null 2>&1; then
+        alsa_package="libasound2t64"
+      fi
+      echo "$alsa_package libdbus-1-3 avahi-daemon libavahi-client3 libnss-mdns"
+      ;;
     dnf) echo "alsa-lib dbus-libs avahi nss-mdns" ;;
     zypper) echo "alsa libdbus-1-3 avahi libavahi-client3 nss-mdns" ;;
     pacman) echo "alsa-lib dbus avahi nss-mdns" ;;
@@ -1794,7 +1845,8 @@ install_qbzd_binary() {
 
   archive_url="https://github.com/vicrodh/qbz/releases/download/v${QBZD_VERSION}/${archive}"
   work="$(mktemp -d -t fxroute-qbzd.XXXXXX)"
-  trap 'rm -rf "$work"' RETURN
+  FXROUTE_ACTIVE_TEMP_DIR="$work"
+  trap 'rm -rf "${work:-}"' RETURN
   run_cmd curl -fL --retry 3 -o "$work/$archive" "$archive_url"
   printf '%s  %s\n' "$checksum" "$work/$archive" | sha256sum -c -
   run_cmd tar -xzf "$work/$archive" -C "$work"
@@ -1805,6 +1857,9 @@ install_qbzd_binary() {
   QBZD_BINARY_PATH="$HOME/.local/bin/qbzd"
   QBZD_INSTALLED_BY_FXROUTE=1
   QBZD_BINARY_SHA256="$(sha256sum "$QBZD_BINARY_PATH" | awk '{print $1}')"
+  rm -rf "$work"
+  FXROUTE_ACTIVE_TEMP_DIR=""
+  trap - RETURN
   pass "qbzd v${QBZD_VERSION} installed (${release_arch})"
 }
 
@@ -2360,6 +2415,7 @@ EOF
 
 checkpoint_install_state_on_exit() {
   local exit_status="$?"
+  cleanup_active_temp_dir
   if [[ "$exit_status" -ne 0 && "$STATE_CHECKPOINT_ENABLED" -eq 1 ]]; then
     write_install_config >/dev/null 2>&1 || true
     write_install_state >/dev/null 2>&1 || true
@@ -2408,7 +2464,7 @@ build_native_dsp_engine() {
 
   [[ -f "$build_script" ]] || die "Missing FXRoute native DSP build script: $build_script"
   case "$PACKAGE_MANAGER" in
-    apt) dsp_packages=(gcc pkg-config libpipewire-0.3-dev libspa-0.2-dev liblilv-dev lilv-utils lv2-dev lsp-plugins-lv2 zam-plugins calf-plugins libebur128-dev libsamplerate0-dev libspeexdsp-dev) ;;
+    apt) dsp_packages=(gcc libc6-dev pkg-config libpipewire-0.3-dev libspa-0.2-dev liblilv-dev lilv-utils lv2-dev lsp-plugins-lv2 zam-plugins calf-plugins libebur128-dev libsamplerate0-dev libspeexdsp-dev) ;;
     dnf) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel lilv lilv-devel lv2-devel lsp-plugins-lv2 zam-plugins-lv2 lv2-calf-plugins libebur128-devel libsamplerate-devel speexdsp-devel) ;;
     zypper) dsp_packages=(gcc gcc-c++ cmake pkgconf-pkg-config pipewire-devel lilv liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel) ;;
     pacman) dsp_packages=(gcc pkgconf libpipewire lilv lv2 lsp-plugins zam-plugins calf libebur128 libsamplerate speexdsp) ;;
@@ -2434,7 +2490,8 @@ install_calf_lv2_from_source() {
   source="$work/calf-$version"
   build="$work/build"
   stage="$work/stage"
-  trap 'rm -rf "$work"' RETURN
+  FXROUTE_ACTIVE_TEMP_DIR="$work"
+  trap 'rm -rf "${work:-}"' RETURN
 
   run_cmd curl -fL --retry 3 -o "$archive" "https://github.com/calf-studio-gear/calf/archive/$version.tar.gz"
   printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
@@ -2466,6 +2523,9 @@ install_calf_lv2_from_source() {
   fi
   lv2ls 2>/dev/null | grep -Fxq 'http://calf.sourceforge.net/plugins/BassEnhancer' \
     || die "Calf Bass Enhancer is unavailable after source installation"
+  rm -rf "$work"
+  FXROUTE_ACTIVE_TEMP_DIR=""
+  trap - RETURN
   pass "Calf Bass Enhancer LV2 installed"
 }
 

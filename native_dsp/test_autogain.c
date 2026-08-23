@@ -80,26 +80,6 @@ static int wait_for_gain(fx_autogain *gain, double minimum) {
     return 0;
 }
 
-static int wait_for_gain_settled(fx_autogain *gain, unsigned stable_reads) {
-    /* The worker publishes asynchronously; a single read can catch a
-     * mid-convergence transient.  Return only once the published gain is
-     * identical across consecutive reads, i.e. the worker drained the ring
-     * and the measurement settled. */
-    double previous = -1.0;
-    unsigned stable = 0;
-    for (unsigned attempt = 0; attempt < 500000U; attempt++) {
-        double current = fx_autogain_get_measurement(gain).gain;
-        if (isfinite(current) && current == previous) {
-            if (++stable >= stable_reads) return 1;
-        } else {
-            stable = 0;
-            previous = current;
-        }
-        sched_yield();
-    }
-    return 0;
-}
-
 static int wait_for_integrated(fx_autogain *gain, double expected, double tolerance) {
     for (unsigned attempt = 0; attempt < 500000U; attempt++) {
         double actual = fx_autogain_get_measurement(gain).integrated_lufs;
@@ -108,6 +88,8 @@ static int wait_for_integrated(fx_autogain *gain, double expected, double tolera
     }
     return 0;
 }
+
+static ebur128_state *make_oracle(unsigned history);
 
 static fx_autogain *make_gain(fx_autogain_reference reference, double target,
                               double silence, unsigned history) {
@@ -221,38 +203,93 @@ static void test_silence_bad_measurements_and_block_limit(void) {
 
 static void test_peak_safety_freezes_previous_gain(void) {
     float left[BLOCK], right[BLOCK], out_left[BLOCK], out_right[BLOCK];
+    float interleaved[BLOCK * 2U];
     double phase = 0.0;
     fx_autogain *gain = make_gain(FX_AUTOGAIN_MOMENTARY, -12.0, -70.0, 15U);
-    run_seconds(gain, 0.02, 1U, left, right, out_left, out_right, &phase);
-    check(wait_for_gain(gain, 1.0), "quiet material is measured asynchronously");
-    check(wait_for_gain_settled(gain, 8U),
-          "quiet material measurement settles before the peak-safety snapshot");
+    ebur128_state *oracle = make_oracle(15U);
+    check(gain && oracle, "peak-safety test initializes its measurement oracle");
+    if (!gain || !oracle) {
+        fx_autogain_free(gain);
+        ebur128_destroy(&oracle);
+        return;
+    }
+
+    for (unsigned n = 0; n < RATE / BLOCK; n++) {
+        fill_sine(left, right, BLOCK, 0.02, &phase);
+        for (size_t i = 0; i < BLOCK; i++) {
+            interleaved[2U * i] = left[i];
+            interleaved[2U * i + 1U] = right[i];
+        }
+        check(ebur128_add_frames_float(oracle, interleaved, BLOCK) == EBUR128_SUCCESS,
+              "peak-safety oracle accepts quiet frames");
+        check(fx_autogain_process(gain, left, right, out_left, out_right, BLOCK) == 0,
+              "quiet peak-safety block processes");
+    }
+    double expected_integrated = 0.0;
+    check(ebur128_loudness_global(oracle, &expected_integrated) == EBUR128_SUCCESS,
+          "peak-safety oracle provides the quiet integrated result");
+    check(wait_for_integrated(gain, expected_integrated, 1e-9),
+          "quiet material is fully measured before the peak-safety snapshot");
     double safe_gain = fx_autogain_get_measurement(gain).gain;
     check(safe_gain > 1.0, "quiet material establishes positive gain");
     fill_sine(left, right, BLOCK, 0.02, &phase);
     left[0] = 0.95f;
+    for (size_t i = 0; i < BLOCK; i++) {
+        interleaved[2U * i] = left[i];
+        interleaved[2U * i + 1U] = right[i];
+    }
+    check(ebur128_add_frames_float(oracle, interleaved, BLOCK) == EBUR128_SUCCESS,
+          "peak-safety oracle accepts the unsafe frame");
     check(fx_autogain_process(gain, left, right, out_left, out_right, BLOCK) == 0,
           "unsafe candidate block still processes");
-    /* The worker measures asynchronously: the unsafe block must be drained
-     * and the peak-safety freeze published before comparing gains, otherwise
-     * a mid-drain transient (a quiet pre-freeze measurement) fails the exact
-     * equality spuriously. */
-    check(wait_for_gain_settled(gain, 8U),
+    check(ebur128_loudness_global(oracle, &expected_integrated) == EBUR128_SUCCESS,
+          "peak-safety oracle provides the unsafe integrated result");
+    check(wait_for_integrated(gain, expected_integrated, 1e-9),
           "peak-safety freeze is published after the unsafe block");
     check_close(fx_autogain_get_measurement(gain).gain, safe_gain, 0.0,
                  "sample-peak safety rejects a clipping gain update");
     check(fabsf(out_left[0]) < 1.0f,
           "RT block peak caps an asynchronously calculated gain");
+    ebur128_destroy(&oracle);
     fx_autogain_free(gain);
 }
 
 static void test_gain_changes_are_smoothed(void) {
     float left[BLOCK], right[BLOCK], out_left[BLOCK], out_right[BLOCK];
+    float interleaved[BLOCK * 2U];
     double phase = 0.0;
     fx_autogain *gain = make_gain(FX_AUTOGAIN_MOMENTARY, -12.0, -70.0, 15U);
-    check(gain != NULL, "smoothed gain initializes");
-    run_seconds(gain, 0.02, 1U, left, right, out_left, out_right, &phase);
-    check(wait_for_gain(gain, 1.0), "worker publishes smoothing target");
+    ebur128_state *oracle = make_oracle(15U);
+    check(gain && oracle, "smoothed gain initializes");
+    if (!gain || !oracle) {
+        fx_autogain_free(gain);
+        ebur128_destroy(&oracle);
+        return;
+    }
+
+    for (unsigned n = 0; n < RATE / BLOCK; n++) {
+        fill_sine(left, right, BLOCK, 0.02, &phase);
+        for (size_t i = 0; i < BLOCK; i++) {
+            interleaved[2U * i] = left[i];
+            interleaved[2U * i + 1U] = right[i];
+        }
+        check(ebur128_add_frames_float(oracle, interleaved, BLOCK) == EBUR128_SUCCESS,
+              "smoothing oracle accepts quiet frames");
+        check(fx_autogain_process(gain, left, right, out_left, out_right, BLOCK) == 0,
+              "smoothing history block processes");
+    }
+    double expected_integrated = 0.0;
+    check(ebur128_loudness_global(oracle, &expected_integrated) == EBUR128_SUCCESS,
+          "smoothing oracle provides the integrated result");
+    check(wait_for_integrated(gain, expected_integrated, 1e-9),
+          "worker publishes a fully measured smoothing baseline");
+    double previous_target = fx_autogain_get_measurement(gain).gain;
+    fx_autogain_set_target(gain, -6.0);
+    fill_sine(left, right, BLOCK, 0.02, &phase);
+    check(fx_autogain_process(gain, left, right, out_left, out_right, BLOCK) == 0,
+          "smoothing target update block processes");
+    check(wait_for_gain(gain, previous_target + 5.0),
+          "worker publishes a deliberately rising smoothing target");
     double target = fx_autogain_get_measurement(gain).gain;
     fill_sine(left, right, BLOCK, 0.02, &phase);
     check(fx_autogain_process(gain, left, right, out_left, out_right, BLOCK) == 0,
@@ -260,6 +297,7 @@ static void test_gain_changes_are_smoothed(void) {
     double applied = out_left[BLOCK / 2U] / left[BLOCK / 2U];
     check(applied > 1.0 && applied < target,
           "release smoothing approaches a rising target without a step");
+    ebur128_destroy(&oracle);
     fx_autogain_free(gain);
 }
 

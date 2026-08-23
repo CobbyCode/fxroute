@@ -25,8 +25,11 @@
  * fxdsp_live_commit) while a concurrent thread runs fxdsp_process, mirroring
  * the realtime process thread that applies committed live updates.  It steps
  * Strength through both directions (1->5, 5->1, 5->4, 4->5 and the full
- * adjacent sweep) and measures the maximum intermediate output amplitude,
- * not just the final state.  It runs the same sequence at the default
+ * adjacent sweep) and measures the maximum intermediate output peak, not just
+ * the final state. Each transition is compared with the higher settled peak
+ * of its old and new Strength so a coarse FFT's legitimate crest-factor
+ * change is not treated as a gain excursion. It runs the same sequence at the
+ * default
  * 4096 FFT, the smallest 256 FFT (boundaries inside one block), the largest
  * 16384 FFT (boundaries spanning many blocks) and at 44.1/48/96 kHz so the
  * matched-latency compensation is not tied to one block/rate.
@@ -85,10 +88,8 @@ static int write_config(const char *path, double rate, int fft_index, int streng
         "matrix 1 1 1\n"
         "stage_begin 0 global-loudness lv2 http://lsp-plug.in/plugins/lv2/loud_comp_stereo\n"
         "control input 1\n"
-        "control mode 0\n"
         "control std 4\n"
         "control fft %d\n"
-        "control approx 2\n"
         "control volume %.9f\n"
         "control hclip 0\n"
         "control hcrange 6\n"
@@ -118,10 +119,8 @@ static float run_block(fxdsp *d, float *left, float *right,
     fxdsp_process(d, input, output, frames);
     float peak = 0.0f;
     for (size_t n = 0; n < frames; n++) {
-        float m = fabsf(out_l[n]);
-        float r = fabsf(out_r[n]);
-        if (r > m) m = r;
-        if (m > peak) peak = m;
+        float current = fmaxf(fabsf(out_l[n]), fabsf(out_r[n]));
+        if (current > peak) peak = current;
     }
     return peak;
 }
@@ -132,7 +131,8 @@ static void *process_loop(void *arg) {
     while (!atomic_load_explicit(&ctx->stop, memory_order_relaxed)) {
         fill_sine(ctx->left, ctx->right, BLOCK, phase, ctx->rate);
         phase += BLOCK;
-        float peak = run_block(ctx->dsp, ctx->left, ctx->right, ctx->out_l, ctx->out_r, BLOCK);
+        float peak = run_block(ctx->dsp, ctx->left, ctx->right, ctx->out_l, ctx->out_r,
+                               BLOCK);
         float current = atomic_load_explicit(&ctx->peak, memory_order_relaxed);
         while (peak > current &&
                !atomic_compare_exchange_weak_explicit(&ctx->peak, &current, peak,
@@ -206,22 +206,20 @@ static void run_config(double rate, int fft_index) {
     atomic_store_explicit(&ctx.peak, 0.0f, memory_order_relaxed);
     size_t reference_start = atomic_load_explicit(&ctx.blocks, memory_order_relaxed);
     wait_blocks(&ctx, reference_start + settle_blocks);
-    float reference = atomic_load_explicit(&ctx.peak, memory_order_acquire);
-    check(reference > 0.0f, "settled loudness output is non-zero");
-    if (reference <= 0.0f) {
+    float reference_peak = atomic_load_explicit(&ctx.peak, memory_order_acquire);
+    check(reference_peak > 0.0f, "settled loudness output is non-zero");
+    if (reference_peak <= 0.0f) {
         atomic_store_explicit(&ctx.stop, 1, memory_order_relaxed);
         pthread_join(thread, NULL);
         fxdsp_free(ctx.dsp);
         free(ctx.left); free(ctx.right); free(ctx.out_l); free(ctx.out_r);
         return;
     }
-    float ceiling = (float)(reference * pow(10.0, TOLERANCE_DB / 20.0));
-
     /* Both directions and several steps: 1->5, 5->1, 5->4, 4->5 plus the
      * full adjacent sweep, ending back at Strength 1. */
     static const int steps[] = {5, 1, 5, 4, 5, 1, 2, 3, 4, 5, 4, 3, 2, 1};
-    float worst_peak = 0.0f;
-    float worst_gain_db = -1000.0f;
+    float previous_settled_peak = reference_peak;
+    float worst_excursion_db = -1000.0f;
     int worst_strength = 0;
 
     for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
@@ -236,27 +234,29 @@ static void run_config(double rate, int fft_index) {
               "live compensation param accepted");
         check(fxdsp_live_commit(ctx.dsp), "live commit accepted");
         wait_blocks(&ctx, start + settle_blocks);
-        float step_peak = atomic_load_explicit(&ctx.peak, memory_order_acquire);
-        float gain_db = 20.0f * log10f(step_peak / reference);
-        fprintf(stderr, "  rate %.0f fft %d strength=%d peak=%.6f gain=%.3f dB\n",
-                rate, fft_index, strength, step_peak, gain_db);
-        if (step_peak > worst_peak) {
-            worst_peak = step_peak;
+        float transition_peak = atomic_load_explicit(&ctx.peak, memory_order_acquire);
+
+        atomic_store_explicit(&ctx.peak, 0.0f, memory_order_relaxed);
+        size_t settled_start = atomic_load_explicit(&ctx.blocks, memory_order_relaxed);
+        wait_blocks(&ctx, settled_start + settle_blocks);
+        float settled_peak = atomic_load_explicit(&ctx.peak, memory_order_acquire);
+        float allowed_peak = fmaxf(previous_settled_peak, settled_peak);
+        float excursion_db = 20.0f * log10f(transition_peak / allowed_peak);
+        fprintf(stderr, "  rate %.0f fft %d strength=%d transition_peak=%.6f settled_peak=%.6f excursion=%.3f dB\n",
+                rate, fft_index, strength, transition_peak, settled_peak, excursion_db);
+        if (excursion_db > worst_excursion_db) {
+            worst_excursion_db = excursion_db;
             worst_strength = strength;
         }
-        if (gain_db > worst_gain_db) worst_gain_db = gain_db;
+        previous_settled_peak = settled_peak;
     }
 
-    fprintf(stderr, "rate %.0f fft %d reference=%.6f ceiling=%.6f worst_gain=%.3f dB (strength=%d)\n",
-            rate, fft_index, reference, ceiling, worst_gain_db, worst_strength);
-    check(worst_peak <= ceiling, "no positive gain excursion across Strength steps");
+    fprintf(stderr, "rate %.0f fft %d reference_peak=%.6f worst_excursion=%.3f dB (strength=%d)\n",
+            rate, fft_index, reference_peak, worst_excursion_db, worst_strength);
+    check(worst_excursion_db <= TOLERANCE_DB, "no positive gain excursion across Strength steps");
 
     /* Final state must be back to level-neutral at Strength 1. */
-    atomic_store_explicit(&ctx.peak, 0.0f, memory_order_relaxed);
-    size_t final_start = atomic_load_explicit(&ctx.blocks, memory_order_relaxed);
-    wait_blocks(&ctx, final_start + settle_blocks);
-    float final_peak = atomic_load_explicit(&ctx.peak, memory_order_acquire);
-    float final_db = 20.0f * log10f(final_peak / reference);
+    float final_db = 20.0f * log10f(previous_settled_peak / reference_peak);
     check(fabsf(final_db) <= 0.5f, "final state returns to level-neutral");
 
     atomic_store_explicit(&ctx.stop, 1, memory_order_relaxed);

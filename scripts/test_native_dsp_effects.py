@@ -77,7 +77,7 @@ class NativeEffectsTests(unittest.TestCase):
         return "\n".join(body)
 
     def test_lsp_peq_applies_independent_left_and_right_bands(self):
-        controls = {"mode": 0, "clink": 0, "ftl_0": 1, "fml_0": 0,
+        controls = {"mode": 0, "ftl_0": 1, "fml_0": 0,
                     "fl_0": 1000, "gl_0": 3.9810717, "ql_0": 2,
                     "ftr_0": 1, "fmr_0": 0, "fr_0": 1000,
                     "gr_0": .25118864, "qr_0": 2}
@@ -88,7 +88,7 @@ class NativeEffectsTests(unittest.TestCase):
 
     def test_lsp_loudness_uses_real_frequency_dependent_contour(self):
         stage = self.lv2("loudness", "http://lsp-plug.in/plugins/lv2/loud_comp_stereo",
-                         {"mode": 0, "std": 4, "fft": 4, "approx": 2,
+                         {"std": 4, "fft": 4,
                           "volume": -40, "hclip": 0, "hcrange": 6})
         gains = {}
         for frequency in (80, 1000, 10000):

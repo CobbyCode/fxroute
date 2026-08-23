@@ -586,7 +586,6 @@ class DSPManager:
                 control("g_out", 10.0 ** (float(output_db) / 20.0))
                 control("mode", eq_modes.get(str(params.get("eqMode", "IIR")).upper(), 0))
                 dual = params.get("channelMode") == "dual"
-                control("clink", 0 if dual else 1)
                 left = params.get("leftBands", []) if dual else params.get("bands", [])
                 right = params.get("rightBands", []) if dual else left
                 for side, bands in (("l", left), ("r", right)):
@@ -641,14 +640,12 @@ class DSPManager:
                 definition = {"enabled": True, "params": params}
                 payload = self._loudness_plugin_payload(definition, autogain_definition)
                 # Enum values verified against the installed lsp-plugins
-                # metadata (loud_comp_stereo.ttl): mode 0=FFT, std 4=ISO226-2023,
-                # approx 2=Normal, fft map 256..16384 -> 0..6.
+                # metadata (loud_comp_stereo.ttl): std 4=ISO226-2023 and
+                # fft map 256..16384 -> 0..6.
                 control("input", 1)
-                control("mode", 0)
                 control("std", 4)
                 control("fft", {256: 0, 512: 1, 1024: 2, 2048: 3, 4096: 4,
                                 8192: 5, 16384: 6}.get(int(params.get("fftSize", 4096)), 4))
-                control("approx", 2)
                 control("volume", payload["volume"])
                 control("hclip", 0)
                 control("hcrange", 6)
@@ -676,7 +673,6 @@ class DSPManager:
                 control("mode", 0)
                 control("th", 10.0 ** (float(params.get("thresholdDb", -1.0)) / 20.0))
                 control("knee", 1)
-                control("smooth", -5)
                 control("boost", 1)
                 control("lk", max(0.1, min(20.0, float(params.get("lookaheadMs", 5.0)))))
                 control("at", max(0.25, min(20.0, float(params.get("attackMs", 5.0)))))
@@ -685,8 +681,6 @@ class DSPManager:
                 control("dith", 0)
                 control("extsc", 0)
                 control("slink", params.get("stereoLinkPercent", 100.0))
-                for name in ("in2lk", "in2sc", "lk2in", "lk2sc", "sc2in", "sc2lk"):
-                    control(name, 0)
             elif plugin_type == "maximizer":
                 control("gain", params.get("inputGainDb", 0.0))
                 control("thresh", params.get("thresholdDb", params.get("threshold", 0.0)))
