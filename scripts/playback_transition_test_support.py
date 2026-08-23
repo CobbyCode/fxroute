@@ -12,6 +12,7 @@ from typing import Any
 import main
 import playback.orchestration as playback_orchestration
 import audio.samplerate as samplerate
+import audio.samplerate_orchestration as samplerate_orchestration
 from playback.runtime import FxrouteTransitionRuntime
 from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
 
@@ -102,7 +103,7 @@ class MainCoreTransitionRuntime:
         aligned = await samplerate.ensure_playback_samplerate_force(
             request.target_rate,
             self.detail,
-            policy=main.samplerate_orchestration.RADIO_POLICY,
+            policy=samplerate_orchestration.RADIO_POLICY,
         )
         if not aligned:
             raise RuntimeError("test target-rate alignment failed")

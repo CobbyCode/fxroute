@@ -444,9 +444,6 @@
 #tidal-search-items { margin-top: 0.35rem; }
 .tidal-search-results-header { display: flex; flex-direction: column; gap: 0.6rem; }
 .streaming-results-title { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 700; }
-.tidal-track-selection { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
-.tidal-track-selection .btn-ghost,
-.tidal-track-selection .btn-primary { min-height: 32px; padding: 0.3rem 0.65rem; font-size: 0.78rem; }
 .streaming-results-heading {
     font-size: 0.78rem;
     text-transform: uppercase;

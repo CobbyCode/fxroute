@@ -17,9 +17,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping
 
-import playback.queue
 import playback.source_policy as source_policy
-import playback.state
 import audio.samplerate as samplerate
 from playback.transition import PlaybackTransitionFailure, TransitionRequest, stable_graph_readbacks
 

@@ -10,13 +10,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from dsp.runtime import BassManagementConfig
 import measurement.autosub as autosub
 from measurement.store import MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER
 from measurement.routing import MeasurementRouting
 
 
-def runtime_config() -> main.BassManagementConfig:
-    return main.BassManagementConfig(
+def runtime_config() -> BassManagementConfig:
+    return BassManagementConfig(
         output_mode=main.OUTPUT_MODE_SUBWOOFER_21,
         output_key="test-output",
         output_label="Test output",

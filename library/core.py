@@ -10,7 +10,7 @@ import subprocess
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from mutagen import File as MutagenFile
 from mutagen.id3 import ID3NoHeaderError
 

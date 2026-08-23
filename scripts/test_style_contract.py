@@ -9,7 +9,7 @@ Asserts on the built artifact static/style.css:
  3. !important only at the explicitly justified utility/accessibility spots:
     .hidden, .streaming-provider [hidden], and the prefers-reduced-motion
     override block; any !important elsewhere fails the guard
- 4. unified primitives exist in the built CSS: .btn-fav, .track-row, .track-play
+ 4. unified primitives exist in the built CSS: .track-row-favorite, .track-row, .track-play
  5. media sanity: at most 3 playback ranges (min-width:1181 desktop +
     701-1180 tablet + max-width:700 phone) — fail if >3 @media blocks
     touch .playback-bar
@@ -215,7 +215,7 @@ def check_primitives(errors: list[str], verbose: bool) -> None:
     # unified primitives must exist as standalone class selectors
     # Use negative lookahead so .track-row-favorite does not satisfy .track-row
     primitives = {
-        ".btn-fav": r"\.btn-fav(?![\w-])",
+        ".track-row-favorite": r"\.track-row-favorite(?![\w-])",
         ".track-row": r"\.track-row(?![\w-])",
         ".track-play": r"\.track-play(?![\w-])",
     }
@@ -223,7 +223,7 @@ def check_primitives(errors: list[str], verbose: bool) -> None:
         if not re.search(pat, css):
             # Show alias hint when primitive is missing
             aliases = {
-                ".btn-fav": [".track-row-favorite", ".track-fav", ".streaming-fav", ".album-favorite-toggle", ".track-favorite-btn"],
+                ".track-row-favorite": [".track-fav", ".streaming-fav", ".album-favorite-toggle", ".track-favorite-btn"],
                 ".track-row": [".track-item", ".streaming-track-row", ".track-row-favorite"],
                 ".track-play": [".track-play", ".control-btn"],
             }

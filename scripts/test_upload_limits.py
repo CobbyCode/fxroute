@@ -135,7 +135,7 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
             created.append(handle.name)
             return handle
 
-        return patch("main.tempfile.NamedTemporaryFile", factory)
+        return patch("library.api.tempfile.NamedTemporaryFile", factory)
 
     async def test_ir_upload_oversized_by_content_length_returns_413(self):
         created = []

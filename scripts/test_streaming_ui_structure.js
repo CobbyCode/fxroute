@@ -519,9 +519,9 @@ assert.ok(css.includes('.streaming-result-cover:empty'),
 for (const cls of ['.track-index', '.track-play', '.track-info', '.track-sub', '.track-fav']) {
     assert.ok(css.includes(cls), `shared track-row CSS must ship ${cls}`);
 }
-assert.ok(css.includes('.streaming-result-play,') && css.includes('.track-play'),
-    'round play button must be one grouped CSS rule');
-assert.ok(css.includes('.streaming-result-duration') && css.includes('.track-duration'),
-    'streaming and track duration CSS rules must both be present');
+assert.ok(css.includes('.track-play'),
+    'round play button must ship as .track-play');
+assert.ok(css.includes('.track-duration'),
+    'track duration CSS rule must be present');
 
 console.log('PASS  scripts/test_streaming_ui_structure.js');

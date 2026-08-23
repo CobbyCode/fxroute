@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import main
+from dsp.runtime import BassManagementConfig
 import measurement.autosub as autosub
 
 
@@ -109,13 +110,13 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             "sweep_start_hz": 20.0, "sweep_end_hz": 600.0,
             "sweep_seconds": 0.1, "tail_seconds": 0.1,
         }
-        safe_config = main.BassManagementConfig(
+        safe_config = BassManagementConfig(
             output_mode=main.OUTPUT_MODE_SUBWOOFER_21, output_key="test", output_label="test",
             output_channels=4, sample_rate=48000, crossover_frequency_hz=80,
             main_highpass_enabled=True, sub_level_db=0.0, sub_alignment_ms=2.0,
             sub_polarity="normal",
         )
-        unsafe_config = main.BassManagementConfig(
+        unsafe_config = BassManagementConfig(
             **{**safe_config.__dict__, "sub_level_db": 6.0, "sub2_level_db": 6.0},
         )
         safe = autosub._auto_sub_stage_peak_prediction(

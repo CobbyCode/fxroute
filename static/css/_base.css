@@ -102,29 +102,23 @@ body {
 /* ============================================================
    Unified primitives — single source for duplicated rows/favs
    ============================================================ */
-.btn-fav,
 .track-row-favorite,
 .track-fav,
 .streaming-fav{flex:0 0 auto;width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);font:inherit;font-size:0.95rem;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer;transition:color .12s var(--ease),border-color .12s var(--ease),background .12s var(--ease),transform .12s var(--ease);-webkit-tap-highlight-color:transparent}
-.btn-fav:hover,
 .track-row-favorite:hover,
 .track-fav:hover,
 .streaming-fav:hover,
-.btn-fav.active,
 .track-row-favorite.active,
 .track-fav.active,
 .streaming-fav.active,
 .track-fav.is-active,
 .streaming-fav.is-active{color:var(--accent);border-color:var(--accent)}
-.btn-fav:active,
 .track-row-favorite:active,
 .track-fav:active,
 .streaming-fav:active{transform:scale(.92)}
-.btn-fav:focus-visible,
 .track-row-favorite:focus-visible,
 .track-fav:focus-visible,
 .streaming-fav:focus-visible{color:var(--accent);outline:2px solid var(--accent);outline-offset:-2px}
-.btn-fav:disabled,
 .track-row-favorite:disabled,
 .track-fav:disabled,
 .streaming-fav:disabled{opacity:.45;cursor:wait}
@@ -139,8 +133,6 @@ body {
 .streaming-add:focus-visible{color:var(--accent);outline:2px solid var(--accent);outline-offset:-2px}
 .track-add.is-active,
 .streaming-add.is-active{color:var(--accent);border-color:var(--accent);background:var(--accent-dim)}
-.track-add.is-partial,
-.streaming-add.is-partial{color:var(--accent);border-color:var(--accent);background:var(--accent-dim);opacity:.55}
 .track-row,
 .streaming-result,
 .album-detail-tracks .track-item{display:flex;align-items:center;gap:.7rem;padding:.45rem .6rem;border-radius:var(--radius-md);background:var(--bg-surface);border:1px solid var(--border);cursor:pointer;min-width:0;transition:background 0.12s,border-color 0.12s}
@@ -149,10 +141,8 @@ body {
 .album-detail-tracks .track-item:hover{background:var(--bg-hover);border-color:var(--border-strong)}
 /* Selected TIDAL rows mirror the library .track-item.selected highlight. */
 .streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,255,.08)}
-.track-play,
-.streaming-result-play{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;justify-content:center;transition:color 0.12s,border-color 0.12s,background 0.12s}
-.track-play:hover,
-.streaming-result-play:hover{color:var(--accent);border-color:var(--accent)}
+.track-play{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;justify-content:center;transition:color 0.12s,border-color 0.12s,background 0.12s}
+.track-play:hover{color:var(--accent);border-color:var(--accent)}
 .track-play:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
 /* ============================================================

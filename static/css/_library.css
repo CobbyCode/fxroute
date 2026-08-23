@@ -874,9 +874,6 @@
 .playlist-item {
     position: relative;
 }
-.playlist-item .track-item-icon {
-    color: var(--accent);
-}
 .playlist-download-btn,
 .playlist-delete-btn,
 .folder-action-btn--delete {
@@ -978,16 +975,6 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
-.folder-item .track-item-icon {
-    color: var(--accent);
-}
-.folder-count {
-    font-size: 0.82rem;
-    color: var(--text-muted);
-    margin-left: auto;
-    padding-left: 0.75rem;
-    white-space: nowrap;
-}
 .folder-actions {
     display: flex;
     align-items: center;
@@ -1044,17 +1031,8 @@
     background: var(--accent-dim);
     box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.32);
 }
-.track-item.active .track-item-icon { color: var(--accent); }
 .track-item.active .track-title {
     color: #f0fff8;
-}
-.track-item-icon {
-    font-size: 1.05rem;
-    color: var(--text-muted);
-    flex-shrink: 0;
-    width: 20px;
-    text-align: center;
-    transition: color 0.15s var(--ease);
 }
 .track-title {
     flex: 1;

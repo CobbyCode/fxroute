@@ -145,29 +145,23 @@ body {
 /* ============================================================
    Unified primitives — single source for duplicated rows/favs
    ============================================================ */
-.btn-fav,
 .track-row-favorite,
 .track-fav,
 .streaming-fav{flex:0 0 auto;width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);font:inherit;font-size:0.95rem;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer;transition:color .12s var(--ease),border-color .12s var(--ease),background .12s var(--ease),transform .12s var(--ease);-webkit-tap-highlight-color:transparent}
-.btn-fav:hover,
 .track-row-favorite:hover,
 .track-fav:hover,
 .streaming-fav:hover,
-.btn-fav.active,
 .track-row-favorite.active,
 .track-fav.active,
 .streaming-fav.active,
 .track-fav.is-active,
 .streaming-fav.is-active{color:var(--accent);border-color:var(--accent)}
-.btn-fav:active,
 .track-row-favorite:active,
 .track-fav:active,
 .streaming-fav:active{transform:scale(.92)}
-.btn-fav:focus-visible,
 .track-row-favorite:focus-visible,
 .track-fav:focus-visible,
 .streaming-fav:focus-visible{color:var(--accent);outline:2px solid var(--accent);outline-offset:-2px}
-.btn-fav:disabled,
 .track-row-favorite:disabled,
 .track-fav:disabled,
 .streaming-fav:disabled{opacity:.45;cursor:wait}
@@ -182,8 +176,6 @@ body {
 .streaming-add:focus-visible{color:var(--accent);outline:2px solid var(--accent);outline-offset:-2px}
 .track-add.is-active,
 .streaming-add.is-active{color:var(--accent);border-color:var(--accent);background:var(--accent-dim)}
-.track-add.is-partial,
-.streaming-add.is-partial{color:var(--accent);border-color:var(--accent);background:var(--accent-dim);opacity:.55}
 .track-row,
 .streaming-result,
 .album-detail-tracks .track-item{display:flex;align-items:center;gap:.7rem;padding:.45rem .6rem;border-radius:var(--radius-md);background:var(--bg-surface);border:1px solid var(--border);cursor:pointer;min-width:0;transition:background 0.12s,border-color 0.12s}
@@ -192,10 +184,8 @@ body {
 .album-detail-tracks .track-item:hover{background:var(--bg-hover);border-color:var(--border-strong)}
 /* Selected TIDAL rows mirror the library .track-item.selected highlight. */
 .streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,255,.08)}
-.track-play,
-.streaming-result-play{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;justify-content:center;transition:color 0.12s,border-color 0.12s,background 0.12s}
-.track-play:hover,
-.streaming-result-play:hover{color:var(--accent);border-color:var(--accent)}
+.track-play{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;justify-content:center;transition:color 0.12s,border-color 0.12s,background 0.12s}
+.track-play:hover{color:var(--accent);border-color:var(--accent)}
 .track-play:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
 /* ============================================================
@@ -1944,9 +1934,6 @@ body {
 .playlist-item {
     position: relative;
 }
-.playlist-item .track-item-icon {
-    color: var(--accent);
-}
 .playlist-download-btn,
 .playlist-delete-btn,
 .folder-action-btn--delete {
@@ -2048,16 +2035,6 @@ body {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
-.folder-item .track-item-icon {
-    color: var(--accent);
-}
-.folder-count {
-    font-size: 0.82rem;
-    color: var(--text-muted);
-    margin-left: auto;
-    padding-left: 0.75rem;
-    white-space: nowrap;
-}
 .folder-actions {
     display: flex;
     align-items: center;
@@ -2114,17 +2091,8 @@ body {
     background: var(--accent-dim);
     box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.32);
 }
-.track-item.active .track-item-icon { color: var(--accent); }
 .track-item.active .track-title {
     color: #f0fff8;
-}
-.track-item-icon {
-    font-size: 1.05rem;
-    color: var(--text-muted);
-    flex-shrink: 0;
-    width: 20px;
-    text-align: center;
-    transition: color 0.15s var(--ease);
 }
 .track-title {
     flex: 1;
@@ -3536,9 +3504,6 @@ body {
 #tidal-search-items { margin-top: 0.35rem; }
 .tidal-search-results-header { display: flex; flex-direction: column; gap: 0.6rem; }
 .streaming-results-title { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 700; }
-.tidal-track-selection { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
-.tidal-track-selection .btn-ghost,
-.tidal-track-selection .btn-primary { min-height: 32px; padding: 0.3rem 0.65rem; font-size: 0.78rem; }
 .streaming-results-heading {
     font-size: 0.78rem;
     text-transform: uppercase;
@@ -6374,7 +6339,6 @@ input[type="number"]::-webkit-outer-spin-button {
     flex-direction: column;
     gap: 0.12rem;
 }
-.streaming-result-title,
 .track-info .track-title {
     font-size: 0.88rem;
     font-weight: 600;
@@ -6383,7 +6347,6 @@ input[type="number"]::-webkit-outer-spin-button {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.streaming-result-sub,
 .track-sub {
     font-size: 0.78rem;
     color: var(--text-muted);
@@ -6391,19 +6354,6 @@ input[type="number"]::-webkit-outer-spin-button {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.streaming-result-duration {
-    align-self: stretch;
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-end;
-    flex: 0 0 auto;
-    padding: 0 0 0 0.4rem;
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-}
-.streaming-result-album,
 .track-album {
     flex: 0 1 30%;
     min-width: 0;
@@ -7735,10 +7685,8 @@ input[type="number"]::-webkit-outer-spin-button {
             vertical-align: middle;
             margin-left: 0.45rem;
         }
-        .streaming-result-album,
         .track-album { display: none; }
         .streaming-btn,
-        .streaming-result-play,
         .track-play { min-width: 44px; min-height: 44px; }
 
     /* from _effects.css */
