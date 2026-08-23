@@ -5022,6 +5022,7 @@ function renderAlbums() {
         const coverUrl = albumCoverUrl(album);
         const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
         const imageSrc = coverUrl || fallbackSvg;
+        const favClass = album.favorite ? ' is-active' : '';
         return `
         <div class="album-card" data-album-id="${escapeHtml(album.id)}" role="button" tabindex="0">
             <div class="album-art-wrap">
@@ -5030,6 +5031,7 @@ function renderAlbums() {
                      onload="this.classList.add('loaded')"
                      onerror="this.onerror=null;this.src='${fallbackSvg}'" />
             </div>
+            <button type="button" class="album-card-fav${favClass}" data-fav-id="${escapeHtml(album.id)}" aria-label="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}" title="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}">${album.favorite ? '♥' : '♡'}</button>
             <div class="album-name">${escapeHtml(album.name)}</div>
             <div class="album-artist">${escapeHtml(album.artist)}</div>
         </div>`;
@@ -5050,6 +5052,16 @@ function renderAlbums() {
     elements.albumsGrid.querySelectorAll('.album-card').forEach(card => {
         card.addEventListener('click', openAlbumCard(card));
         card.addEventListener('keydown', handleAlbumCardKeydown(card));
+    });
+    // Heart toggle: reuse the same local album favorite endpoint the detail
+    // view uses; the card stays visible in all views (favorite toggles don't
+    // remove albums from the main grid).
+    elements.albumsGrid.querySelectorAll('.album-card-fav').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleAlbumCardFavorite(btn.dataset.favId);
+        });
     });
 }
 
@@ -5538,6 +5550,40 @@ async function toggleCurrentAlbumFavorite() {
         showToast(e.message || 'Failed to update favorite', 'error');
     } finally {
         elements.albumFavoriteToggle.disabled = false;
+    }
+}
+
+async function toggleAlbumCardFavorite(albumId) {
+    const stored = (state.library.albums || []).find(item => item.id === albumId);
+    if (!stored) return;
+    const nextFavorite = !stored.favorite;
+    try {
+        const resp = await fetch(`/api/albums/${encodeURIComponent(albumId)}/favorite`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ favorite: nextFavorite }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to update favorite');
+        stored.favorite = !!data.favorite;
+        // Also update the detail-page album if it's the same one.
+        const detailAlbum = state.library.albumDetail?.album;
+        if (detailAlbum && detailAlbum.id === albumId) {
+            detailAlbum.favorite = stored.favorite;
+            updateAlbumFavoriteButton(detailAlbum);
+        }
+        // Update the grid buttons for this album id.
+        document.querySelectorAll('.album-card-fav[data-fav-id="' + CSS.escape(albumId) + '"]').forEach((btn) => {
+            const f = stored.favorite;
+            btn.classList.toggle('is-active', f);
+            btn.innerHTML = f ? '♥' : '♡';
+            btn.setAttribute('aria-label', f ? 'Remove from favorites' : 'Add to favorites');
+            btn.title = f ? 'Remove from favorites' : 'Add to favorites';
+        });
+        updateAlbumFavoritesFilterButton();
+        showToast(stored.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
+    } catch (e) {
+        showToast(e.message || 'Failed to update favorite', 'error');
     }
 }
 

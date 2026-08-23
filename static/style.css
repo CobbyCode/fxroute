@@ -1149,6 +1149,48 @@ body {
     letter-spacing: 0.04em;
     text-transform: uppercase;
 }
+/* Favorite heart on normal album cards — same language as the TIDAL
+   .streaming-fav on album tiles: absolute top-right on the cover, semi-
+   transparent background, round button. */
+.album-card-fav {
+    position: absolute;
+    top: 1.05rem;
+    right: 1.05rem;
+    z-index: 2;
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(8, 18, 26, 0.72);
+    backdrop-filter: blur(4px);
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: color .12s var(--ease), border-color .12s var(--ease), transform .12s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.album-card-fav:hover,
+.album-card-fav.is-active { color: var(--accent); border-color: var(--accent); }
+.album-card-fav:active { transform: scale(.92); }
+.album-card-fav:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* List view: the heart leaves the cover corner and joins the row end. */
+.albums-grid.is-list .album-card-fav {
+    position: static;
+    order: 5;
+    z-index: auto;
+    width: 34px;
+    height: 34px;
+    min-height: 34px;
+    margin-left: auto;
+    background: transparent;
+    backdrop-filter: none;
+}
 .album-name {
     font-weight: 700;
     font-size: 0.98rem;
@@ -1796,6 +1838,10 @@ body {
     gap: var(--control-gap);
     flex-wrap: nowrap;
     margin: 0.15rem 0 1.15rem;
+    /* Same horizontal separator as the TIDAL subbar so both browse headers
+       share one underline language. */
+    border-bottom: 1px solid var(--border-strong);
+    padding-bottom: 0.5rem;
 }
 .library-view-toggle {
     display: flex;
