@@ -90,15 +90,12 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         registry.register(ProbeProvider())
 
         self.assertEqual(
-            await registry.describe_all(),
+            await registry.discover_all(),
             [{
                 "id": "probe",
                 "name": "Probe",
                 "implemented": True,
-                "available": None,
                 "installed": True,
-                "authenticated": None,
-                "backend": None,
                 "capabilities": Capabilities(search=True).to_dict(),
             }],
         )

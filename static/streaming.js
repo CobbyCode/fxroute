@@ -686,7 +686,7 @@
     // -----------------------------------------------------------------------
     async function loadProviders() {
         try {
-            const resp = await fetch('/api/streaming/providers');
+            const resp = await fetch('/api/streaming/providers/discovery');
             if (!resp.ok) return;
             const payload = await resp.json();
             const list = payload.providers || [];

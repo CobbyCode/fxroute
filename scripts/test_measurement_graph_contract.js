@@ -13,12 +13,20 @@ require(path.join(__dirname, '..', 'static', 'measurement_ui.js'));
 require(path.join(__dirname, '..', 'static', 'measurement_graph.js'));
 
 const points = [
-    [20, -6],
-    [40, -3],
-    [80, 4],
-    [160, -2],
-    [320, 1],
+    [80, -8],
+    [90, 6],
+    [100, -4],
+    [110, 8],
+    [120, -6],
 ];
+const expectedPoints = dsp.smoothMeasurementTracePoints(points, '1/3-oct');
+assert.notDeepEqual(expectedPoints, points, 'fixture must exercise non-trivial smoothing');
+const realSmoother = dsp.smoothMeasurementTracePoints;
+let smoothingCalls = 0;
+dsp.smoothMeasurementTracePoints = (...args) => {
+    smoothingCalls += 1;
+    return realSmoother(...args);
+};
 const current = { id: 'current', traces: [{ label: 'Current', points }] };
 const saved = { id: 'saved', traces: [{ label: 'Saved', points }] };
 
@@ -32,8 +40,9 @@ window.FXRouteMeasurementGraph.init({
 
 const entries = window.FXRouteMeasurementGraph.getGraphMeasurementEntries();
 assert.equal(entries.length, 2, 'current and saved measurements must both produce graph entries');
-assert.deepEqual(entries[0].traces[0].points, dsp.smoothMeasurementTracePoints(points, '1/3-oct'));
-assert.deepEqual(entries[1].traces[0].points, dsp.smoothMeasurementTracePoints(points, '1/3-oct'));
+assert.equal(smoothingCalls, 2, 'each graph trace must use the canonical DSP smoother exactly once');
+assert.deepEqual(entries[0].traces[0].points, expectedPoints);
+assert.deepEqual(entries[1].traces[0].points, expectedPoints);
 assert.equal(entries[0].current, true);
 assert.equal(entries[1].current, false);
 

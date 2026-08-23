@@ -40,6 +40,10 @@ async def describe_providers() -> list[dict]:
     return await registry.describe_all()
 
 
+async def discover_providers() -> list[dict]:
+    return await registry.discover_all()
+
+
 __all__ = [
     "CAPABILITY_NAMES",
     "Capabilities",
@@ -50,6 +54,7 @@ __all__ = [
     "SpotifyProvider",
     "StreamingProvider",
     "describe_providers",
+    "discover_providers",
     "get_provider",
     "registry",
 ]

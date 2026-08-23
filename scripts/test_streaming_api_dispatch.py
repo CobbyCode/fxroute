@@ -121,6 +121,13 @@ class StreamingApiDispatchTests(unittest.TestCase):
     def _patch(self, provider):
         return mock.patch.object(main_module.streaming, "get_provider", return_value=provider)
 
+    def test_provider_discovery_uses_lightweight_registry_contract(self):
+        payload = [{"id": "tidal", "name": "TIDAL", "implemented": True, "installed": True, "capabilities": {}}]
+        with mock.patch.object(main_module.streaming, "discover_providers", new=mock.AsyncMock(return_value=payload)):
+            resp = self.client.get("/api/streaming/providers/discovery")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"providers": payload})
+
     def test_search_dispatches_to_provider(self):
         with self._patch(_FakeProvider()):
             resp = self.client.get("/api/streaming/tidal/search?q=daft&types=tracks")
