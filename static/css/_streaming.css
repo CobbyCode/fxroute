@@ -486,7 +486,8 @@
     font-size: 0.95rem;
     opacity: 0.55;
 }
-.streaming-result-info { flex: 1; min-width: 0; }
+.streaming-result-info,
+.streaming-result .track-info { flex: 1; min-width: 0; }
 
 
 .streaming-detail { display: flex; flex-direction: column; gap: 0.7rem; }

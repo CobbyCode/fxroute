@@ -985,7 +985,7 @@ async function main() {
 
     // Playback does not touch the selection.
     fetchCalls.length = 0;
-    favRow.querySelector('.streaming-result-play').click();
+    favRow.querySelector('.track-play').click();
     assert.ok(fetchCalls.some((c) => c.url === '/api/play'), 'the row play button must dispatch playback');
     assert.ok(!saveRow().classList.contains('hidden'), 'playback must never clear the playlist selection');
 

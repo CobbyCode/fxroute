@@ -4759,33 +4759,18 @@ function renderTracks() {
         const isSelected = selectedIds.has(track.id);
         const artist = (track.artist || '').trim();
         const album = (track.album || '').trim();
-        const rel = getTrackRelativePath(track);
         const metadataLine = [artist, album].filter(Boolean).join(' · ');
         const subline = metadataLine || (folderMode ? getTrackFilename(track) : getTrackFolder(track));
-        const thumbHtml = trackThumbHtml(track);
-        return `
-            <div class="track-item ${isSelected ? 'selected' : ''}" data-track-id="${escapeHtml(track.id)}">
-                <button class="track-play" data-track-id="${escapeHtml(track.id)}" type="button" title="${escapeHtml(rel)}" aria-label="Play ${escapeHtml(track.title)}">▶</button>
-                ${thumbHtml}
-                <div class="track-info">
-                    <div class="track-title">${escapeHtml(track.title)}</div>
-                    ${subline ? `<div class="track-artist track-sub">${escapeHtml(subline)}</div>` : ''}
-                </div>
-                <button class="track-add ${isSelected ? 'is-active' : ''}"
-                        data-track-add="${escapeHtml(track.id)}"
-                        type="button"
-                        aria-pressed="${isSelected ? 'true' : 'false'}"
-                        aria-label="${isSelected ? 'Remove track from selection' : 'Add track to selection'}"
-                        title="${isSelected ? 'Remove from selection' : 'Add to selection'}">${isSelected ? '✓' : '+'}</button>
-                <button class="track-row-favorite ${track.favorite ? 'active' : ''}"
-                        data-track-favorite="${escapeHtml(track.id)}"
-                        type="button"
-                        aria-pressed="${track.favorite ? 'true' : 'false'}"
-                        aria-label="${track.favorite ? 'Remove track from favorites' : 'Add track to favorites'}"
-                        title="${track.favorite ? 'Remove from favorites' : 'Add to favorites'}">${track.favorite ? '♥' : '♡'}</button>
-                <span class="track-duration">${formatTime(track.duration)}</span>
-            </div>
-        `;
+        return '<div class="track-item' + (isSelected ? ' selected' : '') + '" data-track-id="' + escapeHtml(track.id) + '">' +
+            detailTrackRowHtml({
+                title: escapeHtml(track.title || 'Unknown'),
+                sub: subline ? escapeHtml(subline) : '',
+                thumb: trackThumbHtml(track),
+                favoriteButton: libraryFavoriteButtonHtml(track.id, !!track.favorite),
+                selectionButton: librarySelectionButtonHtml(track.id, isSelected),
+                duration: formatTime(track.duration),
+            }) +
+        '</div>';
     }).join('');
 
     elements.tracksList.innerHTML = html;
@@ -4811,10 +4796,10 @@ function renderTracks() {
         });
     });
 
-    elements.tracksList.querySelectorAll('.track-play[data-track-id]').forEach(item => {
-        item.addEventListener('click', (e) => {
+    elements.tracksList.querySelectorAll('.track-item[data-track-id]').forEach(row => {
+        row.querySelector('.track-play').addEventListener('click', (e) => {
             e.stopPropagation();
-            playLocal(item.dataset.trackId);
+            playLocal(row.dataset.trackId);
         });
     });
     bindTrackFavoriteRowButtons(elements.tracksList);
@@ -5438,28 +5423,15 @@ function renderAlbumDetailTracks() {
     }
     const selectedIds = new Set(state.library.selectedTrackIds);
     elements.albumDetailTracks.innerHTML = tracks.map((track, index) => {
-        const favorite = !!track.favorite;
-        const favoriteButton =
-            '<button class="track-fav' + (favorite ? ' active' : '') + '" data-track-favorite="' + escapeHtml(track.id) + '" type="button"' +
-            ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
-            ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
-            ' title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + (favorite ? '♥' : '♡') + '</button>';
         const isSelected = selectedIds.has(track.id);
-        const selectionButton =
-            '<button class="track-add' + (isSelected ? ' is-active' : '') + '" data-track-add="' + escapeHtml(track.id) + '" type="button"' +
-            ' aria-pressed="' + (isSelected ? 'true' : 'false') + '"' +
-            ' aria-label="' + (isSelected ? 'Remove track from selection' : 'Add track to selection') + '"' +
-            ' title="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + (isSelected ? '✓' : '+') + '</button>';
         return '<div class="track-item' + (isSelected ? ' selected' : '') + '" data-track-id="' + escapeHtml(track.id) + '" data-album-context="' + escapeHtml(albumId) + '">' +
             detailTrackRowHtml({
                 index: index + 1,
                 title: escapeHtml(track.title || 'Unknown'),
-                // In an open album the album name is page context, not row
-                // metadata; only the artist is repeated per track.
                 sub: escapeHtml((track.artist || '').trim()),
                 thumb: trackThumbHtml(track),
-                favoriteButton,
-                selectionButton,
+                favoriteButton: detailFavoriteButtonHtml(track.id, !!track.favorite),
+                selectionButton: librarySelectionButtonHtml(track.id, isSelected),
                 duration: track.duration ? formatTime(track.duration) : '',
             }) +
         '</div>';
@@ -5487,19 +5459,44 @@ function renderAlbumDetailTracks() {
     bindTrackFavoriteRowButtons(elements.albumDetailTracks);
 }
 
-// Shared detail track-row body for the library album detail and the Tidal
-// album/playlist details (streaming.js receives it via the init api). One
-// row language: index, round play button, stacked title/sub, optional
-// selection Plus, favorite, duration.
-function detailTrackRowHtml({ index, title, sub, favoriteButton, selectionButton, duration, thumb }) {
+function libraryFavoriteButtonHtml(trackId, favorite) {
+    const heart = favorite ? '♥' : '♡';
+    return '<button class="track-row-favorite' + (favorite ? ' active' : '') + '" data-track-favorite="' + escapeHtml(trackId) + '" type="button"' +
+        ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
+        ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
+        ' title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + heart + '</button>';
+}
+
+function detailFavoriteButtonHtml(trackId, favorite) {
+    const heart = favorite ? '♥' : '♡';
+    return '<button class="track-fav' + (favorite ? ' active' : '') + '" data-track-favorite="' + escapeHtml(trackId) + '" type="button"' +
+        ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
+        ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
+        ' title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + heart + '</button>';
+}
+
+function librarySelectionButtonHtml(trackId, isSelected) {
+    const mark = isSelected ? '✓' : '+';
+    return '<button class="track-add' + (isSelected ? ' is-active' : '') + '" data-track-add="' + escapeHtml(trackId) + '" type="button"' +
+        ' aria-pressed="' + (isSelected ? 'true' : 'false') + '"' +
+        ' aria-label="' + (isSelected ? 'Remove track from selection' : 'Add track to selection') + '"' +
+        ' title="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + mark + '</button>';
+}
+
+// Shared detail track-row body for the library list view, album / playlist
+// detail, and (via the init api) TIDAL detail rows.  One row language:
+// optional index, round play button, stacked title / sub, optional album
+// context, selection Plus, favorite, duration.
+function detailTrackRowHtml({ index, title, sub, album, favoriteButton, selectionButton, duration, thumb }) {
     return (
-        '<span class="track-index">' + index + '</span>' +
+        (index != null ? '<span class="track-index">' + index + '</span>' : '') +
         '<button type="button" class="track-play" title="Play">▶</button>' +
         (thumb || '') +
         '<div class="track-info">' +
             '<div class="track-title">' + title + '</div>' +
             (sub ? '<div class="track-sub">' + sub + '</div>' : '') +
         '</div>' +
+        (album ? '<div class="track-album">' + album + '</div>' : '') +
         (selectionButton || '') +
         favoriteButton +
         (duration ? '<span class="track-duration">' + duration + '</span>' : '')
@@ -5719,18 +5716,7 @@ function renderPlaylistDetailTracks() {
     }
     const selectedIds = new Set(state.library.selectedTrackIds);
     elements.playlistDetailTracks.innerHTML = tracks.map((track, index) => {
-        const favorite = !!track.favorite;
-        const favoriteButton =
-            '<button class="track-fav' + (favorite ? ' active' : '') + '" data-track-favorite="' + escapeHtml(track.id) + '" type="button"' +
-            ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
-            ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
-            ' title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + (favorite ? '♥' : '♡') + '</button>';
         const isSelected = selectedIds.has(track.id);
-        const selectionButton =
-            '<button class="track-add' + (isSelected ? ' is-active' : '') + '" data-track-add="' + escapeHtml(track.id) + '" type="button"' +
-            ' aria-pressed="' + (isSelected ? 'true' : 'false') + '"' +
-            ' aria-label="' + (isSelected ? 'Remove track from selection' : 'Add track to selection') + '"' +
-            ' title="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + (isSelected ? '✓' : '+') + '</button>';
         const sub = escapeHtml([(track.artist || '').trim(), (track.album || '').trim()].filter(Boolean).join(' · '));
         return '<div class="track-item' + (isSelected ? ' selected' : '') + '" data-track-id="' + escapeHtml(track.id) + '">' +
             detailTrackRowHtml({
@@ -5738,8 +5724,8 @@ function renderPlaylistDetailTracks() {
                 title: escapeHtml(track.title || 'Unknown'),
                 sub,
                 thumb: trackThumbHtml(track),
-                favoriteButton,
-                selectionButton,
+                favoriteButton: detailFavoriteButtonHtml(track.id, !!track.favorite),
+                selectionButton: librarySelectionButtonHtml(track.id, isSelected),
                 duration: track.duration ? formatTime(track.duration) : '',
             }) +
         '</div>';

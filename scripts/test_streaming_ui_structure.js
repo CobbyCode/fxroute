@@ -502,8 +502,8 @@ assert.ok(albumTracksRender.includes('track.artist'),
     'library album rows must keep an artist sub line');
 assert.ok(!albumTracksRender.includes('[track.artist, track.album]'),
     'library album rows must not repeat the album name in album context');
-assert.ok(albumTracksRender.includes('class="track-fav'),
-    'library album rows must use the shared track-fav favorite class');
+assert.ok(albumTracksRender.includes('detailFavoriteButtonHtml'),
+    'library album rows must use the shared detailFavoriteButtonHtml helper');
 assert.ok(albumTracksRender.includes('.track-play'),
     'library album rows must bind the shared round play button');
 // Result covers fall back to a neutral placeholder: a failed image removes

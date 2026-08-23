@@ -1277,18 +1277,16 @@
             const isSelected = state.tidal.selectedTrackIds.has(trackId);
             li.className = 'streaming-result' + (isSelected ? ' is-selected' : '');
             li.setAttribute('data-track-id', trackId);
-            li.innerHTML =
-                '<button type="button" class="streaming-result-play" title="Play">▶</button>' +
-                '<div class="track-thumb" aria-hidden="true">' + coverImg(item.art_url) + '</div>' +
-                '<div class="streaming-result-info">' +
-                    '<div class="streaming-result-title">' + escapeHtml(item.title) + '</div>' +
-                    '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
-                '</div>' +
-                '<div class="streaming-result-album">' + escapeHtml(item.album || '') + '</div>' +
-                tidalTrackAddButtonHtml(trackId, isSelected) +
-                favoriteButtonHtml('tracks', item.id) +
-                '<div class="streaming-result-duration">' + formatTime(item.duration) + '</div>';
-            li.querySelector('.streaming-result-play').addEventListener('click', (event) => {
+            li.innerHTML = trackRowHtml({
+                title: escapeHtml(item.title),
+                sub: escapeHtml(item.artist || ''),
+                album: item.album ? escapeHtml(item.album) : '',
+                thumb: tidalTrackThumbHtml(item.art_url),
+                selectionButton: tidalTrackAddButtonHtml(trackId, isSelected),
+                favoriteButton: favoriteButtonHtml('tracks', item.id),
+                duration: formatTime(item.duration),
+            });
+            li.querySelector('.track-play').addEventListener('click', (event) => {
                 event.stopPropagation();
                 playTidalTracks(queueIds, trackId);
             });

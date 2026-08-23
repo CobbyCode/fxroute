@@ -47,7 +47,8 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
 }
-.streaming-result-album {
+.streaming-result-album,
+.track-album {
     flex: 0 1 30%;
     min-width: 0;
     font-size: 0.78rem;
@@ -1378,7 +1379,8 @@
             vertical-align: middle;
             margin-left: 0.45rem;
         }
-        .streaming-result-album { display: none; }
+        .streaming-result-album,
+        .track-album { display: none; }
         .streaming-btn,
         .streaming-result-play,
         .track-play { min-width: 44px; min-height: 44px; }
