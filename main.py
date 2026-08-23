@@ -1420,6 +1420,32 @@ def _mark_playback_intent_changed() -> None:
     playback_state.mark_playback_intent_changed()
 
 
+def _schedule_tidal_prefetch() -> None:
+    """Fire-and-forget a background DASH download for the next TIDAL queue track.
+
+    Called after every coordinator commit that establishes a new current track.
+    Runs the existing :func:`~streaming.tidal.playback.resolve_stream_for_id`
+    in a thread-pool worker so the DASH ``.mp4`` is already cached when a
+    subsequent Next or automatic queue advance fires the normal play path.
+    Errors are intentionally not surfaced — prefetch is a pure optimisation.
+    """
+    import threading
+
+    tracks = playback_queue.queue.tracks
+    index = playback_queue.queue.index
+    if index < 0 or index + 1 >= len(tracks):
+        return
+    next_track = dict(tracks[index + 1])
+    if str(next_track.get("source") or "") != "tidal":
+        return
+    next_id = str(next_track.get("id") or "")
+    if not next_id:
+        return
+    from streaming.tidal.playback import prefetch_stream
+
+    threading.Thread(target=prefetch_stream, args=(next_id,), daemon=True).start()
+
+
 def _commit_coordinated_track(
     track_info: Mapping[str, Any],
     *,
@@ -1441,6 +1467,11 @@ def _commit_coordinated_track(
     # run between the coordinator commit and this boundary (the boundary
     # is published synchronously in the same caller step).
     _publish_playback_context_commit(commit_token)
+    # Optimistically warm the DASH cache for the next TIDAL queue track so a
+    # subsequent Next or automatic queue advance hits a ready cache file.
+    if source == "tidal":
+        _schedule_tidal_prefetch()
+
 
 # WebSocket connection manager
 class _ClientSender:

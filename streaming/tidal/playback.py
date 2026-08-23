@@ -428,3 +428,20 @@ def resolve_stream_for_id(track_id: str, *, directory: Path | None = None) -> di
     except Exception as exc:  # noqa: BLE001
         raise _map_exception(exc) from exc
     return resolve_stream_for_track(track, directory=directory)
+
+
+def prefetch_stream(track_id: str) -> None:
+    """Resolve track N+1 in a background thread so its DASH file is cached.
+
+    Errors are silently ignored — prefetch is a pure optimisation.  The
+    normal play path remains the sole authority for stream resolution.
+    Two callers contending for the same cache key (e.g. a still-running
+    prefetch and a real play) are serialised by the existing per-key
+    :func:`_materialize_lock`; the second caller re-checks the cache and
+    returns the already-published file without re-downloading.
+    """
+    try:
+        resolve_stream_for_id(track_id)
+    except Exception:
+        pass
+
