@@ -718,7 +718,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                         # kHz) may be replaced by its decoded live rate while
                         # the target is staged.  Recompute the actual
                         # transition after that resolution so an already
-                        # aligned 48 kHz stream does not rebuild EE/helper.
+                        # aligned 48 kHz stream does not rebuild DSP/helper.
                         active_request = replace(
                             active_request,
                             rate_change=not (
@@ -978,4 +978,3 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     exc,
                 )
                 raise failure from exc
-

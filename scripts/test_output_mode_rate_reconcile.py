@@ -238,34 +238,33 @@ async def main_async() -> None:
 
     # 12. Measurement-session link-loss reconcile: native DSP output-link
     #     drift is repairable; missing ports / rate mismatch are not.
-    def stereo_diagnosis(links_present, *, ee_ports=True, aligned=True, mode="stereo"):
+    def stereo_diagnosis(links_present, *, dsp_ports=True, aligned=True, mode="stereo"):
         links = {
             "fxroute_dsp:output_1 -> alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40:playback_FL": links_present,
             "fxroute_dsp:output_2 -> alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40:playback_FR": links_present,
         }
         return {
-            "links_complete": ee_ports and links_present,
+            "links_complete": dsp_ports and links_present,
             "mode": mode,
             "output_key": "alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40",
-            "ee_ports": ee_ports,
+            "dsp_ports": dsp_ports,
             "helper_ports": True,
             "helper_active": True,
             "helper_rate": 48000,
             "helper_rate_matches": True,
             "measurement_rate_aligned": aligned,
-            "direct_ee_to_hw_present": False,
             "links": links,
         }
 
     assert playback_orchestration.configured().measurement_session_link_loss_is_repairable(
         stereo_diagnosis(links_present=False), target_rate=48000
-    ) is True, "stereo EE->hardware link drift must be repairable"
+    ) is True, "stereo DSP-to-hardware link drift must be repairable"
     assert playback_orchestration.configured().measurement_session_link_loss_is_repairable(
         stereo_diagnosis(links_present=True), target_rate=48000
     ) is False, "complete graph is not a link loss"
     assert playback_orchestration.configured().measurement_session_link_loss_is_repairable(
-        stereo_diagnosis(links_present=False, ee_ports=False), target_rate=48000
-    ) is False, "missing EE ports are not a link-only loss"
+        stereo_diagnosis(links_present=False, dsp_ports=False), target_rate=48000
+    ) is False, "missing DSP ports are not a link-only loss"
     assert playback_orchestration.configured().measurement_session_link_loss_is_repairable(
         stereo_diagnosis(links_present=False, aligned=False), target_rate=48000
     ) is False, "rate mismatch is not a link-only loss"

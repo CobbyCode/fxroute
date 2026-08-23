@@ -97,7 +97,7 @@ class MeasurementEntryRateSyncTests(unittest.IsolatedAsyncioTestCase):
         self.diagnosis = {
             "links_complete": True,
             "bypass_only": False,
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "links": {"main_left": True, "main_right": True},
         }

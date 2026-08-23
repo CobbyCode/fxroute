@@ -141,7 +141,7 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
                 require_source=require_source,
             )
 
-    async def test_stereo_requires_source_and_direct_ee_output(self):
+    async def test_stereo_requires_source_and_dsp_output(self):
         diagnosis = await self._diagnose(mode="stereo")
         self.assertTrue(diagnosis["links_complete"])
         missing_source = await self._diagnose(
@@ -155,7 +155,6 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
             mode="subwoofer-2.2", helper=helper, direct=True
         )
         self.assertFalse(diagnosis["bypass_only"])
-        self.assertFalse(diagnosis["direct_ee_to_hw_present"])
         self.assertTrue(diagnosis["links_complete"])
 
     async def test_22_helper_rate_is_part_of_commit_predicate(self):
@@ -265,7 +264,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             }
         }
         initial = {
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "links": {
                 "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": False,
@@ -274,7 +273,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             "links_complete": False,
         }
         stable = {
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "links": {
                 "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": True,
@@ -393,7 +392,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": True,
         }
         initial = {
-            "ee_ports": False,
+            "dsp_ports": False,
             "helper_ports": True,
             "links": {
                 "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": False,
@@ -402,7 +401,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             "links_complete": False,
         }
         stable = {
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "links": stable_links,
             "links_complete": True,
@@ -534,7 +533,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             }
         }
         initial = {
-            "ee_ports": False,
+            "dsp_ports": False,
             "helper_ports": False,
             "links": {},
             "links_complete": False,
@@ -544,7 +543,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": True,
         }
         stable = {
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "links": stable_links,
             "links_complete": True,
@@ -610,7 +609,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         reconciler.assert_awaited_once()
 
     async def test_output_mode_subwoofer_sync_reconciles_before_final_readback(self):
-        """A transient EE->helper loss is repaired before the mode commit readback."""
+        """A transient DSP-ingress loss is repaired before the mode commit readback."""
         helper = HelperDouble(active=True, rate=48000)
         link_state = {"lost": False}
         events = []
@@ -621,7 +620,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             return {
                 "mode": "subwoofer-2.2",
                 "output_key": OUTPUT_KEY,
-                "ee_ports": True,
+                "dsp_ports": True,
                 "helper_ports": True,
                 "helper_active": True,
                 "helper_rate_matches": True,
@@ -1409,7 +1408,6 @@ class RuntimeStateDumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(links["direct_source_to_hw_present"])
         self.assertNotIn("ee_to_helper_left", links)
         self.assertNotIn("helper_main_left_to_hw", links)
-        self.assertNotIn("direct_ee_to_hw_present", links)
         self.assertEqual(state["api_mode"], "subwoofer-2.1")
         self.assertEqual(state["hardware_output"], OUTPUT_KEY)
 

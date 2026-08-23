@@ -71,7 +71,7 @@ RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS = 4500
 # Bounded readback wait for the native DSP ports after a rate switch or a
 # missing-graph repair. No fixed sleeps: the handoff polls pw-link until the
 # fxroute_dsp input/output ports are exposed, then starts/syncs the helper.
-PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS = 5000
+PLAYBACK_HANDOFF_DSP_PORT_TIMEOUT_MS = 5000
 # A post-source-start graph repair is deliberately a short, deterministic
 # readback window.  It is not a second watcher or a general graph recovery.
 POST_START_GRAPH_STABILITY_READBACKS = 2
@@ -1897,7 +1897,7 @@ def _run_debug_command(args: list[str], timeout: float = 2.0) -> dict:
 
 
 async def _mpv_source_ports_present() -> bool:
-    """Read-only check: are the MPV stream ports and EE sink ports exposed?
+    """Read-only check: are the MPV stream ports and DSP sink ports exposed?
 
     The mpv PipeWire stream (and with it mpv:output_FL/FR) is published only
     once the stream actually opened after a staged ``loadfile``.  This check
@@ -3346,7 +3346,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
         sleep=lambda delay: asyncio.sleep(delay),
         pipewire_poll_interval_ms=PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
-        dsp_port_timeout_ms=PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS,
+        dsp_port_timeout_ms=PLAYBACK_HANDOFF_DSP_PORT_TIMEOUT_MS,
         post_start_readbacks=POST_START_GRAPH_STABILITY_READBACKS,
         output_mode_subwoofer_modes=frozenset(OUTPUT_MODE_SUBWOOFER_MODES),
         output_mode_stereo=OUTPUT_MODE_STEREO,

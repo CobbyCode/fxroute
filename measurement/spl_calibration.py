@@ -687,21 +687,21 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
 
 def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[str, Any]:
     dependencies = _dependencies()
-    ee_manager = dependencies.require_dsp_manager()
-    if not (callable(getattr(ee_manager, "apply_temporary_effects_runtime", None))
-            and bool(getattr(ee_manager, "temporary_runtime_transition_callback", None))):
+    dsp_manager = dependencies.require_dsp_manager()
+    if not (callable(getattr(dsp_manager, "apply_temporary_effects_runtime", None))
+            and bool(getattr(dsp_manager, "temporary_runtime_transition_callback", None))):
         raise RuntimeError("SPL calibration requires the native DSP temporary transition")
     operation.restore_state = {
         "system_volume_percent": dependencies.get_output_volume(),
     }
     try:
-        previous_extras = ee_manager.load_global_extras()
+        previous_extras = dsp_manager.load_global_extras()
         neutral_extras = copy.deepcopy(previous_extras)
         neutral_extras["autogain"]["enabled"] = False
         neutral_extras["loudness"]["enabled"] = False
         operation.restore_state["native_effects_extras"] = previous_extras
         operation.restore_state["neutral_effects_extras"] = neutral_extras
-        ee_manager.apply_temporary_effects_runtime(previous_extras, neutral_extras)
+        dsp_manager.apply_temporary_effects_runtime(previous_extras, neutral_extras)
         dependencies.set_output_volume(100)
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
@@ -1258,7 +1258,7 @@ async def apply_spl_calibration(request: Request):
     except ValueError as exc:
         raise bad_request(exc) from exc
     await _stop_active_operation()
-    ee_manager = _dependencies().require_dsp_manager()
+    dsp_manager = _dependencies().require_dsp_manager()
     run_mutation = _dependencies().run_dsp_mutation
     profile = _spl_output_profile()
     automatic = _spl_auto_capability()
@@ -1266,8 +1266,8 @@ async def apply_spl_calibration(request: Request):
     def _apply_calibration_serialized() -> dict:
         # Runs under the central DSP mutation ownership: the extras
         # read, the calibration merge and the runtime apply/persist form one
-        # atomic read-modify-write against other EE mutations.
-        extras = ee_manager.load_global_extras()
+        # atomic read-modify-write against other DSP mutations.
+        extras = dsp_manager.load_global_extras()
         extras["loudness"]["params"]["calibration"] = {
             "outputProfileId": profile["id"],
             "outputProfileLabel": profile["label"],
@@ -1284,8 +1284,8 @@ async def apply_spl_calibration(request: Request):
         profiles = dict(extras["loudness"]["params"].get("calibrationProfiles") or {})
         profiles[profile["id"]] = dict(extras["loudness"]["params"]["calibration"])
         extras["loudness"]["params"]["calibrationProfiles"] = profiles
-        return ee_manager.apply_autogain_loudness_runtime(
-            ee_manager.load_global_extras(), extras, persist_all_presets=False
+        return dsp_manager.apply_autogain_loudness_runtime(
+            dsp_manager.load_global_extras(), extras, persist_all_presets=False
         )["extras"]
 
     saved = await run_mutation(_apply_calibration_serialized)

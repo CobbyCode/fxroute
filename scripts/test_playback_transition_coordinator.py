@@ -244,13 +244,12 @@ def _measurement_graph(
     return {
         "mode": "subwoofer-2.2",
         "output_key": "alsa_output.test",
-        "ee_ports": True,
+        "dsp_ports": True,
         "helper_ports": helper_ports,
         "helper_active": helper_active,
         "helper_rate": helper_rate,
         "helper_rate_matches": helper_rate_matches,
         "measurement_rate_aligned": True,
-        "direct_ee_to_hw_present": False,
         "links_complete": complete,
         "repairable_link_loss": repairable,
         "signature": signature,
@@ -272,7 +271,7 @@ def request(*, rate_change=True):
 
 class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_active_measurement_reconcile_repairs_once_and_commits_two_stable_readbacks(self):
-        incomplete = _measurement_graph(signature="missing-ee-helper")
+        incomplete = _measurement_graph(signature="missing-dsp-helper")
         stable = _measurement_graph(complete=True, repairable=False, signature="stable")
         runtime = MeasurementSessionRuntime([incomplete, incomplete, stable, stable])
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)

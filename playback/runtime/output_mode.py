@@ -74,7 +74,7 @@ class _RuntimeOutputModeMixin:
             raise RuntimeError("output-mode rollback has no previous overview")
         old_overview = copy.deepcopy(dict(old_overview))
         old_mode = (old_overview.get("output_mode") or {}).get("mode")
-        old_preset = snapshot.get("ee_active_preset")
+        old_preset = snapshot.get("dsp_active_preset")
         if not isinstance(old_config, Mapping) or not old_config:
             old_output_mode = dict(old_overview.get("output_mode") or {})
             old_config = {"mode": old_mode or OUTPUT_MODE_STEREO}
@@ -187,4 +187,3 @@ class _RuntimeOutputModeMixin:
                 f"{diagnosis.get('signature')}"
             )
         return {"graph_complete": True, "diagnosis": diagnosis}
-

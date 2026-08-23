@@ -47,7 +47,7 @@ class _RuntimeSnapshotMixin:
         return result
 
     async def reconcile_measurement_session_graph(self, _target_rate: int) -> None:
-        """Repair only existing production links; never reload EE or the helper."""
+        """Repair only existing production links; never reload the DSP or helper."""
         diagnosis = await self._deps.playback_graph_diagnosis(
             target_rate=_target_rate,
             require_source=False,
@@ -82,7 +82,7 @@ class _RuntimeSnapshotMixin:
             snapshot["output_mode_config"] = copy.deepcopy(
                 samplerate._load_raw_audio_output_mode()
             )
-            snapshot["ee_active_preset"] = (
+            snapshot["dsp_active_preset"] = (
                 self._dsp_manager.get_active_preset()
                 if self._dsp_manager is not None
                 else None
@@ -366,4 +366,3 @@ class _RuntimeSnapshotMixin:
             expected_spotify_identities=expected_spotify_identities,
             intent_generation=intent.get("intent_generation"),
         )
-

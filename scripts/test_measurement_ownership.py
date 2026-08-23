@@ -152,14 +152,13 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
         complete = {"links_complete": True, "signature": "complete"}
         link_loss = {
             "mode": "subwoofer-2.2",
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "helper_active": True,
             "helper_rate": 48000,
             "helper_rate_matches": True,
-            "direct_ee_to_hw_present": False,
             "links_complete": False,
-            "signature": "missing-ee-helper-fl-fr",
+            "signature": "missing-dsp-helper-fl-fr",
         }
         diagnosis = AsyncMock(side_effect=[complete, link_loss])
         with patch.object(main, "measurement_sr_session", session), patch.object(

@@ -109,7 +109,7 @@ class SaveUploadToFileTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(upload.read_sizes, [])
 
 
-class FakeEEManager:
+class FakeDspManager:
     def load_global_extras(self):
         return {}
 
@@ -121,7 +121,7 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_manager = main.dsp_manager
-        main.dsp_manager = FakeEEManager()
+        main.dsp_manager = FakeDspManager()
 
     async def asyncTearDown(self):
         main.dsp_manager = self.original_manager

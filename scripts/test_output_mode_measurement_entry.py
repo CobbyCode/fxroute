@@ -409,7 +409,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         initial = {
             "mode": "stereo",
             "output_key": "alsa_output.test",
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "helper_active": True,
             "helper_rate": 48000,
@@ -419,7 +419,6 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
                 "spotify:output_FR -> fxroute_dsp_sink:playback_FR": False,
             },
             "source_links_complete": False,
-            "direct_ee_to_hw_present": False,
             "links": {
                 "fxroute_dsp:output_FL -> alsa_output.test:playback_FL": True,
                 "fxroute_dsp:output_FR -> alsa_output.test:playback_FR": True,
@@ -431,7 +430,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
                     "fxroute_dsp_sink:playback_FL",
                     "fxroute_dsp_sink:playback_FR",
                 ),
-                "ee": ("fxroute_dsp:output_FL", "fxroute_dsp:output_FR"),
+                "dsp": ("fxroute_dsp:output_FL", "fxroute_dsp:output_FR"),
                 "helper": (),
                 "output": (
                     "alsa_output.test:playback_FL",
@@ -480,14 +479,13 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         incomplete = {
             "mode": "subwoofer-2.2",
             "output_key": "alsa_output.test",
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "helper_active": True,
             "helper_rate": 48000,
             "helper_rate_matches": True,
             "source_links": {},
             "source_links_complete": None,
-            "direct_ee_to_hw_present": False,
             "links": {
                 "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": False,
                 "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": True,
@@ -501,7 +499,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             "port_identities": {
                 "source": (),
                 "source_target": (),
-                "ee": ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR"),
+                "dsp": ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR"),
                 "helper": (
                     "fxroute_dsp:input_1", "fxroute_dsp:input_2",
                     "fxroute_dsp:output_1", "fxroute_dsp:output_2",
@@ -543,7 +541,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stereo_switch_final_readback_settles_over_transient_missing_links(self):
         """A stereo output-mode switch must not fail when the final diagnosis
-        transiently misses the just-created direct EE->hardware front links."""
+        transiently misses the just-created native DSP-to-hardware front links."""
         overview = {
             "output_mode": {
                 "mode": "stereo",
@@ -553,14 +551,13 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         incomplete = {
             "mode": "stereo",
             "output_key": "alsa_output.test",
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "helper_active": True,
             "helper_rate": 48000,
             "helper_rate_matches": True,
             "source_links": {},
             "source_links_complete": None,
-            "direct_ee_to_hw_present": False,
             "links": {
                 "fxroute_dsp:output_FL -> alsa_output.test:playback_FL": False,
                 "fxroute_dsp:output_FR -> alsa_output.test:playback_FR": False,
@@ -570,7 +567,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             "port_identities": {
                 "source": (),
                 "source_target": (),
-                "ee": ("fxroute_dsp:output_FL", "fxroute_dsp:output_FR"),
+                "dsp": ("fxroute_dsp:output_FL", "fxroute_dsp:output_FR"),
                 "helper": (),
                 "output": ("alsa_output.test:playback_FL", "alsa_output.test:playback_FR"),
             },
@@ -783,14 +780,13 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
         diagnosis = {
             "mode": "subwoofer-2.2",
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "helper_active": True,
             "helper_rate": 48000,
             "helper_rate_matches": True,
-            "direct_ee_to_hw_present": False,
             "links_complete": False,
-            "signature": "missing-ee-helper",
+            "signature": "missing-dsp-helper",
         }
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
             main, "measurement_sr_session", SimpleNamespace(active=True)
@@ -855,12 +851,11 @@ class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
         diagnosis = {
             "mode": "subwoofer-2.2",
             "output_key": "alsa_output.test",
-            "ee_ports": True,
+            "dsp_ports": True,
             "helper_ports": True,
             "helper_active": True,
             "helper_rate": 48000,
             "helper_rate_matches": True,
-            "direct_ee_to_hw_present": False,
             "links": {
                 "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": False,
                 "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": False,
@@ -870,7 +865,7 @@ class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
                 "fxroute_dsp:output_4 -> alsa_output.test:playback_RR": True,
             },
             "links_complete": False,
-            "signature": "missing-ee-helper",
+            "signature": "missing-dsp-helper",
         }
         with patch.object(
             main,

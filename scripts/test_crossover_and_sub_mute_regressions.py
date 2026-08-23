@@ -314,7 +314,7 @@ class VolumeSwitchRuntime:
         self.volume = canonical_volume
         self.stale_volume = stale_volume
         self.muted = False
-        self.ee_muted = False
+        self.dsp_muted = False
         self.events: list[str] = []
         self.direct_bypass = False
 
@@ -334,10 +334,10 @@ class VolumeSwitchRuntime:
             self.direct_bypass = True
 
     async def read_sink_mute(self, _sink_name: str) -> bool:
-        return self.ee_muted
+        return self.dsp_muted
 
     async def set_sink_mute(self, _sink_name: str, muted: bool, _transition_id: str) -> None:
-        self.ee_muted = bool(muted)
+        self.dsp_muted = bool(muted)
 
     async def read_transition_snapshot(self, _request) -> dict:
         return {
@@ -494,15 +494,15 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
         sync=mock.AsyncMock(),
         _reclean_guarded=mock.AsyncMock(),
     )
-    ee_manager = mock.MagicMock()
-    ee_manager.load_preset.return_value = None
-    ee_manager.load_compare_state.return_value = {"presetA": "Neutral", "presetB": "B", "activeSide": None}
-    ee_manager.get_status.return_value = {"active_preset": "Neutral", "compare": {}}
+    dsp_manager = mock.MagicMock()
+    dsp_manager.load_preset.return_value = None
+    dsp_manager.load_compare_state.return_value = {"presetA": "Neutral", "presetB": "B", "activeSide": None}
+    dsp_manager.get_status.return_value = {"active_preset": "Neutral", "compare": {}}
     broadcast = mock.AsyncMock()
     stack = contextlib.ExitStack()
     stack.enter_context(mock.patch.multiple(
         main,
-        _require_dsp_manager=mock.MagicMock(return_value=ee_manager),
+        _require_dsp_manager=mock.MagicMock(return_value=dsp_manager),
         manager=mock.MagicMock(broadcast=broadcast),
     ))
     stack.enter_context(mock.patch.multiple(main.runtime, dsp_runtime=active_runtime))
@@ -522,7 +522,7 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
     stack2 = contextlib.ExitStack()
     stack2.enter_context(mock.patch.multiple(
         main,
-        _require_dsp_manager=mock.MagicMock(return_value=ee_manager),
+        _require_dsp_manager=mock.MagicMock(return_value=dsp_manager),
         manager=mock.MagicMock(broadcast=mock.AsyncMock()),
     ))
     stack2.enter_context(mock.patch.multiple(main.runtime, dsp_runtime=idle_runtime))
@@ -536,33 +536,33 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
 
 
 async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
-    """Stereo recovery restores the latest A/B side after an EE restart."""
+    """Stereo recovery restores the latest A/B side after a DSP restart."""
     active_preset = "A"
     events = []
-    ee_manager = mock.MagicMock()
-    ee_manager.load_compare_state.side_effect = [
+    dsp_manager = mock.MagicMock()
+    dsp_manager.load_compare_state.side_effect = [
         {"presetA": "A", "presetB": "B", "activeSide": "A"},
         # Model a user selecting B while runtime sync restarts the DSP.
         {"presetA": "A", "presetB": "B", "activeSide": "B"},
     ]
-    ee_manager.get_active_preset.side_effect = lambda: active_preset
+    dsp_manager.get_active_preset.side_effect = lambda: active_preset
 
     def load_preset(name, *, convolver_sample_rate_hz=None):
         nonlocal active_preset
         events.append(("load", name, convolver_sample_rate_hz))
         active_preset = name
 
-    ee_manager.load_preset.side_effect = load_preset
+    dsp_manager.load_preset.side_effect = load_preset
 
     async def sync_runtime(**_kwargs):
         nonlocal active_preset
         events.append(("runtime-sync",))
         if len(events) == 1:
-            active_preset = "stale-ee-restart-preset"
+            active_preset = "stale-dsp-restart-preset"
 
     wait_for_ports = mock.AsyncMock(return_value=True)
     complete_graph = {
-        "ee_ports": True,
+        "dsp_ports": True,
         "links_complete": True,
         "links": {},
         "signature": "stereo-complete",
@@ -579,7 +579,7 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch.multiple(
             main,
-            dsp_manager=ee_manager,
+            dsp_manager=dsp_manager,
         ))
         stack.enter_context(mock.patch.object(
             playback_orchestration.configured(), "playback_graph_diagnosis",

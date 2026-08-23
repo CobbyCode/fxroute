@@ -33,7 +33,7 @@ class MainCoreTransitionRuntime:
         target_url: str = "/music/target.flac",
         operation: str = "play",
         detail: str = "test-handoff",
-        ee_port_timeout_ms: int | None = None,
+        dsp_port_timeout_ms: int | None = None,
         preserve_dsp_output_graph: bool = False,
         live_rate: int | None = None,
         failure: BaseException | None = None,
@@ -47,7 +47,7 @@ class MainCoreTransitionRuntime:
         self.target_url = target_url
         self.operation = operation
         self.detail = detail
-        self.ee_port_timeout_ms = ee_port_timeout_ms
+        self.dsp_port_timeout_ms = dsp_port_timeout_ms
         self.preserve_dsp_output_graph = preserve_dsp_output_graph
         self.live_rate = live_rate
         self.failure = failure
@@ -117,10 +117,10 @@ class MainCoreTransitionRuntime:
             return {"dsp_reinitialized": False, "helper_rebuilt": False}
         return await playback_orchestration.configured().establish_effects_and_helper(
             request,
-            ee_port_timeout_ms=(
-                self.ee_port_timeout_ms
-                if self.ee_port_timeout_ms is not None
-                else main.PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS
+            dsp_port_timeout_ms=(
+                self.dsp_port_timeout_ms
+                if self.dsp_port_timeout_ms is not None
+                else main.PLAYBACK_HANDOFF_DSP_PORT_TIMEOUT_MS
             ),
         )
 
@@ -166,7 +166,7 @@ async def run_main_handoff_through_coordinator(
     target_url: str = "/music/target.flac",
     operation: str = "play",
     detail: str = "test-handoff",
-    ee_port_timeout_ms: int | None = None,
+    dsp_port_timeout_ms: int | None = None,
     preserve_dsp_output_graph: bool = False,
     live_rate: int | None = None,
     failure: BaseException | None = None,
@@ -183,7 +183,7 @@ async def run_main_handoff_through_coordinator(
         target_url=target_url,
         operation=operation,
         detail=detail,
-        ee_port_timeout_ms=ee_port_timeout_ms,
+        dsp_port_timeout_ms=dsp_port_timeout_ms,
         preserve_dsp_output_graph=preserve_dsp_output_graph,
         live_rate=live_rate,
         failure=failure,

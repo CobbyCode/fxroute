@@ -19,16 +19,16 @@ from playback_transition_test_support import MainCoreTransitionRuntime
 
 
 OUTPUT_KEY = "alsa_output.pci-0000_00_1f.3.analog-stereo"
-EE_LEFT = "fxroute_dsp_sink:monitor_FL"
-EE_RIGHT = "fxroute_dsp_sink:monitor_FR"
+DSP_INGRESS_LEFT = "fxroute_dsp_sink:monitor_FL"
+DSP_INGRESS_RIGHT = "fxroute_dsp_sink:monitor_FR"
 HELPER_LEFT = "fxroute_dsp:input_1"
 HELPER_RIGHT = "fxroute_dsp:input_2"
 
 
 def _graph_snapshot(*, missing: tuple[str, ...] = (), signature: str = "complete") -> dict:
     links = {
-        f"{EE_LEFT} -> {HELPER_LEFT}": f"{EE_LEFT} -> {HELPER_LEFT}" not in missing,
-        f"{EE_RIGHT} -> {HELPER_RIGHT}": f"{EE_RIGHT} -> {HELPER_RIGHT}" not in missing,
+        f"{DSP_INGRESS_LEFT} -> {HELPER_LEFT}": f"{DSP_INGRESS_LEFT} -> {HELPER_LEFT}" not in missing,
+        f"{DSP_INGRESS_RIGHT} -> {HELPER_RIGHT}": f"{DSP_INGRESS_RIGHT} -> {HELPER_RIGHT}" not in missing,
         f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_FL": True,
         f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_FR": True,
         f"fxroute_dsp:output_3 -> {OUTPUT_KEY}:playback_RL": True,
@@ -37,7 +37,7 @@ def _graph_snapshot(*, missing: tuple[str, ...] = (), signature: str = "complete
     return {
         "mode": "subwoofer-2.2",
         "output_key": OUTPUT_KEY,
-        "ee_ports": True,
+        "dsp_ports": True,
         "helper_ports": True,
         "helper_active": True,
         "helper_rate": 48000,
@@ -47,13 +47,12 @@ def _graph_snapshot(*, missing: tuple[str, ...] = (), signature: str = "complete
             "mpv:output_FR -> fxroute_dsp_sink:playback_FR": True,
         },
         "source_links_complete": True,
-        "direct_ee_to_hw_present": False,
         "links": links,
         "links_complete": all(links.values()),
         "bypass_only": False,
         "port_identities": {
             "source": ("mpv:output_FL", "mpv:output_FR"),
-            "ee": (EE_LEFT, EE_RIGHT),
+            "dsp": (DSP_INGRESS_LEFT, DSP_INGRESS_RIGHT),
             "helper": (
                 HELPER_LEFT,
                 HELPER_RIGHT,
@@ -115,8 +114,8 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_post_start_links_are_relinked_and_two_readbacks_allow_commit(self):
         initial = _graph_snapshot(
-            missing=(f"{EE_LEFT} -> {HELPER_LEFT}", f"{EE_RIGHT} -> {HELPER_RIGHT}"),
-            signature="missing-ee-helper",
+            missing=(f"{DSP_INGRESS_LEFT} -> {HELPER_LEFT}", f"{DSP_INGRESS_RIGHT} -> {HELPER_RIGHT}"),
+            signature="missing-dsp-helper",
         )
         stable = _graph_snapshot(signature="stable-canonical")
 
@@ -130,8 +129,8 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             relink.await_args_list,
             [
-                call((EE_LEFT,), HELPER_LEFT),
-                call((EE_RIGHT,), HELPER_RIGHT),
+                call((DSP_INGRESS_LEFT,), HELPER_LEFT),
+                call((DSP_INGRESS_RIGHT,), HELPER_RIGHT),
             ],
         )
         self.assertLess(
@@ -145,12 +144,12 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_links_disappearing_after_relink_latch_failure_and_do_not_commit(self):
         initial = _graph_snapshot(
-            missing=(f"{EE_LEFT} -> {HELPER_LEFT}",),
-            signature="missing-ee-helper",
+            missing=(f"{DSP_INGRESS_LEFT} -> {HELPER_LEFT}",),
+            signature="missing-dsp-helper",
         )
         stable_once = _graph_snapshot(signature="stable-once")
         disappeared = _graph_snapshot(
-            missing=(f"{EE_RIGHT} -> {HELPER_RIGHT}",),
+            missing=(f"{DSP_INGRESS_RIGHT} -> {HELPER_RIGHT}",),
             signature="link-disappeared-again",
         )
 
@@ -184,7 +183,7 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(coordinator.last_result)
         self.assertNotIn("graph-readback", runtime.events)
         self.assertNotIn("commit-readback", runtime.events)
-        relink.assert_awaited_once_with((EE_LEFT,), HELPER_LEFT)
+        relink.assert_awaited_once_with((DSP_INGRESS_LEFT,), HELPER_LEFT)
 
 
 if __name__ == "__main__":

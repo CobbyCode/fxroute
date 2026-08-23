@@ -211,7 +211,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         async def noop_sleep(_delay):
             return None
 
-        async def ee_ports_present(*_args):
+        async def dsp_ports_present(*_args):
             return (
                 "mpv:output_FL\nmpv:output_FR\n"
                 "fxroute_dsp_sink:playback_FL\nfxroute_dsp_sink:playback_FR\n"
@@ -259,7 +259,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
             })()
         ), patch.object(
             samplerate, "get_current_pipewire_force_rate", lambda: 0
-        ), patch.object(pw_link_mod, "run_pw_link_command", ee_ports_present), patch.object(
+        ), patch.object(pw_link_mod, "run_pw_link_command", dsp_ports_present), patch.object(
             main, "get_audio_output_overview",
             return_value={"output_mode": {"mode": "stereo", "effective_output_key": "alsa_output.pci-0000_00_1f.3.analog-stereo"}},
         ), patch.object(

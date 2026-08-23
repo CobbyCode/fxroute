@@ -56,7 +56,7 @@ class FakeUpload:
         pass
 
 
-class FakeEEManager:
+class FakeDspManager:
     def __init__(self, irs_dir: Path, fail_import=False):
         self.irs_dir = irs_dir
         self.fail_import = fail_import
@@ -174,7 +174,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "PRESET_BUNDLE_MAX_CENTRAL_DIRECTORY_BYTES",
             )
         }
-        main.dsp_manager = FakeEEManager(self.irs_dir)
+        main.dsp_manager = FakeDspManager(self.irs_dir)
         dsp_api._finish_dsp_preset_mutation = self._fake_finish
         self.created_temps = []
         real_tempfile = tempfile.NamedTemporaryFile
@@ -357,7 +357,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_ir_restored_when_import_fails(self):
         self.irs_dir.mkdir()
         (self.irs_dir / "same.irs").write_bytes(b"OLD" * 8)
-        main.dsp_manager = FakeEEManager(self.irs_dir, fail_import=True)
+        main.dsp_manager = FakeDspManager(self.irs_dir, fail_import=True)
         with self.assertRaises(HTTPException) as ctx:
             await self._import(self._bundle_with_ir("same.irs", b"NEW" * 16))
         self.assertEqual(ctx.exception.status_code, 400)
@@ -367,7 +367,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_ir_removed_when_import_fails(self):
         self.irs_dir.mkdir()
-        main.dsp_manager = FakeEEManager(self.irs_dir, fail_import=True)
+        main.dsp_manager = FakeDspManager(self.irs_dir, fail_import=True)
         with self.assertRaises(HTTPException) as ctx:
             await self._import(self._bundle_with_ir("new.irs", b"NEW" * 16))
         self.assertEqual(ctx.exception.status_code, 400)

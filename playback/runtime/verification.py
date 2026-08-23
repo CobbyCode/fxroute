@@ -214,7 +214,7 @@ class _RuntimeVerificationMixin:
             require_source=source_required,
         )
         if not graph.get("links_complete"):
-            # Link-only drift during DSP stabilization (EE reconfigures its
+            # Link-only drift during DSP stabilization (the DSP reconfigures its
             # graph while the guarded runtime apply settles): one bounded
             # repair attempt, then re-read before failing the transition.
             graph_mode = graph.get("mode")
@@ -733,4 +733,3 @@ class _RuntimeVerificationMixin:
             "fast_path": True,
             "graph_complete": True,
         }
-

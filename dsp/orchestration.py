@@ -362,11 +362,11 @@ class DspOrchestrator:
                     continue
                 logger.info(
                     "Subwoofer link watcher observed incomplete canonical graph; requesting Coordinator action: "
-                    "bypass_only=%s helper_active=%s helper_rate=%s direct_bypass=%s signature=%s",
+                    "bypass_only=%s helper_active=%s helper_rate=%s direct_source_to_hw=%s signature=%s",
                     diagnosis.get("bypass_only"),
                     diagnosis.get("helper_active"),
                     diagnosis.get("helper_rate"),
-                    diagnosis.get("direct_ee_to_hw_present"),
+                    diagnosis.get("direct_source_to_hw_present"),
                     diagnosis.get("signature"),
                 )
                 await self._deps.request_coordinated_recovery(

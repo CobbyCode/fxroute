@@ -347,12 +347,12 @@ class PlaybackOrchestrator:
 
     async def playback_graph_diagnosis(self, audio_overview: dict | None = None, *, source: str | None = None,
                                        target_rate: int | None = None, require_source: bool = False) -> dict:
-        result = {"mode": None, "output_key": "", "ee_ports": False, "helper_ports": None,
+        result = {"mode": None, "output_key": "", "dsp_ports": False, "helper_ports": None,
                   "helper_active": None, "helper_rate": None, "helper_rate_matches": None,
                   "links": {}, "source_links": {}, "source_links_complete": None,
-                  "direct_ee_to_hw_present": False, "direct_source_to_hw_present": False,
+                  "direct_source_to_hw_present": False,
                   "links_complete": False, "bypass_only": False,
-                  "port_identities": {"source": (), "source_target": (), "ee": (), "helper": (), "output": ()},
+                  "port_identities": {"source": (), "source_target": (), "dsp": (), "helper": (), "output": ()},
                   "signature": "unreadable"}
         try:
             overview = audio_overview or self._deps.get_audio_output_overview()
@@ -380,8 +380,8 @@ class PlaybackOrchestrator:
         dsp_ports = tuple(f"fxroute_dsp:output_{i + 1}" for i in range(output_count))
         ingress_sources = ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR")
         ingress_targets = ("fxroute_dsp:input_1", "fxroute_dsp:input_2")
-        result["ee_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
-        result["helper_ports"] = result["ee_ports"]
+        result["dsp_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
+        result["helper_ports"] = result["dsp_ports"]
         result["helper_active"] = bool(snapshot.get("active"))
         result["helper_rate"] = self._deps.helper_argument_sample_rate(snapshot)
         result["helper_rate_matches"] = bool(result["helper_active"] and (target_rate is None or result["helper_rate"] == target_rate))
@@ -405,9 +405,9 @@ class PlaybackOrchestrator:
             **{f"{p} -> {output_key}:playback_{c}": self._deps.contains_link(link_text, p, f"{output_key}:playback_{c}") for p, c in zip(dsp_ports, channels)},
         }
         result["port_identities"] = {"source": tuple(p for p in source_ports if p in io_text), "source_target": tuple(p for p in source_targets if p in io_text),
-                                      "ee": tuple(p for p in ingress_targets if p in io_text), "helper": tuple(p for p in dsp_ports if p in io_text),
+                                      "dsp": tuple(p for p in ingress_targets if p in io_text), "helper": tuple(p for p in dsp_ports if p in io_text),
                                       "output": tuple(f"{output_key}:playback_{c}" for c in channels if f"{output_key}:playback_{c}" in io_text)}
-        native = bool(result["source_links_complete"] is not False and result["ee_ports"] and result["helper_rate_matches"] and all(result["links"].values()))
+        native = bool(result["source_links_complete"] is not False and result["dsp_ports"] and result["helper_rate_matches"] and all(result["links"].values()))
         result["bypass_only"] = bool(native and result["direct_source_to_hw_present"])
         result["links_complete"] = bool(native and not result["direct_source_to_hw_present"])
         result["signature"] = json.dumps(result, sort_keys=True, default=list)
@@ -420,7 +420,7 @@ class PlaybackOrchestrator:
         return missing
 
     def measurement_session_link_loss_is_repairable(self, diagnosis: Mapping[str, Any], *, target_rate: int) -> bool:
-        if diagnosis.get("links_complete") or diagnosis.get("ee_ports") is not True or diagnosis.get("measurement_rate_aligned") is not True:
+        if diagnosis.get("links_complete") or diagnosis.get("dsp_ports") is not True or diagnosis.get("measurement_rate_aligned") is not True:
             return False
         output_key = str(diagnosis.get("output_key") or "").strip()
         if not output_key or diagnosis.get("mode") not in {self._deps.output_mode_stereo, *self._deps.output_mode_subwoofer_modes}:
@@ -433,7 +433,7 @@ class PlaybackOrchestrator:
         return bool(missing) and missing.issubset(repairable)
 
     def log_playback_graph_diagnosis(self, diagnosis: dict, *, target_rate: int, reason: str, detail: str) -> None:
-        logger.warning("Playback handoff graph incomplete: mode=%s output_key=%s target_rate=%s ee_ports=%s helper_ports=%s helper_active=%s helper_rate=%s direct_bypass=%s source_links=%s missing_links=%s reason=%s detail=%s", diagnosis.get("mode"), diagnosis.get("output_key"), target_rate, diagnosis.get("ee_ports"), diagnosis.get("helper_ports"), diagnosis.get("helper_active"), diagnosis.get("helper_rate"), diagnosis.get("direct_ee_to_hw_present"), diagnosis.get("source_links_complete"), self.missing_playback_graph_links(diagnosis), reason, detail)
+        logger.warning("Playback handoff graph incomplete: mode=%s output_key=%s target_rate=%s dsp_ports=%s helper_ports=%s helper_active=%s helper_rate=%s bypass_only=%s source_links=%s missing_links=%s reason=%s detail=%s", diagnosis.get("mode"), diagnosis.get("output_key"), target_rate, diagnosis.get("dsp_ports"), diagnosis.get("helper_ports"), diagnosis.get("helper_active"), diagnosis.get("helper_rate"), diagnosis.get("bypass_only"), diagnosis.get("source_links_complete"), self.missing_playback_graph_links(diagnosis), reason, detail)
 
     async def repair_stereo_output_links_once(self, diagnosis: dict) -> None:
         if self._deps.repair_stereo_output_links is not None:
@@ -455,7 +455,7 @@ class PlaybackOrchestrator:
         await reconcile()
 
     def post_start_graph_links_are_repairable(self, diagnosis: Mapping[str, Any], *, include_source: bool = False, require_source: bool = True) -> bool:
-        if not diagnosis.get("output_key") or not diagnosis.get("ee_ports") or (require_source and diagnosis.get("source_links_complete") is not True and not include_source) or diagnosis.get("direct_ee_to_hw_present"):
+        if not diagnosis.get("output_key") or not diagnosis.get("dsp_ports") or (require_source and diagnosis.get("source_links_complete") is not True and not include_source):
             return False
         if diagnosis.get("helper_ports") is not True or diagnosis.get("helper_active") is not True or diagnosis.get("helper_rate_matches") is not True:
             return False
@@ -509,12 +509,12 @@ class PlaybackOrchestrator:
             raise RuntimeError("post-start production graph did not reach two stable canonical readbacks")
         return {"graph_complete": True, "post_start_graph_reconciled": True, "post_start_graph_links_relinked": relinked, "graph_signature": signatures[-1]}
 
-    async def establish_effects_and_helper(self, request: TransitionRequest, *, ee_port_timeout_ms: int | None = None) -> dict[str, Any]:
+    async def establish_effects_and_helper(self, request: TransitionRequest, *, dsp_port_timeout_ms: int | None = None) -> dict[str, Any]:
         target_rate = request.target_rate
         empty = {"dsp_reinitialized": False, "preset_reloaded": False, "helper_rebuilt": False, "links_reconciled": False}
         if not isinstance(target_rate, int) or target_rate <= 0:
             return empty
-        timeout = self._deps.dsp_port_timeout_ms if ee_port_timeout_ms is None else ee_port_timeout_ms
+        timeout = self._deps.dsp_port_timeout_ms if dsp_port_timeout_ms is None else dsp_port_timeout_ms
         overview = (
             copy.deepcopy(request.output_mode_target)
             if request.output_mode_target
@@ -530,7 +530,7 @@ class PlaybackOrchestrator:
             await self.reconcile_subwoofer_links_only()
             links_reconciled = True
         else:
-            needs_preset = not diagnosis.get("ee_ports")
+            needs_preset = not diagnosis.get("dsp_ports")
             if request.operation == "output-mode-switch" and manager is not None:
                 compare = manager.load_compare_state(); side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
                 target = compare.get("presetA") if side == "A" else compare.get("presetB") if side == "B" else None
