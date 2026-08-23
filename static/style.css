@@ -1586,7 +1586,7 @@ body {
     display: grid;
     place-items: center;
     background-color: #080808;
-    background-image: url('/static/artwork-placeholder.svg?v=1');
+    background-image: url('/static/artwork-placeholder.svg?v=2');
     background-position: center;
     background-repeat: no-repeat;
     background-size: 100% 100%;
@@ -2232,7 +2232,7 @@ body {
 .track-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .track-thumb:empty {
     background-color: #080808;
-    background-image: url('/static/artwork-placeholder.svg?v=1');
+    background-image: url('/static/artwork-placeholder.svg?v=2');
     background-position: center;
     background-repeat: no-repeat;
     background-size: 100% 100%;
@@ -3570,7 +3570,7 @@ body {
     align-items: center;
     justify-content: center;
     background-color: #080808;
-    background-image: url('/static/artwork-placeholder.svg?v=1');
+    background-image: url('/static/artwork-placeholder.svg?v=2');
     background-position: center;
     background-repeat: no-repeat;
     background-size: 100% 100%;

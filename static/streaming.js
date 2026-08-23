@@ -19,7 +19,7 @@
     let showToast = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
     let formatTime = function () { return '0:00'; };
-    let artworkPlaceholderUrl = function () { return '/static/artwork-placeholder.svg?v=1'; };
+    let artworkPlaceholderUrl = function () { return '/static/artwork-placeholder.svg?v=2'; };
     // Shared detail track-row builder, supplied by app.js so the library album
     // detail and the Tidal album/playlist details render the same row.
     let trackRowHtml = function () { return ''; };

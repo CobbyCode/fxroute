@@ -5769,7 +5769,7 @@ async function playTrackInPlaylist(trackId) {
 }
 
 function artworkPlaceholderUrl() {
-    return '/static/artwork-placeholder.svg?v=1';
+    return '/static/artwork-placeholder.svg?v=2';
 }
 
 function albumArtFallbackSvg() {

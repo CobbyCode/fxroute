@@ -17,7 +17,11 @@ const svg = fs.readFileSync(path.join(root, 'static', 'artwork-placeholder.svg')
 
 assert.match(svg, /<svg\b[^>]*viewBox="0 0 200 200"/,
     'the artwork placeholder must be a square SVG');
-assert.match(svg, /<circle\b/, 'the artwork placeholder must contain a record');
+assert.match(svg, /<radialGradient\b/, 'the artwork placeholder must use tonal depth');
+assert.ok((svg.match(/<circle\b/g) || []).length >= 8,
+    'the artwork placeholder must show multiple record grooves and a center label');
+assert.match(svg, /stroke-width="[23]"/, 'the artwork placeholder must define a clear outer edge');
+assert.match(svg, /<path\b[^>]*opacity=/, 'the artwork placeholder must contain a restrained highlight');
 assert.doesNotMatch(svg, /<text\b|[♫♪♬]/,
     'the artwork placeholder must not contain text or music-note glyphs');
 assert.doesNotMatch(svg, /#(?:6ee7b7|4ade80|6366f1|8b5cf6)/i,
