@@ -5010,12 +5010,14 @@ async def download_status():
 
 @app.get("/api/streaming/providers")
 async def api_streaming_providers():
-    """List registered streaming providers with their capability surface.
+    """Discover installed streaming providers and their capability surface.
 
     The generic foundation for a future streaming tab: the UI reads
     ``capabilities`` instead of branching on provider identity. Providers
     that are declared but not implemented report ``implemented=false`` and
-    ``available=false`` and must never render as a usable service.
+    ``available=false`` and must never render as a usable service. Runtime
+    availability, authentication and backend probes belong to ``/status`` so
+    discovery never waits for a remote service.
     """
     return {"providers": await streaming.describe_providers()}
 

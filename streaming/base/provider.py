@@ -156,7 +156,17 @@ class ProviderRegistry:
         return list(self._providers.values())
 
     async def describe_all(self) -> list[dict]:
-        described: list[dict] = []
+        described = []
         for provider in self.providers():
-            described.append(await provider.describe())
+            installed = provider.is_installed()
+            described.append({
+                "id": provider.provider_id,
+                "name": provider.display_name,
+                "implemented": provider.implemented,
+                "available": None if installed and provider.implemented else False,
+                "installed": installed,
+                "authenticated": None,
+                "backend": None,
+                "capabilities": provider.capabilities().to_dict(),
+            })
         return described

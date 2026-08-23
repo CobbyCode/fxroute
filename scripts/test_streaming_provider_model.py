@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 import streaming
 from streaming.base.capabilities import CAPABILITY_NAMES, Capabilities
+from streaming.base.provider import ProviderRegistry, StreamingProvider
 from streaming.spotify.mpris import (
     detect_backend,
     detect_running_backend,
@@ -62,6 +63,46 @@ class CapabilitiesModelTests(unittest.TestCase):
 
 
 class RegistryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_registry_discovery_does_not_run_dynamic_provider_probes(self):
+        class ProbeProvider(StreamingProvider):
+            provider_id = "probe"
+            display_name = "Probe"
+
+            def capabilities(self):
+                return Capabilities(search=True)
+
+            def is_installed(self):
+                return True
+
+            async def is_available(self):
+                raise AssertionError("discovery must not probe availability")
+
+            async def is_authenticated(self):
+                raise AssertionError("discovery must not probe authentication")
+
+            async def backend(self):
+                raise AssertionError("discovery must not probe the backend")
+
+            async def status(self):
+                return {}
+
+        registry = ProviderRegistry()
+        registry.register(ProbeProvider())
+
+        self.assertEqual(
+            await registry.describe_all(),
+            [{
+                "id": "probe",
+                "name": "Probe",
+                "implemented": True,
+                "available": None,
+                "installed": True,
+                "authenticated": None,
+                "backend": None,
+                "capabilities": Capabilities(search=True).to_dict(),
+            }],
+        )
+
     async def test_registry_lists_providers_with_implemented_flag(self):
         described = {p["id"]: p for p in await streaming.describe_providers()}
         self.assertIn("spotify", described)
