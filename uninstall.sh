@@ -17,9 +17,11 @@ INSTALL_CONFIG_FILE="$HOME/.config/fxroute/install-config.env"
 FXROUTE_BACKUP_DIR="$HOME/.config/fxroute/backups"
 SPOTIFY_APT_SOURCE_FILE="/etc/apt/sources.list.d/spotify.list"
 SPOTIFY_APT_KEY_FILE="/usr/share/keyrings/spotify-archive-keyring.gpg"
+SPOTIFY_APT_KEY_FINGERPRINT="E1096BCBFF6D418796DE78515384CE82BA52C83A"
 SPOTIFYD_ZEROCONF_PORT="4444"
 PRESERVE_INSTALL_STATE=0
 PROVIDER_LAN_CLEANUP_DEFERRED=0
+CORE_SERVICE_CLEANUP_DEFERRED=0
 
 # Provider credentials, sessions, caches, and user configuration are never
 # removed by this script. Owned binaries and user units are handled separately.
@@ -213,7 +215,7 @@ verify_owned_binary_identity() {
   local actual_sha256=""
 
   [[ -e "$path" || -L "$path" ]] || return 0
-  if [[ ! -f "$path" || -z "$expected_sha256" ]]; then
+  if [[ ! -f "$path" || -L "$path" || -z "$expected_sha256" ]]; then
     warn "Refusing to remove $label because its recorded identity is unavailable"
     PRESERVE_INSTALL_STATE=1
     return 1
@@ -227,9 +229,125 @@ verify_owned_binary_identity() {
   return 0
 }
 
+user_unit_file_matches() {
+  local path="$1"
+  local marker=""
+
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  shift
+  for marker in "$@"; do
+    grep -Fq -- "$marker" "$path" || return 1
+  done
+}
+
 remove_service() {
-  systemctl --user disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
-  remove_file_if_exists "$HOME/.config/systemd/user/$SERVICE_NAME.service"
+  local service_path="$HOME/.config/systemd/user/$SERVICE_NAME.service"
+
+  if [[ -e "$service_path" || -L "$service_path" ]] \
+    && ! user_unit_file_matches "$service_path" \
+      "Description=FXRoute" \
+      "WorkingDirectory=$INSTALL_ROOT" \
+      "ExecStart=$INSTALL_ROOT/.venv/bin/python3 $INSTALL_ROOT/main.py"; then
+    warn "Refusing to remove the FXRoute service because its unit content is not FXRoute-owned"
+    PRESERVE_INSTALL_STATE=1
+    CORE_SERVICE_CLEANUP_DEFERRED=1
+    return 0
+  fi
+  if ! stop_owned_user_service "$SERVICE_NAME.service" "$service_path"; then
+    CORE_SERVICE_CLEANUP_DEFERRED=1
+    return 0
+  fi
+  remove_file_if_exists "$service_path"
+}
+
+systemd_unit_is_loaded() {
+  local unit="$1"
+  local load_state=""
+
+  shift
+  if ! load_state="$("$@" systemctl show "$unit" -p LoadState --value 2>/dev/null)"; then
+    return 2
+  fi
+  case "$load_state" in
+    not-found) return 1 ;;
+    "") return 2 ;;
+    *) return 0 ;;
+  esac
+}
+
+user_systemd_unit_is_loaded() {
+  local unit="$1"
+  local load_state=""
+
+  if ! load_state="$(systemctl --user show "$unit" -p LoadState --value 2>/dev/null)"; then
+    return 2
+  fi
+  case "$load_state" in
+    not-found) return 1 ;;
+    "") return 2 ;;
+    *) return 0 ;;
+  esac
+}
+
+systemd_unit_fragment_matches() {
+  local unit="$1"
+  local expected_path="$2"
+  local fragment_path=""
+
+  shift 2
+  if ! fragment_path="$("$@" systemctl show "$unit" -p FragmentPath --value 2>/dev/null)"; then
+    return 2
+  fi
+  [[ "$fragment_path" == "$expected_path" ]]
+}
+
+stop_owned_user_service() {
+  local unit="$1"
+  local expected_path="${2:-}"
+  local active_status=0
+  local fragment_path=""
+  local loaded_status=0
+
+  if [[ -n "$expected_path" ]]; then
+    if user_systemd_unit_is_loaded "$unit"; then
+      if ! fragment_path="$(systemctl --user show "$unit" -p FragmentPath --value 2>/dev/null)"; then
+        warn "Could not verify the loaded unit path for '$unit'"
+        PRESERVE_INSTALL_STATE=1
+        return 1
+      fi
+      if [[ -z "$fragment_path" || "$fragment_path" != "$expected_path" ]]; then
+        warn "Refusing to stop '$unit' because its loaded unit path is not FXRoute-owned"
+        PRESERVE_INSTALL_STATE=1
+        return 1
+      fi
+    else
+      loaded_status=$?
+      if [[ $loaded_status -ne 1 ]]; then
+        warn "Could not verify whether FXRoute-owned user service '$unit' is loaded"
+        PRESERVE_INSTALL_STATE=1
+        return 1
+      fi
+    fi
+  fi
+
+  if systemctl --user disable --now "$unit" >/dev/null 2>&1; then
+    return 0
+  fi
+  if systemctl --user is-active --quiet "$unit" >/dev/null 2>&1; then
+    warn "Could not stop active FXRoute-owned user service '$unit'"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  else
+    active_status=$?
+  fi
+  case "$active_status" in
+    3|4) return 0 ;;
+    *)
+      warn "Could not verify FXRoute-owned user service '$unit'"
+      PRESERVE_INSTALL_STATE=1
+      return 1
+      ;;
+  esac
 }
 
 remove_dsp_ingress_sink() {
@@ -240,9 +358,37 @@ remove_dsp_ingress_sink() {
 }
 
 remove_spotify_cleanup_helper() {
-  systemctl --user disable --now fxroute-spotify-cache-cleanup.timer >/dev/null 2>&1 || true
-  remove_file_if_exists "$HOME/.config/systemd/user/fxroute-spotify-cache-cleanup.service"
-  remove_file_if_exists "$HOME/.config/systemd/user/fxroute-spotify-cache-cleanup.timer"
+  local service_name="fxroute-spotify-cache-cleanup.service"
+  local timer_name="fxroute-spotify-cache-cleanup.timer"
+  local service_path="$HOME/.config/systemd/user/$service_name"
+  local timer_path="$HOME/.config/systemd/user/$timer_name"
+  local script_path="$INSTALL_ROOT/scripts/spotify-cache-cleanup.sh"
+
+  if [[ -e "$service_path" || -L "$service_path" ]] \
+    && ! user_unit_file_matches "$service_path" \
+      "Description=FXRoute Spotify cache cleanup" \
+      "ExecStart=$script_path"; then
+    warn "Refusing to remove the Spotify cache cleanup service because its unit content is not FXRoute-owned"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if [[ -e "$timer_path" || -L "$timer_path" ]] \
+    && ! user_unit_file_matches "$timer_path" \
+      "Description=Run FXRoute Spotify cache cleanup periodically" \
+      "Persistent=true" \
+      "WantedBy=timers.target"; then
+    warn "Refusing to remove the Spotify cache cleanup timer because its unit content is not FXRoute-owned"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if ! stop_owned_user_service "$timer_name" "$timer_path"; then
+    return 0
+  fi
+  if ! stop_owned_user_service "$service_name" "$service_path"; then
+    return 0
+  fi
+  remove_file_if_exists "$service_path"
+  remove_file_if_exists "$timer_path"
 }
 
 remove_optional_system_update_helper() {
@@ -307,6 +453,35 @@ remove_autostart() {
 
 provider_sudo_available() {
   [[ ${EUID:-$(id -u)} -eq 0 ]] || command -v sudo >/dev/null 2>&1
+}
+
+spotify_apt_source_is_owned() {
+  local expected_sha256=""
+  local actual_sha256=""
+  local canonical_line="deb [arch=amd64 signed-by=${SPOTIFY_APT_KEY_FILE}] https://repository.spotify.com stable non-free"
+
+  [[ -f "$SPOTIFY_APT_SOURCE_FILE" && ! -L "$SPOTIFY_APT_SOURCE_FILE" ]] || return 1
+  expected_sha256="$(read_install_state_field "providers.spotify_desktop.apt_repo_sha256" 2>/dev/null || true)"
+  if [[ -n "$expected_sha256" ]]; then
+    actual_sha256="$(sha256sum "$SPOTIFY_APT_SOURCE_FILE" 2>/dev/null | awk '{print $1}')" || return 1
+    [[ "$actual_sha256" == "$expected_sha256" ]]
+    return
+  fi
+  grep -Fxq "$canonical_line" "$SPOTIFY_APT_SOURCE_FILE"
+}
+
+spotify_apt_key_is_owned() {
+  local expected_fingerprint=""
+  local actual_fingerprint=""
+
+  [[ -f "$SPOTIFY_APT_KEY_FILE" && ! -L "$SPOTIFY_APT_KEY_FILE" ]] || return 1
+  command -v gpg >/dev/null 2>&1 || return 1
+  expected_fingerprint="$(read_install_state_field "providers.spotify_desktop.apt_key_fingerprint" 2>/dev/null || true)"
+  [[ -n "$expected_fingerprint" ]] || expected_fingerprint="$SPOTIFY_APT_KEY_FINGERPRINT"
+  actual_fingerprint="$(gpg --show-keys --with-colons --fingerprint "$SPOTIFY_APT_KEY_FILE" 2>/dev/null \
+    | awk -F: '$1 == "fpr" {print toupper($10); exit}')"
+  [[ "$actual_fingerprint" == "$expected_fingerprint" \
+    && "$actual_fingerprint" == "$SPOTIFY_APT_KEY_FINGERPRINT" ]]
 }
 
 remove_owned_spotify_desktop() {
@@ -382,8 +557,30 @@ remove_owned_spotify_desktop() {
     PRESERVE_INSTALL_STATE=1
   fi
   if [[ "$apt_repo_installed_by_fxroute" == "true" && $component_ok -eq 1 ]]; then
-    local repo_paths=("$SPOTIFY_APT_SOURCE_FILE")
-    [[ "$apt_key_installed_by_fxroute" == "true" ]] && repo_paths+=("$SPOTIFY_APT_KEY_FILE")
+    local repo_paths=()
+    local apt_source_removed=0
+    if [[ -e "$SPOTIFY_APT_SOURCE_FILE" || -L "$SPOTIFY_APT_SOURCE_FILE" ]]; then
+      if spotify_apt_source_is_owned; then
+        repo_paths+=("$SPOTIFY_APT_SOURCE_FILE")
+        apt_source_removed=1
+      else
+        warn "Refusing to remove the Spotify apt source because its contents changed"
+        PRESERVE_INSTALL_STATE=1
+      fi
+    fi
+    if [[ "$apt_key_installed_by_fxroute" == "true" \
+      && $apt_source_removed -eq 1 \
+      && ( -e "$SPOTIFY_APT_KEY_FILE" || -L "$SPOTIFY_APT_KEY_FILE" ) ]]; then
+      if spotify_apt_key_is_owned; then
+        repo_paths+=("$SPOTIFY_APT_KEY_FILE")
+      else
+        warn "Refusing to remove the Spotify apt keyring because its fingerprint changed"
+        PRESERVE_INSTALL_STATE=1
+      fi
+    fi
+    if [[ ${#repo_paths[@]} -eq 0 ]]; then
+      return 0
+    fi
     if "${sudo_cmd[@]}" rm -f "${repo_paths[@]}"; then
       log "Removed the FXRoute-owned Spotify apt repository and keyring"
     else
@@ -414,34 +611,38 @@ remove_owned_spotifyd() {
   [[ -n "$binary_path" ]] || binary_path="$HOME/.local/bin/spotifyd"
   [[ -n "$service_path" ]] || service_path="$HOME/.config/systemd/user/spotifyd.service"
 
-  if [[ "$service_installed_by_fxroute" == "true" \
-    && ! -e "$service_path" && ! -L "$service_path" ]]; then
-    warn "Cannot remove FXRoute-owned spotifyd service because its recorded unit is missing"
-    PRESERVE_INSTALL_STATE=1
-    return 0
-  fi
-
   if [[ "$installed_by_fxroute" == "true" ]] && ! verify_owned_binary_identity "$binary_path" "$(read_install_state_field "providers.spotifyd.binary_sha256" 2>/dev/null || true)" "FXRoute-owned spotifyd"; then
     return 0
   fi
-  if [[ "$service_installed_by_fxroute" == "true" ]] && ! verify_owned_binary_identity "$service_path" "$(read_install_state_field "providers.spotifyd.service_sha256" 2>/dev/null || true)" "FXRoute-owned spotifyd service"; then
-    return 0
-  fi
   if [[ "$service_installed_by_fxroute" == "true" ]]; then
-    if [[ "$service_path" == "$HOME/.config/systemd/user/spotifyd.service" ]]; then
-      systemctl --user disable --now spotifyd.service >/dev/null 2>&1 || true
-      remove_file_if_exists "$service_path"
-    else
+    if [[ "$service_path" != "$HOME/.config/systemd/user/spotifyd.service" ]]; then
       warn "Refusing to remove an unexpected spotifyd service path: $service_path"
       PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    if [[ -e "$service_path" || -L "$service_path" ]] \
+      && ! verify_owned_binary_identity "$service_path" "$(read_install_state_field "providers.spotifyd.service_sha256" 2>/dev/null || true)" "FXRoute-owned spotifyd service"; then
+      return 0
+    fi
+    if ! stop_owned_user_service spotifyd.service "$HOME/.config/systemd/user/spotifyd.service"; then
+      return 0
+    fi
+    if [[ -e "$service_path" || -L "$service_path" ]]; then
+      remove_file_if_exists "$service_path"
+    else
+      log "FXRoute-owned spotifyd service is already absent"
     fi
   fi
   if [[ "$installed_by_fxroute" == "true" ]]; then
-    if [[ "$binary_path" == "$HOME/.local/bin/spotifyd" ]]; then
-      remove_file_if_exists "$binary_path"
+    if [[ -e "$binary_path" || -L "$binary_path" ]]; then
+      if [[ "$binary_path" == "$HOME/.local/bin/spotifyd" ]]; then
+        remove_file_if_exists "$binary_path"
+      else
+        warn "Refusing to remove an unexpected spotifyd binary path: $binary_path"
+        PRESERVE_INSTALL_STATE=1
+      fi
     else
-      warn "Refusing to remove an unexpected spotifyd binary path: $binary_path"
-      PRESERVE_INSTALL_STATE=1
+      log "FXRoute-owned spotifyd binary is already absent"
     fi
   fi
   systemctl --user daemon-reload >/dev/null 2>&1 || true
@@ -468,34 +669,38 @@ remove_owned_qbzd() {
   [[ -n "$binary_path" ]] || binary_path="$HOME/.local/bin/qbzd"
   [[ -n "$service_path" ]] || service_path="$HOME/.config/systemd/user/qbzd.service"
 
-  if [[ "$service_installed_by_fxroute" == "true" \
-    && ! -e "$service_path" && ! -L "$service_path" ]]; then
-    warn "Cannot remove FXRoute-owned qbzd service because its recorded unit is missing"
-    PRESERVE_INSTALL_STATE=1
-    return 0
-  fi
-
   if [[ "$installed_by_fxroute" == "true" ]] && ! verify_owned_binary_identity "$binary_path" "$(read_install_state_field "providers.qobuz.binary_sha256" 2>/dev/null || true)" "FXRoute-owned qbzd"; then
     return 0
   fi
-  if [[ "$service_installed_by_fxroute" == "true" ]] && ! verify_owned_binary_identity "$service_path" "$(read_install_state_field "providers.qobuz.service_sha256" 2>/dev/null || true)" "FXRoute-owned qbzd service"; then
-    return 0
-  fi
   if [[ "$service_installed_by_fxroute" == "true" ]]; then
-    if [[ "$service_path" == "$HOME/.config/systemd/user/qbzd.service" ]]; then
-      systemctl --user disable --now qbzd.service >/dev/null 2>&1 || true
-      remove_file_if_exists "$service_path"
-    else
+    if [[ "$service_path" != "$HOME/.config/systemd/user/qbzd.service" ]]; then
       warn "Refusing to remove an unexpected qbzd service path: $service_path"
       PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    if [[ -e "$service_path" || -L "$service_path" ]] \
+      && ! verify_owned_binary_identity "$service_path" "$(read_install_state_field "providers.qobuz.service_sha256" 2>/dev/null || true)" "FXRoute-owned qbzd service"; then
+      return 0
+    fi
+    if ! stop_owned_user_service qbzd.service "$HOME/.config/systemd/user/qbzd.service"; then
+      return 0
+    fi
+    if [[ -e "$service_path" || -L "$service_path" ]]; then
+      remove_file_if_exists "$service_path"
+    else
+      log "FXRoute-owned qbzd service is already absent"
     fi
   fi
   if [[ "$installed_by_fxroute" == "true" ]]; then
-    if [[ "$binary_path" == "$HOME/.local/bin/qbzd" ]]; then
-      remove_file_if_exists "$binary_path"
+    if [[ -e "$binary_path" || -L "$binary_path" ]]; then
+      if [[ "$binary_path" == "$HOME/.local/bin/qbzd" ]]; then
+        remove_file_if_exists "$binary_path"
+      else
+        warn "Refusing to remove an unexpected qbzd binary path: $binary_path"
+        PRESERVE_INSTALL_STATE=1
+      fi
     else
-      warn "Refusing to remove an unexpected qbzd binary path: $binary_path"
-      PRESERVE_INSTALL_STATE=1
+      log "FXRoute-owned qbzd binary is already absent"
     fi
   fi
   systemctl --user daemon-reload >/dev/null 2>&1 || true
@@ -681,6 +886,11 @@ preserve_provider_data() {
 
 remove_owned_streaming_components() {
   local preserve_before=0
+  local preserve_at_start="$PRESERVE_INSTALL_STATE"
+
+  if [[ $preserve_at_start -eq 1 ]]; then
+    PROVIDER_LAN_CLEANUP_DEFERRED=1
+  fi
 
   if ! restore_qbzd_volume_mode_if_owned; then
     warn "Skipping qbzd binary/service removal until its FXRoute volume-mode change can be restored"
@@ -718,7 +928,113 @@ remove_mdns_guard_table_direct() {
     grep -Fq 'table inet fxroute_mdnsguard' <<<"$ruleset" && return 1
     return 0
   fi
-  "${sudo_cmd[@]}" "$nft_path" delete table inet fxroute_mdnsguard >/dev/null 2>&1
+  mdns_guard_table_matches "${sudo_cmd[@]}" || return 1
+  if ! "${sudo_cmd[@]}" "$nft_path" delete table inet fxroute_mdnsguard >/dev/null 2>&1; then
+    return 1
+  fi
+  if "${sudo_cmd[@]}" "$nft_path" list table inet fxroute_mdnsguard >/dev/null 2>&1; then
+    return 1
+  fi
+  ruleset="$("${sudo_cmd[@]}" "$nft_path" list ruleset 2>/dev/null)" || return 1
+  grep -Fq 'table inet fxroute_mdnsguard' <<<"$ruleset" && return 1
+  return 0
+}
+
+mdns_guard_table_matches() {
+  local sudo_cmd=("$@")
+  local nft_path=""
+  local expected_uid=""
+  local script_path="/usr/local/sbin/fxroute-mdns-guard.sh"
+
+  nft_path="$(command -v nft 2>/dev/null || true)"
+  [[ -n "$nft_path" ]] || return 1
+  expected_uid="$(read_install_state_field "lan_comfort.mdns_guard_target_uid" 2>/dev/null || true)"
+  if [[ -z "$expected_uid" && -f "$script_path" && ! -L "$script_path" ]]; then
+    expected_uid="$(sed -n 's/^USER_ID="\([0-9][0-9]*\)"$/\1/p' "$script_path")"
+  fi
+  [[ "$expected_uid" =~ ^[0-9]+$ ]] || return 1
+  "${sudo_cmd[@]}" "$nft_path" list table inet fxroute_mdnsguard 2>/dev/null \
+    | awk -v uid="$expected_uid" '
+      BEGIN {
+        v4 = "^[[:space:]]*meta skuid[[:space:]]+" uid "[[:space:]]+ip daddr 224\\.0\\.0\\.251[[:space:]]+udp dport 5353[[:space:]]+counter[[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+[[:space:]]+drop[[:space:]]+comment[[:space:]]+\"Block desktop user-space mDNS v4 to keep Avahi host advertisement stable\"[[:space:]]*$"
+        v6 = "^[[:space:]]*meta skuid[[:space:]]+" uid "[[:space:]]+ip6 daddr ff02::fb[[:space:]]+udp dport 5353[[:space:]]+counter[[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+[[:space:]]+drop[[:space:]]+comment[[:space:]]+\"Block desktop user-space mDNS v6 to keep Avahi host advertisement stable\"[[:space:]]*$"
+      }
+      /^[[:space:]]*table inet fxroute_mdnsguard[[:space:]]*\{[[:space:]]*$/ { tables++; next }
+      /^[[:space:]]*chain output[[:space:]]*\{[[:space:]]*$/ { chains++; next }
+      /^[[:space:]]*type filter hook output priority[[:space:]]+[^;]+;[[:space:]]*policy accept;[[:space:]]*$/ { next }
+      $0 ~ v4 { v4_rules++; next }
+      $0 ~ v6 { v6_rules++; next }
+      /^[[:space:]]*\}[[:space:]]*$/ || /^[[:space:]]*$/ { next }
+      { invalid++; next }
+      END { exit !(tables == 1 && chains == 1 && v4_rules == 1 && v6_rules == 1 && invalid == 0) }
+    '
+}
+
+mdns_guard_artifacts_match() {
+  local script_path="/usr/local/sbin/fxroute-mdns-guard.sh"
+  local service_path="/etc/systemd/system/fxroute-mdns-guard.service"
+  local timer_path="/etc/systemd/system/fxroute-mdns-guard.timer"
+  local script_sha256=""
+  local service_sha256=""
+  local timer_sha256=""
+  local actual_sha256=""
+
+  script_sha256="$(read_install_state_field "lan_comfort.mdns_guard_script_sha256" 2>/dev/null || true)"
+  service_sha256="$(read_install_state_field "lan_comfort.mdns_guard_service_sha256" 2>/dev/null || true)"
+  timer_sha256="$(read_install_state_field "lan_comfort.mdns_guard_timer_sha256" 2>/dev/null || true)"
+
+  if [[ -e "$script_path" || -L "$script_path" ]]; then
+    [[ -f "$script_path" && ! -L "$script_path" ]] || return 1
+    [[ -n "$script_sha256" ]] || return 1
+    actual_sha256="$(sha256sum "$script_path" | awk '{print $1}')" || return 1
+    [[ "$actual_sha256" == "$script_sha256" ]] || return 1
+  fi
+  if [[ -e "$service_path" || -L "$service_path" ]]; then
+    [[ -f "$service_path" && ! -L "$service_path" ]] || return 1
+    [[ -n "$service_sha256" ]] || return 1
+    actual_sha256="$(sha256sum "$service_path" | awk '{print $1}')" || return 1
+    [[ "$actual_sha256" == "$service_sha256" ]] || return 1
+  fi
+  if [[ -e "$timer_path" || -L "$timer_path" ]]; then
+    [[ -f "$timer_path" && ! -L "$timer_path" ]] || return 1
+    [[ -n "$timer_sha256" ]] || return 1
+    actual_sha256="$(sha256sum "$timer_path" | awk '{print $1}')" || return 1
+    [[ "$actual_sha256" == "$timer_sha256" ]] || return 1
+  fi
+  return 0
+}
+
+legacy_mdns_guard_artifacts_match() {
+  local script_path="/usr/local/sbin/fxroute-mdns-guard.sh"
+  local service_path="/etc/systemd/system/fxroute-mdns-guard.service"
+  local timer_path="/etc/systemd/system/fxroute-mdns-guard.timer"
+
+  if [[ -e "$script_path" || -L "$script_path" ]] \
+    && { [[ -f "$script_path" && ! -L "$script_path" ]] \
+      && grep -Fq '#!/usr/bin/env bash' "$script_path" \
+      && grep -Fq 'TABLE="fxroute_mdnsguard"' "$script_path" \
+      && grep -Fq 'meta skuid' "$script_path" \
+      && grep -Fq 'case "${1:-apply}"' "$script_path"; }; then
+    :
+  elif [[ -e "$script_path" || -L "$script_path" ]]; then
+    return 1
+  fi
+  if [[ -e "$service_path" || -L "$service_path" ]] \
+    && { [[ -f "$service_path" && ! -L "$service_path" ]] \
+      && grep -Fq 'ExecStart=/usr/local/sbin/fxroute-mdns-guard.sh apply' "$service_path" \
+      && grep -Fq 'ExecReload=/usr/local/sbin/fxroute-mdns-guard.sh apply' "$service_path"; }; then
+    :
+  elif [[ -e "$service_path" || -L "$service_path" ]]; then
+    return 1
+  fi
+  if [[ -e "$timer_path" || -L "$timer_path" ]] \
+    && { [[ -f "$timer_path" && ! -L "$timer_path" ]] \
+      && grep -Fq 'Unit=fxroute-mdns-guard.service' "$timer_path"; }; then
+    :
+  elif [[ -e "$timer_path" || -L "$timer_path" ]]; then
+    return 1
+  fi
+  return 0
 }
 
 remove_optional_mdns_guard() {
@@ -728,21 +1044,54 @@ remove_optional_mdns_guard() {
   local script_path="/usr/local/sbin/fxroute-mdns-guard.sh"
   local marker_present=0
   local guard_owned=""
+  local legacy_owned=0
+  local timer_was_active=0
+  local timer_was_enabled=0
+  local timer_loaded=0
+  local service_loaded=0
+  local unit_status=0
 
   if [[ -e "$service_path" || -L "$service_path" \
     || -e "$timer_path" || -L "$timer_path" \
     || -e "$script_path" || -L "$script_path" ]]; then
     marker_present=1
-  elif ! command -v nft >/dev/null 2>&1; then
-    return 0
   fi
 
-  guard_owned="$(read_install_state_field "lan_comfort.mdns_guard_owned_by_fxroute" 2>/dev/null || true)"
-  if [[ -z "$guard_owned" ]]; then
-    guard_owned="$(read_install_state_field "lan_comfort.mdns_guard_enabled" 2>/dev/null || true)"
+  if guard_owned="$(read_install_state_field "lan_comfort.mdns_guard_owned_by_fxroute" 2>/dev/null)"; then
+    :
+  elif [[ "$(read_install_state_field "lan_comfort.mdns_guard_enabled" 2>/dev/null || true)" == "true" ]]; then
+    guard_owned="true"
+    legacy_owned=1
+  else
+    guard_owned=""
+  fi
+  if [[ "$guard_owned" == "true" \
+    && ( -z "$(read_install_state_field "lan_comfort.mdns_guard_script_sha256" 2>/dev/null || true)" \
+      || -z "$(read_install_state_field "lan_comfort.mdns_guard_service_sha256" 2>/dev/null || true)" \
+      || -z "$(read_install_state_field "lan_comfort.mdns_guard_timer_sha256" 2>/dev/null || true)" ) ]]; then
+    legacy_owned=1
   fi
   if [[ "$guard_owned" != "true" ]]; then
+    if [[ "$guard_owned" == "false" \
+      && "$(read_install_state_field "lan_comfort.mdns_guard_enabled" 2>/dev/null || true)" == "true" ]]; then
+      warn "Preserving install state for an active mDNS guard without verified FXRoute ownership"
+      PRESERVE_INSTALL_STATE=1
+      PROVIDER_LAN_CLEANUP_DEFERRED=1
+    fi
     log "Preserving mDNS guard artifacts without FXRoute ownership"
+    return 0
+  fi
+  if [[ $legacy_owned -eq 1 ]]; then
+    if ! legacy_mdns_guard_artifacts_match; then
+      warn "Cannot safely migrate legacy mDNS guard ownership; keeping install state"
+      PRESERVE_INSTALL_STATE=1
+      PROVIDER_LAN_CLEANUP_DEFERRED=1
+      return 0
+    fi
+  elif ! mdns_guard_artifacts_match; then
+    warn "Preserving mDNS guard artifacts whose content no longer matches FXRoute"
+    PRESERVE_INSTALL_STATE=1
+    PROVIDER_LAN_CLEANUP_DEFERRED=1
     return 0
   fi
 
@@ -756,27 +1105,113 @@ remove_optional_mdns_guard() {
     return 0
   fi
 
+  if [[ $marker_present -eq 1 || "$guard_owned" == "true" ]]; then
+    if systemd_unit_is_loaded fxroute-mdns-guard.timer "${sudo_cmd[@]}"; then
+      timer_loaded=1
+    else
+      unit_status=$?
+      if [[ $unit_status -eq 2 ]]; then
+        warn "Could not verify a loaded FXRoute mDNS guard timer"
+        PRESERVE_INSTALL_STATE=1
+        PROVIDER_LAN_CLEANUP_DEFERRED=1
+        return 0
+      fi
+    fi
+    if [[ $timer_loaded -eq 1 ]] && systemctl is-active --quiet fxroute-mdns-guard.timer; then
+      timer_was_active=1
+    fi
+    if [[ $timer_loaded -eq 1 ]] && systemctl is-enabled --quiet fxroute-mdns-guard.timer; then
+      timer_was_enabled=1
+    fi
+    if systemd_unit_is_loaded fxroute-mdns-guard.service "${sudo_cmd[@]}"; then
+      service_loaded=1
+    else
+      unit_status=$?
+      if [[ $unit_status -eq 2 ]]; then
+        warn "Could not verify a loaded FXRoute mDNS guard service"
+        PRESERVE_INSTALL_STATE=1
+        PROVIDER_LAN_CLEANUP_DEFERRED=1
+        return 0
+      fi
+    fi
+    if [[ $timer_loaded -eq 1 ]] \
+      && ! systemd_unit_fragment_matches fxroute-mdns-guard.timer "$timer_path" "${sudo_cmd[@]}"; then
+      warn "Refusing to stop the loaded FXRoute mDNS guard timer from a foreign unit path"
+      PRESERVE_INSTALL_STATE=1
+      PROVIDER_LAN_CLEANUP_DEFERRED=1
+      return 0
+    fi
+    if [[ $service_loaded -eq 1 ]] \
+      && ! systemd_unit_fragment_matches fxroute-mdns-guard.service "$service_path" "${sudo_cmd[@]}"; then
+      warn "Refusing to stop the loaded FXRoute mDNS guard service from a foreign unit path"
+      PRESERVE_INSTALL_STATE=1
+      PROVIDER_LAN_CLEANUP_DEFERRED=1
+      return 0
+    fi
+    if [[ -e "$timer_path" || -L "$timer_path" || $timer_loaded -eq 1 ]] \
+      && ! "${sudo_cmd[@]}" systemctl disable --now fxroute-mdns-guard.timer >/dev/null 2>&1; then
+        warn "Could not stop the FXRoute mDNS guard timer"
+        if [[ $timer_was_enabled -eq 1 ]]; then
+          "${sudo_cmd[@]}" systemctl enable fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+        fi
+        if [[ $timer_was_active -eq 1 ]]; then
+          "${sudo_cmd[@]}" systemctl start fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+        fi
+        PRESERVE_INSTALL_STATE=1
+        PROVIDER_LAN_CLEANUP_DEFERRED=1
+        return 0
+    fi
+    if [[ -e "$service_path" || -L "$service_path" || $service_loaded -eq 1 ]] \
+      && ! "${sudo_cmd[@]}" systemctl disable --now fxroute-mdns-guard.service >/dev/null 2>&1; then
+        warn "Could not stop the FXRoute mDNS guard service"
+        if [[ $timer_was_enabled -eq 1 ]]; then
+          "${sudo_cmd[@]}" systemctl enable fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+        fi
+        if [[ $timer_was_active -eq 1 ]]; then
+          "${sudo_cmd[@]}" systemctl start fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+        fi
+        PRESERVE_INSTALL_STATE=1
+        PROVIDER_LAN_CLEANUP_DEFERRED=1
+      return 0
+    fi
+  fi
   if [[ $marker_present -eq 0 ]]; then
+    if ! command -v nft >/dev/null 2>&1; then
+      warn "Cannot verify the FXRoute mDNS guard table because nft is unavailable"
+      PRESERVE_INSTALL_STATE=1
+      PROVIDER_LAN_CLEANUP_DEFERRED=1
+      return 0
+    fi
     if ! remove_mdns_guard_table_direct "${sudo_cmd[@]}"; then
       warn "Could not verify or remove the FXRoute mDNS guard table"
       PRESERVE_INSTALL_STATE=1
+      PROVIDER_LAN_CLEANUP_DEFERRED=1
       return 0
     fi
     return 0
   fi
-
-  "${sudo_cmd[@]}" systemctl disable --now fxroute-mdns-guard.timer fxroute-mdns-guard.service >/dev/null 2>&1 || true
-  if [[ -x "$script_path" ]]; then
-    "${sudo_cmd[@]}" "$script_path" remove >/dev/null 2>&1 || true
-  fi
   if ! remove_mdns_guard_table_direct "${sudo_cmd[@]}"; then
     warn "Could not remove the FXRoute mDNS guard rules"
+    if [[ $timer_was_enabled -eq 1 ]]; then
+      "${sudo_cmd[@]}" systemctl enable fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+    fi
+    if [[ $timer_was_active -eq 1 ]]; then
+      "${sudo_cmd[@]}" systemctl start fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+    fi
     PRESERVE_INSTALL_STATE=1
+    PROVIDER_LAN_CLEANUP_DEFERRED=1
     return 0
   fi
   if ! "${sudo_cmd[@]}" rm -f "$service_path" "$timer_path" "$script_path"; then
     warn "Could not remove the FXRoute mDNS guard files"
+    if [[ $timer_was_enabled -eq 1 ]]; then
+      "${sudo_cmd[@]}" systemctl enable fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+    fi
+    if [[ $timer_was_active -eq 1 ]]; then
+      "${sudo_cmd[@]}" systemctl start fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+    fi
     PRESERVE_INSTALL_STATE=1
+    PROVIDER_LAN_CLEANUP_DEFERRED=1
     return 0
   fi
   "${sudo_cmd[@]}" systemctl daemon-reload >/dev/null 2>&1 || true
@@ -838,6 +1273,42 @@ firewalld_rule_service() {
   esac
 }
 
+firewalld_rule_rich_rule() {
+  local rule_id="$1"
+  local port=""
+  local port_number=""
+  local protocol=""
+
+  port="$(firewall_rule_port "$rule_id")" || return 1
+  port_number="${port%/*}"
+  protocol="${port#*/}"
+  printf 'rule priority="100" port port="%s" protocol="%s" accept\n' "$port_number" "$protocol"
+}
+
+firewalld_query_status() {
+  local status=0
+
+  if "$@" >/dev/null 2>&1; then
+    return 0
+  else
+    status=$?
+  fi
+  [[ $status -eq 1 ]] && return 1
+  return 2
+}
+
+firewalld_legacy_rich_rule() {
+  local rule_id="$1"
+  local port=""
+  local port_number=""
+  local protocol=""
+
+  port="$(firewall_rule_port "$rule_id")" || return 1
+  port_number="${port%/*}"
+  protocol="${port#*/}"
+  printf 'rule priority="-100" port port="%s" protocol="%s" accept\n' "$port_number" "$protocol"
+}
+
 legacy_firewalld_baseline_field() {
   case "$1" in
     http_80_tcp) printf 'http_was_allowed_before\n' ;;
@@ -869,29 +1340,40 @@ firewalld_rule_is_owned() {
   esac
 }
 
-ufw_legacy_rule_has_fxroute_comment() {
+legacy_firewalld_cleanup_uncertain() {
   local rule_id="$1"
+  local nested=""
+  local legacy_field=""
+
+  firewall_legacy_state_present || return 1
+  nested="$(read_install_state_field "lan_comfort.firewalld_owned_rules.${rule_id}" 2>/dev/null || true)"
+  [[ "$nested" != "true" ]] || return 1
+  legacy_field="$(legacy_firewall_rule_field "$rule_id" 2>/dev/null || true)"
+  [[ -n "$legacy_field" ]] || return 1
+  [[ "$(read_install_state_field "lan_comfort.${legacy_field}" 2>/dev/null || true)" == "true" ]]
+}
+
+ufw_rule_line() {
+  local rule_id="$1"
+  local port=""
   local added=""
   local sudo_cmd=()
 
-  firewall_cleanup_sudo || return 1
+  port="$(firewall_rule_port "$rule_id")" || return 1
+  firewall_cleanup_sudo || return 2
   [[ ${EUID:-$(id -u)} -eq 0 ]] || sudo_cmd=(sudo)
-  command -v ufw >/dev/null 2>&1 || return 1
-  added="$("${sudo_cmd[@]}" ufw show added 2>/dev/null || true)"
-  case "$rule_id" in
-    http_80_tcp) grep -Eqi '80/tcp.*(FXRoute|port-80)' <<<"$added" ;;
-    https_443_tcp) grep -Eqi '443/tcp.*(FXRoute|port-443)' <<<"$added" ;;
-    mdns_5353_udp) grep -Eqi '5353/udp.*(FXRoute|Qobuz Connect|\.local LAN|spotifyd)' <<<"$added" ;;
-    fxroute_http_8000_tcp) grep -Eqi '8000/tcp.*FXRoute' <<<"$added" ;;
-    spotifyd_zeroconf_4444_tcp) grep -Eqi '4444/tcp.*spotifyd' <<<"$added" ;;
-    *) return 1 ;;
-  esac
+  command -v ufw >/dev/null 2>&1 || return 2
+  if ! added="$("${sudo_cmd[@]}" ufw show added 2>/dev/null)"; then
+    return 2
+  fi
+  grep -Ei "^ufw allow ${port}([[:space:]]|$)" <<<"$added" | head -n1 || true
 }
 
 ufw_rule_is_owned() {
   local rule_id="$1"
   local nested=""
   local legacy_field=""
+  local ownership_state=""
 
   nested="$(read_install_state_field "lan_comfort.ufw_owned_rules.${rule_id}" 2>/dev/null || true)"
   case "$nested" in
@@ -903,7 +1385,65 @@ ufw_rule_is_owned() {
   legacy_field="$(legacy_ufw_rule_field "$rule_id" 2>/dev/null || true)"
   [[ -n "$legacy_field" ]] || return 1
   [[ "$(read_install_state_field "lan_comfort.${legacy_field}" 2>/dev/null || true)" == "true" ]] || return 1
-  ufw_legacy_rule_has_fxroute_comment "$rule_id"
+  ownership_state="$(ufw_rule_ownership_state "$rule_id")" || return 2
+  case "$ownership_state" in
+    owned) return 0 ;;
+    absent) return 1 ;;
+    foreign) return 3 ;;
+    *) return 2 ;;
+  esac
+}
+
+ufw_rule_ownership_state() {
+  local rule_id="$1"
+  local rule_line=""
+  local comment_field=""
+  local port=""
+
+  port="$(firewall_rule_port "$rule_id")" || return 1
+  rule_line="$(ufw_rule_line "$rule_id")" || return $?
+  [[ -n "$rule_line" ]] || {
+    printf 'absent\n'
+    return 0
+  }
+  comment_field="${rule_line#* comment }"
+  [[ "$comment_field" != "$rule_line" ]] || {
+    printf 'foreign\n'
+    return 0
+  }
+  case "$rule_id" in
+    http_80_tcp)
+      case "$comment_field" in
+        "'FXRoute port-80 LAN access'"|"\"FXRoute port-80 LAN access\""|"FXRoute port-80 LAN access") printf 'owned\n' ;;
+        *) printf 'foreign\n' ;;
+      esac
+      ;;
+    https_443_tcp)
+      case "$comment_field" in
+        "'FXRoute port-443 LAN access'"|"\"FXRoute port-443 LAN access\""|"FXRoute port-443 LAN access") printf 'owned\n' ;;
+        *) printf 'foreign\n' ;;
+      esac
+      ;;
+    mdns_5353_udp)
+      case "$comment_field" in
+        "'spotifyd Zeroconf mDNS discovery'"|"\"spotifyd Zeroconf mDNS discovery\""|"spotifyd Zeroconf mDNS discovery"|"'Qobuz Connect discovery'"|"\"Qobuz Connect discovery\""|"Qobuz Connect discovery"|"'.local LAN access'"|"\".local LAN access\""|".local LAN access") printf 'owned\n' ;;
+        *) printf 'foreign\n' ;;
+      esac
+      ;;
+    fxroute_http_8000_tcp)
+      case "$comment_field" in
+        "'FXRoute HTTP LAN access'"|"\"FXRoute HTTP LAN access\""|"FXRoute HTTP LAN access") printf 'owned\n' ;;
+        *) printf 'foreign\n' ;;
+      esac
+      ;;
+    spotifyd_zeroconf_4444_tcp)
+      case "$comment_field" in
+        "'spotifyd Zeroconf TCP authentication'"|"\"spotifyd Zeroconf TCP authentication\""|"spotifyd Zeroconf TCP authentication") printf 'owned\n' ;;
+        *) printf 'foreign\n' ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 remove_owned_firewalld_rule() {
@@ -913,23 +1453,57 @@ remove_owned_firewalld_rule() {
   local sudo_cmd=()
   local firewall_cmd=""
   local firewall_offline_cmd=""
-  local runtime_present=0
-  local permanent_present=0
   local legacy_owned=0
   local service=""
   local runtime_service_present=0
   local permanent_service_present=0
+  local rich_rule=""
+  local legacy_rich_rule=""
+  local runtime_rich_present=0
+  local permanent_rich_present=0
+  local runtime_legacy_rich_present=0
+  local permanent_legacy_rich_present=0
+  local offline_rich_present=0
+  local query_status=0
+  local legacy_port_owned=0
+  local runtime_port_present=0
+  local permanent_port_present=0
+  local offline_port_present=0
+  local rule_format=""
+  local ownership_schema=""
+  local nested_ownership=""
 
-  firewalld_rule_is_owned "$rule_id" || return 0
+  if ! firewalld_rule_is_owned "$rule_id"; then
+    if legacy_firewalld_cleanup_uncertain "$rule_id"; then
+      warn "Cannot safely migrate legacy firewalld ownership for '$rule_id'; keeping install state"
+      PRESERVE_INSTALL_STATE=1
+    fi
+    return 0
+  fi
   port="$(firewall_rule_port "$rule_id")" || return 0
+  rich_rule="$(firewalld_rule_rich_rule "$rule_id")" || return 0
+  legacy_rich_rule="$(firewalld_legacy_rich_rule "$rule_id")" || return 0
+  rule_format="$(read_install_state_field "lan_comfort.firewalld_rule_format" 2>/dev/null || true)"
+  ownership_schema="$(read_install_state_field "lan_comfort.firewall_ownership_schema" 2>/dev/null || true)"
+  nested_ownership="$(read_install_state_field "lan_comfort.firewalld_owned_rules.${rule_id}" 2>/dev/null || true)"
+  if [[ "$nested_ownership" == "true" \
+    && ( "$rule_format" == "legacy-port" || ( -z "$rule_format" && "$ownership_schema" == "2" ) ) ]]; then
+    legacy_port_owned=1
+  fi
   if firewall_legacy_state_present \
-    && [[ "$(read_install_state_field "lan_comfort.firewalld_owned_rules.${rule_id}" 2>/dev/null || true)" == "false" || -z "$(read_install_state_field "lan_comfort.firewalld_owned_rules.${rule_id}" 2>/dev/null || true)" ]] \
+    && [[ "$nested_ownership" == "false" || -z "$nested_ownership" ]] \
     && firewalld_legacy_rule_is_owned "$rule_id"; then
     legacy_owned=1
     service="$(firewalld_rule_service "$rule_id")"
   fi
 
-  if [[ $legacy_owned -eq 1 ]]; then
+  if [[ $legacy_port_owned -eq 1 ]]; then
+    if ! confirm "FXRoute opened firewalld port '$port' for $purpose. Remove that firewall opening?"; then
+      warn "Keeping firewalld port '$port'"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  elif [[ $legacy_owned -eq 1 ]]; then
     if ! confirm "FXRoute opened firewalld service '$service' for $purpose. Remove that firewall opening?"; then
       warn "Keeping firewalld service '$service'"
       PRESERVE_INSTALL_STATE=1
@@ -950,13 +1524,94 @@ remove_owned_firewalld_rule() {
   firewall_cmd="$(firewall_cmd_path || true)"
   firewall_offline_cmd="$(firewall_offline_cmd_path || true)"
 
+  if [[ $legacy_port_owned -eq 1 ]]; then
+    if [[ -n "$firewall_cmd" ]] && "${sudo_cmd[@]}" "$firewall_cmd" --state >/dev/null 2>&1; then
+      if firewalld_query_status "${sudo_cmd[@]}" "$firewall_cmd" --query-port="$port"; then
+        runtime_port_present=1
+      else
+        query_status=$?
+        if [[ $query_status -ne 1 ]]; then
+          warn "Could not verify runtime legacy firewalld port '$port'"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+      fi
+      if firewalld_query_status "${sudo_cmd[@]}" "$firewall_cmd" --permanent --query-port="$port"; then
+        permanent_port_present=1
+      else
+        query_status=$?
+        if [[ $query_status -ne 1 ]]; then
+          warn "Could not verify permanent legacy firewalld port '$port'"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+      fi
+      if [[ $runtime_port_present -eq 1 ]] \
+        && ! "${sudo_cmd[@]}" "$firewall_cmd" --remove-port="$port" >/dev/null 2>&1; then
+        warn "Failed to remove runtime legacy firewalld port '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+      if [[ $permanent_port_present -eq 1 ]] \
+        && ! "${sudo_cmd[@]}" "$firewall_cmd" --permanent --remove-port="$port" >/dev/null 2>&1; then
+        warn "Failed to remove permanent legacy firewalld port '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+      if [[ $runtime_port_present -eq 1 || $permanent_port_present -eq 1 ]]; then
+        if ! "${sudo_cmd[@]}" "$firewall_cmd" --reload >/dev/null 2>&1; then
+          warn "Removed legacy firewalld port '$port', but reload failed"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+        log "Removed legacy FXRoute-owned firewalld port '$port'"
+        return 0
+      fi
+    fi
+    if [[ -n "$firewall_offline_cmd" ]]; then
+      if firewalld_query_status "${sudo_cmd[@]}" "$firewall_offline_cmd" --query-port="$port"; then
+        offline_port_present=1
+      else
+        query_status=$?
+        if [[ $query_status -ne 1 ]]; then
+          warn "Could not verify offline legacy firewalld port '$port'"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+      fi
+      if [[ $offline_port_present -eq 1 ]]; then
+        if ! "${sudo_cmd[@]}" "$firewall_offline_cmd" --remove-port="$port" >/dev/null 2>&1; then
+          warn "Failed to remove legacy firewalld port '$port' from offline config"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+        log "Removed legacy FXRoute-owned firewalld port '$port' from offline config"
+        return 0
+      fi
+    fi
+  fi
+
   if [[ $legacy_owned -eq 1 ]]; then
     if [[ -n "$firewall_cmd" ]] && "${sudo_cmd[@]}" "$firewall_cmd" --state >/dev/null 2>&1; then
-      if "${sudo_cmd[@]}" "$firewall_cmd" --query-service="$service" >/dev/null 2>&1; then
+      if firewalld_query_status "${sudo_cmd[@]}" "$firewall_cmd" --query-service="$service"; then
         runtime_service_present=1
+      else
+        query_status=$?
+        if [[ $query_status -ne 1 ]]; then
+          warn "Could not verify runtime firewalld service '$service'"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
       fi
-      if "${sudo_cmd[@]}" "$firewall_cmd" --permanent --query-service="$service" >/dev/null 2>&1; then
+      if firewalld_query_status "${sudo_cmd[@]}" "$firewall_cmd" --permanent --query-service="$service"; then
         permanent_service_present=1
+      else
+        query_status=$?
+        if [[ $query_status -ne 1 ]]; then
+          warn "Could not verify permanent firewalld service '$service'"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
       fi
       if [[ $runtime_service_present -eq 1 ]]; then
         if ! "${sudo_cmd[@]}" "$firewall_cmd" --remove-service="$service" >/dev/null 2>&1; then
@@ -985,7 +1640,15 @@ remove_owned_firewalld_rule() {
       return 0
     fi
     if [[ -n "$firewall_offline_cmd" ]]; then
-      if ! "${sudo_cmd[@]}" "$firewall_offline_cmd" --query-service="$service" >/dev/null 2>&1; then
+      if firewalld_query_status "${sudo_cmd[@]}" "$firewall_offline_cmd" --query-service="$service"; then
+        :
+      else
+        query_status=$?
+        if [[ $query_status -ne 1 ]]; then
+          warn "Could not verify legacy offline firewalld service '$service'"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
         log "Legacy FXRoute-owned firewalld service '$service' is already absent from offline config"
         return 0
       fi
@@ -1003,50 +1666,164 @@ remove_owned_firewalld_rule() {
   fi
 
   if [[ -n "$firewall_cmd" ]] && "${sudo_cmd[@]}" "$firewall_cmd" --state >/dev/null 2>&1; then
-    if "${sudo_cmd[@]}" "$firewall_cmd" --query-port="$port" >/dev/null 2>&1; then
-      runtime_present=1
-    fi
-    if "${sudo_cmd[@]}" "$firewall_cmd" --permanent --query-port="$port" >/dev/null 2>&1; then
-      permanent_present=1
-    fi
-    if [[ $runtime_present -eq 1 ]]; then
-      if ! "${sudo_cmd[@]}" "$firewall_cmd" --remove-port="$port" >/dev/null 2>&1; then
-        warn "Failed to remove runtime firewalld port '$port'"
-        PRESERVE_INSTALL_STATE=1
-        return 0
-      fi
-    fi
-    if [[ $permanent_present -eq 1 ]]; then
-      if ! "${sudo_cmd[@]}" "$firewall_cmd" --permanent --remove-port="$port" >/dev/null 2>&1; then
-        warn "Failed to remove permanent firewalld port '$port'"
-        PRESERVE_INSTALL_STATE=1
-        return 0
-      fi
-    fi
-    if [[ $runtime_present -eq 1 || $permanent_present -eq 1 ]]; then
-      if ! "${sudo_cmd[@]}" "$firewall_cmd" --reload >/dev/null 2>&1; then
-        warn "Removed firewalld port '$port', but reload failed"
-        PRESERVE_INSTALL_STATE=1
-        return 0
-      fi
-      log "Removed FXRoute-owned firewalld port '$port'"
+    if firewalld_query_status "${sudo_cmd[@]}" "$firewall_cmd" --query-rich-rule="$rich_rule"; then
+      runtime_rich_present=1
     else
-      log "FXRoute-owned firewalld port '$port' is already absent"
+      query_status=$?
+      if [[ $query_status -ne 1 ]]; then
+        warn "Could not verify runtime firewalld rule for '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
     fi
+    if firewalld_query_status "${sudo_cmd[@]}" "$firewall_cmd" --permanent --query-rich-rule="$rich_rule"; then
+      permanent_rich_present=1
+    else
+      query_status=$?
+      if [[ $query_status -ne 1 ]]; then
+        warn "Could not verify permanent firewalld rule for '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    fi
+    if firewalld_query_status "${sudo_cmd[@]}" "$firewall_cmd" --query-rich-rule="$legacy_rich_rule"; then
+      runtime_legacy_rich_present=1
+    else
+      query_status=$?
+      if [[ $query_status -ne 1 ]]; then
+        warn "Could not verify legacy runtime firewalld rule for '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    fi
+    if firewalld_query_status "${sudo_cmd[@]}" "$firewall_cmd" --permanent --query-rich-rule="$legacy_rich_rule"; then
+      permanent_legacy_rich_present=1
+    else
+      query_status=$?
+      if [[ $query_status -ne 1 ]]; then
+        warn "Could not verify legacy permanent firewalld rule for '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    fi
+    if [[ $runtime_rich_present -eq 0 && $permanent_rich_present -eq 0 \
+      && $runtime_legacy_rich_present -eq 0 && $permanent_legacy_rich_present -eq 0 ]]; then
+      if firewalld_query_status "${sudo_cmd[@]}" "$firewall_cmd" --query-port="$port"; then
+        warn "Refusing to remove firewalld port '$port' because its current rule is not FXRoute-identifiable"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      else
+        query_status=$?
+        if [[ $query_status -ne 1 ]]; then
+          warn "Could not verify runtime firewalld port '$port'"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+      fi
+      if firewalld_query_status "${sudo_cmd[@]}" "$firewall_cmd" --permanent --query-port="$port"; then
+        warn "Refusing to remove firewalld port '$port' because its current rule is not FXRoute-identifiable"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      else
+        query_status=$?
+        if [[ $query_status -ne 1 ]]; then
+          warn "Could not verify permanent firewalld port '$port'"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+      fi
+      log "FXRoute-owned firewalld rule for '$port' is already absent"
+      return 0
+    fi
+    if [[ $runtime_rich_present -eq 1 ]]; then
+      if ! "${sudo_cmd[@]}" "$firewall_cmd" --remove-rich-rule="$rich_rule" >/dev/null 2>&1; then
+        warn "Failed to remove runtime firewalld rule for '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    fi
+    if [[ $permanent_rich_present -eq 1 ]]; then
+      if ! "${sudo_cmd[@]}" "$firewall_cmd" --permanent --remove-rich-rule="$rich_rule" >/dev/null 2>&1; then
+        warn "Failed to remove permanent firewalld rule for '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    fi
+    if [[ $runtime_legacy_rich_present -eq 1 ]]; then
+      if ! "${sudo_cmd[@]}" "$firewall_cmd" --remove-rich-rule="$legacy_rich_rule" >/dev/null 2>&1; then
+        warn "Failed to remove the legacy runtime firewalld rule for '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    fi
+    if [[ $permanent_legacy_rich_present -eq 1 ]]; then
+      if ! "${sudo_cmd[@]}" "$firewall_cmd" --permanent --remove-rich-rule="$legacy_rich_rule" >/dev/null 2>&1; then
+        warn "Failed to remove the legacy permanent firewalld rule for '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    fi
+    if ! "${sudo_cmd[@]}" "$firewall_cmd" --reload >/dev/null 2>&1; then
+      warn "Removed firewalld rule for '$port', but reload failed"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    log "Removed FXRoute-owned firewalld rule for '$port'"
     return 0
   fi
 
   if [[ -n "$firewall_offline_cmd" ]]; then
-    if ! "${sudo_cmd[@]}" "$firewall_offline_cmd" --query-port="$port" >/dev/null 2>&1; then
-      log "FXRoute-owned firewalld port '$port' is already absent from offline config"
+    if firewalld_query_status "${sudo_cmd[@]}" "$firewall_offline_cmd" --query-rich-rule="$rich_rule"; then
+      offline_rich_present=1
+    else
+      query_status=$?
+      if [[ $query_status -ne 1 ]]; then
+        warn "Could not verify offline firewalld rule for '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    fi
+    if firewalld_query_status "${sudo_cmd[@]}" "$firewall_offline_cmd" --query-rich-rule="$legacy_rich_rule"; then
+      offline_rich_present=1
+    else
+      query_status=$?
+      if [[ $query_status -ne 1 ]]; then
+        warn "Could not verify legacy offline firewalld rule for '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    fi
+    if [[ $offline_rich_present -eq 1 ]]; then
+      if firewalld_query_status "${sudo_cmd[@]}" "$firewall_offline_cmd" --query-rich-rule="$rich_rule"; then
+        if ! "${sudo_cmd[@]}" "$firewall_offline_cmd" --remove-rich-rule="$rich_rule" >/dev/null 2>&1; then
+          warn "Failed to remove firewalld rule for '$port' from offline config"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+      fi
+      if firewalld_query_status "${sudo_cmd[@]}" "$firewall_offline_cmd" --query-rich-rule="$legacy_rich_rule"; then
+        if ! "${sudo_cmd[@]}" "$firewall_offline_cmd" --remove-rich-rule="$legacy_rich_rule" >/dev/null 2>&1; then
+          warn "Failed to remove legacy firewalld rule for '$port' from offline config"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+      fi
+      log "Removed FXRoute-owned firewalld rule for '$port' from offline config"
       return 0
     fi
-    if ! "${sudo_cmd[@]}" "$firewall_offline_cmd" --remove-port="$port" >/dev/null 2>&1; then
-      warn "Failed to remove firewalld port '$port' from offline config"
+    if firewalld_query_status "${sudo_cmd[@]}" "$firewall_offline_cmd" --query-port="$port"; then
+      warn "Refusing to remove offline firewalld port '$port' because its current rule is not FXRoute-identifiable"
       PRESERVE_INSTALL_STATE=1
       return 0
+    else
+      query_status=$?
+      if [[ $query_status -ne 1 ]]; then
+        warn "Could not verify offline firewalld port '$port'"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
     fi
-    log "Removed FXRoute-owned firewalld port '$port' from offline config"
+    log "FXRoute-owned firewalld rule for '$port' is already absent from offline config"
     return 0
   fi
 
@@ -1059,10 +1836,57 @@ remove_owned_ufw_rule() {
   local purpose="$2"
   local port=""
   local sudo_cmd=()
-  local status=""
+  local ownership_state=""
+  local rule_line=""
+  local comment_field=""
+  local rule_comment=""
+  local ownership_result=0
 
-  ufw_rule_is_owned "$rule_id" || return 0
+  if ufw_rule_is_owned "$rule_id"; then
+    :
+  else
+    ownership_result=$?
+    if [[ $ownership_result -eq 2 || $ownership_result -eq 3 ]]; then
+      port="$(firewall_rule_port "$rule_id" || true)"
+      warn "Could not safely migrate current UFW ownership for '$port'"
+      PRESERVE_INSTALL_STATE=1
+    fi
+    return 0
+  fi
   port="$(firewall_rule_port "$rule_id")" || return 0
+
+  if ! ownership_state="$(ufw_rule_ownership_state "$rule_id")"; then
+    warn "Could not verify current UFW ownership for '$port'"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  case "$ownership_state" in
+    absent)
+      log "FXRoute-owned UFW port '$port' is already absent"
+      return 0
+      ;;
+    foreign)
+      warn "Refusing to remove UFW port '$port' because its current comment is not FXRoute-owned"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+      ;;
+  esac
+  rule_line="$(ufw_rule_line "$rule_id")" || {
+    warn "Could not read the current UFW rule for '$port'"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  }
+  comment_field="${rule_line#* comment }"
+  if [[ "$comment_field" == "$rule_line" ]]; then
+    warn "Refusing to remove UFW port '$port' without its exact FXRoute comment"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  case "$comment_field" in
+    \'*\') rule_comment="${comment_field:1:${#comment_field}-2}" ;;
+    \"*\") rule_comment="${comment_field:1:${#comment_field}-2}" ;;
+    *) rule_comment="$comment_field" ;;
+  esac
 
   if ! confirm "FXRoute opened UFW port '$port' for $purpose. Remove that firewall opening?"; then
     warn "Keeping UFW port '$port'"
@@ -1081,16 +1905,16 @@ remove_owned_ufw_rule() {
     return 0
   }
 
-  if "${sudo_cmd[@]}" ufw --force delete allow "$port" >/dev/null 2>&1; then
+  if "${sudo_cmd[@]}" ufw --force delete allow "$port" comment "$rule_comment" >/dev/null 2>&1; then
     log "Removed FXRoute-owned UFW port '$port'"
     return 0
   fi
-  if ! status="$("${sudo_cmd[@]}" ufw show added 2>/dev/null)"; then
+  if ! ownership_state="$(ufw_rule_ownership_state "$rule_id")"; then
     warn "Could not verify the persistent UFW rule '$port' after deletion failed"
     PRESERVE_INSTALL_STATE=1
     return 0
   fi
-  if ! grep -Fq "ufw allow $port" <<<"$status"; then
+  if [[ "$ownership_state" == "absent" ]]; then
     log "FXRoute-owned UFW port '$port' is already absent"
     return 0
   fi
@@ -1517,14 +2341,24 @@ main() {
     restore_hostname_if_requested
     restore_avahi_config_if_requested
     remove_avahi_if_requested
+  fi
+  if [[ $CORE_SERVICE_CLEANUP_DEFERRED -eq 0 ]]; then
     for firewall_rule in \
       http_80_tcp \
       https_443_tcp \
+      fxroute_http_8000_tcp; do
+      remove_owned_firewalld_rule "$firewall_rule" "FXRoute LAN access"
+      remove_owned_ufw_rule "$firewall_rule" "FXRoute LAN access"
+    done
+  else
+    log "Keeping core LAN firewall openings while FXRoute service cleanup is deferred"
+  fi
+  if [[ $PROVIDER_LAN_CLEANUP_DEFERRED -eq 0 ]]; then
+    for firewall_rule in \
       mdns_5353_udp \
-      fxroute_http_8000_tcp \
       spotifyd_zeroconf_4444_tcp; do
-      remove_owned_firewalld_rule "$firewall_rule" "FXRoute LAN/provider access"
-      remove_owned_ufw_rule "$firewall_rule" "FXRoute LAN/provider access"
+      remove_owned_firewalld_rule "$firewall_rule" "FXRoute provider access"
+      remove_owned_ufw_rule "$firewall_rule" "FXRoute provider access"
     done
   fi
   remove_project_dir_if_requested

@@ -154,6 +154,60 @@ printf 'hash=%s changed=%s\\n' "$QBZD_BINARY_SHA256" "$QBZD_BINARY_IDENTITY_CHAN
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f"hash={expected_sha256} changed=1", result.stdout)
+            missing_hash_result = subprocess.run(
+                ["bash", "-c", harness.replace(f"QBZD_BINARY_SHA256={expected_sha256}", "QBZD_BINARY_SHA256=''")],
+                env={**os.environ, "HOME": str(home), "PATH": "/usr/bin:/bin"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(missing_hash_result.returncode, 0, missing_hash_result.stderr)
+            self.assertIn("hash= changed=1", missing_hash_result.stdout)
+            volume_owned_result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    harness.replace(
+                        "QBZD_INSTALLED_BY_FXROUTE=1",
+                        "QBZD_INSTALLED_BY_FXROUTE=0\nQBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=1",
+                    ),
+                ],
+                env={**os.environ, "HOME": str(home), "PATH": "/usr/bin:/bin"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(volume_owned_result.returncode, 0, volume_owned_result.stderr)
+            self.assertIn(f"hash={expected_sha256} changed=1", volume_owned_result.stdout)
+
+    def test_spotifyd_owned_binary_hash_is_not_replaced_after_external_change(self):
+        path_reader = extract_function(self.install, "spotifyd_binary_path")
+        installer = extract_function(self.install, "install_spotifyd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            binary_path = home / ".local" / "bin" / "spotifyd"
+            binary_path.parent.mkdir(parents=True)
+            binary_path.write_text("replacement")
+            expected_sha256 = "original-sha256"
+            harness = f"""
+{path_reader}
+{installer}
+SPOTIFYD_INSTALLED_BY_FXROUTE=1
+SPOTIFYD_BINARY_PATH="$HOME/.local/bin/spotifyd"
+SPOTIFYD_BINARY_SHA256={expected_sha256}
+SPOTIFYD_BINARY_IDENTITY_CHANGED=0
+SPOTIFYD_PRESENT_BEFORE=0
+pass() {{ :; }}
+warn() {{ :; }}
+install_spotifyd_binary
+printf 'hash=%s changed=%s\\n' "$SPOTIFYD_BINARY_SHA256" "$SPOTIFYD_BINARY_IDENTITY_CHANGED"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                env={**os.environ, "HOME": str(home), "PATH": "/usr/bin:/bin"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"hash={expected_sha256} changed=1", result.stdout)
 
     def test_uninstaller_restores_fxroute_owned_qobuz_volume_mode(self):
         reader = extract_function(self.uninstall, "read_qbzd_volume_mode_for_uninstall")
@@ -320,8 +374,98 @@ if mdns_guard_needed; then printf 'yes\\n'; else printf 'no\\n'; fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('USER_ID="4242"', result.stdout)
         self.assertIn("meta skuid ${USER_ID}", result.stdout)
+        self.assertIn("flush chain inet ${TABLE} output", result.stdout)
+        self.assertNotIn('delete table inet "$TABLE" 2>/dev/null || true', result.stdout)
         self.assertNotIn("paul", result.stdout)
         self.assertNotIn("echo 1000", result.stdout)
+
+    def test_mdns_guard_table_match_rejects_foreign_content(self):
+        matcher = extract_function(self.uninstall, "mdns_guard_table_matches")
+        valid_table = (
+            "table inet fxroute_mdnsguard {\n"
+            " chain output {\n"
+            "  type filter hook output priority filter + 5; policy accept;\n"
+            '  meta skuid 4242 ip daddr 224.0.0.251 udp dport 5353 counter packets 0 bytes 0 drop comment "Block desktop user-space mDNS v4 to keep Avahi host advertisement stable"\n'
+            '  meta skuid 4242 ip6 daddr ff02::fb udp dport 5353 counter packets 0 bytes 0 drop comment "Block desktop user-space mDNS v6 to keep Avahi host advertisement stable"\n'
+            " }\n"
+            "}\n"
+        )
+        foreign_chain = valid_table.replace(
+            " }\n}\n",
+            " }\n chain foreign {\n  type filter hook input priority filter; policy accept;\n }\n}\n",
+        )
+        foreign_rule = valid_table.replace(" }\n}\n", "  counter accept\n }\n}\n")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            nft = bin_dir / "nft"
+            nft.write_text(
+                "#!/usr/bin/env bash\n"
+                'if [[ "$1 $2 $3 $4" == "list table inet fxroute_mdnsguard" ]]; then\n'
+                '  cat "$NFT_TABLE_FILE"\n'
+                "  exit 0\n"
+                "fi\n"
+                "exit 1\n"
+            )
+            nft.chmod(0o755)
+            harness = f"""
+{matcher}
+read_install_state_field() {{
+  [[ "$1" == lan_comfort.mdns_guard_target_uid ]] && printf '4242\\n'
+}}
+if mdns_guard_table_matches; then printf 'match\\n'; else printf 'mismatch\\n'; fi
+"""
+            env = {**os.environ, "PATH": f"{bin_dir}:/usr/bin:/bin"}
+            outcomes = []
+            for table in (valid_table, foreign_chain, foreign_rule):
+                table_file = root / "table"
+                table_file.write_text(table)
+                result = subprocess.run(
+                    ["bash", "-c", harness],
+                    env={**env, "NFT_TABLE_FILE": str(table_file)},
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outcomes.append(result.stdout.strip())
+            self.assertEqual(outcomes, ["match", "mismatch", "mismatch"])
+
+    def test_mdns_guard_artifacts_require_recorded_checksums(self):
+        artifact_matcher = extract_function(self.install, "mdns_guard_artifact_matches")
+        matcher = extract_function(self.install, "mdns_guard_artifacts_match")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            script_path = root / "fxroute-mdns-guard.sh"
+            service_path = root / "fxroute-mdns-guard.service"
+            timer_path = root / "fxroute-mdns-guard.timer"
+            script_path.write_text('TABLE="fxroute_mdnsguard"\n')
+            service_path.write_text("ExecStart=/usr/local/sbin/fxroute-mdns-guard.sh apply\n")
+            timer_path.write_text("Unit=fxroute-mdns-guard.service\n")
+            code = (
+                artifact_matcher
+                + "\n"
+                + matcher
+                .replace('/usr/local/sbin/fxroute-mdns-guard.sh', str(script_path))
+                .replace('/etc/systemd/system/fxroute-mdns-guard.service', str(service_path))
+                .replace('/etc/systemd/system/fxroute-mdns-guard.timer', str(timer_path))
+                + f"\n"
+                f"MDNS_GUARD_SCRIPT_SHA256=\"$(sha256sum '{script_path}' | awk '{{print $1}}')\"\n"
+                f"MDNS_GUARD_SERVICE_SHA256=\"$(sha256sum '{service_path}' | awk '{{print $1}}')\"\n"
+                f"MDNS_GUARD_TIMER_SHA256=\"$(sha256sum '{timer_path}' | awk '{{print $1}}')\"\n"
+                "if mdns_guard_artifacts_match; then printf 'match\\n'; else printf 'mismatch\\n'; fi\n"
+                f"printf '# changed\\n' >> '{script_path}'\n"
+                "if mdns_guard_artifacts_match; then printf 'match\\n'; else printf 'mismatch\\n'; fi\n"
+            )
+            result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "match\nmismatch\n")
+        self.assertNotIn('"$script_path" remove', self.install)
+        self.assertNotIn('"$script_path" remove', self.uninstall)
+        self.assertIn("mdns_guard_table_matches()", self.install)
+        self.assertIn("mdns_guard_table_matches()", self.uninstall)
+        self.assertIn("ip daddr 224.0.0.251", self.install)
+        self.assertIn("ip6 daddr ff02::fb", self.install)
 
     def test_target_identity_uses_actual_non_default_user_uid(self):
         body = extract_function(self.install, "determine_fxroute_target_identity")
@@ -361,22 +505,32 @@ printf '%s %s\\n' "$FXROUTE_TARGET_USER" "$FXROUTE_TARGET_UID"
             "remove_owned_ufw_rule",
         ):
             self.assertIn(f"{function_name}()", self.install + self.uninstall)
-        self.assertIn("--add-port", self.install)
-        self.assertIn("--remove-port", self.uninstall)
+        self.assertIn("--add-rich-rule", self.install)
+        self.assertIn("--remove-rich-rule", self.uninstall)
         self.assertIn("--force delete allow", self.uninstall)
+        self.assertIn('priority="100"', extract_function(self.install, "firewalld_rule_rich_rule"))
+        self.assertNotIn('priority="-100"', extract_function(self.install, "firewalld_rule_rich_rule"))
 
     def test_firewalld_existing_port_is_not_owned(self):
         ports = extract_function(self.install, "firewall_rule_port")
         state = extract_function(self.install, "firewall_rule_state_var")
         marker = extract_function(self.install, "mark_firewall_rule_owned")
+        query_status = extract_function(self.install, "firewalld_query_status")
         query = extract_function(self.install, "firewalld_query_port")
+        rich_rule = extract_function(self.install, "firewalld_rule_rich_rule")
+        legacy_rich_rule = extract_function(self.install, "firewalld_legacy_rich_rule")
+        rich_query = extract_function(self.install, "firewalld_query_rich_rule")
         rule_query = extract_function(self.install, "firewalld_query_rule")
         ensure = extract_function(self.install, "ensure_firewalld_rule")
         code = f"""
 {ports}
 {state}
 {marker}
+{query_status}
 {query}
+{rich_rule}
+{legacy_rich_rule}
+{rich_query}
 {rule_query}
 {ensure}
 SUDO_CMD=()
@@ -388,6 +542,7 @@ firewall_cmd_path() {{ printf '%s\\n' firewall_cmd; }}
 firewalld_is_active() {{ return 0; }}
 firewall_cmd() {{
   case "$*" in
+    *--query-rich-rule=*) return 1 ;;
     *--query-port=8000/tcp) return 0 ;;
     *) printf '%s\\n' "$*"; return 0 ;;
   esac
@@ -403,7 +558,11 @@ printf 'owned=%s\\n' "$FIREWALLD_FXROUTE_HTTP_8000_TCP_OPENED_BY_FXROUTE"
         ports = extract_function(self.install, "firewall_rule_port")
         state = extract_function(self.install, "firewall_rule_state_var")
         marker = extract_function(self.install, "mark_firewall_rule_owned")
+        query_status = extract_function(self.install, "firewalld_query_status")
         query = extract_function(self.install, "firewalld_query_port")
+        rich_rule = extract_function(self.install, "firewalld_rule_rich_rule")
+        legacy_rich_rule = extract_function(self.install, "firewalld_legacy_rich_rule")
+        rich_query = extract_function(self.install, "firewalld_query_rich_rule")
         rule_service = extract_function(self.install, "firewalld_rule_service")
         rule_query = extract_function(self.install, "firewalld_query_rule")
         ensure = extract_function(self.install, "ensure_firewalld_rule")
@@ -411,7 +570,11 @@ printf 'owned=%s\\n' "$FIREWALLD_FXROUTE_HTTP_8000_TCP_OPENED_BY_FXROUTE"
 {ports}
 {state}
 {marker}
+{query_status}
 {query}
+{rich_rule}
+{legacy_rich_rule}
+{rich_query}
 {rule_service}
 {rule_query}
 {ensure}
@@ -424,6 +587,7 @@ firewall_cmd_path() {{ printf '%s\\n' firewall_cmd; }}
 firewalld_is_active() {{ return 0; }}
 firewall_cmd() {{
   case "$*" in
+    *--query-rich-rule=*) return 1 ;;
     *--query-port=80/tcp) return 1 ;;
     *--query-service=http) return 0 ;;
     *) printf '%s\\n' "$*"; return 0 ;;
@@ -435,6 +599,166 @@ printf 'owned=%s\\n' "$FIREWALLD_HTTP_80_TCP_OPENED_BY_FXROUTE"
         result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "owned=0")
+
+    def test_firewalld_new_rich_rule_is_owned(self):
+        ports = extract_function(self.install, "firewall_rule_port")
+        state = extract_function(self.install, "firewall_rule_state_var")
+        marker = extract_function(self.install, "mark_firewall_rule_owned")
+        query_status = extract_function(self.install, "firewalld_query_status")
+        query = extract_function(self.install, "firewalld_query_port")
+        rich_rule = extract_function(self.install, "firewalld_rule_rich_rule")
+        legacy_rich_rule = extract_function(self.install, "firewalld_legacy_rich_rule")
+        rich_query = extract_function(self.install, "firewalld_query_rich_rule")
+        rule_query = extract_function(self.install, "firewalld_query_rule")
+        ensure = extract_function(self.install, "ensure_firewalld_rule")
+        code = f"""
+{ports}
+{state}
+{marker}
+{query_status}
+{query}
+{rich_rule}
+{legacy_rich_rule}
+{rich_query}
+{rule_query}
+{ensure}
+SUDO_CMD=()
+FIREWALLD_FXROUTE_HTTP_8000_TCP_OPENED_BY_FXROUTE=0
+FIREWALLD_RULE_FORMAT=legacy-port
+log() {{ :; }}
+pass() {{ :; }}
+warn() {{ :; }}
+firewall_cmd_path() {{ printf '%s\\n' firewall_cmd; }}
+firewalld_is_active() {{ return 0; }}
+firewall_cmd() {{
+  case "$*" in
+    *--query-rich-rule=*) return 1 ;;
+    *--query-port=8000/tcp) return 1 ;;
+    *--add-rich-rule=*) printf '%s\\n' "$*"; return 0 ;;
+    *--reload) return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+ensure_firewalld_rule fxroute_http_8000_tcp test
+printf 'owned=%s format=%s\\n' "$FIREWALLD_FXROUTE_HTTP_8000_TCP_OPENED_BY_FXROUTE" "$FIREWALLD_RULE_FORMAT"
+"""
+        result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('priority="100"', result.stdout)
+        self.assertIn("owned=1 format=rich-priority", result.stdout)
+
+    def test_legacy_firewalld_port_is_migrated_to_rich_rule(self):
+        ports = extract_function(self.install, "firewall_rule_port")
+        state = extract_function(self.install, "firewall_rule_state_var")
+        query_status = extract_function(self.install, "firewalld_query_status")
+        confirm_migration = extract_function(self.install, "confirm_legacy_firewalld_port_migration")
+        migration = extract_function(self.install, "migrate_legacy_firewalld_port")
+        with tempfile.TemporaryDirectory() as td:
+            state_file = Path(td) / "port"
+            log_file = Path(td) / "firewall.log"
+            state_file.write_text("present")
+            code = f"""
+{ports}
+{state}
+{query_status}
+{confirm_migration}
+{migration}
+SUDO_CMD=()
+FIREWALLD_RULE_FORMAT=legacy-port
+FIREWALLD_LEGACY_PORT_MIGRATION=1
+ASSUME_YES=1
+FIREWALLD_FXROUTE_HTTP_8000_TCP_OPENED_BY_FXROUTE=1
+firewall_rule_owned() {{ [[ "$1:$2" == firewalld:fxroute_http_8000_tcp ]]; }}
+firewall_cmd_path() {{ printf '%s\\n' firewall_cmd; }}
+firewalld_is_active() {{ return 0; }}
+firewall_cmd() {{
+  printf '%s\\n' "$*" >> "{log_file}"
+  case "$*" in
+    --query-port=8000/tcp|--permanent\\ --query-port=8000/tcp) [[ -s "{state_file}" ]] ;;
+    --remove-port=8000/tcp) return 0 ;;
+    --permanent\\ --remove-port=8000/tcp) : > "{state_file}" ;;
+    --reload) return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+if migrate_legacy_firewalld_port fxroute_http_8000_tcp; then printf 'migrated=1\\n'; else printf 'migrated=0 status=%s\\n' "$?"; fi
+printf 'remaining=%s\\n' "$(<"{state_file}")"
+"""
+            result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("migrated=1", result.stdout)
+            self.assertIn("remaining=", result.stdout)
+            self.assertIn("--remove-port=8000/tcp", log_file.read_text())
+            self.assertIn("--permanent --remove-port=8000/tcp", log_file.read_text())
+
+    def test_uninstaller_removes_owned_legacy_firewalld_port(self):
+        ports = extract_function(self.uninstall, "firewall_rule_port")
+        rich_rule = extract_function(self.uninstall, "firewalld_rule_rich_rule")
+        legacy_rich_rule = extract_function(self.uninstall, "firewalld_legacy_rich_rule")
+        query_status = extract_function(self.uninstall, "firewalld_query_status")
+        remover = extract_function(self.uninstall, "remove_owned_firewalld_rule")
+        with tempfile.TemporaryDirectory() as td:
+            state_file = Path(td) / "port"
+            log_file = Path(td) / "firewall.log"
+            state_file.write_text("present")
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            firewall = bin_dir / "firewall-cmd"
+            firewall.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"$*\" >> \"$FIREWALLD_LOG\"\n"
+                "case \"$*\" in\n"
+                "  --state) exit 0 ;;\n"
+                "  --query-port=8000/tcp|--permanent\\ --query-port=8000/tcp) [[ -s \"$FIREWALLD_STATE\" ]] ;;\n"
+                "  --remove-port=8000/tcp) exit 0 ;;\n"
+                "  --permanent\\ --remove-port=8000/tcp) : > \"$FIREWALLD_STATE\" ;;\n"
+                "  --reload) exit 0 ;;\n"
+                "  *) exit 1 ;;\n"
+                "esac\n"
+            )
+            firewall.chmod(0o755)
+            sudo = bin_dir / "sudo"
+            sudo.write_text("#!/usr/bin/env bash\nexec \"$@\"\n")
+            sudo.chmod(0o755)
+            code = f"""
+{ports}
+{rich_rule}
+{legacy_rich_rule}
+{query_status}
+{remover}
+read_install_state_field() {{
+  case "$1" in
+    lan_comfort.firewalld_rule_format) printf 'legacy-port\\n' ;;
+    lan_comfort.firewall_ownership_schema) printf '3\\n' ;;
+    lan_comfort.firewalld_owned_rules.fxroute_http_8000_tcp) printf 'true\\n' ;;
+    *) return 1 ;;
+  esac
+}}
+firewalld_rule_is_owned() {{ return 0; }}
+confirm() {{ return 0; }}
+firewall_cleanup_sudo() {{ return 0; }}
+firewall_cmd_path() {{ command -v firewall-cmd; }}
+firewall_offline_cmd_path() {{ return 1; }}
+log() {{ :; }}
+warn() {{ :; }}
+PRESERVE_INSTALL_STATE=0
+remove_owned_firewalld_rule fxroute_http_8000_tcp test
+printf 'preserve=%s remaining=%s\\n' "$PRESERVE_INSTALL_STATE" "$(<"{state_file}")"
+"""
+            result = subprocess.run(
+                ["bash", "-c", code],
+                env={
+                    **os.environ,
+                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                    "FIREWALLD_STATE": str(state_file),
+                    "FIREWALLD_LOG": str(log_file),
+                },
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("preserve=0 remaining=", result.stdout)
+            self.assertIn("--permanent --remove-port=8000/tcp", log_file.read_text())
 
     def test_legacy_firewall_ownership_survives_reinstall_state_migration(self):
         rule_port = extract_function(self.uninstall, "firewall_rule_port")
@@ -511,6 +835,8 @@ printf 'owned=%s\\n' "$UFW_SPOTIFYD_ZEROCONF_4444_TCP_OPENED_BY_FXROUTE"
 
     def test_uninstaller_removes_only_owned_ufw_rule(self):
         ports = extract_function(self.uninstall, "firewall_rule_port")
+        rule_line = extract_function(self.uninstall, "ufw_rule_line")
+        ownership_state = extract_function(self.uninstall, "ufw_rule_ownership_state")
         remover = extract_function(self.uninstall, "remove_owned_ufw_rule")
         with tempfile.TemporaryDirectory() as td:
             bin_dir = Path(td) / "bin"
@@ -520,6 +846,7 @@ printf 'owned=%s\\n' "$UFW_SPOTIFYD_ZEROCONF_4444_TCP_OPENED_BY_FXROUTE"
             ufw.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [[ $1 == status ]]; then printf '%b' \"$UFW_STATUS\"; exit 0; fi\n"
+                "if [[ $1 == show && $2 == added ]]; then printf \"ufw allow 4444/tcp comment 'spotifyd Zeroconf TCP authentication'\\n\"; exit 0; fi\n"
                 "printf '%s\\n' \"$*\" >> \"$UFW_LOG\"\n"
             )
             ufw.chmod(0o755)
@@ -530,6 +857,8 @@ printf 'owned=%s\\n' "$UFW_SPOTIFYD_ZEROCONF_4444_TCP_OPENED_BY_FXROUTE"
             def run_case(owned: str):
                 code = f"""
 {ports}
+{rule_line}
+{ownership_state}
 {remover}
 SPOTIFYD_ZEROCONF_PORT=4444
 read_install_state_field() {{
@@ -571,6 +900,8 @@ printf 'preserve=%s\\n' "$PRESERVE_INSTALL_STATE"
 
     def test_uninstaller_preserves_state_when_inactive_ufw_keeps_persistent_rule(self):
         ports = extract_function(self.uninstall, "firewall_rule_port")
+        rule_line = extract_function(self.uninstall, "ufw_rule_line")
+        ownership_state = extract_function(self.uninstall, "ufw_rule_ownership_state")
         remover = extract_function(self.uninstall, "remove_owned_ufw_rule")
         with tempfile.TemporaryDirectory() as td:
             bin_dir = Path(td) / "bin"
@@ -587,6 +918,8 @@ printf 'preserve=%s\\n' "$PRESERVE_INSTALL_STATE"
             sudo.chmod(0o755)
             code = f"""
 {ports}
+{rule_line}
+{ownership_state}
 {remover}
 SPOTIFYD_ZEROCONF_PORT=4444
 ufw_rule_is_owned() {{ return 0; }}
@@ -607,8 +940,57 @@ printf 'preserve=%s\\n' "$PRESERVE_INSTALL_STATE"
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("preserve=1", result.stdout)
 
+    def test_uninstaller_preserves_state_when_ufw_cannot_be_verified(self):
+        ports = extract_function(self.uninstall, "firewall_rule_port")
+        legacy_field = extract_function(self.uninstall, "legacy_ufw_rule_field")
+        rule_line = extract_function(self.uninstall, "ufw_rule_line")
+        ownership_state = extract_function(self.uninstall, "ufw_rule_ownership_state")
+        owned = extract_function(self.uninstall, "ufw_rule_is_owned")
+        remover = extract_function(self.uninstall, "remove_owned_ufw_rule")
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            ufw = bin_dir / "ufw"
+            ufw.write_text("#!/usr/bin/env bash\nexit 1\n")
+            ufw.chmod(0o755)
+            code = f"""
+{ports}
+{legacy_field}
+{rule_line}
+{ownership_state}
+{owned}
+{remover}
+SPOTIFYD_ZEROCONF_PORT=4444
+read_install_state_field() {{
+  case "$1" in
+    lan_comfort.ufw_owned_rules.http_80_tcp) return 1 ;;
+    lan_comfort.http_opened_by_fxroute) printf 'true\\n' ;;
+    *) return 1 ;;
+  esac
+}}
+firewall_legacy_state_present() {{ return 0; }}
+confirm() {{ return 0; }}
+firewall_cleanup_sudo() {{ return 0; }}
+log() {{ :; }}
+warn() {{ :; }}
+PRESERVE_INSTALL_STATE=0
+remove_owned_ufw_rule http_80_tcp test
+printf 'preserve=%s\\n' "$PRESERVE_INSTALL_STATE"
+"""
+            result = subprocess.run(
+                ["bash", "-c", code],
+                env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("preserve=1", result.stdout)
+
     def test_uninstaller_removes_only_owned_firewalld_port(self):
         ports = extract_function(self.uninstall, "firewall_rule_port")
+        rich_rule = extract_function(self.uninstall, "firewalld_rule_rich_rule")
+        legacy_rich_rule = extract_function(self.uninstall, "firewalld_legacy_rich_rule")
+        query_status = extract_function(self.uninstall, "firewalld_query_status")
         remover = extract_function(self.uninstall, "remove_owned_firewalld_rule")
         with tempfile.TemporaryDirectory() as td:
             bin_dir = Path(td) / "bin"
@@ -621,10 +1003,13 @@ printf 'preserve=%s\\n' "$PRESERVE_INSTALL_STATE"
                 "#!/usr/bin/env bash\n"
                 "case \"$*\" in\n"
                 "  --state) exit 0 ;;\n"
-                "  *--query-port=8000/tcp)\n"
+                "  *--query-rich-rule=*)\n"
                 "    [[ -s \"$FIREWALLD_STATE\" ]] && exit 0 || exit 1\n"
                 "    ;;\n"
-                "  *--remove-port=8000/tcp) : > \"$FIREWALLD_STATE\" ;;\n"
+                "  *--query-port=8000/tcp) exit 1 ;;\n"
+                "  *--remove-rich-rule=*)\n"
+                "    [[ $* == *--permanent* ]] && : > \"$FIREWALLD_STATE\"\n"
+                "    ;;\n"
                 "esac\n"
                 "printf '%s\\n' \"$*\" >> \"$FIREWALLD_LOG\"\n"
             )
@@ -636,9 +1021,16 @@ printf 'preserve=%s\\n' "$PRESERVE_INSTALL_STATE"
             def run_case(owned: str):
                 code = f"""
 {ports}
+{rich_rule}
+{legacy_rich_rule}
+{query_status}
 {remover}
 read_install_state_field() {{
-  if [[ $1 == lan_comfort.firewalld_owned_rules.fxroute_http_8000_tcp ]]; then printf '%s\\n' "$OWNED"; else return 1; fi
+  case "$1" in
+    lan_comfort.firewalld_owned_rules.fxroute_http_8000_tcp) printf '%s\\n' "$OWNED" ;;
+    lan_comfort.firewalld_rule_format) printf 'rich-priority\\n' ;;
+    *) return 1 ;;
+  esac
 }}
 firewalld_rule_is_owned() {{ [[ "$OWNED" == true ]]; }}
 confirm() {{ return 0; }}
@@ -673,7 +1065,7 @@ printf 'preserve=%s\\n' "$PRESERVE_INSTALL_STATE"
 
             owned = run_case("true")
             self.assertEqual(owned.returncode, 0, owned.stderr)
-            self.assertIn("--permanent --remove-port=8000/tcp", firewall_log.read_text())
+            self.assertIn("--permanent --remove-rich-rule=rule priority=", firewall_log.read_text())
             self.assertEqual(firewall_state.read_text(), "")
             self.assertIn("preserve=0", owned.stdout)
 

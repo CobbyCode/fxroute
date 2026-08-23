@@ -234,6 +234,14 @@ spotify_desktop_supported
         for forbidden in ("username", "password", "volume ="):
             self.assertNotIn(forbidden, body)
 
+    def test_owned_provider_services_are_reenabled_on_rerun(self):
+        spotifyd = extract_function(self.install, "configure_spotifyd_service")
+        qbzd = extract_function(self.install, "configure_qbzd_service")
+        self.assertIn("SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -eq 1", spotifyd)
+        self.assertIn("systemctl --user enable --now spotifyd.service", spotifyd)
+        self.assertIn("QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1", qbzd)
+        self.assertIn("systemctl --user enable --now qbzd.service", qbzd)
+
     def test_qobuz_release_matrix_is_pinned(self):
         self.assertRegex(self.install, r"QBZD_VERSION=\"2\.0\.2\"")
         self.assertIn('archive="qbzd-${QBZD_VERSION}-linux-amd64.tar.gz"', self.install)
@@ -245,6 +253,11 @@ spotify_desktop_supported
         body = extract_function(self.install, "install_spotify_desktop_apt")
         self.assertIn("SPOTIFY_DESKTOP_REPO_INSTALLED_BY_FXROUTE=1", body)
         self.assertIn("PKG_REFRESH_DONE=0", body)
+
+    def test_spotify_apt_key_cleanup_requires_owned_source_removal(self):
+        body = extract_function(self.uninstall, "remove_owned_spotify_desktop")
+        self.assertIn("apt_source_removed=0", body)
+        self.assertIn("&& $apt_source_removed -eq 1", body)
 
     def test_spotify_apt_uses_the_current_signed_repository_key(self):
         body = extract_function(self.install, "install_spotify_desktop_apt")
@@ -345,9 +358,18 @@ spotify_desktop_supported
             "legacy_firewall_ownership_present",
             "firewalld_owned_rules",
             "ufw_owned_rules",
+            "mdns_guard_owned_by_fxroute",
+            "mdns_guard_script_sha256",
+            "mdns_guard_service_sha256",
+            "mdns_guard_timer_sha256",
+            "mdns_guard_target_uid",
+            "apt_repo_sha256",
+            "apt_key_fingerprint",
             "power_polkit_installed",
         ):
             self.assertIn(field, ownership_body)
+        self.assertIn('"firewalld_rule_format": "${FIREWALLD_RULE_FORMAT}"', state_body)
+        self.assertIn('FIREWALLD_RULE_FORMAT="rich-priority"', self.install)
 
     def test_spotify_apt_key_fingerprint_is_pinned(self):
         self.assertIn("SPOTIFY_APT_KEY_FINGERPRINT", self.install)
@@ -393,6 +415,10 @@ spotify_desktop_supported
         self.assertIn("remove_owned_streaming_components", self.uninstall)
         self.assertIn("Remove FXRoute-owned", self.uninstall)
         self.assertIn("verify_owned_binary_identity", self.uninstall)
+        for provider_label, function_name in (("spotifyd", "remove_owned_spotifyd"), ("qbzd", "remove_owned_qbzd")):
+            body = extract_function(self.uninstall, function_name)
+            self.assertIn('if [[ -e "$service_path" || -L "$service_path" ]]; then', body)
+            self.assertIn(f"FXRoute-owned {provider_label} service is already absent", body)
 
     def test_tidal_ownership_survives_reruns_and_cleanup_preserves_session(self):
         ownership_body = extract_function(self.install, "load_provider_ownership_state")

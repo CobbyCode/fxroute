@@ -39,14 +39,19 @@ SPOTIFY_DESKTOP_INSTALLED_VERSION=""
 SPOTIFY_DESKTOP_REPO_INSTALLED_BY_FXROUTE=0
 SPOTIFY_DESKTOP_KEY_INSTALLED_BY_FXROUTE=0
 SPOTIFY_DESKTOP_FLATPAK_INSTALLED_BY_FXROUTE=0
+SPOTIFY_DESKTOP_REPO_SHA256=""
+SPOTIFY_DESKTOP_KEY_FINGERPRINT=""
 SPOTIFYD_PRESENT_BEFORE=0
 SPOTIFYD_INSTALLED_BY_FXROUTE=0
 SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE=0
 SPOTIFYD_CONFIG_INSTALLED_BY_FXROUTE=0
 SPOTIFYD_BINARY_PATH=""
 SPOTIFYD_BINARY_SHA256=""
+SPOTIFYD_BINARY_IDENTITY_CHANGED=0
 SPOTIFYD_SERVICE_PATH="$HOME/.config/systemd/user/spotifyd.service"
 SPOTIFYD_SERVICE_SHA256=""
+SPOTIFYD_SERVICE_IDENTITY_CHANGED=0
+SPOTIFYD_SERVICE_SETUP_FAILED=0
 SPOTIFYD_CONFIG_PATH="$HOME/.config/spotifyd/spotifyd.conf"
 QBZD_PRESENT_BEFORE=0
 QBZD_INSTALLED_BY_FXROUTE=0
@@ -55,6 +60,8 @@ QBZD_BINARY_PATH=""
 QBZD_BINARY_SHA256=""
 QBZD_SERVICE_PATH="$HOME/.config/systemd/user/qbzd.service"
 QBZD_SERVICE_SHA256=""
+QBZD_SERVICE_IDENTITY_CHANGED=0
+QBZD_SERVICE_SETUP_FAILED=0
 QBZD_VOLUME_MODE_BEFORE=""
 QBZD_VOLUME_MODE_AFTER=""
 QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
@@ -99,6 +106,11 @@ CADDY_PROXY_ENABLED=0
 CADDY_CERT_PATH=""
 MDNS_GUARD_ENABLED=0
 MDNS_GUARD_OWNED_BY_FXROUTE=0
+MDNS_GUARD_LEGACY_OWNERSHIP=0
+MDNS_GUARD_SCRIPT_SHA256=""
+MDNS_GUARD_SERVICE_SHA256=""
+MDNS_GUARD_TIMER_SHA256=""
+MDNS_GUARD_TARGET_UID=""
 FIREWALLD_WAS_ACTIVE_BEFORE=0
 HTTP_WAS_ALLOWED_BEFORE=0
 HTTPS_WAS_ALLOWED_BEFORE=0
@@ -125,6 +137,8 @@ UFW_MDNS_5353_UDP_OPENED_BY_FXROUTE=0
 UFW_FXROUTE_HTTP_8000_TCP_OPENED_BY_FXROUTE=0
 UFW_SPOTIFYD_ZEROCONF_4444_TCP_OPENED_BY_FXROUTE=0
 FIREWALL_LEGACY_STATE_PRESENT=0
+FIREWALLD_RULE_FORMAT="rich-priority"
+FIREWALLD_LEGACY_PORT_MIGRATION=0
 SPOTIFY_DESKTOP_AVAILABLE=0
 
 usage() {
@@ -140,7 +154,7 @@ Options:
   --spotifyd            Select spotifyd installation
   --qobuz               Select Qobuz/qbzd installation
   --tidal               Select the TIDAL Python dependency
-  -y, --yes             Assume yes for package install prompts
+  -y, --yes             Assume yes for package and legacy firewall prompts
   -h, --help            Show this help
 
 Pass 1 is a pragmatic local installer. It installs dependencies, prepares the venv,
@@ -411,12 +425,19 @@ PY
 
 load_provider_ownership_state() {
   local value=""
+  local mdns_owned_state=""
 
   [[ -f "$INSTALL_STATE_FILE" ]] && INSTALL_STATE_LOADED=1
   [[ "$(previous_install_state_field providers.spotify_desktop.installed_by_fxroute 2>/dev/null || true)" == "true" ]] && SPOTIFY_DESKTOP_INSTALLED_BY_FXROUTE=1
   [[ "$(previous_install_state_field providers.spotify_desktop.flatpak_installed_by_fxroute 2>/dev/null || true)" == "true" ]] && SPOTIFY_DESKTOP_FLATPAK_INSTALLED_BY_FXROUTE=1
   [[ "$(previous_install_state_field providers.spotify_desktop.apt_repo_installed_by_fxroute 2>/dev/null || true)" == "true" ]] && SPOTIFY_DESKTOP_REPO_INSTALLED_BY_FXROUTE=1
   [[ "$(previous_install_state_field providers.spotify_desktop.apt_key_installed_by_fxroute 2>/dev/null || true)" == "true" ]] && SPOTIFY_DESKTOP_KEY_INSTALLED_BY_FXROUTE=1
+  if value="$(previous_install_state_field providers.spotify_desktop.apt_repo_sha256 2>/dev/null)"; then
+    SPOTIFY_DESKTOP_REPO_SHA256="$value"
+  fi
+  if value="$(previous_install_state_field providers.spotify_desktop.apt_key_fingerprint 2>/dev/null)"; then
+    SPOTIFY_DESKTOP_KEY_FINGERPRINT="$value"
+  fi
   if value="$(previous_install_state_field providers.spotify_desktop.installed_version 2>/dev/null)"; then
     [[ -n "$value" ]] && SPOTIFY_DESKTOP_INSTALLED_VERSION="$value"
   fi
@@ -486,11 +507,26 @@ load_provider_ownership_state() {
     [[ -n "$value" ]] && CADDY_CERT_PATH="$value"
   fi
   [[ "$(previous_install_state_field lan_comfort.mdns_guard_enabled 2>/dev/null || true)" == "true" ]] && MDNS_GUARD_ENABLED=1
-  if [[ "$(previous_install_state_field lan_comfort.mdns_guard_owned_by_fxroute 2>/dev/null || true)" == "true" ]]; then
-    MDNS_GUARD_OWNED_BY_FXROUTE=1
-  elif [[ -z "$(previous_install_state_field lan_comfort.mdns_guard_owned_by_fxroute 2>/dev/null || true)" \
-    && $MDNS_GUARD_ENABLED -eq 1 ]]; then
-    MDNS_GUARD_OWNED_BY_FXROUTE=1
+  if mdns_owned_state="$(previous_install_state_field lan_comfort.mdns_guard_owned_by_fxroute 2>/dev/null)"; then
+    [[ "$mdns_owned_state" == "true" ]] && MDNS_GUARD_OWNED_BY_FXROUTE=1
+  elif [[ "$(previous_install_state_field lan_comfort.mdns_guard_enabled 2>/dev/null || true)" == "true" ]]; then
+    MDNS_GUARD_LEGACY_OWNERSHIP=1
+  fi
+  if value="$(previous_install_state_field lan_comfort.mdns_guard_script_sha256 2>/dev/null)"; then
+    MDNS_GUARD_SCRIPT_SHA256="$value"
+  fi
+  if value="$(previous_install_state_field lan_comfort.mdns_guard_service_sha256 2>/dev/null)"; then
+    MDNS_GUARD_SERVICE_SHA256="$value"
+  fi
+  if value="$(previous_install_state_field lan_comfort.mdns_guard_timer_sha256 2>/dev/null)"; then
+    MDNS_GUARD_TIMER_SHA256="$value"
+  fi
+  if value="$(previous_install_state_field lan_comfort.mdns_guard_target_uid 2>/dev/null)"; then
+    MDNS_GUARD_TARGET_UID="$value"
+  fi
+  if [[ "$mdns_owned_state" == "true" && ( -z "$MDNS_GUARD_SCRIPT_SHA256" \
+    || -z "$MDNS_GUARD_SERVICE_SHA256" || -z "$MDNS_GUARD_TIMER_SHA256" ) ]]; then
+    MDNS_GUARD_LEGACY_OWNERSHIP=1
   fi
   [[ "$(previous_install_state_field lan_comfort.firewalld_was_active_before 2>/dev/null || true)" == "true" ]] && FIREWALLD_WAS_ACTIVE_BEFORE=1
   [[ "$(previous_install_state_field lan_comfort.http_was_allowed_before 2>/dev/null || true)" == "true" ]] && HTTP_WAS_ALLOWED_BEFORE=1
@@ -515,6 +551,18 @@ load_provider_ownership_state() {
     && previous_install_state_field lan_comfort.http_opened_by_fxroute >/dev/null 2>&1; then
     FIREWALL_LEGACY_STATE_PRESENT=1
   fi
+  if value="$(previous_install_state_field lan_comfort.firewalld_rule_format 2>/dev/null)"; then
+    [[ -n "$value" ]] && FIREWALLD_RULE_FORMAT="$value"
+  elif [[ $INSTALL_STATE_LOADED -eq 1 ]] \
+    && { [[ "$(previous_install_state_field lan_comfort.firewalld_owned_rules.http_80_tcp 2>/dev/null || true)" == "true" ]] \
+      || [[ "$(previous_install_state_field lan_comfort.firewalld_owned_rules.https_443_tcp 2>/dev/null || true)" == "true" ]] \
+      || [[ "$(previous_install_state_field lan_comfort.firewalld_owned_rules.mdns_5353_udp 2>/dev/null || true)" == "true" ]] \
+      || [[ "$(previous_install_state_field lan_comfort.firewalld_owned_rules.fxroute_http_8000_tcp 2>/dev/null || true)" == "true" ]] \
+      || [[ "$(previous_install_state_field lan_comfort.firewalld_owned_rules.spotifyd_zeroconf_4444_tcp 2>/dev/null || true)" == "true" ]] \
+      || [[ "$(previous_install_state_field lan_comfort.http_opened_by_fxroute 2>/dev/null || true)" == "true" ]]; }; then
+    FIREWALLD_RULE_FORMAT="legacy-port"
+  fi
+  [[ "$FIREWALLD_RULE_FORMAT" == "legacy-port" ]] && FIREWALLD_LEGACY_PORT_MIGRATION=1
   [[ "$(previous_install_state_field lan_comfort.power_polkit_installed 2>/dev/null || true)" == "true" ]] && POWER_POLKIT_INSTALLED=1
   if value="$(previous_install_state_field lan_comfort.power_polkit_rule_path 2>/dev/null)"; then
     [[ -n "$value" ]] && POWER_POLKIT_RULE_PATH="$value"
@@ -724,6 +772,18 @@ firewalld_is_active() {
   "${SUDO_CMD[@]}" "$firewall_cmd" --state >/dev/null 2>&1
 }
 
+firewalld_query_status() {
+  local status=0
+
+  if "$@" >/dev/null 2>&1; then
+    return 0
+  else
+    status=$?
+  fi
+  [[ $status -eq 1 ]] && return 1
+  return 2
+}
+
 firewall_rule_port() {
   case "$1" in
     http_80_tcp) printf '80/tcp\n' ;;
@@ -777,9 +837,13 @@ firewalld_query_port() {
   local firewall_cmd=""
   firewall_cmd="$(firewall_cmd_path || true)"
   [[ -n "$firewall_cmd" ]] || return 1
-  firewalld_is_active || return 1
-  "${SUDO_CMD[@]}" "$firewall_cmd" --query-port="$port" >/dev/null 2>&1 \
-    || "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --query-port="$port" >/dev/null 2>&1
+  firewalld_is_active || return 2
+  if firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --query-port="$port"; then
+    return 0
+  elif [[ $? -ne 1 ]]; then
+    return 2
+  fi
+  firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --query-port="$port"
 }
 
 firewalld_rule_service() {
@@ -796,14 +860,120 @@ firewalld_query_rule() {
   local port=""
   local service=""
   local firewall_cmd=""
+  local query_status=0
 
   firewall_cmd="$(firewall_cmd_path || true)"
   [[ -n "$firewall_cmd" ]] || return 1
-  firewalld_query_port "$(firewall_rule_port "$rule_id")" && return 0
+  if firewalld_query_port "$(firewall_rule_port "$rule_id")"; then
+    return 0
+  else
+    query_status=$?
+    [[ $query_status -eq 1 ]] || return 2
+  fi
   service="$(firewalld_rule_service "$rule_id" 2>/dev/null || true)"
   [[ -n "$service" ]] || return 1
-  "${SUDO_CMD[@]}" "$firewall_cmd" --query-service="$service" >/dev/null 2>&1 \
-    || "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --query-service="$service" >/dev/null 2>&1
+  if firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --query-service="$service"; then
+    return 0
+  else
+    query_status=$?
+    [[ $query_status -eq 1 ]] || return 2
+  fi
+  firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --query-service="$service"
+}
+
+firewalld_rule_rich_rule() {
+  local rule_id="$1"
+  local port=""
+  local port_number=""
+  local protocol=""
+
+  port="$(firewall_rule_port "$rule_id")" || return 1
+  port_number="${port%/*}"
+  protocol="${port#*/}"
+  printf 'rule priority="100" port port="%s" protocol="%s" accept\n' "$port_number" "$protocol"
+}
+
+firewalld_legacy_rich_rule() {
+  local rule_id="$1"
+  local port=""
+  local port_number=""
+  local protocol=""
+
+  port="$(firewall_rule_port "$rule_id")" || return 1
+  port_number="${port%/*}"
+  protocol="${port#*/}"
+  printf 'rule priority="-100" port port="%s" protocol="%s" accept\n' "$port_number" "$protocol"
+}
+
+firewalld_query_rich_rule() {
+  local rich_rule="$1"
+  local firewall_cmd=""
+
+  firewall_cmd="$(firewall_cmd_path || true)"
+  [[ -n "$firewall_cmd" ]] || return 1
+  firewalld_is_active || return 2
+  if firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --query-rich-rule="$rich_rule"; then
+    return 0
+  elif [[ $? -ne 1 ]]; then
+    return 2
+  fi
+  firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --query-rich-rule="$rich_rule"
+}
+
+confirm_legacy_firewalld_port_migration() {
+  local port="$1"
+  local reply=""
+
+  [[ $ASSUME_YES -eq 1 ]] && return 0
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    warn "Preserving historical firewalld port '$port'; rerun interactively or use --yes to migrate it"
+    return 1
+  fi
+  printf "Migrate the historical FXRoute firewalld port '$port' to an owned rich rule? [y/N] "
+  read -r reply || return 1
+  [[ "${reply,,}" == "y" || "${reply,,}" == "yes" ]]
+}
+
+migrate_legacy_firewalld_port() {
+  local rule_id="$1"
+  local port=""
+  local firewall_cmd=""
+  local runtime_present=0
+  local permanent_present=0
+  local query_status=0
+
+  [[ $FIREWALLD_LEGACY_PORT_MIGRATION -eq 1 ]] || return 1
+  firewall_rule_owned firewalld "$rule_id" || return 1
+  port="$(firewall_rule_port "$rule_id")" || return 1
+  firewall_cmd="$(firewall_cmd_path || true)"
+  [[ -n "$firewall_cmd" ]] || return 2
+  firewalld_is_active || return 2
+
+  if firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --query-port="$port"; then
+    runtime_present=1
+  else
+    query_status=$?
+    [[ $query_status -eq 1 ]] || return 2
+  fi
+  if firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --query-port="$port"; then
+    permanent_present=1
+  else
+    query_status=$?
+    [[ $query_status -eq 1 ]] || return 2
+  fi
+  [[ $runtime_present -eq 1 || $permanent_present -eq 1 ]] || return 1
+  confirm_legacy_firewalld_port_migration "$port" || return 1
+
+  if [[ $runtime_present -eq 1 ]] \
+    && ! "${SUDO_CMD[@]}" "$firewall_cmd" --remove-port="$port"; then
+    return 2
+  fi
+  if [[ $permanent_present -eq 1 ]] \
+    && ! "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --remove-port="$port"; then
+    return 2
+  fi
+  "${SUDO_CMD[@]}" "$firewall_cmd" --reload || return 2
+  return 0
 }
 
 ensure_firewalld_rule() {
@@ -811,26 +981,109 @@ ensure_firewalld_rule() {
   local purpose="$2"
   local port=""
   local firewall_cmd=""
+  local rich_rule=""
+  local legacy_rich_rule=""
+  local query_status=0
+  local legacy_runtime_present=0
+  local legacy_permanent_present=0
 
   port="$(firewall_rule_port "$rule_id")" || return 0
+  rich_rule="$(firewalld_rule_rich_rule "$rule_id")" || return 0
+  legacy_rich_rule="$(firewalld_legacy_rich_rule "$rule_id")" || return 0
   firewall_cmd="$(firewall_cmd_path || true)"
   [[ -n "$firewall_cmd" ]] || return 0
   firewalld_is_active || return 0
 
-  if firewalld_query_rule "$rule_id"; then
-    return 0
+  if migrate_legacy_firewalld_port "$rule_id"; then
+    [[ $FIREWALLD_LEGACY_PORT_MIGRATION -eq 1 ]] || FIREWALLD_RULE_FORMAT="rich-priority"
+  else
+    query_status=$?
+    if [[ $query_status -eq 2 ]]; then
+      warn "Optional LAN comfort could not migrate the legacy firewalld port for '$port'"
+      return 0
+    fi
   fi
 
-  log "$firewall_cmd --permanent --add-port=$port"
-  if ! "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --add-port="$port"; then
-    warn "Optional LAN comfort could not open firewalld port '$port' for $purpose"
+  if firewalld_query_rich_rule "$rich_rule"; then
+    [[ $FIREWALLD_LEGACY_PORT_MIGRATION -eq 1 ]] || FIREWALLD_RULE_FORMAT="rich-priority"
+    return 0
+  else
+    query_status=$?
+    if [[ $query_status -ne 1 ]]; then
+      warn "Optional LAN comfort could not verify firewalld rich rule for '$port'"
+      return 0
+    fi
+  fi
+  if firewalld_query_rich_rule "$legacy_rich_rule"; then
+    if ! firewall_rule_owned firewalld "$rule_id"; then
+      if [[ $FIREWALLD_LEGACY_PORT_MIGRATION -eq 1 ]]; then
+        FIREWALLD_RULE_FORMAT="legacy-port"
+      else
+        FIREWALLD_RULE_FORMAT="legacy-rich"
+      fi
+      return 0
+    fi
+    if firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --query-rich-rule="$legacy_rich_rule"; then
+      legacy_runtime_present=1
+    else
+      query_status=$?
+      if [[ $query_status -ne 1 ]]; then
+        warn "Optional LAN comfort could not verify legacy runtime firewalld rule for '$port'"
+        return 0
+      fi
+    fi
+    if firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --query-rich-rule="$legacy_rich_rule"; then
+      legacy_permanent_present=1
+    else
+      query_status=$?
+      if [[ $query_status -ne 1 ]]; then
+        warn "Optional LAN comfort could not verify legacy permanent firewalld rule for '$port'"
+        return 0
+      fi
+    fi
+    if [[ $legacy_runtime_present -eq 1 ]] \
+      && ! "${SUDO_CMD[@]}" "$firewall_cmd" --remove-rich-rule="$legacy_rich_rule"; then
+      warn "Optional LAN comfort could not migrate the legacy runtime firewalld rule for '$port'"
+      return 0
+    fi
+    if [[ $legacy_permanent_present -eq 1 ]] \
+      && ! "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --remove-rich-rule="$legacy_rich_rule"; then
+      warn "Optional LAN comfort could not migrate the legacy permanent firewalld rule for '$port'"
+      return 0
+    fi
+    if ! "${SUDO_CMD[@]}" "$firewall_cmd" --reload; then
+      warn "Optional LAN comfort could not reload firewalld after migrating '$port'"
+      return 0
+    fi
+    [[ $FIREWALLD_LEGACY_PORT_MIGRATION -eq 1 ]] || FIREWALLD_RULE_FORMAT="rich-priority"
+  else
+    query_status=$?
+    if [[ $query_status -ne 1 ]]; then
+      warn "Optional LAN comfort could not verify legacy firewalld rich rule for '$port'"
+      return 0
+    fi
+  fi
+  if firewalld_query_rule "$rule_id"; then
+    return 0
+  else
+    query_status=$?
+    if [[ $query_status -ne 1 ]]; then
+      warn "Optional LAN comfort could not verify firewalld rule for '$port'"
+      return 0
+    fi
+  fi
+
+  log "$firewall_cmd --permanent --add-rich-rule=$rich_rule"
+  if ! "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --add-rich-rule="$rich_rule"; then
+    warn "Optional LAN comfort could not open firewalld rich rule for '$port' for $purpose"
     return 0
   fi
+  [[ $FIREWALLD_LEGACY_PORT_MIGRATION -eq 1 ]] || FIREWALLD_RULE_FORMAT="rich-priority"
   mark_firewall_rule_owned firewalld "$rule_id"
 
   log "$firewall_cmd --reload"
   if ! "${SUDO_CMD[@]}" "$firewall_cmd" --reload; then
-    warn "Optional LAN comfort opened firewalld port '$port' permanently, but reload failed"
+    warn "Optional LAN comfort opened firewalld rich rule for '$port' permanently, but reload failed"
     return 0
   fi
 
@@ -884,6 +1137,44 @@ ensure_lan_firewall_service_open() {
     *) return 0 ;;
   esac
   ensure_lan_firewall_rule "$rule_id" "$2"
+}
+
+finalize_firewalld_rule_format() {
+  local rule_id=""
+  local port=""
+  local firewall_cmd=""
+  local query_status=0
+
+  [[ $FIREWALLD_LEGACY_PORT_MIGRATION -eq 1 ]] || return 0
+  FIREWALLD_RULE_FORMAT="legacy-port"
+  firewall_cmd="$(firewall_cmd_path || true)"
+  [[ -n "$firewall_cmd" ]] || return 0
+  firewalld_is_active || return 0
+
+  for rule_id in \
+    http_80_tcp \
+    https_443_tcp \
+    mdns_5353_udp \
+    fxroute_http_8000_tcp \
+    spotifyd_zeroconf_4444_tcp; do
+    firewall_rule_owned firewalld "$rule_id" || continue
+    port="$(firewall_rule_port "$rule_id")" || continue
+    if firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --query-port="$port"; then
+      return 0
+    else
+      query_status=$?
+      [[ $query_status -eq 1 ]] || return 0
+    fi
+    if firewalld_query_status "${SUDO_CMD[@]}" "$firewall_cmd" --permanent --query-port="$port"; then
+      return 0
+    else
+      query_status=$?
+      [[ $query_status -eq 1 ]] || return 0
+    fi
+  done
+
+  FIREWALLD_RULE_FORMAT="rich-priority"
+  FIREWALLD_LEGACY_PORT_MIGRATION=0
 }
 
 choose_sudo() {
@@ -1419,6 +1710,7 @@ install_spotify_desktop_apt() {
         rm -f "$tmp_source" "$tmp_key"
         return 1
       fi
+      SPOTIFY_DESKTOP_KEY_FINGERPRINT="$key_fingerprint"
     fi
     rm -f "$tmp_key"
     SPOTIFY_DESKTOP_REPO_INSTALLED_BY_FXROUTE=1
@@ -1426,6 +1718,7 @@ install_spotify_desktop_apt() {
       rm -f "$tmp_source"
       return 1
     fi
+    SPOTIFY_DESKTOP_REPO_SHA256="$(sha256sum "$SPOTIFY_APT_SOURCE_FILE" | awk '{print $1}')"
     rm -f "$tmp_source"
     # The source was added after the normal package refresh; refresh it once
     # before asking the shared package installer for spotify-client.
@@ -1599,10 +1892,31 @@ install_spotifyd_binary() {
   local work=""
   local extracted=""
   local binary=""
+  local existing_path=""
+  local current_sha256=""
 
-  if [[ -n "$(spotifyd_binary_path || true)" ]]; then
+  existing_path="$(spotifyd_binary_path || true)"
+  if [[ $SPOTIFYD_INSTALLED_BY_FXROUTE -eq 1 ]]; then
+    if [[ -z "$SPOTIFYD_BINARY_PATH" || "$existing_path" != "$SPOTIFYD_BINARY_PATH" ]]; then
+      SPOTIFYD_BINARY_IDENTITY_CHANGED=1
+      warn "FXRoute-managed spotifyd binary identity is unavailable or its path changed; refusing to replace it during provider setup"
+      return 0
+    fi
+  fi
+  if [[ -n "$existing_path" ]]; then
     SPOTIFYD_PRESENT_BEFORE=1
-    SPOTIFYD_BINARY_PATH="$(spotifyd_binary_path || true)"
+    SPOTIFYD_BINARY_PATH="$existing_path"
+    if [[ ! -f "$SPOTIFYD_BINARY_PATH" || -L "$SPOTIFYD_BINARY_PATH" ]]; then
+      warn "spotifyd path exists but is not a regular non-symlink file; preserving it and skipping provider setup"
+      return 0
+    fi
+    current_sha256="$(sha256sum "$SPOTIFYD_BINARY_PATH" | awk '{print $1}')"
+    if [[ $SPOTIFYD_INSTALLED_BY_FXROUTE -eq 1 ]]; then
+      if [[ -z "$SPOTIFYD_BINARY_SHA256" || "$current_sha256" != "$SPOTIFYD_BINARY_SHA256" ]]; then
+        SPOTIFYD_BINARY_IDENTITY_CHANGED=1
+        warn "FXRoute-owned spotifyd binary identity is unavailable or changed; preserving it and skipping provider setup"
+      fi
+    fi
     if [[ ! -x "$SPOTIFYD_BINARY_PATH" ]]; then
       warn "spotifyd path exists but is not executable; preserving it and skipping provider setup"
       return 0
@@ -1658,6 +1972,7 @@ configure_spotifyd_service() {
   local service_path="$service_dir/spotifyd.service"
   local config_path="$HOME/.config/spotifyd/spotifyd.conf"
   local binary_path="$(spotifyd_binary_path || true)"
+  local current_sha256=""
 
   SPOTIFYD_SERVICE_PATH="$service_path"
   [[ -n "$binary_path" ]] || {
@@ -1666,7 +1981,27 @@ configure_spotifyd_service() {
   }
 
   if user_unit_exists spotifyd.service; then
-    pass "existing spotifyd user service preserved"
+    if [[ $SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]]; then
+      if [[ ! -f "$service_path" || -L "$service_path" || -z "$SPOTIFYD_SERVICE_SHA256" ]]; then
+        SPOTIFYD_SERVICE_IDENTITY_CHANGED=1
+        warn "FXRoute-owned spotifyd service identity is unavailable; preserving the existing unit"
+        return 0
+      fi
+      current_sha256="$(sha256sum "$service_path" | awk '{print $1}')"
+      if [[ "$current_sha256" != "$SPOTIFYD_SERVICE_SHA256" ]]; then
+        SPOTIFYD_SERVICE_IDENTITY_CHANGED=1
+        warn "FXRoute-owned spotifyd service checksum changed; preserving the existing unit"
+        return 0
+      fi
+      if systemctl --user daemon-reload && systemctl --user enable --now spotifyd.service; then
+        pass "FXRoute-owned spotifyd user service enabled"
+      else
+        SPOTIFYD_SERVICE_SETUP_FAILED=1
+        warn "FXRoute-owned spotifyd service is present but could not be enabled in this shell"
+      fi
+    else
+      pass "existing spotifyd user service preserved"
+    fi
     return 0
   fi
 
@@ -1692,8 +2027,20 @@ EOF
   if systemctl --user daemon-reload && systemctl --user enable --now spotifyd.service; then
     pass "spotifyd user service enabled"
   else
+    SPOTIFYD_SERVICE_SETUP_FAILED=1
     warn "spotifyd service was installed, but could not be enabled in this shell"
   fi
+}
+
+spotifyd_service_identity_is_intact() {
+  local service_path="$HOME/.config/systemd/user/spotifyd.service"
+  local current_sha256=""
+
+  [[ $SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]] || return 0
+  user_unit_exists spotifyd.service || return 0
+  [[ -f "$service_path" && ! -L "$service_path" && -n "$SPOTIFYD_SERVICE_SHA256" ]] || return 1
+  current_sha256="$(sha256sum "$service_path" | awk '{print $1}')"
+  [[ "$current_sha256" == "$SPOTIFYD_SERVICE_SHA256" ]]
 }
 
 install_spotifyd() {
@@ -1710,9 +2057,23 @@ install_spotifyd() {
 
   [[ -n "$(spotifyd_binary_path || true)" ]] && was_present=1
   install_spotifyd_binary
-  [[ -n "$(spotifyd_binary_path || true)" ]] || return 0
-  if [[ ! -x "$(spotifyd_binary_path || true)" ]]; then
+  if [[ $SPOTIFYD_BINARY_IDENTITY_CHANGED -eq 1 ]]; then
+    SPOTIFYD_PROVIDER_STATUS="owned binary changed; preserved"
+    return 0
+  fi
+  spotifyd_path="$(spotifyd_binary_path || true)"
+  [[ -n "$spotifyd_path" ]] || return 0
+  if [[ ! -f "$spotifyd_path" || -L "$spotifyd_path" ]]; then
+    SPOTIFYD_PROVIDER_STATUS="existing path is not a regular non-symlink file; preserved"
+    return 0
+  fi
+  if [[ ! -x "$spotifyd_path" ]]; then
     SPOTIFYD_PROVIDER_STATUS="existing path is not executable; preserved"
+    return 0
+  fi
+  if ! spotifyd_service_identity_is_intact; then
+    SPOTIFYD_SERVICE_IDENTITY_CHANGED=1
+    SPOTIFYD_PROVIDER_STATUS="owned service changed; preserved"
     return 0
   fi
   spotifyd_path="$(spotifyd_binary_path || true)"
@@ -1733,6 +2094,10 @@ install_spotifyd() {
   fi
   write_spotifyd_config
   configure_spotifyd_service
+  if [[ $SPOTIFYD_SERVICE_IDENTITY_CHANGED -eq 1 || $SPOTIFYD_SERVICE_SETUP_FAILED -eq 1 ]]; then
+    SPOTIFYD_PROVIDER_STATUS="owned service unavailable; preserved"
+    return 0
+  fi
   if [[ $SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]]; then
     ensure_lan_firewall_rule mdns_5353_udp "spotifyd Zeroconf mDNS discovery"
     ensure_lan_firewall_rule spotifyd_zeroconf_4444_tcp "spotifyd Zeroconf TCP authentication"
@@ -1783,7 +2148,6 @@ ensure_qobuz_runtime_dependencies() {
       warn "Avahi is installed but could not be enabled for Qobuz Connect discovery"
     fi
   fi
-  ensure_lan_firewall_service_open mdns "Qobuz Connect discovery"
 }
 
 qbzd_binary_path() {
@@ -1802,18 +2166,31 @@ install_qbzd_binary() {
   local work=""
   local extracted=""
   local current_sha256=""
+  local existing_path=""
 
-  if [[ -n "$(qbzd_binary_path || true)" ]]; then
+  existing_path="$(qbzd_binary_path || true)"
+  if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 || $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]]; then
+    if [[ -z "$QBZD_BINARY_PATH" || "$existing_path" != "$QBZD_BINARY_PATH" ]]; then
+      QBZD_BINARY_IDENTITY_CHANGED=1
+      warn "FXRoute-managed qbzd binary identity is unavailable or its path changed; refusing to replace it during provider setup"
+      return 0
+    fi
+  fi
+  if [[ -n "$existing_path" ]]; then
     QBZD_PRESENT_BEFORE=1
-    QBZD_BINARY_PATH="$(qbzd_binary_path || true)"
+    QBZD_BINARY_PATH="$existing_path"
+    if [[ ! -f "$QBZD_BINARY_PATH" || -L "$QBZD_BINARY_PATH" ]]; then
+      warn "qbzd path exists but is not a regular non-symlink file; preserving it and skipping provider setup"
+      return 0
+    fi
     if [[ -f "$QBZD_BINARY_PATH" ]]; then
       current_sha256="$(sha256sum "$QBZD_BINARY_PATH" | awk '{print $1}')"
-      if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 \
-        && -n "$QBZD_BINARY_SHA256" \
-        && "$current_sha256" != "$QBZD_BINARY_SHA256" ]]; then
-        QBZD_BINARY_IDENTITY_CHANGED=1
-        warn "FXRoute-owned qbzd binary checksum changed; preserving it and skipping provider setup"
-      elif [[ $QBZD_INSTALLED_BY_FXROUTE -eq 0 || -z "$QBZD_BINARY_SHA256" ]]; then
+      if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 || $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]]; then
+        if [[ -z "$QBZD_BINARY_SHA256" || "$current_sha256" != "$QBZD_BINARY_SHA256" ]]; then
+          QBZD_BINARY_IDENTITY_CHANGED=1
+          warn "FXRoute-owned qbzd binary identity is unavailable or changed; preserving it and skipping Qobuz provider setup"
+        fi
+      else
         QBZD_BINARY_SHA256="$current_sha256"
       fi
     fi
@@ -1920,6 +2297,7 @@ configure_qbzd_service() {
   local service_dir="$HOME/.config/systemd/user"
   local service_path="$service_dir/qbzd.service"
   local binary_path="$(qbzd_binary_path || true)"
+  local current_sha256=""
 
   QBZD_SERVICE_PATH="$service_path"
   [[ -n "$binary_path" ]] || {
@@ -1928,7 +2306,27 @@ configure_qbzd_service() {
   }
 
   if user_unit_exists qbzd.service; then
-    if [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]] && systemctl --user is-active --quiet qbzd.service; then
+    if [[ $QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]]; then
+      if [[ ! -f "$service_path" || -L "$service_path" || -z "$QBZD_SERVICE_SHA256" ]]; then
+        QBZD_SERVICE_IDENTITY_CHANGED=1
+        warn "FXRoute-owned qbzd service identity is unavailable; preserving the existing unit"
+        return 0
+      fi
+      current_sha256="$(sha256sum "$service_path" | awk '{print $1}')"
+      if [[ "$current_sha256" != "$QBZD_SERVICE_SHA256" ]]; then
+        QBZD_SERVICE_IDENTITY_CHANGED=1
+        warn "FXRoute-owned qbzd service checksum changed; preserving the existing unit"
+        return 0
+      fi
+      if ! systemctl --user daemon-reload || ! systemctl --user enable --now qbzd.service; then
+        QBZD_SERVICE_SETUP_FAILED=1
+        warn "FXRoute-owned qbzd service is present but could not be enabled in this shell"
+        return 0
+      fi
+    fi
+    if [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 \
+      && -f "$service_path" && ! -L "$service_path" ]] \
+      && systemctl --user is-active --quiet qbzd.service; then
       if ! systemctl --user restart qbzd.service; then
         die "Could not restart the existing qbzd service after setting qconnect.volume_mode=locked"
       fi
@@ -1959,8 +2357,20 @@ EOF
   if systemctl --user daemon-reload && systemctl --user enable --now qbzd.service; then
     pass "qbzd user service enabled"
   else
+    QBZD_SERVICE_SETUP_FAILED=1
     warn "qbzd service was installed, but could not be enabled in this shell"
   fi
+}
+
+qbzd_service_identity_is_intact() {
+  local service_path="$HOME/.config/systemd/user/qbzd.service"
+  local current_sha256=""
+
+  [[ $QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]] || return 0
+  user_unit_exists qbzd.service || return 0
+  [[ -f "$service_path" && ! -L "$service_path" && -n "$QBZD_SERVICE_SHA256" ]] || return 1
+  current_sha256="$(sha256sum "$service_path" | awk '{print $1}')"
+  [[ "$current_sha256" == "$QBZD_SERVICE_SHA256" ]]
 }
 
 install_qobuz() {
@@ -1972,19 +2382,34 @@ install_qobuz() {
     return 0
   fi
 
-  ensure_qobuz_runtime_dependencies
   install_qbzd_binary
-  [[ -n "$(qbzd_binary_path || true)" ]] || return 0
   if [[ $QBZD_BINARY_IDENTITY_CHANGED -eq 1 ]]; then
     QOBUZ_PROVIDER_STATUS="owned binary changed; preserved"
     return 0
   fi
-  if [[ ! -x "$(qbzd_binary_path || true)" ]]; then
+  qbzd_path="$(qbzd_binary_path || true)"
+  [[ -n "$qbzd_path" ]] || return 0
+  if [[ ! -f "$qbzd_path" || -L "$qbzd_path" ]]; then
+    QOBUZ_PROVIDER_STATUS="existing path is not a regular non-symlink file; preserved"
+    return 0
+  fi
+  if [[ ! -x "$qbzd_path" ]]; then
     QOBUZ_PROVIDER_STATUS="existing path is not executable; preserved"
     return 0
   fi
+  if ! qbzd_service_identity_is_intact; then
+    QBZD_SERVICE_IDENTITY_CHANGED=1
+    QOBUZ_PROVIDER_STATUS="owned service changed; preserved"
+    return 0
+  fi
+  ensure_qobuz_runtime_dependencies
   configure_qbzd_volume_mode
   configure_qbzd_service
+  if [[ $QBZD_SERVICE_IDENTITY_CHANGED -eq 1 || $QBZD_SERVICE_SETUP_FAILED -eq 1 ]]; then
+    QOBUZ_PROVIDER_STATUS="owned service unavailable; preserved"
+    return 0
+  fi
+  ensure_lan_firewall_service_open mdns "Qobuz Connect discovery"
   qbzd_path="$(qbzd_binary_path || true)"
   if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 || $QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]]; then
     QOBUZ_PROVIDER_STATUS="installed/configured by FXRoute"
@@ -2291,7 +2716,9 @@ write_install_state() {
       "installed_by_fxroute": $( [[ $SPOTIFY_DESKTOP_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
       "flatpak_installed_by_fxroute": $( [[ $SPOTIFY_DESKTOP_FLATPAK_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
       "apt_repo_installed_by_fxroute": $( [[ $SPOTIFY_DESKTOP_REPO_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
-      "apt_key_installed_by_fxroute": $( [[ $SPOTIFY_DESKTOP_KEY_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false )
+      "apt_key_installed_by_fxroute": $( [[ $SPOTIFY_DESKTOP_KEY_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+      "apt_repo_sha256": "${SPOTIFY_DESKTOP_REPO_SHA256}",
+      "apt_key_fingerprint": "${SPOTIFY_DESKTOP_KEY_FINGERPRINT}"
     },
     "spotifyd": {
       "selected": $( [[ $SELECT_SPOTIFYD -eq 1 ]] && echo true || echo false ),
@@ -2348,6 +2775,10 @@ write_install_state() {
     "caddy_cert_path": "${CADDY_CERT_PATH}",
     "mdns_guard_enabled": $( [[ $MDNS_GUARD_ENABLED -eq 1 ]] && echo true || echo false ),
     "mdns_guard_owned_by_fxroute": $( [[ $MDNS_GUARD_OWNED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+    "mdns_guard_script_sha256": "${MDNS_GUARD_SCRIPT_SHA256}",
+    "mdns_guard_service_sha256": "${MDNS_GUARD_SERVICE_SHA256}",
+    "mdns_guard_timer_sha256": "${MDNS_GUARD_TIMER_SHA256}",
+    "mdns_guard_target_uid": "${MDNS_GUARD_TARGET_UID}",
     "firewalld_was_active_before": $( [[ $FIREWALLD_WAS_ACTIVE_BEFORE -eq 1 ]] && echo true || echo false ),
     "http_was_allowed_before": $( [[ $HTTP_WAS_ALLOWED_BEFORE -eq 1 ]] && echo true || echo false ),
     "https_was_allowed_before": $( [[ $HTTPS_WAS_ALLOWED_BEFORE -eq 1 ]] && echo true || echo false ),
@@ -2355,7 +2786,8 @@ write_install_state() {
     "http_opened_by_fxroute": $( [[ $HTTP_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
     "https_opened_by_fxroute": $( [[ $HTTPS_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
     "mdns_opened_by_fxroute": $( [[ $MDNS_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
-    "firewall_ownership_schema": 2,
+    "firewall_ownership_schema": 3,
+    "firewalld_rule_format": "${FIREWALLD_RULE_FORMAT}",
     "legacy_firewall_ownership_present": $( [[ $FIREWALL_LEGACY_STATE_PRESENT -eq 1 ]] && echo true || echo false ),
     "firewalld_owned_rules": {
       "http_80_tcp": $( [[ $FIREWALLD_HTTP_80_TCP_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
@@ -2971,21 +3403,53 @@ NFT="/usr/sbin/nft"
 TABLE="fxroute_mdnsguard"
 USER_ID="${FXROUTE_TARGET_UID}"
 
+table_is_owned() {
+  local ruleset=""
+
+  ruleset="\$("\$NFT" list table inet "\$TABLE" 2>/dev/null)" || return 1
+  awk -v uid="\$USER_ID" '
+    BEGIN {
+      v4 = "^[[:space:]]*meta skuid[[:space:]]+" uid "[[:space:]]+ip daddr 224\\.0\\.0\\.251[[:space:]]+udp dport 5353[[:space:]]+counter[[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+[[:space:]]+drop[[:space:]]+comment[[:space:]]+\"Block desktop user-space mDNS v4 to keep Avahi host advertisement stable\"[[:space:]]*$"
+      v6 = "^[[:space:]]*meta skuid[[:space:]]+" uid "[[:space:]]+ip6 daddr ff02::fb[[:space:]]+udp dport 5353[[:space:]]+counter[[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+[[:space:]]+drop[[:space:]]+comment[[:space:]]+\"Block desktop user-space mDNS v6 to keep Avahi host advertisement stable\"[[:space:]]*$"
+    }
+    /^[[:space:]]*table inet fxroute_mdnsguard[[:space:]]*\{[[:space:]]*$/ { tables++; next }
+    /^[[:space:]]*chain output[[:space:]]*\{[[:space:]]*$/ { chains++; next }
+    /^[[:space:]]*type filter hook output priority[[:space:]]+[^;]+;[[:space:]]*policy accept;[[:space:]]*$/ { next }
+    \$0 ~ v4 { v4_rules++; next }
+    \$0 ~ v6 { v6_rules++; next }
+    /^[[:space:]]*\}[[:space:]]*$/ || /^[[:space:]]*$/ { next }
+    { invalid++; next }
+    END { exit !(tables == 1 && chains == 1 && v4_rules == 1 && v6_rules == 1 && invalid == 0) }
+  ' <<<"\$ruleset"
+}
+
 apply_rules() {
-  "\$NFT" delete table inet "\$TABLE" 2>/dev/null || true
-  "\$NFT" -f - <<RULES
- table inet \${TABLE} {
-   chain output {
-     type filter hook output priority 5; policy accept;
-     meta skuid \${USER_ID} ip daddr 224.0.0.251 udp dport 5353 counter drop comment "Block desktop user-space mDNS v4 to keep Avahi host advertisement stable"
-     meta skuid \${USER_ID} ip6 daddr ff02::fb udp dport 5353 counter drop comment "Block desktop user-space mDNS v6 to keep Avahi host advertisement stable"
-   }
- }
+  if "\$NFT" list table inet "\$TABLE" >/dev/null 2>&1; then
+    if ! table_is_owned; then
+      echo "Refusing to modify a foreign nft table named \$TABLE" >&2
+      return 1
+    fi
+    "\$NFT" -f - <<RULES
+ flush chain inet \${TABLE} output
+ add rule inet \${TABLE} output meta skuid \${USER_ID} ip daddr 224.0.0.251 udp dport 5353 counter drop comment "Block desktop user-space mDNS v4 to keep Avahi host advertisement stable"
+ add rule inet \${TABLE} output meta skuid \${USER_ID} ip6 daddr ff02::fb udp dport 5353 counter drop comment "Block desktop user-space mDNS v6 to keep Avahi host advertisement stable"
 RULES
+  else
+    "\$NFT" -f - <<RULES
+ add table inet \${TABLE}
+ add chain inet \${TABLE} output { type filter hook output priority 5; policy accept; }
+ add rule inet \${TABLE} output meta skuid \${USER_ID} ip daddr 224.0.0.251 udp dport 5353 counter drop comment "Block desktop user-space mDNS v4 to keep Avahi host advertisement stable"
+ add rule inet \${TABLE} output meta skuid \${USER_ID} ip6 daddr ff02::fb udp dport 5353 counter drop comment "Block desktop user-space mDNS v6 to keep Avahi host advertisement stable"
+RULES
+  fi
 }
 
 remove_rules() {
   if "\$NFT" list table inet "\$TABLE" >/dev/null 2>&1; then
+    if ! table_is_owned; then
+      echo "Refusing to remove a foreign nft table named \$TABLE" >&2
+      return 1
+    fi
     "\$NFT" delete table inet "\$TABLE"
     return
   fi
@@ -3005,6 +3469,68 @@ esac
 EOF
 }
 
+render_mdns_guard_service() {
+  cat <<'EOF'
+[Unit]
+Description=FXRoute mDNS guard for Spotify Desktop/Avahi coexistence
+After=firewalld.service network-online.target
+Wants=firewalld.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fxroute-mdns-guard.sh apply
+ExecReload=/usr/local/sbin/fxroute-mdns-guard.sh apply
+EOF
+}
+
+render_mdns_guard_timer() {
+  cat <<'EOF'
+[Unit]
+Description=Re-apply FXRoute mDNS guard periodically
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=fxroute-mdns-guard.service
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+migrate_legacy_mdns_guard_ownership() {
+  local script_path="/usr/local/sbin/fxroute-mdns-guard.sh"
+  local service_path="/etc/systemd/system/fxroute-mdns-guard.service"
+  local timer_path="/etc/systemd/system/fxroute-mdns-guard.timer"
+  local target_uid=""
+
+  [[ $MDNS_GUARD_LEGACY_OWNERSHIP -eq 1 ]] || return 0
+  [[ -f "$script_path" && ! -L "$script_path" ]] || return 1
+  [[ -f "$service_path" && ! -L "$service_path" ]] || return 1
+  [[ -f "$timer_path" && ! -L "$timer_path" ]] || return 1
+  if ! grep -Fq '#!/usr/bin/env bash' "$script_path" \
+    || ! grep -Fq 'TABLE="fxroute_mdnsguard"' "$script_path" \
+    || ! grep -Eq '^USER_ID=' "$script_path" \
+    || ! grep -Fq 'meta skuid' "$script_path" \
+    || ! grep -Fq 'case "${1:-apply}"' "$script_path" \
+    || ! grep -Fq 'ExecStart=/usr/local/sbin/fxroute-mdns-guard.sh apply' "$service_path" \
+    || ! grep -Fq 'ExecReload=/usr/local/sbin/fxroute-mdns-guard.sh apply' "$service_path" \
+    || ! grep -Fq 'Unit=fxroute-mdns-guard.service' "$timer_path"; then
+    return 1
+  fi
+  target_uid="$(sed -n 's/^USER_ID="\([0-9][0-9]*\)"$/\1/p' "$script_path")"
+  [[ "$target_uid" =~ ^[0-9]+$ ]] || return 1
+  MDNS_GUARD_SCRIPT_SHA256="$(sha256sum "$script_path" | awk '{print $1}')"
+  MDNS_GUARD_SERVICE_SHA256="$(sha256sum "$service_path" | awk '{print $1}')"
+  MDNS_GUARD_TIMER_SHA256="$(sha256sum "$timer_path" | awk '{print $1}')"
+  MDNS_GUARD_TARGET_UID="$target_uid"
+  MDNS_GUARD_ENABLED=1
+  MDNS_GUARD_OWNED_BY_FXROUTE=1
+  MDNS_GUARD_LEGACY_OWNERSHIP=0
+  return 0
+}
+
 remove_mdns_guard_table_direct() {
   local nft_path=""
   local ruleset=""
@@ -3016,14 +3542,135 @@ remove_mdns_guard_table_direct() {
     grep -Fq 'table inet fxroute_mdnsguard' <<<"$ruleset" && return 1
     return 0
   fi
-  "${SUDO_CMD[@]}" "$nft_path" delete table inet fxroute_mdnsguard >/dev/null 2>&1
+  mdns_guard_table_matches || return 1
+  if ! "${SUDO_CMD[@]}" "$nft_path" delete table inet fxroute_mdnsguard >/dev/null 2>&1; then
+    return 1
+  fi
+  if "${SUDO_CMD[@]}" "$nft_path" list table inet fxroute_mdnsguard >/dev/null 2>&1; then
+    return 1
+  fi
+  ruleset="$("${SUDO_CMD[@]}" "$nft_path" list ruleset 2>/dev/null)" || return 1
+  grep -Fq 'table inet fxroute_mdnsguard' <<<"$ruleset" && return 1
+  return 0
+}
+
+mdns_guard_table_matches() {
+  local nft_path=""
+  local ruleset=""
+  local expected_uid="${FXROUTE_TARGET_UID:-$MDNS_GUARD_TARGET_UID}"
+
+  nft_path="$(command -v nft 2>/dev/null || true)"
+  [[ -n "$nft_path" ]] || return 1
+  [[ "$expected_uid" =~ ^[0-9]+$ ]] || return 1
+  ruleset="$("${SUDO_CMD[@]}" "$nft_path" list table inet fxroute_mdnsguard 2>/dev/null)" || return 1
+  grep -Fq 'chain output' <<<"$ruleset" \
+    && grep -Fq 'hook output' <<<"$ruleset" \
+    && grep -Fq 'priority' <<<"$ruleset" \
+    && grep -Fq 'policy accept' <<<"$ruleset" \
+    && grep -Eq "meta skuid[[:space:]]+${expected_uid}.*ip daddr 224\\.0\\.0\\.251.*udp dport 5353.*drop.*Block desktop user-space mDNS v4 to keep Avahi host advertisement stable" <<<"$ruleset" \
+    && grep -Eq "meta skuid[[:space:]]+${expected_uid}.*ip6 daddr ff02::fb.*udp dport 5353.*drop.*Block desktop user-space mDNS v6 to keep Avahi host advertisement stable" <<<"$ruleset"
+}
+
+systemd_unit_is_loaded() {
+  local unit="$1"
+  local load_state=""
+
+  shift
+  if ! load_state="$("$@" systemctl show "$unit" -p LoadState --value 2>/dev/null)"; then
+    return 2
+  fi
+  case "$load_state" in
+    not-found) return 1 ;;
+    "") return 2 ;;
+    *) return 0 ;;
+  esac
+}
+
+systemd_unit_fragment_matches() {
+  local unit="$1"
+  local expected_path="$2"
+  local fragment_path=""
+
+  shift 2
+  if ! fragment_path="$("$@" systemctl show "$unit" -p FragmentPath --value 2>/dev/null)"; then
+    return 2
+  fi
+  [[ "$fragment_path" == "$expected_path" ]]
+}
+
+mdns_guard_artifact_matches() {
+  local path="$1"
+  local expected_sha256="$2"
+  local actual_sha256=""
+
+  [[ -e "$path" || -L "$path" ]] || return 0
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  [[ -n "$expected_sha256" ]] || return 1
+  actual_sha256="$(sha256sum "$path" | awk '{print $1}')" || return 1
+  [[ "$actual_sha256" == "$expected_sha256" ]]
+}
+
+mdns_guard_artifacts_match() {
+  local script_path="/usr/local/sbin/fxroute-mdns-guard.sh"
+  local service_path="/etc/systemd/system/fxroute-mdns-guard.service"
+  local timer_path="/etc/systemd/system/fxroute-mdns-guard.timer"
+
+  mdns_guard_artifact_matches "$script_path" "$MDNS_GUARD_SCRIPT_SHA256" || return 1
+  mdns_guard_artifact_matches "$service_path" "$MDNS_GUARD_SERVICE_SHA256" || return 1
+  mdns_guard_artifact_matches "$timer_path" "$MDNS_GUARD_TIMER_SHA256" || return 1
+}
+
+restore_mdns_guard_artifacts() {
+  local backup_dir="$1"
+  local restore_failed=0
+
+  if [[ -f "$backup_dir/script" ]]; then
+    "${SUDO_CMD[@]}" cp -p "$backup_dir/script" /usr/local/sbin/fxroute-mdns-guard.sh || restore_failed=1
+  else
+    "${SUDO_CMD[@]}" rm -f /usr/local/sbin/fxroute-mdns-guard.sh || restore_failed=1
+  fi
+  if [[ -f "$backup_dir/service" ]]; then
+    "${SUDO_CMD[@]}" cp -p "$backup_dir/service" /etc/systemd/system/fxroute-mdns-guard.service || restore_failed=1
+  else
+    "${SUDO_CMD[@]}" rm -f /etc/systemd/system/fxroute-mdns-guard.service || restore_failed=1
+  fi
+  if [[ -f "$backup_dir/timer" ]]; then
+    "${SUDO_CMD[@]}" cp -p "$backup_dir/timer" /etc/systemd/system/fxroute-mdns-guard.timer || restore_failed=1
+  else
+    "${SUDO_CMD[@]}" rm -f /etc/systemd/system/fxroute-mdns-guard.timer || restore_failed=1
+  fi
+  return "$restore_failed"
 }
 
 remove_mdns_guard_if_present() {
   local script_path="/usr/local/sbin/fxroute-mdns-guard.sh"
   local service_path="/etc/systemd/system/fxroute-mdns-guard.service"
   local timer_path="/etc/systemd/system/fxroute-mdns-guard.timer"
+  local marker_present=0
+  local timer_was_active=0
+  local timer_was_enabled=0
+  local timer_loaded=0
+  local service_loaded=0
+  local unit_status=0
 
+  if [[ -e "$script_path" || -L "$script_path" \
+    || -e "$service_path" || -L "$service_path" \
+    || -e "$timer_path" || -L "$timer_path" ]]; then
+    marker_present=1
+  fi
+
+  if [[ $MDNS_GUARD_LEGACY_OWNERSHIP -eq 1 && $marker_present -eq 1 ]]; then
+    if ! migrate_legacy_mdns_guard_ownership; then
+      warn "Cannot verify ownership of the legacy FXRoute mDNS guard; preserving it"
+      return 0
+    fi
+  elif [[ $MDNS_GUARD_LEGACY_OWNERSHIP -eq 1 ]]; then
+    # The legacy state explicitly enabled the guard, but its artifacts are
+    # already gone. Keep ownership so the direct nft cleanup can verify the
+    # table without executing a mutable root script.
+    MDNS_GUARD_OWNED_BY_FXROUTE=1
+    MDNS_GUARD_LEGACY_OWNERSHIP=0
+  fi
   if [[ $MDNS_GUARD_OWNED_BY_FXROUTE -ne 1 ]]; then
     if [[ -e "$script_path" || -L "$script_path" \
       || -e "$service_path" || -L "$service_path" \
@@ -3032,35 +3679,129 @@ remove_mdns_guard_if_present() {
     fi
     return 0
   fi
+  if ! mdns_guard_artifacts_match; then
+    warn "Preserving mDNS guard artifacts whose content no longer matches FXRoute"
+    MDNS_GUARD_OWNED_BY_FXROUTE=0
+    MDNS_GUARD_SCRIPT_SHA256=""
+    MDNS_GUARD_SERVICE_SHA256=""
+    MDNS_GUARD_TIMER_SHA256=""
+    MDNS_GUARD_TARGET_UID=""
+    return 0
+  fi
 
-  if [[ ! -e "$script_path" && ! -L "$script_path" \
-    && ! -e "$service_path" && ! -L "$service_path" \
-    && ! -e "$timer_path" && ! -L "$timer_path" ]]; then
-    if command -v nft >/dev/null 2>&1 && ! remove_mdns_guard_table_direct; then
+  if [[ $marker_present -eq 1 || $MDNS_GUARD_OWNED_BY_FXROUTE -eq 1 ]]; then
+    if systemd_unit_is_loaded fxroute-mdns-guard.timer "${SUDO_CMD[@]}"; then
+      timer_loaded=1
+    else
+      unit_status=$?
+      if [[ $unit_status -eq 2 ]]; then
+        warn "Could not verify a loaded FXRoute mDNS guard timer"
+        MDNS_GUARD_ENABLED=1
+        return 0
+      fi
+    fi
+    if [[ $timer_loaded -eq 1 ]] \
+      && "${SUDO_CMD[@]}" systemctl is-active --quiet fxroute-mdns-guard.timer; then
+      timer_was_active=1
+    fi
+    if [[ $timer_loaded -eq 1 ]] \
+      && "${SUDO_CMD[@]}" systemctl is-enabled --quiet fxroute-mdns-guard.timer; then
+      timer_was_enabled=1
+    fi
+    if systemd_unit_is_loaded fxroute-mdns-guard.service "${SUDO_CMD[@]}"; then
+      service_loaded=1
+    else
+      unit_status=$?
+      if [[ $unit_status -eq 2 ]]; then
+        warn "Could not verify a loaded FXRoute mDNS guard service"
+        MDNS_GUARD_ENABLED=1
+        return 0
+      fi
+    fi
+    if [[ $timer_loaded -eq 1 ]] \
+      && ! systemd_unit_fragment_matches fxroute-mdns-guard.timer "$timer_path" "${SUDO_CMD[@]}"; then
+      warn "Refusing to stop the loaded FXRoute mDNS guard timer from a foreign unit path"
+      MDNS_GUARD_ENABLED=1
+      return 0
+    fi
+    if [[ $service_loaded -eq 1 ]] \
+      && ! systemd_unit_fragment_matches fxroute-mdns-guard.service "$service_path" "${SUDO_CMD[@]}"; then
+      warn "Refusing to stop the loaded FXRoute mDNS guard service from a foreign unit path"
+      MDNS_GUARD_ENABLED=1
+      return 0
+    fi
+    if [[ -e "$timer_path" || -L "$timer_path" || $timer_loaded -eq 1 ]] \
+      && ! "${SUDO_CMD[@]}" systemctl disable --now fxroute-mdns-guard.timer >/dev/null 2>&1; then
+      warn "Could not stop the FXRoute mDNS guard timer"
+      if [[ $timer_was_enabled -eq 1 ]]; then
+        "${SUDO_CMD[@]}" systemctl enable fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+      fi
+      if [[ $timer_was_active -eq 1 ]]; then
+        "${SUDO_CMD[@]}" systemctl start fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+      fi
+      MDNS_GUARD_ENABLED=1
+      return 0
+    fi
+    if [[ -e "$service_path" || -L "$service_path" || $service_loaded -eq 1 ]] \
+      && ! "${SUDO_CMD[@]}" systemctl disable --now fxroute-mdns-guard.service >/dev/null 2>&1; then
+      warn "Could not stop the FXRoute mDNS guard service"
+      if [[ $timer_was_enabled -eq 1 ]]; then
+        "${SUDO_CMD[@]}" systemctl enable fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+      fi
+      if [[ $timer_was_active -eq 1 ]]; then
+        "${SUDO_CMD[@]}" systemctl start fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+      fi
+      MDNS_GUARD_ENABLED=1
+      return 0
+    fi
+  fi
+  if [[ $marker_present -eq 0 ]]; then
+    if ! command -v nft >/dev/null 2>&1; then
+      warn "Cannot verify the FXRoute mDNS guard table because nft is unavailable"
+      MDNS_GUARD_ENABLED=1
+      return 0
+    fi
+    if ! remove_mdns_guard_table_direct; then
       warn "Could not verify or remove the FXRoute mDNS guard table"
       MDNS_GUARD_ENABLED=1
       return 0
     fi
     MDNS_GUARD_ENABLED=0
     MDNS_GUARD_OWNED_BY_FXROUTE=0
+    MDNS_GUARD_SCRIPT_SHA256=""
+    MDNS_GUARD_SERVICE_SHA256=""
+    MDNS_GUARD_TIMER_SHA256=""
+    MDNS_GUARD_TARGET_UID=""
     return 0
-  fi
-  "${SUDO_CMD[@]}" systemctl disable --now fxroute-mdns-guard.timer fxroute-mdns-guard.service >/dev/null 2>&1 || true
-  if [[ -x "$script_path" ]]; then
-    "${SUDO_CMD[@]}" "$script_path" remove >/dev/null 2>&1 || true
   fi
   if ! remove_mdns_guard_table_direct; then
     warn "Could not remove the FXRoute mDNS guard rules"
+    if [[ $timer_was_enabled -eq 1 ]]; then
+      "${SUDO_CMD[@]}" systemctl enable fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+    fi
+    if [[ $timer_was_active -eq 1 ]]; then
+      "${SUDO_CMD[@]}" systemctl start fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+    fi
     MDNS_GUARD_ENABLED=1
     return 0
   fi
   if ! "${SUDO_CMD[@]}" rm -f "$script_path" "$service_path" "$timer_path"; then
     warn "Could not remove the FXRoute mDNS guard files"
+    if [[ $timer_was_enabled -eq 1 ]]; then
+      "${SUDO_CMD[@]}" systemctl enable fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+    fi
+    if [[ $timer_was_active -eq 1 ]]; then
+      "${SUDO_CMD[@]}" systemctl start fxroute-mdns-guard.timer >/dev/null 2>&1 || true
+    fi
     return 0
   fi
   "${SUDO_CMD[@]}" systemctl daemon-reload >/dev/null 2>&1 || true
   MDNS_GUARD_ENABLED=0
   MDNS_GUARD_OWNED_BY_FXROUTE=0
+  MDNS_GUARD_SCRIPT_SHA256=""
+  MDNS_GUARD_SERVICE_SHA256=""
+  MDNS_GUARD_TIMER_SHA256=""
+  MDNS_GUARD_TARGET_UID=""
   pass "FXRoute mDNS guard removed for provider compatibility"
 }
 
@@ -3073,6 +3814,11 @@ install_mdns_guard() {
   local tmp_timer=""
   local guard_artifact_present=0
   local guard_artifact_owned=1
+  local backup_dir=""
+  local previous_script_sha256="$MDNS_GUARD_SCRIPT_SHA256"
+  local previous_service_sha256="$MDNS_GUARD_SERVICE_SHA256"
+  local previous_timer_sha256="$MDNS_GUARD_TIMER_SHA256"
+  local previous_target_uid="$MDNS_GUARD_TARGET_UID"
 
   if ! mdns_guard_needed; then
     remove_mdns_guard_if_present
@@ -3085,14 +3831,16 @@ install_mdns_guard() {
     || -e "$timer_path" || -L "$timer_path" ]]; then
     guard_artifact_present=1
   fi
+  if [[ $guard_artifact_present -eq 1 && $MDNS_GUARD_LEGACY_OWNERSHIP -eq 1 ]] \
+    && ! migrate_legacy_mdns_guard_ownership; then
+    warn "Cannot verify ownership of the legacy FXRoute mDNS guard; preserving it"
+    MDNS_GUARD_ENABLED=1
+    MDNS_GUARD_OWNED_BY_FXROUTE=0
+    return 0
+  fi
   if [[ $guard_artifact_present -eq 1 ]]; then
-    if [[ $MDNS_GUARD_ENABLED -ne 1 \
-      || -L "$script_path" || -L "$service_path" || -L "$timer_path" \
-      || ! -f "$script_path" ]]; then
-      guard_artifact_owned=0
-    elif ! grep -Fq 'TABLE="fxroute_mdnsguard"' "$script_path" \
-      || ! grep -Fq 'ExecStart=/usr/local/sbin/fxroute-mdns-guard.sh apply' "$service_path" \
-      || ! grep -Fq 'Unit=fxroute-mdns-guard.service' "$timer_path"; then
+    if [[ $MDNS_GUARD_ENABLED -ne 1 || $MDNS_GUARD_OWNED_BY_FXROUTE -ne 1 ]] \
+      || ! mdns_guard_artifacts_match; then
       guard_artifact_owned=0
     fi
     if [[ $guard_artifact_owned -eq 0 ]]; then
@@ -3117,49 +3865,92 @@ install_mdns_guard() {
 
   render_mdns_guard_script > "$tmp_script"
   chmod 755 "$tmp_script"
-  cat > "$tmp_service" <<'EOF'
-[Unit]
-Description=FXRoute mDNS guard for Spotify Desktop/Avahi coexistence
-After=firewalld.service network-online.target
-Wants=firewalld.service network-online.target
+  render_mdns_guard_service > "$tmp_service"
+  render_mdns_guard_timer > "$tmp_timer"
 
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/fxroute-mdns-guard.sh apply
-ExecReload=/usr/local/sbin/fxroute-mdns-guard.sh apply
-EOF
-
-  cat > "$tmp_timer" <<'EOF'
-[Unit]
-Description=Re-apply FXRoute mDNS guard periodically
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=2min
-Persistent=true
-Unit=fxroute-mdns-guard.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
+  MDNS_GUARD_SCRIPT_SHA256="$(sha256sum "$tmp_script" | awk '{print $1}')"
+  MDNS_GUARD_SERVICE_SHA256="$(sha256sum "$tmp_service" | awk '{print $1}')"
+  MDNS_GUARD_TIMER_SHA256="$(sha256sum "$tmp_timer" | awk '{print $1}')"
+  MDNS_GUARD_TARGET_UID="$FXROUTE_TARGET_UID"
+  if ! backup_dir="$(mktemp -d -t fxroute-mdns-guard-backup.XXXXXX)"; then
+    warn "Could not create a backup area for the FXRoute mDNS guard refresh"
+    MDNS_GUARD_SCRIPT_SHA256="$previous_script_sha256"
+    MDNS_GUARD_SERVICE_SHA256="$previous_service_sha256"
+    MDNS_GUARD_TIMER_SHA256="$previous_timer_sha256"
+    MDNS_GUARD_TARGET_UID="$previous_target_uid"
+    return 0
+  fi
+  trap "trap - RETURN; rm -f '$tmp_script' '$tmp_service' '$tmp_timer'; rm -rf '$backup_dir'" RETURN
+  if [[ -f "$script_path" ]] && ! "${SUDO_CMD[@]}" cp -p "$script_path" "$backup_dir/script"; then
+    warn "Could not back up the existing FXRoute mDNS guard script"
+    MDNS_GUARD_SCRIPT_SHA256="$previous_script_sha256"
+    MDNS_GUARD_SERVICE_SHA256="$previous_service_sha256"
+    MDNS_GUARD_TIMER_SHA256="$previous_timer_sha256"
+    MDNS_GUARD_TARGET_UID="$previous_target_uid"
+    return 0
+  fi
+  if [[ -f "$service_path" ]] && ! "${SUDO_CMD[@]}" cp -p "$service_path" "$backup_dir/service"; then
+    warn "Could not back up the existing FXRoute mDNS guard service"
+    MDNS_GUARD_SCRIPT_SHA256="$previous_script_sha256"
+    MDNS_GUARD_SERVICE_SHA256="$previous_service_sha256"
+    MDNS_GUARD_TIMER_SHA256="$previous_timer_sha256"
+    MDNS_GUARD_TARGET_UID="$previous_target_uid"
+    return 0
+  fi
+  if [[ -f "$timer_path" ]] && ! "${SUDO_CMD[@]}" cp -p "$timer_path" "$backup_dir/timer"; then
+    warn "Could not back up the existing FXRoute mDNS guard timer"
+    MDNS_GUARD_SCRIPT_SHA256="$previous_script_sha256"
+    MDNS_GUARD_SERVICE_SHA256="$previous_service_sha256"
+    MDNS_GUARD_TIMER_SHA256="$previous_timer_sha256"
+    MDNS_GUARD_TARGET_UID="$previous_target_uid"
+    return 0
+  fi
   if ! "${SUDO_CMD[@]}" install -m 755 "$tmp_script" "$script_path"; then
     warn "Could not install FXRoute mDNS guard script"
+    if restore_mdns_guard_artifacts "$backup_dir"; then
+      MDNS_GUARD_SCRIPT_SHA256="$previous_script_sha256"
+      MDNS_GUARD_SERVICE_SHA256="$previous_service_sha256"
+      MDNS_GUARD_TIMER_SHA256="$previous_timer_sha256"
+      MDNS_GUARD_TARGET_UID="$previous_target_uid"
+    else
+      MDNS_GUARD_ENABLED=1
+      MDNS_GUARD_OWNED_BY_FXROUTE=1
+    fi
     return 0
   fi
   if ! "${SUDO_CMD[@]}" install -m 644 "$tmp_service" "$service_path"; then
     warn "Could not install FXRoute mDNS guard service"
+    if restore_mdns_guard_artifacts "$backup_dir"; then
+      MDNS_GUARD_SCRIPT_SHA256="$previous_script_sha256"
+      MDNS_GUARD_SERVICE_SHA256="$previous_service_sha256"
+      MDNS_GUARD_TIMER_SHA256="$previous_timer_sha256"
+      MDNS_GUARD_TARGET_UID="$previous_target_uid"
+    else
+      MDNS_GUARD_ENABLED=1
+      MDNS_GUARD_OWNED_BY_FXROUTE=1
+    fi
     return 0
   fi
   if ! "${SUDO_CMD[@]}" install -m 644 "$tmp_timer" "$timer_path"; then
     warn "Could not install FXRoute mDNS guard timer"
+    if restore_mdns_guard_artifacts "$backup_dir"; then
+      MDNS_GUARD_SCRIPT_SHA256="$previous_script_sha256"
+      MDNS_GUARD_SERVICE_SHA256="$previous_service_sha256"
+      MDNS_GUARD_TIMER_SHA256="$previous_timer_sha256"
+      MDNS_GUARD_TARGET_UID="$previous_target_uid"
+    else
+      MDNS_GUARD_ENABLED=1
+      MDNS_GUARD_OWNED_BY_FXROUTE=1
+    fi
     return 0
   fi
+  MDNS_GUARD_ENABLED=1
+  MDNS_GUARD_OWNED_BY_FXROUTE=1
   if ! "${SUDO_CMD[@]}" systemctl daemon-reload; then
     warn "Could not reload systemd after installing FXRoute mDNS guard"
     return 0
   fi
-  if ! "${SUDO_CMD[@]}" "$script_path" apply; then
+  if ! "${SUDO_CMD[@]}" "$tmp_script" apply; then
     warn "Could not apply the FXRoute mDNS guard rules"
     return 0
   fi
@@ -3167,9 +3958,8 @@ EOF
     warn "Could not enable the FXRoute mDNS guard timer"
     return 0
   fi
+  MDNS_GUARD_TARGET_UID="$FXROUTE_TARGET_UID"
 
-  MDNS_GUARD_ENABLED=1
-  MDNS_GUARD_OWNED_BY_FXROUTE=1
   pass "FXRoute mDNS guard installed for Spotify Desktop only"
   return 0
 }
@@ -3484,6 +4274,7 @@ main() {
   offer_optional_caddy_proxy
   print_summary
   write_install_config
+  finalize_firewalld_rule_format
   write_install_state
 }
 
