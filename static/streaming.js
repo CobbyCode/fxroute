@@ -19,6 +19,7 @@
     let showToast = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
     let formatTime = function () { return '0:00'; };
+    let artworkPlaceholderUrl = function () { return '/static/artwork-placeholder.svg?v=1'; };
     // Shared detail track-row builder, supplied by app.js so the library album
     // detail and the Tidal album/playlist details render the same row.
     let trackRowHtml = function () { return ''; };
@@ -119,6 +120,7 @@
         if (typeof api.showToast === 'function') showToast = api.showToast;
         if (typeof api.escapeHtml === 'function') escapeHtml = api.escapeHtml;
         if (typeof api.formatTime === 'function') formatTime = api.formatTime;
+        if (typeof api.artworkPlaceholderUrl === 'function') artworkPlaceholderUrl = api.artworkPlaceholderUrl;
         if (typeof api.trackRowHtml === 'function') trackRowHtml = api.trackRowHtml;
         if (typeof api.factsHtml === 'function') factsHtml = api.factsHtml;
         if (typeof api.aboutHtml === 'function') aboutHtml = api.aboutHtml;
@@ -1528,15 +1530,8 @@
             'onerror="this.onerror=null;this.src=\'' + fallback + '\'" />';
     }
 
-    function tidalArtFallback(text) {
-        // Subtle tile fallback matching the library album fallback (no
-        // initials block), reusing the existing accent gradient language.
-        const initials = (text || 'TIDAL').split(/\s+/).map(w => w[0]).join('').substring(0, 2).toUpperCase();
-        const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">' +
-            '<rect width="200" height="200" rx="16" fill="#0e1b27"/>' +
-            '<text x="100" y="112" text-anchor="middle" fill="#6ee7b7" opacity="0.85" font-size="64" font-weight="bold" font-family="system-ui,sans-serif">' + escapeHtml(initials) + '</text>' +
-            '</svg>';
-        return 'data:image/svg+xml,' + encodeURIComponent(svg);
+    function tidalArtFallback() {
+        return artworkPlaceholderUrl();
     }
 
     function tidalImageFallbackUrl(url) {
@@ -1547,7 +1542,9 @@
     }
 
     function coverImg(url, loading = 'lazy') {
-        if (!url) return '';
+        const placeholder = escapeHtml(artworkPlaceholderUrl());
+        if (!url) return '<img src="' + placeholder + '" alt=""' +
+            (loading ? ' loading="' + escapeHtml(loading) + '"' : '') + ' decoding="async" />';
         // Some valid TIDAL picture ids reject only the 480px rendition. Retry
         // the smaller rendition once, then fall back to the neutral tile.
         const fallbackUrl = tidalImageFallbackUrl(url);
@@ -1555,8 +1552,8 @@
             ? ' data-fallback-src="' + escapeHtml(fallbackUrl) + '"'
             : '';
         const errorAttr = fallbackUrl
-            ? ' onerror="if (this.dataset.fallbackSrc && this.src !== this.dataset.fallbackSrc) { this.src = this.dataset.fallbackSrc; } else { this.remove(); }"'
-            : ' onerror="this.remove()"';
+            ? ' onerror="if (this.dataset.fallbackSrc && this.src !== this.dataset.fallbackSrc) { this.src = this.dataset.fallbackSrc; } else { this.onerror=null; this.src=\'' + placeholder + '\'; }"'
+            : ' onerror="this.onerror=null;this.src=\'' + placeholder + '\'"';
         const loadingAttr = loading ? ' loading="' + escapeHtml(loading) + '"' : '';
         return '<img src="' + escapeHtml(url) + '" alt=""' + loadingAttr + fallbackAttr + ' decoding="async"' + errorAttr + ' />';
     }
@@ -1967,8 +1964,7 @@
     function detailCoverHtml(extraClass) {
         const art = state.tidal.detailArt || '';
         const cls = 'streaming-detail-cover detail-hero-cover' + (extraClass ? ' ' + extraClass : '');
-        const image = art ? coverImg(art, 'eager') : '<span class="detail-cover-placeholder" aria-hidden="true">♫</span>';
-        return '<div class="' + cls + '">' + image + '</div>';
+        return '<div class="' + cls + '">' + coverImg(art, 'eager') + '</div>';
     }
 
     function detailBackdropHtml() {

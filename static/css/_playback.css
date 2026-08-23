@@ -90,10 +90,11 @@
 }
 .playback-cover.hidden { display: none; }
 .playback-cover-placeholder {
-    color: rgba(110,231,183,0.62);
-    font-size: 0.9rem;
-    font-weight: 800;
-    letter-spacing: -0.06em;
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: inherit;
 }
 .playback-visual:has(.playback-cover:not(.hidden)) .playback-cover-placeholder { display: none; }
 

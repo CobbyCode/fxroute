@@ -65,8 +65,8 @@ assert.ok(detailBackdrop.includes('detail-header-backdrop'),
     'TIDAL detail markup must include the shared backdrop');
 assert.ok(syncBackdrop.includes('detail-header-backdrop') && syncBackdrop.includes('coverImg('),
     'TIDAL detail artwork updates must patch the backdrop image');
-assert.ok(detailCover.includes('detail-cover-placeholder'),
-    'TIDAL detail covers must keep a visible fallback when artwork is unavailable');
+assert.ok(detailCover.includes('coverImg(art, \'eager\')'),
+    'TIDAL detail covers must use the shared artwork fallback when unavailable');
 
 for (const name of ['renderTidalAlbum', 'renderTidalArtist', 'renderTidalPlaylist']) {
     const render = extractFunction(streamingJs, name);

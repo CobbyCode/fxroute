@@ -956,6 +956,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showToast,
             escapeHtml,
             formatTime,
+            artworkPlaceholderUrl,
             trackRowHtml: detailTrackRowHtml,
             factsHtml: detailFactsHtml,
             aboutHtml: detailAboutHtml,
@@ -5193,10 +5194,13 @@ function playlistFeaturingLine(names) {
 function trackThumbHtml(track) {
     const album = findAlbumForTrack(track);
     const coverUrl = album ? albumCoverUrl(album) : '';
-    if (!coverUrl) return '<div class="track-thumb" aria-hidden="true"></div>';
-    const fallback = albumArtFallbackSvg(album?.name || album?.artist || track?.title || 'Album');
+    const fallback = artworkPlaceholderUrl();
+    if (!coverUrl) {
+        return '<div class="track-thumb" aria-hidden="true"><img src="' + escapeHtml(fallback) +
+            '" alt="" loading="lazy" /></div>';
+    }
     return '<div class="track-thumb" aria-hidden="true"><img src="' + escapeHtml(coverUrl) +
-        '" alt="" loading="lazy" onerror="this.onerror=null;this.remove()" /></div>';
+        '" alt="" loading="lazy" onerror="this.onerror=null;this.src=\'' + escapeHtml(fallback) + '\'" /></div>';
 }
 
 function findAlbumForTrack(track) {
@@ -5241,22 +5245,16 @@ function playlistCoverHtml(playlist) {
         const coverUrl = albumCoverUrl(album);
         const isFallback = !coverUrl;
         return `<img class="playlist-collage-cell${isFallback ? ' is-fallback' : ''}"
-            src="${escapeHtml(coverUrl || '/static/favicon.svg')}"
+            src="${escapeHtml(coverUrl || artworkPlaceholderUrl())}"
             alt="${escapeHtml(album.name || '')}"
             loading="lazy"
-            onerror="this.onerror=null;this.classList.add('is-fallback');this.src='/static/favicon.svg';" />`;
+            onerror="this.onerror=null;this.classList.add('is-fallback');this.src='${escapeHtml(artworkPlaceholderUrl())}';" />`;
     }).join('');
     return `<div class="playlist-collage playlist-collage--${count}">${cells}</div>`;
 }
 
 function playlistFallbackMarkSvg() {
-    // Existing FXRoute brand glyph (green FX + waveform from favicon.svg),
-    // used as a clearly visible fallback when a playlist has no artwork.
-    return `<svg class="playlist-collage-fallback-mark" viewBox="0 0 512 512" aria-hidden="true">
-        <path d="M108 352V160h168v54H170v30h96v52h-96v56z" fill="currentColor"/>
-        <path d="M312 158h70l-58 92 78 104h-74l-41-58-42 58h-74l80-106-58-90h71l25 42z" fill="currentColor"/>
-        <path d="M82 386c46 0 46-32 92-32s46 32 92 32 46-32 92-32 46 32 92 32" fill="none" stroke="currentColor" stroke-opacity="0.55" stroke-width="14" stroke-linecap="round"/>
-    </svg>`;
+    return `<img class="playlist-collage-fallback-mark" src="${escapeHtml(artworkPlaceholderUrl())}" alt="" />`;
 }
 
 async function openAlbumDetail(albumId) {
@@ -5770,15 +5768,12 @@ async function playTrackInPlaylist(trackId) {
     await playLocal(trackId, trackIds);
 }
 
-function albumArtFallbackSvg(text) {
-    const initials = (text || 'ALBUM').split(/\s+/).map(w => w[0]).join('').substring(0, 2).toUpperCase();
-    const colors = ['#6366f1', '#8b5cf6', '#a78bfa', '#c084fc', '#7c3aed', '#4f46e5'];
-    const color = colors[(text || '').length % colors.length];
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
-        <rect width="200" height="200" rx="16" fill="${color}"/>
-        <text x="100" y="108" text-anchor="middle" fill="white" font-size="64" font-weight="bold" font-family="system-ui,sans-serif">${escapeHtml(initials)}</text>
-    </svg>`;
-    return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+function artworkPlaceholderUrl() {
+    return '/static/artwork-placeholder.svg?v=1';
+}
+
+function albumArtFallbackSvg() {
+    return artworkPlaceholderUrl();
 }
 
 async function playLibraryFolder(folder) {

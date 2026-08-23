@@ -238,15 +238,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background:
-        radial-gradient(circle at 50% 42%, rgba(110, 231, 183, 0.16), rgba(9, 17, 27, 0.55) 74%);
-    color: var(--accent);
+    background: #080808;
 }
 .playlist-collage-fallback-mark {
     width: 54%;
     height: 54%;
     opacity: 0.9;
-    filter: drop-shadow(0 0 10px rgba(110, 231, 183, 0.4));
+    object-fit: contain;
 }
 .playlist-detail-cover {
     position: relative;
@@ -514,26 +512,14 @@
     height: 100%;
     object-fit: cover;
 }
-.detail-cover-placeholder {
-    display: grid;
-    place-items: center;
-    width: 100%;
-    height: 100%;
-    color: var(--accent);
-    font-size: clamp(2rem, 5vw, 4rem);
-    opacity: 0.52;
-    background: radial-gradient(circle at 50% 40%, rgba(110, 231, 183, 0.16), transparent 65%);
-}
 .streaming-detail--hero .detail-hero-cover:empty {
     display: grid;
     place-items: center;
-    background: radial-gradient(circle at 50% 40%, rgba(110, 231, 183, 0.16), rgba(7, 10, 13, 0.86) 68%);
-}
-.streaming-detail--hero .detail-hero-cover:empty::before {
-    content: '♫';
-    color: var(--accent);
-    font-size: clamp(2rem, 5vw, 4rem);
-    opacity: 0.52;
+    background-color: #080808;
+    background-image: url('/static/artwork-placeholder.svg?v=1');
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
 }
 .album-detail--hero .detail-hero-meta,
 .streaming-detail--hero .detail-hero-meta {
@@ -1161,8 +1147,7 @@
 }
 
 /* Small square album-cover thumbnail on the left of a track row, shared
-   with the streaming track rows. Keeps the compact row height; falls back
-   to the neutral note-glyph placeholder when there is no artwork. */
+   with the streaming track rows. */
 .track-thumb {
     width: 42px;
     height: 42px;
@@ -1176,13 +1161,11 @@
 }
 .track-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .track-thumb:empty {
-    background: linear-gradient(135deg, var(--bg-elevated), var(--bg-hover));
-}
-.track-thumb:empty::after {
-    content: '♫';
-    color: var(--text-muted);
-    font-size: 0.95rem;
-    opacity: 0.55;
+    background-color: #080808;
+    background-image: url('/static/artwork-placeholder.svg?v=1');
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
 }
 
 /* ============================================================

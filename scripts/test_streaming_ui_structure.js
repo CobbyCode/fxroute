@@ -506,11 +506,10 @@ assert.ok(albumTracksRender.includes('detailFavoriteButtonHtml'),
     'library album rows must use the shared detailFavoriteButtonHtml helper');
 assert.ok(albumTracksRender.includes('.track-play'),
     'library album rows must bind the shared round play button');
-// Result covers fall back to a neutral placeholder: a failed image removes
-// itself so the CSS :empty tile (e.g. TIDAL artists without a picture) shows
-// instead of a broken-image icon or an empty box.
-assert.ok(js.includes('onerror="this.remove()"'),
-    'result covers must self-remove on image load failure');
+// Result covers fall back to the shared neutral artwork asset instead of a
+// broken-image icon or an empty box.
+assert.ok(js.includes('artworkPlaceholderUrl'),
+    'result covers must use the shared artwork placeholder on load failure');
 assert.ok(js.includes('function tidalImageFallbackUrl(') && js.includes('data-fallback-src'),
     'TIDAL result covers must retry a reachable smaller image variant before removal');
 assert.ok(css.includes('.streaming-result-cover:empty'),
