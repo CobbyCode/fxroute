@@ -529,9 +529,9 @@
                 message: '',
             };
         }
-        if (providerId === 'spotify') return { title: 'Spotify is ready.', message: '' };
-        if (providerId === 'qobuz') return { title: 'Qobuz is ready.', message: '' };
-        if (providerId === 'tidal') return { title: 'TIDAL is ready.', message: '' };
+        if (providerId === 'spotify') return { title: 'Spotify is not running.', message: '' };
+        if (providerId === 'qobuz') return { title: 'Nothing is playing. Start a track from the Qobuz app.', message: '' };
+        if (providerId === 'tidal') return { title: 'Nothing is playing.', message: '' };
         return { title: 'Nothing is playing.', message: '' };
     }
 
