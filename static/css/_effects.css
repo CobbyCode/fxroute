@@ -865,15 +865,19 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 1rem;
 }
 
-.effects-loudness-row,
-.effects-loudness-controls {
-    flex-wrap: nowrap;
+/* Loudness row wraps when the narrow two-column card cannot fit checkbox
+   + Strength + FFT on one line. The old nowrap overflowed the card in the
+   768–~880px band where the two-column grid starts but cards are small. */
+.effects-loudness-row {
+    flex-wrap: wrap;
 }
 
 .effects-loudness-controls {
     display: inline-flex;
     align-items: center;
-    gap: 1rem;
+    gap: 0.55rem 1rem;
+    flex-wrap: wrap;
+    max-width: 100%;
 }
 
 .effects-headroom-controls {
@@ -908,22 +912,19 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .effects-bass-row {
-    display: grid;
-    grid-template-columns: max-content max-content max-content;
+    display: flex;
     align-items: center;
-    justify-content: start;
-    column-gap: 0.95rem;
-    row-gap: 0.65rem;
+    flex-wrap: wrap;
+    gap: 0.65rem 0.95rem;
     width: 100%;
 }
 
 .effects-bass-controls {
-    display: grid;
-    grid-column: 3;
-    grid-template-columns: max-content max-content;
+    display: inline-flex;
     align-items: center;
-    column-gap: 0.55rem;
-    justify-self: start;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+    max-width: 100%;
 }
 
 .effects-bass-controls .effects-inline-control-label {
