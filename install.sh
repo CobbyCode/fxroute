@@ -87,6 +87,7 @@ FXROUTE_TARGET_GROUP=""
 FXROUTE_RUNTIME_DIR=""
 USER_LINGER_WAS_ENABLED=0
 USER_LINGER_ENABLED_BY_FXROUTE=0
+AUDIO_GROUP_ADDED_BY_FXROUTE=0
 
 VALIDATION_RESULTS=()
 WARNINGS=()
@@ -3278,6 +3279,85 @@ enable_user_session_persistence() {
   die "target user session bus did not become available at $FXROUTE_RUNTIME_DIR/bus"
 }
 
+alsa_hardware_present() {
+  compgen -G /dev/snd/controlC* >/dev/null 2>&1
+}
+
+target_user_in_audio_group() {
+  id -nG "$FXROUTE_TARGET_USER" 2>/dev/null | tr ' ' '\n' | grep -qx audio
+}
+
+target_user_can_open_alsa_control() {
+  local card=""
+  for card in /dev/snd/controlC*; do
+    [[ -e "$card" ]] || continue
+    if run_as_target_user sh -c "exec 3<>'$card'" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+target_user_has_seat_session() {
+  loginctl list-sessions --no-legend 2>/dev/null \
+    | awk -v user="$FXROUTE_TARGET_USER" '$3 == user && $4 != "-" { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+ensure_target_user_audio_access() {
+  local install_user="$FXROUTE_TARGET_USER"
+
+  if ! alsa_hardware_present; then
+    warn "No ALSA sound hardware found; FXRoute will install, but no hardware output will be selectable until audio hardware is present"
+    return 0
+  fi
+
+  if target_user_can_open_alsa_control; then
+    pass "target user can already reach the ALSA audio hardware"
+    return 0
+  fi
+
+  if target_user_in_audio_group; then
+    warn "ALSA hardware is present, but the target user cannot open a control device despite audio group membership"
+    return 0
+  fi
+
+  if ! getent group audio >/dev/null 2>&1; then
+    warn "The audio group does not exist; cannot grant $install_user ALSA device access"
+    return 0
+  fi
+
+  log "Adding $install_user to the audio group for ALSA device access"
+  if ! "${SUDO_CMD[@]}" usermod -aG audio "$install_user"; then
+    warn "Could not add $install_user to the audio group"
+    return 0
+  fi
+  AUDIO_GROUP_ADDED_BY_FXROUTE=1
+  pass "target user added to the audio group"
+
+  # Supplementary groups are fixed when the user manager starts. Restart it so
+  # PipeWire/WirePlumber and FXRoute inherit the audio group without a re-login.
+  # Never restart a session on a seat: that would kill a running desktop.
+  if target_user_has_seat_session; then
+    warn "A graphical seat session is active; the audio group applies after the next login or reboot"
+    return 0
+  fi
+
+  local manager_unit="user@${FXROUTE_TARGET_UID}.service"
+  local deadline=$((SECONDS + 30))
+  if ! "${SUDO_CMD[@]}" systemctl restart "$manager_unit" >/dev/null 2>&1; then
+    warn "User session restart failed; the audio group takes effect after the next login or reboot"
+    return 0
+  fi
+  while (( SECONDS < deadline )); do
+    if [[ -d "$FXROUTE_RUNTIME_DIR" && -S "$FXROUTE_RUNTIME_DIR/bus" ]]; then
+      pass "target user session restarted with the audio group"
+      return 0
+    fi
+    sleep 1
+  done
+  warn "User session bus did not return after restart; the audio group takes effect after the next login or reboot"
+}
+
 configure_dsp_ingress_sink() {
   local config_dir="$HOME/.config/pipewire/pipewire-pulse.conf.d"
   local config_file="$config_dir/50-fxroute-dsp-sink.conf"
@@ -3395,6 +3475,7 @@ write_install_state() {
   "runtime_dir": "${FXROUTE_RUNTIME_DIR}",
   "user_linger_was_enabled": $( [[ $USER_LINGER_WAS_ENABLED -eq 1 ]] && echo true || echo false ),
   "user_linger_enabled_by_fxroute": $( [[ $USER_LINGER_ENABLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+  "audio_group_added_by_fxroute": $( [[ $AUDIO_GROUP_ADDED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
   "providers": {
     "spotify_desktop": {
       "selected": $( [[ $SELECT_SPOTIFY_DESKTOP -eq 1 ]] && echo true || echo false ),
@@ -4442,6 +4523,16 @@ validate_pipewire_session() {
     failures+=("pactl list sinks short failed: ${output//$'\n'/; }")
   elif ! awk '{print $2}' <<<"$output" | grep -Fxq fxroute_dsp_sink; then
     failures+=("FXRoute DSP ingress sink is not visible in the target PipeWire-Pulse graph")
+  fi
+
+  if alsa_hardware_present; then
+    if ! output="$(run_as_target_user wpctl status 2>&1)"; then
+      failures+=("wpctl status failed: ${output//$'\n'/; }")
+    elif ! grep -Fq '[alsa]' <<<"$output"; then
+      failures+=("ALSA hardware is present, but the $FXROUTE_TARGET_USER session cannot reach it (audio group or device access missing)")
+    fi
+  else
+    warn "No ALSA sound hardware found; FXRoute is installed, but no hardware output will be selectable until audio hardware is present"
   fi
 
   service_pid="$(user_systemctl show -p MainPID --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
@@ -5631,6 +5722,7 @@ main() {
   build_native_dsp_engine
   ensure_target_user_ownership
   enable_user_session_persistence
+  ensure_target_user_audio_access
   enable_user_audio_services
   configure_pipewire_samplerates_if_available
   configure_dsp_ingress_sink

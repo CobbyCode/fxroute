@@ -581,6 +581,44 @@ printf '%s\\n' "$SYSTEMCTL_CALLS"
         self.assertIn('"user_linger_enabled_by_fxroute"', self.install)
         self.assertIn('"user_linger_was_enabled"', self.install)
 
+    def test_audio_group_access_is_ensured_before_audio_services(self):
+        body = extract_function(self.install, "main")
+        self.assertLess(
+            body.index("ensure_target_user_audio_access"),
+            body.index("enable_user_audio_services"),
+        )
+        audio_access = extract_function(self.install, "ensure_target_user_audio_access")
+        self.assertIn("usermod -aG audio", audio_access)
+        self.assertIn("getent group audio", audio_access)
+        self.assertIn("AUDIO_GROUP_ADDED_BY_FXROUTE=1", audio_access)
+        self.assertIn("user@${FXROUTE_TARGET_UID}.service", audio_access)
+        self.assertIn("alsa_hardware_present", audio_access)
+        self.assertIn("target_user_can_open_alsa_control", audio_access)
+        self.assertIn("target_user_has_seat_session", audio_access)
+
+    def test_install_state_records_audio_group_ownership(self):
+        self.assertIn('"audio_group_added_by_fxroute"', self.install)
+
+    def test_pipewire_validation_requires_alsa_hardware_reachability(self):
+        validation = extract_function(self.install, "validate_pipewire_session")
+        self.assertIn("alsa_hardware_present", validation)
+        self.assertIn("grep -Fq '[alsa]'", validation)
+        self.assertIn("cannot reach it", validation)
+
+    def test_uninstaller_removes_fxroute_owned_audio_group(self):
+        self.assertIn("remove_audio_group_if_owned()", self.uninstall)
+        self.assertIn("gpasswd -d", self.uninstall)
+        self.assertIn("audio_group_added_by_fxroute", self.uninstall)
+        main_body = extract_function(self.uninstall, "main")
+        self.assertLess(
+            main_body.index("remove_user_linger_if_owned"),
+            main_body.index("remove_audio_group_if_owned"),
+        )
+        remover = extract_function(self.uninstall, "remove_audio_group_if_owned")
+        self.assertIn('read_install_state_field audio_group_added_by_fxroute', remover)
+        self.assertIn('[[ "$group_owned" == "true" ]] || return 0', remover)
+        self.assertIn("PRESERVE_INSTALL_STATE=1", remover)
+
     def test_root_target_commands_pin_xdg_config_to_the_audio_user(self):
         runner = extract_function(self.install, "run_as_target_user")
         self.assertIn('XDG_CONFIG_HOME="$FXROUTE_TARGET_HOME/.config"', runner)

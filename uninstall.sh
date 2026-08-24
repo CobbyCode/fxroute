@@ -655,6 +655,29 @@ remove_user_linger_if_owned() {
   log "Disabled user lingering enabled by FXRoute for $FXROUTE_TARGET_USER"
 }
 
+remove_audio_group_if_owned() {
+  local group_owned=""
+  local sudo_cmd=()
+
+  group_owned="$(read_install_state_field audio_group_added_by_fxroute 2>/dev/null || true)"
+  [[ "$group_owned" == "true" ]] || return 0
+  if [[ "$(id -u)" -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo_cmd=(sudo)
+    else
+      warn "Cannot remove FXRoute-owned audio group membership because sudo is unavailable"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  fi
+  if ! "${sudo_cmd[@]}" gpasswd -d "$FXROUTE_TARGET_USER" audio; then
+    warn "Could not remove $FXROUTE_TARGET_USER from the audio group"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  log "Removed $FXROUTE_TARGET_USER from the audio group added by FXRoute"
+}
+
 remove_spotify_cleanup_helper() {
   local service_name="fxroute-spotify-cache-cleanup.service"
   local timer_name="fxroute-spotify-cache-cleanup.timer"
@@ -3284,6 +3307,8 @@ main() {
   if [[ $CORE_SERVICE_CLEANUP_DEFERRED -eq 0 ]]; then
     log "Removing FXRoute user-session persistence"
     remove_user_linger_if_owned
+    log "Removing FXRoute-owned audio group membership"
+    remove_audio_group_if_owned
   else
     log "Keeping FXRoute user-session persistence while service cleanup is deferred"
   fi
