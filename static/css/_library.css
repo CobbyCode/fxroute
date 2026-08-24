@@ -855,15 +855,18 @@
     flex-wrap: wrap;
     overflow: visible;
 }
+/* On roomy viewports the controls sit as one centered, evenly spaced row:
+   name + save, then the existing-playlist target, then add/cancel. */
 .tidal-playlist-save-row .playlist-save-controls {
     flex: 1 1 auto;
     flex-wrap: wrap;
+    justify-content: center;
 }
 .tidal-playlist-save-row .url-input[type="text"] {
     flex: 0 1 200px;
 }
 .tidal-playlist-save-row select.url-input {
-    flex: 1 1 190px;
+    flex: 0 1 240px;
 }
 .tidal-playlist-save-error {
     flex: 0 0 100%;

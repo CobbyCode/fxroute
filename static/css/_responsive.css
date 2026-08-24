@@ -173,6 +173,11 @@
        centered on the 4.5px track. Firefox centers natively (webkit only). */
     .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
     .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
+    /* TIDAL playlist save row: slightly wider breathing room between the
+       name/save group, the existing-playlist target and the actions. */
+    .tidal-playlist-save-row .playlist-save-controls {
+        gap: 0.85rem;
+    }
 }
 
 @media (min-width: 701px) and (max-width: 1180px) {
