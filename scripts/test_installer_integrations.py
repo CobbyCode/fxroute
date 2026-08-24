@@ -626,6 +626,14 @@ printf '%s\\n' "$SYSTEMCTL_CALLS"
         self.assertIn('PULSE_SERVER="$FXROUTE_RUNTIME_DIR/pulse/native"', runner)
         self.assertIn('DOWNLOADS_SUBDIR', self.install)
 
+    def test_target_user_commands_force_c_locale_for_stable_parsing(self):
+        # Localized tool output (pactl/wpctl) must not break validation
+        # greps on non-English systems (found on de_DE Ubuntu 26.04).
+        install_runner = extract_function(self.install, "run_as_target_user")
+        self.assertIn("LC_ALL=C", install_runner)
+        uninstall_runner = extract_function(self.uninstall, "run_as_target_user")
+        self.assertIn("LC_ALL=C", uninstall_runner)
+
     def test_target_user_ownership_check_never_recursively_chowns_user_tree(self):
         ownership = extract_function(self.install, "ensure_target_user_ownership")
         self.assertNotIn("chown -R", ownership)

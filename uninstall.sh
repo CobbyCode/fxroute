@@ -209,6 +209,7 @@ run_as_target_user() {
   if [[ "$(id -u)" -eq 0 && "$FXROUTE_TARGET_USER" != "root" ]]; then
     runuser -u "$FXROUTE_TARGET_USER" -- env \
       HOME="$HOME" \
+      LC_ALL=C \
       XDG_CONFIG_HOME="$HOME/.config" \
       XDG_DATA_HOME="$HOME/.local/share" \
       XDG_CACHE_HOME="$HOME/.cache" \
@@ -219,6 +220,7 @@ run_as_target_user() {
       "$@"
   else
     HOME="$HOME" \
+      LC_ALL=C \
       XDG_CONFIG_HOME="$HOME/.config" \
       XDG_DATA_HOME="$HOME/.local/share" \
       XDG_CACHE_HOME="$HOME/.cache" \
