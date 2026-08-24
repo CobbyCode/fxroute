@@ -141,7 +141,29 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
         self.assertIn("install_network_library_helper\n", self.text)
         self.assertIn("remove_network_library_helper()", self.uninstall_text)
         self.assertIn("/etc/sudoers.d/fxroute-cifs-mount", self.uninstall_text)
-        self.assertIn("fxroute-cifs-mount --remove-all", self.uninstall_text)
+        self.assertIn('helper_path="/usr/local/sbin/fxroute-cifs-mount"', self.uninstall_text)
+        self.assertIn("--remove-all", self.uninstall_text)
+        self.assertIn("cifs_helper_installed_by_fxroute", self.text)
+        self.assertIn("cifs_sudoers_rule_installed_by_fxroute", self.uninstall_text)
+        self.assertIn("helper_verified", self.uninstall_text)
+
+    def test_system_update_cleanup_requires_recorded_ownership(self):
+        self.assertIn("system_update_owned_by_fxroute", self.text)
+        self.assertIn("system_update_owned_by_fxroute", self.uninstall_text)
+        self.assertIn("system_update_service_sha256", self.uninstall_text)
+        body = _extract_function(self.uninstall_text, "remove_optional_system_update_helper")
+        self.assertLess(body.index("SYSTEM_UPDATE_HELPER_SHA256"), body.index("stop_system_update_units"))
+        self.assertIn("restore_system_update_transaction", body)
+
+    def test_system_update_changes_validate_before_stop_and_support_rollback(self):
+        body = _extract_function(self.text, "configure_system_auto_update_helper")
+        self.assertIn("restore_system_update_transaction", self.text)
+        self.assertLess(body.index('[[ -f "$script_path"'), body.index("stop_system_update_units"))
+        self.assertIn("restore_system_update_transaction", body)
+
+    def test_cifs_cleanup_requires_recorded_helper_ownership_and_current_helper(self):
+        self.assertIn('[[ $helper_owned -eq 1 && $helper_verified -eq 1 ]]', self.uninstall_text)
+        self.assertNotIn("CIFS_HELPER_LEGACY_SHA256", self.uninstall_text)
         safe_path = 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'
         self.assertIn(safe_path, self.text)
         self.assertIn(safe_path, self.uninstall_text)
@@ -203,9 +225,11 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
 
     def test_headless_audio_service_selection_behavior(self):
         exists = _extract_function(self.text, "user_unit_exists")
+        user_systemctl = _extract_function(self.text, "user_systemctl")
         body = _extract_function(self.text, "enable_user_audio_services")
         harness = f'''
 {exists}
+{user_systemctl}
 {body}
 SYSTEMCTL_CALLS=
 PASS=0; FAIL=0
@@ -277,6 +301,9 @@ systemctl() {{ SYSTEMCTL_CALLS="$SYSTEMCTL_CALLS|systemctl $*"; return 0; }}
         self.assertIn("loginctl enable-linger", self.text)
         self.assertIn("loginctl show-user", self.text)
         self.assertIn("enable_user_session_persistence\n", self.text)
+
+    def test_rtkit_is_not_forced_as_an_audio_dependency(self):
+        self.assertNotIn("rtkit", self.text.lower())
 
     def test_spotify_autostart_default_is_x86_64_only(self):
         self.assertIn('[[ "$(uname -m)" != "x86_64" ]]', self.text)

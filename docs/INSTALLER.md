@@ -6,6 +6,31 @@ enables the `fxroute.service` systemd user unit. Optional streaming providers
 are selected independently and are not installed by default in a
 non-interactive run.
 
+## Headless User Session
+
+FXRoute and its PipeWire graph must run as the same Unix user. Run the
+installer as that user when possible. If installation is started from a root
+shell, select the audio user explicitly when more than one normal account is
+present:
+
+```bash
+./install.sh --user khadas
+```
+
+The installer enables `loginctl` lingering before starting PipeWire,
+WirePlumber, PipeWire-Pulse, and FXRoute. It then validates the target user's
+runtime sockets and runs `wpctl`, `pw-cli`, `pw-link`, and `pactl` in that same
+user context. A failed PipeWire session check is an installation failure, not
+an HTTP-only warning. RTKit is not an FXRoute dependency; PipeWire may log a
+fallback-priority warning when RTKit is absent, but the audio session remains
+functional without adding that desktop-oriented package.
+
+Custom `--target` paths must be dedicated directories whose final component is
+`fxroute` (a `--local-project` checkout may keep its own directory name); this
+prevents the root installer from changing ownership of a shared system
+directory. To remove a root-installed target-user installation, select the
+same user explicitly: `./uninstall.sh --user <name>`.
+
 ## Provider Selection
 
 Use one or more explicit provider flags:

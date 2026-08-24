@@ -83,6 +83,14 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
 
 FXRoute runs in a **Linux user session with an active PipeWire audio stack**. That session can be a desktop session or a headless CLI/minimal setup (for example ARM64 Armbian) with the user services enabled. FXRoute is not intended to run as a system daemon.
 
+The installer keeps FXRoute, PipeWire, WirePlumber, and PipeWire-Pulse in the
+same Unix user session. Run it as the audio user, or select that user when a
+root shell is used, for example `./install.sh --user khadas`. On a headless
+system the installer enables user-session persistence, starts the audio units,
+and refuses to report a successful install unless the target user's PipeWire
+socket, `wpctl`, `pw-cli`, `pw-link`, PipeWire-Pulse socket, and FXRoute DSP
+ingress sink are reachable.
+
 Typical setup:
 
 - small PC or ARM board near DAC, amp, active speakers, headphones, or TV
@@ -164,6 +172,12 @@ automation:
 chmod +x install.sh
 ./install.sh
 ```
+
+When installing from a root shell on a host with more than one normal user,
+pass the audio user explicitly: `./install.sh --user <name>`. A root shell on
+a host with one eligible normal user selects that user automatically. Custom
+install targets must be dedicated directories named `fxroute` unless
+`--local-project` is used.
 
 The installer creates `.env` automatically and preserves it on reruns. For manual setup, copy `.env.example` to `.env` and adjust at least `MUSIC_ROOT` when needed. Network libraries can be selected in **Technical settings**. FXRoute discovers accessible SMB shares and also accepts a manual `smb://server/share` entry.
 

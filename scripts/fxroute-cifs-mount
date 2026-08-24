@@ -13,17 +13,56 @@ user="${SUDO_USER:-}"
 }
 uid="$(id -u "$user")"
 mount_root="/var/lib/fxroute/music-libraries/$uid"
+fstab_marker="fxroute-managed"
 
 if [[ "$server" == "--remove-all" ]]; then
   exec 9>/run/lock/fxroute-cifs-mount.lock
   flock 9
+  stop_failed=0
+  mountpoint_status=0
+  if ! awk -v prefix="$mount_root/" -v marker="$fstab_marker" '
+    $2 ~ ("^" prefix) && $3 == "cifs" && $0 !~ ("[[:space:]]#[[:space:]]*" marker "([[:space:]]|$)") {found = 1}
+    END {exit found ? 1 : 0}
+  ' /etc/fstab; then
+    echo "Refusing to remove unprovenanced CIFS entries under $mount_root" >&2
+    exit 1
+  fi
   while read -r mount_point; do
     [[ -n "$mount_point" ]] || continue
     unit="$(systemd-escape --path "$mount_point")"
-    systemctl stop "$unit.automount" "$unit.mount" >/dev/null 2>&1 || true
-  done < <(awk -v prefix="$mount_root/" '$2 ~ ("^" prefix) && $3 == "cifs" { gsub(/\\040/, " ", $2); print $2 }' /etc/fstab)
+    for mount_unit in "$unit.automount" "$unit.mount"; do
+      if ! active_state="$(systemctl show "$mount_unit" -p ActiveState --value 2>/dev/null)"; then
+        stop_failed=1
+        continue
+      fi
+      case "$active_state" in
+        active|activating|deactivating)
+          if ! systemctl stop "$mount_unit" >/dev/null 2>&1; then
+            stop_failed=1
+          fi
+          ;;
+        inactive|failed|dead|unknown)
+          ;;
+        *)
+          stop_failed=1
+          ;;
+      esac
+    done
+    if ! command -v mountpoint >/dev/null 2>&1; then
+      stop_failed=1
+    elif mountpoint -q "$mount_point"; then
+      stop_failed=1
+    else
+      mountpoint_status=$?
+      [[ $mountpoint_status -eq 1 ]] || stop_failed=1
+    fi
+  done < <(awk -v prefix="$mount_root/" -v marker="$fstab_marker" '$2 ~ ("^" prefix) && $3 == "cifs" && $0 ~ ("[[:space:]]#[[:space:]]*" marker "([[:space:]]|$)") { gsub(/\\040/, " ", $2); print $2 }' /etc/fstab)
+  if [[ $stop_failed -ne 0 ]]; then
+    echo "Could not stop all FXRoute CIFS mount units; keeping /etc/fstab entries for retry" >&2
+    exit 1
+  fi
   tmp_fstab="$(mktemp /etc/fstab.fxroute.XXXXXX)"
-  awk -v prefix="$mount_root/" '!($2 ~ ("^" prefix) && $3 == "cifs")' /etc/fstab > "$tmp_fstab"
+  awk -v prefix="$mount_root/" -v marker="$fstab_marker" '!($2 ~ ("^" prefix) && $3 == "cifs" && $0 ~ ("[[:space:]]#[[:space:]]*" marker "([[:space:]]|$)"))' /etc/fstab > "$tmp_fstab"
   chmod --reference=/etc/fstab "$tmp_fstab"
   chown --reference=/etc/fstab "$tmp_fstab"
   mv "$tmp_fstab" /etc/fstab
@@ -52,12 +91,18 @@ install -d -o root -g root -m 755 "$mount_root/$server" "$mount_point"
 fstab_source="${source// /\\040}"
 fstab_mount="${mount_point// /\\040}"
 options="guest,ro,uid=$uid,gid=$gid,_netdev,nofail,x-systemd.automount,x-systemd.mount-timeout=10s,x-systemd.idle-timeout=5min"
-entry="$fstab_source $fstab_mount cifs $options 0 0"
+entry="$fstab_source $fstab_mount cifs $options 0 0 # $fstab_marker"
 
 exec 9>/run/lock/fxroute-cifs-mount.lock
 flock 9
 tmp_fstab="$(mktemp /etc/fstab.fxroute.XXXXXX)"
 trap 'rm -f "$tmp_fstab"' EXIT
+if awk -v mount="$fstab_mount" -v source="$fstab_source" '$2 == mount && $3 == "cifs" && $1 != source {found = 1} END {exit found ? 1 : 0}' /etc/fstab; then
+  :
+else
+  echo "Refusing to replace a foreign CIFS entry already using $mount_point" >&2
+  exit 1
+fi
 FXROUTE_FSTAB_SOURCE="$fstab_source" FXROUTE_FSTAB_MOUNT="$fstab_mount" FXROUTE_FSTAB_ENTRY="$entry" awk '
   BEGIN {
     source = ENVIRON["FXROUTE_FSTAB_SOURCE"]

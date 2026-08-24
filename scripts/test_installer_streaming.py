@@ -173,7 +173,9 @@ spotify_desktop_supported
         runtime_check = extract_function(self.install, "spotifyd_runtime_missing_libraries")
         installer = extract_function(self.install, "install_spotifyd")
         self.assertIn("spotifyd_runtime_missing_libraries", installer)
-        self.assertRegex(installer, r"if ! systemctl --user disable --now spotifyd\.service")
+        self.assertIn("if ! missing_runtime=", installer)
+        self.assertNotIn("|| true", runtime_check)
+        self.assertRegex(installer, r"if ! user_systemctl disable --now spotifyd\.service")
         self.assertLess(installer.index("spotifyd_runtime_missing_libraries"),
                         installer.index("write_spotifyd_config"))
         with tempfile.TemporaryDirectory() as td:
@@ -188,7 +190,7 @@ spotify_desktop_supported
             fake_ldd.chmod(0o755)
             fake_binary.chmod(0o755)
             cases = (
-                ("libssl.so.1.1 => not found", "1", "libssl.so.1.1"),
+                ("libssl.so.1.1 => not found", "0", "libssl.so.1.1"),
                 (
                     "/tmp/spotifyd: /lib/libc.so.6: version `GLIBC_2.38' not found (required by /tmp/spotifyd)",
                     "0",
@@ -200,7 +202,7 @@ spotify_desktop_supported
                     [
                         "bash",
                         "-c",
-                        f'set -euo pipefail\n{runtime_check}\nmissing="$(spotifyd_runtime_missing_libraries {fake_binary})"\nprintf "%s\\n" "$missing"\n',
+                        f'set -euo pipefail\nrun_as_target_user() {{ "$@"; }}\n{runtime_check}\nmissing="$(spotifyd_runtime_missing_libraries {fake_binary})"\nprintf "%s\\n" "$missing"\n',
                     ],
                     env={
                         **os.environ,
@@ -238,9 +240,9 @@ spotify_desktop_supported
         spotifyd = extract_function(self.install, "configure_spotifyd_service")
         qbzd = extract_function(self.install, "configure_qbzd_service")
         self.assertIn("SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -eq 1", spotifyd)
-        self.assertIn("systemctl --user enable --now spotifyd.service", spotifyd)
+        self.assertIn("user_systemctl enable --now spotifyd.service", spotifyd)
         self.assertIn("QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1", qbzd)
-        self.assertIn("systemctl --user enable --now qbzd.service", qbzd)
+        self.assertIn("user_systemctl enable --now qbzd.service", qbzd)
 
     def test_qobuz_release_matrix_is_pinned(self):
         self.assertRegex(self.install, r"QBZD_VERSION=\"2\.0\.2\"")
@@ -478,7 +480,8 @@ spotify_desktop_supported
 
     def test_uninstaller_honors_the_recorded_custom_install_root(self):
         self.assertIn("INSTALL_CONFIG_FILE", self.uninstall)
-        self.assertIn("FXROUTE_INSTALL_ROOT", self.uninstall)
+        self.assertIn("ROOT_INSTALL_STATE_FILE", self.uninstall)
+        self.assertIn("install_root", self.uninstall)
         self.assertIn("INSTALL_ROOT_EXPLICIT", self.uninstall)
         extract_function(self.uninstall, "load_recorded_install_root")
 

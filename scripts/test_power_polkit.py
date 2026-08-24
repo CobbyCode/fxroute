@@ -145,7 +145,7 @@ class InstallerIntegrationTests(unittest.TestCase):
 
     def test_install_substitutes_the_install_user(self):
         sed_block = re.search(
-            r'sed -e "s/INSTALL_USER_PLACEHOLDER/\$\{install_user\}/g" "\$template_src"',
+            r'sed -e "s/INSTALL_USER_PLACEHOLDER/\$\{install_user\}/g" "\$template_snapshot"',
             self.install_text,
         )
         self.assertIsNotNone(sed_block)

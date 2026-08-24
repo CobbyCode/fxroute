@@ -10,15 +10,28 @@ PROJECT_DIRNAME="fxroute"
 INSTALL_ROOT_DEFAULT="$HOME/$PROJECT_DIRNAME"
 INSTALL_ROOT="$INSTALL_ROOT_DEFAULT"
 INSTALL_ROOT_EXPLICIT=0
+TARGET_USER_ARG=""
+FXROUTE_TARGET_USER="$(id -un)"
+FXROUTE_TARGET_UID="$(id -u)"
+FXROUTE_RUNTIME_DIR="/run/user/$FXROUTE_TARGET_UID"
 REMOVE_PROJECT_DIR=0
 ASSUME_YES=0
+INSTALL_ROOT_LOCAL_PROJECT=0
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
 INSTALL_CONFIG_FILE="$HOME/.config/fxroute/install-config.env"
-FXROUTE_BACKUP_DIR="$HOME/.config/fxroute/backups"
+ROOT_INSTALL_STATE_FILE="/var/lib/fxroute/state/$(id -u)/install-state.json"
+FXROUTE_BACKUP_DIR="/var/lib/fxroute/backups/$(id -u)"
+ROOT_STATE_REQUIRED=0
+ROOT_STATE_TRUSTED=0
+CIFS_HELPER_INSTALLED_BY_FXROUTE=0
+CIFS_SUDOERS_RULE_INSTALLED_BY_FXROUTE=0
+CIFS_SUDOERS_SHA256=""
 SPOTIFY_APT_SOURCE_FILE="/etc/apt/sources.list.d/spotify.list"
 SPOTIFY_APT_KEY_FILE="/usr/share/keyrings/spotify-archive-keyring.gpg"
 SPOTIFY_APT_KEY_FINGERPRINT="E1096BCBFF6D418796DE78515384CE82BA52C83A"
 SPOTIFYD_ZEROCONF_PORT="4444"
+CIFS_HELPER_SHA256="a878afbf1927bdd14ed3049df39a41929a54cd18a1ab89a377ba1ed4c4b453d8"
+SYSTEM_UPDATE_HELPER_SHA256="b9e67b2f396e814930d1ebfeba8f6d9d483b601a3fbd27cc7dd8c32b7d3506eb"
 PRESERVE_INSTALL_STATE=0
 PROVIDER_LAN_CLEANUP_DEFERRED=0
 CORE_SERVICE_CLEANUP_DEFERRED=0
@@ -47,6 +60,7 @@ Usage: ./uninstall.sh [options]
 
 Options:
   --target <dir>                Uninstall from this directory (default: $INSTALL_ROOT_DEFAULT)
+  --user <name>                 Select the FXRoute user when invoked as root
   --remove-project-dir          Remove the project directory after uninstall
   -y, --yes                     Assume yes for optional removals
   -h, --help                    Show this help
@@ -102,6 +116,11 @@ while [[ $# -gt 0 ]]; do
       INSTALL_ROOT_EXPLICIT=1
       shift 2
       ;;
+    --user)
+      [[ $# -ge 2 ]] || { echo "--user requires a Unix username" >&2; exit 1; }
+      TARGET_USER_ARG="$2"
+      shift 2
+      ;;
     --remove-project-dir)
       REMOVE_PROJECT_DIR=1
       shift
@@ -121,6 +140,96 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+configure_target_user_environment() {
+  local passwd_entry=""
+  local passwd_name=""
+  local passwd_password=""
+  local passwd_uid=""
+  local passwd_gid=""
+  local passwd_gecos=""
+  local passwd_shell=""
+
+  if [[ -n "$TARGET_USER_ARG" ]]; then
+    [[ "$(id -u)" -eq 0 ]] || {
+      echo "Only root may select a different FXRoute user" >&2
+      exit 1
+    }
+    FXROUTE_TARGET_USER="$TARGET_USER_ARG"
+  fi
+
+  passwd_entry="$(getent passwd "$FXROUTE_TARGET_USER" 2>/dev/null || true)"
+  [[ -n "$passwd_entry" ]] || {
+    echo "Could not find FXRoute user $FXROUTE_TARGET_USER" >&2
+    exit 1
+  }
+  IFS=: read -r passwd_name passwd_password passwd_uid passwd_gid passwd_gecos HOME passwd_shell <<<"$passwd_entry"
+  [[ "$HOME" == /* && -d "$HOME" ]] || {
+    echo "FXRoute user $FXROUTE_TARGET_USER has no usable home directory" >&2
+    exit 1
+  }
+  export HOME
+  FXROUTE_TARGET_UID="$(id -u "$FXROUTE_TARGET_USER")"
+  FXROUTE_RUNTIME_DIR="/run/user/$FXROUTE_TARGET_UID"
+  INSTALL_ROOT_DEFAULT="$HOME/$PROJECT_DIRNAME"
+  [[ $INSTALL_ROOT_EXPLICIT -eq 1 ]] || INSTALL_ROOT="$INSTALL_ROOT_DEFAULT"
+  INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
+  INSTALL_CONFIG_FILE="$HOME/.config/fxroute/install-config.env"
+  ROOT_INSTALL_STATE_FILE="/var/lib/fxroute/state/$FXROUTE_TARGET_UID/install-state.json"
+  FXROUTE_BACKUP_DIR="/var/lib/fxroute/backups/$FXROUTE_TARGET_UID"
+  PROVIDER_DATA_PATHS=(
+    "$HOME/.config/spotify"
+    "$HOME/.cache/spotify"
+    "$HOME/.local/share/spotify"
+    "$HOME/.var/app/com.spotify.Client"
+    "$HOME/.config/spotifyd"
+    "$HOME/.cache/spotifyd"
+    "$HOME/.config/qbzd"
+    "$HOME/.cache/qbzd"
+    "$HOME/.local/share/qbzd"
+    "$HOME/.config/qbz"
+    "$HOME/.cache/qbz"
+    "$HOME/.local/share/qbz"
+    "$HOME/.config/fxroute/tidal-session.json"
+  )
+}
+
+configure_target_user_environment
+
+user_systemctl() {
+  if [[ "$(id -u)" -eq 0 && "$FXROUTE_TARGET_USER" != "root" ]]; then
+    systemctl --user --machine="${FXROUTE_TARGET_USER}@" "$@"
+  else
+    XDG_RUNTIME_DIR="$FXROUTE_RUNTIME_DIR" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$FXROUTE_RUNTIME_DIR/bus" \
+      systemctl --user "$@"
+  fi
+}
+
+run_as_target_user() {
+  if [[ "$(id -u)" -eq 0 && "$FXROUTE_TARGET_USER" != "root" ]]; then
+    runuser -u "$FXROUTE_TARGET_USER" -- env \
+      HOME="$HOME" \
+      XDG_CONFIG_HOME="$HOME/.config" \
+      XDG_DATA_HOME="$HOME/.local/share" \
+      XDG_CACHE_HOME="$HOME/.cache" \
+      XDG_RUNTIME_DIR="$FXROUTE_RUNTIME_DIR" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$FXROUTE_RUNTIME_DIR/bus" \
+      PIPEWIRE_REMOTE=pipewire-0 \
+      PULSE_SERVER="$FXROUTE_RUNTIME_DIR/pulse/native" \
+      "$@"
+  else
+    HOME="$HOME" \
+      XDG_CONFIG_HOME="$HOME/.config" \
+      XDG_DATA_HOME="$HOME/.local/share" \
+      XDG_CACHE_HOME="$HOME/.cache" \
+      XDG_RUNTIME_DIR="$FXROUTE_RUNTIME_DIR" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$FXROUTE_RUNTIME_DIR/bus" \
+      PIPEWIRE_REMOTE=pipewire-0 \
+      PULSE_SERVER="$FXROUTE_RUNTIME_DIR/pulse/native" \
+      "$@"
+  fi
+}
+
 confirm() {
   local prompt="$1"
   if [[ $ASSUME_YES -eq 1 ]]; then
@@ -138,18 +247,151 @@ print(os.path.realpath(os.path.abspath(os.path.expanduser(sys.argv[1]))))
 PY
 }
 
+canonical_config_path() {
+  python3 - <<'PY' "$1" "$2"
+import os
+import sys
+
+value = sys.argv[1].strip()
+base = sys.argv[2]
+if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+    value = value[1:-1]
+value = os.path.expandvars(os.path.expanduser(value))
+if not os.path.isabs(value):
+    value = os.path.join(base, value)
+print(os.path.realpath(os.path.abspath(value)))
+PY
+}
+
 path_is_within() {
   local child="$1"
   local parent="$2"
+  [[ "$parent" == "/" && "$child" == /* ]] && return 0
   [[ "$child" == "$parent" || "$child" == "$parent"/* ]]
+}
+
+path_has_symlink_component() {
+  local path="$1"
+  local current="/"
+  local component=""
+  local components=()
+
+  [[ "$path" == /* ]] || return 1
+  IFS='/' read -r -a components <<<"${path#/}"
+  for component in "${components[@]}"; do
+    [[ -n "$component" ]] || continue
+    current="${current%/}/$component"
+    [[ -L "$current" ]] && return 0
+  done
+  return 1
+}
+
+root_state_is_trusted() {
+  local state_dir="$(dirname "$ROOT_INSTALL_STATE_FILE")"
+  local state_mode=""
+  local dir_mode=""
+
+  [[ "$ROOT_INSTALL_STATE_FILE" == /var/lib/fxroute/state/* ]] || return 1
+  [[ -f "$ROOT_INSTALL_STATE_FILE" && ! -L "$ROOT_INSTALL_STATE_FILE" ]] || return 1
+  if path_has_symlink_component "$ROOT_INSTALL_STATE_FILE"; then
+    return 1
+  fi
+  [[ "$(stat -c '%u:%g' "$ROOT_INSTALL_STATE_FILE" 2>/dev/null || true)" == "0:0" ]] || return 1
+  state_mode="$(stat -c '%a' "$ROOT_INSTALL_STATE_FILE" 2>/dev/null || true)"
+  [[ "$state_mode" == 600 || "$state_mode" == 640 || "$state_mode" == 644 ]] || return 1
+  [[ -d "$state_dir" && ! -L "$state_dir" ]] || return 1
+  [[ "$(stat -c '%u:%g' "$state_dir" 2>/dev/null || true)" == "0:0" ]] || return 1
+  dir_mode="$(stat -c '%a' "$state_dir" 2>/dev/null || true)"
+  [[ "$dir_mode" == 700 || "$dir_mode" == 750 || "$dir_mode" == 755 ]] || return 1
+  python3 - <<'PY' "$ROOT_INSTALL_STATE_FILE" "$FXROUTE_TARGET_USER" "$FXROUTE_TARGET_UID"
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text())
+except (OSError, ValueError):
+    raise SystemExit(1)
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+if payload.get("install_user") != sys.argv[2]:
+    raise SystemExit(1)
+if str(payload.get("install_uid")) != sys.argv[3]:
+    raise SystemExit(1)
+if not isinstance(payload.get("install_root"), str) or not payload["install_root"].startswith("/"):
+    raise SystemExit(1)
+PY
+}
+
+read_state_field_from_file() {
+  local state_file="$1"
+  local field="$2"
+  [[ -f "$state_file" && ! -L "$state_file" ]] || return 1
+  python3 - <<'PY' "$state_file" "$field"
+import json, sys
+from pathlib import Path
+payload = json.loads(Path(sys.argv[1]).read_text())
+value = payload
+for part in sys.argv[2].split('.'):
+    if not isinstance(value, dict) or part not in value:
+        raise SystemExit(1)
+    value = value[part]
+if isinstance(value, bool):
+    print('true' if value else 'false')
+elif value is None:
+    print('')
+else:
+    print(value)
+PY
+}
+
+if [[ -f "$INSTALL_STATE_FILE" || -f "$INSTALL_CONFIG_FILE" || -f "$ROOT_INSTALL_STATE_FILE" ]]; then
+  ROOT_STATE_REQUIRED=1
+fi
+if root_state_is_trusted; then
+  ROOT_STATE_TRUSTED=1
+fi
+
+validate_install_root_selection() {
+  local root="$1"
+
+  [[ "$root" != "/" && "$root" != "$HOME" ]] || {
+    echo "Refusing to use / or the target user's home as an FXRoute project target" >&2
+    exit 1
+  }
+  [[ ! -L "$root" ]] || {
+    echo "Refusing to follow a symlink as the FXRoute project target: $root" >&2
+    exit 1
+  }
+  if path_has_symlink_component "$root"; then
+    echo "Refusing to follow a symlinked parent as the FXRoute project target: $root" >&2
+    exit 1
+  fi
+  if [[ $INSTALL_ROOT_LOCAL_PROJECT -eq 0 && "$(basename "$root")" != "$PROJECT_DIRNAME" ]]; then
+    echo "FXRoute project targets must be dedicated directories named $PROJECT_DIRNAME" >&2
+    exit 1
+  fi
 }
 
 load_recorded_install_root() {
   local configured_root=""
+  local recorded_local_project=""
+  local state_file="$INSTALL_STATE_FILE"
 
-  [[ -f "$INSTALL_CONFIG_FILE" ]] || return 0
-  configured_root="$(sed -n 's/^FXROUTE_INSTALL_ROOT=//p' "$INSTALL_CONFIG_FILE" | tail -n 1)"
+  if [[ $ROOT_STATE_TRUSTED -eq 1 ]]; then
+    state_file="$ROOT_INSTALL_STATE_FILE"
+  elif [[ $INSTALL_ROOT_EXPLICIT -eq 0 && ( -f "$INSTALL_STATE_FILE" || -f "$INSTALL_CONFIG_FILE" ) ]]; then
+    echo "A root-owned FXRoute install state is required to select a recorded project target; rerun with --target or reinstall FXRoute" >&2
+    exit 1
+  fi
+  if [[ -f "$state_file" ]]; then
+    recorded_local_project="$(read_state_field_from_file "$state_file" local_project 2>/dev/null || true)"
+    [[ "$recorded_local_project" == "true" ]] && INSTALL_ROOT_LOCAL_PROJECT=1
+  fi
+  [[ $ROOT_STATE_TRUSTED -eq 1 && -f "$state_file" ]] || return 0
+  configured_root="$(read_state_field_from_file "$state_file" install_root 2>/dev/null || true)"
   [[ -n "$configured_root" ]] || return 0
+  validate_install_root_selection "$configured_root"
   if [[ $INSTALL_ROOT_EXPLICIT -eq 1 ]]; then
     if [[ "$(canonical_path "$configured_root")" != "$(canonical_path "$INSTALL_ROOT")" ]]; then
       echo "The recorded FXRoute install root is $configured_root; refusing to use a different explicit target" >&2
@@ -161,16 +403,32 @@ load_recorded_install_root() {
 }
 
 load_recorded_install_root
+validate_install_root_selection "$INSTALL_ROOT"
 INSTALL_ROOT="$(canonical_path "$INSTALL_ROOT")"
 
 validate_install_root_for_removal() {
   local root="$INSTALL_ROOT"
   local protected_path=""
+  local music_root_value="$HOME/Music"
+  local configured_music_root=""
+  local music_root=""
 
   [[ "$root" != "/" && "$root" != "$HOME" ]] || {
     warn "Refusing to remove / or the home directory as an FXRoute project target"
     return 1
   }
+  [[ ! -L "$root" ]] || {
+    warn "Refusing to remove $root because it is not a dedicated FXRoute project directory"
+    return 1
+  }
+  if [[ $INSTALL_ROOT_LOCAL_PROJECT -eq 0 && "$(basename "$root")" != "$PROJECT_DIRNAME" ]]; then
+    warn "Refusing to remove $root because it is not a dedicated FXRoute project directory"
+    return 1
+  fi
+  if [[ $INSTALL_ROOT_EXPLICIT -eq 0 ]] && ! path_is_within "$root" "$HOME"; then
+    warn "Refusing to remove an externally recorded project target without an explicit --target"
+    return 1
+  fi
   for protected_path in \
     "$HOME/.config" "$HOME/.cache" "$HOME/.local" "$HOME/.var" \
     "$INSTALL_STATE_FILE" "$INSTALL_CONFIG_FILE" "$FXROUTE_BACKUP_DIR"; do
@@ -185,6 +443,18 @@ validate_install_root_for_removal() {
       return 1
     fi
   done
+  if [[ -f "$root/.env" ]]; then
+    configured_music_root="$(awk -F= '$0 !~ /^[[:space:]]*#/ && $1 == "MUSIC_ROOT" {sub(/^[^=]*=/, "", $0); print $0; exit}' "$root/.env")"
+    [[ -n "$configured_music_root" ]] && music_root_value="$configured_music_root"
+  fi
+  music_root="$(canonical_config_path "$music_root_value" "$root")" || {
+    warn "Refusing to remove $root because MUSIC_ROOT could not be validated"
+    return 1
+  }
+  if path_is_within "$music_root" "$root" || path_is_within "$root" "$music_root"; then
+    warn "Refusing to remove $root because it overlaps configured MUSIC_ROOT $music_root"
+    return 1
+  fi
   if [[ -e "$root/.git" ]]; then
     warn "Refusing to remove the Git checkout at $root"
     return 1
@@ -198,8 +468,13 @@ validate_install_root_for_removal() {
 
 remove_file_if_exists() {
   local path="$1"
+  local remove_cmd=(rm)
+  if [[ "$(id -u)" -eq 0 && "$FXROUTE_TARGET_USER" != root \
+    && ( "$path" == "$HOME" || "$path" == "$HOME"/* ) ]]; then
+    remove_cmd=(run_as_target_user rm)
+  fi
   if [[ -e "$path" || -L "$path" ]]; then
-    if rm -f "$path"; then
+    if "${remove_cmd[@]}" -f "$path"; then
       log "Removed $path"
     else
       warn "Could not remove $path; keeping install state for deferred cleanup"
@@ -279,7 +554,7 @@ user_systemd_unit_is_loaded() {
   local unit="$1"
   local load_state=""
 
-  if ! load_state="$(systemctl --user show "$unit" -p LoadState --value 2>/dev/null)"; then
+  if ! load_state="$(user_systemctl show "$unit" -p LoadState --value 2>/dev/null)"; then
     return 2
   fi
   case "$load_state" in
@@ -310,7 +585,7 @@ stop_owned_user_service() {
 
   if [[ -n "$expected_path" ]]; then
     if user_systemd_unit_is_loaded "$unit"; then
-      if ! fragment_path="$(systemctl --user show "$unit" -p FragmentPath --value 2>/dev/null)"; then
+      if ! fragment_path="$(user_systemctl show "$unit" -p FragmentPath --value 2>/dev/null)"; then
         warn "Could not verify the loaded unit path for '$unit'"
         PRESERVE_INSTALL_STATE=1
         return 1
@@ -330,10 +605,10 @@ stop_owned_user_service() {
     fi
   fi
 
-  if systemctl --user disable --now "$unit" >/dev/null 2>&1; then
+  if user_systemctl disable --now "$unit" >/dev/null 2>&1; then
     return 0
   fi
-  if systemctl --user is-active --quiet "$unit" >/dev/null 2>&1; then
+  if user_systemctl is-active --quiet "$unit" >/dev/null 2>&1; then
     warn "Could not stop active FXRoute-owned user service '$unit'"
     PRESERVE_INSTALL_STATE=1
     return 1
@@ -353,8 +628,31 @@ stop_owned_user_service() {
 remove_dsp_ingress_sink() {
   local config_file="$HOME/.config/pipewire/pipewire-pulse.conf.d/50-fxroute-dsp-sink.conf"
   remove_file_if_exists "$config_file"
-  rmdir "$(dirname "$config_file")" >/dev/null 2>&1 || true
-  systemctl --user restart pipewire-pulse.service >/dev/null 2>&1 || true
+  run_as_target_user rmdir "$(dirname "$config_file")" >/dev/null 2>&1 || true
+  user_systemctl restart pipewire-pulse.service >/dev/null 2>&1 || true
+}
+
+remove_user_linger_if_owned() {
+  local linger_owned=""
+  local sudo_cmd=()
+
+  linger_owned="$(read_install_state_field user_linger_enabled_by_fxroute 2>/dev/null || true)"
+  [[ "$linger_owned" == "true" ]] || return 0
+  if [[ "$(id -u)" -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo_cmd=(sudo)
+    else
+      warn "Cannot disable FXRoute-owned user lingering because sudo is unavailable"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  fi
+  if ! "${sudo_cmd[@]}" loginctl disable-linger "$FXROUTE_TARGET_USER"; then
+    warn "Could not disable FXRoute-owned user lingering for $FXROUTE_TARGET_USER"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  log "Disabled user lingering enabled by FXRoute for $FXROUTE_TARGET_USER"
 }
 
 remove_spotify_cleanup_helper() {
@@ -391,12 +689,152 @@ remove_spotify_cleanup_helper() {
   remove_file_if_exists "$timer_path"
 }
 
+system_update_units_are_owned() {
+  local service_path="/etc/systemd/system/fxroute-system-update.service"
+  local timer_path="/etc/systemd/system/fxroute-system-update.timer"
+  local owned=""
+  local service_sha256=""
+  local timer_sha256=""
+
+  owned="$(read_install_state_field lan_comfort.system_update_owned_by_fxroute 2>/dev/null || true)"
+  [[ "$owned" == "true" ]] || return 1
+  service_sha256="$(read_install_state_field lan_comfort.system_update_service_sha256 2>/dev/null || true)"
+  timer_sha256="$(read_install_state_field lan_comfort.system_update_timer_sha256 2>/dev/null || true)"
+
+  if [[ -e "$service_path" || -L "$service_path" ]]; then
+    [[ -f "$service_path" && ! -L "$service_path" ]] \
+      && [[ -n "$service_sha256" ]] \
+      && [[ "$(sha256sum "$service_path" | awk '{print $1}')" == "$service_sha256" ]] \
+      || return 1
+  fi
+  if [[ -e "$timer_path" || -L "$timer_path" ]]; then
+    [[ -f "$timer_path" && ! -L "$timer_path" ]] \
+      && [[ -n "$timer_sha256" ]] \
+      && [[ "$(sha256sum "$timer_path" | awk '{print $1}')" == "$timer_sha256" ]] \
+      || return 1
+  fi
+  return 0
+}
+
+stop_system_update_units() {
+  local sudo_cmd=("$@")
+  local service_name="fxroute-system-update.service"
+  local timer_name="fxroute-system-update.timer"
+  local unit=""
+  local load_state=""
+  local active_state=""
+  local unit_file_state=""
+
+  for unit in "$service_name" "$timer_name"; do
+    if ! load_state="$("${sudo_cmd[@]}" systemctl show "$unit" -p LoadState --value 2>/dev/null)"; then
+      return 1
+    fi
+    [[ "$load_state" == "not-found" ]] && continue
+    [[ -n "$load_state" ]] || return 1
+    if ! active_state="$("${sudo_cmd[@]}" systemctl show "$unit" -p ActiveState --value 2>/dev/null)"; then
+      return 1
+    fi
+    case "$active_state" in
+      inactive|failed|dead) ;;
+      active|activating|deactivating|reloading)
+        "${sudo_cmd[@]}" systemctl stop "$unit" >/dev/null 2>&1 || return 1
+        active_state="$("${sudo_cmd[@]}" systemctl show "$unit" -p ActiveState --value 2>/dev/null)" || return 1
+        case "$active_state" in
+          inactive|failed|dead) ;;
+          *) return 1 ;;
+        esac
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done
+
+  if ! load_state="$("${sudo_cmd[@]}" systemctl show "$timer_name" -p LoadState --value 2>/dev/null)"; then
+    return 1
+  fi
+  [[ "$load_state" == "not-found" ]] && return 0
+  "${sudo_cmd[@]}" systemctl disable "$timer_name" >/dev/null 2>&1 || true
+  unit_file_state="$("${sudo_cmd[@]}" systemctl show "$timer_name" -p UnitFileState --value 2>/dev/null)" || return 1
+  case "$unit_file_state" in
+    enabled|enabled-runtime|linked|linked-runtime|alias)
+      return 1
+      ;;
+    "")
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+restore_system_update_transaction() {
+  local backup_dir="$1"
+  local service_path="/etc/systemd/system/fxroute-system-update.service"
+  local timer_path="/etc/systemd/system/fxroute-system-update.timer"
+  local helper_path="/usr/local/sbin/fxroute-system-package-update"
+  local service_name="fxroute-system-update.service"
+  local timer_name="fxroute-system-update.timer"
+  local service_present="$2"
+  local timer_present="$3"
+  local helper_present="$4"
+  local service_was_active="$5"
+  local timer_was_enabled="$6"
+  local timer_was_active="$7"
+  local sudo_cmd=("${@:8}")
+  local restore_failed=0
+
+  "${sudo_cmd[@]}" systemctl disable --now "$timer_name" >/dev/null 2>&1 || true
+  "${sudo_cmd[@]}" systemctl stop "$service_name" >/dev/null 2>&1 || true
+
+  if [[ "$service_present" -eq 1 ]]; then
+    "${sudo_cmd[@]}" install -m 644 "$backup_dir/service" "$service_path" || restore_failed=1
+  else
+    "${sudo_cmd[@]}" rm -f "$service_path" || restore_failed=1
+  fi
+  if [[ "$timer_present" -eq 1 ]]; then
+    "${sudo_cmd[@]}" install -m 644 "$backup_dir/timer" "$timer_path" || restore_failed=1
+  else
+    "${sudo_cmd[@]}" rm -f "$timer_path" || restore_failed=1
+  fi
+  if [[ "$helper_present" -eq 1 ]]; then
+    "${sudo_cmd[@]}" install -m 755 "$backup_dir/helper" "$helper_path" || restore_failed=1
+  else
+    "${sudo_cmd[@]}" rm -f "$helper_path" || restore_failed=1
+  fi
+  "${sudo_cmd[@]}" systemctl daemon-reload >/dev/null 2>&1 || restore_failed=1
+
+  if [[ "$service_was_active" -eq 1 ]]; then
+    "${sudo_cmd[@]}" systemctl start "$service_name" >/dev/null 2>&1 || restore_failed=1
+  fi
+  if [[ "$timer_was_enabled" -eq 1 ]]; then
+    if [[ "$timer_was_active" -eq 1 ]]; then
+      "${sudo_cmd[@]}" systemctl enable --now "$timer_name" >/dev/null 2>&1 || restore_failed=1
+    else
+      "${sudo_cmd[@]}" systemctl enable "$timer_name" >/dev/null 2>&1 || restore_failed=1
+    fi
+  elif [[ "$timer_was_active" -eq 1 ]]; then
+    "${sudo_cmd[@]}" systemctl start "$timer_name" >/dev/null 2>&1 || restore_failed=1
+  fi
+
+  return "$restore_failed"
+}
+
 remove_optional_system_update_helper() {
   local service_path="/etc/systemd/system/fxroute-system-update.service"
   local timer_path="/etc/systemd/system/fxroute-system-update.timer"
+  local helper_path="/usr/local/sbin/fxroute-system-package-update"
   local sudo_cmd=()
+  local backup_dir=""
+  local service_present=0
+  local timer_present=0
+  local helper_present=0
+  local service_was_active=0
+  local timer_was_enabled=0
+  local timer_was_active=0
+  local load_state=""
+  local unit_state=""
 
-  if [[ ! -e "$service_path" && ! -e "$timer_path" ]]; then
+  if [[ ! -e "$service_path" && ! -e "$timer_path" && ! -e "$helper_path" && ! -L "$helper_path" ]]; then
     return 0
   fi
 
@@ -410,40 +848,316 @@ remove_optional_system_update_helper() {
     return 0
   fi
 
-  "${sudo_cmd[@]}" systemctl disable --now fxroute-system-update.timer >/dev/null 2>&1 || true
-  if ! "${sudo_cmd[@]}" rm -f "$service_path" "$timer_path"; then
-    warn "Could not remove optional FXRoute system update helper files"
+  if ! system_update_units_are_owned; then
+    warn "Refusing to remove non-FXRoute-owned system auto-update units"
     PRESERVE_INSTALL_STATE=1
     return 0
   fi
-  "${sudo_cmd[@]}" systemctl daemon-reload >/dev/null 2>&1 || true
+  if [[ -e "$helper_path" || -L "$helper_path" ]]; then
+    if [[ ! -f "$helper_path" || -L "$helper_path" \
+      || "$("${sudo_cmd[@]}" sha256sum "$helper_path" | awk '{print $1}')" != "$SYSTEM_UPDATE_HELPER_SHA256" ]]; then
+      warn "Refusing to remove an unverified FXRoute system auto-update helper"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    helper_present=1
+  fi
+  [[ -f "$service_path" ]] && service_present=1
+  [[ -f "$timer_path" ]] && timer_present=1
+  if ! load_state="$("${sudo_cmd[@]}" systemctl show fxroute-system-update.service -p LoadState --value 2>/dev/null)" \
+    || [[ -z "$load_state" ]]; then
+    warn "Could not verify the system auto-update service state"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if [[ "$load_state" != "not-found" ]]; then
+    if ! unit_state="$("${sudo_cmd[@]}" systemctl show fxroute-system-update.service -p ActiveState --value 2>/dev/null)" \
+      || [[ -z "$unit_state" ]]; then
+      warn "Could not verify the system auto-update service state"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    case "$unit_state" in
+      active|activating|deactivating|reloading) service_was_active=1 ;;
+    esac
+  fi
+  if ! load_state="$("${sudo_cmd[@]}" systemctl show fxroute-system-update.timer -p LoadState --value 2>/dev/null)" \
+    || [[ -z "$load_state" ]]; then
+    warn "Could not verify the system auto-update timer state"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if [[ "$load_state" != "not-found" ]]; then
+    if ! unit_state="$("${sudo_cmd[@]}" systemctl show fxroute-system-update.timer -p UnitFileState --value 2>/dev/null)" \
+      || [[ -z "$unit_state" ]]; then
+      warn "Could not verify the system auto-update timer state"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    case "$unit_state" in
+      enabled|enabled-runtime|linked|linked-runtime|alias) timer_was_enabled=1 ;;
+    esac
+    if ! unit_state="$("${sudo_cmd[@]}" systemctl show fxroute-system-update.timer -p ActiveState --value 2>/dev/null)" \
+      || [[ -z "$unit_state" ]]; then
+      warn "Could not verify the system auto-update timer state"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    case "$unit_state" in
+      active|activating|deactivating|reloading) timer_was_active=1 ;;
+    esac
+  fi
+  if ! backup_dir="$("${sudo_cmd[@]}" mktemp -d -t fxroute-system-update-backup.XXXXXX)"; then
+    warn "Could not create a rollback area for the system auto-update helper"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if [[ $service_present -eq 1 ]] && ! "${sudo_cmd[@]}" cp -p "$service_path" "$backup_dir/service"; then
+    warn "Could not back up the system auto-update service before removing it"
+    "${sudo_cmd[@]}" rm -rf "$backup_dir"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if [[ $timer_present -eq 1 ]] && ! "${sudo_cmd[@]}" cp -p "$timer_path" "$backup_dir/timer"; then
+    warn "Could not back up the system auto-update timer before removing it"
+    "${sudo_cmd[@]}" rm -rf "$backup_dir"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if [[ $helper_present -eq 1 ]] && ! "${sudo_cmd[@]}" cp -p "$helper_path" "$backup_dir/helper"; then
+    warn "Could not back up the system auto-update helper before removing it"
+    "${sudo_cmd[@]}" rm -rf "$backup_dir"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if ! stop_system_update_units "${sudo_cmd[@]}"; then
+    restore_system_update_transaction "$backup_dir" "$service_present" "$timer_present" \
+      "$helper_present" "$service_was_active" "$timer_was_enabled" "$timer_was_active" \
+      "${sudo_cmd[@]}" || warn "Could not fully restore the system auto-update state"
+    warn "Refusing to remove system auto-update units that could not be stopped safely"
+    "${sudo_cmd[@]}" rm -rf "$backup_dir"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+
+  if [[ -e "$helper_path" || -L "$helper_path" ]]; then
+    if [[ ! -f "$helper_path" || -L "$helper_path" \
+      || "$("${sudo_cmd[@]}" sha256sum "$helper_path" | awk '{print $1}')" != "$SYSTEM_UPDATE_HELPER_SHA256" ]]; then
+      restore_system_update_transaction "$backup_dir" "$service_present" "$timer_present" \
+        "$helper_present" "$service_was_active" "$timer_was_enabled" "$timer_was_active" \
+        "${sudo_cmd[@]}" || warn "Could not fully restore the system auto-update state"
+      warn "Refusing to remove a changed FXRoute system auto-update helper"
+      "${sudo_cmd[@]}" rm -rf "$backup_dir"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  fi
+
+  if ! "${sudo_cmd[@]}" rm -f "$service_path" "$timer_path"; then
+    restore_system_update_transaction "$backup_dir" "$service_present" "$timer_present" \
+      "$helper_present" "$service_was_active" "$timer_was_enabled" "$timer_was_active" \
+      "${sudo_cmd[@]}" || warn "Could not fully restore the system auto-update state"
+    warn "Could not remove optional FXRoute system update helper files"
+    "${sudo_cmd[@]}" rm -rf "$backup_dir"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if [[ $helper_present -eq 1 ]]; then
+    if ! "${sudo_cmd[@]}" rm -f "$helper_path"; then
+      restore_system_update_transaction "$backup_dir" "$service_present" "$timer_present" \
+        "$helper_present" "$service_was_active" "$timer_was_enabled" "$timer_was_active" \
+        "${sudo_cmd[@]}" || warn "Could not fully restore the system auto-update state"
+      warn "Could not remove the FXRoute system auto-update helper"
+      "${sudo_cmd[@]}" rm -rf "$backup_dir"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  fi
+  if ! "${sudo_cmd[@]}" systemctl daemon-reload >/dev/null 2>&1; then
+    restore_system_update_transaction "$backup_dir" "$service_present" "$timer_present" \
+      "$helper_present" "$service_was_active" "$timer_was_enabled" "$timer_was_active" \
+      "${sudo_cmd[@]}" || warn "Could not fully restore the system auto-update state"
+    warn "Could not reload systemd after removing the system auto-update helper"
+    "${sudo_cmd[@]}" rm -rf "$backup_dir"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  "${sudo_cmd[@]}" rm -rf "$backup_dir"
   log "Removed optional FXRoute system update helper"
 }
 
+remove_owned_helper() {
+  local path="$1"
+  local expected=""
+
+  [[ -e "$path" || -L "$path" ]] || return 0
+  case "$(basename "$path")" in
+    fxroute-status)
+      expected="#!/usr/bin/env bash"$'\n'"exec systemctl --user status $SERVICE_NAME"
+      ;;
+    fxroute-logs)
+      expected="#!/usr/bin/env bash"$'\n'"exec journalctl --user -u $SERVICE_NAME -f"
+      ;;
+    fxroute-restart)
+      expected="#!/usr/bin/env bash"$'\n'"exec systemctl --user restart $SERVICE_NAME"
+      ;;
+    fxroute-update)
+      expected="#!/usr/bin/env bash"$'\n'"set -euo pipefail"$'\n'"exec \"$INSTALL_ROOT/scripts/update_fxroute.sh\" \"\$@\""
+      ;;
+    fxroute-update-ytdlp)
+      expected="#!/usr/bin/env bash"$'\n'"set -euo pipefail"$'\n'"exec \"$INSTALL_ROOT/.venv/bin/pip\" install -U yt-dlp"
+      ;;
+    *)
+      warn "Refusing to remove an unrecognized FXRoute helper: $path"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+      ;;
+  esac
+  if [[ ! -f "$path" || -L "$path" ]] || ! cmp -s "$path" <(printf '%s\n' "$expected"); then
+    warn "Refusing to remove a changed FXRoute helper: $path"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  remove_file_if_exists "$path"
+}
+
 remove_helpers() {
-  remove_file_if_exists "$HOME/.local/bin/fxroute-status"
-  remove_file_if_exists "$HOME/.local/bin/fxroute-logs"
-  remove_file_if_exists "$HOME/.local/bin/fxroute-restart"
-  remove_file_if_exists "$HOME/.local/bin/fxroute-update"
-  remove_file_if_exists "$HOME/.local/bin/fxroute-update-ytdlp"
+  remove_owned_helper "$HOME/.local/bin/fxroute-status"
+  remove_owned_helper "$HOME/.local/bin/fxroute-logs"
+  remove_owned_helper "$HOME/.local/bin/fxroute-restart"
+  remove_owned_helper "$HOME/.local/bin/fxroute-update"
+  remove_owned_helper "$HOME/.local/bin/fxroute-update-ytdlp"
+}
+
+target_cifs_entries_present() {
+  local mount_root="/var/lib/fxroute/music-libraries/$FXROUTE_TARGET_UID"
+  [[ -f /etc/fstab ]] || return 1
+  awk -v prefix="$mount_root/" '$2 ~ ("^" prefix) && $3 == "cifs" {found = 1} END {exit found ? 0 : 1}' /etc/fstab
 }
 
 remove_network_library_helper() {
-  if command -v sudo >/dev/null 2>&1; then
-    sudo /usr/local/sbin/fxroute-cifs-mount --remove-all 2>/dev/null || true
-    if ! sudo rm -f /usr/local/sbin/fxroute-cifs-mount /etc/sudoers.d/fxroute-cifs-mount; then
-      warn "Could not remove the network library mount helper"
-      PRESERVE_INSTALL_STATE=1
-    fi
-  elif [[ $EUID -eq 0 ]]; then
-    SUDO_USER="${SUDO_USER:-$(logname 2>/dev/null || true)}" /usr/local/sbin/fxroute-cifs-mount --remove-all 2>/dev/null || true
-    if ! rm -f /usr/local/sbin/fxroute-cifs-mount /etc/sudoers.d/fxroute-cifs-mount; then
-      warn "Could not remove the network library mount helper"
-      PRESERVE_INSTALL_STATE=1
-    fi
+  local sudo_cmd=()
+  local helper_path="/usr/local/sbin/fxroute-cifs-mount"
+  local sudoers_path="/etc/sudoers.d/fxroute-cifs-mount"
+  local sudoers_rule=""
+  local existing_sudoers=""
+  local tmp_sudoers=""
+  local helper_sha256=""
+  local target_entries=0
+  local helper_owned=0
+  local helper_verified=0
+  local sudoers_owned=0
+  local recorded_sudoers_sha256=""
+  local fstab_status=0
+
+  if [[ "$(id -u)" -eq 0 ]]; then
+    sudo_cmd=()
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo_cmd=(sudo)
   else
     warn "Could not remove the network library mount helper because sudo is unavailable"
     PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+
+  if target_cifs_entries_present; then
+    target_entries=1
+  else
+    fstab_status=$?
+    if [[ $fstab_status -ne 1 ]]; then
+      warn "Could not inspect /etc/fstab for FXRoute CIFS entries"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  fi
+  [[ "$(read_install_state_field lan_comfort.cifs_helper_installed_by_fxroute 2>/dev/null || true)" == "true" ]] \
+    && helper_owned=1
+  [[ "$(read_install_state_field lan_comfort.cifs_sudoers_rule_installed_by_fxroute 2>/dev/null || true)" == "true" ]] \
+    && sudoers_owned=1
+  recorded_sudoers_sha256="$(read_install_state_field lan_comfort.cifs_sudoers_sha256 2>/dev/null || true)"
+  if [[ -e "$helper_path" || -L "$helper_path" ]]; then
+    if [[ ! -f "$helper_path" || -L "$helper_path" ]]; then
+      helper_owned=0
+    else
+      helper_sha256="$("${sudo_cmd[@]}" sha256sum "$helper_path" | awk '{print $1}')"
+      [[ "$helper_sha256" == "$CIFS_HELPER_SHA256" ]] && helper_verified=1
+      [[ $helper_verified -eq 1 ]] || helper_owned=0
+    fi
+    if [[ $helper_verified -eq 0 ]]; then
+      warn "Refusing to remove a changed FXRoute CIFS mount helper"
+      PRESERVE_INSTALL_STATE=1
+    fi
+  fi
+  if [[ $target_entries -eq 1 && "$FXROUTE_TARGET_USER" == root ]]; then
+    warn "Cannot remove FXRoute CIFS entries for the root user safely"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if [[ $target_entries -eq 1 && "$FXROUTE_TARGET_USER" != root ]]; then
+    if [[ ! -x "$helper_path" ]]; then
+      warn "Cannot remove FXRoute CIFS entries because the privileged helper is unavailable"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    if [[ $helper_owned -eq 1 && $helper_verified -eq 1 ]]; then
+      if [[ "$(id -u)" -eq 0 ]]; then
+        if ! SUDO_USER="$FXROUTE_TARGET_USER" "$helper_path" --remove-all 2>/dev/null; then
+          warn "Could not remove FXRoute CIFS mount entries for $FXROUTE_TARGET_USER"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+      elif ! sudo "$helper_path" --remove-all 2>/dev/null; then
+        warn "Could not remove FXRoute CIFS mount entries for $FXROUTE_TARGET_USER"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    else
+      warn "Refusing to run an unowned or unverified FXRoute CIFS mount helper"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  fi
+  if [[ $target_entries -eq 1 ]] && target_cifs_entries_present; then
+    warn "FXRoute CIFS entries remain after helper cleanup"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+
+  sudoers_rule="$FXROUTE_TARGET_USER ALL=(root) NOPASSWD: $helper_path *"
+  existing_sudoers="$("${sudo_cmd[@]}" cat "$sudoers_path" 2>/dev/null || true)"
+  if [[ $sudoers_owned -eq 1 && -e "$sudoers_path" \
+    && ( -z "$recorded_sudoers_sha256" \
+      || "$("${sudo_cmd[@]}" sha256sum "$sudoers_path" | awk '{print $1}')" != "$recorded_sudoers_sha256" ) ]]; then
+    warn "Refusing to modify a changed FXRoute CIFS sudoers file"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if [[ $sudoers_owned -eq 1 ]] && grep -Fqx -- "$sudoers_rule" <<<"$existing_sudoers"; then
+    tmp_sudoers="$(mktemp)"
+    awk -v rule="$sudoers_rule" '$0 != rule {print}' <<<"$existing_sudoers" > "$tmp_sudoers"
+    if command -v visudo >/dev/null 2>&1; then
+      if ! "${sudo_cmd[@]}" visudo -cf "$tmp_sudoers" >/dev/null; then
+        rm -f "$tmp_sudoers"
+        warn "Could not validate the remaining FXRoute CIFS sudoers rules"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+    fi
+    if ! "${sudo_cmd[@]}" install -m 440 "$tmp_sudoers" "$sudoers_path"; then
+      rm -f "$tmp_sudoers"
+      warn "Could not update the FXRoute CIFS sudoers rules"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    rm -f "$tmp_sudoers"
+  fi
+
+  existing_sudoers="$("${sudo_cmd[@]}" cat "$sudoers_path" 2>/dev/null || true)"
+  if [[ $sudoers_owned -eq 1 && -z "$(grep -Ev '^[[:space:]]*(#|$)' <<<"$existing_sudoers" || true)" ]]; then
+    "${sudo_cmd[@]}" rm -f "$sudoers_path"
+  fi
+  if [[ $helper_owned -eq 1 ]]; then
+    "${sudo_cmd[@]}" rm -f "$helper_path"
   fi
 }
 
@@ -645,7 +1359,7 @@ remove_owned_spotifyd() {
       log "FXRoute-owned spotifyd binary is already absent"
     fi
   fi
-  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  user_systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
 remove_owned_qbzd() {
@@ -703,13 +1417,13 @@ remove_owned_qbzd() {
       log "FXRoute-owned qbzd binary is already absent"
     fi
   fi
-  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  user_systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
 read_qbzd_volume_mode_for_uninstall() {
   local binary_path="$1"
   [[ -x "$binary_path" ]] || return 1
-  "$binary_path" settings show --quiet --json 2>/dev/null | python3 -c '
+  run_as_target_user "$binary_path" settings show --quiet --json 2>/dev/null | python3 -c '
 import json
 import sys
 
@@ -806,7 +1520,7 @@ restore_qbzd_volume_mode_if_owned() {
     PRESERVE_INSTALL_STATE=1
     return 1
   fi
-  if ! "$binary_path" settings set --quiet qconnect.volume_mode "$mode_before" >/dev/null 2>&1; then
+  if ! run_as_target_user "$binary_path" settings set --quiet qconnect.volume_mode "$mode_before" >/dev/null 2>&1; then
     warn "Failed to restore qbzd qconnect.volume_mode=$mode_before"
     PRESERVE_INSTALL_STATE=1
     return 1
@@ -827,7 +1541,7 @@ restore_qbzd_volume_mode_if_owned() {
 tidalapi_installed_version() {
   local python_path="$INSTALL_ROOT/.venv/bin/python3"
   [[ -x "$python_path" ]] || return 1
-  "$python_path" - <<'PY'
+  run_as_target_user "$python_path" - <<'PY'
 from importlib.metadata import version
 try:
     print(version("tidalapi"))
@@ -866,7 +1580,7 @@ remove_owned_tidal_dependency() {
     return 0
   fi
 
-  if "$pip_path" uninstall -y tidalapi; then
+  if run_as_target_user "$pip_path" uninstall -y tidalapi; then
     remove_file_if_exists "$marker_path"
     log "Removed the FXRoute-owned TIDAL Python dependency"
   else
@@ -1924,21 +2638,33 @@ remove_owned_ufw_rule() {
 
 remove_system_power_polkit_rule() {
   local rule_installed
+  local rule_pre_existed
   local rule_path
   local backup_path
+  local backup_sha256
+  local rule_sha256
+  local expected_rule_sha256
   local sudo_cmd=()
   local rule_name="50-fxroute-power.rules"
   local rule_default="/etc/polkit-1/rules.d/$rule_name"
   local backup_default="$FXROUTE_BACKUP_DIR/${rule_name}.pre-fxroute"
 
   rule_installed="$(read_install_state_field "lan_comfort.power_polkit_installed" 2>/dev/null || true)"
+  rule_pre_existed="$(read_install_state_field "lan_comfort.power_polkit_rule_pre_existed" 2>/dev/null || true)"
   rule_path="$(read_install_state_field "lan_comfort.power_polkit_rule_path" 2>/dev/null || true)"
-  [[ -z "$rule_path" ]] && rule_path="$rule_default"
-  if [[ "$rule_installed" != "true" && ! -e "$rule_path" ]]; then
+  if [[ -n "$rule_path" && "$rule_path" != "$rule_default" ]]; then
+    warn "Refusing to use an unexpected FXRoute polkit rule path: $rule_path"
+    PRESERVE_INSTALL_STATE=1
     return 0
   fi
+  rule_path="$rule_default"
+  [[ "$rule_installed" == "true" ]] || {
+    return 0
+  }
 
-  if command -v sudo >/dev/null 2>&1; then
+  if [[ "$(id -u)" -eq 0 ]]; then
+    sudo_cmd=()
+  elif command -v sudo >/dev/null 2>&1; then
     sudo_cmd=(sudo)
   else
     warn "Cannot remove FXRoute polkit power rule because sudo is unavailable"
@@ -1951,7 +2677,23 @@ remove_system_power_polkit_rule() {
     return 0
   fi
 
+  rule_sha256="$("${sudo_cmd[@]}" sha256sum "$rule_path" | awk '{print $1}')"
+  expected_rule_sha256="$(read_install_state_field "lan_comfort.power_polkit_rule_sha256" 2>/dev/null || true)"
+  if [[ -z "$expected_rule_sha256" || "$rule_sha256" != "$expected_rule_sha256" ]]; then
+    warn "Refusing to remove the changed or unverified FXRoute polkit power rule"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+
   if [[ -e "$backup_default" ]]; then
+    backup_sha256="$(read_install_state_field "lan_comfort.power_polkit_backup_sha256" 2>/dev/null || true)"
+    if [[ ! -f "$backup_default" || -L "$backup_default" || -z "$backup_sha256" \
+      || "$("${sudo_cmd[@]}" stat -c '%u' "$backup_default" 2>/dev/null || true)" != "0" \
+      || "$("${sudo_cmd[@]}" sha256sum "$backup_default" | awk '{print $1}')" != "$backup_sha256" ]]; then
+      warn "Refusing to restore an unverified FXRoute polkit backup"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
     if confirm "FXRoute added /etc/polkit-1/rules.d/$rule_name. Restore the previous rule from backup?"; then
       if "${sudo_cmd[@]}" install -m 644 "$backup_default" "$rule_path"; then
         if "${sudo_cmd[@]}" rm -f "$backup_default"; then
@@ -1964,6 +2706,10 @@ remove_system_power_polkit_rule() {
       fi
       warn "Failed to restore the pre-FXRoute polkit rule from backup"
     fi
+  elif [[ "$rule_pre_existed" == "true" ]]; then
+    warn "The previous polkit rule backup is unavailable; refusing to remove the current rule"
+    PRESERVE_INSTALL_STATE=1
+    return 0
   fi
 
   if confirm "Remove FXRoute polkit power rule at $rule_path? This is what enables the suspend/shutdown menu."; then
@@ -1985,13 +2731,36 @@ remove_optional_caddy_proxy() {
   local config_path="/etc/fxroute/Caddyfile"
   local cert_path="/etc/fxroute/certs/fxroute-local-root.crt"
   local caddy_data_dir="/var/lib/fxroute-caddy"
+  local proxy_enabled=""
+  local service_sha256=""
+  local config_sha256=""
+  local cert_sha256=""
+  local recorded_cert_path=""
+  local data_created=""
+  local actual_sha256=""
+  local active_state=""
+  local unit_file_state=""
+  local fragment_path=""
+  local path=""
+  local loaded_status=0
   local sudo_cmd=()
 
-  if [[ ! -e "$service_path" && ! -e "$config_path" && ! -e "$cert_path" && ! -e "$caddy_data_dir" ]]; then
+  proxy_enabled="$(read_install_state_field "lan_comfort.caddy_proxy_enabled" 2>/dev/null || true)"
+  [[ "$proxy_enabled" == "true" ]] || return 0
+  service_sha256="$(read_install_state_field "lan_comfort.caddy_service_sha256" 2>/dev/null || true)"
+  config_sha256="$(read_install_state_field "lan_comfort.caddy_config_sha256" 2>/dev/null || true)"
+  cert_sha256="$(read_install_state_field "lan_comfort.caddy_cert_sha256" 2>/dev/null || true)"
+  recorded_cert_path="$(read_install_state_field "lan_comfort.caddy_cert_path" 2>/dev/null || true)"
+  data_created="$(read_install_state_field "lan_comfort.caddy_data_dir_created_by_fxroute" 2>/dev/null || true)"
+  if [[ -n "$recorded_cert_path" && "$recorded_cert_path" != "$cert_path" ]]; then
+    warn "Refusing to remove Caddy artifacts because the recorded certificate path is unexpected"
+    PRESERVE_INSTALL_STATE=1
     return 0
   fi
 
-  if command -v sudo >/dev/null 2>&1; then
+  if [[ "$(id -u)" -eq 0 ]]; then
+    sudo_cmd=()
+  elif command -v sudo >/dev/null 2>&1; then
     sudo_cmd=(sudo)
   else
     warn "Cannot remove optional FXRoute Caddy proxy because sudo is unavailable"
@@ -1999,16 +2768,152 @@ remove_optional_caddy_proxy() {
     return 0
   fi
 
-  "${sudo_cmd[@]}" systemctl disable --now "$service_name" >/dev/null 2>&1 || true
+  for path in "$service_path" "$config_path" "$cert_path" "$caddy_data_dir"; do
+    if path_has_symlink_component "$path"; then
+      warn "Refusing to remove Caddy artifacts through a symlinked parent: $path"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  done
+
+  for path in "$service_path" "$config_path"; do
+    if [[ -e "$path" || -L "$path" ]]; then
+      [[ -f "$path" && ! -L "$path" && "$("${sudo_cmd[@]}" stat -c '%u' "$path" 2>/dev/null || true)" == "0" ]] \
+        || {
+          warn "Refusing to remove unexpected Caddy artifact $path"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        }
+      if [[ "$path" == "$service_path" ]]; then
+        [[ -n "$service_sha256" ]] || {
+          warn "Refusing to remove Caddy service without a recorded checksum"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        }
+        actual_sha256="$("${sudo_cmd[@]}" sha256sum "$path" | awk '{print $1}')"
+        [[ "$actual_sha256" == "$service_sha256" ]] || {
+          warn "Refusing to remove a changed Caddy service"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        }
+        grep -Fqx 'Description=FXRoute Caddy reverse proxy' "$path" || {
+          warn "Refusing to remove a non-FXRoute Caddy service"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        }
+        grep -Fq -- "--config $config_path" "$path" || {
+          warn "Refusing to remove a Caddy service with an unexpected config path"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        }
+      else
+        [[ -n "$config_sha256" ]] || {
+          warn "Refusing to remove Caddy configuration without a recorded checksum"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        }
+        actual_sha256="$("${sudo_cmd[@]}" sha256sum "$path" | awk '{print $1}')"
+        [[ "$actual_sha256" == "$config_sha256" ]] || {
+          warn "Refusing to remove a changed Caddy configuration"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        }
+        grep -Fq 'reverse_proxy 127.0.0.1:' "$path" || {
+          warn "Refusing to remove a non-FXRoute Caddy configuration"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        }
+      fi
+    fi
+  done
+  if [[ -e "$cert_path" || -L "$cert_path" ]]; then
+    [[ -f "$cert_path" && ! -L "$cert_path" && "$recorded_cert_path" == "$cert_path" \
+      && -n "$cert_sha256" \
+      && "$("${sudo_cmd[@]}" stat -c '%u' "$cert_path" 2>/dev/null || true)" == "0" ]] || {
+      warn "Refusing to remove an unexpected Caddy certificate"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    }
+    actual_sha256="$("${sudo_cmd[@]}" sha256sum "$cert_path" | awk '{print $1}')"
+    [[ "$actual_sha256" == "$cert_sha256" ]] || {
+      warn "Refusing to remove a changed Caddy certificate"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    }
+  fi
+  if [[ -e "$caddy_data_dir" || -L "$caddy_data_dir" ]]; then
+    if [[ "$data_created" == "true" ]]; then
+      [[ -d "$caddy_data_dir" && ! -L "$caddy_data_dir" \
+        && "$("${sudo_cmd[@]}" stat -c '%u' "$caddy_data_dir" 2>/dev/null || true)" == "0" ]] || {
+        warn "Refusing to remove an unexpected Caddy data directory"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      }
+    else
+      log "Keeping pre-existing Caddy data directory"
+    fi
+  fi
+
+  if systemd_unit_is_loaded "$service_name" "${sudo_cmd[@]}"; then
+    if ! fragment_path="$("${sudo_cmd[@]}" systemctl show "$service_name" -p FragmentPath --value 2>/dev/null)" \
+      || [[ "$fragment_path" != "$service_path" ]]; then
+      warn "Refusing to stop Caddy because its loaded unit path is not FXRoute-owned"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    if ! active_state="$("${sudo_cmd[@]}" systemctl show "$service_name" -p ActiveState --value 2>/dev/null)"; then
+      warn "Could not verify the FXRoute Caddy service state"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+    case "$active_state" in
+      active|activating|deactivating|reloading)
+        if ! "${sudo_cmd[@]}" systemctl stop "$service_name" >/dev/null 2>&1; then
+          warn "Could not stop the FXRoute Caddy service"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+        fi
+        active_state="$("${sudo_cmd[@]}" systemctl show "$service_name" -p ActiveState --value 2>/dev/null || true)"
+        ;;
+    esac
+    case "$active_state" in
+      inactive|failed|dead) ;;
+      *)
+        warn "Refusing to remove an active FXRoute Caddy service"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+        ;;
+    esac
+    if ! "${sudo_cmd[@]}" systemctl disable "$service_name" >/dev/null 2>&1; then
+      unit_file_state="$("${sudo_cmd[@]}" systemctl show "$service_name" -p UnitFileState --value 2>/dev/null || true)"
+      case "$unit_file_state" in
+        enabled|enabled-runtime|linked|linked-runtime|alias|"")
+          warn "Could not disable the FXRoute Caddy service"
+          PRESERVE_INSTALL_STATE=1
+          return 0
+          ;;
+      esac
+    fi
+  else
+    loaded_status=$?
+    if [[ $loaded_status -ne 1 ]]; then
+      warn "Could not verify whether the FXRoute Caddy service is loaded"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  fi
+
   if ! "${sudo_cmd[@]}" rm -f "$service_path" "$config_path" "$cert_path"; then
     warn "Could not remove the FXRoute Caddy service or configuration"
     PRESERVE_INSTALL_STATE=1
     return 0
   fi
-  if ! "${sudo_cmd[@]}" rm -rf "$caddy_data_dir"; then
-    warn "Could not remove the FXRoute Caddy data"
-    PRESERVE_INSTALL_STATE=1
-    return 0
+  if [[ "$data_created" == "true" && -e "$caddy_data_dir" ]]; then
+    if ! "${sudo_cmd[@]}" rm -rf "$caddy_data_dir"; then
+      warn "Could not remove the FXRoute Caddy data"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
   fi
   "${sudo_cmd[@]}" rmdir /etc/fxroute/certs >/dev/null 2>&1 || true
   "${sudo_cmd[@]}" rmdir /etc/fxroute >/dev/null 2>&1 || true
@@ -2227,6 +3132,12 @@ remove_avahi_if_requested() {
 read_install_state_field() {
   local field="$1"
   local state_file="$INSTALL_STATE_FILE"
+  if [[ ${ROOT_STATE_REQUIRED:-0} -eq 1 && ${ROOT_STATE_TRUSTED:-0} -ne 1 ]]; then
+    return 1
+  fi
+  if [[ ${ROOT_STATE_TRUSTED:-0} -eq 1 ]]; then
+    state_file="$ROOT_INSTALL_STATE_FILE"
+  fi
   [[ -f "$state_file" ]] || return 1
   python3 - <<'PY' "$state_file" "$field"
 import json, sys
@@ -2251,6 +3162,10 @@ validate_install_root_identity() {
 
   recorded_root="$(read_install_state_field install_root 2>/dev/null || true)"
   [[ -n "$recorded_root" ]] || return 0
+  if [[ -L "$recorded_root" ]]; then
+    echo "The FXRoute install state records a symlink target; refusing to continue" >&2
+    exit 1
+  fi
   if [[ "$(canonical_path "$recorded_root")" != "$INSTALL_ROOT" ]]; then
     echo "The install state belongs to $recorded_root, not $INSTALL_ROOT; refusing to continue" >&2
     exit 1
@@ -2272,7 +3187,14 @@ remove_project_dir_if_requested() {
     PRESERVE_INSTALL_STATE=1
     return 0
   fi
-  if ! rm -rf -- "$INSTALL_ROOT"; then
+  if [[ "$(id -u)" -eq 0 && "$FXROUTE_TARGET_USER" != root \
+    && ( "$INSTALL_ROOT" == "$HOME" || "$INSTALL_ROOT" == "$HOME"/* ) ]]; then
+    if ! run_as_target_user rm -rf -- "$INSTALL_ROOT"; then
+      warn "Failed to remove project directory $INSTALL_ROOT"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  elif ! rm -rf -- "$INSTALL_ROOT"; then
     warn "Failed to remove project directory $INSTALL_ROOT"
     PRESERVE_INSTALL_STATE=1
     return 0
@@ -2281,18 +3203,40 @@ remove_project_dir_if_requested() {
 }
 
 remove_install_records() {
+  local sudo_cmd=()
   if [[ $PRESERVE_INSTALL_STATE -eq 0 ]]; then
     remove_file_if_exists "$INSTALL_STATE_FILE"
     remove_file_if_exists "$INSTALL_CONFIG_FILE"
   else
     log "Keeping FXRoute install state for a later provider cleanup retry"
   fi
-  rmdir "$FXROUTE_BACKUP_DIR" >/dev/null 2>&1 || true
-  rmdir "$(dirname "$FXROUTE_BACKUP_DIR")" >/dev/null 2>&1 || true
+  if [[ $PRESERVE_INSTALL_STATE -eq 0 ]]; then
+    if [[ "$(id -u)" -eq 0 ]]; then
+      sudo_cmd=()
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo_cmd=(sudo)
+    fi
+    if [[ ${#sudo_cmd[@]} -gt 0 || "$(id -u)" -eq 0 ]]; then
+      if ! "${sudo_cmd[@]}" rm -f "$ROOT_INSTALL_STATE_FILE"; then
+        warn "Could not remove the root-owned FXRoute install state"
+        PRESERVE_INSTALL_STATE=1
+        return 0
+      fi
+      "${sudo_cmd[@]}" rmdir "$FXROUTE_BACKUP_DIR" >/dev/null 2>&1 || true
+      "${sudo_cmd[@]}" rmdir "$(dirname "$FXROUTE_BACKUP_DIR")" >/dev/null 2>&1 || true
+      "${sudo_cmd[@]}" rmdir "$(dirname "$ROOT_INSTALL_STATE_FILE")" >/dev/null 2>&1 || true
+      "${sudo_cmd[@]}" rmdir "$(dirname "$(dirname "$ROOT_INSTALL_STATE_FILE")")" >/dev/null 2>&1 || true
+      "${sudo_cmd[@]}" rmdir /var/lib/fxroute >/dev/null 2>&1 || true
+    fi
+  fi
 }
 
 main() {
   local firewall_rule=""
+  if [[ $ROOT_STATE_REQUIRED -eq 1 && $ROOT_STATE_TRUSTED -ne 1 ]]; then
+    warn "No trusted root-owned FXRoute install state is available; privileged ownership cleanup and project removal are disabled"
+    PRESERVE_INSTALL_STATE=1
+  fi
   validate_install_root_identity
   log "Stopping and removing FXRoute user service"
   remove_service
@@ -2334,8 +3278,15 @@ main() {
   log "Restoring previously active system caddy.service if needed"
   restore_default_caddy_service_if_needed
 
-  systemctl --user daemon-reload >/dev/null 2>&1 || true
-  systemctl --user reset-failed >/dev/null 2>&1 || true
+  user_systemctl daemon-reload >/dev/null 2>&1 || true
+  user_systemctl reset-failed >/dev/null 2>&1 || true
+
+  if [[ $CORE_SERVICE_CLEANUP_DEFERRED -eq 0 ]]; then
+    log "Removing FXRoute user-session persistence"
+    remove_user_linger_if_owned
+  else
+    log "Keeping FXRoute user-session persistence while service cleanup is deferred"
+  fi
 
   if [[ $PROVIDER_LAN_CLEANUP_DEFERRED -eq 0 ]]; then
     restore_hostname_if_requested

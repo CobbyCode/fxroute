@@ -47,6 +47,7 @@ class InstallerIntegrationTests(unittest.TestCase):
         reader = extract_function(self.install, "read_qbzd_volume_mode")
         setter = extract_function(self.install, "set_qbzd_volume_mode")
         configurator = extract_function(self.install, "configure_qbzd_volume_mode")
+        target_runner = extract_function(self.install, "run_as_target_user")
         with tempfile.TemporaryDirectory() as td:
             state = Path(td) / "mode"
             log = Path(td) / "calls"
@@ -69,6 +70,9 @@ MODE_FILE={state}
 CALL_LOG={log}
 QOBUZ_VOLUME_MODE_KEY=qconnect.volume_mode
 QOBUZ_REQUIRED_VOLUME_MODE=locked
+FXROUTE_TARGET_USER="$(id -un)"
+FXROUTE_TARGET_HOME="$HOME"
+FXROUTE_RUNTIME_DIR="/run/user/$(id -u)"
 export MODE_FILE CALL_LOG
 QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
 QBZD_VOLUME_MODE_BEFORE=""
@@ -77,6 +81,7 @@ run_cmd() {{ "$@"; }}
 pass() {{ :; }}
 warn() {{ printf 'WARN:%s\\n' "$*" >&2; }}
 die() {{ printf 'DIE:%s\\n' "$*" >&2; return 1; }}
+{target_runner}
 {reader}
 {setter}
 {configurator}
@@ -233,6 +238,7 @@ printf 'hash=%s changed=%s\\n' "$SPOTIFYD_BINARY_SHA256" "$SPOTIFYD_BINARY_IDENT
             fake_qbzd.chmod(0o755)
             qbzd_sha256 = hashlib.sha256(fake_qbzd.read_bytes()).hexdigest()
             harness = f"""
+{extract_function(self.uninstall, "run_as_target_user")}
 {reader}
 {extract_function(self.uninstall, "clear_qbzd_volume_ownership_record")}
 {extract_function(self.uninstall, "verify_owned_binary_identity")}
@@ -252,6 +258,8 @@ log() {{ :; }}
 warn() {{ printf '%s\\n' "$*" >&2; }}
 PRESERVE_INSTALL_STATE=0
 INSTALL_STATE_FILE={install_state}
+FXROUTE_TARGET_USER="$(id -un)"
+FXROUTE_RUNTIME_DIR="/run/user/$(id -u)"
 restore_qbzd_volume_mode_if_owned
 printf 'mode=%s preserve=%s\\n' "$(<"$MODE_FILE")" "$PRESERVE_INSTALL_STATE"
 """
@@ -474,6 +482,7 @@ if mdns_guard_table_matches; then printf 'match\\n'; else printf 'mismatch\\n'; 
 id() {{
   case "$*" in
     '-u fxroute-test') printf '4242\\n' ;;
+    '-u') printf '1000\\n' ;;
     '-un') printf 'fxroute-test\\n' ;;
     *) printf '0\\n' ;;
   esac
@@ -481,12 +490,279 @@ id() {{
 SUDO_USER=''
 FXROUTE_TARGET_USER=''
 FXROUTE_TARGET_UID=''
+die() {{ printf 'DIE:%s\\n' "$*" >&2; exit 99; }}
 determine_fxroute_target_identity
 printf '%s %s\\n' "$FXROUTE_TARGET_USER" "$FXROUTE_TARGET_UID"
 """
         result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "fxroute-test 4242")
+
+    def test_root_target_identity_accepts_explicit_audio_user(self):
+        body = extract_function(self.install, "determine_fxroute_target_identity")
+        code = f"""
+{body}
+EUID=0
+TARGET_USER_ARG=khadas
+id() {{
+  case "$*" in
+    '-u') printf '0\\n' ;;
+    '-u khadas') printf '1000\\n' ;;
+    '-un') printf 'root\\n' ;;
+    *) printf '0\\n' ;;
+  esac
+}}
+FXROUTE_TARGET_USER=''
+FXROUTE_TARGET_UID=''
+die() {{ printf 'DIE:%s\\n' "$*" >&2; exit 99; }}
+determine_fxroute_target_identity
+printf '%s %s\\n' "$FXROUTE_TARGET_USER" "$FXROUTE_TARGET_UID"
+"""
+        result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "khadas 1000")
+
+    def test_root_user_systemctl_targets_the_audio_user_manager(self):
+        body = extract_function(self.install, "user_systemctl")
+        code = f"""
+{body}
+EUID=0
+FXROUTE_TARGET_USER=khadas
+SYSTEMCTL_CALLS=''
+id() {{
+  case "$*" in
+    '-u') printf '0\\n' ;;
+    *) command id "$@" ;;
+  esac
+}}
+systemctl() {{ SYSTEMCTL_CALLS="$*"; }}
+user_systemctl show pipewire.service
+printf '%s\\n' "$SYSTEMCTL_CALLS"
+"""
+        result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "--user --machine=khadas@ show pipewire.service",
+        )
+
+    def test_headless_audio_persistence_precedes_audio_start(self):
+        body = extract_function(self.install, "main")
+        self.assertLess(
+            body.index("enable_user_session_persistence"),
+            body.index("enable_user_audio_services"),
+        )
+        self.assertLess(
+            body.index("ensure_no_foreign_fxroute_services"),
+            body.index("enable_user_audio_services"),
+        )
+        self.assertLess(
+            body.index("enable_user_audio_services"),
+            body.index("write_service_unit"),
+        )
+
+    def test_pipewire_validation_is_a_required_install_gate(self):
+        self.assertIn("validate_pipewire_session()", self.install)
+        body = extract_function(self.install, "main")
+        self.assertLess(body.index("validate_pipewire_session"), body.index("print_summary"))
+        validation = extract_function(self.install, "validate_pipewire_session")
+        self.assertIn("wpctl", validation)
+        self.assertIn("pw-cli", validation)
+        self.assertIn("pw-link", validation)
+        self.assertIn("pactl", validation)
+        self.assertIn("ActiveState", validation)
+        self.assertIn("configured_dsp_binary", validation)
+        self.assertIn("die", validation)
+
+    def test_install_state_records_the_audio_session_identity(self):
+        self.assertIn('"install_user": "${FXROUTE_TARGET_USER}"', self.install)
+        self.assertIn('"install_uid": "${FXROUTE_TARGET_UID}"', self.install)
+        self.assertIn('"runtime_dir": "${FXROUTE_RUNTIME_DIR}"', self.install)
+        self.assertIn('"user_linger_enabled_by_fxroute"', self.install)
+        self.assertIn('"user_linger_was_enabled"', self.install)
+
+    def test_root_target_commands_pin_xdg_config_to_the_audio_user(self):
+        runner = extract_function(self.install, "run_as_target_user")
+        self.assertIn('XDG_CONFIG_HOME="$FXROUTE_TARGET_HOME/.config"', runner)
+        self.assertIn('PIPEWIRE_REMOTE=pipewire-0', runner)
+        self.assertIn('PULSE_SERVER="$FXROUTE_RUNTIME_DIR/pulse/native"', runner)
+        self.assertIn('DOWNLOADS_SUBDIR', self.install)
+
+    def test_target_user_ownership_check_never_recursively_chowns_user_tree(self):
+        ownership = extract_function(self.install, "ensure_target_user_ownership")
+        self.assertNotIn("chown -R", ownership)
+        self.assertNotIn("chown --no-dereference", ownership)
+        self.assertIn("path_has_symlink_component", ownership)
+
+    def test_root_installer_does_not_trust_target_user_install_state(self):
+        state_reader = extract_function(self.install, "previous_install_state_field")
+        self.assertIn("ROOT_INSTALL_STATE_FILE", state_reader)
+        self.assertIn("root_state_is_trusted", state_reader)
+        self.assertIn("return 1", state_reader)
+        state_trust = extract_function(self.install, "root_state_is_trusted")
+        self.assertIn("INSTALL_ROOT", state_trust)
+        ownership_loader = extract_function(self.install, "load_provider_ownership_state")
+        self.assertIn("root_state_is_trusted", ownership_loader)
+
+    def test_caddy_setup_does_not_take_over_foreign_data_directory(self):
+        caddy = extract_function(self.install, "offer_optional_caddy_proxy")
+        self.assertIn("CADDY_DATA_DIR_CREATED_BY_FXROUTE", caddy)
+        self.assertIn("Refusing to use a pre-existing Caddy data directory", caddy)
+
+    def test_caddy_setup_validates_user_configured_port_before_root_write(self):
+        caddy = extract_function(self.install, "offer_optional_caddy_proxy")
+        self.assertIn('[[ "$port" =~ ^[0-9]+$ ]]', caddy)
+        self.assertIn("65535", caddy)
+
+    def test_caddy_default_service_is_switched_only_after_staging(self):
+        caddy = self.install[self.install.index("offer_optional_caddy_proxy() {"):]
+        self.assertLess(caddy.index('install -m 644 "$tmp_service" "$service_path"'),
+                        caddy.index('systemctl disable --now caddy.service'))
+        self.assertIn('systemctl disable --now "${service_name}.service"', caddy)
+        self.assertIn("systemctl enable --now caddy.service", caddy)
+
+    def test_configured_dsp_binary_is_used_by_validation(self):
+        validation = extract_function(self.install, "validate_pipewire_session")
+        tools = extract_function(self.install, "validate_tools")
+        self.assertIn("configured_dsp_binary", validation)
+        self.assertIn("configured_dsp_binary", tools)
+        self.assertIn("$2 !~ /(^|\\/)awk$/", validation)
+
+    def test_nonempty_unrecorded_target_is_rejected_before_sync(self):
+        root_guard = extract_function(self.install, "ensure_install_root_is_safe")
+        path_expander = extract_function(self.install, "expand_path")
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            target = home / "fxroute"
+            target.mkdir(parents=True)
+            (target / "foreign-file").write_text("not FXRoute")
+            code = f"""
+{path_expander}
+{root_guard}
+HOME={home}
+INSTALL_ROOT={target}
+INSTALL_CONFIG_FILE={home}/.config/fxroute/install-config.env
+INSTALL_STATE_FILE={home}/.config/fxroute/install-state.json
+LOCAL_PROJECT_MODE=0
+PROJECT_DIRNAME=fxroute
+die() {{ printf 'DIE:%s\\n' "$*" >&2; exit 43; }}
+ensure_install_root_is_safe
+"""
+            result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 43)
+            self.assertIn("non-empty unrecorded target", result.stderr)
+
+    def test_safe_install_root_survives_erre_symlink_check(self):
+        root_guard = extract_function(self.install, "ensure_install_root_is_safe")
+        symlink_check = extract_function(self.install, "path_has_symlink_component")
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            target = home / "fxroute"
+            home.mkdir()
+            code = f"""
+set -Eeuo pipefail
+{symlink_check}
+{root_guard}
+HOME={home}
+INSTALL_ROOT={target}
+INSTALL_CONFIG_FILE={home}/.config/fxroute/install-config.env
+INSTALL_STATE_FILE={home}/.config/fxroute/install-state.json
+LOCAL_PROJECT_MODE=0
+PROJECT_DIRNAME=fxroute
+reject_managed_user_symlinks() {{ :; }}
+ensure_target_fxroute_service_is_owned() {{ :; }}
+die() {{ printf 'DIE:%s\\n' "$*" >&2; exit 43; }}
+ensure_install_root_is_safe
+printf 'safe-root=ok\\n'
+"""
+            result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "safe-root=ok\n")
+
+    def test_download_path_expansion_rejects_system_directories(self):
+        expand_path = extract_function(self.install, "expand_config_path")
+        normalize_subdir = extract_function(self.install, "normalize_downloads_subdir")
+        validate_path = extract_function(self.install, "validate_download_path")
+        code = f"""
+{expand_path}
+{normalize_subdir}
+{validate_path}
+HOME=/tmp/fxroute-target-home
+printf 'expanded=%s subdir=%s\\n' "$(expand_config_path '$HOME/Music')" "$(normalize_downloads_subdir 'nested/incoming')"
+die() {{ printf 'DIE:%s\\n' "$*" >&2; exit 44; }}
+validate_download_path /etc/music /etc
+"""
+        result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 44)
+        self.assertIn("expanded=/tmp/fxroute-target-home/Music subdir=nested/incoming", result.stdout)
+        self.assertIn("system path", result.stderr)
+
+    def test_pipewire_link_validation_requires_ingress_and_outputs(self):
+        link_present = extract_function(self.install, "pipewire_link_present")
+        port_linked = extract_function(self.install, "pipewire_port_linked")
+        graph = (
+            "fxroute_dsp_sink:monitor_FL\n"
+            "  |-> fxroute_dsp:input_1\n"
+            "fxroute_dsp_sink:monitor_FR\n"
+            "  |-> fxroute_dsp:input_2\n"
+            "alsa_output.test:playback_FL\n"
+            "  |<- fxroute_dsp:output_1\n"
+            "alsa_output.test:playback_FR\n"
+            "  |<- fxroute_dsp:output_2\n"
+        )
+        code = f"""
+{link_present}
+{port_linked}
+graph={graph!r}
+pipewire_link_present "$graph" fxroute_dsp_sink:monitor_FL fxroute_dsp:input_1
+pipewire_link_present "$graph" fxroute_dsp_sink:monitor_FR fxroute_dsp:input_2
+pipewire_port_linked "$graph" fxroute_dsp:output_1
+pipewire_port_linked "$graph" fxroute_dsp:output_2
+printf 'link-graph=ok\\n'
+"""
+        result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "link-graph=ok\n")
+
+    def test_uninstaller_can_select_the_recorded_audio_user(self):
+        self.assertIn("--user", self.uninstall)
+        self.assertIn("user_systemctl()", self.uninstall)
+        self.assertIn("run_as_target_user()", self.uninstall)
+        self.assertIn("remove_user_linger_if_owned()", self.uninstall)
+        self.assertIn('systemctl --user --machine="${FXROUTE_TARGET_USER}@"', self.uninstall)
+
+    def test_pipewire_validation_fails_closed_when_target_graph_is_unreachable(self):
+        user_systemctl = extract_function(self.install, "user_systemctl")
+        run_as_target_user = extract_function(self.install, "run_as_target_user")
+        validation = extract_function(self.install, "validate_pipewire_session")
+        code = f"""
+{user_systemctl}
+{run_as_target_user}
+{validation}
+FXROUTE_TARGET_USER=khadas
+FXROUTE_TARGET_UID=1000
+FXROUTE_TARGET_HOME=/home/khadas
+FXROUTE_RUNTIME_DIR=/run/user/1000
+INSTALL_ROOT=/home/khadas/fxroute
+SERVICE_NAME=fxroute
+fail() {{ printf 'FAIL:%s\\n' "$*"; }}
+warn() {{ printf 'WARN:%s\\n' "$*" >&2; }}
+die() {{ printf 'DIE:%s\\n' "$*" >&2; exit 42; }}
+systemctl() {{
+  case "$*" in
+    *MainPID*) printf '123\\n' ;;
+    *ActiveState*) printf 'active\\n' ;;
+  esac
+}}
+wpctl() {{ return 1; }}
+pw-cli() {{ return 1; }}
+pw-link() {{ return 1; }}
+pactl() {{ return 1; }}
+validate_pipewire_session
+"""
+        result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 42)
+        self.assertIn("Functional PipeWire/WirePlumber validation failed", result.stderr)
 
     def test_firewall_contract_tracks_each_backend_rule_separately(self):
         for rule in (
