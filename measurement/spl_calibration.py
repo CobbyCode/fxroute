@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from http_errors import bad_request
 from measurement.session import MeasurementEntryInvalidated
 from audio.samplerate import get_audio_output_overview
+from audio.tool_env import c_locale_env
 
 logger = logging.getLogger(__name__)
 SPL_STOP_TIMEOUT_SECONDS = 40.0
@@ -949,6 +950,7 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
                     text=True,
                     timeout=3,
                     check=True,
+                    env=c_locale_env(),
                 )
                 gain = re.search(
                     r"/\s*([0-9.]+)%\s*/\s*[-+0-9.]+\s*dB",
@@ -977,6 +979,7 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
                         capture_output=True,
                         text=True,
                         timeout=3,
+                        env=c_locale_env(),
                         check=False,
                     )
             except Exception:
@@ -1131,6 +1134,7 @@ async def measure_spl_automatically():
             text=True,
             timeout=3,
             check=True,
+            env=c_locale_env(),
         )
         before_match = re.search(
             r"/\s*([0-9.]+)%\s*/\s*([-+0-9.]+)\s*dB",
@@ -1150,6 +1154,7 @@ async def measure_spl_automatically():
                 text=True,
                 timeout=3,
                 check=True,
+                env=c_locale_env(),
             )
         verified = await _run_operation_thread(
             operation,
@@ -1159,6 +1164,7 @@ async def measure_spl_automatically():
             text=True,
             timeout=3,
             check=True,
+            env=c_locale_env(),
         )
         gain = re.search(r"/\s*([0-9.]+)%\s*/\s*([-+0-9.]+)\s*dB", verified.stdout or "")
         if not gain or abs(float(gain.group(1)) - 100.0) > 0.05 or abs(float(gain.group(2))) > 0.05:

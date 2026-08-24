@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Any
 
+from audio.tool_env import c_locale_env
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,6 +102,7 @@ def _run_command(args: list[str]) -> str:
             text=True,
             check=False,
             timeout=SYSTEM_VOLUME_COMMAND_TIMEOUT_SECONDS,
+            env=c_locale_env(),
         )
     except subprocess.TimeoutExpired as exc:
         raise SystemVolumeError(f"Command timed out: {' '.join(args)}") from exc

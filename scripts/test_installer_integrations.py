@@ -634,6 +634,31 @@ printf '%s\\n' "$SYSTEMCTL_CALLS"
         uninstall_runner = extract_function(self.uninstall, "run_as_target_user")
         self.assertIn("LC_ALL=C", uninstall_runner)
 
+    def test_pactl_subprocess_calls_force_c_locale(self):
+        """Every pactl subprocess.run in production code must pin LC_ALL=C.
+
+        On non-English systems pactl localizes labels ("Standard-Ziel"),
+        values ("Mute: nein") and decimals ("0,00"), breaking English-only
+        output parsers.  Found on de_DE Ubuntu 26.04 x86_64 (.121).
+        """
+        pactl_pat = re.compile(r'"pactl"')
+        env_pat = re.compile(r'env=c_locale_env\(\)')
+        for mod in sorted(ROOT.rglob("**/*.py")):
+            if any(x in str(mod) for x in ("scripts", "__pycache__", ".venv")):
+                continue
+            text = mod.read_text(errors="replace")
+            for i, line in enumerate(text.splitlines(), 1):
+                if not pactl_pat.search(line):
+                    continue
+                window = "\n".join(text.splitlines()[max(0, i - 1):i + 8])
+                if "subprocess.run" not in window:
+                    continue
+                self.assertTrue(
+                    env_pat.search(window),
+                    f"{mod.relative_to(ROOT)}:{i}: pactl subprocess.run "
+                    f"without env=c_locale_env() breaks parsers on non-C locale"
+                )
+
     def test_target_user_ownership_check_never_recursively_chowns_user_tree(self):
         ownership = extract_function(self.install, "ensure_target_user_ownership")
         self.assertNotIn("chown -R", ownership)

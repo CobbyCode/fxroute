@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 from .deps import PlaybackRuntimeDependencies
+from audio.tool_env import c_locale_env
 
 SOURCE_HANDOFF_SETTLE_MS = 260
 RADIO_EXPECTED_SAMPLE_RATE_HZ = 44100
@@ -49,6 +50,7 @@ def _read_sink_mute(sink_name: str) -> bool:
         text=True,
         check=False,
         timeout=1.5,
+        env=c_locale_env(),
     )
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
@@ -69,6 +71,7 @@ def _set_sink_mute(sink_name: str, muted: bool) -> None:
         text=True,
         check=False,
         timeout=1.5,
+        env=c_locale_env(),
     )
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()

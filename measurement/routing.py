@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from dsp.runtime import DSPRuntimeConfig
+from audio.tool_env import c_locale_env
 from measurement.constants import (
     MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     MEASUREMENT_SCOPE_RAW_HELPER,
@@ -600,7 +601,7 @@ class MeasurementRouting:
         try:
             pactl = self._run(
                 ["pactl", "list", "sinks", "short"],
-                capture_output=True, text=True, timeout=3,
+                capture_output=True, text=True, timeout=3, env=c_locale_env(),
             )
             sink_lines = [l for l in (pactl.stdout or "").splitlines() if l.strip()]
             for line in sink_lines:
@@ -618,14 +619,14 @@ class MeasurementRouting:
         try:
             volume = self._run(
                 ["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
-                capture_output=True, text=True, timeout=2,
+                capture_output=True, text=True, timeout=2, env=c_locale_env(),
             )
             vol_line = (volume.stdout or "").strip()
             snapshot["pactl_master_volume"] = vol_line[:200] if vol_line else None
 
             mute = self._run(
                 ["pactl", "get-sink-mute", "@DEFAULT_SINK@"],
-                capture_output=True, text=True, timeout=2,
+                capture_output=True, text=True, timeout=2, env=c_locale_env(),
             )
             mute_line = (mute.stdout or "").strip()
             snapshot["pactl_master_mute"] = mute_line[:200] if mute_line else None
@@ -649,7 +650,7 @@ class MeasurementRouting:
 
     def _pactl_info_value(self, key: str) -> str | None:
         try:
-            completed = self._run(["pactl", "info"], capture_output=True, text=True, timeout=3)
+            completed = self._run(["pactl", "info"], capture_output=True, text=True, timeout=3, env=c_locale_env())
         except Exception:
             return None
         if completed.returncode != 0:
@@ -665,7 +666,7 @@ class MeasurementRouting:
         if kind not in {"sinks", "sources"}:
             return []
         try:
-            completed = self._run(["pactl", "list", "short", kind], capture_output=True, text=True, timeout=3)
+            completed = self._run(["pactl", "list", "short", kind], capture_output=True, text=True, timeout=3, env=c_locale_env())
         except Exception:
             return []
         if completed.returncode != 0:

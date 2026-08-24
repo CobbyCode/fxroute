@@ -23,6 +23,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from audio.tool_env import c_locale_env
 from measurement.audio import MeasurementAudioAdapter
 from measurement.file_store import MeasurementFileStore
 from measurement.host_capture import HostCaptureRunner
@@ -1760,7 +1761,7 @@ class MeasurementStore:
 
     def _discover_capture_inputs_from_pactl(self, seen_ids: set[str], seen_node_names: set[str]) -> list[dict[str, Any]]:
         try:
-            completed = subprocess.run(["pactl", "list", "short", "sources"], capture_output=True, text=True, timeout=4)
+            completed = subprocess.run(["pactl", "list", "short", "sources"], capture_output=True, text=True, timeout=4, env=c_locale_env())
         except Exception:
             return []
         if completed.returncode != 0:
@@ -1853,6 +1854,7 @@ class MeasurementStore:
                     capture_output=True,
                     text=True,
                     timeout=3,
+                    env=c_locale_env(),
                 )
             except Exception:
                 volume = None

@@ -15,6 +15,7 @@ from .constants import (
     PIPEWIRE_DEFAULT_RATE_OPTIONS,
     SAMPLE_RATE_CANDIDATES,
 )
+from audio.tool_env import c_locale_env
 
 
 def _run_command(args: list[str]) -> str:
@@ -25,6 +26,7 @@ def _run_command(args: list[str]) -> str:
             text=True,
             check=False,
             timeout=COMMAND_TIMEOUT_SECONDS,
+            env=c_locale_env(),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"Command timed out: {' '.join(args)}") from exc

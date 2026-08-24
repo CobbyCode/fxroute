@@ -19,6 +19,7 @@ from .overview import (
     get_samplerate_status,
     playback_rate_aligned,
 )
+from audio.tool_env import c_locale_env
 from .persistence import load_sample_rate_policy
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ def pulse_suspend_sink_for_samplerate(output_key: str, reason: str) -> None:
             text=True,
             check=False,
             timeout=1.5,
+            env=c_locale_env(),
         )
         if completed.returncode != 0:
             stderr = (completed.stderr or "").strip()
@@ -78,6 +80,7 @@ def set_pipewire_force_rate(rate: int) -> None:
         text=True,
         check=False,
         timeout=1.5,
+        env=c_locale_env(),
     )
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
