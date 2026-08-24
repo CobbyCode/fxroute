@@ -51,11 +51,15 @@
     flex-direction: column;
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-top: 3px solid var(--accent);
+    /* Neutral edge for regular cards; mint stays reserved for active or
+       selected surfaces so they read at a glance. */
+    border-top: 3px solid var(--border-strong);
     border-radius: var(--radius-lg);
     padding: 1rem;
 }
 
+/* The A/B compare card mirrors the active listening chain ("Listening: A ·
+   Neutral") and keeps the mint edge regular cards no longer carry. */
 .effects-card-manage {
     border-top-color: var(--accent);
 }
@@ -373,7 +377,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-card-subwoofer {
     grid-column: 1 / -1;
     order: 20;
-    border-top-color: #6ee7b7;
 }
 
 .effects-card-subwoofer-header {
@@ -782,7 +785,8 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .effects-card-extras {
     border: 1px solid var(--border);
-    border-top: 3px solid var(--accent);
+    /* Re-assert the shared neutral card edge after the border shorthand. */
+    border-top: 3px solid var(--border-strong);
     border-radius: var(--radius-md);
     background: var(--bg-surface);
     overflow: hidden;

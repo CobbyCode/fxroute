@@ -40,4 +40,6 @@
     /* Native form controls (select option popups, autofill, scrollbars)
        follow the dark theme instead of the system light scheme. */
     color-scheme: dark;
+    /* Native control accents (checkboxes, radios) use the brand mint. */
+    accent-color: var(--accent);
 }

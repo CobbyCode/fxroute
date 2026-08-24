@@ -32,7 +32,9 @@
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.025), 0 0 0 3px rgba(110, 231, 183, 0.08);
 }
 .brand-lockup-button:focus-visible {
-    outline: none;
+    /* Same visible keyboard ring as the power button next in the header. */
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 /* Custom CSS tooltips (header buttons): the brand/settings trigger and the
    power button use the same look. The attribute selector keeps the shared
