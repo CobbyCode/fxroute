@@ -26,6 +26,9 @@
     --radius-xl:  20px;
     --action-gap: 12px;
     --action-gap-mobile: 8px;
+    /* Uniform horizontal spacing for button/control groups on every tab
+       (library rows, playlist save rows, streaming actions share one value). */
+    --control-gap: 12px;
     /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
        cards derive their column sizing from these two values so all three
        surfaces keep one tile rhythm across breakpoints. Radio reads a
@@ -1783,7 +1786,6 @@ body {
    Library tab
    ============================================================ */
 #tab-library {
-    --control-gap: 12px;
     padding-top: 0.55rem;
 }
 .library-header {
@@ -6497,11 +6499,6 @@ input[type="number"]::-webkit-outer-spin-button {
        centered on the 4.5px track. Firefox centers natively (webkit only). */
     .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
     .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
-    /* TIDAL playlist save row: slightly wider breathing room between the
-       name/save group, the existing-playlist target and the actions. */
-    .tidal-playlist-save-row .playlist-save-controls {
-        gap: 0.85rem;
-    }
 }
 
 @media (min-width: 701px) and (max-width: 1180px) {
