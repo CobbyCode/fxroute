@@ -362,8 +362,15 @@ class PlaybackOrchestrator:
             result.update(mode=mode, output_key=output_key)
             if not output_key:
                 return result
-            io_text = await self._deps.run_pw_link_command("-io")
-            link_text = await self._deps.run_pw_link_command("-l")
+            # Both pw-link reads are independent read-only commands; run them
+            # concurrently so each graph diagnosis costs the slower read, not
+            # their sum.  A diagnosis is still a single consistent verdict:
+            # the two outputs describe the same settled graph between our own
+            # mutations.
+            io_text, link_text = await asyncio.gather(
+                self._deps.run_pw_link_command("-io"),
+                self._deps.run_pw_link_command("-l"),
+            )
         except Exception:
             return result
         source_ports = ()

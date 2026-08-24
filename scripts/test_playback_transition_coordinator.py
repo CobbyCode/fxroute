@@ -380,7 +380,10 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(runtime.events.count("mute:True"), 2)
 
     async def test_gate_readback_failure_latches_a_safe_transition(self):
-        runtime = FakeRuntime(muted=False, fail_mute_read_number=3)
+        # Audible transitions no longer perform the unused pre-close mute
+        # read, so the first gate readback after closing the gate (the
+        # target-rate gate check) is mute read number two.
+        runtime = FakeRuntime(muted=False, fail_mute_read_number=2)
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
 
         with self.assertRaises(PlaybackTransitionFailure) as caught:

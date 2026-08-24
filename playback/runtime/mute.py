@@ -27,25 +27,41 @@ class _RuntimeMuteMixin:
     """Attributes provided by the composing adapter instance."""
     _deps: PlaybackRuntimeDependencies
     _output_key: str | None
+    # Memoized gate sink for the current gate-ownership episode; the
+    # coordinator invalidates this at episode boundaries.
+    _resolved_gate_sink: str | None = None
 
     async def read_hardware_mute(self) -> bool:
-        self._output_key = await asyncio.to_thread(
-            _hardware_sink_for_transition, self._deps
+        # The gate sink is stable for one gate-ownership episode; resolving it
+        # once per episode avoids repeating the full status pipeline at every
+        # mute readback boundary.  The coordinator invalidates this memo at
+        # episode boundaries (_close_gate/_restore_gate).
+        if self._resolved_gate_sink is None:
+            self._resolved_gate_sink = await asyncio.to_thread(
+                _hardware_sink_for_transition, self._deps
+            )
+        return await asyncio.to_thread(
+            _read_hardware_sink_mute, self._resolved_gate_sink
         )
-        return await asyncio.to_thread(_read_hardware_sink_mute, self._output_key)
 
     async def set_hardware_mute(self, muted: bool, transition_id: str) -> None:
-        output_key = self._output_key or await asyncio.to_thread(
-            _hardware_sink_for_transition, self._deps
+        if self._resolved_gate_sink is None:
+            self._resolved_gate_sink = await asyncio.to_thread(
+                _hardware_sink_for_transition, self._deps
+            )
+        await asyncio.to_thread(
+            _set_hardware_sink_mute, self._resolved_gate_sink, muted
         )
-        self._output_key = output_key
-        await asyncio.to_thread(_set_hardware_sink_mute, output_key, muted)
         logger.info(
             "Playback transition output gate set: output=%s muted=%s transition_id=%s",
-            output_key,
+            self._resolved_gate_sink,
             muted,
             transition_id,
         )
+
+    def invalidate_gate_sink_resolution(self) -> None:
+        """Drop the memoized gate sink so the next boundary re-resolves it."""
+        self._resolved_gate_sink = None
 
     async def read_sink_mute(self, sink_name: str) -> bool:
         return await asyncio.to_thread(_read_sink_mute, sink_name)

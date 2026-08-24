@@ -196,21 +196,29 @@ class _OutputGateMixin:
     async def _close_gate(
         self, transition_id: str, *, audible_output: bool = False
     ) -> None:
-        observed_muted = await self.runtime.read_hardware_mute()
-        # A mute left behind by an earlier FXRoute failure is owned by the
-        # coordinator, not evidence of a newly user-muted sink.
+        # A new gate-ownership episode begins: the physical gate sink may have
+        # changed since the previous episode, so drop the memoized resolution
+        # before the first mute write below.
+        invalidate = getattr(self.runtime, "invalidate_gate_sink_resolution", None)
+        if callable(invalidate):
+            invalidate()
+        # Audible play/recovery/measurement-entry is an explicit request for
+        # sound: original_user_muted is forced False and neither the fresh-
+        # capture nor the unlatch branch below can apply, so the pre-read of
+        # the hardware mute would be unused work.
         if audible_output:
-            # Audible play/recovery/measurement-entry is an explicit request
-            # for sound.  A stale physical mute must not become the next
-            # transition's user intent.
             self.gate.original_user_muted = False
-        elif not self.gate.closed:
-            self.gate.original_user_muted = bool(observed_muted)
-        elif self.gate.failure_latched and not observed_muted:
-            # The user explicitly unmuted after the failure; begin a fresh
-            # ownership interval without carrying the old latch forward.
-            self.gate.original_user_muted = False
-            self.gate.failure_latched = False
+        else:
+            observed_muted = await self.runtime.read_hardware_mute()
+            # A mute left behind by an earlier FXRoute failure is owned by the
+            # coordinator, not evidence of a newly user-muted sink.
+            if not self.gate.closed:
+                self.gate.original_user_muted = bool(observed_muted)
+            elif self.gate.failure_latched and not observed_muted:
+                # The user explicitly unmuted after the failure; begin a fresh
+                # ownership interval without carrying the old latch forward.
+                self.gate.original_user_muted = False
+                self.gate.failure_latched = False
 
         self.gate.closed = True
         self.gate.owner = "fxroute"
@@ -304,6 +312,11 @@ class _OutputGateMixin:
                 "hardware_muted=False gate.closed=%s",
                 self.gate.closed,
             )
+        # The ownership episode ends here: drop the memoized gate sink so the
+        # next transition re-resolves it against current output selection.
+        invalidate = getattr(self.runtime, "invalidate_gate_sink_resolution", None)
+        if callable(invalidate):
+            invalidate()
 
     async def _latch_failure(self, transition_id: str) -> None:
         self.gate.failure_latched = True

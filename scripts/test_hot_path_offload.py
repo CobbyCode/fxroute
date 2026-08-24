@@ -169,5 +169,122 @@ class SamplerateStatusConcurrencyTest(unittest.TestCase):
         self.assertEqual(status["notes"], [])
 
 
+class GraphDiagnosisParallelReadsTest(unittest.IsolatedAsyncioTestCase):
+    """playback_graph_diagnosis issues its two pw-link reads concurrently."""
+
+    async def test_pw_link_reads_overlap_and_verdict_is_unchanged(self):
+        import asyncio
+        from types import SimpleNamespace
+
+        import playback.orchestration as orchestration_module
+
+        calls = []
+
+        async def fake_pw_link(*args: str) -> str:
+            calls.append(tuple(args))
+            await asyncio.sleep(0.05)
+            if args == ("-io",):
+                return (
+                    "mpv:output_FL\n"
+                    "fxroute_dsp_sink:playback_FL\n"
+                    "fxroute_dsp_sink:playback_FR\n"
+                    "fxroute_dsp_sink:monitor_FL\n"
+                    "fxroute_dsp_sink:monitor_FR\n"
+                    "fxroute_dsp:input_1\n"
+                    "fxroute_dsp:input_2\n"
+                    "fxroute_dsp:output_1\n"
+                    "fxroute_dsp:output_2\n"
+                )
+            return (
+                "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1\n"
+                "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2\n"
+                "fxroute_dsp:output_1 -> alsa_output.test:playback_FL\n"
+                "fxroute_dsp:output_2 -> alsa_output.test:playback_FR\n"
+                "mpv:output_FL -> fxroute_dsp_sink:playback_FL\n"
+                "mpv:output_FR -> fxroute_dsp_sink:playback_FR\n"
+            )
+
+        deps = SimpleNamespace(
+            run_pw_link_command=fake_pw_link,
+            output_mode_subwoofer_modes=frozenset({"subwoofer-2.1", "subwoofer-2.2"}),
+            output_mode_stereo="stereo",
+            get_dsp_snapshot=lambda: {"active": True},
+            helper_argument_sample_rate=lambda snapshot: 44100,
+            resolve_source_producer_ports=None,
+            contains_link=None,
+        )
+        # contains_link is a pure function on text; bind the real one.
+        from playback.orchestration import PlaybackOrchestrator  # noqa: F401
+        from dsp.runtime import _contains_link as real_contains_link
+
+        deps.contains_link = real_contains_link
+
+        orchestrator = type(
+            "_Orchestrator",
+            (),
+            {
+                "_deps": deps,
+                "playback_graph_diagnosis": orchestration_module.PlaybackOrchestrator.playback_graph_diagnosis,
+            },
+        )()
+        overview = {
+            "output_mode": {
+                "mode": "stereo",
+                "effective_output_key": "alsa_output.test",
+            }
+        }
+        start = time.monotonic()
+        diagnosis = await orchestrator.playback_graph_diagnosis(
+            overview, source="radio", target_rate=44100, require_source=True
+        )
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(calls, [("-io",), ("-l",)])
+        # Serial execution would have cost ~2x the single-read sleep.
+        self.assertLess(elapsed, 0.095, f"pw-link reads did not overlap: {elapsed:.3f}s")
+        self.assertTrue(diagnosis["links_complete"])
+        self.assertFalse(diagnosis["bypass_only"])
+
+
+class GateSinkEpisodeMemoTest(unittest.IsolatedAsyncioTestCase):
+    """The gate sink resolves once per episode and re-resolves on invalidation."""
+
+    async def test_read_reuses_resolution_until_invalidated(self):
+        from playback.runtime.mute import _RuntimeMuteMixin
+
+        resolutions = {"count": 0}
+
+        class _Deps:
+            @staticmethod
+            def get_samplerate_status():
+                resolutions["count"] += 1
+                return {
+                    "relevant_sink": {"name": "alsa_output.test"},
+                    "active_rate": 44100,
+                    "force_rate": 0,
+                }
+
+            @staticmethod
+            def get_audio_output_overview():
+                return {"output_mode": {}}
+
+        class _Adapter(_RuntimeMuteMixin):
+            def __init__(self):
+                self._deps = _Deps()
+
+        with patch(
+            "playback.runtime.mute._read_hardware_sink_mute",
+            lambda output_key: False,
+        ):
+            adapter = _Adapter()
+            await adapter.read_hardware_mute()
+            await adapter.read_hardware_mute()
+            self.assertEqual(resolutions["count"], 1, "gate sink re-resolved within episode")
+
+            adapter.invalidate_gate_sink_resolution()
+            await adapter.read_hardware_mute()
+            self.assertEqual(resolutions["count"], 2, "invalidation did not force re-resolution")
+
+
 if __name__ == "__main__":
     unittest.main()
