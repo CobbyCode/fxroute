@@ -115,7 +115,11 @@ class DspOrchestrator:
         selection but left the graph linked to the previous card forever.
         """
         overview_was_supplied = audio_overview is not None
-        overview = audio_overview or self._deps.get_audio_output_overview()
+        overview = (
+            audio_overview
+            if audio_overview
+            else await asyncio.to_thread(self._deps.get_audio_output_overview)
+        )
         dsp_runtime = self._deps.get_dsp_runtime()
 
         if dsp_runtime is None:
@@ -125,7 +129,10 @@ class DspOrchestrator:
 
         async def _sync_locked() -> dict:
             try:
-                samplerate_status = self._deps.get_samplerate_status()
+                # Bounded PipeWire subprocess pipeline; run it off the event loop.
+                samplerate_status = await asyncio.to_thread(
+                    self._deps.get_samplerate_status
+                )
             except Exception as exc:
                 logger.warning(
                     "Subwoofer runtime sync skipped: authoritative samplerate unavailable reason=%s error=%s",
@@ -150,7 +157,11 @@ class DspOrchestrator:
                 )
                 return overview
 
-            current_overview = target_overview or audio_overview or self._deps.get_audio_output_overview()
+            current_overview = (
+                target_overview
+                or audio_overview
+                or await asyncio.to_thread(self._deps.get_audio_output_overview)
+            )
             if requested_rate is not None and requested_rate != authoritative_rate:
                 logger.info(
                     "Native DSP sync stale; restart suppressed: reason=%s requested_rate=%s authoritative_rate=%s",
@@ -168,7 +179,9 @@ class DspOrchestrator:
             current_overview = samplerate.audio_output_overview_with_effective_rate(
                 current_overview, authoritative_rate,
             )
-            pre_start_status = self._deps.get_samplerate_status()
+            pre_start_status = await asyncio.to_thread(
+                self._deps.get_samplerate_status
+            )
             pre_start_rate = samplerate.authoritative_sample_rate(pre_start_status)
             pre_start_sink_rate = pre_start_status.get("active_rate")
             if pre_start_rate != authoritative_rate or pre_start_sink_rate != authoritative_rate:
@@ -181,7 +194,7 @@ class DspOrchestrator:
             current_overview = samplerate.audio_output_overview_with_effective_rate(
                 current_overview, pre_start_rate,
             )
-            final_status = self._deps.get_samplerate_status()
+            final_status = await asyncio.to_thread(self._deps.get_samplerate_status)
             final_rate = samplerate.authoritative_sample_rate(final_status)
             if final_rate != authoritative_rate:
                 logger.info(
@@ -214,7 +227,9 @@ class DspOrchestrator:
         deadline = time.monotonic() + self._stale_retry_deadline_s
         while time.monotonic() <= deadline:
             try:
-                samplerate_status = self._deps.get_samplerate_status()
+                samplerate_status = await asyncio.to_thread(
+                    self._deps.get_samplerate_status
+                )
             except Exception as exc:
                 logger.warning(
                     "DSP sync retry skipped: authoritative samplerate unavailable reason=%s error=%s",
@@ -280,7 +295,9 @@ class DspOrchestrator:
         )
         runtime_snapshot = dsp_runtime.snapshot()
         try:
-            samplerate_status = self._deps.get_samplerate_status()
+            samplerate_status = await asyncio.to_thread(
+                self._deps.get_samplerate_status
+            )
         except Exception:
             samplerate_status = {}
         logger.info(
@@ -336,7 +353,10 @@ class DspOrchestrator:
                 dsp_runtime = self._deps.get_dsp_runtime()
                 if dsp_runtime is None:
                     continue
-                overview = self._deps.get_audio_output_overview()
+                # The overview build spawns a dozen PipeWire/BlueZ subprocesses;
+                # keep that blocking pipeline off the event loop so playback
+                # transitions, IPC, and status endpoints stay responsive.
+                overview = await asyncio.to_thread(self._deps.get_audio_output_overview)
                 output_mode = overview.get("output_mode") or {}
                 if output_mode.get("mode") not in samplerate.OUTPUT_MODE_SUBWOOFER_MODES:
                     continue

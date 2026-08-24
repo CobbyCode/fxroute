@@ -8,6 +8,7 @@ adapter instance and reads the attributes declared on the class below.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 from typing import Any, Mapping
@@ -29,7 +30,7 @@ class _RuntimeSnapshotMixin:
 
     async def read_measurement_session_graph(self, target_rate: int) -> dict[str, Any]:
         """Read the active-measurement graph without touching playback state."""
-        rate = dict(self._deps.get_samplerate_status())
+        rate = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
         diagnosis = await self._deps.playback_graph_diagnosis(
             target_rate=target_rate,
             require_source=False,
@@ -64,8 +65,17 @@ class _RuntimeSnapshotMixin:
     async def read_transition_snapshot(self, request: TransitionRequest) -> dict[str, Any]:
         self._staged_target_url = None
         state = dict(self._player.state if self._player else {})
+        # Both builders run bounded PipeWire/BlueZ subprocess pipelines; keep
+        # them off the event loop and run them concurrently so the snapshot
+        # costs the slower builder, not the sum of both.
+        rate_task = asyncio.create_task(
+            asyncio.to_thread(self._deps.get_samplerate_status)
+        )
+        overview_task: asyncio.Task | None = asyncio.create_task(
+            asyncio.to_thread(self._deps.get_audio_output_overview)
+        )
         try:
-            rate = dict(self._deps.get_samplerate_status())
+            rate = dict(await rate_task)
         except Exception:
             rate = {}
         snapshot = {
@@ -78,7 +88,8 @@ class _RuntimeSnapshotMixin:
             "playback_intent_generation": self._deps.get_playback_intent_generation(),
         }
         if request.operation == "output-mode-switch":
-            snapshot["output_mode_overview"] = copy.deepcopy(self._deps.get_audio_output_overview())
+            assert overview_task is not None
+            snapshot["output_mode_overview"] = copy.deepcopy(await overview_task)
             snapshot["output_mode_config"] = copy.deepcopy(
                 samplerate._load_raw_audio_output_mode()
             )
@@ -91,7 +102,8 @@ class _RuntimeSnapshotMixin:
         else:
             # Frozen once per transition; the graph-diagnosis stages reuse it
             # instead of re-running the full pactl/pw-cli output enumeration.
-            snapshot["audio_overview"] = copy.deepcopy(self._deps.get_audio_output_overview())
+            assert overview_task is not None
+            snapshot["audio_overview"] = copy.deepcopy(await overview_task)
         return snapshot
 
     def target_source_staged(self, request: TransitionRequest) -> bool:

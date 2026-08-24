@@ -147,7 +147,13 @@ class BluetoothInputMonitor:
         logger.info("Enabled Bluetooth input monitoring from %s to fxroute_dsp_sink", normalized)
 
     async def sync(self, source_overview: dict[str, Any] | None = None) -> dict[str, Any]:
-        overview = source_overview or get_audio_source_overview()
+        # The source overview runs the bounded bluetoothctl/pactl subprocess
+        # pipeline; keep it off the event loop.
+        overview = (
+            source_overview
+            if source_overview
+            else await asyncio.to_thread(get_audio_source_overview)
+        )
         if overview.get("mode") != SOURCE_MODE_BLUETOOTH_INPUT:
             await self.disable()
             try:
@@ -163,20 +169,20 @@ class BluetoothInputMonitor:
         await self._ensure_agent()
         if not bt_state.get("discoverable") or not bt_state.get("pairable"):
             set_bluetooth_receiver_enabled(True)
-        bt_overview = get_bluetooth_audio_overview()
+        bt_overview = await asyncio.to_thread(get_bluetooth_audio_overview)
         receiver_session = bt_overview.get("receiver_session") or {}
         source_name = receiver_session.get("source_name")
         if not source_name:
             await self.clear_links()
-            return get_audio_source_overview()
+            return await asyncio.to_thread(get_audio_source_overview)
 
         await self._ensure_loopback(str(source_name))
-        return get_audio_source_overview()
+        return await asyncio.to_thread(get_audio_source_overview)
 
     async def run_monitor_loop(self) -> None:
         while True:
             try:
-                overview = get_audio_source_overview()
+                overview = await asyncio.to_thread(get_audio_source_overview)
                 if overview.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT:
                     overview = await self.sync(overview)
                     await self._deps.sync_peak_monitor_for_source_mode_state(overview)

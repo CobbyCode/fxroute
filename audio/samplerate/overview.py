@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Mapping
 
 from .bluetooth import get_bluetooth_audio_overview
@@ -101,32 +102,43 @@ def _build_selected_output_payload(selected_key: str | None, current_name: str |
     return None
 
 def get_audio_output_overview() -> dict[str, Any]:
-    status = get_samplerate_status()
-    bluetooth_overview = get_bluetooth_audio_overview()
-    default_sink = status.get("sink") or {"id": None, "name": None, "description": None}
-    relevant_sink = status.get("relevant_sink") or {}
-    selection_state = _load_audio_output_selection()
-    output_mode = _load_audio_output_mode()
+    # The independent PipeWire/BlueZ enumerations below each spawn their own
+    # subprocess; running them concurrently keeps this builder's latency near
+    # the slowest single read instead of the sum of all reads.
+    notes: list[str] = []
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        status_future = pool.submit(get_samplerate_status)
+        bluetooth_future = pool.submit(get_bluetooth_audio_overview)
+        sinks_short_future = pool.submit(_run_command, ["pactl", "list", "sinks", "short"])
+        sinks_detailed_future = pool.submit(_run_command, ["pactl", "list", "sinks"])
+        nodes_future = pool.submit(_run_command, ["pw-cli", "ls", "Node"])
 
-    sinks: list[dict[str, Any]] = []
-    sink_details: dict[str, dict[str, Any]] = {}
-    notes = list(status.get("notes") or [])
-    try:
-        pactl_sinks_output = _run_command(["pactl", "list", "sinks", "short"])
-        sinks = _parse_pactl_sinks_short(pactl_sinks_output)
-    except Exception as exc:
-        notes.append(f"Output list unavailable: {exc}")
+        status = status_future.result()
+        bluetooth_overview = bluetooth_future.result()
 
-    try:
-        sink_details = _parse_pactl_sinks_detailed(_run_command(["pactl", "list", "sinks"]))
-    except Exception as exc:
-        notes.append(f"Output details unavailable: {exc}")
+        default_sink = status.get("sink") or {"id": None, "name": None, "description": None}
+        relevant_sink = status.get("relevant_sink") or {}
+        selection_state = _load_audio_output_selection()
+        output_mode = _load_audio_output_mode()
 
-    node_ids: dict[str, int] = {}
-    try:
-        node_ids = _parse_pw_node_ids(_run_command(["pw-cli", "ls", "Node"]))
-    except Exception as exc:
-        notes.append(f"Output sample-rate capabilities unavailable: {exc}")
+        sinks: list[dict[str, Any]] = []
+        sink_details: dict[str, dict[str, Any]] = {}
+        notes = list(status.get("notes") or [])
+        try:
+            sinks = _parse_pactl_sinks_short(sinks_short_future.result())
+        except Exception as exc:
+            notes.append(f"Output list unavailable: {exc}")
+
+        try:
+            sink_details = _parse_pactl_sinks_detailed(sinks_detailed_future.result())
+        except Exception as exc:
+            notes.append(f"Output details unavailable: {exc}")
+
+        node_ids: dict[str, int] = {}
+        try:
+            node_ids = _parse_pw_node_ids(nodes_future.result())
+        except Exception as exc:
+            notes.append(f"Output sample-rate capabilities unavailable: {exc}")
 
     default_name = default_sink.get("name")
     current_name = relevant_sink.get("name") or default_name

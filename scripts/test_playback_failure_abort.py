@@ -123,6 +123,10 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
     async def test_replay_never_uses_stale_radio_for_lost_local_context(self):
         player = PlayerDouble("/music/old.flac", playing=True)
         saved_queue = queue_state()
+        saved_track_info = main.playback_state.current_track_info
+        saved_last_track_info = main.playback_state.last_track_info
+        saved_last_radio_track_info = main.playback_state.last_radio_track_info
+        saved_player = main.runtime.player_instance
         try:
             main.runtime.player_instance = player
             main.playback_state.current_track_info = None
@@ -134,6 +138,12 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(transition.await_args.args[0].source, "local")
         finally:
             restore_queue_state(saved_queue)
+            # Restore the shared playback state this test deliberately rewrites;
+            # leftovers leak into later suites that read the committed context.
+            main.playback_state.current_track_info = saved_track_info
+            main.playback_state.last_track_info = saved_last_track_info
+            main.playback_state.last_radio_track_info = saved_last_radio_track_info
+            main.runtime.player_instance = saved_player
 
     async def test_staged_target_is_stopped_but_committed_queue_preserved(self):
         player = PlayerDouble("/music/new.flac", playing=True)

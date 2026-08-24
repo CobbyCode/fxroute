@@ -29,11 +29,15 @@ class _RuntimeMuteMixin:
     _output_key: str | None
 
     async def read_hardware_mute(self) -> bool:
-        self._output_key = _hardware_sink_for_transition(self._deps)
+        self._output_key = await asyncio.to_thread(
+            _hardware_sink_for_transition, self._deps
+        )
         return await asyncio.to_thread(_read_hardware_sink_mute, self._output_key)
 
     async def set_hardware_mute(self, muted: bool, transition_id: str) -> None:
-        output_key = self._output_key or _hardware_sink_for_transition(self._deps)
+        output_key = self._output_key or await asyncio.to_thread(
+            _hardware_sink_for_transition, self._deps
+        )
         self._output_key = output_key
         await asyncio.to_thread(_set_hardware_sink_mute, output_key, muted)
         logger.info(

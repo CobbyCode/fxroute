@@ -232,7 +232,9 @@ class _RuntimeSourceMixin:
         if not isinstance(request.target_rate, int) or request.target_rate <= 0:
             raise RuntimeError("Playback transition has no target sample rate")
         try:
-            status = dict(self._deps.get_samplerate_status())
+            status = dict(
+                await asyncio.to_thread(self._deps.get_samplerate_status)
+            )
         except Exception:
             status = {}
         if samplerate.playback_rate_aligned(status, request.target_rate):
@@ -268,7 +270,7 @@ class _RuntimeSourceMixin:
         if not aligned:
             aligned = await self._deps.trigger_idle_sink_renegotiation(request.target_rate)
         if not aligned:
-            status = self._deps.get_samplerate_status()
+            status = await asyncio.to_thread(self._deps.get_samplerate_status)
             raise RuntimeError(
                 "target hardware rate did not settle: "
                 f"expected={request.target_rate} active={status.get('active_rate')} "

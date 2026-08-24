@@ -7,6 +7,8 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 from .deps import PlaybackRuntimeDependencies
@@ -14,9 +16,30 @@ from .deps import PlaybackRuntimeDependencies
 SOURCE_HANDOFF_SETTLE_MS = 260
 RADIO_EXPECTED_SAMPLE_RATE_HZ = 44100
 
+# The gate sink is re-read at every mute readback boundary of a transition.
+# Each resolution spawns the full PipeWire status pipeline, which dominated
+# radio-start latency on slow hosts, so a very short memo keeps the burst of
+# readbacks inside one transition on one resolution while still picking up an
+# output change between transitions.
+_GATE_SINK_CACHE_TTL_S = 2.0
+_gate_sink_cache: dict[str, tuple[float, str]] = {}
+_gate_sink_cache_lock = threading.Lock()
+
 
 def _hardware_sink_for_transition(deps: PlaybackRuntimeDependencies) -> str:
     """Resolve the physical sink used by the coordinator output gate."""
+    now = time.monotonic()
+    with _gate_sink_cache_lock:
+        cached = _gate_sink_cache.get("sink")
+        if cached is not None and now - cached[0] <= _GATE_SINK_CACHE_TTL_S:
+            return cached[1]
+    resolved = _resolve_hardware_sink_for_transition(deps)
+    with _gate_sink_cache_lock:
+        _gate_sink_cache["sink"] = (now, resolved)
+    return resolved
+
+
+def _resolve_hardware_sink_for_transition(deps: PlaybackRuntimeDependencies) -> str:
     status = deps.get_samplerate_status()
     relevant_sink = status.get("relevant_sink") or {}
     output_key = str(relevant_sink.get("name") or "").strip()

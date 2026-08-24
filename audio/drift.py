@@ -9,6 +9,7 @@ root, rate-domain helpers come from ``audio.samplerate``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -95,7 +96,8 @@ class SamplerateDriftObserver:
         track_rate = deps.coordinator_source_rate(source, track)
         actual_rate = deps.get_player_audio_samplerate()
         try:
-            samplerate_status = deps.get_samplerate_status()
+            # Bounded PipeWire subprocess pipeline; run it off the event loop.
+            samplerate_status = await asyncio.to_thread(deps.get_samplerate_status)
         except Exception:
             samplerate_status = {}
         active_rate = samplerate_status.get("active_rate") if isinstance(samplerate_status, dict) else None

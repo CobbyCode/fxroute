@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from .constants import SOURCE_MODE_BLUETOOTH_INPUT
@@ -93,47 +94,57 @@ def get_bluetooth_audio_overview() -> dict[str, Any]:
     pw_cli_available = _command_available("pw-cli")
     wpctl_available = _command_available("wpctl")
 
-    controller: dict[str, Any] | None = None
-    adapter_present = False
-    if bluetoothctl_available:
-        try:
-            controller = _parse_bluetoothctl_show(_run_command(["bluetoothctl", "show"]))
-            adapter_present = bool(controller.get("address"))
-        except Exception as exc:
-            notes.append(f"Bluetooth adapter status unavailable: {exc}")
-    else:
-        notes.append("bluetoothctl is not installed or not available in PATH.")
+    # Independent command inventories run concurrently: serial execution made
+    # this builder the latency floor of every audio overview on slow hosts.
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        controller_future = pool.submit(_run_command, ["bluetoothctl", "show"]) if bluetoothctl_available else None
+        sources_short_future = pool.submit(_run_command, ["pactl", "list", "sources", "short"]) if pactl_available else None
+        sinks_short_future = pool.submit(_run_command, ["pactl", "list", "sinks", "short"]) if pactl_available else None
+        sources_detailed_future = pool.submit(_run_command, ["pactl", "list", "sources"]) if pactl_available else None
+        sinks_detailed_future = pool.submit(_run_command, ["pactl", "list", "sinks"]) if pactl_available else None
+        wpctl_status_future = pool.submit(_run_command, ["wpctl", "status"]) if wpctl_available else None
 
-    sources: list[dict[str, Any]] = []
-    sinks: list[dict[str, Any]] = []
-    source_details: dict[str, dict[str, Any]] = {}
-    sink_details: dict[str, dict[str, Any]] = {}
-    if pactl_available:
-        try:
-            sources = _parse_pactl_sources_short(_run_command(["pactl", "list", "sources", "short"]))
-        except Exception as exc:
-            notes.append(f"Bluetooth source inventory unavailable: {exc}")
-        try:
-            sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
-        except Exception as exc:
-            notes.append(f"Bluetooth sink inventory unavailable: {exc}")
-        try:
-            source_details = _parse_pactl_sources_detailed(_run_command(["pactl", "list", "sources"]))
-        except Exception as exc:
-            notes.append(f"Bluetooth source details unavailable: {exc}")
-        try:
-            sink_details = _parse_pactl_sinks_detailed(_run_command(["pactl", "list", "sinks"]))
-        except Exception as exc:
-            notes.append(f"Bluetooth sink details unavailable: {exc}")
-    else:
-        notes.append("pactl is not installed or not available in PATH.")
+        controller: dict[str, Any] | None = None
+        adapter_present = False
+        if bluetoothctl_available:
+            try:
+                controller = _parse_bluetoothctl_show(controller_future.result())
+                adapter_present = bool(controller.get("address"))
+            except Exception as exc:
+                notes.append(f"Bluetooth adapter status unavailable: {exc}")
+        else:
+            notes.append("bluetoothctl is not installed or not available in PATH.")
 
-    wpctl_bluetooth_streams: list[dict[str, Any]] = []
-    if wpctl_available:
-        try:
-            wpctl_bluetooth_streams = _parse_wpctl_status_bluetooth_streams(_run_command(["wpctl", "status"]))
-        except Exception as exc:
-            notes.append(f"Bluetooth PipeWire stream inventory unavailable: {exc}")
+        sources: list[dict[str, Any]] = []
+        sinks: list[dict[str, Any]] = []
+        source_details: dict[str, dict[str, Any]] = {}
+        sink_details: dict[str, dict[str, Any]] = {}
+        if pactl_available:
+            try:
+                sources = _parse_pactl_sources_short(sources_short_future.result())
+            except Exception as exc:
+                notes.append(f"Bluetooth source inventory unavailable: {exc}")
+            try:
+                sinks = _parse_pactl_sinks_short(sinks_short_future.result())
+            except Exception as exc:
+                notes.append(f"Bluetooth sink inventory unavailable: {exc}")
+            try:
+                source_details = _parse_pactl_sources_detailed(sources_detailed_future.result())
+            except Exception as exc:
+                notes.append(f"Bluetooth source details unavailable: {exc}")
+            try:
+                sink_details = _parse_pactl_sinks_detailed(sinks_detailed_future.result())
+            except Exception as exc:
+                notes.append(f"Bluetooth sink details unavailable: {exc}")
+        else:
+            notes.append("pactl is not installed or not available in PATH.")
+
+        wpctl_bluetooth_streams: list[dict[str, Any]] = []
+        if wpctl_available:
+            try:
+                wpctl_bluetooth_streams = _parse_wpctl_status_bluetooth_streams(wpctl_status_future.result())
+            except Exception as exc:
+                notes.append(f"Bluetooth PipeWire stream inventory unavailable: {exc}")
 
     source_names = {str(source.get("name") or "") for source in sources}
     sink_names = {str(sink.get("name") or "") for sink in sinks}

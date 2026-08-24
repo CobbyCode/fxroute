@@ -188,7 +188,7 @@ class _RuntimeVerificationMixin:
 
             effects_runtime = await self._read_and_validate_effects_runtime(extras)
 
-        rate = dict(self._deps.get_samplerate_status())
+        rate = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
         if rate.get("active_rate") != request.target_rate:
             raise RuntimeError(
                 "target rate changed during DSP stabilization: "
@@ -338,15 +338,16 @@ class _RuntimeVerificationMixin:
         require_effects_runtime: bool = True,
     ) -> dict[str, Any]:
         try:
-            rate = dict(self._deps.get_samplerate_status())
+            rate = dict(
+                await asyncio.to_thread(self._deps.get_samplerate_status)
+            )
         except Exception:
             rate = {}
         state = dict(self._player.state if self._player else {})
-        overview = (
-            dict(request.audio_overview)
-            if request.audio_overview
-            else self._deps.get_audio_output_overview()
-        )
+        if request.audio_overview:
+            overview = dict(request.audio_overview)
+        else:
+            overview = await asyncio.to_thread(self._deps.get_audio_output_overview)
         live_mpv = self._live_mpv_commit_state(state)
         if source_policy.is_mpv_source(request.source):
             self._verify_mpv_live_commit(
@@ -491,12 +492,16 @@ class _RuntimeVerificationMixin:
 
     async def verify_measurement_entry(self, request: TransitionRequest) -> dict[str, Any]:
         """Confirm the paused measurement handoff without starting music."""
-        status = dict(self._deps.get_samplerate_status())
+        status = dict(
+            await asyncio.to_thread(self._deps.get_samplerate_status)
+        )
         if not samplerate.playback_rate_aligned(status, request.target_rate):
             await self._deps.reconcile_transition_sink_rate(
                 request.target_rate, reason="measurement-entry"
             )
-            status = dict(self._deps.get_samplerate_status())
+            status = dict(
+                await asyncio.to_thread(self._deps.get_samplerate_status)
+            )
         if status.get("active_rate") != request.target_rate:
             raise RuntimeError(
                 "measurement entry hardware rate mismatch: "
@@ -562,12 +567,12 @@ class _RuntimeVerificationMixin:
         if not isinstance(target_rate, int) or target_rate <= 0:
             raise RuntimeError("output-mode transition has no authoritative sample rate")
 
-        rate = dict(self._deps.get_samplerate_status())
+        rate = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
         if not samplerate.playback_rate_aligned(rate, target_rate):
             await self._deps.reconcile_transition_sink_rate(
                 target_rate, reason="output-mode-switch"
             )
-            rate = dict(self._deps.get_samplerate_status())
+            rate = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
         if rate.get("active_rate") != target_rate:
             raise RuntimeError(
                 "output-mode transition hardware rate mismatch: "
