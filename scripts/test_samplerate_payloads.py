@@ -142,6 +142,19 @@ class OutputOverviewRateCapabilityTests(unittest.TestCase):
             "relevant_sink": {"name": "alsa_output.usb-DAC"},
             "notes": [],
         }
+        def fake_run_command(args):
+            # Dispatch by command, not position: get_audio_output_overview
+            # runs its independent reads concurrently.
+            if args[:1] == ["pactl"] and "short" in args:
+                return pactl_short
+            if args[:1] == ["pactl"]:
+                return pactl_detailed
+            if args[:2] == ["pw-cli", "ls"]:
+                return pw_cli_ls
+            if args[:2] == ["pw-cli", "enum-params"]:
+                return enum_format
+            raise AssertionError(f"unexpected command in overview test: {args}")
+
         with patch.object(
             samplerate.overview, "get_samplerate_status", return_value=status
         ), patch.object(
@@ -149,7 +162,7 @@ class OutputOverviewRateCapabilityTests(unittest.TestCase):
         ), patch.object(
             samplerate.overview,
             "_run_command",
-            side_effect=[pactl_short, pactl_detailed, pw_cli_ls, enum_format],
+            side_effect=fake_run_command,
         ):
             return samplerate.get_audio_output_overview()
 
@@ -667,13 +680,27 @@ class StopRouteForceRateClearTests(unittest.IsolatedAsyncioTestCase):
         )
         pactl = "73\talsa_output.test\tPipeWire\ts32le 4ch 44100Hz\tRUNNING\n"
         pw_cli = "default.clock.rate = 44100\n"
-        with patch.object(samplerate.overview, "_run_command", side_effect=[pw_metadata, wpctl, pactl, pw_cli]), \
+
+        def fake_run_command(args):
+            # get_samplerate_status issues its four reads concurrently; route
+            # by command rather than call order.
+            if args[:2] == ["pw-metadata", "-n"]:
+                return pw_metadata
+            if args[:2] == ["wpctl", "inspect"]:
+                return wpctl
+            if args[:2] == ["pactl", "list"]:
+                return pactl
+            if args[:2] == ["pw-cli", "info"]:
+                return pw_cli
+            raise AssertionError(f"unexpected command in status test: {args}")
+
+        with patch.object(samplerate.overview, "_run_command", side_effect=fake_run_command), \
              patch.object(samplerate.overview, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
             status = samplerate.get_samplerate_status()
         self.assertEqual(status["mode"], "auto")
         self.assertEqual(status["force_rate"], 44100)
 
-        with patch.object(samplerate.overview, "_run_command", side_effect=[pw_metadata, wpctl, pactl, pw_cli]), \
+        with patch.object(samplerate.overview, "_run_command", side_effect=fake_run_command), \
              patch.object(samplerate.overview, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 48000}):
             status = samplerate.get_samplerate_status()
         self.assertEqual(status["mode"], "fixed")

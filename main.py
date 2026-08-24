@@ -389,10 +389,11 @@ def _qobuz_sink_input_observation(
 async def _wait_for_sink_input_release(list_fn, timeout_ms: int) -> bool:
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     while time.monotonic() <= deadline:
-        if not list_fn():
+        # The listing spawns pactl; keep that subprocess off the event loop.
+        if not await asyncio.to_thread(list_fn):
             return True
         await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-    return not list_fn()
+    return not await asyncio.to_thread(list_fn)
 
 
 async def _wait_for_pipewire_mpv_release(timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS) -> bool:
@@ -426,8 +427,9 @@ async def _wait_for_spotify_sink_input_samplerate(
     last_rate: int | None = None
     for poll_index in range(max_polls):
         try:
+            entries = await asyncio.to_thread(_list_spotify_sink_inputs)
             observation = _spotify_sink_input_observation(
-                _list_spotify_sink_inputs(),
+                entries,
                 expected_rate=expected_rate,
                 preferred_identity=(last_observation[0] if last_observation else None),
             )
@@ -489,8 +491,9 @@ async def _wait_for_qobuz_sink_input_samplerate(
     last_rate: int | None = None
     for poll_index in range(max_polls):
         try:
+            entries = await asyncio.to_thread(_list_qobuz_sink_inputs)
             observation = _qobuz_sink_input_observation(
-                _list_qobuz_sink_inputs(),
+                entries,
                 expected_rate=expected_rate,
                 preferred_identity=(last_observation[0] if last_observation else None),
             )
@@ -2426,6 +2429,7 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
 
     track = _qobuz_target_track_from_state(qobuz_state)
     target_rate = _qobuz_target_rate(qobuz_state)
+    rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
     request = TransitionRequest(
         operation="qobuz-claim",
         source="qobuz",
@@ -2433,7 +2437,7 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
         target_url=str(track.get("id") or ""),
         target_track=track,
         should_play=True,
-        rate_change=_coordinator_rate_change(target_rate),
+        rate_change=rate_change,
         reload_source=False,
         detail=detail,
         skip_if_committed_owner=skip_if_owner_committed,
@@ -2478,12 +2482,13 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
         return playback_state.current_playback_owner == "spotify"
 
     target_rate = _coordinator_target_rate("spotify")
+    rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
     request = TransitionRequest(
         operation="spotify-claim",
         source="spotify",
         target_rate=target_rate,
         should_play=True,
-        rate_change=_coordinator_rate_change(target_rate),
+        rate_change=rate_change,
         reload_source=True,
         detail=detail,
         skip_if_committed_owner=skip_if_owner_committed,
@@ -2730,6 +2735,9 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
             if playback_queue.queue.single_track_loop and playback_state.current_track_info and playback_state.current_track_info.get("url"):
                 loop_track = dict(playback_state.current_track_info)
                 loop_rate = _coordinator_target_rate("local", loop_track)
+                loop_rate_change = await asyncio.to_thread(
+                    _coordinator_rate_change, loop_rate
+                )
                 try:
                     result = await _run_coordinated_transition(TransitionRequest(
                         operation="replay",
@@ -2738,7 +2746,7 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
                         target_url=loop_track.get("url"),
                         target_track=loop_track,
                         should_play=True,
-                        rate_change=_coordinator_rate_change(loop_rate),
+                        rate_change=loop_rate_change,
                         reload_source=True,
                         detail="single-track-loop",
                     ))
@@ -3323,7 +3331,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         get_dsp_preset_load_lock=lambda: runtime.dsp_preset_load_lock,
         get_measurement_session=lambda: measurement_sr_session,
         get_samplerate_status=lambda: get_samplerate_status(),
-        get_audio_output_overview=lambda: get_audio_output_overview(),
+        get_audio_output_overview=lambda *args, **kwargs: get_audio_output_overview(*args, **kwargs),
         get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
         get_player_audio_samplerate=_get_player_audio_samplerate,
         is_local_playback_active=_is_local_playback_active,
@@ -3756,7 +3764,7 @@ async def play_track(req: PlayRequest):
     native_trim_required = playback_queue.queue.mode == "native_mpv" and queue_candidate.mode != "native_mpv"
     same_target = previous_state.get("current_file") == target_url and not previous_state.get("ended")
     target_rate = _coordinator_target_rate(source, track_info)
-    rate_change = _coordinator_rate_change(target_rate)
+    rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
     request = TransitionRequest(
         operation="play",
         source=source,
@@ -3927,7 +3935,7 @@ async def toggle_playback():
                 "playback": build_playback_payload(new_state),
             }
         target_rate = _coordinator_target_rate(source, active_track)
-        rate_change = _coordinator_rate_change(target_rate)
+        rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
         if not rate_change and target_rate is not None:
             # Same-rate resume is transport-only: the committed source, rate
             # and graph are unchanged while paused, so a full Coordinator
@@ -3978,6 +3986,7 @@ async def toggle_playback():
         raise HTTPException(status_code=409, detail="Nothing is available to replay")
     source = str(replay_track.get("source") or "local")
     target_rate = _coordinator_target_rate(source, replay_track)
+    replay_rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
     request = TransitionRequest(
         operation="replay",
         source=source,
@@ -3985,7 +3994,7 @@ async def toggle_playback():
         target_url=replay_url,
         target_track=replay_track,
         should_play=True,
-        rate_change=_coordinator_rate_change(target_rate),
+        rate_change=replay_rate_change,
         reload_source=True,
         detail="replay",
         **((playback_queue.queue.native_request_fields()) if source == "local" else {}),
@@ -5066,6 +5075,7 @@ async def _qobuz_ui_start_action(action: str) -> dict:
         return qobuz_state
     track = _qobuz_target_track_from_state(qobuz_state)
     target_rate = _qobuz_target_rate(qobuz_state)
+    qobuz_rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
     request = TransitionRequest(
         operation="qobuz-play" if action == "play" else "qobuz-toggle",
         source="qobuz",
@@ -5073,7 +5083,7 @@ async def _qobuz_ui_start_action(action: str) -> dict:
         target_url=str(track.get("id") or ""),
         target_track=track,
         should_play=True,
-        rate_change=_coordinator_rate_change(target_rate),
+        rate_change=qobuz_rate_change,
         reload_source=True,
         detail=f"api-streaming-qobuz-{action}",
     )
@@ -5507,12 +5517,13 @@ def _resolve_playback_source_producer_ports(source: str | None) -> tuple[str, st
 @app.post("/api/spotify/play")
 async def api_spotify_play():
     target_rate = _coordinator_target_rate("spotify")
+    rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
     request = TransitionRequest(
         operation="spotify-play",
         source="spotify",
         target_rate=target_rate,
         should_play=True,
-        rate_change=_coordinator_rate_change(target_rate),
+        rate_change=rate_change,
         reload_source=True,
         detail="api-spotify-play",
     )
@@ -5550,12 +5561,13 @@ async def api_spotify_toggle():
         return await broadcast_spotify_state(data)
 
     target_rate = _coordinator_target_rate("spotify")
+    rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
     request = TransitionRequest(
         operation="spotify-toggle",
         source="spotify",
         target_rate=target_rate,
         should_play=True,
-        rate_change=_coordinator_rate_change(target_rate),
+        rate_change=rate_change,
         reload_source=True,
         detail="api-spotify-toggle",
     )

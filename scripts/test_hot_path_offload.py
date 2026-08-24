@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Second responsiveness pass: hot-path offload and redundant-read regressions.
+
+Pins the follow-up fixes to commit 6b2e8df:
+
+- ``_wait_for_sink_input_release`` must poll its pactl listing off the event
+  loop (the release waits run inside every rate-changing transition).
+- ``get_audio_output_overview(status=...)`` must reuse a caller-provided
+  samplerate status instead of rebuilding that pipeline per snapshot.
+- ``get_samplerate_status`` keeps identical parsing/notes semantics while its
+  four independent command reads run concurrently.
+"""
+
+import sys
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import main
+import audio.samplerate.overview as overview_module
+
+MAIN_THREAD = threading.current_thread()
+
+WPCTL_INSPECT = (
+    "id 57,\n"
+    '    * node.name = "alsa_output.usb"\n'
+    '    * node.description = "USB Headphone"\n'
+)
+PACTL_SINKS_SHORT = (
+    "79\talsa_output.usb\tPipeWire\ts16le 2ch 44100Hz\tRUNNING\n"
+    "55\tfxroute_dsp_sink\tPipeWire\tfloat32le 2ch 44100Hz\tRUNNING\n"
+)
+PW_METADATA = (
+    "key:'clock.rate' value:'44100'\n"
+    "key:'clock.force-rate' value:'0'\n"
+    "key:'clock.allowed-rates' value:'[44100 48000]'\n"
+)
+PW_CORE_INFO = 'default.clock.rate = "44100"\n'
+PW_NODES = (
+    "id 57,\n"
+    '    node.name = "alsa_output.usb"\n'
+    "id 55,\n"
+    '    node.name = "fxroute_dsp_sink"\n'
+)
+PW_ENUM_FORMAT = (
+    "Audio:rate (Standard)\n"
+    "    Int 44100\n"
+)
+
+
+def _stub_run_command(delay_s: float = 0.0):
+    """Return a _run_command stand-in serving canned outputs per command."""
+    commands = []
+
+    def run(args):
+        commands.append(tuple(args))
+        if delay_s:
+            time.sleep(delay_s)
+        if args[:2] == ["pw-metadata", "-n"]:
+            return PW_METADATA
+        if args[:2] == ["wpctl", "inspect"]:
+            return WPCTL_INSPECT
+        if args[:2] == ["pactl", "list"] and args[-1] == "short":
+            return PACTL_SINKS_SHORT
+        if args[:2] == ["pactl", "list"]:
+            return ""
+        if args[:2] == ["pw-cli", "info"]:
+            return PW_CORE_INFO
+        if args[:2] == ["pw-cli", "ls"]:
+            return PW_NODES
+        if args[:2] == ["pw-cli", "enum-params"]:
+            return PW_ENUM_FORMAT
+        return ""
+
+    run.commands = commands
+    return run
+
+
+class WaitForSinkInputReleaseOffLoopTest(unittest.IsolatedAsyncioTestCase):
+    async def test_release_wait_polls_listing_off_loop(self):
+        threads = []
+
+        def probe():
+            threads.append(threading.current_thread() is MAIN_THREAD)
+            return len(threads) < 2  # busy once, released on second poll
+
+        released = await main._wait_for_sink_input_release(probe, timeout_ms=2000)
+        self.assertTrue(released)
+        self.assertEqual(len(threads), 2)
+        self.assertFalse(
+            any(threads),
+            "release wait ran the pactl sink-input listing on the event loop",
+        )
+
+
+class OverviewStatusReuseTest(unittest.TestCase):
+    def test_overview_reuses_injected_status_without_rebuild(self):
+        stub = _stub_run_command()
+        counter = {"status_builds": 0}
+
+        def counted_status():
+            counter["status_builds"] += 1
+            return {
+                "available": True,
+                "notes": [],
+                "sink": {"id": 57, "name": "alsa_output.usb", "description": "USB"},
+                "relevant_sink": {"name": "alsa_output.usb", "active_rate": 44100},
+                "force_rate": 0,
+                "policy": {"mode": "auto"},
+            }
+
+        with patch.object(
+            overview_module, "_run_command", stub
+        ), patch.object(
+            overview_module, "get_bluetooth_audio_overview",
+            lambda: {"available": False},
+        ), patch.object(
+            overview_module, "get_samplerate_status", counted_status
+        ):
+            injected = counted_status()
+            overview = overview_module.get_audio_output_overview(status=injected)
+            self.assertEqual(counter["status_builds"], 1, "injected status was rebuilt")
+            keys = [output["key"] for output in overview["outputs"]]
+            self.assertIn("fxroute_dsp_sink", keys)
+            dsp_output = next(o for o in overview["outputs"] if o["key"] == "fxroute_dsp_sink")
+            self.assertIn(44100, dsp_output["native_supported_rates"])
+            self.assertEqual(
+                overview["output_mode"]["effective_output_key"], "alsa_output.usb"
+            )
+
+            # Without an injected status the builder fetches one itself.
+            overview_module.get_audio_output_overview()
+            self.assertEqual(counter["status_builds"], 2)
+
+
+class SamplerateStatusConcurrencyTest(unittest.TestCase):
+    def test_concurrent_reads_keep_parse_semantics(self):
+        stub = _stub_run_command(delay_s=0.04)
+
+        with patch.object(overview_module, "_run_command", stub):
+            start = time.monotonic()
+            status = overview_module.get_samplerate_status()
+            elapsed = time.monotonic() - start
+
+        # Four ~40 ms reads: concurrent execution must stay well under the
+        # serial sum (~160 ms) while every read still happens exactly once.
+        self.assertLess(elapsed, 0.14, f"status reads did not overlap: {elapsed:.3f}s")
+        issued = stub.commands
+        for expected in (
+            ("pw-metadata", "-n"),
+            ("wpctl", "inspect"),
+            ("pactl", "list"),
+            ("pw-cli", "info"),
+        ):
+            self.assertIn(expected, [tuple(cmd[:2]) for cmd in issued])
+
+        self.assertTrue(status["available"])
+        self.assertEqual(status["sink"]["name"], "alsa_output.usb")
+        self.assertEqual(status["relevant_sink"]["name"], "alsa_output.usb")
+        self.assertEqual(status["active_rate"], 44100)
+        self.assertEqual(status["clock_rate"], 44100)
+        self.assertEqual(status["force_rate"], 0)
+        self.assertEqual(status["default_rate"], 44100)
+        self.assertEqual(status["allowed_rates"], [44100, 48000])
+        self.assertEqual(status["notes"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -66,18 +66,15 @@ class _RuntimeSnapshotMixin:
         self._staged_target_url = None
         state = dict(self._player.state if self._player else {})
         # Both builders run bounded PipeWire/BlueZ subprocess pipelines; keep
-        # them off the event loop and run them concurrently so the snapshot
-        # costs the slower builder, not the sum of both.
-        rate_task = asyncio.create_task(
-            asyncio.to_thread(self._deps.get_samplerate_status)
-        )
-        overview_task: asyncio.Task | None = asyncio.create_task(
-            asyncio.to_thread(self._deps.get_audio_output_overview)
-        )
+        # them off the event loop.  The status is read first so the overview
+        # build can reuse it instead of repeating that pipeline a second time.
         try:
-            rate = dict(await rate_task)
+            rate = dict(
+                await asyncio.to_thread(self._deps.get_samplerate_status)
+            )
         except Exception:
             rate = {}
+        overview_status = rate or None
         snapshot = {
             "player": state,
             "active_rate": rate.get("active_rate"),
@@ -88,8 +85,11 @@ class _RuntimeSnapshotMixin:
             "playback_intent_generation": self._deps.get_playback_intent_generation(),
         }
         if request.operation == "output-mode-switch":
-            assert overview_task is not None
-            snapshot["output_mode_overview"] = copy.deepcopy(await overview_task)
+            snapshot["output_mode_overview"] = copy.deepcopy(
+                await asyncio.to_thread(
+                    self._deps.get_audio_output_overview, overview_status
+                )
+            )
             snapshot["output_mode_config"] = copy.deepcopy(
                 samplerate._load_raw_audio_output_mode()
             )
@@ -102,8 +102,11 @@ class _RuntimeSnapshotMixin:
         else:
             # Frozen once per transition; the graph-diagnosis stages reuse it
             # instead of re-running the full pactl/pw-cli output enumeration.
-            assert overview_task is not None
-            snapshot["audio_overview"] = copy.deepcopy(await overview_task)
+            snapshot["audio_overview"] = copy.deepcopy(
+                await asyncio.to_thread(
+                    self._deps.get_audio_output_overview, overview_status
+                )
+            )
         return snapshot
 
     def target_source_staged(self, request: TransitionRequest) -> bool:

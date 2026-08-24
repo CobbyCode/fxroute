@@ -126,8 +126,9 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
                 return {"active_rate": 44100, "force_rate": 44100}
 
             @staticmethod
-            def get_audio_output_overview():
+            def get_audio_output_overview(status=None):
                 seen.append(("overview", threading.current_thread() is MAIN_THREAD))
+                assert status is not None, "snapshot must pass its status for reuse"
                 return {"output_mode": {"mode": "stereo"}}
 
             @staticmethod

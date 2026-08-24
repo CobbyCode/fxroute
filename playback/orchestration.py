@@ -245,7 +245,9 @@ class PlaybackOrchestrator:
             player = self._deps.get_runtime_player()
             state = dict(player.state if player else {})
             should_play = bool(state.get("current_file") and state.get("playing") and not state.get("paused") and not state.get("ended"))
-        rate_change = False if graph_only else self.coordinator_rate_change(target_rate)
+        rate_change = False if graph_only else await asyncio.to_thread(
+            self.coordinator_rate_change, target_rate
+        )
         observed_url = str(track.get("url") or track.get("id") or "") or None
         commit_context = self.coordinator_commit_context_id()
         if not commit_context:
@@ -315,7 +317,7 @@ class PlaybackOrchestrator:
             target_rate = status.get("active_rate") or status.get("force_rate")
         if not isinstance(target_rate, int) or target_rate <= 0:
             raise RuntimeError("current hardware sample rate is unavailable")
-        rate_change = self.coordinator_rate_change(target_rate)
+        rate_change = await asyncio.to_thread(self.coordinator_rate_change, target_rate)
         request = TransitionRequest(
             operation="sample-rate-policy", source=source, target_rate=target_rate,
             target_url=context.get("target_url"), target_track=dict(context.get("target_track") or {}),

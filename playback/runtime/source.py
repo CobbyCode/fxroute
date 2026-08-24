@@ -112,7 +112,12 @@ class _RuntimeSourceMixin:
 
         # A native MPV source claims playback: pause any active external
         # renderer (Spotify or qbzd).
-        spotify_state = await self._deps.get_spotify_ui_state()
+        # Both provider states are read concurrently; the checks and pauses
+        # below keep their original order.
+        spotify_state, qobuz_state = await asyncio.gather(
+            self._deps.get_spotify_ui_state(),
+            self._deps.get_qobuz_ui_state(),
+        )
         if self._deps.is_spotify_playback_active(spotify_state):
             await self._deps.pause_spotify_for_local_playback_broadcast()
             # The output gate is already closed at this Coordinator stage.
@@ -123,7 +128,6 @@ class _RuntimeSourceMixin:
                 raise RuntimeError(
                     "active Spotify sink input did not quiesce before MPV handoff"
                 )
-        qobuz_state = await self._deps.get_qobuz_ui_state()
         if self._deps.is_qobuz_playback_active(qobuz_state):
             await self._deps.qobuz_pause()
             if not await self._deps.wait_for_pipewire_qobuz_release():

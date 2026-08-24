@@ -101,19 +101,24 @@ def _build_selected_output_payload(selected_key: str | None, current_name: str |
         }
     return None
 
-def get_audio_output_overview() -> dict[str, Any]:
+def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str, Any]:
     # The independent PipeWire/BlueZ enumerations below each spawn their own
     # subprocess; running them concurrently keeps this builder's latency near
-    # the slowest single read instead of the sum of all reads.
+    # the slowest single read instead of the sum of all reads.  Callers that
+    # already hold a fresh samplerate status may pass it as ``status`` so the
+    # build does not repeat that pipeline.
     notes: list[str] = []
     with ThreadPoolExecutor(max_workers=5) as pool:
-        status_future = pool.submit(get_samplerate_status)
+        status_future = (
+            None if isinstance(status, dict) else pool.submit(get_samplerate_status)
+        )
         bluetooth_future = pool.submit(get_bluetooth_audio_overview)
         sinks_short_future = pool.submit(_run_command, ["pactl", "list", "sinks", "short"])
         sinks_detailed_future = pool.submit(_run_command, ["pactl", "list", "sinks"])
         nodes_future = pool.submit(_run_command, ["pw-cli", "ls", "Node"])
 
-        status = status_future.result()
+        if status_future is not None:
+            status = status_future.result()
         bluetooth_overview = bluetooth_future.result()
 
         default_sink = status.get("sink") or {"id": None, "name": None, "description": None}
@@ -145,6 +150,30 @@ def get_audio_output_overview() -> dict[str, Any]:
     default_label = default_sink.get("description") or _humanize_sink_name(default_name)
     selected_key = selection_state.get("selected_key")
 
+    # The per-sink EnumFormat reads are independent commands; run them
+    # concurrently before the assembly loop.  A per-sink failure is stored so
+    # the loop can append the exact same note it appended when these reads
+    # were serial.
+    enum_results: dict[int, Any] = {}
+    enum_node_ids = sorted({
+        node_ids[str(sink.get("name") or "")]
+        for sink in sinks
+        if node_ids.get(str(sink.get("name") or "")) is not None
+    })
+    if enum_node_ids:
+        with ThreadPoolExecutor(max_workers=min(4, len(enum_node_ids))) as enum_pool:
+            enum_futures = {
+                node_id: enum_pool.submit(
+                    _run_command, ["pw-cli", "enum-params", str(node_id), "EnumFormat"]
+                )
+                for node_id in enum_node_ids
+            }
+            for node_id, future in enum_futures.items():
+                try:
+                    enum_results[node_id] = _parse_enum_format_supported_rates(future.result())
+                except Exception as exc:
+                    enum_results[node_id] = exc
+
     explicit_outputs = []
     for sink in sinks:
         name = sink.get("name")
@@ -154,12 +183,11 @@ def get_audio_output_overview() -> dict[str, Any]:
         native_supported_rates: list[int] = []
         node_id = node_ids.get(str(name or ""))
         if node_id is not None:
-            try:
-                native_supported_rates = _parse_enum_format_supported_rates(
-                    _run_command(["pw-cli", "enum-params", str(node_id), "EnumFormat"])
-                )
-            except Exception as exc:
-                notes.append(f"Sample-rate capabilities unavailable for {label}: {exc}")
+            enum_result = enum_results.get(node_id)
+            if isinstance(enum_result, Exception):
+                notes.append(f"Sample-rate capabilities unavailable for {label}: {enum_result}")
+            elif enum_result is not None:
+                native_supported_rates = enum_result
         if not native_supported_rates and sink.get("active_rate") in SAMPLE_RATE_CANDIDATES:
             native_supported_rates = [sink["active_rate"]]
         # native_supported_rates is the raw hardware/PipeWire capability;
@@ -599,73 +627,83 @@ def get_samplerate_status() -> dict[str, Any]:
     policy = load_sample_rate_policy()
     clock_rate_config = _load_pipewire_clock_rate_config()
 
-    try:
-        metadata_output = _run_command(["pw-metadata", "-n", "settings", "0"])
-        metadata = _parse_pw_metadata_settings(metadata_output)
-    except Exception as exc:
-        return {
-            "status": "error",
-            "available": False,
-            "detail": str(exc),
-            "mode": None,
-            "policy": policy,
-            "force_rate": None,
-            "configured_default_rate": clock_rate_config.get("configured_default_rate"),
-            "configured_allowed_rates": clock_rate_config.get("configured_allowed_rates") or [],
-            "active_rate": None,
-            "clock_rate": None,
-            "allowed_rates": [],
-            "default_rate_options": PIPEWIRE_DEFAULT_RATE_OPTIONS,
-            "pipewire_clock_config_path": clock_rate_config.get("config_path"),
-            "pipewire_clock_config_exists": bool(clock_rate_config.get("config_exists")),
-            "restart_required": False,
-            "default_rate": None,
-            "sink": {"id": None, "name": None, "description": None},
-            "notes": ["pw-metadata unavailable"],
-        }
+    # These four reads are independent commands; run them concurrently so the
+    # status cost tracks the slowest single read instead of their sum.  The
+    # results below are still consumed in the original serial order, so note
+    # texts and error semantics stay exactly the same.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        metadata_future = pool.submit(_run_command, ["pw-metadata", "-n", "settings", "0"])
+        sink_inspect_future = pool.submit(_run_command, ["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"])
+        sinks_short_future = pool.submit(_run_command, ["pactl", "list", "sinks", "short"])
+        core_info_future = pool.submit(_run_command, ["pw-cli", "info", "0"])
 
-    try:
-        sink_output = _run_command(["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"])
-        sink = _parse_default_sink(sink_output)
-    except Exception as exc:
-        sink = {"id": None, "name": None, "description": None}
-        notes.append(f"Default sink unavailable: {exc}")
-
-    active_rate = None
-    relevant_sink = None
-    try:
-        pactl_sinks_output = _run_command(["pactl", "list", "sinks", "short"])
-        pactl_sinks = _parse_pactl_sinks_short(pactl_sinks_output)
-        relevant_sink = _select_relevant_sink(sink, pactl_sinks)
-        active_rate = (relevant_sink or {}).get("active_rate")
-        if active_rate is None and relevant_sink:
-            notes.append(f"No parsed active rate for sink {relevant_sink.get('name')}")
-        dsp_sink = next((item for item in pactl_sinks if item.get("name") == "fxroute_dsp_sink"), None)
-        if relevant_sink and dsp_sink and relevant_sink.get("name") != dsp_sink.get("name"):
-            relevant_rate = relevant_sink.get("active_rate")
-            dsp_rate = dsp_sink.get("active_rate")
-            if relevant_rate and dsp_rate and relevant_rate != dsp_rate:
-                notes.append(f"Hardware sink {relevant_sink.get('name')} at {relevant_rate} Hz differs from fxroute_dsp_sink at {dsp_rate} Hz")
-    except Exception as exc:
-        notes.append(f"pactl sink rate unavailable: {exc}")
-
-    if active_rate is None and sink.get("id") is not None:
         try:
-            format_output = _run_command(["pw-cli", "enum-params", str(sink["id"]), "Format"])
-            active_rate = _parse_active_rate(format_output)
-            if active_rate is None:
-                notes.append("Sink idle or no active format")
+            metadata_output = metadata_future.result()
+            metadata = _parse_pw_metadata_settings(metadata_output)
         except Exception as exc:
-            notes.append(f"Active rate unavailable: {exc}")
-    elif active_rate is None:
-        notes.append("No default audio sink resolved")
+            return {
+                "status": "error",
+                "available": False,
+                "detail": str(exc),
+                "mode": None,
+                "policy": policy,
+                "force_rate": None,
+                "configured_default_rate": clock_rate_config.get("configured_default_rate"),
+                "configured_allowed_rates": clock_rate_config.get("configured_allowed_rates") or [],
+                "active_rate": None,
+                "clock_rate": None,
+                "allowed_rates": [],
+                "default_rate_options": PIPEWIRE_DEFAULT_RATE_OPTIONS,
+                "pipewire_clock_config_path": clock_rate_config.get("config_path"),
+                "pipewire_clock_config_exists": bool(clock_rate_config.get("config_exists")),
+                "restart_required": False,
+                "default_rate": None,
+                "sink": {"id": None, "name": None, "description": None},
+                "notes": ["pw-metadata unavailable"],
+            }
 
-    default_rate = None
-    try:
-        core_output = _run_command(["pw-cli", "info", "0"])
-        default_rate = _parse_default_rate(core_output)
-    except Exception as exc:
-        notes.append(f"Default rate unavailable: {exc}")
+        try:
+            sink_output = sink_inspect_future.result()
+            sink = _parse_default_sink(sink_output)
+        except Exception as exc:
+            sink = {"id": None, "name": None, "description": None}
+            notes.append(f"Default sink unavailable: {exc}")
+
+        active_rate = None
+        relevant_sink = None
+        try:
+            pactl_sinks_output = sinks_short_future.result()
+            pactl_sinks = _parse_pactl_sinks_short(pactl_sinks_output)
+            relevant_sink = _select_relevant_sink(sink, pactl_sinks)
+            active_rate = (relevant_sink or {}).get("active_rate")
+            if active_rate is None and relevant_sink:
+                notes.append(f"No parsed active rate for sink {relevant_sink.get('name')}")
+            dsp_sink = next((item for item in pactl_sinks if item.get("name") == "fxroute_dsp_sink"), None)
+            if relevant_sink and dsp_sink and relevant_sink.get("name") != dsp_sink.get("name"):
+                relevant_rate = relevant_sink.get("active_rate")
+                dsp_rate = dsp_sink.get("active_rate")
+                if relevant_rate and dsp_rate and relevant_rate != dsp_rate:
+                    notes.append(f"Hardware sink {relevant_sink.get('name')} at {relevant_rate} Hz differs from fxroute_dsp_sink at {dsp_rate} Hz")
+        except Exception as exc:
+            notes.append(f"pactl sink rate unavailable: {exc}")
+
+        if active_rate is None and sink.get("id") is not None:
+            try:
+                format_output = _run_command(["pw-cli", "enum-params", str(sink["id"]), "Format"])
+                active_rate = _parse_active_rate(format_output)
+                if active_rate is None:
+                    notes.append("Sink idle or no active format")
+            except Exception as exc:
+                notes.append(f"Active rate unavailable: {exc}")
+        elif active_rate is None:
+            notes.append("No default audio sink resolved")
+
+        default_rate = None
+        try:
+            core_output = core_info_future.result()
+            default_rate = _parse_default_rate(core_output)
+        except Exception as exc:
+            notes.append(f"Default rate unavailable: {exc}")
 
     configured_default_rate = clock_rate_config.get("configured_default_rate")
     force_rate = metadata.get("force_rate") or 0
