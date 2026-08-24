@@ -1160,6 +1160,9 @@ function handleWebSocketMessage(msg) {
             if (data.stations) {
                 radioModule.setStations(data.stations);
             }
+            if (data.catalog) {
+                radioModule.setCatalogStations(data.catalog);
+            }
             if (data.spotify) {
                 handleIncomingSpotifyState(data.spotify, { renderTab: true, renderFooter: true });
             }
@@ -5091,6 +5094,7 @@ function albumHasCover(album) {
 
 function albumCoverUrl(album) {
     if (!albumHasCover(album) || !album.id) return '';
+    if (album.demo_cover_url) return album.demo_cover_url;
     return `/api/albums/${encodeURIComponent(album.id)}/cover?v=${state.library.albumsCacheToken || ''}`;
 }
 
@@ -5591,6 +5595,11 @@ async function toggleAlbumCardFavorite(albumId) {
             btn.title = f ? 'Remove from favorites' : 'Add to favorites';
         });
         updateAlbumFavoritesFilterButton();
+        // The Favorites view must drop an unfavorited album immediately;
+        // re-render the grid so the filter stays authoritative.
+        if (state.library.showFavoriteAlbums && !state.library.albumDetail) {
+            renderAlbums();
+        }
         showToast(stored.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
     } catch (e) {
         showToast(e.message || 'Failed to update favorite', 'error');
@@ -11965,13 +11974,18 @@ function renderEffectsCompare() {
     }
     elements.effectsCompareRow.style.display = '';
 
-    elements.effectsCompareA.innerHTML = presets.map(n =>
-        `<option value="${escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${escapeHtml(n)}</option>`
-    ).join('');
-
-    elements.effectsCompareB.innerHTML = [`<option value="" ${!presetB ? 'selected' : ''}>Select preset…</option>`].concat(
+    // Rebuilding <option> lists on every WS push closes an open dropdown.
+    // Only touch the DOM when the values actually changed.
+    const optionsA = presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
+    if (elements.effectsCompareA.innerHTML !== optionsA) {
+        elements.effectsCompareA.innerHTML = optionsA;
+    }
+    const optionsB = [`<option value="" ${!presetB ? 'selected' : ''}>Select preset…</option>`].concat(
         presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetB ? 'selected' : ''}>${escapeHtml(n)}</option>`)
     ).join('');
+    if (elements.effectsCompareB.innerHTML !== optionsB) {
+        elements.effectsCompareB.innerHTML = optionsB;
+    }
 
     let activeLabel = 'Listening: —';
     let chainPresetName = '';
@@ -12041,15 +12055,26 @@ function renderEffectsCombine() {
     const normalized = normalizeEffectsCombineDraft(draft, presets);
     fx.combineDraft = normalized;
 
-    elements.effectsCombinePreset1.innerHTML = [`<option value="" ${!normalized.preset1 ? 'selected' : ''}>Select preset…</option>`].concat(
+    // Rebuilding <option> lists on every WS push closes an open dropdown.
+    // Only touch the DOM when the values actually changed.
+    const options1 = [`<option value="" ${!normalized.preset1 ? 'selected' : ''}>Select preset…</option>`].concat(
         presets.map(n => `<option value="${escapeHtml(n)}" ${n === normalized.preset1 ? 'selected' : ''}>${escapeHtml(n)}</option>`)
     ).join('');
-    elements.effectsCombinePreset2.innerHTML = [`<option value="" ${!normalized.preset2 ? 'selected' : ''}>Select preset…</option>`].concat(
+    if (elements.effectsCombinePreset1.innerHTML !== options1) {
+        elements.effectsCombinePreset1.innerHTML = options1;
+    }
+    const options2 = [`<option value="" ${!normalized.preset2 ? 'selected' : ''}>Select preset…</option>`].concat(
         presets.map(n => `<option value="${escapeHtml(n)}" ${n === normalized.preset2 ? 'selected' : ''}>${escapeHtml(n)}</option>`)
     ).join('');
-    elements.effectsCombinePreset3.innerHTML = [`<option value="" ${!normalized.preset3 ? 'selected' : ''}>Optional…</option>`].concat(
+    if (elements.effectsCombinePreset2.innerHTML !== options2) {
+        elements.effectsCombinePreset2.innerHTML = options2;
+    }
+    const options3 = [`<option value="" ${!normalized.preset3 ? 'selected' : ''}>Optional…</option>`].concat(
         presets.map(n => `<option value="${escapeHtml(n)}" ${n === normalized.preset3 ? 'selected' : ''}>${escapeHtml(n)}</option>`)
     ).join('');
+    if (elements.effectsCombinePreset3.innerHTML !== options3) {
+        elements.effectsCombinePreset3.innerHTML = options3;
+    }
     if (document.activeElement !== elements.effectsCombinePresetName) {
         elements.effectsCombinePresetName.value = normalized.presetName || '';
     }

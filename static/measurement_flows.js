@@ -755,6 +755,12 @@ function openHybridProfileInConvolver() {
     const buildSide = (side) => {
         const model = wizard.profile[side];
         const timing = model.timingMeasurement;
+        const modelPoints = Array.isArray(model.points) ? model.points : [];
+        const modelMinDb = modelPoints.length ? Math.min(...modelPoints.map((point) => Number(point[1]) || 0)) : 0;
+        const modelMaxDb = modelPoints.length ? Math.max(...modelPoints.map((point) => Number(point[1]) || 0)) : 0;
+        const modelMinHz = modelPoints.length ? Number(modelPoints[0][0]) || 20 : 20;
+        const modelMaxHz = modelPoints.length ? Number(modelPoints[modelPoints.length - 1][0]) || 20000 : 20000;
+        const modelSummary = { trace_count: modelPoints.length ? 1 : 0, point_count: modelPoints.length, min_db: modelMinDb, max_db: modelMaxDb, min_hz: modelMinHz, max_hz: modelMaxHz };
         return deps.normalizeMeasurementEntry({
             id: `hybrid-${side}-${Date.now()}`,
             name: `Advanced ${HybridMeasurement.MODE_LABELS[wizard.mode]} ${side === 'left' ? 'L' : 'R'}`,
@@ -767,6 +773,8 @@ function openHybridProfileInConvolver() {
             calibration: timing.calibration,
             audio_output_context: timing.audio_output_context,
             traces: [{ kind: 'hybrid-response', role: 'trusted', label: `Hybrid ${side}`, points: model.points }],
+            summary: modelSummary,
+            review_summary: modelSummary,
             analysis: {
                 ...timing.analysis,
                 hybrid_constraints: model.constraints,

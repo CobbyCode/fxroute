@@ -272,6 +272,7 @@
             const entry = {
                 root,
                 els,
+                providerId,
                 tabBtn: document.querySelector('.tab-btn[data-tab="' + providerId + '"]'),
                 tabPanel: document.getElementById('tab-' + providerId),
                 seeking: false,
@@ -528,8 +529,9 @@
                 message: 'qbzd is waiting for a Qobuz Connect session. Start playback from the Qobuz app and select FXRoute.',
             };
         }
-        if (providerId === 'spotify') return { title: 'Spotify is not running.', message: '' };
-        if (providerId === 'qobuz') return { title: 'Nothing is playing. Start a track from the Qobuz app.', message: '' };
+        if (providerId === 'spotify') return { title: 'Spotify is ready.', message: '' };
+        if (providerId === 'qobuz') return { title: 'Qobuz is ready.', message: '' };
+        if (providerId === 'tidal') return { title: 'TIDAL is ready.', message: '' };
         return { title: 'Nothing is playing.', message: '' };
     }
 
