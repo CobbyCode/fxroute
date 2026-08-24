@@ -26,9 +26,6 @@
     --radius-xl:  20px;
     --action-gap: 12px;
     --action-gap-mobile: 8px;
-    /* Uniform horizontal spacing for button/control groups on every tab
-       (library rows, playlist save rows, streaming actions share one value). */
-    --control-gap: 12px;
     /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
        cards derive their column sizing from these two values so all three
        surfaces keep one tile rhythm across breakpoints. Radio reads a
@@ -1786,6 +1783,7 @@ body {
    Library tab
    ============================================================ */
 #tab-library {
+    --control-gap: 12px;
     padding-top: 0.55rem;
 }
 .library-header {
@@ -1916,19 +1914,24 @@ body {
 .tidal-playlist-save-row {
     flex-wrap: wrap;
     overflow: visible;
+    gap: var(--action-gap);
 }
-/* On roomy viewports the controls sit as one centered, evenly spaced row:
-   name + save, then the existing-playlist target, then add/cancel. */
+/* Compact and left-aligned like the library save row: the controls sit at
+   the row start with a uniform 12px gap (--action-gap). Single line on
+   roomy viewports; the responsive rules switch to wrapping when the tab
+   runs out of width. --control-gap is scoped to the library tab, so the
+   TIDAL row pins its own spacing instead of silently collapsing. */
 .tidal-playlist-save-row .playlist-save-controls {
-    flex: 1 1 auto;
-    flex-wrap: wrap;
-    justify-content: center;
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    gap: var(--action-gap);
 }
 .tidal-playlist-save-row .url-input[type="text"] {
-    flex: 0 1 200px;
+    flex: 0 1 160px;
 }
 .tidal-playlist-save-row select.url-input {
-    flex: 0 1 240px;
+    flex: 0 1 200px;
 }
 .tidal-playlist-save-error {
     flex: 0 0 100%;
@@ -7339,6 +7342,11 @@ input[type="number"]::-webkit-outer-spin-button {
         .playlist-save-controls {
             width: 100%;
             flex: 0 1 auto;
+        }
+        /* TIDAL save row: with the full-width controls container the five
+           controls wrap left-aligned instead of overflowing. */
+        .tidal-playlist-save-row .playlist-save-controls {
+            flex-wrap: wrap;
         }
 
 }

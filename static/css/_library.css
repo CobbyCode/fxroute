@@ -854,19 +854,24 @@
 .tidal-playlist-save-row {
     flex-wrap: wrap;
     overflow: visible;
+    gap: var(--action-gap);
 }
-/* On roomy viewports the controls sit as one centered, evenly spaced row:
-   name + save, then the existing-playlist target, then add/cancel. */
+/* Compact and left-aligned like the library save row: the controls sit at
+   the row start with a uniform 12px gap (--action-gap). Single line on
+   roomy viewports; the responsive rules switch to wrapping when the tab
+   runs out of width. --control-gap is scoped to the library tab, so the
+   TIDAL row pins its own spacing instead of silently collapsing. */
 .tidal-playlist-save-row .playlist-save-controls {
-    flex: 1 1 auto;
-    flex-wrap: wrap;
-    justify-content: center;
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    gap: var(--action-gap);
 }
 .tidal-playlist-save-row .url-input[type="text"] {
-    flex: 0 1 200px;
+    flex: 0 1 160px;
 }
 .tidal-playlist-save-row select.url-input {
-    flex: 0 1 240px;
+    flex: 0 1 200px;
 }
 .tidal-playlist-save-error {
     flex: 0 0 100%;
