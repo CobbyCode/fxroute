@@ -147,6 +147,28 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
         self.assertIn("cifs_sudoers_rule_installed_by_fxroute", self.uninstall_text)
         self.assertIn("helper_verified", self.uninstall_text)
 
+    def test_root_staged_temp_files_are_removed_with_sudo(self):
+        # install_network_library_helper and configure_system_auto_update_helper
+        # stage a mktemp file as the invoking user, then `sudo install` rewrites
+        # it root-owned. A plain `rm -f` then fails in sticky /tmp under `set -e`,
+        # aborting the install when run as a normal user with sudo. Both must
+        # remove the staging file via the sudo command.
+        for name in (
+            "install_network_library_helper",
+            "configure_system_auto_update_helper",
+        ):
+            body = _extract_function(self.text, name)
+            self.assertEqual(
+                len(re.findall(r'^\s*rm -f "\$tmp_helper"$', body, re.MULTILINE)),
+                0,
+                f"{name} still removes the sudo-staged temp file as the plain user",
+            )
+            self.assertEqual(
+                len(re.findall(r'^\s*"\$\{SUDO_CMD\[@\]\}" rm -f "\$tmp_helper"$', body, re.MULTILINE)),
+                3,
+                f"{name} does not remove the sudo-staged temp file via sudo",
+            )
+
     def test_system_update_cleanup_requires_recorded_ownership(self):
         self.assertIn("system_update_owned_by_fxroute", self.text)
         self.assertIn("system_update_owned_by_fxroute", self.uninstall_text)

@@ -1959,14 +1959,14 @@ install_network_library_helper() {
     tmp_helper="$(mktemp)"
     if ! "${SUDO_CMD[@]}" install -m 600 "$helper_src" "$tmp_helper" \
       || [[ "$("${SUDO_CMD[@]}" sha256sum "$tmp_helper" | awk '{print $1}')" != "$CIFS_HELPER_SHA256" ]]; then
-      rm -f "$tmp_helper"
+      "${SUDO_CMD[@]}" rm -f "$tmp_helper"
       die "Refusing to install a changed network library mount helper"
     fi
     if ! "${SUDO_CMD[@]}" install -m 755 "$tmp_helper" "$helper_path"; then
-      rm -f "$tmp_helper"
+      "${SUDO_CMD[@]}" rm -f "$tmp_helper"
       die "Could not install the network library mount helper"
     fi
-    rm -f "$tmp_helper"
+    "${SUDO_CMD[@]}" rm -f "$tmp_helper"
     CIFS_HELPER_INSTALLED_BY_FXROUTE=1
   fi
   [[ "$("${SUDO_CMD[@]}" sha256sum "$helper_path" | awk '{print $1}')" == "$CIFS_HELPER_SHA256" ]] \
@@ -4173,7 +4173,7 @@ configure_system_auto_update_helper() {
       "$helper_present" "$service_was_active" "$timer_was_enabled" "$timer_was_active" \
       || warn "Could not fully restore the system auto-update state"
     warn "System auto-update helper could not be installed in the root-owned system path"
-    rm -f "$tmp_helper"
+    "${SUDO_CMD[@]}" rm -f "$tmp_helper"
     "${SUDO_CMD[@]}" rm -rf "$backup_dir"
     return
   fi
@@ -4182,11 +4182,11 @@ configure_system_auto_update_helper() {
       "$helper_present" "$service_was_active" "$timer_was_enabled" "$timer_was_active" \
       || warn "Could not fully restore the system auto-update state"
     warn "System auto-update helper could not be installed in the root-owned system path"
-    rm -f "$tmp_helper"
+    "${SUDO_CMD[@]}" rm -f "$tmp_helper"
     "${SUDO_CMD[@]}" rm -rf "$backup_dir"
     return
   fi
-  rm -f "$tmp_helper"
+  "${SUDO_CMD[@]}" rm -f "$tmp_helper"
   if ! tmp_service="$(mktemp)"; then
     restore_system_update_transaction "$backup_dir" "$service_present" "$timer_present" \
       "$helper_present" "$service_was_active" "$timer_was_enabled" "$timer_was_active" \
