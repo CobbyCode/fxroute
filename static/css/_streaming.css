@@ -44,7 +44,8 @@
     text-align: center;
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-top: 3px solid var(--accent);
+    /* Standby is not an active state: neutral edge like the DSP cards. */
+    border-top: 3px solid var(--border-strong);
     border-radius: var(--radius-lg);
 }
 .streaming-empty-icon {
@@ -84,6 +85,7 @@
     position: relative;
     background: var(--bg-surface);
     border: 1px solid var(--border);
+    /* Active playback keeps the mint edge (same logic as the DSP A/B card). */
     border-top: 3px solid var(--accent);
     border-radius: var(--radius-lg);
     padding: 1.5rem 1.5rem 1.7rem;

@@ -158,7 +158,7 @@
 
 .measurement-workflow-group {
     display: grid;
-    grid-template-columns: 176px minmax(0, 1fr);
+    grid-template-columns: 190px minmax(0, 1fr);
     align-items: center;
     gap: 0.55rem;
     min-height: 0;
@@ -169,14 +169,14 @@
 #measurement-hybrid-open,
 #measurement-auto-sub-start,
 #measurement-spl-calibration-open {
-    width: 176px;
-    min-width: 176px;
+    width: 190px;
+    min-width: 190px;
     min-height: 44px;
 }
 
 .measurement-workflow-row {
     display: grid;
-    grid-template-columns: 176px minmax(0, 1fr);
+    grid-template-columns: 190px minmax(0, 1fr);
     align-items: center;
     gap: 0.55rem;
     min-width: 0;

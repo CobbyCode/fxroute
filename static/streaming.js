@@ -18,6 +18,10 @@
     let api = null;
     let showToast = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
+
+    /* Line-icon variants for the loop transport (replaces color emojis). */
+    const LOOP_ALL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>';
+    const LOOP_TRACK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><path d="M11 10h1v4"/></svg>';
     let formatTime = function () { return '0:00'; };
     let artworkPlaceholderUrl = function () { return '/static/artwork-placeholder.svg?v=2'; };
     // Shared detail track-row builder, supplied by app.js so the library album
@@ -219,7 +223,7 @@
                                 '<span class="streaming-btn-sm-icon">⇄</span><span class="streaming-btn-sm-label">Shuffle</span>' +
                             '</button>' +
                             '<button type="button" class="streaming-btn-sm" data-action="loop" title="Loop">' +
-                                '<span class="streaming-btn-sm-icon">🔁</span><span class="streaming-btn-sm-label">Loop</span>' +
+                                '<span class="streaming-btn-sm-icon">' + LOOP_ALL_ICON + '</span><span class="streaming-btn-sm-label">Loop</span>' +
                             '</button>' +
                         '</div>' +
                         '<div class="streaming-progress-row">' +
@@ -469,7 +473,7 @@
             els.loop.classList.toggle('active', loopActive);
             els.loop.setAttribute('aria-pressed', loopActive ? 'true' : 'false');
             els.loop.title = loopVal === 'track' ? 'Loop: track' : (loopVal === 'playlist' ? 'Loop: playlist' : 'Loop: off');
-            if (els.loopIcon) els.loopIcon.textContent = loopVal === 'track' ? '🔂' : '🔁';
+            if (els.loopIcon) els.loopIcon.innerHTML = loopVal === 'track' ? LOOP_TRACK_ICON : LOOP_ALL_ICON;
         }
 
         // Progress / seek (capabilities: progress + seek).
@@ -519,13 +523,13 @@
         // session state.
         if (providerId === 'spotify' && data && data.spotifyd_standby) {
             return {
-                title: 'Spotify is ready.',
+                title: 'Ready for Spotify Connect.',
                 message: '',
             };
         }
         if (providerId === 'qobuz' && data && data.qbzd_standby) {
             return {
-                title: 'Qobuz is ready.',
+                title: 'Ready for Qobuz Connect.',
                 message: '',
             };
         }

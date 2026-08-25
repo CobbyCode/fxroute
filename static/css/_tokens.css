@@ -1,6 +1,26 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 /* FXRoute — Redesigned Styles */
 /* Dark, warm, product-like. Touch-friendly. */
+
+/* Geist variable (SIL OFL 1.1, bundled in static/fonts/): one file covers
+   all weights, so no extra cuts are needed. font-display: swap keeps first
+   paint on the system fallback. */
+@font-face {
+    font-family: 'Geist';
+    src: url('fonts/Geist.woff2?v=0.9.149') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Geist Mono';
+    src: url('fonts/GeistMono.woff2?v=0.9.149') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
 :root {
     --bg-primary:    #0d0d0f;
     --bg-surface:    #161619;
@@ -35,8 +55,8 @@
     --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
-    --font-sans: -apple-system, BlinkMacSystemFont, "Geist", "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    --font-mono: 'Geist Mono', ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
     /* Native form controls (select option popups, autofill, scrollbars)
        follow the dark theme instead of the system light scheme. */
     color-scheme: dark;

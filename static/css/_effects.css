@@ -1244,6 +1244,11 @@ input[type="number"]::-webkit-outer-spin-button {
     padding: 0.65rem;
     font-size: 1.05rem;
 }
+.btn-icon svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+}
 #download-selected-tracks .btn-spinner { display: none; }
 #download-selected-tracks.is-busy .btn-spinner {
     display: inline-block;
@@ -1259,10 +1264,19 @@ input[type="number"]::-webkit-outer-spin-button {
 @keyframes btn-spin { to { transform: rotate(360deg); } }
 
 .btn-danger {
-    background: var(--danger);
-    color: #fff;
+    /* Ghost-danger: destructive actions stay quiet until hovered; the red
+       tint signals intent without competing with primary actions. */
+    background: var(--danger-dim);
+    color: var(--danger);
+    border: 1px solid rgba(248, 113, 113, 0.32);
 }
-.btn-danger:hover { opacity: 0.9; filter: brightness(1.1); }
+.btn-danger:hover {
+    background: rgba(248, 113, 113, 0.2);
+    border-color: rgba(248, 113, 113, 0.52);
+    color: var(--danger);
+    opacity: 1;
+    filter: none;
+}
 .btn-primary:disabled,
 .btn-secondary:disabled,
 .btn-danger:disabled {
@@ -1300,7 +1314,13 @@ input[type="number"]::-webkit-outer-spin-button {
     box-shadow: 0 0 0 3px var(--accent-dim);
 }
 .upload-area-icon {
-    font-size: 1.4rem;
+    display: inline-flex;
+    color: var(--text-secondary);
+}
+
+.upload-area-icon svg {
+    width: 20px;
+    height: 20px;
 }
 .upload-area-text {
     color: var(--text-secondary);

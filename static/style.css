@@ -1,6 +1,26 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 /* FXRoute — Redesigned Styles */
 /* Dark, warm, product-like. Touch-friendly. */
+
+/* Geist variable (SIL OFL 1.1, bundled in static/fonts/): one file covers
+   all weights, so no extra cuts are needed. font-display: swap keeps first
+   paint on the system fallback. */
+@font-face {
+    font-family: 'Geist';
+    src: url('fonts/Geist.woff2?v=0.9.149') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Geist Mono';
+    src: url('fonts/GeistMono.woff2?v=0.9.149') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
 :root {
     --bg-primary:    #0d0d0f;
     --bg-surface:    #161619;
@@ -35,8 +55,8 @@
     --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
-    --font-sans: -apple-system, BlinkMacSystemFont, "Geist", "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    --font-mono: 'Geist Mono', ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
     /* Native form controls (select option popups, autofill, scrollbars)
        follow the dark theme instead of the system light scheme. */
     color-scheme: dark;
@@ -189,6 +209,16 @@ body {
 .track-play{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;justify-content:center;transition:color 0.12s,border-color 0.12s,background 0.12s}
 .track-play:hover{color:var(--accent);border-color:var(--accent)}
 .track-play:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Inline SVG icons in generated markup (playlist/folder delete, compact
+   labels, streaming transport) inherit currentColor. */
+.playlist-delete-btn svg,
+.folder-action-btn svg,
+.label-compact svg,
+.streaming-btn-sm-icon svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+}
 
 /* ============================================================
    Header
@@ -3116,7 +3146,8 @@ body {
     text-align: center;
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-top: 3px solid var(--accent);
+    /* Standby is not an active state: neutral edge like the DSP cards. */
+    border-top: 3px solid var(--border-strong);
     border-radius: var(--radius-lg);
 }
 .streaming-empty-icon {
@@ -3156,6 +3187,7 @@ body {
     position: relative;
     background: var(--bg-surface);
     border: 1px solid var(--border);
+    /* Active playback keeps the mint edge (same logic as the DSP A/B card). */
     border-top: 3px solid var(--accent);
     border-radius: var(--radius-lg);
     padding: 1.5rem 1.5rem 1.7rem;
@@ -3918,7 +3950,7 @@ body {
 
 .measurement-workflow-group {
     display: grid;
-    grid-template-columns: 176px minmax(0, 1fr);
+    grid-template-columns: 190px minmax(0, 1fr);
     align-items: center;
     gap: 0.55rem;
     min-height: 0;
@@ -3929,14 +3961,14 @@ body {
 #measurement-hybrid-open,
 #measurement-auto-sub-start,
 #measurement-spl-calibration-open {
-    width: 176px;
-    min-width: 176px;
+    width: 190px;
+    min-width: 190px;
     min-height: 44px;
 }
 
 .measurement-workflow-row {
     display: grid;
-    grid-template-columns: 176px minmax(0, 1fr);
+    grid-template-columns: 190px minmax(0, 1fr);
     align-items: center;
     gap: 0.55rem;
     min-width: 0;
@@ -5842,6 +5874,11 @@ input[type="number"]::-webkit-outer-spin-button {
     padding: 0.65rem;
     font-size: 1.05rem;
 }
+.btn-icon svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+}
 #download-selected-tracks .btn-spinner { display: none; }
 #download-selected-tracks.is-busy .btn-spinner {
     display: inline-block;
@@ -5857,10 +5894,19 @@ input[type="number"]::-webkit-outer-spin-button {
 @keyframes btn-spin { to { transform: rotate(360deg); } }
 
 .btn-danger {
-    background: var(--danger);
-    color: #fff;
+    /* Ghost-danger: destructive actions stay quiet until hovered; the red
+       tint signals intent without competing with primary actions. */
+    background: var(--danger-dim);
+    color: var(--danger);
+    border: 1px solid rgba(248, 113, 113, 0.32);
 }
-.btn-danger:hover { opacity: 0.9; filter: brightness(1.1); }
+.btn-danger:hover {
+    background: rgba(248, 113, 113, 0.2);
+    border-color: rgba(248, 113, 113, 0.52);
+    color: var(--danger);
+    opacity: 1;
+    filter: none;
+}
 .btn-primary:disabled,
 .btn-secondary:disabled,
 .btn-danger:disabled {
@@ -5898,7 +5944,13 @@ input[type="number"]::-webkit-outer-spin-button {
     box-shadow: 0 0 0 3px var(--accent-dim);
 }
 .upload-area-icon {
-    font-size: 1.4rem;
+    display: inline-flex;
+    color: var(--text-secondary);
+}
+
+.upload-area-icon svg {
+    width: 20px;
+    height: 20px;
 }
 .upload-area-text {
     color: var(--text-secondary);

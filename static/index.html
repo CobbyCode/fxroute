@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.148">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.151">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -283,7 +283,7 @@
                                 </div>
                                 <div id="station-url-drop-area" class="upload-area upload-area-url upload-area-url-station" tabindex="0" role="button" aria-label="Drop or paste a station URL">
                                     <input type="text" id="station-url" class="upload-area-text-input" autocomplete="off" spellcheck="false" inputmode="url" aria-label="Paste station URL">
-                                    <span class="upload-area-icon">📻</span>
+                                    <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="9" width="18" height="12" rx="2"/><path d="m8.5 9 1-4.5 8 1.6"/><circle cx="15.5" cy="15" r="2.5"/><path d="M7 15h4"/></svg></span>
                                     <span class="upload-area-text">Drop station link here or paste a URL</span>
                                     <span id="station-url-hint" class="upload-area-filename">SomaFM adds directly.</span>
                                 </div>
@@ -342,8 +342,8 @@
                             <button type="button" id="library-view-mode-list" class="view-mode-btn" aria-pressed="false" title="List view" aria-label="List view">☰</button>
                         </div>
                         <button id="refresh-library" class="btn-secondary btn-icon" title="Refresh library" aria-label="Refresh library">⟳</button>
-                        <button id="download-selected-tracks" class="btn-secondary btn-icon hidden" title="Download selected" aria-label="Download selected"><span class="btn-spinner" aria-hidden="true"></span>⬇</button>
-                        <button id="delete-selected-tracks" class="btn-secondary btn-icon hidden" title="Delete selected" aria-label="Delete selected">🗑</button>
+                        <button id="download-selected-tracks" class="btn-secondary btn-icon hidden" title="Download selected" aria-label="Download selected"><span class="btn-spinner" aria-hidden="true"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg></button>
+                        <button id="delete-selected-tracks" class="btn-secondary btn-icon hidden" title="Delete selected" aria-label="Delete selected"><span class="btn-spinner" aria-hidden="true"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
                     </div>
                 </div>
                 <div id="library-import-panel" class="library-import-panel hidden">
@@ -353,7 +353,7 @@
                                 <label for="download-url">Import from URL</label>
                                 <div id="download-url-drop-area" class="upload-area upload-area-url upload-area-url-primary" tabindex="0" role="button" aria-label="Drop or paste a media URL">
                                     <input type="text" id="download-url" class="upload-area-text-input" autocomplete="off" spellcheck="false" inputmode="url" aria-label="Paste media URL">
-                                    <span class="upload-area-icon">🔗</span>
+                                    <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><path d="M8 12h8"/></svg></span>
                                     <span class="upload-area-text">Drop link here or paste a URL</span>
                                     <span id="download-url-detail" class="upload-area-filename">YouTube or direct media link.</span>
                                 </div>
@@ -361,7 +361,7 @@
                             <div class="field-group library-import-option">
                                 <label for="upload-track-file">Upload audio file, playlist, or album ZIP</label>
                                 <div id="upload-track-area" class="upload-area upload-area-file-primary">
-                                    <span class="upload-area-icon">🎵</span>
+                                    <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span>
                                     <span class="upload-area-text">Drop audio file or ZIP, or&nbsp;<u>browse</u></span>
                                     <span id="upload-track-filename" class="upload-area-filename">Upload MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8, or ZIP.</span>
                                     <input type="file" id="upload-track-file" class="upload-area-input" accept=".mp3,.flac,.ogg,.oga,.opus,.m4a,.aac,.wav,.wma,.webm,.weba,.m3u,.m3u8,.zip,audio/*,application/zip,audio/x-mpegurl,application/vnd.apple.mpegurl">
@@ -485,7 +485,7 @@
                                 <span class="effects-import-section-meta">Main path</span>
                             </div>
                             <div id="effects-import-area" class="upload-area upload-area-file-primary effects-filter-import-area">
-                                <span class="upload-area-icon">📁</span>
+                                <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></span>
                                 <span class="upload-area-text">Drop stereo file or <u>browse</u></span>
                                 <span id="effects-import-filename" class="upload-area-filename">Stereo convolver .irs/.wav or Preset .json</span>
                                 <input type="file" id="effects-import-file" class="upload-area-input" accept=".irs,.wav,.json,audio/wav,application/json">
@@ -500,7 +500,7 @@
                                         <label for="effects-rew-left-text">Left filter</label>
                                     </div>
                                     <div id="effects-rew-left-area" class="upload-area upload-area-file-primary effects-rew-upload-area">
-                                        <span class="upload-area-icon">⬅️</span>
+                                        <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
                                         <span class="upload-area-text">Drop Left file or <u>browse</u></span>
                                         <span id="effects-rew-left-filename" class="upload-area-filename"></span>
                                         <input type="file" id="effects-rew-left-file" class="upload-area-input" accept=".irs,.wav,.txt,text/plain,audio/wav">
@@ -512,7 +512,7 @@
                                         <label for="effects-rew-right-text">Right filter</label>
                                     </div>
                                     <div id="effects-rew-right-area" class="upload-area upload-area-file-primary effects-rew-upload-area">
-                                        <span class="upload-area-icon">➡️</span>
+                                        <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
                                         <span class="upload-area-text">Drop Right file or <u>browse</u></span>
                                         <span id="effects-rew-right-filename" class="upload-area-filename"></span>
                                         <input type="file" id="effects-rew-right-file" class="upload-area-input" accept=".irs,.wav,.txt,text/plain,audio/wav">
@@ -956,7 +956,7 @@
                                         <button id="measurement-calibration-delete" class="btn-danger" type="button">Delete</button>
                                     </div>
                                     <label for="measurement-calibration-file" id="measurement-calibration-upload" class="upload-area upload-area-file-primary measurement-calibration-upload-area">
-                                        <span class="upload-area-icon">📎</span>
+                                        <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>
                                         <span class="upload-area-text">Drop calibration file or <u>upload</u></span>
                                         <span id="measurement-calibration-upload-name" class="upload-area-filename">No calibration file selected.</span>
                                         <input type="file" id="measurement-calibration-file" class="upload-area-input" accept=".txt,.csv,text/plain">
@@ -973,7 +973,7 @@
                                         <button id="measurement-house-curve-delete" class="btn-danger" type="button">Delete</button>
                                     </div>
                                     <label for="measurement-house-curve-file" id="measurement-house-curve-upload" class="upload-area upload-area-file-primary measurement-calibration-upload-area">
-                                        <span class="upload-area-icon">📎</span>
+                                        <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>
                                         <span class="upload-area-text">Drop REW house curve file or <u>upload</u></span>
                                         <span id="measurement-house-curve-upload-name" class="upload-area-filename">No house curve file selected.</span>
                                         <input type="file" id="measurement-house-curve-file" class="upload-area-input" accept=".txt,.csv,text/plain">
@@ -1373,7 +1373,7 @@
     <script src="/static/measurement_graph.js?v=0.9.13"></script>
     <script src="/static/measurement_flows.js?v=0.9.14"></script>
     <script src="/static/radio.js?v=0.9.15"></script>
-    <script src="/static/app.js?v=0.9.85"></script>
-    <script src="/static/streaming.js?v=0.9.52"></script>
+    <script src="/static/app.js?v=0.9.86"></script>
+    <script src="/static/streaming.js?v=0.9.54"></script>
 </body>
 </html>
