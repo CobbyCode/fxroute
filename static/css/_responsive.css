@@ -1390,6 +1390,15 @@
             grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
+        /* 2.2 mode pins Sub 1/Sub 2 to base-grid columns with (0,3,0)
+           specificity; re-reset them (and the derived-delays row) so the
+           single-column stack carries no implicit extra tracks. */
+        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
+        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group,
+        .effects-subwoofer-derived-delays {
+            grid-column: 1;
+        }
+
         .effects-subwoofer-frequency-row {
             gap: 0.55rem;
         }

@@ -5114,22 +5114,17 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     align-self: end;
 }
 
+/* Subwoofer selects share the common #tab-effects control metrics; these
+   rules only cap the inline width so the compact groups stay aligned. */
 #tab-effects .effects-subwoofer-polarity-select,
 #tab-effects .effects-subwoofer-compact-select {
-    width: min(100%,5.6rem);
+    width: min(100%, 5.6rem);
     min-width: 0;
     max-width: 100%;
-    height: 34px;
-    min-height: 34px;
-    padding: 0.25rem 1.45rem 0.25rem 0.45rem;
-    font-size: 0.84rem;
-    line-height: 1.05;
 }
 
 #tab-effects .effects-subwoofer-compact-select {
-    width: min(100%,4.8rem);
-    min-width: 0;
-    max-width: 100%;
+    width: min(100%, 4.8rem);
 }
 
 .effects-filter-import-area.is-busy {
@@ -5521,6 +5516,31 @@ input[type="number"]::-webkit-outer-spin-button {
     padding-top: 1.45rem;
 }
 
+/* Collapsed PEQ card: read-only draft preview plus hint. Both hide while
+   the editor is expanded; the summary text is filled from the draft. */
+.effects-peq-summary {
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.effects-peq-summary-hint {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 0.76rem;
+    letter-spacing: 0.01em;
+    color: var(--text-muted);
+}
+
+.effects-disclosure[open] .effects-peq-summary,
+.effects-disclosure[open] .effects-peq-summary-hint {
+    display: none;
+}
+
 .effects-disclosure {
     width: 100%;
 }
@@ -5648,13 +5668,11 @@ input[type="number"]::-webkit-outer-spin-button {
     border-radius: var(--radius-sm);
     font-size: 0.92rem;
 }
-/* Delay number inputs override the shared #tab-effects .url-input sizing:
-   compact fixed-width fields. Selectors carry #tab-effects to win over the
-   shared rule at equal specificity. */
+/* Delay number inputs keep the shared #tab-effects control metrics
+   (46px min-height, shared padding/font) so mixed number/select rows
+   align; only the inline width stays compact. The #tab-effects prefix
+   keeps equal-specificity priority over the shared sizing rule. */
 #tab-effects .delay-number-input {
-    min-height: 34px;
-    padding: 0.35rem 0.45rem;
-    font-size: 0.84rem;
     max-width: 100%;
     min-width: 0;
     flex: 0 0 auto;
@@ -5666,8 +5684,6 @@ input[type="number"]::-webkit-outer-spin-button {
 #tab-effects .effects-bass-controls .delay-number-input {
     width: 4.6rem;
     min-width: 4.6rem;
-    min-height: 46px;
-    padding: 0.7rem 0.85rem;
 }
 /* ============================================================
    Buttons
@@ -7726,6 +7742,15 @@ input[type="number"]::-webkit-outer-spin-button {
         .effects-subwoofer-channel-group {
             grid-column: 1;
             grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        /* 2.2 mode pins Sub 1/Sub 2 to base-grid columns with (0,3,0)
+           specificity; re-reset them (and the derived-delays row) so the
+           single-column stack carries no implicit extra tracks. */
+        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
+        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group,
+        .effects-subwoofer-derived-delays {
+            grid-column: 1;
         }
 
         .effects-subwoofer-frequency-row {

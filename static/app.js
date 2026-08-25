@@ -669,6 +669,7 @@ const elements = {
     effectsRewDualCreatePresetBtn: document.getElementById('effects-rew-dual-create-preset'),
     effectsPeqDisclosure: document.getElementById('effects-peq-disclosure'),
     effectsPeqDisclosureMeta: document.querySelector('#effects-peq-disclosure .effects-disclosure-meta'),
+    effectsPeqSummary: document.getElementById('effects-peq-summary'),
     effectsPeqPresetName: document.getElementById('effects-peq-preset-name'),
     effectsPeqModeSelect: document.getElementById('effects-peq-mode-select'),
     effectsPeqAddBandBtn: document.getElementById('effects-peq-add-band'),
@@ -6685,6 +6686,47 @@ function updateEffectsPeqDisclosureLabel() {
     const rightCount = state.dsp?.peqDraft?.rightBands?.length || 0;
     const actionLabel = elements.effectsPeqDisclosure.open ? 'Collapse' : 'Expand';
     elements.effectsPeqDisclosureMeta.textContent = `L${leftCount} · R${rightCount} · ${actionLabel}`;
+    updateEffectsPeqSummary();
+}
+
+/* Collapsed-card preview: compact read-only band list from the draft. */
+function formatPeqSummaryBand(band) {
+    if (!band) return null;
+    const fixed = (value) => {
+        const n = Number(value);
+        return Number.isFinite(n) ? Math.round(n * 10) / 10 : 0;
+    };
+    if (band.filterType === 'delay') return `${fixed(band.delayMs)} ms`;
+    if (band.filterType === 'gain') {
+        const gain = fixed(band.gainDb);
+        return `${gain > 0 ? '+' : ''}${gain} dB`;
+    }
+    const hz = Number(band.frequencyHz);
+    const freq = Number.isFinite(hz) && hz >= 1000 ? `${Math.round(hz / 100) / 10} kHz` : `${Math.round(hz)} Hz`;
+    const gain = fixed(band.gainDb);
+    return `${freq} ${gain > 0 ? '+' : ''}${gain} dB Q${fixed(band.q)}`;
+}
+
+function updateEffectsPeqSummary() {
+    if (!elements.effectsPeqSummary) return;
+    const formatSide = (bands) => {
+        const items = (bands || []).map(formatPeqSummaryBand).filter(Boolean);
+        if (!items.length) return null;
+        const shown = items.slice(0, 3).join(' · ');
+        return items.length > 3 ? `${shown} · +${items.length - 3}` : shown;
+    };
+    const left = formatSide(state.dsp?.peqDraft?.leftBands);
+    const right = formatSide(state.dsp?.peqDraft?.rightBands);
+    const lines = [];
+    if (left) lines.push(`L  ${left}`);
+    if (right) lines.push(`R  ${right}`);
+    if (!lines.length) {
+        elements.effectsPeqSummary.textContent = '';
+        elements.effectsPeqSummary.hidden = true;
+        return;
+    }
+    elements.effectsPeqSummary.textContent = lines.join('\n');
+    elements.effectsPeqSummary.hidden = false;
 }
 
 function clearEffectsPeqStatusOnCollapse() {
