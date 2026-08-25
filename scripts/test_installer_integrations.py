@@ -835,6 +835,58 @@ validate_pipewire_session
         self.assertEqual(result.returncode, 42)
         self.assertIn("Functional PipeWire/WirePlumber validation failed", result.stderr)
 
+    def test_validate_http_gives_cold_start_a_real_deadline(self):
+        # Fresh installs restart the service and then validate; a cold start
+        # (venv bytecode compile, HDA init, first PipeWire graph) can exceed
+        # 30 seconds. The wait must be long enough to cover that.
+        body = extract_function(self.install, "validate_http")
+        match = re.search(r"FXROUTE_HTTP_VALIDATION_DEADLINE:-(\d+)", body)
+        self.assertIsNotNone(match, "validate_http must default to SECONDS + FXROUTE_HTTP_VALIDATION_DEADLINE")
+        self.assertGreaterEqual(int(match.group(1)), 90)
+
+    def test_validate_http_failure_does_not_kill_installer(self):
+        # The fail path used to end with a bare `return` after a
+        # `[[ ... ]] && warn` line. That compound leaves status 1 and the
+        # plain `validate_http` call in main() then dies under `set -e`,
+        # aborting the installer right after the [fail] output, before the
+        # summary. The function must exit 0 (it reports failure via pass/fail).
+        body = extract_function(self.install, "validate_http")
+        self.assertNotIn("        return\n", body)
+        user_systemctl = extract_function(self.install, "user_systemctl")
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home) / "fxroute"
+            root.mkdir()
+            (root / ".env").write_text("PORT=8000\n")
+            code = f"""
+set -euo pipefail
+{user_systemctl}
+{body}
+FXROUTE_TARGET_USER=khadas
+FXROUTE_TARGET_UID=1000
+FXROUTE_TARGET_HOME={home}
+FXROUTE_RUNTIME_DIR=/run/user/1000
+INSTALL_ROOT={root}
+SERVICE_NAME=fxroute
+SECONDS=100
+FXROUTE_HTTP_VALIDATION_DEADLINE=1
+pass() {{ printf 'PASS:%s\\n' "$*"; }}
+fail() {{ printf 'FAIL:%s\\n' "$*"; }}
+warn() {{ printf 'WARN:%s\\n' "$*" >&2; }}
+user_systemctl() {{
+  case "$*" in
+    *MainPID*) printf '17779\\n' ;;
+    *ActiveState*) printf 'active\\n' ;;
+  esac
+}}
+ss() {{ return 0; }}
+validate_http
+printf 'survived\\n'
+"""
+            result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("FAIL:HTTP port owned by FXRoute service", result.stdout)
+            self.assertIn("survived", result.stdout)
+
     def test_firewall_contract_tracks_each_backend_rule_separately(self):
         for rule in (
             "http_80_tcp",

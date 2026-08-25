@@ -134,6 +134,34 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
             self.assertIn("cifs-utils", planned)
             self.assertTrue("smbclient" in planned or "samba-client" in planned)
 
+    def test_tar_is_required_support_package_for_all_distros(self):
+        # Minimal openSUSE server installs do not ship tar, yet the installer
+        # needs it for sync_project_tree and for provider archives. tar must be
+        # requested alongside the other support tools on every manager.
+        self.assertIn("support_packages=(curl git socat tar)", self.text)
+        self.assertIn(
+            "for cmd in python3 mpv ffmpeg playerctl curl git socat tar bluetoothctl wpctl pw-cli pactl; do",
+            self.text,
+        )
+
+    def test_calf_lv2_checks_survive_pipefail(self):
+        # lv2ls is slow enough that `lv2ls | grep -q` under `set -o pipefail`
+        # dies with SIGPIPE (141) as soon as grep finds the match, even though
+        # the plugin is installed. Both zypper Calf checks must capture the
+        # full listing before grepping, like verify_lv2_plugins does.
+        self.assertIn("lv2_plugin_available() {", self.text)
+        self.assertIn('discovered="$(lv2ls 2>/dev/null || true)"', self.text)
+        self.assertIn('grep -Fxq "$uri" <<<"$discovered"', self.text)
+        self.assertNotIn("lv2ls 2>/dev/null | grep", self.text)
+        self.assertIn(
+            '[[ "$PACKAGE_MANAGER" == "zypper" ]] && ! lv2_plugin_available',
+            self.text,
+        )
+        self.assertIn(
+            "lv2_plugin_available 'http://calf.sourceforge.net/plugins/BassEnhancer'",
+            self.text,
+        )
+
     def test_installer_installs_restricted_cifs_helper(self):
         self.assertIn("install_network_library_helper()", self.text)
         self.assertIn("/usr/local/sbin/fxroute-cifs-mount", self.text)

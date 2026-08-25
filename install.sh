@@ -1797,7 +1797,7 @@ ensure_smb_packages() {
 
 ensure_native_packages() {
   local core_packages=()
-  local support_packages=(curl git socat)
+  local support_packages=(curl git socat tar)
   local audio_stack_packages=()
   local missing_packages=()
   local missing_support=()
@@ -1881,7 +1881,7 @@ ensure_native_packages() {
     esac
   fi
 
-  for cmd in python3 mpv ffmpeg playerctl curl git socat bluetoothctl wpctl pw-cli pactl; do
+  for cmd in python3 mpv ffmpeg playerctl curl git socat tar bluetoothctl wpctl pw-cli pactl; do
     command -v "$cmd" >/dev/null 2>&1 || die "Expected command missing after package install: $cmd"
   done
   if ! bt_plugin_present; then
@@ -3712,7 +3712,7 @@ build_native_dsp_engine() {
   esac
   [[ ${#dsp_packages[@]} -eq 0 ]] || pkg_install "${dsp_packages[@]}"
 
-  if [[ "$PACKAGE_MANAGER" == "zypper" ]] && ! lv2ls 2>/dev/null | grep -Fxq 'http://calf.sourceforge.net/plugins/BassEnhancer'; then
+  if [[ "$PACKAGE_MANAGER" == "zypper" ]] && ! lv2_plugin_available 'http://calf.sourceforge.net/plugins/BassEnhancer'; then
     install_calf_lv2_from_source
   fi
 
@@ -3763,7 +3763,7 @@ install_calf_lv2_from_source() {
     [[ ! -e "$previous" ]] || run_as_target_user mv "$previous" "$HOME/.lv2/calf.lv2"
     die "Failed to install the staged Calf LV2 bundle"
   fi
-  lv2ls 2>/dev/null | grep -Fxq 'http://calf.sourceforge.net/plugins/BassEnhancer' \
+  lv2_plugin_available 'http://calf.sourceforge.net/plugins/BassEnhancer' \
     || die "Calf Bass Enhancer is unavailable after source installation"
   rm -rf "$work"
   FXROUTE_ACTIVE_TEMP_DIR=""
@@ -4298,7 +4298,10 @@ validate_http() {
   port="$(grep '^PORT=' "$env_file" | cut -d= -f2- | tr -d '[:space:]')"
   [[ -n "$port" ]] || port=8000
 
-  local deadline=$((SECONDS + 30))
+  # A cold start on a fresh install (venv bytecode compile, HDA init, first
+  # PipeWire graph build) can take well over 30 seconds on slow hosts.
+  # FXROUTE_HTTP_VALIDATION_DEADLINE exists for tests to shorten the wait.
+  local deadline=$((SECONDS + ${FXROUTE_HTTP_VALIDATION_DEADLINE:-120}))
   while (( SECONDS < deadline )); do
     service_pid="$(user_systemctl show -p MainPID --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
     service_state="$(user_systemctl show -p ActiveState --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
@@ -4317,7 +4320,7 @@ validate_http() {
   if [[ -z "$service_pid" || "$service_pid" == "0" || "$service_state" != "active" ]]; then
     fail "FXRoute service running"
     warn "FXRoute user service is not active after install; check: systemctl --user status ${SERVICE_NAME}.service"
-    return
+    return 0
   fi
 
   port_listing="$(ss -ltnp 2>/dev/null | grep -E ":${port}\\b" || true)"
@@ -4325,7 +4328,10 @@ validate_http() {
     fail "HTTP port owned by FXRoute service"
     warn "Port ${port} is not owned by ${SERVICE_NAME}.service MainPID ${service_pid}; another process may be answering health checks"
     [[ -n "$port_listing" ]] && warn "Port ${port} listeners: ${port_listing//$'\n'/; }"
-    return
+    # Explicit success return: a bare `return` here would inherit the status
+    # of the `[[ ... ]] && warn` line and, under `set -e`, silently abort the
+    # whole installer right after reporting this validation failure.
+    return 0
   fi
   if [[ "$port" == "8000" ]]; then
     ensure_lan_firewall_service_open fxroute-http "FXRoute HTTP LAN access"
@@ -4337,6 +4343,17 @@ validate_http() {
     fail "HTTP health response"
     warn "FXRoute did not answer on http://127.0.0.1:${port}/api/status yet"
   fi
+}
+
+lv2_plugin_available() {
+  # grep -q must not be fed from a live pipe under `set -o pipefail`:
+  # grep exits as soon as it sees the match, the producer gets SIGPIPE and
+  # the pipeline reports 141 even though the plugin is present. Capture the
+  # full listing first (same pattern as verify_lv2_plugins).
+  local uri="$1"
+  local discovered=""
+  discovered="$(lv2ls 2>/dev/null || true)"
+  grep -Fxq "$uri" <<<"$discovered"
 }
 
 verify_lv2_plugins() {
