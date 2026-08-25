@@ -36,6 +36,53 @@ class SamplerateCommandTimeoutTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "timed out"):
                 samplerate._run_command(["bluetoothctl", "info", "AA:BB:CC"])
 
+    def test_bluetooth_overview_skips_device_queries_when_daemon_unreachable(self):
+        # On hosts with bluetoothctl installed but no reachable BlueZ daemon,
+        # bluetoothctl calls block until the command timeout. The overview
+        # must probe the D-Bus service first and skip all bluetoothctl
+        # queries when it is not there, keeping the audio overviews fast.
+        import audio.samplerate.bluetooth as bt
+
+        def fake_run(cmd):
+            if cmd[0] == "dbus-send":
+                raise RuntimeError("NameHasNoOwner")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with mock.patch.object(bt, "_command_available", return_value=True), \
+            mock.patch.object(bt, "_run_command", side_effect=fake_run), \
+            mock.patch.object(bt, "_load_audio_source_selection", return_value={"mode": "app_playback"}), \
+            mock.patch.object(bt, "_pipewire_bluez_plugin_available", return_value=False):
+            overview = bt.get_bluetooth_audio_overview()
+        self.assertFalse(overview.get("devices"))
+        self.assertTrue(
+            any("not reachable" in n for n in overview.get("notes") or [])
+        )
+
+    def test_bluetooth_overview_queries_devices_when_daemon_reachable(self):
+        import audio.samplerate.bluetooth as bt
+
+        calls = []
+
+        def fake_run(cmd):
+            calls.append(cmd)
+            if cmd[0] == "dbus-send":
+                return "method return sender=org.freedesktop.DBus -> dest=:1.2\n"
+            if cmd[:2] == ["bluetoothctl", "show"]:
+                return "Controller AA:BB:CC:DD:EE:FF hostname alias\n"
+            if cmd == ["bluetoothctl", "devices", "Paired"]:
+                return "Device AA:BB:CC:DD:EE:FF Some Device\n"
+            if cmd[:2] == ["bluetoothctl", "devices"]:
+                return ""
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with mock.patch.object(bt, "_command_available", return_value=True), \
+            mock.patch.object(bt, "_run_command", side_effect=fake_run), \
+            mock.patch.object(bt, "_load_audio_source_selection", return_value={"mode": "app_playback"}), \
+            mock.patch.object(bt, "_pipewire_bluez_plugin_available", return_value=False):
+            overview = bt.get_bluetooth_audio_overview()
+        self.assertTrue(any("AA:BB:CC:DD:EE:FF" in str(d.get("address")) for d in overview.get("devices") or []))
+        self.assertTrue(any(c[:2] == ["bluetoothctl", "devices"] for c in calls))
+
     def test_error_fallback_paths_still_work(self):
         # The fallback helpers parse failures into notes instead of raising.
         self.assertEqual(samplerate._parse_active_rate(""), None)

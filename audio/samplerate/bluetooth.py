@@ -85,11 +85,34 @@ def disconnect_connected_bluetooth_audio_sources() -> list[str]:
         raise RuntimeError("; ".join(failures))
     return disconnected
 
+def _bluetooth_daemon_reachable() -> bool:
+    """Return True when the system BlueZ D-Bus service answers quickly.
+
+    bluetoothctl blocks until its command timeout when bluez is installed
+    but not running (no D-Bus service), so probing the bus first keeps the
+    audio overviews fast on hosts without an active Bluetooth stack.
+    """
+    probes = [
+        ["dbus-send", "--system", "--print-reply", "--dest=org.bluez", "/org/bluez", "org.freedesktop.DBus.Peer.Ping"],
+        ["busctl", "--system", "status", "org.bluez"],
+    ]
+    for probe in probes:
+        if not _command_available(probe[0]):
+            continue
+        try:
+            _run_command(probe)
+        except Exception:
+            return False
+        return True
+    return True  # no probe tool; fall back to the bounded bluetoothctl call
+
+
 def get_bluetooth_audio_overview() -> dict[str, Any]:
     notes: list[str] = []
     selection_state = _load_audio_source_selection()
     receiver_enabled_intent = selection_state.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT
     bluetoothctl_available = _command_available("bluetoothctl")
+    bluetooth_daemon_reachable = _bluetooth_daemon_reachable()
     pactl_available = _command_available("pactl")
     pw_cli_available = _command_available("pw-cli")
     wpctl_available = _command_available("wpctl")
@@ -97,7 +120,7 @@ def get_bluetooth_audio_overview() -> dict[str, Any]:
     # Independent command inventories run concurrently: serial execution made
     # this builder the latency floor of every audio overview on slow hosts.
     with ThreadPoolExecutor(max_workers=6) as pool:
-        controller_future = pool.submit(_run_command, ["bluetoothctl", "show"]) if bluetoothctl_available else None
+        controller_future = pool.submit(_run_command, ["bluetoothctl", "show"]) if (bluetoothctl_available and bluetooth_daemon_reachable) else None
         sources_short_future = pool.submit(_run_command, ["pactl", "list", "sources", "short"]) if pactl_available else None
         sinks_short_future = pool.submit(_run_command, ["pactl", "list", "sinks", "short"]) if pactl_available else None
         sources_detailed_future = pool.submit(_run_command, ["pactl", "list", "sources"]) if pactl_available else None
@@ -106,12 +129,14 @@ def get_bluetooth_audio_overview() -> dict[str, Any]:
 
         controller: dict[str, Any] | None = None
         adapter_present = False
-        if bluetoothctl_available:
+        if bluetoothctl_available and bluetooth_daemon_reachable:
             try:
                 controller = _parse_bluetoothctl_show(controller_future.result())
                 adapter_present = bool(controller.get("address"))
             except Exception as exc:
                 notes.append(f"Bluetooth adapter status unavailable: {exc}")
+        elif bluetoothctl_available:
+            notes.append("Bluetooth daemon is not reachable on the system bus.")
         else:
             notes.append("bluetoothctl is not installed or not available in PATH.")
 
@@ -205,7 +230,13 @@ def get_bluetooth_audio_overview() -> dict[str, Any]:
     )
 
     device_seed_output = ""
-    if bluetoothctl_available:
+    # When the BlueZ daemon is installed but not reachable (no DBus service
+    # or no adapter), every bluetoothctl call blocks until the command
+    # timeout. `show` already failed above, so skip the per-device queries
+    # instead of adding their timeouts on top: with an unreachable daemon
+    # they cannot return anything useful and would stall the audio overview
+    # for seconds on every request.
+    if bluetoothctl_available and bluetooth_daemon_reachable:
         try:
             paired_output = _run_command(["bluetoothctl", "devices", "Paired"])
             all_output = _run_command(["bluetoothctl", "devices"])
