@@ -3313,21 +3313,26 @@ ensure_target_user_audio_access() {
     return 0
   fi
 
-  if target_user_can_open_alsa_control; then
-    pass "target user can already reach the ALSA audio hardware"
-    return 0
-  fi
-
-  if target_user_in_audio_group; then
-    warn "ALSA hardware is present, but the target user cannot open a control device despite audio group membership"
-    return 0
-  fi
-
   if ! getent group audio >/dev/null 2>&1; then
     warn "The audio group does not exist; cannot grant $install_user ALSA device access"
     return 0
   fi
 
+  if target_user_in_audio_group; then
+    if target_user_can_open_alsa_control; then
+      pass "target user can reach the ALSA audio hardware"
+    else
+      warn "ALSA hardware is present, but the target user cannot open a control device despite audio group membership"
+    fi
+    return 0
+  fi
+
+  # ALSA hardware and an audio group exist, but the target user is not a
+  # member. Add them unconditionally: logind seat ACLs cover only active
+  # sessions, so on a headless boot with linger (no login) the user would
+  # otherwise lose ALSA access and WirePlumber would not create a hardware
+  # sink. The current session may reach the devices via ACL right now, but
+  # that access disappears with the session.
   log "Adding $install_user to the audio group for ALSA device access"
   if ! "${SUDO_CMD[@]}" usermod -aG audio "$install_user"; then
     warn "Could not add $install_user to the audio group"

@@ -596,6 +596,35 @@ printf '%s\\n' "$SYSTEMCTL_CALLS"
         self.assertIn("target_user_can_open_alsa_control", audio_access)
         self.assertIn("target_user_has_seat_session", audio_access)
 
+    def test_audio_group_is_added_even_when_seat_acl_grants_current_access(self):
+        # A running SSH/seat session grants ALSA access through logind ACLs,
+        # which made the installer skip the audio group. On a headless boot
+        # with linger there is no seat session and no ACL, so WirePlumber
+        # would not create a hardware sink. The group must be added whenever
+        # ALSA hardware and the audio group exist, regardless of the current
+        # session access.
+        fn = extract_function(self.install, "ensure_target_user_audio_access")
+        code = f"""
+{fn}
+FXROUTE_TARGET_USER=khadas
+FXROUTE_TARGET_UID=1000
+FXROUTE_RUNTIME_DIR=/run/user/1000
+SUDO_CMD=(sudo)
+alsa_hardware_present() {{ return 0; }}
+getent() {{ [[ "$1" == group && "$2" == audio ]]; }}
+target_user_in_audio_group() {{ return 1; }}
+target_user_can_open_alsa_control() {{ return 0; }}
+target_user_has_seat_session() {{ return 0; }}
+sudo() {{ echo "SUDO usermod -aG audio khadas"; }}
+pass() {{ echo "PASS:$*"; }}
+warn() {{ echo "WARN:$*" >&2; }}
+log() {{ echo "LOG:$*"; }}
+ensure_target_user_audio_access
+"""
+        result = subprocess.run(["bash", "-c", code], capture_output=True, text=True, check=True)
+        self.assertIn("SUDO usermod -aG audio khadas", result.stdout)
+        self.assertIn("PASS:target user added to the audio group", result.stdout)
+
     def test_install_state_records_audio_group_ownership(self):
         self.assertIn('"audio_group_added_by_fxroute"', self.install)
 
