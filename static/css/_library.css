@@ -67,7 +67,7 @@
     position: absolute;
     top: 0.55rem;
     left: 0.55rem;
-    z-index: 1;
+    z-index: var(--z-base);
     padding: 0.22rem 0.46rem;
     border-radius: 999px;
     border: 1px solid rgba(74, 222, 128, 0.35);
@@ -86,7 +86,7 @@
     position: absolute;
     top: 1.05rem;
     right: 1.05rem;
-    z-index: 2;
+    z-index: var(--z-raised);
     width: 32px;
     height: 32px;
     min-height: 32px;
@@ -450,20 +450,20 @@
     pointer-events: none;
 }
 .detail-hero-header::before {
-    z-index: 1;
+    z-index: var(--z-base);
     background:
         linear-gradient(90deg, rgba(10, 13, 17, 0.5), rgba(10, 13, 17, 0.84) 54%, rgba(10, 13, 17, 0.94)),
         linear-gradient(180deg, rgba(6, 8, 11, 0.08), rgba(6, 8, 11, 0.34));
 }
 .detail-hero-header::after {
-    z-index: 1;
+    z-index: var(--z-base);
     background: radial-gradient(circle at 14% 20%, rgba(110, 231, 183, 0.12), transparent 34%);
     mix-blend-mode: screen;
     opacity: 0.55;
 }
 .detail-header-backdrop {
     position: absolute;
-    z-index: 0;
+    z-index: var(--z-underlay);
     inset: -12%;
     overflow: hidden;
     pointer-events: none;
@@ -486,7 +486,7 @@
 .album-detail--hero .detail-hero-header > :not(.detail-header-backdrop),
 .streaming-detail--hero .detail-hero-header > :not(.detail-header-backdrop) {
     position: relative;
-    z-index: 2;
+    z-index: var(--z-raised);
 }
 .album-detail--hero .detail-hero-header .detail-hero-cover,
 .streaming-detail--hero .detail-hero-header .detail-hero-cover {
@@ -1236,7 +1236,7 @@
     background: transparent;
     color: transparent;
     cursor: text;
-    z-index: 2;
+    z-index: var(--z-raised);
 }
 .upload-area-text-input:focus {
     outline: none;
@@ -1311,7 +1311,7 @@
 .cover-detail-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 1040;
+    z-index: var(--z-cover-detail-backdrop);
     background: rgba(0, 0, 0, 0.55);
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
@@ -1321,7 +1321,7 @@
     left: 50%;
     transform: translateX(-50%);
     bottom: calc(102px + 8px + 14px);
-    z-index: 1041;
+    z-index: var(--z-cover-detail);
     width: min(720px, calc(100vw - 2rem));
     max-height: calc(100vh - 102px - 8px - 14px - 1rem);
     overflow-y: auto;

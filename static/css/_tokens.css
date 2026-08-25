@@ -55,6 +55,27 @@
     --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
+    /* Stacking-order tokens: semantic names for the layering the stylesheet
+       already implements. Values are the historical literal z-index numbers,
+       preserved exactly so the visible order is unchanged; the tokens only
+       make the hierarchy legible and give one place to adjust a layer.
+       Ascending from the page background to the topmost transient layer. */
+    --z-underlay:        0;      /* blurred detail-hero backdrop */
+    --z-base:            1;      /* badges, hero gradient overlays, seat in the room view */
+    --z-raised:          2;      /* interactive controls on tiles/covers, room mic, cover */
+    --z-tabs:            4;      /* tab bar (header) */
+    --z-header-menu:     80;     /* open power menu */
+    --z-playback-bar:    100;    /* fixed playback footer */
+    --z-banner:          1002;   /* offline/disconnect banner */
+    --z-toast:           1005;   /* transient toasts */
+    --z-header-menu-open: 1006;  /* header stacking context raised while the menu is open */
+    --z-cover-detail-backdrop: 1040;
+    --z-cover-detail:    1041;   /* cover detail card */
+    --z-overlay:         1100;   /* generic modal overlay (manage/settings) */
+    --z-measurement:     1200;   /* measurement dialog overlay */
+    --z-measurement-hybrid: 1230;/* hybrid measurement overlay */
+    --z-skip-link:       2000;   /* visually-hidden skip link */
+    --z-tooltip:         3000;   /* custom header tooltips */
     --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     --font-mono: 'Geist Mono', ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
     /* Native form controls (select option popups, autofill, scrollbars)

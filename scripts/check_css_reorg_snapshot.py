@@ -37,23 +37,37 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PORT = 8211
 
 # The viewport widths the reorg must be verified at (from the task).
+# Covers the full set of historically-grown media-query boundaries, including
+# the exact breakpoint pairs the CSS cleanup must not disturb:
+#   599/600/601 · 699/700/701 · 760/761/768 · 899/900/940 ·
+#   1024/1099/1100/1101 · 1180/1181/1199/1200 · desktop 1440 · mobile 390/360/320
 VIEWPORTS = [
     (1440, 900),
     (1200, 900),
+    (1199, 900),
     (1181, 900),
     (1180, 900),
+    (1101, 900),
+    (1100, 900),
+    (1099, 900),
     (1024, 900),
+    (940, 900),
     (901, 900),
     (900, 900),
+    (899, 900),
     (834, 1112),
     (820, 1180),
+    (768, 1024),
     (761, 1024),
     (760, 1024),
     (701, 1024),
     (700, 1024),
+    (699, 1024),
     (641, 1024),
     (640, 1024),
+    (601, 1024),
     (600, 1024),
+    (599, 1024),
     (520, 800),
     (390, 844),
     (360, 800),

@@ -620,7 +620,7 @@
     position: absolute;
     top: 0.55rem;
     right: 0.55rem;
-    z-index: 2;
+    z-index: var(--z-raised);
     width: 32px;
     height: 32px;
     min-height: 32px;

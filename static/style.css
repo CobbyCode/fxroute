@@ -55,6 +55,27 @@
     --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
+    /* Stacking-order tokens: semantic names for the layering the stylesheet
+       already implements. Values are the historical literal z-index numbers,
+       preserved exactly so the visible order is unchanged; the tokens only
+       make the hierarchy legible and give one place to adjust a layer.
+       Ascending from the page background to the topmost transient layer. */
+    --z-underlay:        0;      /* blurred detail-hero backdrop */
+    --z-base:            1;      /* badges, hero gradient overlays, seat in the room view */
+    --z-raised:          2;      /* interactive controls on tiles/covers, room mic, cover */
+    --z-tabs:            4;      /* tab bar (header) */
+    --z-header-menu:     80;     /* open power menu */
+    --z-playback-bar:    100;    /* fixed playback footer */
+    --z-banner:          1002;   /* offline/disconnect banner */
+    --z-toast:           1005;   /* transient toasts */
+    --z-header-menu-open: 1006;  /* header stacking context raised while the menu is open */
+    --z-cover-detail-backdrop: 1040;
+    --z-cover-detail:    1041;   /* cover detail card */
+    --z-overlay:         1100;   /* generic modal overlay (manage/settings) */
+    --z-measurement:     1200;   /* measurement dialog overlay */
+    --z-measurement-hybrid: 1230;/* hybrid measurement overlay */
+    --z-skip-link:       2000;   /* visually-hidden skip link */
+    --z-tooltip:         3000;   /* custom header tooltips */
     --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     --font-mono: 'Geist Mono', ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
     /* Native form controls (select option popups, autofill, scrollbars)
@@ -97,7 +118,7 @@ html {
 .skip-link {
     position: absolute;
     top: -40px;
-    left: 0.75rem;    z-index: 2000;
+    left: 0.75rem;    z-index: var(--z-skip-link);
     padding: 0.6rem 0.9rem;
     border-radius: var(--radius-sm);
     background: var(--bg-elevated);
@@ -143,7 +164,7 @@ body {
     padding: 0.5rem 1rem;
     font-weight: 600;
     font-size: 0.88rem;
-    z-index: 1002;
+    z-index: var(--z-banner);
     letter-spacing: 0.02em;
     animation: bannerSlide 0.3s var(--ease);
 }
@@ -366,7 +387,7 @@ body {
     content: attr(data-tooltip);
     position: absolute;
     top: calc(100% + 0.45rem);
-    z-index: 3000;
+    z-index: var(--z-tooltip);
     padding: 0.32rem 0.52rem;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
@@ -523,14 +544,14 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.1rem;
-    z-index: 80;
+    z-index: var(--z-header-menu);
 }
 /* Keep the open power menu above transient toasts: the header's
    backdrop-filter creates a stacking context that would otherwise trap
    the menu below the fixed toast layer. */
 .header:has(.power-menu:not(.hidden)) {
     position: relative;
-    z-index: 1006;
+    z-index: var(--z-header-menu-open);
 }
 .power-menu-item {
     display: flex;
@@ -585,7 +606,7 @@ body {
 .tabs {
     display: flex;
     position: relative;
-    z-index: 4;
+    z-index: var(--z-tabs);
     background: rgba(14, 14, 17, 0.94);
     padding: .42rem clamp(.7rem, 1.4vw, 1.2rem);
     gap: .25rem;
@@ -751,7 +772,7 @@ body {
 .manage-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1100;
+    z-index: var(--z-overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1011,7 +1032,7 @@ body {
     position: fixed;
     top: 1rem;
     right: 1rem;
-    z-index: 1005;
+    z-index: var(--z-toast);
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
@@ -1161,7 +1182,7 @@ body {
     position: absolute;
     top: 0.55rem;
     left: 0.55rem;
-    z-index: 1;
+    z-index: var(--z-base);
     padding: 0.22rem 0.46rem;
     border-radius: 999px;
     border: 1px solid rgba(74, 222, 128, 0.35);
@@ -1180,7 +1201,7 @@ body {
     position: absolute;
     top: 1.05rem;
     right: 1.05rem;
-    z-index: 2;
+    z-index: var(--z-raised);
     width: 32px;
     height: 32px;
     min-height: 32px;
@@ -1544,20 +1565,20 @@ body {
     pointer-events: none;
 }
 .detail-hero-header::before {
-    z-index: 1;
+    z-index: var(--z-base);
     background:
         linear-gradient(90deg, rgba(10, 13, 17, 0.5), rgba(10, 13, 17, 0.84) 54%, rgba(10, 13, 17, 0.94)),
         linear-gradient(180deg, rgba(6, 8, 11, 0.08), rgba(6, 8, 11, 0.34));
 }
 .detail-hero-header::after {
-    z-index: 1;
+    z-index: var(--z-base);
     background: radial-gradient(circle at 14% 20%, rgba(110, 231, 183, 0.12), transparent 34%);
     mix-blend-mode: screen;
     opacity: 0.55;
 }
 .detail-header-backdrop {
     position: absolute;
-    z-index: 0;
+    z-index: var(--z-underlay);
     inset: -12%;
     overflow: hidden;
     pointer-events: none;
@@ -1580,7 +1601,7 @@ body {
 .album-detail--hero .detail-hero-header > :not(.detail-header-backdrop),
 .streaming-detail--hero .detail-hero-header > :not(.detail-header-backdrop) {
     position: relative;
-    z-index: 2;
+    z-index: var(--z-raised);
 }
 .album-detail--hero .detail-hero-header .detail-hero-cover,
 .streaming-detail--hero .detail-hero-header .detail-hero-cover {
@@ -2330,7 +2351,7 @@ body {
     background: transparent;
     color: transparent;
     cursor: text;
-    z-index: 2;
+    z-index: var(--z-raised);
 }
 .upload-area-text-input:focus {
     outline: none;
@@ -2405,7 +2426,7 @@ body {
 .cover-detail-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 1040;
+    z-index: var(--z-cover-detail-backdrop);
     background: rgba(0, 0, 0, 0.55);
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
@@ -2415,7 +2436,7 @@ body {
     left: 50%;
     transform: translateX(-50%);
     bottom: calc(102px + 8px + 14px);
-    z-index: 1041;
+    z-index: var(--z-cover-detail);
     width: min(720px, calc(100vw - 2rem));
     max-height: calc(100vh - 102px - 8px - 14px - 1rem);
     overflow-y: auto;
@@ -3722,7 +3743,7 @@ body {
     position: absolute;
     top: 0.55rem;
     right: 0.55rem;
-    z-index: 2;
+    z-index: var(--z-raised);
     width: 32px;
     height: 32px;
     min-height: 32px;
@@ -3791,7 +3812,7 @@ body {
 }
 .streaming-similar-item:hover .streaming-similar-name { color: var(--text-primary); }
 .measurement-overlay {
-    z-index: 1200;
+    z-index: var(--z-measurement);
     align-items: stretch;
     padding: 1rem;
 }
@@ -4006,7 +4027,7 @@ body {
 }
 
 .hybrid-measurement-overlay {
-    z-index: 1230;
+    z-index: var(--z-measurement-hybrid);
     align-items: center;
 }
 
@@ -4094,7 +4115,7 @@ body {
     top: 79%;
     width: 210px;
     height: 92px;
-    z-index: 1;
+    z-index: var(--z-base);
 }
 .hybrid-seat-back {
     position: absolute;
@@ -4129,7 +4150,7 @@ body {
 .hybrid-mic {
     width: 48px;
     height: 34px;
-    z-index: 2;
+    z-index: var(--z-raised);
     border: 1px dashed var(--border);
     border-radius: 999px;
     color: var(--text-muted);
@@ -6019,7 +6040,7 @@ input[type="number"]::-webkit-outer-spin-button {
     width: min(1560px, calc(100vw - 20px));
     min-height: 112px;
     transform: translateX(-50%);
-    z-index: 100;
+    z-index: var(--z-playback-bar);
     display: grid;
     grid-template-columns: minmax(180px, 0.72fr) minmax(390px, 1.75fr) minmax(130px, 0.52fr) minmax(200px, 0.78fr);
     grid-template-areas: "track transport meter volume";
@@ -6074,7 +6095,7 @@ input[type="number"]::-webkit-outer-spin-button {
     border-radius: inherit;
     cursor: pointer;
     position: relative;
-    z-index: 2;
+    z-index: var(--z-raised);
 }
 .playback-cover.hidden { display: none; }
 .playback-cover-placeholder {
@@ -8008,6 +8029,32 @@ input[type="number"]::-webkit-outer-spin-button {
         flex: 0 1 34vw;
         width: auto;
     }
+
+    /* Tablet subwoofer layout: two control columns (merged with the TIDAL
+       tablet block above; identical media condition). Scoped to ≥761px so
+       the one-column mobile layout at ≤760px wins the cascade. */
+    .effects-subwoofer-controls {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .effects-subwoofer-global-group,
+    .effects-subwoofer-channel-group {
+        grid-column: auto;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .effects-subwoofer-channel-group {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
+        grid-column: auto;
+    }
+
+    .effects-subwoofer-derived-delays {
+        grid-column: 1 / -1;
+    }
 }
 
 @media (min-width: 601px) and (max-width: 760px) {
@@ -8257,34 +8304,6 @@ input[type="number"]::-webkit-outer-spin-button {
     /* from _effects.css */
     .effects-compare-fields {
             grid-template-columns: 1fr 1fr;
-        }
-
-}
-
-@media (min-width: 761px) and (max-width: 1100px) {
-    /* Tablet subwoofer layout: two control columns. Scoped to ≥761px so the
-       one-column mobile layout at ≤760px wins the cascade. */
-    .effects-subwoofer-controls {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-
-        .effects-subwoofer-global-group,
-        .effects-subwoofer-channel-group {
-            grid-column: auto;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-
-        .effects-subwoofer-channel-group {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-        }
-
-        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
-        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
-            grid-column: auto;
-        }
-
-        .effects-subwoofer-derived-delays {
-            grid-column: 1 / -1;
         }
 
 }

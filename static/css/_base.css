@@ -32,7 +32,7 @@ html {
 .skip-link {
     position: absolute;
     top: -40px;
-    left: 0.75rem;    z-index: 2000;
+    left: 0.75rem;    z-index: var(--z-skip-link);
     padding: 0.6rem 0.9rem;
     border-radius: var(--radius-sm);
     background: var(--bg-elevated);
@@ -78,7 +78,7 @@ body {
     padding: 0.5rem 1rem;
     font-weight: 600;
     font-size: 0.88rem;
-    z-index: 1002;
+    z-index: var(--z-banner);
     letter-spacing: 0.02em;
     animation: bannerSlide 0.3s var(--ease);
 }

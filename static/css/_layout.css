@@ -44,7 +44,7 @@
     content: attr(data-tooltip);
     position: absolute;
     top: calc(100% + 0.45rem);
-    z-index: 3000;
+    z-index: var(--z-tooltip);
     padding: 0.32rem 0.52rem;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
@@ -201,14 +201,14 @@
     display: flex;
     flex-direction: column;
     gap: 0.1rem;
-    z-index: 80;
+    z-index: var(--z-header-menu);
 }
 /* Keep the open power menu above transient toasts: the header's
    backdrop-filter creates a stacking context that would otherwise trap
    the menu below the fixed toast layer. */
 .header:has(.power-menu:not(.hidden)) {
     position: relative;
-    z-index: 1006;
+    z-index: var(--z-header-menu-open);
 }
 .power-menu-item {
     display: flex;
@@ -263,7 +263,7 @@
 .tabs {
     display: flex;
     position: relative;
-    z-index: 4;
+    z-index: var(--z-tabs);
     background: rgba(14, 14, 17, 0.94);
     padding: .42rem clamp(.7rem, 1.4vw, 1.2rem);
     gap: .25rem;

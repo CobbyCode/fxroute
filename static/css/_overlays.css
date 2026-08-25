@@ -1,7 +1,7 @@
 .manage-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1100;
+    z-index: var(--z-overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -261,7 +261,7 @@
     position: fixed;
     top: 1rem;
     right: 1rem;
-    z-index: 1005;
+    z-index: var(--z-toast);
     display: flex;
     flex-direction: column;
     gap: 0.5rem;

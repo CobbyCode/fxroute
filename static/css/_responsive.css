@@ -1489,6 +1489,32 @@
         flex: 0 1 34vw;
         width: auto;
     }
+
+    /* Tablet subwoofer layout: two control columns (merged with the TIDAL
+       tablet block above; identical media condition). Scoped to ≥761px so
+       the one-column mobile layout at ≤760px wins the cascade. */
+    .effects-subwoofer-controls {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .effects-subwoofer-global-group,
+    .effects-subwoofer-channel-group {
+        grid-column: auto;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .effects-subwoofer-channel-group {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
+        grid-column: auto;
+    }
+
+    .effects-subwoofer-derived-delays {
+        grid-column: 1 / -1;
+    }
 }
 
 @media (min-width: 601px) and (max-width: 760px) {
@@ -1738,34 +1764,6 @@
     /* from _effects.css */
     .effects-compare-fields {
             grid-template-columns: 1fr 1fr;
-        }
-
-}
-
-@media (min-width: 761px) and (max-width: 1100px) {
-    /* Tablet subwoofer layout: two control columns. Scoped to ≥761px so the
-       one-column mobile layout at ≤760px wins the cascade. */
-    .effects-subwoofer-controls {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-
-        .effects-subwoofer-global-group,
-        .effects-subwoofer-channel-group {
-            grid-column: auto;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-
-        .effects-subwoofer-channel-group {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-        }
-
-        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
-        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
-            grid-column: auto;
-        }
-
-        .effects-subwoofer-derived-delays {
-            grid-column: 1 / -1;
         }
 
 }

@@ -31,7 +31,7 @@
     width: min(1560px, calc(100vw - 20px));
     min-height: 112px;
     transform: translateX(-50%);
-    z-index: 100;
+    z-index: var(--z-playback-bar);
     display: grid;
     grid-template-columns: minmax(180px, 0.72fr) minmax(390px, 1.75fr) minmax(130px, 0.52fr) minmax(200px, 0.78fr);
     grid-template-areas: "track transport meter volume";
@@ -86,7 +86,7 @@
     border-radius: inherit;
     cursor: pointer;
     position: relative;
-    z-index: 2;
+    z-index: var(--z-raised);
 }
 .playback-cover.hidden { display: none; }
 .playback-cover-placeholder {

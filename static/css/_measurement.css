@@ -1,5 +1,5 @@
 .measurement-overlay {
-    z-index: 1200;
+    z-index: var(--z-measurement);
     align-items: stretch;
     padding: 1rem;
 }
@@ -214,7 +214,7 @@
 }
 
 .hybrid-measurement-overlay {
-    z-index: 1230;
+    z-index: var(--z-measurement-hybrid);
     align-items: center;
 }
 
@@ -302,7 +302,7 @@
     top: 79%;
     width: 210px;
     height: 92px;
-    z-index: 1;
+    z-index: var(--z-base);
 }
 .hybrid-seat-back {
     position: absolute;
@@ -337,7 +337,7 @@
 .hybrid-mic {
     width: 48px;
     height: 34px;
-    z-index: 2;
+    z-index: var(--z-raised);
     border: 1px dashed var(--border);
     border-radius: 999px;
     color: var(--text-muted);
