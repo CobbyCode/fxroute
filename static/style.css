@@ -3894,6 +3894,28 @@ body {
     gap: 0.5rem;
 }
 
+/* Workflow areas: quiet micro-labels group the action list into
+   measurement / subwoofer / calibration without adding cards. */
+.measurement-workflow-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.measurement-workflow-section + .measurement-workflow-section {
+    margin-top: 0.35rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--border);
+}
+
+.measurement-workflow-label {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
 .measurement-workflow-group {
     display: grid;
     grid-template-columns: 176px minmax(0, 1fr);
@@ -3910,12 +3932,6 @@ body {
     width: 176px;
     min-width: 176px;
     min-height: 44px;
-}
-
-.measurement-workflow-auto-sub {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
 }
 
 .measurement-workflow-row {

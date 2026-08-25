@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.144">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.145">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -852,30 +852,37 @@
                         <section class="effects-card measurement-card measurement-card-controls">
                             <div class="measurement-actions measurement-actions-top">
                                 <div class="measurement-workflow-list">
-                                    <div class="measurement-workflow-group measurement-workflow-single">
-                                        <button id="measurement-start" class="btn-primary" type="button">Start Single Sweep</button>
-                                        <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" role="group" aria-label="Single sweep speaker selection">
-                                            <button type="button" class="measurement-chip is-active" data-measurement-channel="left">L</button>
-                                            <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
-                                            <button type="button" class="measurement-chip" data-measurement-channel="stereo">Stereo</button>
+                                    <div class="measurement-workflow-section">
+                                        <h4 class="measurement-workflow-label">Measurement</h4>
+                                        <div class="measurement-workflow-group measurement-workflow-single">
+                                            <button id="measurement-start" class="btn-primary" type="button">Start Single Sweep</button>
+                                            <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" role="group" aria-label="Single sweep speaker selection">
+                                                <button type="button" class="measurement-chip is-active" data-measurement-channel="left">L</button>
+                                                <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
+                                                <button type="button" class="measurement-chip" data-measurement-channel="stereo">Stereo</button>
+                                            </div>
+                                        </div>
+                                        <div class="measurement-workflow-group measurement-workflow-repeat">
+                                            <button id="measurement-repeat-start" class="btn-secondary" type="button">Start L/R Repeat</button>
+                                            <span class="measurement-repeat-help">Measures L/R three times at the same mic position.</span>
+                                        </div>
+                                        <div class="measurement-workflow-group">
+                                            <button id="measurement-hybrid-open" class="btn-secondary" type="button">Advanced Measurement</button>
+                                            <span class="measurement-repeat-help">Speaker and room measurements for subwoofer alignment.</span>
                                         </div>
                                     </div>
-                                    <div class="measurement-workflow-group measurement-workflow-repeat">
-                                        <button id="measurement-repeat-start" class="btn-secondary" type="button">Start L/R Repeat</button>
-                                        <span class="measurement-repeat-help">Measures L/R three times at the same mic position.</span>
-                                    </div>
-                                    <div class="measurement-workflow-group">
-                                        <button id="measurement-hybrid-open" class="btn-primary" type="button">Advanced Measurement</button>
-                                        <span class="measurement-repeat-help">Speaker and room measurements for subwoofer alignment.</span>
-                                    </div>
-                                    <div class="measurement-workflow-group measurement-workflow-auto-sub hidden" id="measurement-auto-sub-group">
+                                    <div class="measurement-workflow-section measurement-workflow-auto-sub hidden" id="measurement-auto-sub-group">
+                                        <h4 class="measurement-workflow-label">Subwoofer</h4>
                                         <div class="measurement-workflow-row">
                                             <button id="measurement-auto-sub-start" class="btn-secondary" type="button">Auto Sub Optimize</button>
                                             <span id="measurement-auto-sub-status" class="measurement-repeat-help">Scans sub delay around crossover, picks best alignment.</span>
                                         </div>
                                     </div>
-                                    <div class="measurement-workflow-group">
-                                        <button id="measurement-spl-calibration-open" class="btn-secondary" type="button">SPL Calibration</button>
+                                    <div class="measurement-workflow-section">
+                                        <h4 class="measurement-workflow-label">Calibration</h4>
+                                        <div class="measurement-workflow-group">
+                                            <button id="measurement-spl-calibration-open" class="btn-secondary" type="button">SPL Calibration</button>
+                                        </div>
                                     </div>
                                 </div>
                                 <button id="measurement-setup-toggle" class="btn-secondary" type="button">Setup</button>
@@ -1336,7 +1343,7 @@
     <script src="/static/hybrid_measurement.js?v=0.9.12"></script>
     <script src="/static/measurement_ui.js?v=0.9.12"></script>
     <script src="/static/measurement_graph.js?v=0.9.13"></script>
-    <script src="/static/measurement_flows.js?v=0.9.13"></script>
+    <script src="/static/measurement_flows.js?v=0.9.14"></script>
     <script src="/static/radio.js?v=0.9.15"></script>
     <script src="/static/app.js?v=0.9.83"></script>
     <script src="/static/streaming.js?v=0.9.52"></script>

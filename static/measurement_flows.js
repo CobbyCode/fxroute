@@ -67,11 +67,6 @@ function syncAutoSubButton() {
     const measurementState = deps.getState().measurement || {};
     const outputMode = deps.getState().settings?.audioOutputs?.output_mode;
     const isSubwooferMode = deps.isSubwooferModeName(outputMode?.mode || '');
-    if (deps.getElements().splCalibrationOpen) {
-        deps.getElements().splCalibrationOpen.classList.toggle('btn-primary', isSubwooferMode);
-        deps.getElements().splCalibrationOpen.classList.toggle('btn-secondary', !isSubwooferMode);
-    }
-
     if (!isSubwooferMode) {
         deps.getElements().measurementAutoSubGroup.classList.add('hidden');
         return;
