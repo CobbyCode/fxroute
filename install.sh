@@ -3718,7 +3718,7 @@ build_native_dsp_engine() {
   prepare_target_user_directory "$INSTALL_ROOT/native_dsp/build"
   case "$PACKAGE_MANAGER" in
     apt) dsp_packages=(gcc libc6-dev pkg-config libpipewire-0.3-dev libspa-0.2-dev liblilv-dev lilv-utils lv2-dev lsp-plugins-lv2 zam-plugins calf-plugins libebur128-dev libsamplerate0-dev libspeexdsp-dev) ;;
-    dnf) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel lilv lilv-devel lv2-devel lsp-plugins-lv2 zam-plugins-lv2 lv2-calf-plugins libebur128-devel libsamplerate-devel speexdsp-devel) ;;
+    dnf) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel lilv lilv-devel lv2-devel lsp-plugins-lv2 lv2-zam-plugins lv2-calf-plugins libebur128-devel libsamplerate-devel speexdsp-devel) ;;
     zypper) dsp_packages=(gcc gcc-c++ cmake pkgconf-pkg-config pipewire-devel lilv liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel) ;;
     pacman) dsp_packages=(gcc pkgconf libpipewire lilv lv2 lsp-plugins zam-plugins calf libebur128 libsamplerate speexdsp) ;;
   esac

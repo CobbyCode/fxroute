@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Packaging contract for the FXRoute-owned native DSP path."""
 
+import re
 import unittest
 from pathlib import Path
 
@@ -36,6 +37,15 @@ class DspPackagingTests(unittest.TestCase):
     def test_debian_native_dsp_provisions_standard_c_headers(self):
         script = (ROOT / "install.sh").read_text()
         self.assertRegex(script, r"apt\) dsp_packages=\([^)]*\blibc6-dev\b")
+
+    def test_fedora_dsp_packages_use_dnf_names(self):
+        # Fedora ships the ZamAudio LV2 bundle as 'lv2-zam-plugins';
+        # 'zam-plugins-lv2' (Debian-style) does not exist in dnf and made
+        # the whole install transaction fail with 'No match for argument'.
+        script = (ROOT / "install.sh").read_text()
+        dnf_list = re.search(r"dnf\) dsp_packages=\(([^)]*)\)", script).group(1)
+        self.assertNotIn("zam-plugins-lv2", dnf_list)
+        self.assertIn("lv2-zam-plugins", dnf_list)
 
     def test_opensuse_builds_pinned_calf_lv2_when_package_is_unavailable(self):
         script = (ROOT / "install.sh").read_text()
