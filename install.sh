@@ -4422,7 +4422,16 @@ validate_tools() {
     warn "Bluetooth input mode needs the PipeWire BlueZ SPA plugin (libspa-bluez5.so) on the host."
   fi
 
-  if bluetoothctl show >/dev/null 2>&1; then
+  # bluetoothctl show can block forever when bluetoothd is installed but
+  # inactive (fresh BlueZ install, no controller). Bound the probe so a
+  # host without an active Bluetooth stack cannot stall the installer.
+  local bt_probe=()
+  if command -v timeout >/dev/null 2>&1; then
+    bt_probe=(timeout 15 bluetoothctl show)
+  else
+    bt_probe=(bluetoothctl show)
+  fi
+  if "${bt_probe[@]}" >/dev/null 2>&1; then
     pass "BlueZ controller query works"
   else
     warn "bluetoothctl show failed in this shell. Bluetooth input mode will stay unavailable until BlueZ is active and an adapter/controller is visible."

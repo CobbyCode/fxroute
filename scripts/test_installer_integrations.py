@@ -887,6 +887,13 @@ printf 'survived\\n'
             self.assertIn("FAIL:HTTP port owned by FXRoute service", result.stdout)
             self.assertIn("survived", result.stdout)
 
+    def test_bluetooth_probe_is_bounded_by_timeout(self):
+        # bluetoothctl show blocks forever when bluetoothd is installed but
+        # inactive (fresh BlueZ install, no controller); a stalled probe
+        # would hang the installer mid-validation.
+        body = extract_function(self.install, "validate_tools")
+        self.assertIn("(timeout 15 bluetoothctl show)", body)
+
     def test_firewall_contract_tracks_each_backend_rule_separately(self):
         for rule in (
             "http_80_tcp",
