@@ -83,6 +83,26 @@ class SamplerateCommandTimeoutTests(unittest.TestCase):
         self.assertTrue(any("AA:BB:CC:DD:EE:FF" in str(d.get("address")) for d in overview.get("devices") or []))
         self.assertTrue(any(c[:2] == ["bluetoothctl", "devices"] for c in calls))
 
+    def test_bluetooth_receiver_and_disconnect_skip_when_daemon_unreachable(self):
+        # The shutdown cleanup disables the Bluetooth receiver and disconnects
+        # audio sources; with no reachable BlueZ daemon those calls used to
+        # block until the command timeout, emitting errors and stalling the
+        # service stop. Both must become no-ops when the daemon is down.
+        import audio.samplerate.bluetooth as bt
+
+        def fake_run(cmd):
+            if cmd[0] == "dbus-send":
+                raise RuntimeError("NameHasNoOwner")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with mock.patch.object(bt, "_command_available", return_value=True), \
+            mock.patch.object(bt, "_run_command", side_effect=fake_run), \
+            mock.patch.object(bt, "_load_audio_source_selection", return_value={"mode": "app_playback"}), \
+            mock.patch.object(bt, "_pipewire_bluez_plugin_available", return_value=False):
+            self.assertEqual(bt.disconnect_connected_bluetooth_audio_sources(), [])
+            overview = bt.set_bluetooth_receiver_enabled(False)
+        self.assertEqual(overview.get("devices"), [])
+
     def test_error_fallback_paths_still_work(self):
         # The fallback helpers parse failures into notes instead of raising.
         self.assertEqual(samplerate._parse_active_rate(""), None)

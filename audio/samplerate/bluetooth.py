@@ -37,6 +37,11 @@ from .persistence import _load_audio_source_selection
 def set_bluetooth_receiver_enabled(enabled: bool) -> dict[str, Any]:
     if not _command_available("bluetoothctl"):
         raise RuntimeError("bluetoothctl is not installed or not available in PATH")
+    if not _bluetooth_daemon_reachable():
+        # Nothing to configure: every bluetoothctl call would block until its
+        # command timeout, stalling e.g. the shutdown cleanup on hosts with
+        # bluez installed but no active daemon.
+        return get_bluetooth_audio_overview()
 
     commands = [["bluetoothctl", "power", "on"]] if enabled else []
     commands.extend([
@@ -59,6 +64,8 @@ def set_bluetooth_receiver_enabled(enabled: bool) -> dict[str, Any]:
 def disconnect_connected_bluetooth_audio_sources() -> list[str]:
     if not _command_available("bluetoothctl"):
         raise RuntimeError("bluetoothctl is not installed or not available in PATH")
+    if not _bluetooth_daemon_reachable():
+        return []
 
     disconnected: list[str] = []
     failures: list[str] = []
