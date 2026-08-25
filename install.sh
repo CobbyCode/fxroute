@@ -1485,6 +1485,11 @@ ensure_firewalld_rule() {
 
   if firewalld_query_rich_rule "$rich_rule"; then
     [[ $FIREWALLD_LEGACY_PORT_MIGRATION -eq 1 ]] || FIREWALLD_RULE_FORMAT="rich-priority"
+    # A rule already carrying the exact FXRoute rich-rule signature was
+    # created by FXRoute in this or an earlier run. Record ownership so a
+    # later uninstall removes it; re-runs over an existing rule used to skip
+    # this and left the rule behind.
+    mark_firewall_rule_owned firewalld "$rule_id"
     return 0
   else
     query_status=$?
@@ -1543,6 +1548,8 @@ ensure_firewalld_rule() {
     fi
   fi
   if firewalld_query_rule "$rule_id"; then
+    # A bare port/service rule is not the FXRoute rich-rule signature; it
+    # may belong to the user, so do not mark ownership here.
     return 0
   else
     query_status=$?
@@ -5398,7 +5405,24 @@ configure_system_power_polkit_rule() {
     fi
     backup_path="$FXROUTE_BACKUP_DIR/${rule_name}.pre-fxroute"
     current_rule_sha256="$("${SUDO_CMD[@]}" sha256sum "$rule_path" | awk '{print $1}')"
-    if [[ -n "$POWER_POLKIT_RULE_SHA256" ]]; then
+    rendered_sha256="$(printf '%s\n' "$rendered_rule" | sha256sum | awk '{print $1}')"
+    if [[ -n "$rendered_sha256" && "$current_rule_sha256" == "$rendered_sha256" ]]; then
+      # The existing rule is exactly the FXRoute-rendered one: FXRoute (this
+      # or an earlier run) created it, not the user. Treating it as
+      # pre-existing made re-runs record a bogus backup and later blocked the
+      # uninstaller. Drop any leftover backup copy of the same rule so the
+      # uninstall can remove the rule cleanly.
+      POWER_POLKIT_RULE_PRE_EXISTED=0
+      POWER_POLKIT_RULE_SHA256="$current_rule_sha256"
+      if [[ -f "$backup_path" && ! -L "$backup_path" ]]; then
+        local backup_copy_sha256=""
+        backup_copy_sha256="$("${SUDO_CMD[@]}" sha256sum "$backup_path" | awk '{print $1}')"
+        if [[ "$backup_copy_sha256" == "$current_rule_sha256" ]]; then
+          "${SUDO_CMD[@]}" rm -f "$backup_path"
+        fi
+      fi
+      POWER_POLKIT_BACKUP_SHA256=""
+    elif [[ -n "$POWER_POLKIT_RULE_SHA256" ]]; then
       if [[ "$current_rule_sha256" != "$POWER_POLKIT_RULE_SHA256" ]]; then
         warn "Could not verify the existing FXRoute polkit rule; refusing to replace a changed rule"
         rm -f "$tmp_rule"

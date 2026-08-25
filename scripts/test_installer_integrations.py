@@ -596,6 +596,27 @@ printf '%s\\n' "$SYSTEMCTL_CALLS"
         self.assertIn("target_user_can_open_alsa_control", audio_access)
         self.assertIn("target_user_has_seat_session", audio_access)
 
+    def test_firewalld_existing_rule_marks_ownership(self):
+        # Re-runs over an already-present FXRoute rich rule used to return
+        # without marking ownership, so a later uninstall left the rule
+        # behind. Both "rule already present" paths must record ownership.
+        body = extract_function(self.install, "ensure_firewalld_rule")
+        # One call for the already-present FXRoute rich rule (re-run path)
+        # and one for the newly created rule; both must record ownership.
+        owned = body.count('mark_firewall_rule_owned firewalld "$rule_id"')
+        self.assertGreaterEqual(owned, 2)
+
+    def test_polkit_rerun_detects_fxroute_owned_rule(self):
+        # Re-runs treated the FXRoute-rendered rule as pre-existing, recorded
+        # a bogus backup and later blocked the uninstaller from removing it.
+        # The installer must compare the current rule against the rendered
+        # template and clear the pre-existing flag for its own artifact.
+        body = extract_function(self.install, "configure_system_power_polkit_rule")
+        self.assertIn('rendered_sha256="$(printf \'%s\\n\' "$rendered_rule" | sha256sum | awk \'{print $1}\')"', body)
+        self.assertIn('"$current_rule_sha256" == "$rendered_sha256"', body)
+        self.assertIn("POWER_POLKIT_RULE_PRE_EXISTED=0", body)
+        self.assertIn('"${SUDO_CMD[@]}" rm -f "$backup_path"', body)
+
     def test_audio_group_is_added_even_when_seat_acl_grants_current_access(self):
         # A running SSH/seat session grants ALSA access through logind ACLs,
         # which made the installer skip the audio group. On a headless boot
