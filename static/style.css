@@ -5752,6 +5752,19 @@ input[type="number"]::-webkit-outer-spin-button {
     outline-offset: -2px;
 }
 
+/* Display-only unit suffix inside the control (− 75 Hz +). Not part of
+   the input value; the number input keeps its own step/min/max. */
+.stepper-unit {
+    flex: 0 0 auto;
+    align-self: center;
+    padding-right: 0.15rem;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1;
+    user-select: none;
+}
+
 #tab-effects .stepper-control .stepper-input {
     width: 2.6rem;
     min-width: 0;
