@@ -44,7 +44,7 @@ const notPlayingContent = new Function(
 assert.deepEqual(
     notPlayingContent('spotify', { status: 'Stopped', spotifyd_standby: true }),
     {
-        title: 'Spotify is ready.',
+        title: 'Ready for Spotify Connect.',
         message: '',
     },
 );
@@ -54,14 +54,14 @@ assert.deepEqual(
 assert.deepEqual(
     notPlayingContent('qobuz', { status: 'Paused', title: 'Diamonds', qbzd_standby: true }),
     {
-        title: 'Qobuz is ready.',
+        title: 'Ready for Qobuz Connect.',
         message: '',
     },
 );
 assert.deepEqual(
     notPlayingContent('qobuz', { status: 'Stopped', qbzd_standby: true }),
     {
-        title: 'Qobuz is ready.',
+        title: 'Ready for Qobuz Connect.',
         message: '',
     },
 );

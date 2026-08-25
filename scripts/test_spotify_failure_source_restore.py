@@ -920,12 +920,12 @@ class CoordinatorGateRestoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cm.exception.failure_latched)
         self.assertTrue(coordinator.last_error["failure_latched"])
 
-    async def test_gate_close_failure_prevents_restore_under_unverified_gate(self):
+    async def test_gate_close_read_failure_is_reconfirmed_before_restore(self):
         # The original Spotify transition failed at output-gate-close (the
         # first hardware mute read failed after the mute was issued).  The
-        # Coordinator's first restore boundary check cannot confirm a closed
-        # gate, so no rate/graph restore may start and the failure stays
-        # latched.
+        # Coordinator re-confirms the physical gate before restoring the
+        # committed source, so a transient read failure must not skip the
+        # rate/graph restore sequence.
         runtime = FakeRuntime(muted=False, fail_mute_read_number=1)
 
         class GuardUsingAbortRuntime(FakeRuntime):
@@ -941,12 +941,15 @@ class CoordinatorGateRestoreTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PlaybackTransitionFailure) as cm:
             await coordinator.execute(spotify_request())
 
-        self.assertNotIn("rate", runtime.events)
-        self.assertTrue(coordinator.gate.failure_latched)
-        self.assertTrue(coordinator.gate.closed)
-        self.assertTrue(runtime.muted)
-        self.assertTrue(cm.exception.failure_latched)
-        self.assertTrue(coordinator.last_error["failure_latched"])
+        self.assertIn("rate", runtime.events)
+        self.assertLess(runtime.events.index("abort-verdict-returned"), runtime.events.index("rate"))
+        self.assertIn("verify-graph", runtime.events)
+        self.assertIn("verify", runtime.events)
+        self.assertFalse(coordinator.gate.failure_latched)
+        self.assertFalse(coordinator.gate.closed)
+        self.assertFalse(runtime.muted)
+        self.assertFalse(cm.exception.failure_latched)
+        self.assertFalse(coordinator.last_error["failure_latched"])
 
 
 if __name__ == "__main__":

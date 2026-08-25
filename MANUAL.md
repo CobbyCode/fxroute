@@ -287,9 +287,9 @@ In **Setup**, select an imported calibration or House Curve file and press
 **Export** to download the managed file with its original content. Built-in
 target curves are not exportable files.
 
-### Advanced Measurement
+### System Calibration
 
-**Advanced Measurement** measures speakers and room response at close range and at three listening positions.
+**System Calibration** measures speakers and room response at close range and at three listening positions for system correction.
 
 The workflow runs these measurements:
 
@@ -318,9 +318,9 @@ noise. Their exact prior states are restored when calibration stops, is saved,
 is cancelled, or fails. Normal sweeps and Auto Sub Optimize continue to
 measure the active processing chain.
 
-### Single Sweep and L/R Repeat
+### LR Stereo and L/R Repeat
 
-Use **Start Single Sweep** when you want one quick measurement of the selected speaker:
+Use **LR Stereo** when you want one quick measurement of the selected speaker:
 
 - **L** measures the left speaker.
 - **R** measures the right speaker.
@@ -328,7 +328,7 @@ Use **Start Single Sweep** when you want one quick measurement of the selected s
 
 While a sweep is running, the status line shows the simple input-level indicator, for example `Peak -42 dBFS`, `Peak < -90 dBFS`, or `CLIP`.
 
-Use **Start L/R Repeat** when you want a more dependable left/right measurement pair at one microphone position. Put the microphone in place, do not move it, then start the repeat. FXRoute measures left and right three times each, alternating L/R internally.
+Use **Start LR Repeat** when you want a more dependable left/right measurement pair at one microphone position. Put the microphone in place, do not move it, then start the repeat. FXRoute measures left and right three times each, alternating L/R internally.
 
 While L/R Repeat is running, the status keeps the current repeat step and total progress, and adds the same simple input-level indicator used by Single Sweep.
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /**
- * FXRoute measurement flows: Auto-Sub optimize and the Advanced Measurement
+ * FXRoute measurement flows: Auto-Sub optimize and System Calibration
  * (hybrid) wizard.
  *
  * State/DOM access goes through injected getters, UI feedback through
@@ -462,6 +462,7 @@ function openHybridMeasurementWizard() {
         deps.getElements().measurementHybridPanel?.classList.remove('hidden');
         renderHybridMeasurementWizard();
         window.FXRouteModal?.open(deps.getElements().measurementHybridPanel, {
+            opener: deps.getElements().measurementSweepToggleBtn,
             initialFocus: deps.getElements().measurementHybridPrimaryBtn,
             onEscape: () => { void closeHybridMeasurementWizard(); },
         });
@@ -485,6 +486,7 @@ function openHybridMeasurementWizard() {
     deps.getElements().measurementHybridPanel?.classList.remove('hidden');
     renderHybridMeasurementWizard();
     window.FXRouteModal?.open(deps.getElements().measurementHybridPanel, {
+        opener: deps.getElements().measurementSweepToggleBtn,
         initialFocus: deps.getElements().measurementHybridPrimaryBtn,
         onEscape: () => { void closeHybridMeasurementWizard(); },
     });
@@ -540,7 +542,7 @@ function renderHybridMeasurementWizard() {
         const done = complete ? wizard.sequence.length : wizard.stepIndex;
         deps.getElements().measurementHybridProgress.textContent = `${done} / ${wizard.sequence.length}`;
     }
-    if (deps.getElements().measurementHybridTitle) deps.getElements().measurementHybridTitle.textContent = complete ? 'Measurement complete' : (current?.title || 'Advanced Measurement');
+    if (deps.getElements().measurementHybridTitle) deps.getElements().measurementHybridTitle.textContent = complete ? 'Measurement complete' : (current?.title || 'System Calibration');
     if (deps.getElements().measurementHybridInstruction) {
         const instruction = complete ? 'All measurements were completed successfully.' : (current?.instruction || '');
         deps.getElements().measurementHybridInstruction.textContent = instruction;
@@ -609,7 +611,7 @@ async function runHybridWizardStep(step) {
     renderHybridMeasurementWizard();
     const response = await api.startMeasurement(buildHybridMeasurementForm(step));
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to start advanced measurement'));
+    if (!response.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to start system calibration measurement'));
     const jobId = String(data.job?.id || '');
     wizard.jobId = jobId;
     deps.getState().measurement.activeJobId = jobId;
@@ -621,7 +623,7 @@ async function runHybridWizardStep(step) {
     for (let attempt = 0; attempt < 360; attempt += 1) {
         const poll = await api.pollMeasurementJob(jobId);
         const payload = await poll.json().catch(() => ({}));
-        if (!poll.ok) throw new Error(deps.formatTransitionErrorDetail(payload.detail, 'Failed to fetch advanced measurement'));
+        if (!poll.ok) throw new Error(deps.formatTransitionErrorDetail(payload.detail, 'Failed to fetch system calibration measurement'));
         const job = payload.job || {};
         const status = deps.getMeasurementJobStatus(job);
         const processing = String(job.message || '').toLowerCase().startsWith('processing');
@@ -729,7 +731,7 @@ async function runHybridWizardSweep() {
         }
         wizard.status = wizard.cancelRequested
             ? 'Measurement cancelled. The microphone position is ready to measure again.'
-            : (error.message || 'Advanced measurement failed.');
+            : (error.message || 'System calibration measurement failed.');
         wizard.quality = wizard.cancelRequested ? null : { level: 'error', retry: true };
     } finally {
         wizard.running = false;
@@ -758,7 +760,7 @@ function openHybridProfileInConvolver() {
         const modelSummary = { trace_count: modelPoints.length ? 1 : 0, point_count: modelPoints.length, min_db: modelMinDb, max_db: modelMaxDb, min_hz: modelMinHz, max_hz: modelMaxHz };
         return deps.normalizeMeasurementEntry({
             id: `hybrid-${side}-${Date.now()}`,
-            name: `Advanced ${HybridMeasurement.MODE_LABELS[wizard.mode]} ${side === 'left' ? 'L' : 'R'}`,
+            name: `System Calibration ${HybridMeasurement.MODE_LABELS[wizard.mode]} ${side === 'left' ? 'L' : 'R'}`,
             created_at: new Date().toISOString(),
             channel: side,
             measurement_kind: 'hybrid-correction-model-v1',
@@ -782,7 +784,7 @@ function openHybridProfileInConvolver() {
     const pair = [buildSide('left'), buildSide('right')];
     deps.getState().measurement.pendingRepeatMeasurements = pair;
     deps.getState().measurement.currentMeasurement = pair[0];
-    deps.getState().measurement.currentMeasurementName = `Advanced ${HybridMeasurement.MODE_LABELS[wizard.mode]}`;
+    deps.getState().measurement.currentMeasurementName = `System Calibration ${HybridMeasurement.MODE_LABELS[wizard.mode]}`;
     deps.getState().measurement.currentMeasurementSaved = false;
     deps.setMeasurementAssistMode('convolver');
     void closeHybridMeasurementWizard();

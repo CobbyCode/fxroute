@@ -547,6 +547,8 @@ const elements = {
     measurementCustomHouseCurveName: document.getElementById('measurement-custom-house-curve-name'),
     measurementCustomHouseCurveCreateBtn: document.getElementById('measurement-custom-house-curve-create'),
     measurementNameInput: document.getElementById('measurement-name'),
+    measurementSweepToggleBtn: document.getElementById('measurement-sweep-toggle'),
+    measurementSweepMenu: document.getElementById('measurement-sweep-menu'),
     measurementStartBtn: document.getElementById('measurement-start'),
     measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
     measurementAutoSubStartBtn: document.getElementById('measurement-auto-sub-start'),
@@ -1032,7 +1034,13 @@ function setEffectsImportPanelOpen(shouldOpen) {
     if (!elements.effectsImportPanel || !elements.effectsToggleImportBtn) return;
     elements.effectsImportPanel.classList.toggle('hidden', !shouldOpen);
     elements.effectsToggleImportBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
-    elements.effectsToggleImportBtn.textContent = shouldOpen ? 'Close import' : 'Import';
+    elements.effectsToggleImportBtn.textContent = shouldOpen ? 'Close Import' : 'Import';
+}
+
+function setMeasurementSweepMenuOpen(shouldOpen) {
+    if (!elements.measurementSweepMenu || !elements.measurementSweepToggleBtn) return;
+    elements.measurementSweepMenu.classList.toggle('hidden', !shouldOpen);
+    elements.measurementSweepToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
 }
 
 function setupWebSocket() {
@@ -2701,7 +2709,13 @@ function clearLibraryImportFeedbackIfIdle() {
 }
 
 function closeLibraryImportPanel() {
-    if (!elements.libraryImportPanel || elements.libraryImportPanel.classList.contains('hidden')) return;
+    if (!elements.libraryImportPanel || elements.libraryImportPanel.classList.contains('hidden')) {
+        if (elements.toggleImportBtn) {
+            elements.toggleImportBtn.textContent = 'Import';
+            elements.toggleImportBtn.setAttribute('aria-expanded', 'false');
+        }
+        return;
+    }
     const searchWrap = elements.librarySearchInput ? elements.librarySearchInput.closest('.library-search-wrap') : null;
     const selectionToolbar = elements.selectAllTracksBtn ? elements.selectAllTracksBtn.closest('.library-selection-toolbar') : null;
     clearLibraryImportFeedbackIfIdle();
@@ -2710,7 +2724,10 @@ function closeLibraryImportPanel() {
     if (searchWrap) searchWrap.classList.remove('hidden');
     if (selectionToolbar) selectionToolbar.classList.remove('hidden');
     if (elements.playlistSaveRow) updatePlaylistSaveRowVisibility();
-    if (elements.toggleImportBtn) elements.toggleImportBtn.textContent = 'Import';
+    if (elements.toggleImportBtn) {
+        elements.toggleImportBtn.textContent = 'Import';
+        elements.toggleImportBtn.setAttribute('aria-expanded', 'false');
+    }
 }
 
 function switchTab(tabId) {
@@ -9596,6 +9613,7 @@ function toggleMeasurementPanel(forceOpen = null) {
     if (elements.effectsMeasureOpenBtn) {
         elements.effectsMeasureOpenBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
     }
+    if (!shouldOpen) setMeasurementSweepMenuOpen(false);
     if (shouldOpen) {
         startMeasurementWindowHeartbeat();
         measurementInputScanOnFocusDone = false;
@@ -9604,7 +9622,13 @@ function toggleMeasurementPanel(forceOpen = null) {
         scheduleMeasurementGraphRender();
         window.FXRouteModal?.open(elements.measurementPanel, {
             initialFocus: elements.measurementCloseBtn,
-            onEscape: () => toggleMeasurementPanel(false),
+            onEscape: () => {
+                if (elements.measurementSweepMenu && !elements.measurementSweepMenu.classList.contains('hidden')) {
+                    setMeasurementSweepMenuOpen(false);
+                    return;
+                }
+                toggleMeasurementPanel(false);
+            },
         });
     } else {
         stopMeasurementWindowHeartbeat();
@@ -9841,7 +9865,7 @@ function syncMeasurementStartButtonFallback() {
         : (activeJobRunning ? !singleActive : (measurementState.inputsLoading || !measurementModeReady()));
     elements.measurementStartBtn.textContent = singleActive
         ? 'Cancel measurement'
-        : (measurementState.startInFlight ? 'Starting...' : 'Start Single Sweep');
+        : (measurementState.startInFlight ? 'Starting...' : 'LR Stereo');
     if (elements.measurementRepeatStartBtn) {
         elements.measurementRepeatStartBtn.disabled = calibrationBusy
             ? true
@@ -9849,7 +9873,7 @@ function syncMeasurementStartButtonFallback() {
             : (measurementState.startInFlight || measurementState.inputsLoading || !measurementModeReady()));
         elements.measurementRepeatStartBtn.textContent = lrActive
             ? 'Cancel measurement'
-            : 'Start L/R Repeat';
+            : 'Start LR Repeat';
     }
     syncAutoSubButton();
 }
@@ -10600,6 +10624,9 @@ function renderMeasurementPanelActionsSection({ measurementState, current, measu
         elements.measurementNameInput.disabled = measurementState.startInFlight || measurementState.saveInFlight || !!measurementState.activeJobId;
         elements.measurementNameInput.placeholder = 'Measurement name';
     }
+    if (elements.measurementSweepToggleBtn) {
+        elements.measurementSweepToggleBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting;
+    }
     if (elements.measurementStartBtn) {
         const activeKind = getActiveMeasurementKind();
         const activeJobRunning = hasActiveMeasurementJob();
@@ -10608,7 +10635,7 @@ function renderMeasurementPanelActionsSection({ measurementState, current, measu
             : (activeJobRunning ? activeKind !== 'single' : (measurementState.inputsLoading || !measurementModeReady()));
         elements.measurementStartBtn.textContent = activeKind === 'single'
             ? 'Cancel measurement'
-            : (measurementState.startInFlight ? 'Starting…' : 'Start Single Sweep');
+            : (measurementState.startInFlight ? 'Starting…' : 'LR Stereo');
     }
     if (elements.measurementRepeatStartBtn) {
         const activeKind = getActiveMeasurementKind();
@@ -10619,7 +10646,7 @@ function renderMeasurementPanelActionsSection({ measurementState, current, measu
             : (measurementState.startInFlight || measurementState.inputsLoading || !measurementModeReady()));
         elements.measurementRepeatStartBtn.textContent = activeKind === 'lr_repeat'
             ? 'Cancel measurement'
-            : 'Start L/R Repeat';
+            : 'Start LR Repeat';
     }
     if (elements.measurementSaveBtn) {
         const hasAutoSubMeas = Array.isArray(measurementState.autoSubMeasurements) && measurementState.autoSubMeasurements.length > 0;
@@ -11196,11 +11223,6 @@ function setupMeasurementActions() {
     elements.measurementCloseBtn.addEventListener('click', () => toggleMeasurementPanel(false));
     const backdrop = elements.measurementPanel.querySelector('.manage-overlay-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => toggleMeasurementPanel(false));
-    document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && !elements.measurementPanel.classList.contains('hidden')) {
-            toggleMeasurementPanel(false);
-        }
-    });
     window.addEventListener('pagehide', () => {
         if (isMeasurementPanelOpen()) stopMeasurementWindowHeartbeat(true);
     });
@@ -11208,6 +11230,23 @@ function setupMeasurementActions() {
         elements.measurementSetupToggleBtn.addEventListener('click', () => {
             state.measurement.setupOpen = !state.measurement.setupOpen;
             renderMeasurementPanel();
+        });
+    }
+    if (elements.measurementSweepToggleBtn) {
+        elements.measurementSweepToggleBtn.addEventListener('click', () => {
+            const shouldOpen = elements.measurementSweepMenu?.classList.contains('hidden');
+            setMeasurementSweepMenuOpen(!!shouldOpen);
+        });
+    }
+    if (elements.measurementSweepMenu) {
+        elements.measurementSweepMenu.addEventListener('click', (event) => {
+            if (event.target.closest('button')) setMeasurementSweepMenuOpen(false);
+        });
+        document.addEventListener('click', (event) => {
+            if (!elements.measurementSweepMenu.classList.contains('hidden')
+                    && !event.target.closest('.measurement-workflow-menu')) {
+                setMeasurementSweepMenuOpen(false);
+            }
         });
     }
     if (elements.measurementInputSelect) {
@@ -11332,6 +11371,7 @@ function setupMeasurementActions() {
     }
     if (elements.measurementStartBtn) {
         elements.measurementStartBtn.addEventListener('click', () => {
+            setMeasurementSweepMenuOpen(false);
             if (getActiveMeasurementKind() === 'single') {
                 void cancelMeasurement();
                 return;
@@ -11341,6 +11381,7 @@ function setupMeasurementActions() {
     }
     if (elements.measurementRepeatStartBtn) {
         elements.measurementRepeatStartBtn.addEventListener('click', () => {
+            setMeasurementSweepMenuOpen(false);
             if (getActiveMeasurementKind() === 'lr_repeat') {
                 void cancelMeasurement();
                 return;
@@ -13389,7 +13430,8 @@ function setupLibraryActions() {
         }
         clearLibraryImportFeedbackIfIdle();
         resetUploadAreaSelection('upload-track-file');
-        elements.toggleImportBtn.textContent = '− Close';
+        elements.toggleImportBtn.textContent = 'Close Import';
+        elements.toggleImportBtn.setAttribute('aria-expanded', 'true');
     });
     if (elements.librarySearchInput) {
         updateLibrarySearchPlaceholder();

@@ -3977,14 +3977,49 @@ body {
     min-height: 0;
 }
 
-#measurement-start,
-#measurement-repeat-start,
-#measurement-hybrid-open,
+#measurement-sweep-toggle,
 #measurement-auto-sub-start,
 #measurement-spl-calibration-open {
     width: 190px;
     min-width: 190px;
     min-height: 44px;
+}
+
+.measurement-workflow-menu {
+    position: relative;
+    width: 190px;
+}
+
+.measurement-workflow-menu-panel {
+    position: absolute;
+    top: calc(100% + 0.45rem);
+    left: 0;
+    z-index: var(--z-raised);
+    display: flex;
+    width: min(280px, calc(100vw - 2rem));
+    flex-direction: column;
+    gap: 0.45rem;
+    padding: 0.45rem;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    box-shadow: 0 18px 36px -18px var(--shadow);
+}
+
+.measurement-workflow-menu-choice {
+    display: grid;
+    gap: 0.4rem;
+}
+
+.measurement-workflow-menu-panel > button,
+.measurement-workflow-menu-choice > button {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+}
+
+.measurement-workflow-menu-panel .measurement-channel-chip-row {
+    padding: 0.1rem 0.1rem 0.15rem;
 }
 
 .measurement-workflow-row {
@@ -3998,6 +4033,12 @@ body {
 #measurement-setup-toggle {
     align-self: flex-start;
     min-width: 104px;
+}
+
+#measurement-start,
+#measurement-repeat-start,
+#measurement-hybrid-open {
+    min-height: 42px;
 }
 
 .measurement-repeat-help {
@@ -7395,6 +7436,17 @@ input[type="number"]::-webkit-outer-spin-button {
             gap: 0.55rem;
         }
 
+        .measurement-workflow-menu {
+            width: 100%;
+        }
+
+        .measurement-workflow-menu-panel {
+            position: static;
+            width: 100%;
+            max-width: none;
+            box-sizing: border-box;
+        }
+
         .measurement-workflow-row {
             display: flex;
             align-items: stretch;
@@ -7406,6 +7458,7 @@ input[type="number"]::-webkit-outer-spin-button {
             flex: 0 0 auto;
         }
 
+        #measurement-sweep-toggle,
         #measurement-start,
         #measurement-repeat-start,
         #measurement-hybrid-open,
@@ -7597,26 +7650,21 @@ input[type="number"]::-webkit-outer-spin-button {
             line-height: 1.2;
         }
         .library-toolbar #toggle-import {
-            width: 44px;
-            min-width: 44px;
-            max-width: 44px;
-            height: 44px;
+            width: auto;
+            min-width: 104px;
+            max-width: none;
+            height: auto;
             min-height: 44px;
-            max-height: 44px;
-            padding: 0;
-            font-size: 0;
+            max-height: none;
+            padding: 0.55rem 0.8rem;
+            font-size: 0.84rem;
             line-height: 1;
             align-self: center;
             white-space: nowrap;
-            overflow: hidden;
+            overflow: visible;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-        }
-        .library-toolbar #toggle-import::before {
-            content: "＋";
-            font-size: 1.2rem;
-            line-height: 1;
         }
         #tab-library {
             padding-top: 0;
