@@ -6795,6 +6795,45 @@ function setupEffectsActions() {
     });
     if (elements.effectsPeqAddBandBtn) elements.effectsPeqAddBandBtn.addEventListener('click', addPeqBandPair);
     if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.addEventListener('click', createPeqPreset);
+    /* Compact − / value / + steppers: nudge the paired number input by its
+       own step/min/max and let the existing input/change listeners apply
+       the value (draft update + debounced save, unchanged semantics). */
+    function nudgeStepperControl(button) {
+        const control = button.closest('.stepper-control');
+        const input = control ? control.querySelector('input[type="number"]') : null;
+        if (!input || input.disabled) return;
+        const direction = button.dataset.stepper === 'dec' ? -1 : 1;
+        const step = Number(input.step);
+        const stepValue = Number.isFinite(step) && step > 0 ? step : 1;
+        const decimals = Math.min((String(input.step).split('.')[1] || '').length, 4);
+        const min = input.min === '' ? -Infinity : Number(input.min);
+        const max = input.max === '' ? Infinity : Number(input.max);
+        const current = Number(input.value);
+        if (!Number.isFinite(current)) return;
+        let next = current + direction * stepValue;
+        next = Number(next.toFixed(decimals));
+        if (Number.isFinite(min)) next = Math.max(min, next);
+        if (Number.isFinite(max)) next = Math.min(max, next);
+        if (next === current) return;
+        input.focus({ preventScroll: true });
+        input.value = String(next);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    document.addEventListener('mousedown', (event) => {
+        /* Keep focus on the number input when its stepper buttons are
+           pressed: losing focus would drop the input from _activeEditing
+           and let the pending-save echo overwrite the user's value. */
+        const button = event.target instanceof Element ? event.target.closest('.stepper-btn') : null;
+        if (button) event.preventDefault();
+    });
+
+    document.addEventListener('click', (event) => {
+        const button = event.target instanceof Element ? event.target.closest('.stepper-btn') : null;
+        if (button) nudgeStepperControl(button);
+    });
+
     [
         elements.effectsSubwooferFrequencyNumber,
         elements.effectsSubwooferLevel,

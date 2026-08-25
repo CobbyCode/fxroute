@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.145">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.146">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -547,7 +547,11 @@
                                             <label for="effects-subwoofer-frequency-number">Crossover frequency</label>
                                             <div class="effects-subwoofer-frequency-row">
                                                 <div class="delay-input-wrap">
-                                                    <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input" min="40" max="200" step="1" value="80">
+                                                    <div class="stepper-control">
+                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease crossover frequency">&minus;</button>
+                                                        <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
+                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase crossover frequency">+</button>
+                                                    </div>
                                                     <span class="delay-unit">Hz</span>
                                                 </div>
                                             </div>
@@ -565,14 +569,22 @@
                                         <div class="field-group">
                                             <label id="effects-subwoofer-level-label" for="effects-subwoofer-level">Sub level</label>
                                             <div class="delay-input-wrap">
-                                                <input type="number" id="effects-subwoofer-level" class="url-input delay-number-input" min="-24" max="12" step="0.5" value="0">
+                                                <div class="stepper-control">
+                                                    <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease sub level">&minus;</button>
+                                                    <input type="number" id="effects-subwoofer-level" class="url-input delay-number-input stepper-input" min="-24" max="12" step="0.5" value="0">
+                                                    <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase sub level">+</button>
+                                                </div>
                                                 <span class="delay-unit">dB</span>
                                             </div>
                                         </div>
                                         <div class="field-group">
                                             <label id="effects-subwoofer-delay-label" for="effects-subwoofer-delay">Sub alignment</label>
                                             <div class="delay-input-wrap">
-                                                <input type="number" id="effects-subwoofer-delay" class="url-input delay-number-input" min="-40" max="40" step="0.1" value="0">
+                                                <div class="stepper-control">
+                                                    <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease sub alignment">&minus;</button>
+                                                    <input type="number" id="effects-subwoofer-delay" class="url-input delay-number-input stepper-input" min="-40" max="40" step="0.1" value="0">
+                                                    <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase sub alignment">+</button>
+                                                </div>
                                                 <span class="delay-unit">ms</span>
                                             </div>
                                         </div>
@@ -589,14 +601,22 @@
                                         <div class="field-group">
                                             <label for="effects-subwoofer-sub2-level">Sub 2 level</label>
                                             <div class="delay-input-wrap">
-                                                <input type="number" id="effects-subwoofer-sub2-level" class="url-input delay-number-input" min="-24" max="12" step="0.5" value="0">
+                                                <div class="stepper-control">
+                                                    <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease sub 2 level">&minus;</button>
+                                                    <input type="number" id="effects-subwoofer-sub2-level" class="url-input delay-number-input stepper-input" min="-24" max="12" step="0.5" value="0">
+                                                    <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase sub 2 level">+</button>
+                                                </div>
                                                 <span class="delay-unit">dB</span>
                                             </div>
                                         </div>
                                         <div class="field-group">
                                             <label for="effects-subwoofer-sub2-delay">Sub 2 alignment</label>
                                             <div class="delay-input-wrap">
-                                                <input type="number" id="effects-subwoofer-sub2-delay" class="url-input delay-number-input" min="-40" max="40" step="0.1" value="0">
+                                                <div class="stepper-control">
+                                                    <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease sub 2 alignment">&minus;</button>
+                                                    <input type="number" id="effects-subwoofer-sub2-delay" class="url-input delay-number-input stepper-input" min="-40" max="40" step="0.1" value="0">
+                                                    <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase sub 2 alignment">+</button>
+                                                </div>
                                                 <span class="delay-unit">ms</span>
                                             </div>
                                         </div>
@@ -696,7 +716,11 @@
                                             <div class="effects-loudness-controls">
                                                 <label for="effects-loudness-strength" id="effects-loudness-strength-wrap" class="effects-inline-control hidden">
                                                     <span class="effects-inline-control-label">Strength</span>
-                                                    <input type="number" id="effects-loudness-strength" class="url-input delay-number-input effects-compact-control" min="1" max="10" step="1" value="10" aria-label="Strength">
+                                                    <div class="stepper-control">
+                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease loudness strength">&minus;</button>
+                                                        <input type="number" id="effects-loudness-strength" class="url-input delay-number-input stepper-input" min="1" max="10" step="1" value="10" aria-label="Strength">
+                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase loudness strength">+</button>
+                                                    </div>
                                                 </label>
                                                 <label for="effects-loudness-fft-size" id="effects-loudness-fft-wrap" class="effects-inline-control hidden">
                                                     <span class="effects-inline-control-label">FFT</span>
@@ -718,7 +742,11 @@
                                                 <span class="effects-inline-control-label">Amount:</span>
                                                 <div class="delay-field delay-field-compact">
                                                     <div class="delay-input-wrap">
-                                                        <input type="number" id="effects-bass-amount" class="url-input delay-number-input effects-compact-control" min="-20" max="20" step="0.5" value="0">
+                                                        <div class="stepper-control">
+                                                            <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease bass amount">&minus;</button>
+                                                            <input type="number" id="effects-bass-amount" class="url-input delay-number-input stepper-input" min="-20" max="20" step="0.5" value="0">
+                                                            <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase bass amount">+</button>
+                                                        </div>
                                                         <span class="delay-unit">dB</span>
                                                     </div>
                                                 </div>
@@ -1345,7 +1373,7 @@
     <script src="/static/measurement_graph.js?v=0.9.13"></script>
     <script src="/static/measurement_flows.js?v=0.9.14"></script>
     <script src="/static/radio.js?v=0.9.15"></script>
-    <script src="/static/app.js?v=0.9.83"></script>
+    <script src="/static/app.js?v=0.9.85"></script>
     <script src="/static/streaming.js?v=0.9.52"></script>
 </body>
 </html>

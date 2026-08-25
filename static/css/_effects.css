@@ -1103,6 +1103,70 @@ input[type="number"]::-webkit-outer-spin-button {
     width: 4.6rem;
     min-width: 4.6rem;
 }
+/* Compact − / value / + stepper for small-range DSP numbers. Replaces the
+   native spinners where stepping is the primary interaction; the value
+   stays directly editable and keeps its step/min/max semantics. Placed
+   after the delay-number overrides so its sizing wins the cascade. */
+.stepper-control {
+    display: inline-flex;
+    align-items: stretch;
+    height: 46px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    overflow: hidden;
+}
+
+.stepper-btn {
+    flex: 0 0 auto;
+    width: 32px;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.12s var(--ease), background 0.12s var(--ease);
+}
+
+.stepper-btn:hover {
+    color: var(--accent);
+    background: var(--accent-dim);
+}
+.stepper-btn:active {
+    color: var(--accent);
+}
+.stepper-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+#tab-effects .stepper-control .stepper-input {
+    width: 3.4rem;
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    border: 0;
+    background: transparent;
+    text-align: center;
+    padding: 0.35rem 0.15rem;
+    font-size: 0.92rem;
+}
+
+.stepper-control input[type="number"]::-webkit-inner-spin-button,
+.stepper-control input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.stepper-control input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
 /* ============================================================
    Buttons
    ============================================================ */
