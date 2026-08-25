@@ -1111,26 +1111,35 @@ input[type="number"]::-webkit-outer-spin-button {
     display: inline-flex;
     align-items: stretch;
     height: 46px;
+    /* Never shrink inside tight grid cells: overflow clipping would hide
+       the + button. Slight overflow into the column gap is fine. */
+    flex: 0 0 auto;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--bg-input);
-    overflow: hidden;
 }
 
 .stepper-btn {
     flex: 0 0 auto;
-    width: 32px;
+    width: 26px;
     border: 0;
     padding: 0;
     background: transparent;
     color: var(--text-secondary);
     font-family: inherit;
-    font-size: 1.1rem;
+    font-size: 1.05rem;
     line-height: 1;
     cursor: pointer;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
     transition: color 0.12s var(--ease), background 0.12s var(--ease);
+}
+
+.stepper-btn:first-child {
+    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+.stepper-btn:last-child {
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
 .stepper-btn:hover {
@@ -1146,14 +1155,14 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 #tab-effects .stepper-control .stepper-input {
-    width: 3.4rem;
+    width: 2.6rem;
     min-width: 0;
     min-height: 0;
     height: auto;
     border: 0;
     background: transparent;
     text-align: center;
-    padding: 0.35rem 0.15rem;
+    padding: 0.35rem 0.1rem;
     font-size: 0.92rem;
 }
 
@@ -1166,6 +1175,17 @@ input[type="number"]::-webkit-outer-spin-button {
 .stepper-control input[type="number"] {
     -moz-appearance: textfield;
     appearance: textfield;
+}
+
+/* Stacked mobile fields have full cell width: restore comfortable touch
+   targets for the stepper buttons. */
+@media (max-width: 520px) {
+    .stepper-btn {
+        width: 34px;
+    }
+    #tab-effects .stepper-control .stepper-input {
+        width: 3rem;
+    }
 }
 /* ============================================================
    Buttons
