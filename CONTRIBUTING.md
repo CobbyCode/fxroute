@@ -27,6 +27,17 @@ When preparing a contribution:
 
 If your change affects setup, install, deployment, or public docs, please update the relevant documentation too.
 
+## Testing
+
+Run the full local suite with `scripts/run_tests.sh` (see `scripts/run_tests.sh --list` for the inventory). The browser/UI regression checks use Python Playwright and the Playwright-managed Chromium binary; on a fresh dev host install both once:
+
+```bash
+pip install playwright
+python3 -m playwright install chromium
+```
+
+The test runner checks for the browser up front and skips the browser tests with a setup hint when it is missing, so a missing browser shows as a clear skip instead of a wall of launch failures.
+
 ## License for contributions
 
 FXRoute is licensed under the GNU Affero General Public License v3.0.

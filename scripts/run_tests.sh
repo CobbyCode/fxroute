@@ -10,6 +10,13 @@
 # skipped locally with an explicit reason; use --all to force-run them
 # (they will fail fast when the host lacks the prerequisites).
 #
+# Browser/UI tests use Python Playwright and the Playwright-managed
+# Chromium binary.  On a fresh dev host install them once:
+#   pip install playwright
+#   python3 -m playwright install chromium
+# The runner checks for the browser up front and skips the browser tests
+# with a setup hint when it is missing, instead of failing every test.
+#
 # Usage:
 #   scripts/run_tests.sh            # run everything runnable locally
 #   scripts/run_tests.sh --list     # print categorized test inventory
@@ -83,6 +90,47 @@ if ! pkg-config --exists $NATIVE_DEPS_PKGS; then
     NATIVE_DEPS_SKIP_REASON="missing native DSP build dependencies (pkg-config: $NATIVE_DEPS_PKGS); build on .104"
 fi
 
+# Browser tests run through Python Playwright and need the
+# Playwright-managed Chromium binary.  When it is missing, each browser
+# test would otherwise fail with a launch error; detect it once here and
+# skip the whole group with a setup hint instead.  Never auto-install in
+# the suite run (see the header comment for the one-time host setup).
+BROWSER_TESTS=(
+    scripts/check_css_reorg_snapshot.py
+    scripts/check_select_popup_theme.py
+    scripts/check_ui_walkthrough.py
+    scripts/check_viewports.py
+    scripts/test_brand_geometry.py
+    scripts/test_favorite_button_geometry.py
+    scripts/test_favorite_primitives_geometry.py
+    scripts/test_footer_badge_geometry.py
+    scripts/test_library_folder_back.py
+    scripts/test_measurement_ui_responsive.py
+    scripts/test_reduced_motion.py
+    scripts/test_subwoofer_controls_geometry.py
+    scripts/test_tidal_direct_search.py
+    scripts/test_tidal_header_geometry.py
+    scripts/test_tidal_subbar_overflow.py
+    scripts/test_view_tab_geometry.py
+)
+
+BROWSER_SKIP_REASON=""
+if ! "$PYTHON" -c "import playwright" >/dev/null 2>&1; then
+    BROWSER_SKIP_REASON="playwright python package not installed (run: pip install playwright)"
+else
+    # Probe with a real launch: verifies the managed Chromium binary and
+    # its system dependencies in one cheap check.
+    if ! "$PYTHON" - <<'PYEOF' >/dev/null 2>&1
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    browser.close()
+PYEOF
+    then
+        BROWSER_SKIP_REASON="playwright chromium browser not installed (run: python3 -m playwright install chromium)"
+    fi
+fi
+
 # Tests that need live PipeWire graph / audio hardware on .104.
 # (Kept as a category for future hardware-bound suites; currently empty
 # because test_measurement_sr_session.py mocks the rate plumbing and runs
@@ -116,6 +164,7 @@ if [ "$MODE" = "list" ]; then
     done
     echo
     echo "Legend: [local] läuft lokal mit installierten Projektabhängigkeiten (z. B. uvicorn, requests), [.104] benötigt native Helper-Binary (Build-Deps: $NATIVE_DEPS_PKGS) oder Live-PipeWire/Hardware."
+    echo "Browser tests (Playwright/Chromium) additionally need the Playwright-managed browser: pip install playwright && python3 -m playwright install chromium"
     exit 0
 fi
 
@@ -175,6 +224,10 @@ run_one() {
 # ---------------------------------------------------------------------------
 
 echo "== FXRoute test runner (mode: $MODE) =="
+if [ "$MODE" != "all" ] && [ -n "$BROWSER_SKIP_REASON" ]; then
+    echo "NOTE: browser tests will be skipped: $BROWSER_SKIP_REASON"
+    echo "      (the other tests still run; use --all to force the browser tests)"
+fi
 echo
 
 for f in "${PY_TESTS[@]}"; do
@@ -185,6 +238,9 @@ for f in "${PY_TESTS[@]}"; do
         esac
         case " ${HARDWARE_TESTS[*]} " in
             *" $f "*) reason="needs live PipeWire/measurement host on .104" ;;
+        esac
+        case " ${BROWSER_TESTS[*]} " in
+            *" $f "*) reason="$BROWSER_SKIP_REASON" ;;
         esac
     fi
     run_one "$f" "$PYTHON" "$reason"
@@ -202,7 +258,13 @@ for f in "${CHECK_TESTS[@]}"; do
     if [[ "$f" == *.js ]]; then
         run_one "$f" "$NODE" "$NODE_SKIP_REASON"
     else
-        run_one "$f" "$PYTHON" ""
+        reason=""
+        if [ "$MODE" != "all" ]; then
+            case " ${BROWSER_TESTS[*]} " in
+                *" $f "*) reason="$BROWSER_SKIP_REASON" ;;
+            esac
+        fi
+        run_one "$f" "$PYTHON" "$reason"
     fi
 done
 
