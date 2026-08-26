@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.154">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.155">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -884,11 +884,13 @@
                                         <h4 class="measurement-workflow-label">Measurements</h4>
                                         <div class="measurement-workflow-group measurement-workflow-menu-group">
                                             <div class="measurement-workflow-menu">
-                                                <button id="measurement-sweep-toggle" class="btn-primary" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="measurement-sweep-menu">Start Sweep</button>
+                                                <div class="measurement-workflow-menu-trigger">
+                                                    <button id="measurement-sweep-toggle" class="btn-primary" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="measurement-sweep-menu">Start Sweep</button>
+                                                    <span class="measurement-repeat-help">Run Single Sweep.</span>
+                                                </div>
                                                 <div id="measurement-sweep-menu" class="measurement-workflow-menu-panel hidden" aria-labelledby="measurement-sweep-toggle">
                                                     <div class="measurement-workflow-menu-choice measurement-workflow-channel-choice">
                                                         <span class="measurement-workflow-menu-label">L / R / Stereo</span>
-                                                        <span class="measurement-repeat-help">Run Single Sweep.</span>
                                                         <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" role="group" aria-label="Single sweep speaker selection">
                                                             <button type="button" class="measurement-chip is-active" data-measurement-channel="left">L</button>
                                                             <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
@@ -1382,7 +1384,7 @@
     <script src="/static/measurement_graph.js?v=0.9.13"></script>
     <script src="/static/measurement_flows.js?v=0.9.16"></script>
     <script src="/static/radio.js?v=0.9.15"></script>
-    <script src="/static/app.js?v=0.9.88"></script>
+    <script src="/static/app.js?v=0.9.89"></script>
     <script src="/static/streaming.js?v=0.9.54"></script>
 </body>
 </html>

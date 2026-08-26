@@ -13,13 +13,16 @@ const measurementCss = fs.readFileSync(path.join(root, 'static', 'css', '_measur
 const responsiveCss = fs.readFileSync(path.join(root, 'static', 'css', '_responsive.css'), 'utf8');
 
 assert.match(index, /<h4 class="measurement-workflow-label">Measurements<\/h4>/);
-assert.match(index, /id="measurement-sweep-toggle"[^>]*>Start Sweep<\/button>/);
+assert.match(index, /<div class="measurement-workflow-menu-trigger">\s*<button id="measurement-sweep-toggle"[^>]*>Start Sweep<\/button>\s*<span class="measurement-repeat-help">Run Single Sweep\.<\/span>/);
 assert.match(index, /id="measurement-sweep-menu"[^>]*class="[^"]*hidden[^"]*"/);
 assert.match(index, /L \/ R \/ Stereo/);
 assert.match(index, /data-measurement-channel="left">L<\/button>/);
 assert.match(index, /data-measurement-channel="right">R<\/button>/);
 assert.match(index, /data-measurement-channel="stereo">Stereo<\/button>/);
-assert.match(index, /Run Single Sweep\./);
+const channelBlockStart = index.indexOf('measurement-workflow-channel-choice');
+const channelBlockEnd = index.indexOf('measurement-workflow-menu-choice">', channelBlockStart + 1);
+assert.ok(channelBlockStart >= 0 && channelBlockEnd > channelBlockStart, 'channel choice block is present');
+assert.doesNotMatch(index.slice(channelBlockStart, channelBlockEnd), /Run Single Sweep\./);
 assert.match(index, /id="measurement-repeat-start"[^>]*>Start LR Repeat<\/button>/);
 assert.match(index, /Repeated L\/R sweeps for more precision\./);
 assert.match(index, /id="measurement-hybrid-open"[^>]*>Advanced<\/button>/);
@@ -44,6 +47,7 @@ assert.ok(mobileImportRule, 'mobile library import rule is present');
 assert.doesNotMatch(mobileImportRule, /font-size:\s*0(?:\s*;|\s*$)/);
 
 assert.match(measurementCss, /\.measurement-workflow-menu-panel/);
+assert.match(measurementCss, /\.measurement-workflow-menu-trigger\s*\{[\s\S]*?display:\s*grid/);
 assert.match(responsiveCss, /\.measurement-workflow-menu-panel[\s\S]*?position:\s*static/);
 
 console.log('measurement UI structure tests: ok');

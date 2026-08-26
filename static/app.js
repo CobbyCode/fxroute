@@ -9862,12 +9862,17 @@ function syncMeasurementSweepButton() {
     const hybridWizard = measurementState.hybridWizard || {};
     const hybridButtonHost = elements.measurementHybridHeaderActions;
     const sweepMenuHost = elements.measurementSweepMenu?.parentElement;
+    const sweepMenuTrigger = elements.measurementSweepToggleBtn.closest('.measurement-workflow-menu-trigger');
     const shouldShowHybridCancel = !!hybridWizard.running && !!hybridWizard.open;
 
     if (shouldShowHybridCancel && hybridButtonHost && !hybridButtonHost.contains(elements.measurementSweepToggleBtn)) {
         hybridButtonHost.append(elements.measurementSweepToggleBtn);
     } else if (!shouldShowHybridCancel && sweepMenuHost && !sweepMenuHost.contains(elements.measurementSweepToggleBtn)) {
-        sweepMenuHost.insertBefore(elements.measurementSweepToggleBtn, elements.measurementSweepMenu);
+        if (sweepMenuTrigger) {
+            sweepMenuTrigger.insertBefore(elements.measurementSweepToggleBtn, sweepMenuTrigger.firstChild);
+        } else {
+            sweepMenuHost.insertBefore(elements.measurementSweepToggleBtn, elements.measurementSweepMenu);
+        }
     }
 
     elements.measurementSweepToggleBtn.disabled = !!calibrationBusy;

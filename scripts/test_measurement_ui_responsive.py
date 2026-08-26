@@ -183,7 +183,10 @@ def _run():
                     page.locator("#measurement-repeat-start").inner_text(),
                     page.locator("#measurement-hybrid-open").inner_text(),
                 ] == ["L", "R", "Stereo", "Start LR Repeat", "Advanced"]
-                assert "L / R / Stereo\nRun Single Sweep." in page.locator(".measurement-workflow-menu-choice").nth(0).inner_text()
+                assert page.locator(".measurement-workflow-menu-trigger").inner_text() == (
+                    "Start Sweep\nRun Single Sweep."
+                )
+                assert "Run Single Sweep." not in page.locator(".measurement-workflow-menu-choice").nth(0).inner_text()
                 assert page.locator(".measurement-workflow-menu-choice").nth(1).inner_text() == (
                     "Start LR Repeat\nRepeated L/R sweeps for more precision."
                 )
@@ -206,6 +209,9 @@ def _run():
                 page.locator("#measurement-hybrid-panel").wait_for(state="visible")
                 page.locator("#measurement-hybrid-close").click()
                 assert page.evaluate("document.activeElement?.id") == "measurement-sweep-toggle"
+                assert page.locator("#measurement-sweep-toggle").evaluate(
+                    "element => element.parentElement?.classList.contains('measurement-workflow-menu-trigger')"
+                )
                 checks += 2
 
                 for channel in ("left", "right", "stereo"):
