@@ -50,6 +50,7 @@ from ..jobs import (
     _capture_auto_sub_playback_gain,
     router,
 )
+from ..scoring import _validate_auto_sub_target_curve_snapshot
 from .optimize import _run_auto_sub_optimize
 from .optimize_22 import _run_auto_sub_22_optimize
 from .optimize_22_stereo import _run_auto_sub_22_stereo_optimize

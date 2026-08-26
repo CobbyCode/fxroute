@@ -20,6 +20,7 @@ from uuid import uuid4
 from ..candidates import (
     _auto_sub_22_candidate_subwoofers,
     _auto_sub_22_global_config,
+    _auto_sub_22_stereo_name,
     _auto_sub_22_sub,
     _auto_sub_22_verify_alignment,
     _auto_sub_apply_candidate,
@@ -27,6 +28,7 @@ from ..candidates import (
     _auto_sub_fine_delay_candidates,
     _auto_sub_opposite_polarity,
     _auto_sub_polarity_decision,
+    _restore_auto_sub_original_config,
     _auto_sub_snapshot_copy,
     _auto_sub_step_ms,
     _auto_sub_sweep_profile,
