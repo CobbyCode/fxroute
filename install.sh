@@ -1937,6 +1937,43 @@ ensure_dbus_send_binary() {
   fi
 }
 
+ensure_firewall_cmd_binary() {
+  # firewall-cmd lives in different packages per distro.
+  # Fedora/RHEL: firewalld (pre-installed on most server installs).
+  # Debian/Ubuntu: firewalld.
+  # openSUSE: firewalld.
+  # Arch/Manjano: firewalld.
+  local pkg=""
+  local firewall_pkg=""
+
+  command -v firewall-cmd >/dev/null 2>&1 && return 0
+
+  case "$PACKAGE_MANAGER" in
+    apt)       firewall_pkg="firewalld" ;;
+    dnf)       firewall_pkg="firewalld" ;;
+    zypper)    firewall_pkg="firewalld" ;;
+    pacman)    firewall_pkg="firewalld" ;;
+    *)
+      warn "firewall-cmd is missing and the package manager is unknown; FXRoute will skip firewall configuration"
+      return 0
+      ;;
+  esac
+
+  if package_installed "$firewall_pkg"; then
+    log "Found firewall-cmd package: $firewall_pkg"
+    return 0
+  fi
+
+  pkg="$firewall_pkg"
+  log "installing firewall-cmd (from package '$pkg', distro: $PACKAGE_MANAGER)"
+  if pkg_install "$pkg"; then
+    command -v firewall-cmd >/dev/null 2>&1 && pass "firewall-cmd available via $pkg" \
+      || warn "Package '$pkg' installed but firewall-cmd binary is still missing"
+  else
+    warn "Could not install '$pkg' for firewall-cmd; FXRoute will skip firewall configuration"
+  fi
+}
+
 install_network_library_helper() {
   local helper_src="$INSTALL_ROOT/scripts/fxroute-cifs-mount"
   local helper_path="/usr/local/sbin/fxroute-cifs-mount"
@@ -3276,6 +3313,13 @@ enable_user_session_persistence() {
     pass "user session persistence enabled (loginctl enable-linger)"
   else
     die "loginctl enable-linger failed; refusing to install a headless FXRoute service without persistent user-session support"
+  fi
+
+  # On a headless system, linger alone does not start the user manager.
+  # Explicitly trigger it so the session bus appears promptly.
+  local manager_unit="user@${FXROUTE_TARGET_UID}.service"
+  if "${SUDO_CMD[@]}" systemctl start "$manager_unit" >/dev/null 2>&1; then
+    log "Started user session manager ($manager_unit)"
   fi
 
   while (( SECONDS < deadline )); do
@@ -5767,6 +5811,7 @@ main() {
   capture_lan_comfort_baseline
   ensure_native_packages
   ensure_dbus_send_binary
+  ensure_firewall_cmd_binary
   sync_project_tree
   write_install_config
   ensure_target_user_ownership
