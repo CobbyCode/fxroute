@@ -15,11 +15,13 @@ const responsiveCss = fs.readFileSync(path.join(root, 'static', 'css', '_respons
 assert.match(index, /<h4 class="measurement-workflow-label">Measurements<\/h4>/);
 assert.match(index, /id="measurement-sweep-toggle"[^>]*>Start Sweep<\/button>/);
 assert.match(index, /id="measurement-sweep-menu"[^>]*class="[^"]*hidden[^"]*"/);
-assert.match(index, /L \/ R \/ Stereo/);
-assert.match(index, /data-measurement-channel="left">L<\/button>/);
+assert.doesNotMatch(index, /L \/ R \/ Stereo/);
+assert.doesNotMatch(index, /measurement-workflow-menu-label/);
+assert.match(index, /Run Single Sweep\./);
+assert.ok(index.indexOf('measurement-channel-chip-row') < index.indexOf('Run Single Sweep.'), 'single sweep help sits below the channel chips');
+assert.ok(!index.includes('class="measurement-chip is-active" data-measurement-channel='), 'channel chip active state is not hardcoded in markup');
 assert.match(index, /data-measurement-channel="right">R<\/button>/);
 assert.match(index, /data-measurement-channel="stereo">Stereo<\/button>/);
-assert.match(index, /Run Single Sweep\./);
 assert.match(index, /id="measurement-repeat-start"[^>]*>Start LR Repeat<\/button>/);
 assert.match(index, /Repeated L\/R sweeps for more precision\./);
 assert.match(index, /id="measurement-hybrid-open"[^>]*>Advanced<\/button>/);

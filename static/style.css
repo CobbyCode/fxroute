@@ -4011,12 +4011,6 @@ body {
     gap: 0.4rem;
 }
 
-.measurement-workflow-menu-label {
-    color: var(--text-secondary);
-    font-size: 0.78rem;
-    font-weight: 700;
-}
-
 .hybrid-header-actions {
     display: flex;
     flex: 0 0 auto;
@@ -4034,6 +4028,16 @@ body {
     width: 100%;
     min-width: 0;
     justify-content: flex-start;
+}
+
+.measurement-workflow-menu-choice > .btn-secondary {
+    background: var(--accent-dim);
+    border-color: var(--accent-dim);
+}
+
+.measurement-workflow-menu-choice > .btn-secondary:hover {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    border-color: var(--accent-hover);
 }
 
 .measurement-workflow-menu-panel .measurement-channel-chip-row {
@@ -4295,9 +4299,15 @@ body {
     font-weight: 700;
 }
 
+.measurement-chip:not(.is-active):not(:disabled):hover {
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+}
+
 .measurement-chip.is-active {
-    color: #08110d;
-    background: var(--success);
+    color: #0d0d0f;
+    background: var(--accent);
     border-color: transparent;
 }
 
