@@ -217,6 +217,9 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main, "measurement_store", store),
                 patch.object(autosub.measurement, "set_audio_output_mode"),
                 patch.object(autosub.measurement, "get_audio_output_overview", return_value={}),
+                # The pre-sweep safety decision uses a fresh unclamped live
+                # master read off the loop; pin it so the candidate stays hermetic.
+                patch.object(autosub.measurement, "get_output_volume_unclamped", return_value=100),
                 patch.object(BassManagementConfig, "from_overview", return_value=runtime_config()),
                 # Pre-arm responsibility moved to _sync_dsp_runtime_for_measurement_sweep.
                 patch.object(measurement_session, "_sync_dsp_runtime_for_measurement_sweep", new_callable=AsyncMock, return_value=None),

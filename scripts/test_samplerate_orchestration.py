@@ -19,11 +19,11 @@ class PolicyReconcileTests(unittest.IsolatedAsyncioTestCase):
         state = {"active_rate": active, "force_rate": force}
         wait_results = iter(waits)
 
-        def read_status():
+        async def read_status():
             events.append(("read", dict(state)))
             return dict(state)
 
-        def write_force(rate):
+        async def write_force(rate):
             events.append(("force", rate))
             state["force_rate"] = rate
 
@@ -71,11 +71,14 @@ class PolicyReconcileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, [("read", {"active_rate": 44100, "force_rate": 44100})])
 
     async def test_callback_error_is_propagated(self):
-        def read_status():
+        async def read_status():
             raise RuntimeError("status failure")
 
         async def never_wait(rate, timeout_ms):
             self.fail("wait must not run after a status callback error")
+
+        async def write_force(rate):
+            return None
 
         with self.assertRaises(RuntimeError):
             await orchestration.reconcile_playback_samplerate(
@@ -83,7 +86,7 @@ class PolicyReconcileTests(unittest.IsolatedAsyncioTestCase):
                 reason="contract",
                 policy=orchestration.DEFAULT_POLICY,
                 read_status=read_status,
-                write_force_rate=lambda rate: None,
+                write_force_rate=write_force,
                 wait_for_alignment=never_wait,
                 pulse_sink=lambda reason: asyncio.sleep(0, result=True),
             )

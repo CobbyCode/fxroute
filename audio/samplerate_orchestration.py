@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping
 
 
-StatusReader = Callable[[], Mapping[str, Any]]
-ForceRateWriter = Callable[[int], None]
+StatusReader = Callable[[], Awaitable[Mapping[str, Any]]]
+ForceRateWriter = Callable[[int], Awaitable[None]]
 AlignmentWaiter = Callable[[int, int], Awaitable[bool]]
 SinkPulse = Callable[[str], Awaitable[bool]]
 
@@ -55,11 +55,14 @@ async def reconcile_playback_samplerate(
 ) -> bool:
     """Apply one explicit bounded playback-rate reconciliation policy.
 
-    The caller owns validation, measurement-session gates, and any runtime
-    state bookkeeping. This function only coordinates injected callbacks and
-    returns whether the sink aligned at the end of the policy.
+    All I/O callbacks (``read_status``, ``write_force_rate``) are async so
+    the reconciliation never runs subprocess work on the event loop; the
+    policy logic itself stays I/O-independent. The caller owns validation,
+    measurement-session gates, and any runtime state bookkeeping. This
+    function only coordinates injected callbacks and returns whether the
+    sink aligned at the end of the policy.
     """
-    status = read_status()
+    status = await read_status()
     active_rate = status.get("active_rate") if isinstance(status, Mapping) else None
     force_rate = status.get("force_rate") if isinstance(status, Mapping) else None
 
@@ -67,7 +70,7 @@ async def reconcile_playback_samplerate(
         return True
 
     if force_rate != expected_rate:
-        write_force_rate(expected_rate)
+        await write_force_rate(expected_rate)
 
     aligned = await wait_for_alignment(
         expected_rate, policy.initial_alignment_timeout_ms,

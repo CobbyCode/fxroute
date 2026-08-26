@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -512,13 +513,13 @@ async def _run_auto_sub_optimize(
                 final_polarity = original_polarity
                 polarity_check.update({"accepted": False, "selected": original_polarity, "reason": "measurement_or_scoring_failed"})
 
-            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
+            await asyncio.to_thread(set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, {
                 "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
                 "sub_level_db": original_level, "sub_polarity": final_polarity,
                 "main_highpass_enabled": original_highpass,
             })
             if _dsp_runtime() is not None:
-                await _dsp_runtime().sync(get_audio_output_overview())
+                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         job["polarity_check"] = polarity_check
         job["auto_gain"] = _calculate_auto_sub_gain(
             mode=OUTPUT_MODE_SUBWOOFER_21,
@@ -544,13 +545,13 @@ async def _run_auto_sub_optimize(
         })
         gained_level = max(-24.0, min(12.0, original_level + applied_gain_delta))
         if gain_deltas:
-            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
+            await asyncio.to_thread(set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, {
                 "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
                 "sub_level_db": gained_level, "sub_polarity": final_polarity,
                 "main_highpass_enabled": original_highpass,
             })
             if _dsp_runtime() is not None:
-                await _dsp_runtime().sync(get_audio_output_overview())
+                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         gain_after_sweep = await _measure_auto_sub_combined_candidate(
             delay_ms=applied_delay, job=job, candidate_index=1, total=1,
             sweep_index_start=total + 1, sweep_total=total + 2, stage="gain_after", fc=fc,
@@ -578,13 +579,13 @@ async def _run_auto_sub_optimize(
         correction_after = None
         correction_verdict = None
         if not gain_verdict["accepted"]:
-            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
+            await asyncio.to_thread(set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, {
                 "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
                 "sub_level_db": original_level, "sub_polarity": final_polarity,
                 "main_highpass_enabled": original_highpass,
             })
             if _dsp_runtime() is not None:
-                await _dsp_runtime().sync(get_audio_output_overview())
+                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         else:
             correction_plan = _auto_sub_gain_response_correction(
                 job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_21,
@@ -600,13 +601,13 @@ async def _run_auto_sub_optimize(
                     "step1_retained": True,
                 }
             elif abs(correction_delta) > 0.0005:
-                set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
+                await asyncio.to_thread(set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, {
                     "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
                     "sub_level_db": corrected_level, "sub_polarity": final_polarity,
                     "main_highpass_enabled": original_highpass,
                 })
                 if _dsp_runtime() is not None:
-                    await _dsp_runtime().sync(get_audio_output_overview())
+                    await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
                 correction_sweep = await _measure_auto_sub_combined_candidate(
                     delay_ms=applied_delay, job=job, candidate_index=1, total=1,
                     sweep_index_start=total + 3, sweep_total=total + 4, stage="gain_correction_after", fc=fc,
@@ -634,13 +635,13 @@ async def _run_auto_sub_optimize(
                     final_gain_level = corrected_level
                     final_gain_sweep = correction_sweep
                 else:
-                    set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
+                    await asyncio.to_thread(set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, {
                         "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
                         "sub_level_db": gained_level, "sub_polarity": final_polarity,
                         "main_highpass_enabled": original_highpass,
                     })
                     if _dsp_runtime() is not None:
-                        await _dsp_runtime().sync(get_audio_output_overview())
+                        await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         _auto_sub_gain_log_line("AUTOGAIN_FEEDBACK", {
             "gain_after_step1": gained_level,
             "score_before": _auto_sub_gain_log_score(job["auto_gain"]),

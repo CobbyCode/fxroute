@@ -216,7 +216,7 @@ class MeasurementSampleRateSession:
         self._rate_changed = False
         self.entry_in_progress = True
         try:
-            status = get_samplerate_status()
+            status = await asyncio.to_thread(get_samplerate_status)
             self.original_force_rate = int(status.get("force_rate") or 0)
         except Exception as exc:
             logger.warning("Measurement sample-rate session could not read force-rate: %s", exc)
@@ -473,13 +473,13 @@ class MeasurementSampleRateSession:
                     playback_target_rate,
                 )
             elif self._rate_changed and not coordinator_attempted:
-                current_force_rate = _get_current_pipewire_force_rate()
+                current_force_rate = await asyncio.to_thread(_get_current_pipewire_force_rate)
                 if current_force_rate == self.measurement_rate:
                     try:
                         # Set the rate of the playback context directly. Do not
                         # briefly restore the idle/default rate first: that would
                         # create a second transition before the sink is aligned.
-                        _set_pipewire_force_rate(target_rate)
+                        await asyncio.to_thread(_set_pipewire_force_rate, target_rate)
                     except Exception as exc:
                         force_rate_owned = False
                         logger.warning("Measurement sample-rate session force-rate restore failed: %s", exc)
@@ -497,7 +497,7 @@ class MeasurementSampleRateSession:
             try:
                 runtime_restore_rate = playback_target_rate or restore_value
                 if runtime_restore_rate <= 0:
-                    status = get_samplerate_status()
+                    status = await asyncio.to_thread(get_samplerate_status)
                     runtime_restore_rate = int(
                         status.get("clock_rate")
                         or DEFAULT_SAMPLE_RATE
@@ -893,14 +893,14 @@ async def _wait_for_selected_output_effective_rate(expected_rate: int, timeout_m
     last_overview: dict = {}
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     while time.monotonic() <= deadline:
-        last_overview = get_audio_output_overview()
+        last_overview = await asyncio.to_thread(get_audio_output_overview)
         output_mode = last_overview.get("output_mode") or {}
         effective_rate = output_mode.get("effective_output_rate")
         if isinstance(effective_rate, int) and effective_rate == expected_rate:
             return True, last_overview
         await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
     if not last_overview:
-        last_overview = get_audio_output_overview()
+        last_overview = await asyncio.to_thread(get_audio_output_overview)
     return False, last_overview
 
 
@@ -975,14 +975,14 @@ async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None
     dsp_orchestrator = services.get_dsp_orchestrator()
     if _dsp_runtime() is None:
         return None
-    overview = get_audio_output_overview()
+    overview = await asyncio.to_thread(get_audio_output_overview)
     output_mode = overview.get("output_mode") or {}
     if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
         return None
     mode_num = "2.2 Stereo Bass" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
     output_key = str(output_mode.get("effective_output_key") or "").strip()
 
-    samplerate_status = get_samplerate_status()
+    samplerate_status = await asyncio.to_thread(get_samplerate_status)
     previous_force_rate = samplerate_status.get("force_rate")
     previous_active_rate = samplerate_status.get("active_rate")
     before = _dsp_runtime().snapshot()
@@ -1007,9 +1007,11 @@ async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None
         previous_force_rate,
     )
     if previous_active_rate != measurement_rate:
-        _pulse_suspend_sink_for_samplerate(output_key, "measurement-pre-arm")
+        await asyncio.to_thread(_pulse_suspend_sink_for_samplerate, output_key, "measurement-pre-arm")
 
-    overview = _audio_output_overview_with_effective_rate(get_audio_output_overview(), measurement_rate)
+    overview = _audio_output_overview_with_effective_rate(
+        await asyncio.to_thread(get_audio_output_overview), measurement_rate,
+    )
     await dsp_orchestrator.sync_runtime(overview, reason="measurement-pre-arm")
 
     aligned, overview = await _wait_for_selected_output_effective_rate(measurement_rate, timeout_ms=3500)
@@ -1023,7 +1025,7 @@ async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None
 
     await dsp_orchestrator.sync_runtime(overview, reason="measurement-pre-arm")
     after = _dsp_runtime().snapshot()
-    samplerate_after = get_samplerate_status()
+    samplerate_after = await asyncio.to_thread(get_samplerate_status)
     after_config = after.get("config") or {}
     runtime_config = BassManagementConfig.from_overview(overview)
     helper_rate = after_config.get("sample_rate")

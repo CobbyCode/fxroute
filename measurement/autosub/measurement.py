@@ -20,7 +20,7 @@ from audio.samplerate import (
     get_audio_output_overview,
     set_audio_output_mode,
 )
-from audio.system_volume import get_status_volume
+from audio.system_volume import get_output_volume_unclamped
 from dsp.runtime import BassManagementConfig
 
 from .candidates import (
@@ -46,6 +46,25 @@ from .jobs import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _auto_sub_fresh_master_percent() -> int:
+    """Live, unclamped sink master percent for the pre-sweep peak safety.
+
+    The non-blocking status cache is not authoritative for a safety
+    decision: a stale low value would under-estimate the DAC gain and could
+    admit a sweep that clips.  A failed live read conservatively assumes
+    100% (the largest gain FXRoute itself can apply), so a stale or
+    unreadable low master never releases a potentially dangerous sweep.
+    """
+    try:
+        return await asyncio.to_thread(get_output_volume_unclamped)
+    except Exception as exc:
+        logger.warning(
+            "Auto-sub: live master volume read failed; assuming 100%% for peak safety: %s",
+            exc,
+        )
+        return 100
 
 
 async def _measure_auto_sub_candidate(
@@ -141,7 +160,9 @@ async def _measure_auto_sub_candidate(
                 sub1_polarity=sub1_polarity,
                 sub2_polarity=sub2_polarity,
             )
-            persisted_overview = set_audio_output_mode(output_mode, sub_config, subwoofers_config)
+            persisted_overview = await asyncio.to_thread(
+                set_audio_output_mode, output_mode, sub_config, subwoofers_config,
+            )
         else:
             sub_config = {
                 "crossover_frequency_hz": fc,
@@ -150,7 +171,9 @@ async def _measure_auto_sub_candidate(
                 "sub_polarity": original_polarity,
                 "main_highpass_enabled": original_highpass,
             }
-            persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
+            persisted_overview = await asyncio.to_thread(
+                set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, sub_config,
+            )
         if _dsp_runtime() is not None:
             await _auto_sub_sync_dsp_runtime(
                 output_mode=output_mode,
@@ -216,16 +239,20 @@ async def _measure_auto_sub_candidate(
             "scan": stage,
         })
     playback_gain = _auto_sub_job_playback_gain(job)
-    master_percent = get_status_volume()
+    master_percent = await _auto_sub_fresh_master_percent()
     # The sink applies the master volume as a float-domain gain before the
     # float→integer conversion; its transfer curve is the measured PA cubic
     # (percent/100)**3, so the prediction folds in the resulting linear gain.
-    sink_gain = auto_sub_sink_gain_from_master_percent(master_percent)
+    # clamp_upper=False keeps an externally raised >100% master from being
+    # under-estimated by the safety check.
+    sink_gain = auto_sub_sink_gain_from_master_percent(master_percent, clamp_upper=False)
     stage_peak_prediction = _auto_sub_stage_peak_prediction(
         sweep_profile=auto_sub_sweep_profile,
         sample_rate=auto_sub_rate,
         channel=channel,
-        config=BassManagementConfig.from_overview(get_audio_output_overview()),
+        config=BassManagementConfig.from_overview(
+            await asyncio.to_thread(get_audio_output_overview),
+        ),
         playback_gain=playback_gain,
         sink_gain=sink_gain,
     )

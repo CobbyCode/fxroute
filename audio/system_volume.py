@@ -57,7 +57,7 @@ _status_volume_publish_lock = threading.Lock()
 _volume_monitor_task: asyncio.Task[Any] | None = None
 
 
-def volume_percent_to_linear_gain(percent: int | float) -> float:
+def volume_percent_to_linear_gain(percent: int | float, *, clamp_upper: bool = True) -> float:
     """Return the real linear gain PipeWire applies for a master percent.
 
     The FXRoute master percent is the PipeWire/Pulse volume fraction times
@@ -68,9 +68,17 @@ def volume_percent_to_linear_gain(percent: int | float) -> float:
     pipewire 1.6.8): five master settings measured on the sink monitor match
     the cubic curve exactly. Do not use ``percent / 100`` as a linear gain in
     peak or headroom calculations.
+
+    ``clamp_upper=False`` keeps the FXRoute-internal 100% cap out of the
+    conversion (the lower bound is always enforced). FXRoute itself limits
+    the master to 100%, but PipeWire can be set above 100% externally (e.g.
+    unity-backed clients); a safety decision must not under-estimate the
+    gain the sink actually applies, so safety reads pass ``clamp_upper=False``.
     """
-    normalized = max(0.0, min(100.0, float(percent))) / 100.0
-    return normalized ** 3
+    value = max(0.0, float(percent))
+    if clamp_upper:
+        value = min(100.0, value)
+    return (value / 100.0) ** 3
 
 
 def volume_percent_to_db(percent: int | float, floor_db: float = -80.0) -> float:
@@ -88,10 +96,10 @@ def volume_db_to_percent(volume_db: int | float) -> int:
     return max(0, min(100, round(100.0 * (gain ** (1.0 / 3.0)))))
 
 
-def _get_target_volume(target: str) -> int:
+def _get_target_volume(target: str, *, clamp_upper: bool = True) -> int:
     """Live, timeout-bounded wpctl read (never served from a cache)."""
     output = _run_command(["wpctl", "get-volume", target])
-    return _parse_wpctl_volume(output)
+    return _parse_wpctl_volume(output, clamp_upper=clamp_upper)
 
 
 def _set_target_volume(target: str, percent: int | float) -> int:
@@ -132,18 +140,32 @@ def _run_command(args: list[str]) -> str:
     return result.stdout.strip()
 
 
-def _parse_wpctl_volume(output: str) -> int:
+def _parse_wpctl_volume(output: str, *, clamp_upper: bool = True) -> int:
     match = re.search(r"Volume:\s*([0-9]*\.?[0-9]+)", output)
     if not match:
         raise SystemVolumeError(f"Unable to parse volume from wpctl output: {output!r}")
     normalized = float(match.group(1))
     percent = round(normalized * 100)
-    return max(0, min(100, percent))
+    if clamp_upper:
+        return max(0, min(100, percent))
+    return max(0, percent)
 
 
 def get_output_volume() -> int:
     """Live system output volume (timeout-bounded wpctl read)."""
     return _get_target_volume(TARGET_SINK)
+
+
+def get_output_volume_unclamped() -> int:
+    """Live sink master percent without the 100% cap (safety reads only).
+
+    FXRoute's regular master limit is 100%, but PipeWire can be set above
+    100% externally (e.g. unity-backed clients). A safety decision must not
+    under-estimate the gain the sink applies, so this read reports the real
+    percent. The canonical clamped :func:`get_output_volume` remains the
+    UI/master value; change only the safety read, never the master limit.
+    """
+    return _get_target_volume(TARGET_SINK, clamp_upper=False)
 
 
 def set_output_volume(percent: int | float) -> int:

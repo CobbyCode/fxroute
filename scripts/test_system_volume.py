@@ -92,6 +92,56 @@ class SystemVolumeCommandTests(unittest.TestCase):
             ):
                 self.assertEqual(system_volume.get_output_volume(), expected)
 
+    def test_unclamped_read_reports_above_100(self):
+        # PipeWire can be set above 100% externally (unity); the safety read
+        # must report the real percent instead of under-estimating 100.
+        with mock.patch(
+            "audio.system_volume.subprocess.run",
+            return_value=_completed(0, "Volume: 1.25\n"),
+        ) as run:
+            self.assertEqual(system_volume.get_output_volume_unclamped(), 125)
+        run.assert_called_once()
+
+    def test_unclamped_read_stays_live_and_clamped_api_is_unchanged(self):
+        with mock.patch(
+            "audio.system_volume.subprocess.run",
+            return_value=_completed(0, "Volume: 1.25\n"),
+        ) as run:
+            self.assertEqual(system_volume.get_output_volume_unclamped(), 125)
+            self.assertEqual(system_volume.get_output_volume_unclamped(), 125)
+            # Exactly two reads: the safety read is never cached either.
+            self.assertEqual(run.call_count, 2)
+
+    def test_unclamped_read_rounds_percent(self):
+        with mock.patch(
+            "audio.system_volume.subprocess.run",
+            return_value=_completed(0, "Volume: 1.048\n"),
+        ):
+            self.assertEqual(system_volume.get_output_volume_unclamped(), 105)
+
+    def test_volume_percent_to_linear_gain_default_still_clamps_above_100(self):
+        self.assertEqual(system_volume.volume_percent_to_linear_gain(100), 1.0)
+        self.assertEqual(system_volume.volume_percent_to_linear_gain(150), 1.0)
+
+    def test_volume_percent_to_linear_gain_unclamped_keeps_real_gain(self):
+        # Safety semantics: a >100% master must not be under-estimated.
+        self.assertEqual(
+            system_volume.volume_percent_to_linear_gain(150, clamp_upper=False),
+            1.5 ** 3,
+        )
+        self.assertEqual(
+            system_volume.volume_percent_to_linear_gain(125, clamp_upper=False),
+            1.25 ** 3,
+        )
+        self.assertEqual(
+            system_volume.volume_percent_to_linear_gain(-5, clamp_upper=False),
+            0.0,
+        )
+        self.assertEqual(
+            system_volume.volume_percent_to_linear_gain(50, clamp_upper=False),
+            0.125,
+        )
+
     def test_set_writes_then_reads_back_fresh(self):
         calls = []
 

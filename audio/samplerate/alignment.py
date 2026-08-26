@@ -63,7 +63,7 @@ async def wait_for_samplerate_alignment(
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     while time.monotonic() <= deadline:
         try:
-            samplerate_status = get_samplerate_status()
+            samplerate_status = await asyncio.to_thread(get_samplerate_status)
         except Exception:
             samplerate_status = {}
         sink_rate = samplerate_status.get("active_rate")
@@ -128,7 +128,8 @@ async def suspend_resume_playback_sink(
         return False
     logger.info("Sink suspend/resume START: reason=%s output_key=%s", reason, output_key)
     try:
-        pulse_suspend_sink_for_samplerate(output_key, reason)
+        # pactl suspend pulses and the settle sleep run in a worker thread.
+        await asyncio.to_thread(pulse_suspend_sink_for_samplerate, output_key, reason)
     except Exception as exc:
         logger.error("Sink suspend/resume FAILED: reason=%s output_key=%s error=%s", reason, output_key, exc)
         return False
@@ -220,16 +221,16 @@ async def ensure_playback_samplerate_force(
     pulse_attempted = False
     pulse_succeeded = False
 
-    def read_status() -> dict:
+    async def read_status() -> dict:
         nonlocal initial_status
         try:
-            initial_status = get_samplerate_status()
+            initial_status = await asyncio.to_thread(get_samplerate_status)
         except Exception:
             initial_status = {}
         return initial_status
 
-    def write_force_rate(rate: int) -> None:
-        set_pipewire_force_rate(rate)
+    async def write_force_rate(rate: int) -> None:
+        await asyncio.to_thread(set_pipewire_force_rate, rate)
         logger.info(
             "Playback samplerate force-rate applied: reason=%s expected_rate=%s active_rate=%s previous_force_rate=%s",
             reason,
@@ -318,7 +319,7 @@ def ensure_rate_renegotiation_trigger_file(sample_rate: int) -> Path | None:
 
 async def trigger_idle_sink_renegotiation(sample_rate: int) -> bool:
     """Renegotiate an idle/suspended sink to the forced rate with a silent stream."""
-    path = ensure_rate_renegotiation_trigger_file(sample_rate)
+    path = await asyncio.to_thread(ensure_rate_renegotiation_trigger_file, sample_rate)
     if path is None:
         return False
     try:
@@ -353,7 +354,7 @@ async def reconcile_transition_sink_rate(
     stream, the only proven renegotiation trigger on an idle graph.
     """
     try:
-        status = dict(get_samplerate_status())
+        status = dict(await asyncio.to_thread(get_samplerate_status))
     except Exception:
         status = {}
     if playback_rate_aligned(status, target_rate):
@@ -369,7 +370,7 @@ async def reconcile_transition_sink_rate(
     if not aligned:
         return False
     try:
-        status = dict(get_samplerate_status())
+        status = dict(await asyncio.to_thread(get_samplerate_status))
     except Exception:
         status = {}
     return bool(playback_rate_aligned(status, target_rate))

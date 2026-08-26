@@ -114,7 +114,7 @@ async def start_auto_sub_optimize(
             raise HTTPException(status_code=400, detail="Auto Sub Optimize requires 2.1 or 2.2 Subwoofer output mode")
         auto_sub_playback_gain = _capture_auto_sub_playback_gain()
 
-        config = BassManagementConfig.from_overview(get_audio_output_overview())
+        config = BassManagementConfig.from_overview(await asyncio.to_thread(get_audio_output_overview))
         fc = config.crossover_frequency_hz
         current_alignment = config.sub_alignment_ms
         current_sub2_alignment = config.sub2_alignment_ms if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES else 0.0

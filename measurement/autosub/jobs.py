@@ -130,14 +130,16 @@ async def cancel_auto_sub_optimize_job(job_id: str):
 class AutoSubPeakSafetyError(RuntimeError):
     """Abort the complete AutoSub run after a native-DSP peak safety failure."""
 
-def auto_sub_sink_gain_from_master_percent(percent: int | float) -> float:
+def auto_sub_sink_gain_from_master_percent(percent: int | float, *, clamp_upper: bool = True) -> float:
     """Linear gain the hardware sink applies for a master percent.
 
     Same PipeWire/Pulse cubic curve as
     :func:`audio.system_volume.volume_percent_to_linear_gain` (verified on
-    the .104 UMC204HD sink: 31% -> -30.5 dB, 10% -> -60.0 dB).
+    the .104 UMC204HD sink: 31% -> -30.5 dB, 10% -> -60.0 dB).  The peak
+    safety read passes ``clamp_upper=False`` so an externally raised >100%
+    master is never under-estimated.
     """
-    return volume_percent_to_linear_gain(percent)
+    return volume_percent_to_linear_gain(percent, clamp_upper=clamp_upper)
 
 def _auto_sub_stage_peak_prediction(
     *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,

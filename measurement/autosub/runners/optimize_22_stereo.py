@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import logging
@@ -575,7 +576,7 @@ async def _run_auto_sub_22_stereo_optimize(
 
         derived_delays: dict[str, Any] = {}
         try:
-            config = BassManagementConfig.from_overview(get_audio_output_overview())
+            config = BassManagementConfig.from_overview(await asyncio.to_thread(get_audio_output_overview))
             derived_delays = {
                 "derived_main_delay_ms": round(config.derived_main_delay_ms, 2),
                 "derived_sub1_delay_ms": round(config.derived_sub1_delay_ms, 2),
@@ -682,7 +683,8 @@ async def _run_auto_sub_22_stereo_optimize(
             left_delta_db=gain_deltas.get("left", 0.0), right_delta_db=gain_deltas.get("right", 0.0),
         )
         if gain_deltas:
-            set_audio_output_mode(
+            await asyncio.to_thread(
+                set_audio_output_mode,
                 OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(gain_snapshot),
                 _auto_sub_22_candidate_subwoofers(
                     gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
@@ -690,7 +692,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 ),
             )
             if _dsp_runtime() is not None:
-                await _dsp_runtime().sync(get_audio_output_overview())
+                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         gain_after_left = await _measure_auto_sub_candidate(
             delay_ms=best_left, job=job, candidate_index=1, total=2, stage="gain_after", fc=fc,
             input_id=input_id, channel="left", mic_input_channel=mic_input_channel,
@@ -744,7 +746,8 @@ async def _run_auto_sub_22_stereo_optimize(
         correction_verdict = None
         stereo_probe_plan = None
         if not step1_retained:
-            set_audio_output_mode(
+            await asyncio.to_thread(
+                set_audio_output_mode,
                 OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(polarity_snapshot),
                 _auto_sub_22_candidate_subwoofers(
                     polarity_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
@@ -752,11 +755,12 @@ async def _run_auto_sub_22_stereo_optimize(
                 ),
             )
             if _dsp_runtime() is not None:
-                await _dsp_runtime().sync(get_audio_output_overview())
+                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         elif not all(accepted_step1_sides.values()):
             # Stereo channels have independent Gain controls.  A regression on
             # one side must not discard a measured improvement on the other.
-            set_audio_output_mode(
+            await asyncio.to_thread(
+                set_audio_output_mode,
                 OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(final_gain_snapshot),
                 _auto_sub_22_candidate_subwoofers(
                     final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
@@ -764,7 +768,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 ),
             )
             if _dsp_runtime() is not None:
-                await _dsp_runtime().sync(get_audio_output_overview())
+                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
             correction_verdict = {
                 "accepted": False,
                 "reason": "Retained improved Stereo side; restored regressed side",
@@ -800,7 +804,8 @@ async def _run_auto_sub_22_stereo_optimize(
                     gain_snapshot, left_delta_db=correction_deltas.get("left", 0.0),
                     right_delta_db=correction_deltas.get("right", 0.0),
                 )
-                set_audio_output_mode(
+                await asyncio.to_thread(
+                    set_audio_output_mode,
                     OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(correction_snapshot),
                     _auto_sub_22_candidate_subwoofers(
                         correction_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
@@ -808,7 +813,7 @@ async def _run_auto_sub_22_stereo_optimize(
                     ),
                 )
                 if _dsp_runtime() is not None:
-                    await _dsp_runtime().sync(get_audio_output_overview())
+                    await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
                 correction_left = await _measure_auto_sub_candidate(
                     delay_ms=best_left, job=job, candidate_index=1, total=2,
                     stage="gain_correction_after", fc=fc, input_id=input_id, channel="left",
@@ -887,7 +892,8 @@ async def _run_auto_sub_22_stereo_optimize(
                         "channels": probe_channels, "step1_retained": True, "stereo_probe": True,
                     }
                     if not all(accepted_probe_sides.get(side, False) for side in correction_deltas):
-                        set_audio_output_mode(
+                        await asyncio.to_thread(
+                            set_audio_output_mode,
                             OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(final_gain_snapshot),
                             _auto_sub_22_candidate_subwoofers(
                                 final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
@@ -895,7 +901,7 @@ async def _run_auto_sub_22_stereo_optimize(
                             ),
                         )
                         if _dsp_runtime() is not None:
-                            await _dsp_runtime().sync(get_audio_output_overview())
+                            await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
                 else:
                     correction_verdict = _auto_sub_gain_verdict(
                         gain_after, correction_after, OUTPUT_MODE_SUBWOOFER_22_STEREO,
@@ -908,7 +914,8 @@ async def _run_auto_sub_22_stereo_optimize(
                         final_gain_snapshot = correction_snapshot
                         final_gain_left, final_gain_right = correction_left, correction_right
                     else:
-                        set_audio_output_mode(
+                        await asyncio.to_thread(
+                            set_audio_output_mode,
                             OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(gain_snapshot),
                             _auto_sub_22_candidate_subwoofers(
                                 gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
@@ -916,7 +923,7 @@ async def _run_auto_sub_22_stereo_optimize(
                             ),
                         )
                         if _dsp_runtime() is not None:
-                            await _dsp_runtime().sync(get_audio_output_overview())
+                            await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         _auto_sub_gain_log_line("AUTOGAIN_FEEDBACK", {
             "gain_after_step1": {
                 "left": float(_auto_sub_22_sub(gain_snapshot, "sub1").get("level_db", 0.0)),

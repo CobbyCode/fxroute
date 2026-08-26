@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -494,9 +495,11 @@ async def _run_auto_sub_22_optimize(
                 polarity_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
                 active_subs=("sub1", "sub2"),
             )
-            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(polarity_snapshot), rollback_subs)
+            await asyncio.to_thread(
+                set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(polarity_snapshot), rollback_subs,
+            )
             if _dsp_runtime() is not None:
-                await _dsp_runtime().sync(get_audio_output_overview())
+                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         else:
             correction_plan = _auto_sub_gain_response_correction(
                 job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_22,
@@ -514,15 +517,15 @@ async def _run_auto_sub_22_optimize(
                 correction_snapshot = _auto_sub_22_snapshot_with_gain(
                     gain_snapshot, left_delta_db=correction_delta, right_delta_db=correction_delta,
                 )
-                set_audio_output_mode(
-                    OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(correction_snapshot),
+                await asyncio.to_thread(
+                    set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(correction_snapshot),
                     _auto_sub_22_candidate_subwoofers(
                         correction_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
                         active_subs=("sub1", "sub2"),
                     ),
                 )
                 if _dsp_runtime() is not None:
-                    await _dsp_runtime().sync(get_audio_output_overview())
+                    await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
                 correction_sweep = await _measure_auto_sub_combined_candidate(
                     delay_ms=best_sub1, job=job, candidate_index=1, total=1,
                     sweep_index_start=matrix_sweep_total + 3, sweep_total=matrix_sweep_total + 4,
@@ -551,15 +554,15 @@ async def _run_auto_sub_22_optimize(
                     final_gain_snapshot = correction_snapshot
                     final_gain_sweep = correction_sweep
                 else:
-                    set_audio_output_mode(
-                        OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(gain_snapshot),
+                    await asyncio.to_thread(
+                        set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(gain_snapshot),
                         _auto_sub_22_candidate_subwoofers(
                             gain_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
                             active_subs=("sub1", "sub2"),
                         ),
                     )
                     if _dsp_runtime() is not None:
-                        await _dsp_runtime().sync(get_audio_output_overview())
+                        await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         _auto_sub_gain_log_line("AUTOGAIN_FEEDBACK", {
             "gain_after_step1": {
                 "sub1": float(_auto_sub_22_sub(gain_snapshot, "sub1").get("level_db", 0.0)),
@@ -609,7 +612,7 @@ async def _run_auto_sub_22_optimize(
 
         derived_delays: dict[str, Any] = {}
         try:
-            config = BassManagementConfig.from_overview(get_audio_output_overview())
+            config = BassManagementConfig.from_overview(await asyncio.to_thread(get_audio_output_overview))
             derived_delays = {
                 "derived_main_delay_ms": round(config.derived_main_delay_ms, 2),
                 "derived_sub1_delay_ms": round(config.derived_sub1_delay_ms, 2),

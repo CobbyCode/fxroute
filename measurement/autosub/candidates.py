@@ -42,13 +42,14 @@ async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, 
             if mode in OUTPUT_MODE_SUBWOOFER_22_MODES
             else original_config_snapshot.get("subwoofer") or {}
         )
-        set_audio_output_mode(
+        await asyncio.to_thread(
+            set_audio_output_mode,
             mode,
             subwoofer_config,
             original_config_snapshot.get("subwoofers") or {},
         )
         if _dsp_runtime() is not None:
-            await _dsp_runtime().sync(get_audio_output_overview())
+            await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
     except Exception:
         logger.exception("Auto-sub: failed to restore original config from snapshot")
 
@@ -71,7 +72,7 @@ async def _auto_sub_sync_dsp_runtime(
     """
     if _dsp_runtime() is None:
         return
-    overview = get_audio_output_overview()
+    overview = await asyncio.to_thread(get_audio_output_overview)
     expected = BassManagementConfig.from_overview(persisted_overview)
     actual = BassManagementConfig.from_overview(overview)
     mismatches: list[str] = []
@@ -132,8 +133,8 @@ async def _auto_sub_apply_candidate(
 ) -> bool:
     """Persist, live-sync, settle, and verify one mode-owned candidate."""
     try:
-        persisted_overview = set_audio_output_mode(
-            output_mode, global_config, subwoofers_config,
+        persisted_overview = await asyncio.to_thread(
+            set_audio_output_mode, output_mode, global_config, subwoofers_config,
         )
         if _dsp_runtime() is not None:
             await _auto_sub_sync_dsp_runtime(
@@ -141,7 +142,7 @@ async def _auto_sub_apply_candidate(
                 persisted_overview=persisted_overview,
             )
         await asyncio.sleep(0.3)
-        overview = (load_overview or get_audio_output_overview)()
+        overview = await asyncio.to_thread(load_overview or get_audio_output_overview)
         return bool(verify(overview))
     except Exception:
         logger.exception("Auto-sub: candidate apply or verification failed")
