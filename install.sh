@@ -3322,6 +3322,10 @@ enable_user_session_persistence() {
     log "Started user session manager ($manager_unit)"
   fi
 
+  # On a headless system, the user dbus socket is not auto-created without
+  # a login session.  Start dbus.service explicitly so the session bus appears.
+  user_systemctl start dbus.service >/dev/null 2>&1 || true
+
   while (( SECONDS < deadline )); do
     if [[ -d "$FXROUTE_RUNTIME_DIR" && -S "$FXROUTE_RUNTIME_DIR/bus" ]]; then
       pass "target user session bus available ($FXROUTE_RUNTIME_DIR/bus)"
