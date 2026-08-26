@@ -19,6 +19,7 @@ run_cmd and counts how often refresh/upgrade commands actually run
 across multiple pkg_install calls.
 """
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -275,6 +276,33 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
         self.assertIn("wireplumber.service", self.text)
 
     def test_headless_audio_service_selection_behavior(self):
+        # The harness forces a non-root uid regardless of the real test
+        # process, so the plain `systemctl --user` branch of user_systemctl()
+        # is reproduced deterministically (as normal user, sudo/root or CI).
+        self._assert_service_selection(
+            uid=1000,
+            expected=(
+                "systemctl --user enable --now pipewire.socket wireplumber.service pipewire-pulse.socket",
+                "systemctl --user enable --now pipewire.service wireplumber.service pipewire-pulse.service",
+                "systemctl --user enable --now pipewire.socket wireplumber.service",
+            ),
+        )
+
+    def test_headless_audio_service_selection_behavior_as_root(self):
+        # Root installs target the audio user's manager via --machine; the
+        # harness must reproduce that variant hermetically instead of
+        # depending on the uid the test suite happens to run under.
+        self._assert_service_selection(
+            uid=0,
+            target_user="fxroute-audio",
+            expected=(
+                "systemctl --user --machine=fxroute-audio@ enable --now pipewire.socket wireplumber.service pipewire-pulse.socket",
+                "systemctl --user --machine=fxroute-audio@ enable --now pipewire.service wireplumber.service pipewire-pulse.service",
+                "systemctl --user --machine=fxroute-audio@ enable --now pipewire.socket wireplumber.service",
+            ),
+        )
+
+    def _assert_service_selection(self, uid, expected, target_user="audio-user"):
         exists = _extract_function(self.text, "user_unit_exists")
         user_systemctl = _extract_function(self.text, "user_systemctl")
         body = _extract_function(self.text, "enable_user_audio_services")
@@ -282,11 +310,19 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
 {exists}
 {user_systemctl}
 {body}
+FXROUTE_TARGET_USER={target_user}
+FXROUTE_RUNTIME_DIR=/run/user/1000
 SYSTEMCTL_CALLS=
 PASS=0; FAIL=0
 pass() {{ PASS=$((PASS+1)); }}
 fail() {{ FAIL=$((FAIL+1)); }}
 warn() {{ echo "WARN $*"; }}
+id() {{
+  case "$*" in
+    '-u') printf '{uid}\n' ;;
+    *) command id "$@" ;;
+  esac
+}}
 systemctl() {{ SYSTEMCTL_CALLS="$SYSTEMCTL_CALLS|systemctl $*"; return 0; }}
 '''
 
@@ -309,7 +345,7 @@ systemctl() {{ SYSTEMCTL_CALLS="$SYSTEMCTL_CALLS|systemctl $*"; return 0; }}
         stdout = run(sockets_only)
         calls = stdout.split("CALLS:")[-1].strip()
         self.assertIn(
-            "systemctl --user enable --now pipewire.socket wireplumber.service pipewire-pulse.socket",
+            expected[0],
             calls,
         )
         self.assertNotIn("pipewire.service", calls)
@@ -326,7 +362,7 @@ systemctl() {{ SYSTEMCTL_CALLS="$SYSTEMCTL_CALLS|systemctl $*"; return 0; }}
         stdout = run(services_only)
         calls = stdout.split("CALLS:")[-1].strip()
         self.assertIn(
-            "systemctl --user enable --now pipewire.service wireplumber.service pipewire-pulse.service",
+            expected[1],
             calls,
         )
 
@@ -341,7 +377,7 @@ systemctl() {{ SYSTEMCTL_CALLS="$SYSTEMCTL_CALLS|systemctl $*"; return 0; }}
         stdout = run(pulse_absent)
         calls = stdout.split("CALLS:")[-1].strip()
         self.assertIn(
-            "systemctl --user enable --now pipewire.socket wireplumber.service",
+            expected[2],
             calls,
         )
         self.assertNotIn("pipewire-pulse", calls)
@@ -427,6 +463,141 @@ pkg_install {' '.join(packages)}
         self.assertEqual(self._count_log_lines(log, "pacman -Syu --needed --noconfirm"), 1)
         self.assertEqual(self._count_log_lines(log, "pacman -S --needed --noconfirm"), 2)
         self.assertEqual(self._count_log_lines(log, "pacman -Sy "), 0)
+
+
+class InstallerFirewallSemanticsTests(unittest.TestCase):
+    """Firewall-stack decision of ensure_firewall_cmd_binary().
+
+    firewalld is only auto-installed where it is the regular/expected stack
+    (dnf/zypper/pacman). On Debian/Ubuntu a missing firewall-cmd follows the
+    actually active stack: UFW is used when UFW runs, and a host without an
+    active supported firewall must not gain a firewalld stack solely for
+    FXRoute. The uninstaller must never remove firewall packages.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = INSTALL_SH.read_text()
+        cls.uninstall_text = UNINSTALL_SH.read_text()
+
+    def test_firewall_cmd_binary_apt_follows_active_stack(self):
+        body = _extract_function(self.text, "ensure_firewall_cmd_binary")
+        self.assertIn('dnf|zypper|pacman) firewall_pkg="firewalld"', body)
+        self.assertIn("apt)\n      if ufw_is_active; then", body)
+        # apt must no longer hard-map a missing firewall-cmd to firewalld.
+        self.assertNotIn('apt)       firewall_pkg="firewalld"', body)
+
+    def test_uninstaller_never_removes_firewall_packages(self):
+        for forbidden in (
+            "apt-get remove firewalld",
+            "apt-get remove ufw",
+            "dnf remove firewalld",
+            "zypper remove firewalld",
+            "pacman -R firewalld",
+            "pacman -Rns firewalld",
+            "firewalld_installed_by_fxroute",
+        ):
+            self.assertNotIn(forbidden, self.uninstall_text)
+        # No package-level firewalld ownership is ever recorded, so uninstall
+        # has no basis to touch a firewall stack that pre-existed.
+        self.assertNotIn("firewalld_installed_by_fxroute", self.text)
+        # Uninstall removes only FXRoute-owned rules through the owned-rule
+        # helpers, never whole services or stacks.
+        self.assertIn("remove_owned_firewalld_rule()", self.uninstall_text)
+        self.assertIn("remove_owned_ufw_rule()", self.uninstall_text)
+
+    def _run_firewall_binary_decision(
+        self,
+        manager: str,
+        *,
+        ufw_mode: str = "absent",
+        firewall_cmd_present: bool = False,
+        fake_install: bool = False,
+    ) -> str:
+        """Run ensure_firewall_cmd_binary in a hermetic subshell.
+
+        PATH is restricted to a temp bin dir containing only the tools the
+        harness needs (grep for the UFW status probe, chmod for the fake
+        install), so a real firewall-cmd on the host can never satisfy
+        ``command -v``; the ufw backend is a mock function and pkg_install
+        only records (or optionally materializes a fake firewall-cmd
+        binary inside the temp dir).
+        """
+        ensure = _extract_function(self.text, "ensure_firewall_cmd_binary")
+        ufw_is_active = _extract_function(self.text, "ufw_is_active")
+        ufw_mock = {
+            "absent": "",
+            "inactive": 'ufw() { printf \'Status: inactive\\n\'; }',
+            "active": 'ufw() { printf \'Status: active\\n\'; }',
+        }[ufw_mode]
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            for tool in ("grep", "chmod"):
+                shutil.copy2(f"/bin/{tool}", bin_dir / tool)
+            if firewall_cmd_present:
+                fake = bin_dir / "firewall-cmd"
+                fake.write_text("#!/usr/bin/env bash\nexit 0\n")
+                fake.chmod(0o755)
+            code = f'''
+{ensure}
+{ufw_is_active}
+PACKAGE_MANAGER={manager}
+SUDO_CMD=()
+INSTALLED=()
+WARNED=()
+pass() {{ printf 'PASS:%s\\n' "$*"; }}
+log() {{ printf 'LOG:%s\\n' "$*"; }}
+warn() {{ WARNED+=("$*"); printf 'WARN:%s\\n' "$*"; }}
+package_installed() {{ return 1; }}
+pkg_install() {{
+  INSTALLED+=("$*")
+  if [ "{1 if fake_install else 0}" = 1 ]; then
+    : > "{bin_dir}/firewall-cmd"
+    chmod +x "{bin_dir}/firewall-cmd"
+  fi
+}}
+{ufw_mock}
+ensure_firewall_cmd_binary
+printf 'INSTALLED:%s\\n' "${{INSTALLED[*]}}"
+printf 'WARNED:%s\\n' "${{WARNED[*]}}"
+'''
+            result = subprocess.run(
+                [shutil.which("bash"), "-c", code],
+                capture_output=True,
+                text=True,
+                check=True,
+                env={"PATH": str(bin_dir)},
+            )
+            return result.stdout
+
+    def test_apt_with_active_ufw_uses_ufw_and_installs_nothing(self):
+        stdout = self._run_firewall_binary_decision("apt", ufw_mode="active")
+        self.assertIn("INSTALLED:", stdout)
+        self.assertNotIn("firewalld", stdout)
+        self.assertIn("UFW is active", stdout)
+        self.assertNotIn("WARN:", stdout)
+
+    def test_apt_without_firewall_skips_without_installing(self):
+        for ufw_mode in ("inactive", "absent"):
+            stdout = self._run_firewall_binary_decision("apt", ufw_mode=ufw_mode)
+            self.assertNotIn("INSTALLED:firewalld", stdout)
+            self.assertNotIn("PASS:", stdout)
+            self.assertIn("skip firewall configuration", stdout)
+
+    def test_apt_with_existing_firewalld_keeps_it(self):
+        stdout = self._run_firewall_binary_decision(
+            "apt", ufw_mode="absent", firewall_cmd_present=True
+        )
+        self.assertEqual(stdout.strip(), "INSTALLED:\nWARNED:")
+
+    def test_dnf_zypper_pacman_install_firewalld_when_missing(self):
+        for manager in ("dnf", "zypper", "pacman"):
+            stdout = self._run_firewall_binary_decision(
+                manager, ufw_mode="absent", fake_install=True
+            )
+            self.assertIn("INSTALLED:firewalld", stdout, manager)
+            self.assertIn("PASS:firewall-cmd available via firewalld", stdout, manager)
 
 
 if __name__ == "__main__":

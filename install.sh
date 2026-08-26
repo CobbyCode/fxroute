@@ -1938,21 +1938,27 @@ ensure_dbus_send_binary() {
 }
 
 ensure_firewall_cmd_binary() {
-  # firewall-cmd lives in different packages per distro.
-  # Fedora/RHEL: firewalld (pre-installed on most server installs).
-  # Debian/Ubuntu: firewalld.
-  # openSUSE: firewalld.
-  # Arch/Manjano: firewalld.
+  # firewall-cmd ships in the firewalld package on every supported distro,
+  # but only Fedora/RHEL, openSUSE and Arch/Manjaro treat firewalld as their
+  # regular firewall stack.  On Debian/Ubuntu the installer must follow the
+  # stack that is actually active: with UFW running the UFW path is used,
+  # and a host without an active supported firewall must not gain a
+  # firewalld stack (and its enabled unit) solely for FXRoute.
   local pkg=""
   local firewall_pkg=""
 
   command -v firewall-cmd >/dev/null 2>&1 && return 0
 
   case "$PACKAGE_MANAGER" in
-    apt)       firewall_pkg="firewalld" ;;
-    dnf)       firewall_pkg="firewalld" ;;
-    zypper)    firewall_pkg="firewalld" ;;
-    pacman)    firewall_pkg="firewalld" ;;
+    dnf|zypper|pacman) firewall_pkg="firewalld" ;;
+    apt)
+      if ufw_is_active; then
+        log "firewall-cmd is missing and UFW is active; FXRoute firewall rules will use UFW"
+        return 0
+      fi
+      warn "firewall-cmd is missing and no active UFW/firewalld stack was detected; FXRoute will skip firewall configuration"
+      return 0
+      ;;
     *)
       warn "firewall-cmd is missing and the package manager is unknown; FXRoute will skip firewall configuration"
       return 0
