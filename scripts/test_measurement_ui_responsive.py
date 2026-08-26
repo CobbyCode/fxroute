@@ -183,8 +183,9 @@ def _run():
                     page.locator("#measurement-repeat-start").inner_text(),
                     page.locator("#measurement-hybrid-open").inner_text(),
                 ] == ["L", "R", "Stereo", "Start LR Repeat", "Advanced"]
+                assert "L / R / Stereo\nRun Single Sweep." in page.locator(".measurement-workflow-menu-choice").nth(0).inner_text()
                 assert page.locator(".measurement-workflow-menu-choice").nth(1).inner_text() == (
-                    "Start LR Repeat\nRun repeated left and right sweeps for improved precision."
+                    "Start LR Repeat\nRepeated L/R sweeps for more precision."
                 )
                 assert page.locator(".measurement-workflow-menu-choice").nth(2).inner_text() == (
                     "Advanced\nCombined Speaker and Room Measurement"
