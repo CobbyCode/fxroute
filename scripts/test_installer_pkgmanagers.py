@@ -244,6 +244,7 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
         self.assertTrue({"gcc", "pkgconf", "libpipewire", "lilv", "lv2",
                          "lsp-plugins", "zam-plugins", "calf", "libebur128",
                          "libsamplerate", "speexdsp"}.issubset(packages))
+        self.assertIn("lilv-tools", packages)
 
     def test_lv2ls_tool_package_for_each_distro(self):
         required = {
