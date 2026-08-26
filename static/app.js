@@ -10549,10 +10549,7 @@ function renderMeasurementPanelSetupSection({ measurementState, current, measure
         elements.measurementModeNote.textContent = measurementState.modeNote || '';
     }
     document.querySelectorAll('[data-measurement-channel]').forEach((button) => {
-        const active = (button.getAttribute('data-measurement-channel') || '') === (measurementState.selectedChannel || 'left');
-        button.classList.toggle('is-active', active);
         button.disabled = measurementState.startInFlight;
-        button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
     document.querySelectorAll('[data-measurement-smoothing]').forEach((button) => {
         const active = (button.getAttribute('data-measurement-smoothing') || '') === (measurementState.displaySmoothing || '1/6-oct');

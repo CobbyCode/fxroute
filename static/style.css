@@ -4069,6 +4069,20 @@ body {
     line-height: 1.25;
 }
 
+/* Bottom status line: kept visually apart from the action blocks so
+   running/cancelled messages read as panel status, not as part of one row. */
+#measurement-setup-status {
+    margin-top: 0.6rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+}
+
+#measurement-setup-status:empty {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+}
+
 .spl-calibration-dialog {
     position: relative;
     width: min(560px, 100%);

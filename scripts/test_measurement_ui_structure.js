@@ -26,6 +26,8 @@ assert.match(index, /id="measurement-repeat-start"[^>]*>Start LR Repeat<\/button
 assert.match(index, /Repeated L\/R sweeps for more precision\./);
 assert.match(index, /id="measurement-hybrid-open"[^>]*>Advanced<\/button>/);
 assert.match(index, /Combined Speaker and Room Measurement/);
+assert.match(index, /id="measurement-spl-calibration-open"[^>]*>SPL Calibration<\/button>/);
+assert.match(index, /Calibrate your loudness reference\./);
 assert.ok(index.indexOf('id="measurement-repeat-start"') > index.indexOf('id="measurement-sweep-menu"'));
 assert.ok(index.indexOf('id="measurement-hybrid-open"') > index.indexOf('id="measurement-sweep-menu"'));
 assert.doesNotMatch(index, /subwoofer alignment/i);
