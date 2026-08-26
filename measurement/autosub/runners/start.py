@@ -46,7 +46,10 @@ from ..deps import (
     _measurement_store,
     _start_auto_sub_worker,
 )
-from ..jobs import router
+from ..jobs import (
+    _capture_auto_sub_playback_gain,
+    router,
+)
 from .optimize import _run_auto_sub_optimize
 from .optimize_22 import _run_auto_sub_22_optimize
 from .optimize_22_stereo import _run_auto_sub_22_stereo_optimize
