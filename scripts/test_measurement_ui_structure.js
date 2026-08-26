@@ -15,16 +15,22 @@ const responsiveCss = fs.readFileSync(path.join(root, 'static', 'css', '_respons
 assert.match(index, /<h4 class="measurement-workflow-label">Measurements<\/h4>/);
 assert.match(index, /id="measurement-sweep-toggle"[^>]*>Start Sweep<\/button>/);
 assert.match(index, /id="measurement-sweep-menu"[^>]*class="[^"]*hidden[^"]*"/);
-assert.match(index, /id="measurement-start"[^>]*>LR Stereo<\/button>/);
+assert.match(index, /L \/ R \/ Stereo/);
+assert.match(index, /data-measurement-channel="left">L<\/button>/);
+assert.match(index, /data-measurement-channel="right">R<\/button>/);
+assert.match(index, /data-measurement-channel="stereo">Stereo<\/button>/);
 assert.match(index, /id="measurement-repeat-start"[^>]*>Start LR Repeat<\/button>/);
-assert.match(index, /id="measurement-hybrid-open"[^>]*>System Calibration<\/button>/);
-assert.ok(index.indexOf('id="measurement-start"') > index.indexOf('id="measurement-sweep-menu"'));
+assert.match(index, /Run repeated left and right sweeps for improved precision\./);
+assert.match(index, /id="measurement-hybrid-open"[^>]*>Advanced<\/button>/);
+assert.match(index, /Combined Speaker and Room Measurement/);
 assert.ok(index.indexOf('id="measurement-repeat-start"') > index.indexOf('id="measurement-sweep-menu"'));
 assert.ok(index.indexOf('id="measurement-hybrid-open"') > index.indexOf('id="measurement-sweep-menu"'));
-assert.match(index, /Speaker and room measurements for system calibration\./);
 assert.doesNotMatch(index, /subwoofer alignment/i);
+assert.doesNotMatch(index, /for correction/i);
+assert.doesNotMatch(index, /System Calibration/);
+assert.doesNotMatch(flows, /System Calibration/);
 assert.doesNotMatch(index, /Advanced Measurement/);
-assert.doesNotMatch(flows, /Advanced Measurement/);
+assert.doesNotMatch(flows, /Subwoofer Alignment/i);
 
 assert.match(index, /id="effects-toggle-import"[^>]*>Import<\/button>/);
 assert.match(app, /elements\.effectsToggleImportBtn\.textContent = shouldOpen \? 'Close Import' : 'Import';/);

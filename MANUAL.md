@@ -287,9 +287,9 @@ In **Setup**, select an imported calibration or House Curve file and press
 **Export** to download the managed file with its original content. Built-in
 target curves are not exportable files.
 
-### System Calibration
+### Advanced
 
-**System Calibration** measures speakers and room response at close range and at three listening positions for system correction.
+**Advanced** combines speaker and room measurements at close range and at three listening positions.
 
 The workflow runs these measurements:
 
@@ -318,9 +318,9 @@ noise. Their exact prior states are restored when calibration stops, is saved,
 is cancelled, or fails. Normal sweeps and Auto Sub Optimize continue to
 measure the active processing chain.
 
-### LR Stereo and L/R Repeat
+### Single Sweeps and L/R Repeat
 
-Use **LR Stereo** when you want one quick measurement of the selected speaker:
+Open **Start Sweep** and choose the sweep you want:
 
 - **L** measures the left speaker.
 - **R** measures the right speaker.

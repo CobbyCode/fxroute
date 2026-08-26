@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.153">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.154">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -886,18 +886,21 @@
                                             <div class="measurement-workflow-menu">
                                                 <button id="measurement-sweep-toggle" class="btn-primary" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="measurement-sweep-menu">Start Sweep</button>
                                                 <div id="measurement-sweep-menu" class="measurement-workflow-menu-panel hidden" aria-labelledby="measurement-sweep-toggle">
-                                                    <div class="measurement-workflow-menu-choice" role="group" aria-label="Single sweep speaker selection">
-                                                        <button id="measurement-start" class="btn-secondary" type="button">LR Stereo</button>
+                                                    <div class="measurement-workflow-menu-choice measurement-workflow-channel-choice">
+                                                        <span class="measurement-workflow-menu-label">L / R / Stereo</span>
                                                         <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" role="group" aria-label="Single sweep speaker selection">
                                                             <button type="button" class="measurement-chip is-active" data-measurement-channel="left">L</button>
                                                             <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
                                                             <button type="button" class="measurement-chip" data-measurement-channel="stereo">Stereo</button>
                                                         </div>
                                                     </div>
-                                                    <button id="measurement-repeat-start" class="btn-secondary" type="button">Start LR Repeat</button>
                                                     <div class="measurement-workflow-menu-choice">
-                                                        <button id="measurement-hybrid-open" class="btn-secondary" type="button">System Calibration</button>
-                                                        <span class="measurement-repeat-help">Speaker and room measurements for system calibration.</span>
+                                                        <button id="measurement-repeat-start" class="btn-secondary" type="button">Start LR Repeat</button>
+                                                        <span class="measurement-repeat-help">Run repeated left and right sweeps for improved precision.</span>
+                                                    </div>
+                                                    <div class="measurement-workflow-menu-choice">
+                                                        <button id="measurement-hybrid-open" class="btn-secondary" type="button">Advanced</button>
+                                                        <span class="measurement-repeat-help">Combined Speaker and Room Measurement</span>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1208,10 +1211,11 @@
                 <div class="manage-dialog-header dialog-header-corner-close">
                     <div>
                         <p id="measurement-hybrid-mode" class="hybrid-mode-label"></p>
-                        <h2 id="measurement-hybrid-title" class="section-title">System Calibration</h2>
-                        <p class="section-subtitle">Speaker and room measurements for system calibration.</p>
+                        <h2 id="measurement-hybrid-title" class="section-title">Advanced</h2>
+                        <p class="section-subtitle">Combined Speaker and Room Measurement</p>
                     </div>
-                    <button id="measurement-hybrid-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close system calibration">
+                    <div id="measurement-hybrid-header-actions" class="hybrid-header-actions"></div>
+                    <button id="measurement-hybrid-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close advanced measurement">
                         <span class="btn-ghost-icon">✕</span>
                     </button>
                 </div>
@@ -1236,7 +1240,7 @@
                     </div>
                     <div class="hybrid-step-card">
                         <div class="hybrid-progress-row"><span>Progress</span><strong id="measurement-hybrid-progress">0 / 0</strong></div>
-                        <h3 id="measurement-hybrid-step-title">System Calibration</h3>
+                        <h3 id="measurement-hybrid-step-title">Advanced</h3>
                         <p id="measurement-hybrid-instruction" class="hybrid-instruction"></p>
                         <p id="measurement-hybrid-active" class="hybrid-active"></p>
                         <div id="measurement-hybrid-status" class="hybrid-status" aria-live="polite"></div>
@@ -1375,9 +1379,9 @@
     <script src="/static/hybrid_measurement.js?v=0.9.12"></script>
     <script src="/static/measurement_ui.js?v=0.9.12"></script>
     <script src="/static/measurement_graph.js?v=0.9.13"></script>
-    <script src="/static/measurement_flows.js?v=0.9.15"></script>
+    <script src="/static/measurement_flows.js?v=0.9.16"></script>
     <script src="/static/radio.js?v=0.9.15"></script>
-    <script src="/static/app.js?v=0.9.87"></script>
+    <script src="/static/app.js?v=0.9.88"></script>
     <script src="/static/streaming.js?v=0.9.54"></script>
 </body>
 </html>

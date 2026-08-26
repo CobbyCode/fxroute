@@ -1,4 +1,4 @@
-"""L/R repeat and System Calibration execution owner."""
+"""L/R repeat and Advanced measurement execution owner."""
 
 from __future__ import annotations
 

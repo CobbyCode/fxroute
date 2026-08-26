@@ -188,6 +188,7 @@ let state = {
         selectedMicInputChannel: '1',
         selectedReferenceInputChannel: '',
         selectedChannel: 'left',
+        cancelRequested: false,
         repeatJobActive: false,
         displaySmoothing: '1/6-oct',
         measurementView: 'freq',
@@ -199,6 +200,7 @@ let state = {
         calibrationUpdating: false,
         calibrationDeleting: false,
         calibrationExporting: false,
+        autoSubCancelRequested: false,
         houseCurveFilename: '',
         houseCurveOptions: [],
         houseCurveUpdating: false,
@@ -222,6 +224,7 @@ let state = {
         storage: null,
         captureAvailable: false,
         activeJobId: '',
+        jobGeneration: 0,
         activeMeasurementKind: '',
         autoSubJobId: '',
         autoSubProgress: null,
@@ -549,7 +552,6 @@ const elements = {
     measurementNameInput: document.getElementById('measurement-name'),
     measurementSweepToggleBtn: document.getElementById('measurement-sweep-toggle'),
     measurementSweepMenu: document.getElementById('measurement-sweep-menu'),
-    measurementStartBtn: document.getElementById('measurement-start'),
     measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
     measurementAutoSubStartBtn: document.getElementById('measurement-auto-sub-start'),
     measurementAutoSubGroup: document.getElementById('measurement-auto-sub-group'),
@@ -557,6 +559,7 @@ const elements = {
     measurementHybridOpenBtn: document.getElementById('measurement-hybrid-open'),
     measurementHybridPanel: document.getElementById('measurement-hybrid-panel'),
     measurementHybridCloseBtn: document.getElementById('measurement-hybrid-close'),
+    measurementHybridHeaderActions: document.getElementById('measurement-hybrid-header-actions'),
     measurementHybridMode: document.getElementById('measurement-hybrid-mode'),
     measurementHybridProgress: document.getElementById('measurement-hybrid-progress'),
     measurementHybridTitle: document.getElementById('measurement-hybrid-step-title'),
@@ -9822,6 +9825,7 @@ function normalizeMeasurementKind(kind) {
 function getActiveMeasurementKind() {
     const measurementState = state.measurement || {};
     if (measurementState.autoSubInFlight) return 'auto_sub';
+    if (measurementState.hybridWizard?.running) return 'hybrid';
     const normalized = normalizeMeasurementKind(measurementState.activeMeasurementKind);
     if (normalized && measurementState.activeJobId) return normalized;
     if (measurementState.repeatJobActive && measurementState.activeJobId) return 'lr_repeat';
@@ -9831,7 +9835,7 @@ function getActiveMeasurementKind() {
 
 function hasActiveMeasurementJob() {
     const measurementState = state.measurement || {};
-    return !!(measurementState.activeJobId || measurementState.autoSubInFlight);
+    return !!(measurementState.activeJobId || measurementState.autoSubInFlight || measurementState.hybridWizard?.running);
 }
 
 function getMeasurementJobResultMeasurement(job = {}) {
@@ -9850,22 +9854,35 @@ function formatMeasurementJobStatusText(job = {}, fallback = 'Measurement runnin
     return `${message} · ${levelText}`;
 }
 
+function syncMeasurementSweepButton() {
+    if (!elements.measurementSweepToggleBtn) return;
+    const measurementState = state.measurement || {};
+    const calibrationBusy = measurementState.calibrationUpdating || measurementState.calibrationDeleting;
+    const measurementActive = !!measurementState.startInFlight || hasActiveMeasurementJob();
+    const hybridWizard = measurementState.hybridWizard || {};
+    const hybridButtonHost = elements.measurementHybridHeaderActions;
+    const sweepMenuHost = elements.measurementSweepMenu?.parentElement;
+    const shouldShowHybridCancel = !!hybridWizard.running && !!hybridWizard.open;
+
+    if (shouldShowHybridCancel && hybridButtonHost && !hybridButtonHost.contains(elements.measurementSweepToggleBtn)) {
+        hybridButtonHost.append(elements.measurementSweepToggleBtn);
+    } else if (!shouldShowHybridCancel && sweepMenuHost && !sweepMenuHost.contains(elements.measurementSweepToggleBtn)) {
+        sweepMenuHost.insertBefore(elements.measurementSweepToggleBtn, elements.measurementSweepMenu);
+    }
+
+    elements.measurementSweepToggleBtn.disabled = !!calibrationBusy;
+    elements.measurementSweepToggleBtn.textContent = measurementActive ? 'Cancel' : 'Start Sweep';
+    elements.measurementSweepToggleBtn.setAttribute('aria-expanded', measurementActive ? 'false' : (elements.measurementSweepMenu?.classList.contains('hidden') ? 'false' : 'true'));
+    if (measurementActive) setMeasurementSweepMenuOpen(false);
+}
+
 function syncMeasurementStartButtonFallback() {
-    if (!elements.measurementStartBtn) return;
+    syncMeasurementSweepButton();
     const measurementState = state.measurement || {};
     const activeKind = getActiveMeasurementKind();
     const activeJobRunning = hasActiveMeasurementJob();
-    const singleActive = activeKind === 'single';
     const lrActive = activeKind === 'lr_repeat';
-    const autoSubActive = activeKind === 'auto_sub';
     const calibrationBusy = measurementState.calibrationUpdating || measurementState.calibrationDeleting;
-
-    elements.measurementStartBtn.disabled = calibrationBusy
-        ? true
-        : (activeJobRunning ? !singleActive : (measurementState.inputsLoading || !measurementModeReady()));
-    elements.measurementStartBtn.textContent = singleActive
-        ? 'Cancel measurement'
-        : (measurementState.startInFlight ? 'Starting...' : 'LR Stereo');
     if (elements.measurementRepeatStartBtn) {
         elements.measurementRepeatStartBtn.disabled = calibrationBusy
             ? true
@@ -9921,7 +9938,7 @@ function renderMeasurementPanelDefensively(context = 'measurement render') {
 
 
 
-async function startHostMeasurement() {
+async function startHostMeasurement(jobGeneration = state.measurement.jobGeneration) {
     if (!state.measurement.hostCaptureAvailable || !state.measurement.selectedInputId) {
         state.measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
         renderMeasurementPanel();
@@ -9962,10 +9979,12 @@ async function startHostMeasurement() {
     state.measurement.activeMeasurementKind = normalizeMeasurementKind(job.job_kind || 'single') || 'single';
     state.measurement.statusText = formatMeasurementJobStatusText(job, 'Preparing sweep…');
     renderMeasurementPanel();
-    await pollMeasurementJob(state.measurement.activeJobId);
+    if (state.measurement.cancelRequested) await cancelMeasurement();
+    if (!state.measurement.activeJobId) return;
+    await pollMeasurementJob(state.measurement.activeJobId, jobGeneration);
 }
 
-async function startLrRepeatMeasurement() {
+async function startLrRepeatMeasurement(jobGeneration = state.measurement.jobGeneration) {
     if (!state.measurement.hostCaptureAvailable || !state.measurement.selectedInputId) {
         state.measurement.statusText = 'No usable host capture source is available for an L/R repeat measurement on this host.';
         renderMeasurementPanel();
@@ -10002,7 +10021,9 @@ async function startLrRepeatMeasurement() {
     state.measurement.activeMeasurementKind = normalizeMeasurementKind(job.job_kind || 'lr-repeat') || 'lr_repeat';
     state.measurement.statusText = formatMeasurementJobStatusText(job, 'Preparing L/R repeat…');
     renderMeasurementPanel();
-    await pollMeasurementJob(state.measurement.activeJobId);
+    if (state.measurement.cancelRequested) await cancelMeasurement();
+    if (!state.measurement.activeJobId) return;
+    await pollMeasurementJob(state.measurement.activeJobId, jobGeneration);
 }
 
 function getHybridWizardState() {
@@ -10066,7 +10087,10 @@ async function startMeasurement() {
         return;
     }
 
+    const jobGeneration = Number(state.measurement.jobGeneration || 0) + 1;
+    state.measurement.jobGeneration = jobGeneration;
     state.measurement.startInFlight = true;
+    state.measurement.cancelRequested = false;
     state.measurement.repeatJobActive = false;
     state.measurement.activeMeasurementKind = '';
     state.measurement.activeJobId = '';
@@ -10074,16 +10098,19 @@ async function startMeasurement() {
     renderMeasurementPanel();
 
     try {
-        await startHostMeasurement();
+        await startHostMeasurement(jobGeneration);
     } catch (error) {
+        if (state.measurement.jobGeneration !== jobGeneration) return;
         console.error('startMeasurement failed', error);
         state.measurement.statusText = error.message || 'Failed to start measurement';
         showToast(state.measurement.statusText, 'error');
     } finally {
+        if (state.measurement.jobGeneration !== jobGeneration) return;
         state.measurement.startInFlight = false;
-        if (!state.measurement.activeJobId) {
+        if (state.measurement.jobGeneration === jobGeneration && !state.measurement.activeJobId) {
             state.measurement.activeMeasurementKind = '';
             state.measurement.repeatJobActive = false;
+            state.measurement.cancelRequested = false;
         }
         renderMeasurementPanel();
     }
@@ -10097,21 +10124,27 @@ async function startLrRepeat() {
         showToast(state.measurement.statusText, 'error');
         return;
     }
+    const jobGeneration = Number(state.measurement.jobGeneration || 0) + 1;
+    state.measurement.jobGeneration = jobGeneration;
     state.measurement.startInFlight = true;
+    state.measurement.cancelRequested = false;
     state.measurement.activeMeasurementKind = '';
     state.measurement.repeatJobActive = true;
     renderMeasurementPanel();
     try {
-        await startLrRepeatMeasurement();
+        await startLrRepeatMeasurement(jobGeneration);
     } catch (error) {
+        if (state.measurement.jobGeneration !== jobGeneration) return;
         console.error('startLrRepeat failed', error);
         state.measurement.statusText = error.message || 'Failed to start L/R repeat measurement';
         showToast(state.measurement.statusText, 'error');
     } finally {
+        if (state.measurement.jobGeneration !== jobGeneration) return;
         state.measurement.startInFlight = false;
-        if (!state.measurement.activeJobId) {
+        if (state.measurement.jobGeneration === jobGeneration && !state.measurement.activeJobId) {
             state.measurement.activeMeasurementKind = '';
             state.measurement.repeatJobActive = false;
+            state.measurement.cancelRequested = false;
         }
         renderMeasurementPanel();
     }
@@ -10120,21 +10153,25 @@ async function startLrRepeat() {
 async function cancelMeasurement() {
     const jobId = String(state.measurement.activeJobId || '');
     if (!jobId) return;
+    const jobGeneration = state.measurement.jobGeneration;
     state.measurement.statusText = 'Cancelling measurement…';
     renderMeasurementPanel();
     try {
         const resp = await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to cancel measurement'));
+        if (state.measurement.jobGeneration !== jobGeneration || String(state.measurement.activeJobId || '') !== jobId) return;
         state.measurement.statusText = String(data.job?.message || 'Measurement cancelled.');
         if (MEASUREMENT_JOB_CANCELLED_STATES.has(getMeasurementJobStatus(data.job || {}))) {
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
             state.measurement.activeMeasurementKind = '';
+            state.measurement.cancelRequested = false;
             state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
         }
     } catch (error) {
+        if (state.measurement.jobGeneration !== jobGeneration || String(state.measurement.activeJobId || '') !== jobId) return;
         console.error('cancelMeasurement failed', error);
         state.measurement.statusText = error.message || 'Failed to cancel measurement';
         showToast(state.measurement.statusText, 'error');
@@ -10143,28 +10180,46 @@ async function cancelMeasurement() {
     }
 }
 
-async function pollMeasurementJob(jobId) {
+function requestMeasurementCancellation() {
+    const activeKind = getActiveMeasurementKind();
+    if (activeKind === 'hybrid') return cancelHybridWizardMeasurement();
+    if (activeKind === 'auto_sub') return cancelAutoSubOptimize();
+    if (state.measurement.activeJobId) return cancelMeasurement();
+    if (state.measurement.startInFlight) {
+        state.measurement.cancelRequested = true;
+        state.measurement.statusText = 'Cancelling measurement…';
+        renderMeasurementPanel();
+    }
+    return Promise.resolve();
+}
+
+async function pollMeasurementJob(jobId, jobGeneration = state.measurement.jobGeneration) {
     if (!jobId) return;
     for (let attempt = 0; attempt < 360; attempt += 1) {
+        if (state.measurement.jobGeneration !== jobGeneration || String(state.measurement.activeJobId || '') !== String(jobId)) return;
         const resp = await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`);
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to fetch measurement job'));
         const job = data.job || {};
+        if (state.measurement.jobGeneration !== jobGeneration || String(state.measurement.activeJobId || '') !== String(jobId)) return;
         const jobStatus = getMeasurementJobStatus(job);
         state.measurement.statusText = formatMeasurementJobStatusText(job, state.measurement.statusText || 'Measurement running…');
         if (MEASUREMENT_JOB_SUCCESS_STATES.has(jobStatus)) {
             state.measurement.statusText = String(job.message || 'Measurement finished.');
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
+            state.measurement.cancelRequested = false;
             const repeatMeasurements = Array.isArray(job?.result?.measurements) ? job.result.measurements : [];
             state.measurement.activeMeasurementKind = '';
             state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
+            renderMeasurementPanelDefensively('measurement completion state sync');
             await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
                 jobId,
                 jobStatus,
                 measurementKind: repeatMeasurements.length ? 'lr-repeat' : 'single',
             });
+            if (state.measurement.jobGeneration !== jobGeneration) return;
             if (repeatMeasurements.length) {
                 state.measurement.pendingRepeatMeasurements = repeatMeasurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index));
                 state.measurement.currentMeasurement = state.measurement.pendingRepeatMeasurements[0] || null;
@@ -10207,27 +10262,33 @@ async function pollMeasurementJob(jobId) {
         if (MEASUREMENT_JOB_FAILED_STATES.has(jobStatus)) {
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
+            state.measurement.cancelRequested = false;
             state.measurement.activeMeasurementKind = '';
             state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
+            renderMeasurementPanelDefensively('measurement failure state sync');
             await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
                 jobId,
                 jobStatus,
                 failed: true,
             });
+            if (state.measurement.jobGeneration !== jobGeneration) return;
             throw new Error(formatTransitionErrorDetail(job.error?.detail, job.message || 'Measurement failed'));
         }
         if (MEASUREMENT_JOB_CANCELLED_STATES.has(jobStatus)) {
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
+            state.measurement.cancelRequested = false;
             state.measurement.activeMeasurementKind = '';
             state.measurement.repeatJobActive = false;
             state.measurement.statusText = String(job.message || 'Measurement cancelled.');
+            renderMeasurementPanelDefensively('measurement cancellation state sync');
             await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
                 jobId,
                 jobStatus,
                 cancelled: true,
             });
+            if (state.measurement.jobGeneration !== jobGeneration) return;
             renderMeasurementPanelDefensively('measurement cancellation render');
             showToast('Measurement cancelled', 'success');
             return;
@@ -10236,8 +10297,10 @@ async function pollMeasurementJob(jobId) {
         renderMeasurementPanelDefensively('measurement polling render');
         await sleep(800);
     }
+    if (state.measurement.jobGeneration !== jobGeneration || String(state.measurement.activeJobId || '') !== String(jobId)) return;
     state.measurement.activeJobId = '';
     state.measurement.startInFlight = false;
+    state.measurement.cancelRequested = false;
     state.measurement.activeMeasurementKind = '';
     state.measurement.repeatJobActive = false;
     syncMeasurementStartButtonFallback();
@@ -10624,19 +10687,7 @@ function renderMeasurementPanelActionsSection({ measurementState, current, measu
         elements.measurementNameInput.disabled = measurementState.startInFlight || measurementState.saveInFlight || !!measurementState.activeJobId;
         elements.measurementNameInput.placeholder = 'Measurement name';
     }
-    if (elements.measurementSweepToggleBtn) {
-        elements.measurementSweepToggleBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting;
-    }
-    if (elements.measurementStartBtn) {
-        const activeKind = getActiveMeasurementKind();
-        const activeJobRunning = hasActiveMeasurementJob();
-        elements.measurementStartBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting
-            ? true
-            : (activeJobRunning ? activeKind !== 'single' : (measurementState.inputsLoading || !measurementModeReady()));
-        elements.measurementStartBtn.textContent = activeKind === 'single'
-            ? 'Cancel measurement'
-            : (measurementState.startInFlight ? 'Starting…' : 'LR Stereo');
-    }
+    syncMeasurementSweepButton();
     if (elements.measurementRepeatStartBtn) {
         const activeKind = getActiveMeasurementKind();
         const activeJobRunning = hasActiveMeasurementJob();
@@ -11234,6 +11285,10 @@ function setupMeasurementActions() {
     }
     if (elements.measurementSweepToggleBtn) {
         elements.measurementSweepToggleBtn.addEventListener('click', () => {
+            if (state.measurement.startInFlight || hasActiveMeasurementJob()) {
+                void requestMeasurementCancellation();
+                return;
+            }
             const shouldOpen = elements.measurementSweepMenu?.classList.contains('hidden');
             setMeasurementSweepMenuOpen(!!shouldOpen);
         });
@@ -11287,8 +11342,10 @@ function setupMeasurementActions() {
     }
     document.querySelectorAll('[data-measurement-channel]').forEach((button) => {
         button.addEventListener('click', () => {
+            if (state.measurement.startInFlight || hasActiveMeasurementJob()) return;
             state.measurement.selectedChannel = button.getAttribute('data-measurement-channel') || 'left';
-            renderMeasurementPanel();
+            setMeasurementSweepMenuOpen(false);
+            void startMeasurement();
         });
     });
     document.querySelectorAll('[data-measurement-smoothing]').forEach((button) => {
@@ -11367,16 +11424,6 @@ function setupMeasurementActions() {
     if (elements.measurementNameInput) {
         elements.measurementNameInput.addEventListener('input', (event) => {
             state.measurement.currentMeasurementName = event.target.value || '';
-        });
-    }
-    if (elements.measurementStartBtn) {
-        elements.measurementStartBtn.addEventListener('click', () => {
-            setMeasurementSweepMenuOpen(false);
-            if (getActiveMeasurementKind() === 'single') {
-                void cancelMeasurement();
-                return;
-            }
-            void startMeasurement();
         });
     }
     if (elements.measurementRepeatStartBtn) {

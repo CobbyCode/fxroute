@@ -4011,6 +4011,24 @@ body {
     gap: 0.4rem;
 }
 
+.measurement-workflow-menu-label {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.hybrid-header-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.hybrid-header-actions #measurement-sweep-toggle {
+    width: 190px;
+}
+
 .measurement-workflow-menu-panel > button,
 .measurement-workflow-menu-choice > button {
     width: 100%;
@@ -4035,7 +4053,6 @@ body {
     min-width: 104px;
 }
 
-#measurement-start,
 #measurement-repeat-start,
 #measurement-hybrid-open {
     min-height: 42px;
@@ -7459,7 +7476,6 @@ input[type="number"]::-webkit-outer-spin-button {
         }
 
         #measurement-sweep-toggle,
-        #measurement-start,
         #measurement-repeat-start,
         #measurement-hybrid-open,
     #measurement-auto-sub-start,
@@ -7531,7 +7547,6 @@ input[type="number"]::-webkit-outer-spin-button {
         .measurement-peq-editor-actions .btn-danger,
         .measurement-peq-take-row .btn-secondary,
         .measurement-save-row .btn-secondary,
-        #measurement-start,
         #measurement-repeat-start,
         #measurement-setup-toggle {
             width: 100%;

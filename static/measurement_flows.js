@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /**
- * FXRoute measurement flows: Auto-Sub optimize and System Calibration
+ * FXRoute measurement flows: Auto-Sub optimize and Advanced measurement
  * (hybrid) wizard.
  *
  * State/DOM access goes through injected getters, UI feedback through
@@ -103,6 +103,7 @@ async function startAutoSubOptimize() {
 
     measurementState.autoSubInFlight = true;
     measurementState.startInFlight = true;
+    measurementState.autoSubCancelRequested = false;
     measurementState.activeMeasurementKind = 'auto_sub';
     measurementState.autoSubJobId = '';
     measurementState.autoSubResult = null;
@@ -137,6 +138,8 @@ async function startAutoSubOptimize() {
         measurementState.autoSubJobId = String(job.id || '');
         measurementState.statusText = job.message || 'Auto Sub Optimize: queued';
         deps.renderMeasurementPanel();
+        if (measurementState.autoSubCancelRequested) await cancelAutoSubOptimize();
+        if (!measurementState.autoSubJobId) return;
         await pollAutoSubJob(measurementState.autoSubJobId);
     } catch (error) {
         console.error('startAutoSubOptimize failed', error);
@@ -147,6 +150,7 @@ async function startAutoSubOptimize() {
         measurementState.startInFlight = false;
         measurementState.activeMeasurementKind = '';
         measurementState.autoSubJobId = '';
+        measurementState.autoSubCancelRequested = false;
         // Refresh audio outputs to pick up new sub_alignment_ms
         deps.fetchAudioOutputOverview().catch(() => {});
         deps.renderMeasurementPanel();
@@ -156,7 +160,14 @@ async function startAutoSubOptimize() {
 
 async function cancelAutoSubOptimize() {
     const jobId = String(deps.getState().measurement.autoSubJobId || '');
-    if (!jobId) return;
+    if (!jobId) {
+        if (deps.getState().measurement.autoSubInFlight) {
+            deps.getState().measurement.autoSubCancelRequested = true;
+            deps.getState().measurement.statusText = 'Cancelling Auto Sub Optimize…';
+            deps.renderMeasurementPanel();
+        }
+        return;
+    }
     deps.getState().measurement.statusText = 'Cancelling Auto Sub Optimize…';
     deps.renderMeasurementPanel();
     try {
@@ -461,6 +472,7 @@ function openHybridMeasurementWizard() {
         wizard.open = true;
         deps.getElements().measurementHybridPanel?.classList.remove('hidden');
         renderHybridMeasurementWizard();
+        deps.renderMeasurementPanel();
         window.FXRouteModal?.open(deps.getElements().measurementHybridPanel, {
             opener: deps.getElements().measurementSweepToggleBtn,
             initialFocus: deps.getElements().measurementHybridPrimaryBtn,
@@ -504,9 +516,9 @@ async function closeHybridMeasurementWizard() {
         deps.getState().measurement.activeJobId = '';
         deps.getState().measurement.activeMeasurementKind = '';
     }
+    deps.renderMeasurementPanelDefensively('hybrid wizard close');
     deps.getElements().measurementHybridPanel?.classList.add('hidden');
     window.FXRouteModal?.close(deps.getElements().measurementHybridPanel);
-    deps.renderMeasurementPanelDefensively('hybrid wizard close');
 }
 
 
@@ -542,7 +554,7 @@ function renderHybridMeasurementWizard() {
         const done = complete ? wizard.sequence.length : wizard.stepIndex;
         deps.getElements().measurementHybridProgress.textContent = `${done} / ${wizard.sequence.length}`;
     }
-    if (deps.getElements().measurementHybridTitle) deps.getElements().measurementHybridTitle.textContent = complete ? 'Measurement complete' : (current?.title || 'System Calibration');
+    if (deps.getElements().measurementHybridTitle) deps.getElements().measurementHybridTitle.textContent = complete ? 'Measurement complete' : (current?.title || 'Advanced');
     if (deps.getElements().measurementHybridInstruction) {
         const instruction = complete ? 'All measurements were completed successfully.' : (current?.instruction || '');
         deps.getElements().measurementHybridInstruction.textContent = instruction;
@@ -611,7 +623,7 @@ async function runHybridWizardStep(step) {
     renderHybridMeasurementWizard();
     const response = await api.startMeasurement(buildHybridMeasurementForm(step));
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to start system calibration measurement'));
+    if (!response.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to start advanced measurement'));
     const jobId = String(data.job?.id || '');
     wizard.jobId = jobId;
     deps.getState().measurement.activeJobId = jobId;
@@ -623,7 +635,7 @@ async function runHybridWizardStep(step) {
     for (let attempt = 0; attempt < 360; attempt += 1) {
         const poll = await api.pollMeasurementJob(jobId);
         const payload = await poll.json().catch(() => ({}));
-        if (!poll.ok) throw new Error(deps.formatTransitionErrorDetail(payload.detail, 'Failed to fetch system calibration measurement'));
+        if (!poll.ok) throw new Error(deps.formatTransitionErrorDetail(payload.detail, 'Failed to fetch advanced measurement'));
         const job = payload.job || {};
         const status = deps.getMeasurementJobStatus(job);
         const processing = String(job.message || '').toLowerCase().startsWith('processing');
@@ -699,6 +711,7 @@ async function runHybridWizardSweep() {
     wizard.phase = 'preparing';
     wizard.status = 'Preparing measurement…';
     renderHybridMeasurementWizard();
+    deps.renderMeasurementPanel();
     try {
         await deps.flushSubwooferSettingsBeforeMeasurement();
         while (wizard.stepIndex <= seriesEnd && !wizard.cancelRequested) {
@@ -731,7 +744,7 @@ async function runHybridWizardSweep() {
         }
         wizard.status = wizard.cancelRequested
             ? 'Measurement cancelled. The microphone position is ready to measure again.'
-            : (error.message || 'System calibration measurement failed.');
+            : (error.message || 'Advanced measurement failed.');
         wizard.quality = wizard.cancelRequested ? null : { level: 'error', retry: true };
     } finally {
         wizard.running = false;
@@ -760,7 +773,7 @@ function openHybridProfileInConvolver() {
         const modelSummary = { trace_count: modelPoints.length ? 1 : 0, point_count: modelPoints.length, min_db: modelMinDb, max_db: modelMaxDb, min_hz: modelMinHz, max_hz: modelMaxHz };
         return deps.normalizeMeasurementEntry({
             id: `hybrid-${side}-${Date.now()}`,
-            name: `System Calibration ${HybridMeasurement.MODE_LABELS[wizard.mode]} ${side === 'left' ? 'L' : 'R'}`,
+            name: `Advanced ${HybridMeasurement.MODE_LABELS[wizard.mode]} ${side === 'left' ? 'L' : 'R'}`,
             created_at: new Date().toISOString(),
             channel: side,
             measurement_kind: 'hybrid-correction-model-v1',
@@ -784,7 +797,7 @@ function openHybridProfileInConvolver() {
     const pair = [buildSide('left'), buildSide('right')];
     deps.getState().measurement.pendingRepeatMeasurements = pair;
     deps.getState().measurement.currentMeasurement = pair[0];
-    deps.getState().measurement.currentMeasurementName = `System Calibration ${HybridMeasurement.MODE_LABELS[wizard.mode]}`;
+    deps.getState().measurement.currentMeasurementName = `Advanced ${HybridMeasurement.MODE_LABELS[wizard.mode]}`;
     deps.getState().measurement.currentMeasurementSaved = false;
     deps.setMeasurementAssistMode('convolver');
     void closeHybridMeasurementWizard();

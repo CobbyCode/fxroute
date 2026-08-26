@@ -32,12 +32,12 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
   <tr>
     <td width="33%"><img src="media/screenshots/07-tidal.png" alt="FXRoute TIDAL catalog browse view"></td>
     <td width="33%"><img src="media/screenshots/08-spl-calibration.png" alt="FXRoute SPL calibration view"></td>
-    <td width="33%"><img src="media/screenshots/09-advanced-measurement.png" alt="FXRoute System Calibration workflow"></td>
+    <td width="33%"><img src="media/screenshots/09-advanced-measurement.png" alt="FXRoute Advanced measurement workflow"></td>
   </tr>
   <tr>
     <td align="center"><strong>TIDAL</strong></td>
     <td align="center"><strong>SPL Calibration</strong></td>
-    <td align="center"><strong>System Calibration</strong></td>
+    <td align="center"><strong>Advanced</strong></td>
   </tr>
 </table>
 
@@ -53,7 +53,7 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
 - native DSP preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
 - stereo, 2.1 subwoofer, and 2.2 subwoofer output modes
 - global DSP helpers for protection, gain management, loudness contouring, bass enhancement, and tone shaping; Loudness provides a calibrated contour that follows the playback level and also accounts for the Auto Gain target when both are active
-- room and speaker measurements with host microphone capture, including System Calibration to measure speakers, room response, and microphone position,
+- room and speaker measurements with host microphone capture, including Advanced to measure speakers, room response, and microphone position,
   calibration files, calibration-file export, smoothing, saved runs, a
   twelve-filter PEQ editor, custom House Curve editing and export, PEQ filter
   transfer, and stereo FIR/convolver preset creation with linear, minimum-
@@ -205,7 +205,7 @@ Typical URLs:
 - **Radio** — curated station catalog, personal stations, Radio Browser search, live metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
 - **Library** — local files, album browsing, cached metadata, artist info, similar-artist discovery, playlists, uploads, imports, downloads, and deletion
 - **DSP** — native DSP presets, PEQ, convolver, helpers, A/B compare, and preset creation
-- **Measure** — host-mic measurement, System Calibration, subwoofer optimization, and tuning workflow
+- **Measure** — host-mic measurement, Advanced, subwoofer optimization, and tuning workflow
 - **Spotify** — control a local Spotify desktop client or spotifyd player
 - **Qobuz** — control a Qobuz Connect player on the audio PC
 - **TIDAL** — full catalog browser with login, search, favorites, and native playback

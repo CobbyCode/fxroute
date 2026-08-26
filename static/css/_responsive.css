@@ -878,7 +878,6 @@
         }
 
         #measurement-sweep-toggle,
-        #measurement-start,
         #measurement-repeat-start,
         #measurement-hybrid-open,
     #measurement-auto-sub-start,
@@ -950,7 +949,6 @@
         .measurement-peq-editor-actions .btn-danger,
         .measurement-peq-take-row .btn-secondary,
         .measurement-save-row .btn-secondary,
-        #measurement-start,
         #measurement-repeat-start,
         #measurement-setup-toggle {
             width: 100%;
