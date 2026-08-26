@@ -40,7 +40,10 @@ _AUTO_SUB_TIMING_MARKS = [
     "release_done",
 ]
 
-_AUTO_SUB_STAGE_PEAK_LIMIT_DBFS = -1.0
+# Full-scale of the hardware sink float→integer conversion, the first stage
+# that actually clips. The engine and its peak meter are float and never
+# clip; between the predicted stage and the DAC only the sink volume applies.
+_AUTO_SUB_STAGE_PEAK_LIMIT_DBFS = 0.0
 _AUTO_SUB_STAGE_PEAK_MISMATCH_DB = 1.0
 
 
@@ -126,11 +129,31 @@ async def cancel_auto_sub_optimize_job(job_id: str):
 class AutoSubPeakSafetyError(RuntimeError):
     """Abort the complete AutoSub run after a native-DSP peak safety failure."""
 
+def auto_sub_sink_gain_from_master_percent(percent: int | float) -> float:
+    """Return the linear gain the hardware sink applies for a master percent.
+
+    Measured on the PipeWire ALSA sink (UMC204HD, pipewire 1.6.8): the sink
+    node applies the volume as float-domain gain before the float→integer
+    conversion, and the volume transfer curve is the PulseAudio cubic
+    ``(percent / 100) ** 3`` (e.g. 31% -> -30.5 dB, 10% -> -60.0 dB).
+    """
+    normalized = max(0.0, min(1.0, float(percent) / 100.0))
+    return normalized ** 3
+
 def _auto_sub_stage_peak_prediction(
     *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,
     config: BassManagementConfig, playback_gain: float = 1.0,
+    sink_gain: float = 1.0,
 ) -> dict[str, Any]:
-    """Run the known measurement PCM through the native DSP topology."""
+    """Run the known measurement PCM through the native DSP topology.
+
+    ``sink_gain`` is the linear amplitude gain the hardware sink applies to
+    the engine output (0..1) before the float→integer conversion that clips.
+    Use :func:`auto_sub_sink_gain_from_master_percent` to convert the master
+    percent to this linear gain. The engine chain is linear, so folding it
+    into the sweep yields the true DAC-level peaks without touching the
+    Mono/Stereo routing.
+    """
     rate = int(sample_rate)
     duration = float(sweep_profile["sweep_seconds"])
     count = max(2048, int(round(rate * duration)))
@@ -147,11 +170,14 @@ def _auto_sub_stage_peak_prediction(
     sweep *= 0.8 / max(float(np.max(np.abs(sweep))), 1e-12)
     try:
         source_gain = float(playback_gain)
+        sink_linear = float(sink_gain)
     except (TypeError, ValueError) as exc:
-        raise ValueError("playback_gain must be a finite non-negative number") from exc
+        raise ValueError("playback_gain and sink_gain must be finite non-negative numbers") from exc
     if not math.isfinite(source_gain) or source_gain < 0.0:
         raise ValueError("playback_gain must be a finite non-negative number")
-    sweep *= source_gain
+    if not math.isfinite(sink_linear) or sink_linear < 0.0:
+        raise ValueError("sink_gain must be a finite non-negative number")
+    sweep *= source_gain * sink_linear
     zeros = np.zeros_like(sweep)
     left = sweep if channel in ("left", "stereo") else zeros
     right = sweep if channel in ("right", "stereo") else zeros
@@ -213,14 +239,25 @@ def _auto_sub_stage_peak_prediction(
         "limit_dbfs": _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
         "safe": max(peak_dbfs.values()) <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
         "playback_gain": source_gain,
+        "sink_gain": sink_linear,
     }
 
 def _auto_sub_stage_peak_comparison(
     predicted: dict[str, Any], measured_linear: dict[str, float],
+    *, sink_gain: float = 1.0,
 ) -> dict[str, Any]:
+    try:
+        sink_linear = float(sink_gain)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("sink_gain must be a finite non-negative number") from exc
+    if not math.isfinite(sink_linear) or sink_linear < 0.0:
+        raise ValueError("sink_gain must be a finite non-negative number")
+    # The meter reads the engine output (before the sink volume); fold the
+    # sink gain in so predicted and measured are both at the DAC stage.
+    folded_linear = {key: float(value) * sink_linear for key, value in measured_linear.items()}
     measured_dbfs = {
-        key: round(20.0 * math.log10(max(float(value), 1e-12)), 3)
-        for key, value in measured_linear.items()
+        key: round(20.0 * math.log10(max(value, 1e-12)), 3)
+        for key, value in folded_linear.items()
     }
     differences = {
         key: round(measured_dbfs[key] - float(predicted["dbfs"][key]), 3)
@@ -230,7 +267,7 @@ def _auto_sub_stage_peak_comparison(
     relevant = any(abs(value) > _AUTO_SUB_STAGE_PEAK_MISMATCH_DB for value in differences.values())
     return {
         "predicted": predicted,
-        "measured": {"linear": measured_linear, "dbfs": measured_dbfs},
+        "measured": {"linear": folded_linear, "dbfs": measured_dbfs},
         "difference_db": differences,
         "tolerance_db": _AUTO_SUB_STAGE_PEAK_MISMATCH_DB,
         "relevant_mismatch": relevant,

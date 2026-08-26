@@ -91,6 +91,7 @@ from measurement.autosub.jobs import (
     _auto_sub_timing_durations,
     _capture_auto_sub_playback_gain,
     _finalize_autosub_job,
+    auto_sub_sink_gain_from_master_percent,
     _finish_auto_sub_worker,
     _log_auto_sub_timing_summary,
     cancel_auto_sub_optimize_job,

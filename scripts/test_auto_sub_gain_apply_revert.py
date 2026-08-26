@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 import inspect
+import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,7 +128,122 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         )
         self.assertTrue(safe["safe"])
         self.assertFalse(unsafe["safe"])
-        self.assertGreater(unsafe["dbfs"]["output_3"], -1.0)
+        self.assertGreater(unsafe["dbfs"]["output_3"], 0.0)
+        self.assertEqual(safe["sink_gain"], 1.0)
+
+    def test_stage_peak_prediction_folds_sink_gain_into_all_outputs(self):
+        profile = {
+            "sweep_start_hz": 20.0, "sweep_end_hz": 600.0,
+            "sweep_seconds": 0.1, "tail_seconds": 0.1,
+        }
+        config = BassManagementConfig(
+            output_mode=main.OUTPUT_MODE_SUBWOOFER_22_STEREO, output_key="test", output_label="test",
+            output_channels=4, sample_rate=48000, crossover_frequency_hz=80,
+            main_highpass_enabled=True, sub_level_db=0.0, sub_alignment_ms=0.0,
+            sub_polarity="normal",
+        )
+        full = autosub._auto_sub_stage_peak_prediction(
+            sweep_profile=profile, sample_rate=48000, channel="stereo", config=config,
+        )
+        quiet = autosub._auto_sub_stage_peak_prediction(
+            sweep_profile=profile, sample_rate=48000, channel="stereo", config=config,
+            sink_gain=0.31,
+        )
+        self.assertEqual(quiet["sink_gain"], 0.31)
+        for key, value in full["linear"].items():
+            self.assertAlmostEqual(quiet["linear"][key], value * 0.31, places=12)
+        self.assertAlmostEqual(quiet["maximum_dbfs"], full["maximum_dbfs"] + 20.0 * math.log10(0.31), places=3)
+
+    def test_stage_peak_prediction_22_stereo_bass_plus_two_allowed_with_reduced_sink(self):
+        profile = {
+            "sweep_start_hz": 20.0, "sweep_end_hz": 600.0,
+            "sweep_seconds": 0.1, "tail_seconds": 0.1,
+        }
+        config = BassManagementConfig(
+            output_mode=main.OUTPUT_MODE_SUBWOOFER_22_STEREO, output_key="test", output_label="test",
+            output_channels=4, sample_rate=48000, crossover_frequency_hz=80,
+            main_highpass_enabled=True, sub_level_db=2.0, sub_alignment_ms=0.0,
+            sub_polarity="normal",
+        )
+        # The stereo-bass routing feeds the full channel amplitude to the sub.
+        # At reduced master volume the +2 dB candidate is safely below the
+        # DAC full-scale (the user scenario: loud listening volume turned down).
+        at_31 = autosub._auto_sub_stage_peak_prediction(
+            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+            sink_gain=0.31,
+        )
+        self.assertTrue(at_31["safe"])
+        self.assertLess(at_31["maximum_dbfs"], 0.0)
+        # The same candidate must also be safe at full master volume: the
+        # LR24 lowpass peak of the short sweep stays under full-scale.
+        at_full = autosub._auto_sub_stage_peak_prediction(
+            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+        )
+        self.assertTrue(at_full["safe"])
+
+    def test_sink_gain_from_master_percent_is_cubic(self):
+        # Measured on the .104 PipeWire ALSA sink (UMC204HD, pipewire 1.6.8):
+        # the volume transfer curve is the PA cubic (percent/100)**3, e.g.
+        # 31% -> -30.5 dB and 10% -> -60.0 dB, not the linear percent/100.
+        self.assertEqual(autosub.auto_sub_sink_gain_from_master_percent(100), 1.0)
+        self.assertEqual(autosub.auto_sub_sink_gain_from_master_percent(0), 0.0)
+        self.assertAlmostEqual(autosub.auto_sub_sink_gain_from_master_percent(31), 0.31 ** 3, places=12)
+        self.assertAlmostEqual(autosub.auto_sub_sink_gain_from_master_percent(10), 0.10 ** 3, places=12)
+        self.assertAlmostEqual(
+            20.0 * math.log10(autosub.auto_sub_sink_gain_from_master_percent(31)), -30.5, places=1)
+        self.assertAlmostEqual(
+            20.0 * math.log10(autosub.auto_sub_sink_gain_from_master_percent(10)), -60.0, places=1)
+        self.assertEqual(autosub.auto_sub_sink_gain_from_master_percent(-5), 0.0)
+        self.assertEqual(autosub.auto_sub_sink_gain_from_master_percent(150), 1.0)
+
+    def test_stage_peak_prediction_22_stereo_bass_plus_six_blocked_even_reduced_sink(self):
+        profile = {
+            "sweep_start_hz": 20.0, "sweep_end_hz": 600.0,
+            "sweep_seconds": 0.1, "tail_seconds": 0.1,
+        }
+        config = BassManagementConfig(
+            output_mode=main.OUTPUT_MODE_SUBWOOFER_22_STEREO, output_key="test", output_label="test",
+            output_channels=4, sample_rate=48000, crossover_frequency_hz=80,
+            main_highpass_enabled=True, sub_level_db=6.0, sub_alignment_ms=0.0,
+            sub_polarity="normal",
+        )
+        # At reduced master the real cubic sink gain leaves plenty of
+        # headroom (31% -> 0.31**3 = 0.0298): +6 dB stays far below 0 dBFS.
+        moderate = autosub._auto_sub_stage_peak_prediction(
+            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+            sink_gain=autosub.auto_sub_sink_gain_from_master_percent(31),
+        )
+        self.assertTrue(moderate["safe"])
+        # At full master volume the same +6 dB candidate genuinely clips the
+        # float→integer conversion and must stay blocked.
+        full = autosub._auto_sub_stage_peak_prediction(
+            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+        )
+        self.assertFalse(full["safe"])
+        # The same candidate is also unsafe at 90% master (0.9**3 = 0.729):
+        # 0.8 * 1.995 * 0.729 = 1.16 exceeds 0 dBFS at the DAC.
+        near_full = autosub._auto_sub_stage_peak_prediction(
+            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+            sink_gain=autosub.auto_sub_sink_gain_from_master_percent(90),
+        )
+        self.assertFalse(near_full["safe"])
+        # At 70% master (0.7**3 = 0.343) the same candidate is safe:
+        # 0.8 * 1.995 * 0.343 = 0.55 (-5.2 dBFS).
+        reduced = autosub._auto_sub_stage_peak_prediction(
+            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+            sink_gain=autosub.auto_sub_sink_gain_from_master_percent(70),
+        )
+        self.assertTrue(reduced["safe"])
+
+    def test_stage_peak_comparison_folds_sink_gain_into_measured(self):
+        predicted = {
+            "dbfs": {"output_1": -12.0, "output_2": -12.0, "output_3": -12.0, "output_4": -12.0},
+        }
+        measured = {key: 10.0 ** (db / 20.0) for key, db in predicted["dbfs"].items()}
+        comparison = autosub._auto_sub_stage_peak_comparison(predicted, measured, sink_gain=0.31)
+        self.assertTrue(comparison["measured_safe"])
+        for key, db in comparison["measured"]["dbfs"].items():
+            self.assertAlmostEqual(db, -12.0 + 20.0 * math.log10(0.31), places=3)
 
     def test_four_stage_peak_channels_compare_plausibly(self):
         predicted = {

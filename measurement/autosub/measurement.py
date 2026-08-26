@@ -20,6 +20,7 @@ from audio.samplerate import (
     get_audio_output_overview,
     set_audio_output_mode,
 )
+from audio.system_volume import get_status_volume
 from dsp.runtime import BassManagementConfig
 
 from .candidates import (
@@ -40,6 +41,7 @@ from .jobs import (
     _auto_sub_job_playback_gain,
     _auto_sub_stage_peak_comparison,
     _auto_sub_stage_peak_prediction,
+    auto_sub_sink_gain_from_master_percent,
     AutoSubPeakSafetyError,
 )
 
@@ -214,12 +216,18 @@ async def _measure_auto_sub_candidate(
             "scan": stage,
         })
     playback_gain = _auto_sub_job_playback_gain(job)
+    master_percent = get_status_volume()
+    # The sink applies the master volume as a float-domain gain before the
+    # float→integer conversion; its transfer curve is the measured PA cubic
+    # (percent/100)**3, so the prediction folds in the resulting linear gain.
+    sink_gain = auto_sub_sink_gain_from_master_percent(master_percent)
     stage_peak_prediction = _auto_sub_stage_peak_prediction(
         sweep_profile=auto_sub_sweep_profile,
         sample_rate=auto_sub_rate,
         channel=channel,
         config=BassManagementConfig.from_overview(get_audio_output_overview()),
         playback_gain=playback_gain,
+        sink_gain=sink_gain,
     )
     if exact_sub_mute:
         for key in ("output_3", "output_4"):
@@ -233,8 +241,9 @@ async def _measure_auto_sub_candidate(
             stage, delay_ms, stage_peak_prediction["dbfs"],
         )
         job["message"] = (
-            f"AutoGain candidate blocked before sweep: predicted Stage peak "
-            f"{stage_peak_prediction['maximum_dbfs']:.2f} dBFS exceeds −1 dBFS"
+            f"AutoGain candidate blocked before sweep: predicted DAC peak "
+            f"{stage_peak_prediction['maximum_dbfs']:.2f} dBFS exceeds 0 dBFS "
+            f"(master volume {master_percent}%)"
         )
         peak_failure = {"predicted": stage_peak_prediction, "status": "headroom_blocked"}
         job.setdefault("auto_gain", {})["stage_output_peaks"] = peak_failure
@@ -309,13 +318,13 @@ async def _measure_auto_sub_candidate(
         _marks["sweep_poll_done"] = time.monotonic()
         measured_stage_peaks = await _dsp_runtime().read_output_peaks()
         stage_peak_comparison = _auto_sub_stage_peak_comparison(
-            stage_peak_prediction, measured_stage_peaks,
+            stage_peak_prediction, measured_stage_peaks, sink_gain=sink_gain,
         )
         if stage_peak_comparison["relevant_mismatch"] or not stage_peak_comparison["measured_safe"]:
             reason = (
                 "Native DSP peak mismatch"
                 if stage_peak_comparison["relevant_mismatch"]
-                else "Native DSP measured peak exceeded −1 dBFS"
+                else "Native DSP measured peak exceeded 0 dBFS at the DAC"
             )
             logger.error("Auto-sub stopped: %s diagnostics=%s", reason, json.dumps(stage_peak_comparison, sort_keys=True))
             job["message"] = f"Auto Sub stopped: {reason}"
