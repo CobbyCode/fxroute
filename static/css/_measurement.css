@@ -177,11 +177,6 @@
     width: 190px;
 }
 
-.measurement-workflow-menu-trigger {
-    display: grid;
-    gap: 0.4rem;
-}
-
 .measurement-workflow-menu-panel {
     position: absolute;
     top: calc(100% + 0.45rem);
