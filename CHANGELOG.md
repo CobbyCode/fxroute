@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.9.13 (2026-08-26)
+
+### Installer / platforms
+- Fedora DSP build now uses the correct dnf package name `lv2-zam-plugins`;
+  Arch/Manjaro install `lilv-tools` for `lv2ls`, and the installer follows the
+  actively running firewall stack on Debian/Ubuntu (UFW when active, an
+  existing firewalld is respected, and no extra firewall is installed without
+  an active one).
+- Headless installs start the target user's session manager and session bus
+  (`dbus.service`) explicitly and add the target user to the `audio` group for
+  ALSA access; Debian 13 ARM installer and DSP mappings were fixed.
+- Hardened installer/uninstaller ownership handling and tool parsing
+  (C locale for target-user output, bounded probes, ownership records on
+  reruns); completed optional streaming-provider setup.
+
+### Measurement / AutoSub
+- Streamlined the measurement workflow: one Start Sweep menu with L/R/Stereo
+  chips, LR Repeat and Advanced actions, and shared cancellation across sweep
+  types.
+- AutoSub DAC peak safety now reads a fresh unclamped master value and applies
+  the real cubic sink-volume curve, checking the four final Stage outputs
+  against the 0 dBFS full-scale/clipping limit instead of a fixed −1 dBFS
+  headroom.
+- Restored the measurement graph smoothing contract after the UI refactor.
+
+### Playback / responsiveness
+- Remaining synchronous PipeWire/Samplerate reads were offloaded from the
+  event loop and hot transition paths were trimmed, improving handoff
+  responsiveness.
+- Bluetooth cleanup and device queries no-op when the BlueZ daemon is down,
+  and pactl invocations are locale-safe.
+
+### Streaming / Library / UI
+- TIDAL gained real playlist writes (create new or add to an existing
+  playlist), artist detail views, an instant cached library, and background
+  DASH prefetch for the next queue track.
+- spotifyd and qbzd idle states now show as standby instead of "not running".
+- Library and TIDAL track selection, favorites hearts, album-card favorites,
+  and artwork-led detail headers were unified.
+- The playback footer uses a neutral master volume curve and shows the peak
+  state in the level badge; text responses are gzip-compressed.
+
 ## 0.9.12 (2026-08-16)
 
 ### Native DSP engine
@@ -159,8 +201,6 @@
 - Sweep start after an SPL calibration repairs missing stereo links instead
   of failing with "measurement session graph is not a repairable link-only
   loss".
-
-## Unreleased
 
 ## 0.9.5 (2026-08-08)
 

@@ -18,12 +18,16 @@ present:
 ```
 
 The installer enables `loginctl` lingering before starting PipeWire,
-WirePlumber, PipeWire-Pulse, and FXRoute. It then validates the target user's
-runtime sockets and runs `wpctl`, `pw-cli`, `pw-link`, and `pactl` in that same
-user context. A failed PipeWire session check is an installation failure, not
-an HTTP-only warning. RTKit is not an FXRoute dependency; PipeWire may log a
-fallback-priority warning when RTKit is absent, but the audio session remains
-functional without adding that desktop-oriented package.
+WirePlumber, PipeWire-Pulse, and FXRoute. On a headless system it also starts
+the target user's session manager and session bus (`dbus.service`) explicitly
+so the user session appears without a login, and adds the target user to the
+`audio` group when ALSA hardware is present. It then validates the target
+user's session bus and runtime sockets and runs `wpctl`, `pw-cli`, `pw-link`,
+and `pactl` in that same user context. A failed PipeWire session check is an
+installation failure, not an HTTP-only warning. RTKit is not an FXRoute
+dependency; PipeWire may log a fallback-priority warning when RTKit is absent,
+but the audio session remains functional without adding that desktop-oriented
+package.
 
 Custom `--target` paths must be dedicated directories whose final component is
 `fxroute` (a `--local-project` checkout may keep its own directory name); this

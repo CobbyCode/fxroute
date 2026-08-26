@@ -98,7 +98,7 @@ Use **Spotify** to control a Spotify player running in the same Linux user sessi
 - **Spotify Desktop** — the official desktop client, controlled through MPRIS. Requires an X11/Wayland desktop session.
 - **spotifyd** — a headless Spotify player that also works in a session without a desktop. It uses the PipeWire-Pulse backend and MPRIS.
 
-FXRoute detects the running backend and shows the player state in the Spotify tab. Both backends offer the same control surface:
+FXRoute detects the running backend and shows the player state in the Spotify tab. When the backend is running but idle (for example spotifyd waiting for a Spotify Connect session), the tab shows a standby state instead of an error. Both backends offer the same control surface:
 
 - play/pause
 - previous/next track
@@ -128,7 +128,7 @@ Spotify volume is the provider's own volume. The playback-bar slider remains the
 
 ## 7. Qobuz
 
-The Qobuz tab controls a **Qobuz Connect** player on the audio PC. Playback starts from the Qobuz app: run `"$HOME/.local/bin/qbzd" setup` once after installation, enable Qobuz Connect, then select the FXRoute device from the Qobuz app. The FXRoute tab then shows what is playing and offers the same transport controls as the other sources:
+The Qobuz tab controls a **Qobuz Connect** player on the audio PC. Playback starts from the Qobuz app: run `"$HOME/.local/bin/qbzd" setup` once after installation, enable Qobuz Connect, then select the FXRoute device from the Qobuz app. The FXRoute tab then shows what is playing and offers the same transport controls as the other sources. While qbzd is running but no FXRoute device is active, the tab shows a standby state instead of an error. The controls are:
 
 - play/pause
 - previous/next track
@@ -153,6 +153,8 @@ The tab provides:
 - search the catalog
 - favorite tracks, albums, artists, and playlists (favorites appear in the footer for the current track)
 - album, artist, and playlist pages with cover art and track lists
+- select tracks and save them as a new TIDAL playlist or add them to an
+  existing one
 
 TIDAL playback runs natively through FXRoute's audio engine, so the DSP chain, output mode, and sample-rate policy apply exactly as for local files. Playback control lives in the bottom playback bar, and the master volume slider applies to TIDAL playback.
 
@@ -234,7 +236,8 @@ The **Output extras** helpers apply on top of the active preset automatically, e
 - **Loudness** applies a calibrated contour that follows the playback level.
   **Strength** controls its intensity; when Autogain is active, the contour
   also accounts for the selected Autogain target. A **FFT** setting selects
-  the analysis window size.
+  the analysis window size. Loudness works at its own internal DSP level and
+  never changes the FXRoute master volume.
 - **Bass enhancer** adds adjustable low-frequency enhancement.
 - **Tone effect** provides broad tonal shaping with **Crystalizer** or
   **Maximizer** modes.
@@ -362,7 +365,7 @@ The optimizer does not measure the subwoofer's internal latency directly. It opt
 
 Where the active mode uses a fine scan, FXRoute checks additional candidates around the best coarse delay region. In 2.2 Mono, the matrix scan evaluates the combined dual-sub result. The selected values apply to the measured crossover, room, and microphone position; they are not universal latency figures.
 
-In **2.1** and **2.2 Mono**, candidates are evaluated against both left and right main channels so a weak result on one side affects the combined choice. In **2.2 Stereo**, the left and right sub/main branches are evaluated and optimized separately. The active polarity is protected unless another measured setting is clearly better. Autogain then makes measured gain steps of up to ±6 dB against the selected target curve, verifies them with fresh sweeps, and restores gain changes that do not improve the result. Before and during those gain sweeps, FXRoute checks all four final Stage outputs and stops an unsafe candidate before it can exceed −1 dBFS. PEQ, target curves, and room-correction filters are not changed.
+In **2.1** and **2.2 Mono**, candidates are evaluated against both left and right main channels so a weak result on one side affects the combined choice. In **2.2 Stereo**, the left and right sub/main branches are evaluated and optimized separately. The active polarity is protected unless another measured setting is clearly better. Autogain then makes measured gain steps of up to ±6 dB against the selected target curve, verifies them with fresh sweeps, and restores gain changes that do not improve the result. Before and during those gain sweeps, FXRoute evaluates the level that actually reaches the DAC: the real master/sink gain is folded in (the master percentage maps to linear gain through the cubic PipeWire/Pulse volume curve), and the four final Stage outputs are checked against the 0 dBFS full-scale/clipping limit, stopping an unsafe candidate before playback. PEQ, target curves, and room-correction filters are not changed.
 
 **Recommended order with EQ or Convolver:**
 
@@ -417,7 +420,7 @@ Click the FXRoute logo to open **Technical settings**.
 Useful settings:
 
 - choose the audio output device
-- choose Stereo, 2.1 Subwoofer, or 2.2 Subwoofer output mode
+- choose Stereo, 2.1 Subwoofer, 2.2 Subwoofer, or 2.2 Stereo Bass output mode
 - follow the playback sample rate or use a fixed sample rate
 - check the current source mode
 - see Bluetooth input status when the host supports it
@@ -430,9 +433,9 @@ The power menu in the header lets you **Suspend** or **Shut down** the audio PC 
 
 ### Output modes
 
-Select **Stereo**, **2.1 Subwoofer**, or **2.2 Subwoofer** under **Output Mode**. The available subwoofer controls and measurement workflows depend on the selected mode. Set the crossover, levels, polarity, and alignment in the DSP output controls before running **Auto Sub Optimize**.
+Select **Stereo**, **2.1 Subwoofer**, **2.2 Subwoofer**, or **2.2 Stereo Bass** under **Output Mode**. The available subwoofer controls and measurement workflows depend on the selected mode. Set the crossover, levels, polarity, and alignment in the DSP output controls before running **Auto Sub Optimize**.
 
-The **Crossover / Subwoofer** card on the DSP page shows the routing (`Out 1/2 Main · Out 3/4 Sub` in 2.1 mode, `Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2` in 2.2 mode), a crossover preview, the crossover frequency (40–200 Hz), the main highpass, and per-subwoofer level, alignment, and polarity. In 2.2 mode, Sub 1 and Sub 2 are configured separately.
+The **Crossover / Subwoofer** card on the DSP page shows the routing (`Out 1/2 Main · Out 3/4 Sub` in 2.1 mode, `Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2` in 2.2 mode, `Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub` in 2.2 Stereo Bass mode), a crossover preview, the crossover frequency (40–200 Hz), the main highpass, and per-subwoofer level, alignment, and polarity. In 2.2 modes, Sub 1 and Sub 2 are configured separately.
 
 ### Fixed Sample Rate
 
@@ -510,5 +513,6 @@ FXRoute is designed for:
 - local network browser control
 - a DAC, amp, active speakers, headphones, or similar listening setup
 - optionally a local Spotify client, spotifyd, or qbzd for provider playback
+- optionally a TIDAL account for catalog browsing and native playback
 
 FXRoute depends on an active audio user session with PipeWire. Headless CLI/minimal setups are supported when the user services stay enabled; running without a user session is not supported.

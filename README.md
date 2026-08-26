@@ -51,7 +51,7 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
 - Spotify desktop control through `playerctl` / MPRIS, including passive metadata refresh for automatic track changes
 - Spotify Lossless playback through a current local Spotify desktop client for eligible Premium accounts, when Lossless is enabled in Spotify (up to 24-bit/44.1 kHz FLAC); FXRoute provides remote client control, not the Spotify stream
 - native DSP preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
-- stereo, 2.1 subwoofer, and 2.2 subwoofer output modes
+- stereo, 2.1 subwoofer, 2.2 subwoofer, and 2.2 Stereo Bass output modes
 - global DSP helpers for protection, gain management, loudness contouring, bass enhancement, and tone shaping; Loudness provides a calibrated contour that follows the playback level and also accounts for the Auto Gain target when both are active
 - room and speaker measurements with host microphone capture, including Advanced to measure speakers, room response, and microphone position,
   calibration files, calibration-file export, smoothing, saved runs, a
@@ -62,9 +62,10 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
   Dayton UMM-6 SPL measurement, and manual C-weighted/Slow meter fallback;
   Auto Gain and Loudness are neutralized only for calibration
 - Auto Sub Optimize with measured delay, polarity, and target-aware subwoofer
-  gain verification for 2.1 and 2.2 output modes; confirmed AutoGain searches
-  can use up to ±6 dB while four final Stage outputs are checked against
-  −1 dBFS
+  gain verification for 2.1, 2.2, and 2.2 Stereo Bass output modes; confirmed
+  AutoGain searches can use up to ±6 dB while the four final Stage outputs are
+  checked at the DAC level against the 0 dBFS full-scale/clipping limit, using
+  the real master/sink gain
 - automatic or fixed sample-rate playback handling for local files, radio, Spotify, and Bluetooth handoff cases; FXRoute supports sample rates up to 384 kHz, subject to the capabilities of the selected audio device
 - rich now-playing and cover detail views for local, radio, and Spotify
   playback, including stream tech lines (codec/bitrate/sample rate) and
@@ -86,10 +87,10 @@ FXRoute runs in a **Linux user session with an active PipeWire audio stack**. Th
 The installer keeps FXRoute, PipeWire, WirePlumber, and PipeWire-Pulse in the
 same Unix user session. Run it as the audio user, or select that user when a
 root shell is used, for example `./install.sh --user khadas`. On a headless
-system the installer enables user-session persistence, starts the audio units,
-and refuses to report a successful install unless the target user's PipeWire
-socket, `wpctl`, `pw-cli`, `pw-link`, PipeWire-Pulse socket, and FXRoute DSP
-ingress sink are reachable.
+system the installer enables user-session persistence, starts the audio units
+and the session bus, and refuses to report a successful install unless the
+target user's session bus, PipeWire socket, `wpctl`, `pw-cli`, `pw-link`,
+PipeWire-Pulse socket, and FXRoute DSP ingress sink are reachable.
 
 Typical setup:
 
@@ -114,6 +115,7 @@ Tested installer targets so far include:
 - openSUSE Tumbleweed on x86_64
 - Fedora-family x86_64 systems
 - Armbian 26.2.1 / Ubuntu 24.04 Noble on ARM64 (`aarch64`, Khadas VIM1S; PipeWire setup may be needed depending on the image)
+- Debian 13/Trixie on ARM64 (`aarch64`)
 
 ## Native DSP engine
 
@@ -209,7 +211,7 @@ Typical URLs:
 - **Spotify** — control a local Spotify desktop client or spotifyd player
 - **Qobuz** — control a Qobuz Connect player on the audio PC
 - **TIDAL** — full catalog browser with login, search, favorites, and native playback
-- **Technical settings** — output selection, Stereo/2.1/2.2 modes, Auto or fixed sample rate, music libraries, source state, Bluetooth status, Maintenance updates, and local certificate access
+- **Technical settings** — output selection, Stereo/2.1/2.2/2.2 Stereo Bass modes, Auto or fixed sample rate, music libraries, source state, Bluetooth status, Maintenance updates, and local certificate access
 
 ## Library metadata
 

@@ -4436,7 +4436,7 @@ verify_lv2_plugins() {
 
   if ! command -v lv2ls >/dev/null 2>&1; then
     fail "LV2 plugin discovery tool (lv2ls) available"
-    die "LV2 plugin verification needs lv2ls from lilv-utils (Debian/Ubuntu) or lilv (Fedora/openSUSE/Arch)"
+    die "LV2 plugin verification needs lv2ls from lilv-utils (Debian/Ubuntu), lilv (Fedora/openSUSE), or lilv-tools (Arch/Manjaro)"
   fi
 
   discovered="$(lv2ls 2>/dev/null || true)"
@@ -4452,7 +4452,7 @@ verify_lv2_plugins() {
     for uri in "${missing[@]}"; do
       fail "LV2 plugin available: $uri"
     done
-    die "FXRoute DSP effects need these LV2 plugins: ${missing[*]}; install lsp-plugins-lv2 zam-plugins calf-plugins (Debian/Ubuntu/Armbian), lsp-plugins-lv2 zam-plugins-lv2 lv2-calf-plugins (Fedora), lv2-lsp-plugins lv2-zam-plugins (openSUSE), or lsp-plugins zam-plugins calf (Arch/Manjaro)"
+    die "FXRoute DSP effects need these LV2 plugins: ${missing[*]}; install lsp-plugins-lv2 zam-plugins calf-plugins (Debian/Ubuntu/Armbian), lsp-plugins-lv2 lv2-zam-plugins lv2-calf-plugins (Fedora), lv2-lsp-plugins lv2-zam-plugins (openSUSE), or lsp-plugins zam-plugins calf (Arch/Manjaro)"
   fi
 }
 
