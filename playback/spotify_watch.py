@@ -61,12 +61,12 @@ class SpotifyPlayerctlWatch:
             for index, delay_s in enumerate(burst_delays):
                 if delay_s > 0:
                     await asyncio.sleep(delay_s if index == 0 else max(0.0, delay_s - burst_delays[index - 1]))
-                spotify_inputs = deps.list_spotify_sink_inputs()
+                spotify_inputs = await asyncio.to_thread(deps.list_spotify_sink_inputs)
                 spotify_observation = deps.spotify_sink_input_observation(spotify_inputs)
                 spotify_identity = spotify_observation[0] if spotify_observation else None
                 spotify_rate = spotify_observation[1] if spotify_observation else None
                 spotify_state = await deps.get_spotify_ui_state()
-                samplerate_status = samplerate.get_samplerate_status()
+                samplerate_status = await asyncio.to_thread(samplerate.get_samplerate_status)
                 sink_rate = samplerate_status.get("active_rate")
                 last_snapshot = (
                     spotify_state.get("status"),

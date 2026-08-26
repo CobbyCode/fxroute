@@ -300,7 +300,7 @@ class PlaybackOrchestrator:
         )
 
     async def transition_sample_rate_policy(self, policy: Mapping[str, Any], *, detail: str) -> None:
-        overview = self._deps.get_audio_output_overview()
+        overview = await asyncio.to_thread(self._deps.get_audio_output_overview)
         selected = overview.get("selected_output") or overview.get("current_output") or {}
         if policy.get("mode") == "fixed" and policy.get("rate") not in (selected.get("supported_rates") or []):
             raise ValueError("Selected output does not support this sample rate")
@@ -313,7 +313,7 @@ class PlaybackOrchestrator:
                 source_rate = live_rate
         target_rate = samplerate.effective_playback_rate(source_rate, policy)
         if not isinstance(target_rate, int) or target_rate <= 0:
-            status = self._deps.get_samplerate_status()
+            status = await asyncio.to_thread(self._deps.get_samplerate_status)
             target_rate = status.get("active_rate") or status.get("force_rate")
         if not isinstance(target_rate, int) or target_rate <= 0:
             raise RuntimeError("current hardware sample rate is unavailable")
@@ -355,7 +355,7 @@ class PlaybackOrchestrator:
                   "port_identities": {"source": (), "source_target": (), "dsp": (), "helper": (), "output": ()},
                   "signature": "unreadable"}
         try:
-            overview = audio_overview or self._deps.get_audio_output_overview()
+            overview = audio_overview or await asyncio.to_thread(self._deps.get_audio_output_overview)
             output_mode = overview.get("output_mode") or {}
             mode = output_mode.get("mode")
             output_key = str(output_mode.get("effective_output_key") or "").strip()
@@ -525,7 +525,7 @@ class PlaybackOrchestrator:
         overview = (
             copy.deepcopy(request.output_mode_target)
             if request.output_mode_target
-            else (dict(request.audio_overview) if request.audio_overview else self._deps.get_audio_output_overview())
+            else (dict(request.audio_overview) if request.audio_overview else await asyncio.to_thread(self._deps.get_audio_output_overview))
         )
         mode = (overview.get("output_mode") or {}).get("mode")
         diagnosis = await self.playback_graph_diagnosis(overview, target_rate=target_rate)
@@ -558,7 +558,7 @@ class PlaybackOrchestrator:
             if not await self.wait_for_dsp_output_ports(timeout):
                 raise RuntimeError("Coordinator effects stage failed: native DSP output ports were not confirmed")
             if request.operation in {"measurement-entry", "output-mode-switch"} and not await self._deps.reconcile_sink_rate(target_rate, reason=f"effects-{request.operation}"):
-                status = dict(self._deps.get_samplerate_status())
+                status = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
                 raise RuntimeError(f"Coordinator effects stage rate reconcile failed: expected={target_rate} active={status.get('active_rate')} force={status.get('force_rate')}")
             if request.operation == "output-mode-switch":
                 await self._deps.sync_runtime(audio_overview=overview, reason="coordinator-output-mode-switch", _rate_lock_held=False, target_overview=overview)

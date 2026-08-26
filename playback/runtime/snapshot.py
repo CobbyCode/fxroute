@@ -165,7 +165,7 @@ class _RuntimeSnapshotMixin:
                 or previous_state.get("paused")
                 or previous_state.get("ended")
             ):
-                restore_request = self._build_restore_request(
+                restore_request = await self._build_restore_request(
                     request, snapshot, previous_state, snapshot_track
                 )
                 if restore_request is not None:
@@ -202,7 +202,7 @@ class _RuntimeSnapshotMixin:
                 return None
 
         if source_policy.is_mpv_source(snapshot_track.get("source")) and previous_state.get("current_file"):
-            restore_request = self._build_restore_request(
+            restore_request = await self._build_restore_request(
                 request, snapshot, previous_state, snapshot_track
             )
             if restore_request is not None:
@@ -249,7 +249,7 @@ class _RuntimeSnapshotMixin:
         self._deps.set_playback_owner(None)
         self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
 
-    def _build_restore_request(
+    async def _build_restore_request(
         self,
         request: TransitionRequest,
         snapshot: Mapping[str, Any] | None,
@@ -298,7 +298,7 @@ class _RuntimeSnapshotMixin:
         # validated/reinitialized; establish_target_rate stays idempotent
         # when the hardware already stands correctly.
         try:
-            live_status = dict(self._deps.get_samplerate_status())
+            live_status = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
         except Exception:
             live_status = {}
         live_active = int(live_status.get("active_rate") or 0)
