@@ -20,6 +20,9 @@ class VolumeState:
     preset: str
     loudness_enabled: bool
     volume_db: float
+    # FXRoute master in the PipeWire/Pulse volume scale (percent 0..100).
+    # The real linear sink gain is the cubic (percent/100)**3; never use
+    # percent/100 as a gain, see audio.system_volume.volume_percent_to_linear_gain.
     master_percent: int
     dsp_guard_db: float = 0.0
 

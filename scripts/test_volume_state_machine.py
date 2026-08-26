@@ -75,6 +75,19 @@ def assert_safe_transition(test, start, target, actions):
 
 
 class VolumeContractUnitTests(unittest.TestCase):
+    def test_master_percent_to_linear_gain_is_cubic(self):
+        # The FXRoute master percent is the PipeWire/Pulse volume scale. The
+        # real linear sink gain is the cubic (percent/100)**3 (verified on the
+        # .104 UMC204HD sink path); percent/100 must never be used as a gain
+        # in peak/headroom calculations.
+        gain = system_volume.volume_percent_to_linear_gain
+        self.assertEqual(gain(100), 1.0)
+        self.assertEqual(gain(0), 0.0)
+        self.assertAlmostEqual(gain(50), 0.125, places=12)
+        self.assertAlmostEqual(gain(31), 0.31 ** 3, places=12)
+        self.assertAlmostEqual(gain(31), 0.0298, places=4)
+        self.assertAlmostEqual(system_volume.volume_percent_to_db(31), -30.5, places=1)
+
     def test_loudness_in_path_only_when_enabled_and_not_direct(self):
         self.assertTrue(state(preset="Neutral", loudness=True).loudness_in_path)
         self.assertFalse(state(preset="Direct", loudness=True).loudness_in_path)

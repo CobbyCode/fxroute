@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 import numpy as np
 import audio.volume_contract as volume_contract
+from audio.system_volume import volume_percent_to_linear_gain
 from fastapi import APIRouter, HTTPException
 
 from dsp.runtime import BassManagementConfig
@@ -130,15 +131,13 @@ class AutoSubPeakSafetyError(RuntimeError):
     """Abort the complete AutoSub run after a native-DSP peak safety failure."""
 
 def auto_sub_sink_gain_from_master_percent(percent: int | float) -> float:
-    """Return the linear gain the hardware sink applies for a master percent.
+    """Linear gain the hardware sink applies for a master percent.
 
-    Measured on the PipeWire ALSA sink (UMC204HD, pipewire 1.6.8): the sink
-    node applies the volume as float-domain gain before the float→integer
-    conversion, and the volume transfer curve is the PulseAudio cubic
-    ``(percent / 100) ** 3`` (e.g. 31% -> -30.5 dB, 10% -> -60.0 dB).
+    Same PipeWire/Pulse cubic curve as
+    :func:`audio.system_volume.volume_percent_to_linear_gain` (verified on
+    the .104 UMC204HD sink: 31% -> -30.5 dB, 10% -> -60.0 dB).
     """
-    normalized = max(0.0, min(1.0, float(percent) / 100.0))
-    return normalized ** 3
+    return volume_percent_to_linear_gain(percent)
 
 def _auto_sub_stage_peak_prediction(
     *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,

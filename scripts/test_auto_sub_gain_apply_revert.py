@@ -187,6 +187,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         # 31% -> -30.5 dB and 10% -> -60.0 dB, not the linear percent/100.
         self.assertEqual(autosub.auto_sub_sink_gain_from_master_percent(100), 1.0)
         self.assertEqual(autosub.auto_sub_sink_gain_from_master_percent(0), 0.0)
+        self.assertAlmostEqual(autosub.auto_sub_sink_gain_from_master_percent(50), 0.125, places=12)
         self.assertAlmostEqual(autosub.auto_sub_sink_gain_from_master_percent(31), 0.31 ** 3, places=12)
         self.assertAlmostEqual(autosub.auto_sub_sink_gain_from_master_percent(10), 0.10 ** 3, places=12)
         self.assertAlmostEqual(

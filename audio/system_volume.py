@@ -1,4 +1,14 @@
-"""Helpers for PipeWire/PulseAudio output volume control via wpctl."""
+"""Helpers for PipeWire/PulseAudio output volume control via wpctl.
+
+Volume scale semantics (verified on the real .104 sink path, UMC204HD,
+pipewire 1.6.8): the FXRoute master percent is the PipeWire/Pulse volume
+fraction times 100. The sink applies that volume as a float-domain gain
+before the float→integer conversion, and the transfer curve is the
+PulseAudio cubic ``(percent / 100) ** 3`` (100% -> 1.0, 50% -> 0.125,
+31% -> -30.5 dB, 10% -> -60.0 dB). Peak/headroom calculations must
+therefore never treat ``percent / 100`` as a linear gain; use
+:func:`volume_percent_to_linear_gain` instead.
+"""
 
 from __future__ import annotations
 
@@ -48,7 +58,17 @@ _volume_monitor_task: asyncio.Task[Any] | None = None
 
 
 def volume_percent_to_linear_gain(percent: int | float) -> float:
-    """Return PipeWire's effective gain for the cubic FXRoute slider."""
+    """Return the real linear gain PipeWire applies for a master percent.
+
+    The FXRoute master percent is the PipeWire/Pulse volume fraction times
+    100. PipeWire applies the volume as a float-domain gain on the sink, and
+    its transfer curve is the PulseAudio cubic ``(percent / 100) ** 3``:
+    100% -> 1.0 (0 dB), 50% -> 0.125 (-18.1 dB), 31% -> 0.0298 (-30.5 dB),
+    0% -> 0. This was verified on the real sink path (.104, UMC204HD,
+    pipewire 1.6.8): five master settings measured on the sink monitor match
+    the cubic curve exactly. Do not use ``percent / 100`` as a linear gain in
+    peak or headroom calculations.
+    """
     normalized = max(0.0, min(100.0, float(percent))) / 100.0
     return normalized ** 3
 
