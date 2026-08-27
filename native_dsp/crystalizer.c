@@ -452,17 +452,30 @@ void fx_crystalizer_set_band_intensity_db(fx_crystalizer *c, size_t band, float 
 
 void fx_crystalizer_process(fx_crystalizer *c, const float *input, float *output, size_t frames) {
     if (!c || !input || !output) return;
-    for (size_t i = 0; i < frames; i++) {
-        output[i] = c->output_count ? c->output_block[c->output_pos++] : 0.0F;
-        if (c->output_count) c->output_count--;
-        float up[4];
-        spx_uint32_t input_count = 1U, output_count = 4U;
-        if (speex_resampler_process_float(c->upsampler, 0U, input + i, &input_count,
-                                          up, &output_count) != RESAMPLER_ERR_SUCCESS) output_count = 0U;
+    /* Batched resampler with per-sample read/feed semantics: slices end
+     * exactly on 2048-upsample block completions (one completion per 1024
+     * inputs at the 2x oversampling ratio), so block results become visible
+     * to the output ring at the same input positions as the per-sample loop
+     * for every quantum and call pattern. */
+    float staging[2048];
+    size_t done = 0;
+    while (done < frames) {
+        size_t to_completion = (BLOCK_SIZE - c->block_pos + 1U) / 2U;
+        size_t slice = frames - done;
+        if (slice > to_completion) slice = to_completion;
+        if (slice > 1024U) slice = 1024U;
+        for (size_t i = 0; i < slice; i++) {
+            output[done + i] = c->output_count ? c->output_block[c->output_pos++] : 0.0F;
+            if (c->output_count) c->output_count--;
+        }
+        spx_uint32_t input_count = (spx_uint32_t)slice, output_count = (spx_uint32_t)(2U * slice);
+        if (speex_resampler_process_float(c->upsampler, 0U, input + done, &input_count,
+                                          staging, &output_count) != RESAMPLER_ERR_SUCCESS) output_count = 0U;
         for (spx_uint32_t phase = 0; phase < output_count; phase++) {
-            c->input_block[c->block_pos] = up[phase];
+            c->input_block[c->block_pos] = staging[phase];
             if (++c->block_pos == BLOCK_SIZE) { filter_block(c); process_block(c); c->block_pos = 0U; }
         }
+        done += slice;
     }
 }
 
