@@ -14,6 +14,7 @@ import json
 import logging
 import socket
 import shlex
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
@@ -222,6 +223,7 @@ class DSPRuntime:
         self.binary = Path(binary or os.environ.get("FXROUTE_DSP_BINARY") or Path(__file__).parent.parent / "native_dsp/build/fxroute-dsp")
         self._run = command_runner or self._run_command
         self._launch = process_launcher or self._launch_process
+        self._realtime_launcher = os.environ.get("FXROUTE_DSP_RT_LAUNCHER", "")
         self._process = None
         self._config: DSPRuntimeConfig | None = None
         self._config_path: Path | None = None
@@ -844,6 +846,9 @@ class DSPRuntime:
             raise
         return CommandResult(process.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace"))
 
-    @staticmethod
-    async def _launch_process(args: Sequence[str]) -> Any:
-        return await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    async def _launch_process(self, args: Sequence[str]) -> Any:
+        launch_args = list(args)
+        launcher = self._realtime_launcher
+        if launcher and shutil.which(launcher):
+            launch_args = [launcher, "-f", "20", *launch_args]
+        return await asyncio.create_subprocess_exec(*launch_args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
