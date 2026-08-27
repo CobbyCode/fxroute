@@ -792,7 +792,15 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
                                 stage->lv2_comp_transition = 0;
                         }
                     }
-                } else for(unsigned channel=0;channel<d->inputs;channel++) {
+                } else {
+                    unsigned channel=0;
+                    if(stage->kind==STAGE_CRYSTALIZER && d->inputs>=2U && stage->crystalizer[0] && stage->crystalizer[1]) {
+                        fx_crystalizer_process_pair(stage->crystalizer[0],stage->crystalizer[1],
+                            d->scratch[source][0],d->scratch[source][1],
+                            d->scratch[target][0],d->scratch[target][1],count);
+                        channel=2U;
+                    }
+                    for(;channel<d->inputs;channel++) {
                     float *src=d->scratch[source][channel],*dst=d->scratch[target][channel];
                     if(stage->kind==STAGE_CRYSTALIZER) fx_crystalizer_process(stage->crystalizer[channel],src,dst,count);
                     else for(size_t n=0;n<count;n++) {
@@ -805,6 +813,7 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
                             value=stage->delay_line[channel][read]; stage->delay_pos[channel]=(stage->delay_pos[channel]+1U)%stage->delay_size[channel];
                         }
                         dst[n]=isfinite(value)?value:0.0f;
+                    }
                     }
                 }
                 source=target;
