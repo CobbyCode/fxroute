@@ -30,7 +30,7 @@ typedef struct { float b0, b1, b2, a1, a2, z1, z2; } biquad;
 typedef struct { float re, im; } complex_value;
 typedef struct {
     size_t tap_count, head_count, head_pos, partition_count, input_pos, spectrum_pos;
-    float *head, *head_history, *input_block, *tail_output, *overlap;
+    float *head, *head_fwd, *head_history, *win, *input_block, *tail_output, *overlap;
     complex_value *ir_spectra, *input_spectra, *work;
 } convolution;
 typedef struct {
@@ -223,14 +223,19 @@ static int prepare_convolution(fxdsp *d, convolution *c, float *taps, size_t cou
     c->tap_count = count; c->head_count = count < CONV_BLOCK ? count : CONV_BLOCK;
     c->partition_count = count > CONV_BLOCK ? (count - CONV_BLOCK + CONV_BLOCK - 1) / CONV_BLOCK : 0;
     c->head = calloc(c->head_count, sizeof *c->head); c->head_history = calloc(c->head_count, sizeof *c->head_history);
+    c->head_fwd = calloc(c->head_count, sizeof *c->head_fwd); c->win = calloc(2 * c->head_count, sizeof *c->win);
     if (c->partition_count) {
         c->input_block = calloc(CONV_BLOCK, sizeof *c->input_block); c->tail_output = calloc(CONV_BLOCK, sizeof *c->tail_output);
         c->overlap = calloc(CONV_BLOCK, sizeof *c->overlap); c->work = calloc(fft_size, sizeof *c->work);
         c->ir_spectra = calloc(c->partition_count * fft_size, sizeof *c->ir_spectra);
         c->input_spectra = calloc(c->partition_count * fft_size, sizeof *c->input_spectra);
     }
-    if (!c->head || !c->head_history || (c->partition_count && (!c->input_block || !c->tail_output || !c->overlap || !c->work || !c->ir_spectra || !c->input_spectra))) return -1;
+    if (!c->head || !c->head_history || !c->head_fwd || !c->win ||
+        (c->partition_count && (!c->input_block || !c->tail_output || !c->overlap || !c->work || !c->ir_spectra || !c->input_spectra))) return -1;
     memcpy(c->head, taps, c->head_count * sizeof *taps);
+    /* head_fwd is the time-reversed head so the per-sample window sum walks
+     * both buffers in ascending order (vectorizer-friendly dot product). */
+    for (size_t i = 0; i < c->head_count; i++) c->head_fwd[i] = c->head[c->head_count - 1U - i];
     for (size_t p = 0; p < c->partition_count; p++) {
         complex_value *spectrum = c->ir_spectra + p * fft_size;
         size_t offset = CONV_BLOCK + p * CONV_BLOCK;
@@ -242,11 +247,29 @@ static int prepare_convolution(fxdsp *d, convolution *c, float *taps, size_t cou
 }
 
 static float convolve(fxdsp *d, convolution *c, float input) {
-    double direct = 0;
-    c->head_history[c->head_pos] = input;
-    size_t history = c->head_pos;
-    for (size_t i = 0; i < c->head_count; i++) { direct += c->head[i] * c->head_history[history]; history = history ? history - 1 : c->head_count - 1; }
-    c->head_pos = (c->head_pos + 1) % c->head_count;
+    const size_t h = c->head_count;
+    /* Two-copy linear window: the newest sample is stored at head_pos and
+     * head_pos + h, so after the index wrap the last h inputs are
+     * win[head_pos .. head_pos + h - 1] in ascending order.  The window sum
+     * uses four independent accumulators (the serial single-accumulator
+     * double chain dominated the ARM64 profile) and walks both buffers
+     * ascending, which GCC can vectorize; products are rounded to float
+     * exactly like the original loop, only the summation order differs. */
+    c->win[c->head_pos] = input;
+    c->win[c->head_pos + h] = input;
+    c->head_pos = (c->head_pos + 1) % h;
+    const float *restrict w = c->win + c->head_pos;
+    const float *restrict taps = c->head_fwd;
+    double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+    size_t m = 0;
+    for (; m + 4 <= h; m += 4) {
+        a0 += (double)(taps[m] * w[m]);
+        a1 += (double)(taps[m + 1] * w[m + 1]);
+        a2 += (double)(taps[m + 2] * w[m + 2]);
+        a3 += (double)(taps[m + 3] * w[m + 3]);
+    }
+    double direct = (a0 + a1) + (a2 + a3);
+    for (; m < h; m++) direct += (double)(taps[m] * w[m]);
     if (!c->partition_count) return (float)direct;
     float tail = c->tail_output[c->input_pos];
     c->input_block[c->input_pos++] = input;
@@ -528,7 +551,8 @@ bad:
 }
 
 static void free_convolution(convolution *c) {
-    free(c->head); free(c->head_history); free(c->input_block); free(c->tail_output);
+    free(c->head); free(c->head_history); free(c->head_fwd); free(c->win);
+    free(c->input_block); free(c->tail_output);
     free(c->overlap); free(c->ir_spectra); free(c->input_spectra); free(c->work);
 }
 
