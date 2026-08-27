@@ -13,6 +13,8 @@ import logging
 import math
 import struct
 import time
+
+import numpy
 from dataclasses import dataclass
 from itertools import count
 from typing import Any, Awaitable, Callable, Optional
@@ -26,6 +28,9 @@ PEAK_THRESHOLD = 1.0
 HOLD_SECONDS = 0.03
 READ_SIZE = 4096
 DISCOVERY_INTERVAL = 0.4
+# Idle backoff: while no DSP output node exists (engine stopped) the
+# discovery loop must not spawn pw-cli at the full rate.
+DISCOVERY_INTERVAL_MAX = 2.0
 LINK_DISCOVERY_TIMEOUT = 3.0
 PORT_DISCOVERY_POLL_INTERVAL = 0.1
 LINK_RETRY_ATTEMPTS = 12
@@ -63,6 +68,11 @@ REBUILD_SETTLE_GRACE_SECONDS = 10.0
 # node recreation (same id, new serial) triggers an immediate rearm instead
 # of waiting for the no-data timeout.
 TARGET_RECHECK_INTERVAL = 1.0
+# Once the capture target has been stable for a while, the per-second
+# pw-cli recheck backs off; recreation still rearms quickly via capture
+# failures, and the early rechecks keep the fast interval.
+TARGET_RECHECK_INTERVAL_STABLE = 4.0
+TARGET_RECHECK_STABLE_BACKOFF_CHECKS = 10
 # A capture armed during the rebuild settle window can negotiate a degraded
 # stream (periodic 250-400 ms data gaps).  When repeated timeouts were
 # observed during the grace, rearm the capture once after the grace so the
@@ -211,6 +221,8 @@ class DSPPeakMonitor:
         self._settle_until = 0.0
         self._settle_timeout_count = 0
         self._settle_rearmed = False
+        self._empty_discoveries = 0
+        self._stable_target_checks = 0
         self._hold_until_l = 0.0
         self._hold_until_r = 0.0
         self._last_over_at_l: Optional[float] = None
@@ -376,12 +388,17 @@ class DSPPeakMonitor:
                 await asyncio.sleep(ERROR_RETRY_INTERVAL)
                 continue
 
+            if target is not None:
+                self._empty_discoveries = 0
             if target is None:
+                self._empty_discoveries += 1
                 if self._target is not None:
                     self._target = None
                     self._last_error = None
                     await self._emit_if_changed(force=True)
-                await asyncio.sleep(DISCOVERY_INTERVAL)
+                await asyncio.sleep(
+                    min(DISCOVERY_INTERVAL * self._empty_discoveries, DISCOVERY_INTERVAL_MAX)
+                )
                 continue
 
             if self._target != target:
@@ -472,6 +489,7 @@ class DSPPeakMonitor:
                 await self._emit_if_changed(force=True)
             self._settle_timeout_count = 0
             self._capture_armed_under_settle = self._settle_until > 0.0
+            self._stable_target_checks = 0
             last_target_check_at = time.monotonic()
             while self._running:
                 try:
@@ -534,7 +552,12 @@ class DSPPeakMonitor:
                                         "Peak monitor capture degraded after rebuild settle; "
                                         "rearming for a clean stream"
                                     )
-                    if now - last_target_check_at >= TARGET_RECHECK_INTERVAL:
+                    target_check_interval = (
+                        TARGET_RECHECK_INTERVAL
+                        if self._stable_target_checks < TARGET_RECHECK_STABLE_BACKOFF_CHECKS
+                        else TARGET_RECHECK_INTERVAL_STABLE
+                    )
+                    if now - last_target_check_at >= target_check_interval:
                         last_target_check_at = now
                         try:
                             current_target = await self._discover_target()
@@ -544,6 +567,8 @@ class DSPPeakMonitor:
                             raise RuntimeError(
                                 "Peak monitor target node was recreated; rearming capture"
                             )
+                        if current_target is not None and current_target == self._target:
+                            self._stable_target_checks += 1
                     no_data_timeout = (
                         REBUILD_SETTLE_GRACE_SECONDS
                         if now < self._settle_until else CAPTURE_NO_DATA_TIMEOUT
@@ -871,7 +896,40 @@ class DSPPeakMonitor:
         ``frame_bytes`` must be a multiple of 8 bytes (complete L/R frames).
         Joint peak is the max absolute sample across both channels; joint RMS
         is over all samples, matching the pre-stereo single-stream behavior.
+        Finite chunks are measured with vectorized numpy reductions; chunks
+        containing non-finite samples fall back to the scalar loop so the
+        per-sample skip semantics (channel assignment by original index)
+        stay exact.
         """
+        samples = numpy.frombuffer(frame_bytes, dtype="<f4")
+        if bool(numpy.isfinite(samples).all()):
+            return DSPPeakMonitor._stereo_metrics_vectorized(samples)
+        return DSPPeakMonitor._stereo_metrics_per_sample(frame_bytes)
+
+    @staticmethod
+    def _stereo_metrics_vectorized(samples: numpy.ndarray) -> StereoChunkMetrics:
+        """Peak/RMS for an interleaved stereo buffer without non-finite samples."""
+        left = samples[0::2]
+        right = samples[1::2]
+        peak_l = float(numpy.abs(left).max(initial=0.0))
+        peak_r = float(numpy.abs(right).max(initial=0.0))
+        sum_squares_l = float(numpy.square(left, dtype=numpy.float64).sum())
+        sum_squares_r = float(numpy.square(right, dtype=numpy.float64).sum())
+        count_l = int(left.size)
+        count_r = int(right.size)
+        return StereoChunkMetrics(
+            peak=max(peak_l, peak_r),
+            rms=math.sqrt((sum_squares_l + sum_squares_r) / (count_l + count_r))
+            if count_l + count_r else 0.0,
+            peak_l=peak_l,
+            rms_l=math.sqrt(sum_squares_l / count_l) if count_l else 0.0,
+            peak_r=peak_r,
+            rms_r=math.sqrt(sum_squares_r / count_r) if count_r else 0.0,
+        )
+
+    @staticmethod
+    def _stereo_metrics_per_sample(frame_bytes: bytes) -> StereoChunkMetrics:
+        """Scalar reference path: skips non-finite samples individually."""
         peak = 0.0
         sum_squares = 0.0
         count = 0
