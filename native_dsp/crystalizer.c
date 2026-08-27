@@ -49,7 +49,7 @@
 
 struct fx_crystalizer {
     unsigned rate;
-    size_t kernel_size, partition_count, block_pos, output_pos, output_count, spectrum_pos;
+    size_t kernel_size, partition_count, block_pos, output_pos, output_count, spectrum_pos, silence_run;
     SpeexResamplerState *upsampler, *downsampler;
     /* Per-stage contiguous twiddle pools; DIF stages read them front to back,
      * DIT stages in reverse order. */
@@ -330,6 +330,42 @@ static void process_block(fx_crystalizer *c) {
     c->output_pos = 0U; c->output_count = output_count; c->first_block = 0;
 }
 
+/* State update for a digital-zero block once the convolution history has
+ * fully flushed (partition_count + 1 zero blocks).  Reproduces the full
+ * path exactly: crest/flux measurements land on their 1.0 guards,
+ * kurtosis on 3.0, the history ring receives a zero spectrum, the
+ * previous-sample trackers are zeroed, and the downsampler advances over
+ * zeros so its history matches the unskipped stream. */
+static void silence_block(fx_crystalizer *c) {
+    float block_time = (float)BLOCK_SIZE / (2.0F * c->rate);
+    float attack = expf(-block_time / 0.4F), release = expf(-block_time / 3.0F);
+    c->global_crest = envelope(c->global_crest, 1.0F, attack, release);
+    c->global_kurtosis = envelope(c->global_kurtosis, 3.0F, attack, release);
+    c->global_flux = envelope(c->global_flux, 1.0F, attack, release);
+    c->global_previous = 0.0F;
+    memset(c->global_previous_data, 0, sizeof c->global_previous_data);
+    for (unsigned band = 0; band < CRYSTALIZER_BANDS; band++) {
+        c->env_crest[band] = envelope(c->env_crest[band], 1.0F, attack, release);
+        c->env_kurtosis[band] = envelope(c->env_kurtosis[band], 3.0F, attack, release);
+        c->env_flux[band] = envelope(c->env_flux[band], 1.0F, attack, release);
+        c->band_previous[band] = 0.0F;
+        memset(c->band_previous_data[band], 0, BLOCK_SIZE * sizeof(float));
+        memset(c->overlap[band], 0, BLOCK_SIZE * sizeof(float));
+        c->adaptive_intensity[band] = c->base_intensity[band] * cbrtf(
+            (c->global_crest / c->env_crest[band]) *
+            (c->global_kurtosis / c->env_kurtosis[band]) *
+            (c->global_flux / c->env_flux[band]));
+    }
+    c->spectrum_pos = (c->spectrum_pos + 1U) % c->partition_count;
+    memset(c->spectra_re + c->spectrum_pos * FFT_SIZE, 0, FFT_SIZE * sizeof(float));
+    memset(c->spectra_im + c->spectrum_pos * FFT_SIZE, 0, FFT_SIZE * sizeof(float));
+    spx_uint32_t input_count = BLOCK_SIZE, output_count = BLOCK_SIZE;
+    if (speex_resampler_process_float(c->downsampler, 0U, c->input_block, &input_count,
+                                      c->output_block, &output_count) != RESAMPLER_ERR_SUCCESS ||
+        input_count != BLOCK_SIZE) output_count = 0U;
+    c->output_pos = 0U; c->output_count = output_count; c->first_block = 0;
+}
+
 fx_crystalizer *fx_crystalizer_create(unsigned rate) {
     if (rate < 40040U) return NULL;
     fx_crystalizer *c = calloc(1, sizeof *c); if (!c) return NULL;
@@ -426,6 +462,7 @@ void fx_crystalizer_destroy(fx_crystalizer *c) {
 void fx_crystalizer_reset(fx_crystalizer *c) {
     if (!c) return;
     c->block_pos = c->output_pos = c->output_count = 0U; c->global_previous = 0.0F;
+    c->silence_run = 0U;
     speex_resampler_reset_mem(c->upsampler); speex_resampler_reset_mem(c->downsampler);
     c->global_crest = c->global_kurtosis = c->global_flux = 1.0F; c->first_block = 1;
     memset(c->input_block, 0, sizeof c->input_block); memset(c->output_block, 0, sizeof c->output_block);
@@ -473,7 +510,22 @@ void fx_crystalizer_process(fx_crystalizer *c, const float *input, float *output
                                           staging, &output_count) != RESAMPLER_ERR_SUCCESS) output_count = 0U;
         for (spx_uint32_t phase = 0; phase < output_count; phase++) {
             c->input_block[c->block_pos] = staging[phase];
-            if (++c->block_pos == BLOCK_SIZE) { filter_block(c); process_block(c); c->block_pos = 0U; }
+            if (++c->block_pos == BLOCK_SIZE) {
+                int nonzero = 0;
+                for (size_t i = 0; i < BLOCK_SIZE; i++) nonzero |= (c->input_block[i] != 0.0F);
+                if (nonzero) {
+                    c->silence_run = 0U;
+                    filter_block(c);
+                    process_block(c);
+                } else {
+                    c->silence_run++;
+                    /* Keep the full path until the convolution history has
+                     * flushed, then switch to the exact zero-block update. */
+                    if (c->silence_run > c->partition_count + 1U) silence_block(c);
+                    else { filter_block(c); process_block(c); }
+                }
+                c->block_pos = 0U;
+            }
         }
         done += slice;
     }
