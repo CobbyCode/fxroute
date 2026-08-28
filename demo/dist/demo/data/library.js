@@ -208,6 +208,16 @@
         { id: 't_artist_18', name: 'Kestrel Wire', genres: ['Post-Rock'] },
         { id: 't_artist_19', name: 'Glass Tiger', genres: ['Indie', 'Alternative'] },
         { id: 't_artist_20', name: 'Waves of Amber', genres: ['Chillwave', 'Indie'] },
+        { id: 't_artist_21', name: 'Mirage Motel', genres: ['Synthwave'] },
+        { id: 't_artist_22', name: 'Sable & Finch', genres: ['Indie Folk'] },
+        { id: 't_artist_23', name: 'Cobalt Arcade', genres: ['Electro'] },
+        { id: 't_artist_24', name: 'Velvet Hour', genres: ['Neo-Soul'] },
+        { id: 't_artist_25', name: 'The Morning Line', genres: ['Alternative'] },
+        { id: 't_artist_26', name: 'Iris Bloom', genres: ['Art Pop'] },
+        { id: 't_artist_27', name: 'Static River', genres: ['Post-Punk'] },
+        { id: 't_artist_28', name: 'Nova Format', genres: ['IDM'] },
+        { id: 't_artist_29', name: 'Harbor Glass', genres: ['Chillwave'] },
+        { id: 't_artist_30', name: 'Onyx Chapel', genres: ['Dark Ambient'] },
     ];
     TIDAL_ARTISTS.forEach((artist) => {
         artist.image_url = demoImage('tidal-artist:' + artist.id);
@@ -237,6 +247,18 @@
         ['t_album_20', 'Waves of Gold', 't_artist_20', 2022, 'LOSSLESS', ['Golden Hour', 214], ['Coastline', 243], ['Summer of Something', 228], ['Waves of Us', 265]],
         ['t_album_21', 'Slow Motion Sunrise', 't_artist_02', 2024, 'LOSSLESS', ['Slow Motion Sunrise', 322], ['Analog Dreams', 301], ['Paper Planes (Night)', 244]],
         ['t_album_22', 'Dust Bowl Hymns', 't_artist_17', 2021, 'HIGH', ['Grain Elevator Blues', 297], ['Red Sky Morning', 260], ['Highway 61 Revisited', 342]],
+        ['t_album_23', 'Mirage Motel', 't_artist_21', 2023, 'HI_RES_LOSSLESS', ['Mirage Motel', 243], ['Chrome Palm', 218], ['Neon Lobby', 251], ['Pool Light', 197]],
+        ['t_album_24', 'Hollow & Home', 't_artist_22', 2021, 'LOSSLESS', ['Hollow & Home', 226], ['Cedar Porch', 198], ['River Smoke', 244], ['Quiet Rooms', 231]],
+        ['t_album_25', 'Cobalt Arcade', 't_artist_23', 2022, 'LOSSLESS', ['Cobalt Arcade', 217], ['Voltage Bloom', 204], ['Pixel Rain', 232], ['Arcade Sunset', 189]],
+        ['t_album_26', 'Velvet Hour', 't_artist_24', 2023, 'LOSSLESS', ['Velvet Hour', 268], ['Silk Static', 245], ['Golden Last Call', 289]],
+        ['t_album_27', 'The Morning Line', 't_artist_25', 2020, 'LOSSLESS', ['The Morning Line', 214], ['Half Past Dawn', 238], ['Platform Lights', 251], ['Departures', 227]],
+        ['t_album_28', 'Iris Bloom', 't_artist_26', 2024, 'HI_RES_LOSSLESS', ['Iris Bloom', 233], ['Petal Logic', 209], ['Chromatic Garden', 276], ['Soft Focus', 244]],
+        ['t_album_29', 'Static River', 't_artist_27', 2019, 'LOSSLESS', ['Static River', 254], ['Grey Bridge', 231], ['Concrete Current', 268]],
+        ['t_album_30', 'Nova Format', 't_artist_28', 2023, 'HI_RES_LOSSLESS', ['Nova Format', 297], ['Signal Drift', 263], ['Lumen Field', 312], ['Zero Hour', 284]],
+        ['t_album_31', 'Harbor Glass', 't_artist_29', 2021, 'LOSSLESS', ['Harbor Glass', 224], ['Tidewater Static', 208], ['Marina Blue', 241]],
+        ['t_album_32', 'Onyx Chapel', 't_artist_30', 2022, 'LOSSLESS', ['Onyx Chapel', 346], ['Candle Frequency', 312], ['Deep Aisle', 374]],
+        ['t_album_33', 'Glass Tiger', 't_artist_19', 2022, 'HI_RES_LOSSLESS', ['Neon Glass', 228], ['Window Seat', 215], ['Reflection Run', 243]],
+        ['t_album_34', 'Waves of Amber (Live)', 't_artist_20', 2023, 'HI_RES_LOSSLESS', ['Golden Hour (Live)', 232], ['Coastline (Live)', 251], ['Summer of Something (Live)', 239]],
     ];
 
     const tidalAlbums = TIDAL_ALBUM_SEEDS.map((seed) => {
@@ -263,13 +285,15 @@
             tracks,
         };
     });
-    // Tracks view: a curated ~20-track selection — the opener of each of the
-    // twenty core albums — so the Tracks tab stays scannable while Albums
-    // carries the full catalog.
+    // Tracks view: the opener of every album plus the second track of the
+    // first half of the catalog — a curated ~48-track selection so the Tracks
+    // tab feels like a real library while Albums carries the full catalog.
     const tidalTracks = [];
-    tidalAlbums.forEach((album) => {
-        if (/^t_album_(0[1-9]|1[0-9]|20)$/.test(album.id) && album.tracks.length) {
-            const t = album.tracks[0];
+    tidalAlbums.forEach((album, albumIndex) => {
+        if (!album.tracks.length) return;
+        const picks = albumIndex < 14 ? Math.min(2, album.tracks.length) : 1;
+        for (let index = 0; index < picks; index += 1) {
+            const t = album.tracks[index];
             tidalTracks.push({
                 id: t.id,
                 title: t.title,
@@ -331,6 +355,55 @@
         };
     });
 
+    // ---------------------------------------------------------------------
+    // Streaming provider catalogs (Spotify / Qobuz)
+    // ---------------------------------------------------------------------
+    // Each provider gets its own small queue drawn from distinct albums and
+    // artists, so switching tracks changes title, artist, album and cover
+    // together instead of rotating one album's tracks. Covers use the
+    // provider namespace so the same title never reuses the local art.
+    function buildProviderTracks(provider, seeds) {
+        return seeds.map((seed, index) => {
+            const [title, artist, album, genre, year, duration, sampleRate] = seed;
+            const art = demoImage(provider + ':' + title);
+            return {
+                id: 'demo_' + provider + '_' + (index + 1),
+                title,
+                artist,
+                album,
+                album_artist: artist,
+                genre,
+                year,
+                duration,
+                sample_rate_hz: sampleRate || 44100,
+                source: provider,
+                url: 'file://demo/' + provider + '/' + title + '.flac',
+                cover_url: art,
+                art_url: art,
+                cover_available: true,
+                artwork_available: true,
+                artwork_url: art,
+                artwork_source: provider,
+                favorite: hashCode('fav-' + provider + ':' + title) % 4 === 0,
+            };
+        });
+    }
+
+    const SPOTIFY_TRACK_SEEDS = [
+        ['Electric Bloom', 'Nova Circuit', 'Electric Bloom', 'Synthpop', 2024, 231, 48000],
+        ['Night Service', 'Nova Circuit', 'Electric Bloom', 'Synthpop', 2024, 204, 48000],
+        ['Paper Satellites', 'Marisol Vega', 'Orbit Hours', 'Indie Pop', 2023, 198, 44100],
+        ['Golden Gate Lights', 'Marisol Vega', 'Orbit Hours', 'Indie Pop', 2023, 226, 44100],
+    ];
+    const QOBUZ_TRACK_SEEDS = [
+        ['Aurora Borealis', 'Helios Strings', 'Northern Skies', 'Classical Crossover', 2022, 312, 96000],
+        ['Midnight Glacier', 'Helios Strings', 'Northern Skies', 'Classical Crossover', 2022, 287, 96000],
+        ['Velvet Circuit', 'Eiko Maru', 'Neon Kaidan', 'City Pop', 2021, 243, 44100],
+        ['Rainy Shinjuku', 'Eiko Maru', 'Neon Kaidan', 'City Pop', 2021, 265, 44100],
+    ];
+    const spotifyTracks = buildProviderTracks('spotify', SPOTIFY_TRACK_SEEDS);
+    const qobuzTracks = buildProviderTracks('qobuz', QOBUZ_TRACK_SEEDS);
+
     window.FXROUTE_DEMO_LIBRARY = {
         demoImage,
         tracks,
@@ -340,5 +413,7 @@
         tidalTracks,
         tidalArtists: TIDAL_ARTISTS,
         tidalPlaylists,
+        spotifyTracks,
+        qobuzTracks,
     };
 })();

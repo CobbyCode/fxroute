@@ -17,11 +17,13 @@
     const tidalPlaylists = () => S.tidalPlaylists();
 
     // ── Favorites (TIDAL) ───────────────────────────────────────────────
+    // Pre-filled generously so the browse surfaces look like a real library
+    // instead of three lonely entries.
     const tidalFavs = {
-        tracks: new Set(['t_album_01_t2', 't_album_11_t1', 't_album_04_t3']),
-        albums: new Set(['t_album_01', 't_album_11', 't_album_16']),
-        artists: new Set(['t_artist_09', 't_artist_01', 't_artist_07']),
-        playlists: new Set(['t_playlist_01', 't_playlist_06', 't_playlist_10']),
+        tracks: new Set(['t_album_01_t1', 't_album_01_t2', 't_album_02_t1', 't_album_03_t1', 't_album_04_t1', 't_album_06_t2', 't_album_08_t1', 't_album_11_t1', 't_album_13_t2', 't_album_16_t1', 't_album_18_t1', 't_album_20_t1']),
+        albums: new Set(['t_album_01', 't_album_02', 't_album_04', 't_album_06', 't_album_08', 't_album_11', 't_album_13', 't_album_16', 't_album_18', 't_album_20']),
+        artists: new Set(['t_artist_01', 't_artist_03', 't_artist_04', 't_artist_06', 't_artist_07', 't_artist_09', 't_artist_11', 't_artist_14', 't_artist_17', 't_artist_20']),
+        playlists: new Set(['t_playlist_01', 't_playlist_03', 't_playlist_04', 't_playlist_06', 't_playlist_08', 't_playlist_10', 't_playlist_12', 't_playlist_15', 't_playlist_16', 't_playlist_20']),
     };
 
     // ── DSP state ───────────────────────────────────────────────────────
@@ -77,21 +79,29 @@
         { key: 'alsa_output.usb-DEMO_DAC-00.analog-stereo', name: 'Demo USB DAC', label: 'Demo USB DAC', description: 'Hi-Res USB Audio', channels: 4, active_rate: 96000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
         { key: 'alsa_output.usb-MOTU_M4-00.analog-surround-40', name: 'MOTU M4', label: 'MOTU M4', description: '4-Channel USB Audio Interface', channels: 4, active_rate: 48000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000] },
     ];
-    let selectedOutputKeyCache = OUTPUTS[0].key;
+    // The demo starts on the 4-channel interface so the default 2.2 mode has
+    // the channels it needs (Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2).
+    let selectedOutputKeyCache = OUTPUTS[2].key;
     function selectedOutput() {
         return OUTPUTS.find(o => o.key === selectedOutputKeyCache) || OUTPUTS[0];
     }
     let outputMode = {
-        mode: 'stereo',
+        mode: 'subwoofer-2.2',
         available: true,
         required_channels: 4,
-        effective_output_channels: 2,
-        routing: { main_pair: [1, 2], sub_pair: [3, 4], status: 'Out 1/2 Main' },
-        subwoofer: { crossover_frequency_hz: 80, slope: 'LR24', main_highpass_enabled: true, sub_level_db: 0.0, sub_alignment_ms: 0.0, sub_polarity: 'normal' },
+        effective_output_channels: 4,
+        routing: { main_pair: [1, 2], sub_pair: [3, 4], status: 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2' },
+        subwoofer: { crossover_frequency_hz: 80, slope: 'LR24', main_highpass_enabled: true, sub_level_db: 0.0, sub_alignment_ms: 2.8, sub_polarity: 'normal' },
         subwoofers: {
-            sub1: { level_db: 0.0, alignment_ms: 0.0, polarity: 'normal' },
-            sub2: { level_db: 0.0, alignment_ms: 0.0, polarity: 'normal' },
+            sub1: { level_db: 0.0, alignment_ms: 2.8, polarity: 'normal' },
+            sub2: { level_db: 0.0, alignment_ms: 2.45, polarity: 'normal' },
         },
+        // Derived 2.2 delays: the DSP computes Main / Sub 1 / Sub 2 from the
+        // measured alignment, shown in the subwoofer card. Seeded with the
+        // current demo alignment so the card reads like a configured system.
+        derived_main_delay_ms: 0.0,
+        derived_sub1_delay_ms: 2.8,
+        derived_sub2_delay_ms: 2.45,
     };
 
     function normalizeSub(input = {}) {
@@ -196,6 +206,193 @@
 
     function emitState() {
         window.__demoBroadcast && window.__demoBroadcast('playback', S.getPlayback());
+    }
+
+    // ── Auto Sub Optimize simulation ────────────────────────────────────
+    // A plausible multi-stage run: baseline sweep, per-sub coarse scans, a
+    // fine scan and the combined matrix, then a complete mode-aware result
+    // (2.2 / 2.2-stereo align both subs, 2.1 aligns the single sub). Stages
+    // advance by elapsed time so every poll shows further progress instead
+    // of jumping straight to a finished job.
+    const autoSubJobs = {};
+    let autoSubSeq = 0;
+
+    function autoSubBaseline(mode) {
+        return S.makeMeasurement({ name: 'AutoSub Baseline', channel: 'left', seed: 21, mode });
+    }
+    function autoSubConfirmation(mode) {
+        return S.makeMeasurement({ name: 'AutoSub Confirmation', channel: 'right', seed: 22, mode });
+    }
+
+    function applyAutoSubResult(result) {
+        // Mirror the applied alignment into the audio-output model so the
+        // subwoofer card and settings show the new derived delays.
+        if (result.mode === 'subwoofer-2.2' || result.mode === 'subwoofer-2.2-stereo') {
+            outputMode.subwoofers.sub1.alignment_ms = result.applied_sub1_alignment_ms;
+            outputMode.subwoofers.sub2.alignment_ms = result.applied_sub2_alignment_ms;
+            outputMode.subwoofer.sub_alignment_ms = result.applied_sub1_alignment_ms;
+            outputMode.derived_main_delay_ms = result.derived_main_delay_ms;
+            outputMode.derived_sub1_delay_ms = result.derived_sub1_delay_ms;
+            outputMode.derived_sub2_delay_ms = result.derived_sub2_delay_ms;
+        } else {
+            outputMode.subwoofer.sub_alignment_ms = result.applied_alignment_ms;
+            outputMode.subwoofers.sub1.alignment_ms = result.applied_alignment_ms;
+            outputMode.subwoofers.sub2.alignment_ms = result.applied_alignment_ms;
+            outputMode.derived_main_delay_ms = 0;
+            outputMode.derived_sub1_delay_ms = result.applied_alignment_ms;
+            outputMode.derived_sub2_delay_ms = result.applied_alignment_ms;
+        }
+    }
+
+    function autoSubResult(job) {
+        const mode = job.mode;
+        // The measurements travel both at job level (live baseline push while
+        // the run is in progress) and inside result (final graph display).
+        const baseline = autoSubBaseline(mode);
+        const confirmation = autoSubConfirmation(mode);
+        const base = {
+            id: job.id,
+            status: 'completed',
+            message: 'Auto Sub Optimize completed.',
+            target_curve: { label: 'Flat Target Curve' },
+            baseline_measurement: baseline,
+            confirmation_measurement: confirmation,
+        };
+        if (mode === 'subwoofer-2.2' || mode === 'subwoofer-2.2-stereo') {
+            const result = {
+                mode,
+                applied: true,
+                baseline_measurement: baseline,
+                confirmation_measurement: confirmation,
+                original_sub1_alignment_ms: 2.8,
+                original_sub2_alignment_ms: 2.45,
+                applied_sub1_alignment_ms: 3.4,
+                applied_sub2_alignment_ms: 3.1,
+                left_score_pct: 84.6,
+                right_score_pct: 82.1,
+                overall_score_pct: 83.4,
+                winner: { score_pct: 83.0, score_L_pct: 84.6, score_R_pct: 82.1, overall_score_pct: 83.4 },
+                sub1_coarse_winner: { delay_ms: 3.4, score_pct: 84.6 },
+                sub2_coarse_winner: { delay_ms: 3.1, score_pct: 82.1 },
+                derived_main_delay_ms: 0.0,
+                derived_sub1_delay_ms: 3.4,
+                derived_sub2_delay_ms: 3.1,
+                fine_scan: { triggered: true, status: 'completed' },
+                confidence: 'high',
+            };
+            if (mode === 'subwoofer-2.2-stereo') {
+                result.left_winner = result.sub1_coarse_winner;
+                result.right_winner = result.sub2_coarse_winner;
+            }
+            applyAutoSubResult(result);
+            return { ...base, result };
+        }
+        const result = {
+            mode,
+            applied: true,
+            baseline_measurement: baseline,
+            confirmation_measurement: confirmation,
+            original_alignment_ms: 2.8,
+            applied_alignment_ms: 3.4,
+            suggested_alignment_ms: 3.4,
+            left_score_pct: 84.6,
+            right_score_pct: 82.1,
+            overall_score_pct: 83.4,
+            winner: { score_pct: 83.0, score_L_pct: 84.6, score_R_pct: 82.1, overall_score_pct: 83.4 },
+            coarse_winner: { delay_ms: 3.4, score_pct: 84.6 },
+            runner_up: { delay_ms: 6.2, score_pct: 71.3 },
+            fine_winner: { delay_ms: 3.4, score_pct: 84.6 },
+            fine_scan: { triggered: true, status: 'completed' },
+            confidence: 'high',
+        };
+        applyAutoSubResult(result);
+        return { ...base, result };
+    }
+
+    // elapsedMs is injectable so the behavior test can fast-forward a run.
+    function autoSubJobPayload(id, elapsedMs) {
+        const job = autoSubJobs[id];
+        if (!job) return null;
+        if (job.status === 'cancelled') {
+            return { id, status: 'cancelled', message: 'Auto Sub Optimize cancelled.' };
+        }
+        const mode = job.mode;
+        const elapsed = (elapsedMs != null) ? elapsedMs : (Date.now() - job.startedAt);
+        const isStereoBass = mode === 'subwoofer-2.2-stereo';
+        const is22 = mode === 'subwoofer-2.2' || isStereoBass;
+        const sub1Label = isStereoBass ? 'Left Sub' : 'Sub 1';
+        const sub2Label = isStereoBass ? 'Right Sub' : 'Sub 2';
+        const base = { id, target_curve: { label: 'Flat Target Curve' } };
+        const withBaseline = () => ({ ...base, baseline_measurement: autoSubBaseline(mode) });
+
+        if (elapsed < 900) return { ...base, status: 'queued', message: 'Auto Sub Optimize: queued' };
+        if (elapsed < 2000) {
+            const t = Math.min(1, (elapsed - 900) / 1100);
+            return {
+                ...withBaseline(),
+                status: 'running',
+                message: 'Baseline sweep (main L/R)…',
+                progress: { current: 1, total: 5, stage: 'coarse', sweep_current: 1 + Math.floor(t * 4), sweep_total: 4 },
+            };
+        }
+        if (is22 && elapsed < 4200) {
+            const t = Math.min(1, (elapsed - 2000) / 2200);
+            const n = 1 + Math.floor(t * 4);
+            return {
+                ...withBaseline(),
+                status: 'running',
+                message: 'Coarse scan ' + sub1Label + '…',
+                progress: { current: 2, total: 5, stage: isStereoBass ? 'left_sub' : 'sub1_coarse', candidate_current: n, candidate_total: 4, sweep_current: n, sweep_total: 4 },
+            };
+        }
+        if (is22 && elapsed < 6400) {
+            const t = Math.min(1, (elapsed - 4200) / 2200);
+            const n = 1 + Math.floor(t * 4);
+            return {
+                ...withBaseline(),
+                status: 'running',
+                message: 'Coarse scan ' + sub2Label + '…',
+                progress: { current: 3, total: 5, stage: isStereoBass ? 'right_sub' : 'sub2_coarse', candidate_current: n, candidate_total: 4, sweep_current: n, sweep_total: 4 },
+            };
+        }
+        if (is22 && elapsed < 7600) {
+            const t = Math.min(1, (elapsed - 6400) / 1200);
+            return {
+                ...withBaseline(),
+                status: 'running',
+                message: 'Fine scan…',
+                progress: { current: 4, total: 5, stage: 'fine', sweep_current: 1 + Math.floor(t * 3), sweep_total: 3 },
+            };
+        }
+        if (is22 && elapsed < 8800) {
+            const t = Math.min(1, (elapsed - 7600) / 1200);
+            return {
+                ...withBaseline(),
+                status: 'running',
+                message: 'Combined matrix…',
+                progress: { current: 5, total: 5, stage: 'combined_matrix', sweep_current: 1 + Math.floor(t * 2), sweep_total: 2 },
+            };
+        }
+        if (!is22 && elapsed < 6400) {
+            const t = Math.min(1, (elapsed - 2000) / 4400);
+            const n = 1 + Math.floor(t * 8);
+            return {
+                ...withBaseline(),
+                status: 'running',
+                message: 'Coarse scan…',
+                progress: { current: 2, total: 4, stage: 'coarse', candidate_current: n, candidate_total: 8, sweep_current: n, sweep_total: 8 },
+            };
+        }
+        if (!is22 && elapsed < 8000) {
+            const t = Math.min(1, (elapsed - 6400) / 1600);
+            return {
+                ...withBaseline(),
+                status: 'running',
+                message: 'Fine scan…',
+                progress: { current: 3, total: 4, stage: 'fine', sweep_current: 1 + Math.floor(t * 3), sweep_total: 3 },
+            };
+        }
+        return autoSubResult(job);
     }
 
     // ── fetch interceptor ───────────────────────────────────────────────
@@ -886,33 +1083,22 @@
             return j(result);
         }
         if (p === '/api/measurements/auto-sub-optimize/start' && post) {
-            const id = 'demo_autosub_' + Date.now();
+            const id = 'demo_autosub_' + (++autoSubSeq);
+            autoSubJobs[id] = { id, mode: normalizeOutputModeName(outputMode.mode), startedAt: Date.now(), status: 'running' };
             return j({ job: { id, status: 'queued', message: 'Auto Sub Optimize: queued' } });
         }
         const autoSubJob = p.match(/^\/api\/measurements\/auto-sub-optimize\/jobs\/([^/]+)$/);
         if (autoSubJob) {
-            const done = {
-                id: autoSubJob[1],
-                status: 'completed',
-                message: 'Auto Sub Optimize completed.',
-                result: {
-                    mode: outputMode.mode,
-                    applied_alignment_ms: 3.2,
-                    original_alignment_ms: 0,
-                    applied: true,
-                    left_score_pct: 82.4,
-                    right_score_pct: 79.1,
-                    overall_score_pct: 80.8,
-                    winner: { score_pct: 0.8, score_L_pct: 82.4, score_R_pct: 79.1, overall_score_pct: 80.8 },
-                    baseline_measurement: S.makeMeasurement({ name: 'AutoSub Baseline', channel: 'left', seed: 11 }),
-                    confirmation_measurement: S.makeMeasurement({ name: 'AutoSub Confirmation', channel: 'right', seed: 12 }),
-                    fine_scan: { triggered: false, status: 'not-needed' },
-                },
-            };
-            return j({ job: done });
+            const payload = autoSubJobPayload(autoSubJob[1]);
+            if (!payload) return err('Job not found');
+            return j({ job: payload });
         }
         const autoSubCancel = p.match(/^\/api\/measurements\/auto-sub-optimize\/jobs\/([^/]+)\/cancel$/);
-        if (autoSubCancel && post) return j({ job: { id: autoSubCancel[1], status: 'cancelled', message: 'Auto Sub Optimize cancelled.' } });
+        if (autoSubCancel && post) {
+            const id = autoSubCancel[1];
+            if (autoSubJobs[id]) autoSubJobs[id].status = 'cancelled';
+            return j({ job: { id, status: 'cancelled', message: 'Auto Sub Optimize cancelled.' } });
+        }
         if (p === '/api/measurements/lr-repeat/start' && post) {
             const id = S.startLrRepeatMeasurement({ base_name: body.base_name });
             return j({ job: { id, job_kind: 'lr-repeat', status: 'running', progress_pct: 0, message: 'L/R repeat queued.' } });
@@ -938,5 +1124,6 @@
     window.FXROUTE_DEMO_API = {
         playbackPayload: S.getPlayback,
         easyeffectsStatus: dspPayload,
+        autoSubJobPayload,
     };
 })();

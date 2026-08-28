@@ -30,15 +30,27 @@
         saved_station_id: stations.find((saved) => saved.id === station.id)?.id || null,
     }));
 
-    // Provider tabs use a deliberately small local queue from the demo
-    // library; no provider-sized catalog is fabricated. Each provider gets
-    // its own artwork key space so the same track renders a distinct cover
-    // per provider and per title.
-    const providerDemoTracks = localTracks.slice(0, 4).map((track) => ({
-        ...track,
-        spotify_art_url: lib.demoImage('spotify:' + (track.title || track.album || 'demo')),
-        qobuz_art_url: lib.demoImage('qobuz:' + (track.title || track.album || 'demo')),
-    }));
+    // Provider tabs use a deliberately small queue, but each provider gets
+    // its own tracks from distinct albums/artists (demo/data/library.js), so
+    // switching tracks changes title, artist, album and cover together and
+    // Spotify never shows Qobuz content (and vice versa). Each provider has
+    // its own artwork key space.
+    const spotifyProviderTracks = (lib.spotifyTracks && lib.spotifyTracks.length)
+        ? lib.spotifyTracks.map((track) => ({ ...track, source: 'spotify' }))
+        : localTracks.slice(0, 4).map((track) => ({
+            ...track,
+            source: 'spotify',
+            spotify_art_url: lib.demoImage('spotify:' + (track.title || track.album || 'demo')),
+            art_url: lib.demoImage('spotify:' + (track.title || track.album || 'demo')),
+        }));
+    const qobuzProviderTracks = (lib.qobuzTracks && lib.qobuzTracks.length)
+        ? lib.qobuzTracks.map((track) => ({ ...track, source: 'qobuz' }))
+        : localTracks.slice(0, 4).map((track) => ({
+            ...track,
+            source: 'qobuz',
+            qobuz_art_url: lib.demoImage('qobuz:' + (track.title || track.album || 'demo')),
+            art_url: lib.demoImage('qobuz:' + (track.title || track.album || 'demo')),
+        }));
 
     // Radio streams have no finite track duration in the normal FXRoute UI.
 
@@ -473,9 +485,9 @@
 
     // ── Qobuz provider (remote-style transport) ─────────────────────────
     const qobuz = {
-        current: { ...providerDemoTracks[0], source: 'qobuz' },
+        current: { ...qobuzProviderTracks[0], source: 'qobuz' },
         qidx: 0,
-        qlist: providerDemoTracks.map((track) => ({ ...track, source: 'qobuz' })),
+        qlist: qobuzProviderTracks.map((track) => ({ ...track, source: 'qobuz' })),
         playing: false,
         positionOffset: 0,
         lastTick: 0,
@@ -485,7 +497,7 @@
         demoStart() {
             const track = this.current || this.qlist[0];
             if (track) {
-                this.qlist = providerDemoTracks.map((item) => ({ ...item, source: 'qobuz' }));
+                this.qlist = qobuzProviderTracks.map((item) => ({ ...item, source: 'qobuz' }));
                 this.adopt(track);
                 currentSource = 'qobuz';
                 currentTrack = { ...track, source: 'qobuz' };
@@ -566,6 +578,18 @@
         seek(pos) { this.positionOffset = Math.max(0, Number(pos) || 0); this.lastTick = Date.now(); emitPlayback(); },
         toggleShuffle() { this.shuffle = !this.shuffle; },
         cycleLoop() { this.loop = this.loop === 'none' ? 'playlist' : this.loop === 'playlist' ? 'track' : 'none'; },
+        queueInfo() {
+            const pool = (this.qlist.length ? this.qlist : queue);
+            if (!pool.length) return { queue_len: 0, queue_index: 0, next_track: null };
+            const curId = this.current?.id;
+            const idx = Math.max(0, pool.findIndex(t => String(t.id) === String(curId)));
+            const next = pool[(idx + 1) % pool.length];
+            return {
+                queue_len: pool.length,
+                queue_index: idx + 1,
+                next_track: next ? { title: next.title, artist: next.artist } : null,
+            };
+        },
         payload() {
             const dur = Number(this.current?.duration || 0);
             return {
@@ -586,6 +610,7 @@
                 source: 'qobuz',
                 footer_owner: this.playing ? 'qobuz' : null,
                 capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true },
+                ...this.queueInfo(),
             };
         },
     };
@@ -599,7 +624,7 @@
         lastTick: 0,
         shuffle: false,
         loop: 'none',
-        list: providerDemoTracks.map((track) => ({ ...track, source: 'spotify' })),
+        list: spotifyProviderTracks.map((track) => ({ ...track, source: 'spotify' })),
         demoBooted: false,
         demoStart() {
             const track = this.current || this.list[0];
@@ -681,6 +706,18 @@
         seek(pos) { this.positionOffset = Math.max(0, Number(pos) || 0); this.lastTick = Date.now(); emitPlayback(); },
         toggleShuffle() { this.shuffle = !this.shuffle; },
         cycleLoop() { this.loop = this.loop === 'none' ? 'playlist' : this.loop === 'playlist' ? 'track' : 'none'; },
+        queueInfo() {
+            const pool = this.list || [];
+            if (!pool.length) return { queue_len: 0, queue_index: 0, next_track: null };
+            const curId = this.current?.id;
+            const idx = Math.max(0, pool.findIndex(t => String(t.id) === String(curId)));
+            const next = pool[(idx + 1) % pool.length];
+            return {
+                queue_len: pool.length,
+                queue_index: idx + 1,
+                next_track: next ? { title: next.title, artist: next.artist } : null,
+            };
+        },
         snapshot() {
             const cur = this.current;
             return {
@@ -706,6 +743,7 @@
                 source_volume: 100,
                 footer_owner: this.playing ? 'spotify' : null,
                 capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true },
+                ...this.queueInfo(),
             };
         },
     };

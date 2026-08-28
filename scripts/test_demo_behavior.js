@@ -348,10 +348,34 @@ const radio = state.getPlayback();
     assert.ok(qobuz.duration > 0);
     assert.ok(Array.isArray(state.qobuz.qlist));
     assert.ok(state.qobuz.qlist.length <= 4);
+    // Spotify and Qobuz must draw from distinct catalogs: same metadata
+    // (title, artist, album, cover) never appears on the other provider.
+    const spotifyIds = new Set(state.spotify.list.map(t => String(t.id)));
+    const qobuzIds = new Set(state.qobuz.qlist.map(t => String(t.id)));
+    assert.ok(![...spotifyIds].some(id => qobuzIds.has(id)), 'Spotify/Qobuz demo queues must be disjoint');
+    const spotifyTitles = new Set(state.spotify.list.map(t => t.title));
+    const qobuzTitles = new Set(state.qobuz.qlist.map(t => t.title));
+    assert.ok(![...spotifyTitles].some(title => qobuzTitles.has(title)), 'Spotify/Qobuz must not share track titles');
+    // Each provider queue rotates its own album/artist so next/prev changes
+    // title, artist, album and cover together.
+    const spAlbum = new Set(state.spotify.list.map(t => t.album)).size;
+    assert.ok(spAlbum >= 2, 'Spotify queue must span multiple albums');
+    const qbAlbum = new Set(state.qobuz.qlist.map(t => t.album)).size;
+    assert.ok(qbAlbum >= 2, 'Qobuz queue must span multiple albums');
     state.qobuz.toggleShuffle();
     assert.equal(state.qobuz.payload().shuffle, true);
     state.qobuz.cycleLoop();
     assert.equal(state.qobuz.payload().loop, 'playlist');
+
+    // The demo starts in 2.2 mode on the 4-channel interface, with crossover
+    // and derived sub delays visible (seeded like a configured system).
+    const outputs = await (await demoFetch('/api/audio/outputs')).json();
+    assert.equal(outputs.output_mode.mode, 'subwoofer-2.2');
+    assert.equal(outputs.selected_output.channels, 4);
+    assert.equal(outputs.output_mode.subwoofer.crossover_frequency_hz, 80);
+    assert.equal(outputs.output_mode.subwoofer.slope, 'LR24');
+    assert.ok(outputs.output_mode.derived_sub1_delay_ms > 0);
+    assert.ok(outputs.output_mode.derived_sub2_delay_ms > 0);
 
     // ── Measurement simulation contract ─────────────────────────────────
     const directLeft = state.makeMeasurement({ role: 'direct', channel: 'left', id: 'demo_direct_l' });
@@ -406,6 +430,72 @@ const radio = state.getPlayback();
     const lrStartPoll = await (await demoFetch('/api/measurements/jobs/' + lrStart.job.id)).json();
     assert.equal(lrStartPoll.job.job_kind, 'lr-repeat');
     assert.ok(lrStartPoll.job.input_level);
+
+    // ── Auto Sub Optimize: staged run with complete mode-aware result ───
+    // The run must advance through queued/running stages (with live baseline
+    // data for the graph) and finish with a full 2.2 result — finite Sub 1 /
+    // Sub 2 alignment and derived delays, never '? ms'.
+    const autoSubStart = await (await demoFetch('/api/measurements/auto-sub-optimize/start', { method: 'POST' })).json();
+    assert.equal(autoSubStart.job.status, 'queued');
+    const autoSubId = autoSubStart.job.id;
+    // The immediate HTTP poll is still queued (the run has not progressed
+    // yet); staged progression is exercised deterministically through the
+    // exported payload builder with injected elapsed time.
+    const autoSubQueuedPoll = await (await demoFetch('/api/measurements/auto-sub-optimize/jobs/' + autoSubId)).json();
+    assert.equal(autoSubQueuedPoll.job.status, 'queued');
+    const stageAt = (ms) => context.FXROUTE_DEMO_API.autoSubJobPayload(autoSubId, ms);
+    const baselineStage = stageAt(1500);
+    assert.equal(baselineStage.status, 'running');
+    assert.ok(baselineStage.progress && baselineStage.progress.stage === 'coarse');
+    assert.ok(baselineStage.baseline_measurement, 'running job must push baseline for the live graph');
+    assert.ok(Array.isArray(baselineStage.baseline_measurement.traces)
+        && baselineStage.baseline_measurement.traces.length);
+    assert.equal(stageAt(3000).progress.stage, 'sub1_coarse');
+    assert.equal(stageAt(3000).progress.candidate_current > 0, true);
+    assert.equal(stageAt(5000).progress.stage, 'sub2_coarse');
+    assert.equal(stageAt(5000).progress.candidate_current > 0, true);
+    assert.equal(stageAt(7000).progress.stage, 'fine');
+    assert.equal(stageAt(8000).progress.stage, 'combined_matrix');
+    assert.ok(stageAt(8000).progress.sweep_current > 0);
+    const autoSubDone = context.FXROUTE_DEMO_API.autoSubJobPayload(autoSubId, 100000);
+    assert.equal(autoSubDone.status, 'completed');
+    const autoSubResult = autoSubDone.result;
+    assert.equal(autoSubResult.mode, 'subwoofer-2.2');
+    assert.equal(autoSubResult.applied, true);
+    assert.ok(Number.isFinite(autoSubResult.applied_sub1_alignment_ms));
+    assert.ok(Number.isFinite(autoSubResult.applied_sub2_alignment_ms));
+    assert.ok(Number.isFinite(autoSubResult.original_sub1_alignment_ms));
+    assert.ok(Number.isFinite(autoSubResult.original_sub2_alignment_ms));
+    assert.ok(autoSubResult.applied_sub1_alignment_ms !== autoSubResult.original_sub1_alignment_ms);
+    assert.ok(Number.isFinite(autoSubResult.derived_main_delay_ms));
+    assert.ok(Number.isFinite(autoSubResult.derived_sub1_delay_ms));
+    assert.ok(Number.isFinite(autoSubResult.derived_sub2_delay_ms));
+    assert.ok(autoSubResult.sub1_coarse_winner && Number.isFinite(autoSubResult.sub1_coarse_winner.delay_ms));
+    assert.ok(autoSubResult.sub2_coarse_winner && Number.isFinite(autoSubResult.sub2_coarse_winner.delay_ms));
+    assert.ok(Number.isFinite(autoSubResult.left_score_pct));
+    assert.ok(Number.isFinite(autoSubResult.right_score_pct));
+    assert.ok(Number.isFinite(autoSubResult.overall_score_pct));
+    assert.ok(autoSubResult.winner && Number.isFinite(autoSubResult.winner.score_pct));
+    assert.ok(autoSubResult.baseline_measurement && Array.isArray(autoSubResult.baseline_measurement.traces));
+    assert.ok(autoSubResult.confirmation_measurement && Array.isArray(autoSubResult.confirmation_measurement.traces));
+    // The applied alignment must land in the audio-output model so the
+    // subwoofer card shows the new derived delays after the run.
+    const outputsAfterAutoSub = await (await demoFetch('/api/audio/outputs')).json();
+    assert.equal(outputsAfterAutoSub.output_mode.derived_sub1_delay_ms, autoSubResult.applied_sub1_alignment_ms);
+    assert.equal(outputsAfterAutoSub.output_mode.derived_sub2_delay_ms, autoSubResult.applied_sub2_alignment_ms);
+    assert.equal(outputsAfterAutoSub.output_mode.subwoofers.sub1.alignment_ms, autoSubResult.applied_sub1_alignment_ms);
+    // 2.1 mode must still produce a single-sub result with coarse/fine winners.
+    await (await demoFetch('/api/audio/output-mode', { method: 'POST', body: JSON.stringify({ mode: 'subwoofer-2.1' }) })).json();
+    const autoSub21Start = await (await demoFetch('/api/measurements/auto-sub-optimize/start', { method: 'POST' })).json();
+    const autoSub21Done = context.FXROUTE_DEMO_API.autoSubJobPayload(autoSub21Start.job.id, 100000);
+    assert.equal(autoSub21Done.status, 'completed');
+    assert.equal(autoSub21Done.result.mode, 'subwoofer-2.1');
+    assert.ok(Number.isFinite(autoSub21Done.result.applied_alignment_ms));
+    assert.ok(autoSub21Done.result.coarse_winner && Number.isFinite(autoSub21Done.result.coarse_winner.delay_ms));
+    assert.ok(autoSub21Done.result.runner_up && Number.isFinite(autoSub21Done.result.runner_up.delay_ms));
+    assert.ok(autoSub21Done.result.fine_scan && autoSub21Done.result.fine_scan.status === 'completed');
+    // Restore the demo's default 2.2 mode.
+    await (await demoFetch('/api/audio/output-mode', { method: 'POST', body: JSON.stringify({ mode: 'subwoofer-2.2' }) })).json();
 
     // ── Demo stock reset/restore ───────────────────────────────────────
     // Playing around in a session (unfavoriting, deleting/creating
