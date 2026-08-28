@@ -8,14 +8,19 @@ Two controller semantics exist and each bridge uses the matching translator:
   against the master is stable, so the controller and the master stay in step
   once aligned: :class:`RemoteVolumeDeltaTranslator` anchors the first value
   of a session and applies later values as relative deltas.
-* **Qobuz (qbzd, ``volume_mode=locked``)** has no shared scale at all: the
-  Qobuz app maintains a persistent per-renderer volume slider and pushes its
-  value on Connect activation and on every gesture (live-verified on .104,
-  2026-08-28: 0.01-step slider drags, the activation push equals the last
-  slider position). Delta semantics preserve a permanent controller-to-master
-  offset, so the two displays never match. The Qobuz bridge therefore uses
-  :class:`RemoteVolumeAbsoluteTranslator`: every observed value is an
-  absolute renderer-volume intent and the master adopts it.
+* **Qobuz (qbzd, ``volume_mode=locked``)** has no shared scale at all: at
+  connect time the Qobuz app pushes the *phone's media volume* as an absolute
+  SetVolume (live-verified on .104, 2026-08-28 21:36: deactivate/reactivate →
+  push 98% while the session slider had been at ~50%), and gestures are
+  slider drags on a scale whose zero point is unrelated to the master.
+  Neither the push nor an out-of-position gesture may move the master.
+
+  The Qobuz bridge therefore uses :class:`RemoteVolumePickupTranslator`
+  (motorized-fader pickup semantics, the user-facing "pickup" contract):
+  the connect-time push only anchors the controller scale and never writes;
+  a gesture takes over **only when it crosses the current master level** —
+  the write is bounded by the gesture step at the crossing — and from the
+  pickup on, the master tracks the controller value absolutely.
 """
 
 from __future__ import annotations
@@ -186,24 +191,40 @@ class RemoteVolumeDeltaTranslator:
         return False
 
 
-class RemoteVolumeAbsoluteTranslator:
-    """Coalesce remote volume observations into absolute master writes.
+class RemoteVolumePickupTranslator:
+    """Motorized-fader pickup semantics for absolute remote volume values.
 
-    Every observed value is an absolute renderer-volume intent: ``flush``
-    writes the latest pending value instead of a delta, so the controller
-    display and the master show the same number (Spotify-Connect-like sync).
-    Absolute writes are idempotent, so a failed write simply keeps the value
-    pending for retry. Repeats of the already-applied value are dropped, while
-    a fresh activation always re-adopts the controller value.
+    Session lifecycle:
+
+    * The first observation of a session (the app's connect-time push of the
+      phone's media volume) only **anchors** the controller scale — it never
+      writes the master.
+    * While not picked up, a gesture writes only when it **crosses the
+      current master level** (the master lies between the previous and the
+      new observed value, or a value lands exactly on it). The pickup write
+      adopts the observed value, so the jump is bounded by the gesture step.
+      Gestures that stay on the far side of the master are ignored: adopting
+      them would jump the master to the controller's unrelated scale.
+    * After the pickup the master tracks the controller value absolutely, so
+      both displays show the same number.
+
+    Absolute writes are idempotent: a failed write keeps the value pending
+    for retry. Owner loss or a session (de)activation drops all state and
+    re-arms the pickup.
     """
 
     def __init__(
         self,
         is_active: Callable[[], bool],
         apply_volume_value: Callable[[int], Awaitable[Any]],
+        current_master: Callable[[], int],
     ) -> None:
         self.is_active = is_active
         self.apply_volume_value = apply_volume_value
+        self.current_master = current_master
+        self._anchor: int | None = None
+        self._last_value: int | None = None
+        self._picked_up = False
         self._pending_value: int | None = None
         self._last_written: int | None = None
         self._activation_epoch = 0
@@ -213,35 +234,55 @@ class RemoteVolumeAbsoluteTranslator:
     def pending(self) -> int | None:
         return self._pending_value
 
-    def observe_activation(self) -> None:
-        """Session (de)activation or ownership loss: drop pending state.
+    @property
+    def picked_up(self) -> bool:
+        return self._picked_up
 
-        ``_last_written`` is cleared too, so the first value of a fresh session
-        is always adopted even when it repeats the previous session's value —
-        connect-time adoption is what keeps the two displays aligned.
+    def observe_activation(self) -> None:
+        """Session (de)activation or ownership loss: drop all session state.
+
+        The next observation re-anchors (the app re-pushes after activation)
+        and the pickup must happen again before any write.
         """
         self._activation_epoch += 1
+        self._anchor = None
+        self._last_value = None
+        self._picked_up = False
         self._pending_value = None
         self._last_written = None
         if self._inflight_apply_task is not None and not self._inflight_apply_task.done():
             self._inflight_apply_task.cancel()
 
     def submit(self, percent: int) -> bool:
-        """Record an observation; ``True`` when a write became pending.
-
-        A repeat of the already-written value (echo/poll push) produces no
-        write; anything else replaces the pending value so a drag burst
-        collapses to its latest position.
-        """
+        """Record an observation; ``True`` when a write became pending."""
         if not self.is_active():
             # Not the playback owner: nothing may be tracked or applied.
             self.observe_activation()
             return False
-        if percent == self._last_written and self._pending_value is None:
+        if self._anchor is None:
+            # Connect-time push: anchors the controller scale, never writes.
+            self._anchor = percent
+            self._last_value = percent
             return False
-        changed = self._pending_value != percent
+        previous = self._last_value if self._last_value is not None else self._anchor
+        self._last_value = percent
+        if self._picked_up:
+            if percent == self._last_written and self._pending_value is None:
+                # Repeat of the already-applied value (echo/re-push): no write.
+                return False
+            changed = self._pending_value != percent
+            self._pending_value = percent
+            return changed
+        master = max(0, min(100, int(self.current_master())))
+        crossed = min(previous, percent) <= master <= max(previous, percent)
+        if not crossed:
+            # The gesture stays on the far side of the master: adopting it
+            # would jump the master onto the controller's unrelated scale.
+            return False
+        # Pickup: the gesture reaches the master level; adopt absolutely.
+        self._picked_up = True
         self._pending_value = percent
-        return changed
+        return True
 
     async def flush(self) -> None:
         if self._pending_value is None:

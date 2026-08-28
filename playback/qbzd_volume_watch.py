@@ -16,21 +16,21 @@ maps each intent onto the canonical FXRoute master volume. qbzd's own gain is
 never written here; the unity pin lives at the Qobuz claim/start path
 (``set_volume(100)`` works in locked mode through the local control plane).
 
-Remote values are translated into **absolute master writes** (see
-:class:`playback.remote_volume.RemoteVolumeAbsoluteTranslator`): the Qobuz app
-maintains a persistent per-renderer volume slider and pushes its value on
-Connect activation and on every gesture (live-verified on .104, 2026-08-28:
-0.01-step slider drags; the activation push equals the last slider position).
-The master adopts each observed value, so the phone display and the FXRoute
-display show the same number — Spotify-Connect-like sync.
+Remote values are translated with **pickup semantics** (see
+:class:`playback.remote_volume.RemoteVolumePickupTranslator`): the
+connect-time push (the phone's media volume, live-verified on .104 — a
+deactivate/reactivate pushed 98% while the session slider sat at ~50%) only
+anchors the controller scale and never writes; a gesture takes over the
+master only when it crosses the current master level, and from the pickup on
+the master tracks the controller value absolutely, so both displays show the
+same number without any jump.
 
-Contract history: the 2026-08-21 design anchored the first post-activation
-value and applied later values as deltas, because a connect-time push was
-believed to be the phone's media volume and must not hijack the master
-(37 -> 100 was live-observed). The 0.01-step slider traces disproved the
-media-volume reading — the push is the app's own renderer slider — and the
-anchor design left the controller and master permanently offset (phone 0% vs
-master 13%, gestures moving both in parallel). Absolute adoption replaces it.
+Contract history: the 2026-08-21 design anchored the push and applied deltas
+forever — the controller and master displays never matched (phone 0% vs
+master 13%). The 2026-08-28 absolute-adoption design fixed the matching but
+reintroduced the connect-time hijack (master jumped to the pushed 98%). The
+pickup contract keeps both properties: no connect-time write, absolute sync
+after the gesture crosses the master level.
 
 The parser only recognizes locked-mode lines, so in ``software`` mode this
 watch is a silent no-op. The translator debounces the drag burst (a phone drag
@@ -46,7 +46,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from playback.remote_volume import RemoteVolumeAbsoluteTranslator
+from playback.remote_volume import RemoteVolumePickupTranslator
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def is_software_volume_apply(line: str | None) -> bool:
 
 # Historical name for the Qobuz volume translator; the Qobuz bridge was the
 # first consumer and tests reference it by this name.
-QobuzRemoteVolumeTranslator = RemoteVolumeAbsoluteTranslator
+QobuzRemoteVolumeTranslator = RemoteVolumePickupTranslator
 
 
 @dataclass
@@ -127,6 +127,9 @@ class QobuzVolumeWatchDependencies:
 
     is_active: Callable[[], bool]
     apply_volume_value: Callable[[int], Awaitable[Any]]
+    # Non-blocking read of the canonical master percent; the pickup rule
+    # needs it to detect a gesture crossing the current master level.
+    current_master: Callable[[], int]
     # Optional: notified when the journal shows this device becoming (True)
     # or ceasing to be (False) the actively selected Connect renderer.
     on_device_active: Callable[[bool], None] | None = None
@@ -145,9 +148,10 @@ class QobuzVolumeWatch:
         self._deps = deps
         self._journal_command = list(journal_command or JOURNALCTL_COMMAND)
         self._debounce_seconds = debounce_seconds
-        self._translator = RemoteVolumeAbsoluteTranslator(
+        self._translator = RemoteVolumePickupTranslator(
             is_active=deps.is_active,
             apply_volume_value=deps.apply_volume_value,
+            current_master=deps.current_master,
         )
         self.watch_task: asyncio.Task | None = None
         self._drain_task: asyncio.Task | None = None

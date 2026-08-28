@@ -1017,6 +1017,7 @@ qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
         owner="qobuz",
         source_active=lambda: connect_state.is_device_active() is not False,
     ),
+    current_master=lambda: get_output_volume_safe(),
     on_device_active=lambda value: connect_state.set_device_active(value),
 ))
 spotifyd_volume_watch = SpotifydVolumeWatch(SpotifydVolumeWatchDependencies(
@@ -2182,13 +2183,12 @@ async def _apply_remote_volume_value(
 ) -> None:
     """Apply an absolute remote Connect volume to the canonical master.
 
-    The Qobuz app maintains a persistent per-renderer volume slider and pushes
-    its value on Connect activation and on gestures. The master adopts the
-    value so the phone display and the FXRoute display stay identical; delta
-    semantics would preserve a permanent controller-to-master offset instead.
-    The owner check is repeated while holding the canonical write lock, and an
-    owner transition during the non-cancellable worker call restores the
-    pre-write master (same contract as :func:`_apply_remote_volume_delta`).
+    Called by the Qobuz bridge only after pickup (the gesture crossed the
+    current master level), so the write adopts the controller value without
+    any jump larger than the gesture step. The owner check is repeated while
+    holding the canonical write lock, and an owner transition during the
+    non-cancellable worker call restores the pre-write master (same contract
+    as :func:`_apply_remote_volume_delta`).
     """
     owner_is_current = lambda: (
         (owner is None or _resolve_playback_owner() == owner)
