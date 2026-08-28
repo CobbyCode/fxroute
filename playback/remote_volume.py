@@ -2,25 +2,19 @@
 
 """Remote-volume-to-master translation, shared by both Connect bridges.
 
-Two controller semantics exist and each bridge uses the matching translator:
+Both controllers (spotifyd's reported Connect volume and qbzd's locked-mode
+journal values) deliver absolute values on a controller scale that is
+unrelated to the FXRoute master: at connect time the apps push the phone's
+media volume (live-verified on .104, 2026-08-28 — Qobuz pushed 98% on
+reactivate; Spotify pushed 42% -> 100% mid-session), and gesture scales have
+arbitrary offsets. Neither the push nor an out-of-position gesture may move
+the master.
 
-* **spotifyd** reports its Connect volume on a controller scale whose offset
-  against the master is stable, so the controller and the master stay in step
-  once aligned: :class:`RemoteVolumeDeltaTranslator` anchors the first value
-  of a session and applies later values as relative deltas.
-* **Qobuz (qbzd, ``volume_mode=locked``)** has no shared scale at all: at
-  connect time the Qobuz app pushes the *phone's media volume* as an absolute
-  SetVolume (live-verified on .104, 2026-08-28 21:36: deactivate/reactivate →
-  push 98% while the session slider had been at ~50%), and gestures are
-  slider drags on a scale whose zero point is unrelated to the master.
-  Neither the push nor an out-of-position gesture may move the master.
-
-  The Qobuz bridge therefore uses :class:`RemoteVolumePickupTranslator`
-  (motorized-fader pickup semantics, the user-facing "pickup" contract):
-  the connect-time push only anchors the controller scale and never writes;
-  a gesture takes over **only when it crosses the current master level** —
-  the write is bounded by the gesture step at the crossing — and from the
-  pickup on, the master tracks the controller value absolutely.
+:class:`RemoteVolumePickupTranslator` implements the motorized-fader
+"pickup" contract for both bridges: the session's first value only anchors
+the controller scale, a gesture takes over **only when it crosses the
+current master level with a bounded overshoot**, and from the pickup on the
+master tracks the controller value absolutely so both displays match.
 """
 
 from __future__ import annotations
@@ -32,163 +26,12 @@ from typing import Any, Awaitable, Callable
 OWNER_POLL_INTERVAL_SECONDS = 0.05
 logger = logging.getLogger(__name__)
 
-
-class RemoteVolumeDeltaTranslator:
-    """Coalesce remote volume observations into one canonical master write.
-
-    ``submit`` records observations and computes deltas against the running
-    anchor; ``flush`` applies the latest pending delta exactly once. Bursts
-    (one observation per drag/button step) therefore apply the gesture's net
-    delta instead of every intermediate step.
-    """
-
-    def __init__(
-        self,
-        is_active: Callable[[], bool],
-        apply_volume_delta: Callable[[int], Awaitable[Any]],
-    ) -> None:
-        self.is_active = is_active
-        self.apply_volume_delta = apply_volume_delta
-        self._anchor: int | None = None
-        self._pending_delta: int | None = None
-        self._pending_observed = False
-        self._activation_epoch = 0
-        self._inflight_apply_task: asyncio.Task[Any] | None = None
-
-    @property
-    def pending(self) -> int | None:
-        return self._pending_delta
-
-    @property
-    def anchored(self) -> bool:
-        return self._anchor is not None
-
-    def observe_activation(self) -> None:
-        """Session (re)activation or ownership loss: drop anchor and pending.
-
-        The next observed value re-anchors the controller scale without
-        touching the master, so connect-time sync pushes, restored session
-        volumes and daemon restarts can never leak into the master as user
-        intent.
-        """
-        self._activation_epoch += 1
-        self._anchor = None
-        self._pending_delta = None
-        self._pending_observed = False
-        if self._inflight_apply_task is not None and not self._inflight_apply_task.done():
-            self._inflight_apply_task.cancel()
-
-    def submit(self, percent: int) -> bool:
-        """Record an observation; ``True`` when it produced a pending delta.
-
-        The anchor stays fixed until :meth:`flush` applies the pending delta,
-        so a drag burst nets against the pre-gesture scale (100->99->98 yields
-        -2, not the last step's -1).
-        """
-        if not self.is_active():
-            # Not the playback owner: nothing may be tracked or applied, and
-            # the next active observation re-anchors from scratch.
-            self.observe_activation()
-            return False
-        if self._anchor is None:
-            self._anchor = percent
-            return False
-        self._pending_observed = True
-        if percent == self._anchor:
-            # The gesture returned to the anchored value: net delta is zero.
-            self._pending_delta = None
-            return False
-        self._pending_delta = percent - self._anchor
-        return True
-
-    async def flush(self) -> None:
-        if self._pending_delta is None:
-            return
-        if not self.is_active():
-            # The owner changed inside the debounce window: the pending delta
-            # is stale and must never touch the master anymore.  Reset through
-            # the activation path so an in-flight write is cancelled too.
-            self.observe_activation()
-            return
-        delta = self._pending_delta
-        self._pending_delta = None
-        self._pending_observed = False
-        self._anchor += delta
-        epoch = self._activation_epoch
-        apply_task = asyncio.create_task(
-            self.apply_volume_delta(delta),
-            name="remote-volume-apply",
-        )
-        self._inflight_apply_task = apply_task
-        owner_monitor = asyncio.create_task(
-            self._wait_for_owner_loss(epoch),
-            name="remote-volume-owner-monitor",
-        )
-        try:
-            done, _ = await asyncio.wait(
-                (apply_task, owner_monitor),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if owner_monitor in done and owner_monitor.result() and not apply_task.done():
-                self.observe_activation()
-            await apply_task
-        except asyncio.CancelledError:
-            if epoch != self._activation_epoch or not self.is_active():
-                if epoch == self._activation_epoch:
-                    self.observe_activation()
-                return
-            self._restore_failed_delta(delta)
-            raise
-        except Exception as exc:
-            if getattr(exc, "volume_write_applied", False):
-                # A failed verification after wpctl accepted the set is already
-                # committed; retrying the delta would apply the gesture twice.
-                logger.warning("Remote volume write committed but readback failed: %s", exc)
-                if epoch != self._activation_epoch or not self.is_active():
-                    if epoch == self._activation_epoch:
-                        self.observe_activation()
-                return
-            if epoch != self._activation_epoch or not self.is_active():
-                if epoch == self._activation_epoch:
-                    self.observe_activation()
-                return
-            self._restore_failed_delta(delta)
-            raise
-        finally:
-            if not apply_task.done():
-                apply_task.cancel()
-            if not owner_monitor.done():
-                owner_monitor.cancel()
-            await asyncio.gather(apply_task, owner_monitor, return_exceptions=True)
-            if self._inflight_apply_task is apply_task:
-                self._inflight_apply_task = None
-
-        if epoch != self._activation_epoch or not self.is_active():
-            if epoch == self._activation_epoch:
-                self.observe_activation()
-
-    def _restore_failed_delta(self, delta: int) -> None:
-        """Rebase a failed write and any newer observation onto the old anchor."""
-        if self._anchor is None:
-            return
-        self._anchor -= delta
-        if self._pending_observed and self._pending_delta is not None:
-            restored = self._pending_delta + delta
-            self._pending_delta = restored or None
-        else:
-            self._pending_delta = delta
-        self._pending_observed = False
-
-    async def _wait_for_owner_loss(self, epoch: int) -> bool:
-        """Return when ownership disappears during an asynchronous write."""
-        while epoch == self._activation_epoch:
-            try:
-                if not self.is_active():
-                    return True
-            except Exception:
-                return False
-            await asyncio.sleep(OWNER_POLL_INTERVAL_SECONDS)
-        return False
+# Maximum distance between a crossing gesture's observed value and the
+# current master level for the pickup to adopt that value. Gestures reach
+# the master in small steps (slider drags, hardware-key steps); app pushes
+# leap far across it (42% -> 100% was live-observed on Spotify) and must
+# never adopt.
+MAX_PICKUP_OVERSHOOT = 10
 
 
 class RemoteVolumePickupTranslator:
@@ -200,11 +43,13 @@ class RemoteVolumePickupTranslator:
       phone's media volume) only **anchors** the controller scale — it never
       writes the master.
     * While not picked up, a gesture writes only when it **crosses the
-      current master level** (the master lies between the previous and the
-      new observed value, or a value lands exactly on it). The pickup write
-      adopts the observed value, so the jump is bounded by the gesture step.
-      Gestures that stay on the far side of the master are ignored: adopting
-      them would jump the master to the controller's unrelated scale.
+      current master level** with a bounded overshoot
+      (``max_pickup_overshoot``): the write adopts the observed value, so the
+      jump is bounded by the gesture step. Gestures that stay on the far side
+      of the master, and app pushes that leap far across it (live-verified:
+      Spotify pushed the phone's media volume 42% -> 100% mid-session), are
+      ignored — adopting them would jump the master onto the controller's
+      unrelated scale.
     * After the pickup the master tracks the controller value absolutely, so
       both displays show the same number.
 
@@ -218,10 +63,12 @@ class RemoteVolumePickupTranslator:
         is_active: Callable[[], bool],
         apply_volume_value: Callable[[int], Awaitable[Any]],
         current_master: Callable[[], int],
+        max_pickup_overshoot: int = MAX_PICKUP_OVERSHOOT,
     ) -> None:
         self.is_active = is_active
         self.apply_volume_value = apply_volume_value
         self.current_master = current_master
+        self.max_pickup_overshoot = max_pickup_overshoot
         self._anchor: int | None = None
         self._last_value: int | None = None
         self._picked_up = False
@@ -278,6 +125,10 @@ class RemoteVolumePickupTranslator:
         if not crossed:
             # The gesture stays on the far side of the master: adopting it
             # would jump the master onto the controller's unrelated scale.
+            return False
+        if abs(percent - master) > self.max_pickup_overshoot:
+            # A leap far across the master (app pushing the phone's media
+            # volume) is not a gesture: ignore it and stay unarmed.
             return False
         # Pickup: the gesture reaches the master level; adopt absolutely.
         self._picked_up = True
