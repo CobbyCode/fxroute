@@ -21,15 +21,18 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import audio.bluetooth as bluetooth_module
+import main
 from audio.bluetooth import BluetoothInputMonitor
 from dsp.orchestration import DspOrchestrationDeps, DspOrchestrator
+from playback_transition_test_support import make_transition_runtime
 from playback.runtime.mute import _RuntimeMuteMixin
 from playback.runtime.snapshot import _RuntimeSnapshotMixin
+from playback.transition import TransitionRequest
 
 
 MAIN_THREAD = threading.current_thread()
@@ -54,6 +57,74 @@ def _assert_off_loop(self, fn):
 
 
 class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
+    async def test_pause_route_runs_mpv_command_off_loop(self):
+        seen = []
+
+        class Player:
+            _running = True
+            state = {
+                "current_file": "/music/current.flac",
+                "playing": True,
+                "paused": False,
+                "ended": False,
+            }
+
+            def pause(self):
+                seen.append(threading.current_thread() is MAIN_THREAD)
+                self.state = {**self.state, "playing": False, "paused": True}
+
+        with patch.object(main.runtime, "player_instance", Player()), patch.object(
+            main, "_mark_player_state_authoritative"
+        ), patch.object(main, "_mark_playback_intent_changed"):
+            await main.pause_playback()
+
+        self.assertEqual(seen, [False])
+
+    async def test_runtime_player_command_runs_off_loop(self):
+        seen = []
+
+        class Player:
+            _running = True
+            state = {"paused": False, "playing": True, "current_file": "/music/current.flac"}
+
+            def set_pause(self, paused):
+                seen.append(threading.current_thread() is MAIN_THREAD)
+                self.state = {**self.state, "paused": paused, "playing": not paused}
+
+        request = TransitionRequest(
+            operation="output-mode-switch",
+            source="local",
+            target_rate=44100,
+            should_play=False,
+            reload_source=False,
+        )
+        with patch.object(main.runtime, "player_instance", Player()):
+            await make_transition_runtime().prepare_target_source(request)
+
+        self.assertEqual(seen, [False])
+
+    async def test_audio_samplerate_poll_runs_mpv_property_read_off_loop(self):
+        seen = []
+
+        class Player:
+            _running = True
+            state = {"current_file": "/music/current.flac"}
+
+            def get_property(self, name):
+                seen.append(threading.current_thread() is MAIN_THREAD)
+                self.assertEqual(name, "audio-params")
+                return {"samplerate": 48000}
+
+        player = Player()
+        player.assertEqual = self.assertEqual
+        with patch.object(main.runtime, "player_instance", player):
+            rate = await main._wait_for_player_audio_samplerate(
+                expected_url="/music/current.flac"
+            )
+
+        self.assertEqual(rate, 48000)
+        self.assertEqual(seen, [False])
+
     async def test_runtime_link_watch_loop_builds_overview_off_loop(self):
         seen = []
 

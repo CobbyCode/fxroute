@@ -12,7 +12,9 @@ transition is no longer active, the endpoints keep their normal semantics.
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -156,6 +158,27 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
         finally:
             restore_queue_state(saved_queue)
 
+    async def test_clear_queue_during_active_transition_is_conflict_and_noop(self):
+        player = PlayerDouble()
+        coordinator = _transition_coordinator(True)
+        queue = [{"id": "a"}, {"id": "b"}]
+        saved_queue = queue_state()
+        try:
+            playback_queue.queue.tracks = [dict(item) for item in queue]
+            with patch.object(main.runtime, "player_instance", player), patch.object(
+                main, "playback_transition_coordinator", coordinator
+            ), patch.object(
+                main, "build_playback_payload", side_effect=dict
+            ), patch.object(main.manager, "broadcast", new=AsyncMock()) as broadcast:
+                with self.assertRaises(HTTPException) as cm:
+                    await main.clear_playback_queue()
+
+            self.assertEqual(cm.exception.status_code, 409)
+            self.assertEqual(playback_queue.queue.tracks, queue)
+            broadcast.assert_not_awaited()
+        finally:
+            restore_queue_state(saved_queue)
+
     async def test_seek_during_active_transition_is_conflict_before_body_read(self):
         player = PlayerDouble()
         coordinator = _transition_coordinator(True)
@@ -210,6 +233,53 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "paused")
         player.pause.assert_called_once_with()
 
+    async def test_pause_holds_coordinator_lock_until_mpv_command_finishes(self):
+        player = PlayerDouble()
+        command_started = threading.Event()
+        command_release = threading.Event()
+        transition_entered = asyncio.Event()
+
+        def blocking_pause():
+            command_started.set()
+            command_release.wait(1.0)
+            player._toggle_pause()
+
+        player.pause.side_effect = blocking_pause
+
+        class Coordinator:
+            def __init__(self):
+                self.lock = asyncio.Lock()
+
+            @property
+            def transition_active(self):
+                return self.lock.locked()
+
+        coordinator = Coordinator()
+
+        async def competing_transition():
+            async with coordinator.lock:
+                transition_entered.set()
+
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            main, "playback_transition_coordinator", coordinator
+        ), patch.object(
+            main, "build_playback_payload", side_effect=dict
+        ), patch.object(
+            main, "_mark_player_state_authoritative"
+        ), patch.object(main, "_mark_playback_intent_changed"):
+            pause_task = asyncio.create_task(main.pause_playback())
+            self.assertTrue(await asyncio.to_thread(command_started.wait, 1.0))
+            transition_task = asyncio.create_task(competing_transition())
+            await asyncio.sleep(0)
+            try:
+                self.assertFalse(transition_entered.is_set())
+            finally:
+                command_release.set()
+            await pause_task
+            await transition_task
+
+        self.assertTrue(transition_entered.is_set())
+
     async def test_toggle_works_when_transition_inactive(self):
         player = PlayerDouble()
         track = {"source": "local", "url": "/music/current.flac"}
@@ -224,6 +294,60 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "paused")
         player.pause.assert_called_once_with()
+
+    async def test_external_owner_toggle_runs_under_coordinator_lock(self):
+        player = PlayerDouble()
+
+        class Coordinator:
+            def __init__(self):
+                self.lock = asyncio.Lock()
+
+            @property
+            def transition_active(self):
+                return self.lock.locked()
+
+        coordinator = Coordinator()
+
+        async def routed_control(action, request=None):
+            self.assertTrue(coordinator.lock.locked())
+            return {"routed": "spotify"}
+
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            main, "playback_transition_coordinator", coordinator
+        ), patch.object(main, "_route_global_control", new=routed_control):
+            result = await main.toggle_playback()
+
+        self.assertEqual(result, {"routed": "spotify"})
+        player.pause.assert_not_called()
+
+    async def test_toggle_resume_rejected_when_transition_completes_during_rate_calc(self):
+        # The resume fast path computes the rate in a worker thread before its
+        # guard: a transition that starts and completes during that await must
+        # invalidate the stale toggle instead of unpausing the new context.
+        player = PlayerDouble(paused=True)
+        track = {"source": "local", "url": "/music/current.flac", "sample_rate_hz": 44100}
+
+        def rate_change_with_transition(_target):
+            main.playback_state.begin_transition_attempt()
+            main.playback_state.end_transition_attempt()
+            return False
+
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            main.playback_state, "current_track_info", track
+        ), patch.object(
+            main, "_coordinator_rate_change", new=rate_change_with_transition
+        ), patch.object(
+            main, "_can_send_play_command", return_value=True
+        ), patch.object(
+            main, "build_playback_payload", side_effect=dict
+        ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
+            main, "_mark_playback_intent_changed"
+        ):
+            with self.assertRaises(HTTPException) as cm:
+                await main.toggle_playback()
+
+        self.assertEqual(cm.exception.status_code, 409)
+        self.assertTrue(player.state["paused"])
 
     async def test_stop_works_when_transition_inactive(self):
         player = PlayerDouble()
@@ -254,6 +378,88 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(main.playback_state.current_track_info)
         finally:
             restore_queue_state(saved_queue)
+
+    async def test_stop_pauses_spotify_owner_before_clearing_context(self):
+        player = PlayerDouble()
+        self._orig_latest_spotify_state = main.playback_state.latest_spotify_state
+        main.playback_state.latest_spotify_state = {"status": "Playing"}
+
+        async def pause_spotify():
+            self.assertEqual(main.playback_state.current_playback_owner, "spotify")
+            return {"status": "Paused"}
+
+        release = AsyncMock(return_value=True)
+        try:
+            with patch.object(main.runtime, "player_instance", player), patch.object(
+                main.playback_state, "current_playback_owner", "spotify"
+            ), patch.object(
+                main.playback_state, "current_track_info", {"source": "spotify", "id": "track-1"}
+            ), patch.object(
+                main, "spotify_pause", new=AsyncMock(side_effect=pause_spotify)
+            ) as pause, patch.object(
+                main, "_wait_for_pipewire_spotify_release", release
+            ), patch.object(
+                main, "_mark_player_state_authoritative"
+            ), patch.object(
+                main, "_mark_playback_intent_changed"
+            ), patch.object(
+                main.radio_reconnect, "reset"
+            ), patch.object(
+                main.playback_queue.queue, "reset"
+            ), patch.object(
+                main.playback_queue.queue, "reset_mpv_loop_state"
+            ), patch.object(
+                main, "get_samplerate_status", return_value={"active_rate": 44100}
+            ), patch.object(main.samplerate, "clear_auto_policy_force_rate"):
+                result = await main.stop_playback()
+
+            self.assertEqual(result["status"], "stopped")
+            pause.assert_awaited_once_with()
+            release.assert_awaited_once_with()
+            self.assertEqual(
+                main.playback_state.latest_spotify_state, {"status": "Paused"}
+            )
+            self.assertIsNone(main.playback_state.current_playback_owner)
+            player.stop_playback.assert_called_once_with()
+        finally:
+            main.playback_state.latest_spotify_state = self._orig_latest_spotify_state
+
+    async def test_stop_pauses_qobuz_owner_before_clearing_context(self):
+        player = PlayerDouble()
+
+        async def pause_qobuz():
+            self.assertEqual(main.playback_state.current_playback_owner, "qobuz")
+            return {"status": "Paused"}
+
+        release = AsyncMock(return_value=True)
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            main.playback_state, "current_playback_owner", "qobuz"
+        ), patch.object(
+            main.playback_state, "current_track_info", {"source": "qobuz", "id": "track-1"}
+        ), patch.object(
+            main, "qobuz_pause", new=AsyncMock(side_effect=pause_qobuz)
+        ) as pause, patch.object(
+            main, "_wait_for_pipewire_qobuz_release", release
+        ), patch.object(
+            main, "_mark_player_state_authoritative"
+        ), patch.object(
+            main, "_mark_playback_intent_changed"
+        ), patch.object(
+            main.radio_reconnect, "reset"
+        ), patch.object(
+            main.playback_queue.queue, "reset"
+        ), patch.object(
+            main.playback_queue.queue, "reset_mpv_loop_state"
+        ), patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 44100}
+        ), patch.object(main.samplerate, "clear_auto_policy_force_rate"):
+            result = await main.stop_playback()
+
+        self.assertEqual(result["status"], "stopped")
+        pause.assert_awaited_once_with()
+        release.assert_awaited_once_with()
+        self.assertIsNone(main.playback_state.current_playback_owner)
+        player.stop_playback.assert_called_once_with()
 
     async def test_seek_works_when_transition_inactive(self):
         player = PlayerDouble()

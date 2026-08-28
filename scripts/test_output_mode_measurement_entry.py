@@ -34,6 +34,7 @@ class TransactionRuntime:
         initially_dsp_muted: bool = False,
         dsp_reinitialized: bool = False,
         real_reconcile: bool = False,
+        fail_gate_restore: bool = False,
     ):
         self.events: list[str] = []
         self.muted = initially_muted
@@ -41,13 +42,16 @@ class TransactionRuntime:
         self.fail_output_verify = fail_output_verify
         self.rate = 44100
         self.helper_rate = 44100
+        self.force_rate = 44100
         self.volume = 72
         self.position = 123.5
         self.paused = False
         self.playing = True
         self.spotify_status = "Playing"
+        self.sample_rate_policy = {"mode": "auto", "rate": None}
         self.dsp_reinitialized = dsp_reinitialized
         self.real_reconcile = real_reconcile
+        self.fail_gate_restore = fail_gate_restore
         self.spotify_source_link_confirmed = False
 
     async def read_hardware_mute(self):
@@ -55,6 +59,8 @@ class TransactionRuntime:
         return self.muted
 
     async def set_hardware_mute(self, muted, _transition_id):
+        if not muted and self.fail_gate_restore:
+            raise RuntimeError("hardware gate did not reopen")
         self.muted = bool(muted)
         self.events.append(f"mute:{self.muted}")
 
@@ -83,6 +89,9 @@ class TransactionRuntime:
             "output_mode_overview": {"output_mode": {"mode": "stereo"}},
             "output_mode_config": {"mode": "stereo"},
             "spotify": {"status": self.spotify_status},
+            "sample_rate_policy": dict(self.sample_rate_policy),
+            "active_rate": self.rate,
+            "force_rate": self.force_rate,
         }
 
     async def quiet_old_source(self, _request):
@@ -122,7 +131,12 @@ class TransactionRuntime:
 
     async def commit_sample_rate_policy(self, _request):
         self.events.append("persist-sample-rate-policy")
+        self.sample_rate_policy = dict(_request.sample_rate_policy)
         return {"sample_rate_policy": dict(_request.sample_rate_policy)}
+
+    async def rollback_sample_rate_policy(self, _request, snapshot):
+        self.events.append("rollback-sample-rate-policy")
+        self.sample_rate_policy = dict(snapshot["sample_rate_policy"])
 
     async def rollback_output_mode_runtime(self, _request, _snapshot):
         self.events.append("rollback-output-mode")
@@ -298,6 +312,76 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         indices = [runtime.events.index(event) for event in expected]
         self.assertEqual(indices, sorted(indices))
         self.assertNotIn("restore-transport", runtime.events)
+
+    async def test_sample_rate_policy_rolls_back_when_gate_restore_fails(self):
+        runtime = TransactionRuntime(fail_gate_restore=True)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        request = TransitionRequest(
+            operation="sample-rate-policy",
+            source="local",
+            target_rate=44100,
+            target_url="/music/current.flac",
+            target_track={"source": "local", "url": "/music/current.flac"},
+            should_play=True,
+            rate_change=False,
+            reload_source=False,
+            sample_rate_policy={"mode": "fixed", "rate": 44100},
+        )
+
+        with self.assertRaises(PlaybackTransitionFailure):
+            await coordinator.execute(request)
+
+        self.assertEqual(runtime.sample_rate_policy, {"mode": "auto", "rate": None})
+        self.assertLess(
+            runtime.events.index("persist-sample-rate-policy"),
+            runtime.events.index("rollback-sample-rate-policy"),
+        )
+
+    async def test_sample_rate_policy_rollback_restores_live_force_rate(self):
+        # The transition re-pinned the hardware to the failed target rate;
+        # the production rollback must also restore the pre-transition live
+        # pin of the restored fixed policy, not only the JSON policy file.
+        runtime = make_transition_runtime()
+        snapshot = {
+            "sample_rate_policy": {"mode": "fixed", "rate": 44100},
+            "active_rate": 44100,
+            "force_rate": 44100,
+        }
+        restored_pins = []
+
+        def restore_pin(rate):
+            restored_pins.append(rate)
+
+        with patch.object(
+            main.samplerate, "set_pipewire_force_rate", new=restore_pin
+        ), patch.object(
+            main.samplerate, "persist_sample_rate_policy",
+            return_value={"mode": "fixed", "rate": 44100},
+        ) as persist:
+            await runtime.rollback_sample_rate_policy(None, snapshot)
+
+        persist.assert_called_once_with({"mode": "fixed", "rate": 44100})
+        self.assertEqual(restored_pins, [44100])
+
+    async def test_sample_rate_policy_rollback_clears_pin_for_auto_policy(self):
+        runtime = make_transition_runtime()
+        snapshot = {
+            "sample_rate_policy": {"mode": "auto", "rate": None},
+            "active_rate": 44100,
+            "force_rate": 48000,
+        }
+        cleared = []
+
+        def clear_pin(expected_rate, **kwargs):
+            cleared.append(expected_rate)
+            return True
+
+        with patch.object(
+            main.samplerate, "clear_auto_policy_force_rate", new=clear_pin
+        ):
+            await runtime.rollback_sample_rate_policy(None, snapshot)
+
+        self.assertEqual(cleared, [44100])
 
     async def test_spotify_play_clears_stale_hardware_and_internal_mutes(self):
         runtime = TransactionRuntime(
@@ -539,6 +623,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["graph_complete"])
 
+
     async def test_stereo_switch_final_readback_settles_over_transient_missing_links(self):
         """A stereo output-mode switch must not fail when the final diagnosis
         transiently misses the just-created native DSP-to-hardware front links."""
@@ -615,6 +700,101 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(runtime.events.index("persist-output-mode"), runtime.events.index("mute:False"))
 
 
+class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
+    def test_qobuz_source_rate_falls_back_to_44100(self):
+        self.assertEqual(
+            playback_orchestration.configured().coordinator_source_rate(
+                "qobuz", {"source": "qobuz"}
+            ),
+            44100,
+        )
+
+    async def test_output_mode_snapshot_captures_qobuz_transport(self):
+        runtime = make_transition_runtime()
+        request = TransitionRequest(
+            operation="output-mode-switch",
+            source="qobuz",
+            target_rate=88200,
+            should_play=True,
+            output_mode_target={"output_mode": {"mode": "stereo"}},
+            output_mode_config={"mode": "stereo"},
+        )
+        with patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 88200}
+        ), patch.object(
+            main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}
+        ), patch.object(
+            samplerate, "_load_raw_audio_output_mode", return_value={"mode": "stereo"}
+        ), patch.object(
+            main, "get_spotify_ui_state", new=AsyncMock(return_value={"status": "Paused"})
+        ), patch.object(
+            main, "get_qobuz_ui_state", new=AsyncMock(return_value={"status": "Playing"})
+        ), patch.object(main, "dsp_manager", None):
+            snapshot = await runtime.read_transition_snapshot(request)
+
+        self.assertEqual(snapshot["qobuz"]["status"], "Playing")
+
+    async def test_output_mode_restore_resumes_previously_playing_qobuz(self):
+        runtime = make_transition_runtime()
+        request = TransitionRequest(
+            operation="output-mode-switch",
+            source="qobuz",
+            target_rate=88200,
+            should_play=True,
+            output_mode_target={"output_mode": {"mode": "stereo"}},
+            output_mode_config={"mode": "stereo"},
+        )
+        with patch.object(
+            main, "qobuz_play", new=AsyncMock(return_value={"status": "Playing"})
+        ) as play, patch.object(
+            main, "get_qobuz_ui_state", new=AsyncMock(return_value={"status": "Playing"})
+        ):
+            await runtime.restore_output_mode_transport(
+                request,
+                {"qobuz": {"status": "Playing"}},
+                "tr-output-mode",
+            )
+
+        play.assert_awaited_once_with()
+
+    async def test_output_mode_commit_requires_qobuz_sink_rate(self):
+        runtime = make_transition_runtime()
+        request = TransitionRequest(
+            operation="output-mode-switch",
+            source="qobuz",
+            target_rate=44100,
+            should_play=True,
+            target_track={"source": "qobuz"},
+            output_mode_target={"output_mode": {"mode": "stereo"}},
+            output_mode_config={"mode": "stereo"},
+        )
+        diagnosis = {
+            "links_complete": True,
+            "signature": "qobuz-output-mode-stable",
+        }
+        with patch.object(
+            main, "get_samplerate_status", return_value={
+                "active_rate": 44100,
+                "force_rate": 44100,
+                "default_rate": 44100,
+            }
+        ), patch.object(
+            playback_orchestration.configured(),
+            "playback_graph_diagnosis",
+            new=AsyncMock(return_value=diagnosis),
+        ), patch.object(
+            main, "get_qobuz_ui_state", new=AsyncMock(return_value={"status": "Playing"})
+        ), patch.object(
+            main,
+            "_wait_for_qobuz_sink_input_samplerate",
+            new=AsyncMock(return_value=None),
+        ) as wait_rate:
+            with self.assertRaisesRegex(RuntimeError, "Qobuz stream rate mismatch"):
+                await runtime.verify_output_mode_runtime(request)
+
+        wait_rate.assert_awaited_once_with(expected_rate=44100)
+
+
 class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_output_mode_endpoint_submits_target_to_coordinator(self):
         class Request:
@@ -647,6 +827,54 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.operation, "output-mode-switch")
         self.assertEqual(request.output_mode_target, target["overview"])
         self.assertEqual(request.output_mode_config, target["config"])
+
+    async def test_running_dsp_output_mode_switch_uses_coordinator(self):
+        class Request:
+            async def json(self):
+                return {"mode": "subwoofer-2.1", "subwoofer": {}}
+
+        target = {
+            "overview": {"output_mode": {"mode": "subwoofer-2.1"}},
+            "config": {"mode": "subwoofer-2.1", "subwoofer": {}},
+        }
+        run = AsyncMock(return_value=SimpleNamespace(committed=True))
+        dsp_runtime = SimpleNamespace(
+            guarded_rebuild=AsyncMock(),
+            snapshot=lambda: {},
+        )
+        with patch.object(
+            main, "measurement_sr_session", SimpleNamespace(active=False, has_active_jobs=False)
+        ), patch.object(
+            main, "prepare_audio_output_mode", return_value=target
+        ), patch.object(
+            main.samplerate, "_load_audio_output_mode", return_value={"mode": "stereo"}
+        ), patch.object(
+            main, "_coordinator_current_playback_context", new=AsyncMock(return_value={
+                "source": "local",
+                "target_url": "/music/current.flac",
+                "target_track": {"source": "local", "url": "/music/current.flac"},
+                "should_play": True,
+            })
+        ), patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 44100}
+        ), patch.object(
+            main, "_run_coordinated_transition", run
+        ), patch.object(
+            main, "get_audio_output_overview", return_value=target["overview"]
+        ), patch.object(
+            main, "persist_audio_output_mode"
+        ) as persist, patch.object(
+            main, "with_subwoofer_derived_delays", side_effect=lambda value: value
+        ), patch.object(
+            main.runtime, "dsp_runtime", dsp_runtime
+        ), patch.object(
+            main.dsp_orchestrator, "refresh_peak_monitor_after_effects_change", new=AsyncMock()
+        ):
+            await main.save_audio_output_mode_route(Request())
+
+        run.assert_awaited_once()
+        dsp_runtime.guarded_rebuild.assert_not_awaited()
+        persist.assert_not_called()
 
     async def test_measurement_session_entry_submits_rate_change_to_coordinator(self):
         session = main.MeasurementSampleRateSession()

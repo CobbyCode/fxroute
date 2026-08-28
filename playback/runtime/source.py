@@ -139,18 +139,18 @@ class _RuntimeSourceMixin:
         state = self._player.state
         set_volume = getattr(self._player, "set_volume", None)
         if callable(set_volume):
-            set_volume(0)
+            await self._deps.drain_worker(set_volume, 0)
         if (
             request.operation == "recovery"
             and state.get("current_file")
             and not request.rate_change
         ):
-            self._player.set_pause(True)
+            await self._deps.drain_worker(self._player.set_pause, True)
             return
         # A healthy same-rate replacement keeps the existing MPV/PipeWire
         # stream alive and only quiets it.  A real rate change must release the
         # old stream before the target-rate negotiation begins.
-        self._player.set_pause(True)
+        await self._deps.drain_worker(self._player.set_pause, True)
         should_release = bool(
             request.rate_change
             and request.operation not in {"measurement-entry", "output-mode-switch"}
@@ -161,7 +161,7 @@ class _RuntimeSourceMixin:
             and state.get("current_file")
         )
         if should_release:
-            self._player.stop_playback()
+            await self._deps.drain_worker(self._player.stop_playback)
             released = await self._deps.wait_for_pipewire_mpv_release()
             if not released:
                 await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
@@ -179,8 +179,10 @@ class _RuntimeSourceMixin:
                 raise RuntimeError("MPV player is not available")
             set_volume = getattr(self._player, "set_volume", None)
             if callable(set_volume):
-                set_volume(0)
-            self._deps.load_player_paused(request.target_url)
+                await self._deps.drain_worker(set_volume, 0)
+            await self._deps.drain_worker(
+                self._deps.load_player_paused, request.target_url
+            )
             if not await self._deps.wait_for_player_current_file(request.target_url):
                 raise RuntimeError("local target did not settle while paused")
             live_rate = await self._deps.wait_for_player_audio_samplerate(
@@ -206,11 +208,15 @@ class _RuntimeSourceMixin:
         if not self._deps.player_is_running():
             raise RuntimeError("MPV player is not available")
 
-        previous_rate = self._deps.get_player_audio_samplerate()
+        previous_rate = await self._deps.drain_worker(
+            self._deps.get_player_audio_samplerate
+        )
         set_volume = getattr(self._player, "set_volume", None)
         if callable(set_volume):
-            set_volume(0)
-        self._deps.load_player_paused(request.target_url)
+            await self._deps.drain_worker(set_volume, 0)
+        await self._deps.drain_worker(
+            self._deps.load_player_paused, request.target_url
+        )
         if not await self._deps.wait_for_player_current_file(request.target_url):
             raise RuntimeError("radio target stream did not settle while paused")
         attempt_epoch = request.attempt_epoch
@@ -299,19 +305,19 @@ class _RuntimeSourceMixin:
             raise RuntimeError("MPV player is not available")
 
         if not request.reload_source and not request.should_play:
-            self._player.set_pause(True)
+            await self._deps.drain_worker(self._player.set_pause, True)
             return
 
         set_volume = getattr(self._player, "set_volume", None)
         if callable(set_volume):
-            set_volume(0)
+            await self._deps.drain_worker(set_volume, 0)
 
         if request.native_queue:
             set_shuffle = getattr(self._player, "set_shuffle", None)
             if callable(set_shuffle):
                 # Disable any legacy MPV-side permutation before staging or
                 # jumping within the explicit FXRoute queue order.
-                set_shuffle(False)
+                await self._deps.drain_worker(set_shuffle, False)
             queue_tracks = tuple(request.native_queue)
             if request.reload_source:
                 start_index = request.native_queue_index
@@ -322,17 +328,26 @@ class _RuntimeSourceMixin:
                 first_url = str(queue_tracks[0].get("url") or "")
                 if not first_url:
                     raise RuntimeError("native MPV queue has no first URL")
-                self._deps.load_player_paused(first_url)
+                await self._deps.drain_worker(
+                    self._deps.load_player_paused, first_url
+                )
                 for queued_track in queue_tracks[1:]:
                     queued_url = str(queued_track.get("url") or "")
                     if not queued_url:
                         raise RuntimeError("native MPV queue contains an empty URL")
-                    self._player.loadfile(queued_url, mode="append")
-                self._player.set_loop_playlist(bool(request.native_queue_loop))
-                self._player.set_playlist_pos(start_index)
+                    await self._deps.drain_worker(
+                        self._player.loadfile, queued_url, mode="append"
+                    )
+                await self._deps.drain_worker(
+                    self._player.set_loop_playlist,
+                    bool(request.native_queue_loop),
+                )
+                await self._deps.drain_worker(
+                    self._player.set_playlist_pos, start_index
+                )
                 self._staged_target_url = request.target_url
             else:
-                self._player.set_pause(True)
+                await self._deps.drain_worker(self._player.set_pause, True)
 
             if not await self._deps.wait_for_player_current_file(request.target_url):
                 raise RuntimeError("native MPV queue target did not settle while paused")
@@ -347,16 +362,20 @@ class _RuntimeSourceMixin:
             elif self._staged_target_url != request.target_url:
                 # A non-native transition must not inherit loop/shuffle
                 # controls from a previously committed native playlist.
-                self._player.set_loop_playlist(False)
+                await self._deps.drain_worker(
+                    self._player.set_loop_playlist, False
+                )
                 set_shuffle = getattr(self._player, "set_shuffle", None)
                 if callable(set_shuffle):
-                    set_shuffle(False)
-                self._deps.load_player_paused(request.target_url)
+                    await self._deps.drain_worker(set_shuffle, False)
+                await self._deps.drain_worker(
+                    self._deps.load_player_paused, request.target_url
+                )
                 self._staged_target_url = request.target_url
                 if not await self._deps.wait_for_player_current_file(request.target_url):
                     raise RuntimeError("target MPV stream did not settle while paused")
             else:
-                self._player.set_pause(True)
+                await self._deps.drain_worker(self._player.set_pause, True)
 
         if (
             request.operation in {"measurement-restore", "replay", "sample-rate-policy"}
@@ -367,12 +386,14 @@ class _RuntimeSourceMixin:
             seek = getattr(self._player, "seek", None)
             if not callable(seek):
                 raise RuntimeError("MPV position restore is not available")
-            self._player.set_pause(True)
-            seek(position)
+            await self._deps.drain_worker(self._player.set_pause, True)
+            await self._deps.drain_worker(seek, position)
             get_property = getattr(self._player, "get_property", None)
             if callable(get_property):
                 try:
-                    readback = get_property("time-pos")
+                    readback = await self._deps.drain_worker(
+                        get_property, "time-pos"
+                    )
                 except Exception as exc:
                     raise RuntimeError(
                         f"MPV position restore readback failed: {exc}"
@@ -392,7 +413,7 @@ class _RuntimeSourceMixin:
         if not await self._deps.ensure_mpv_to_dsp_links():
             raise RuntimeError("target source to DSP links were not confirmed")
         if not request.should_play:
-            self._player.set_pause(True)
+            await self._deps.drain_worker(self._player.set_pause, True)
 
     async def start_target_source(self, request: TransitionRequest) -> None:
         if request.graph_only:
@@ -437,7 +458,9 @@ class _RuntimeSourceMixin:
             return
         if not self._deps.player_is_running():
             raise RuntimeError("MPV player is not available")
-        self._player.set_pause(not request.should_play)
+        await self._deps.drain_worker(
+            self._player.set_pause, not request.should_play
+        )
         if not request.should_play:
             return
         deadline = time.monotonic() + 1.8
@@ -446,18 +469,21 @@ class _RuntimeSourceMixin:
         while time.monotonic() <= deadline:
             if callable(get_property):
                 try:
-                    live_path = get_property("path")
-                    live_paused = get_property("pause")
-                    live_idle = get_property("idle-active")
-                    live_time_pos = get_property("time-pos")
-                    live_audio_params = get_property("audio-params")
-                    last_readback = {
-                        "path": live_path,
-                        "pause": live_paused,
-                        "idle-active": live_idle,
-                        "time-pos": live_time_pos,
-                        "audio-params": live_audio_params,
-                    }
+                    def read_live_state() -> dict[str, Any]:
+                        return {
+                            "path": get_property("path"),
+                            "pause": get_property("pause"),
+                            "idle-active": get_property("idle-active"),
+                            "time-pos": get_property("time-pos"),
+                            "audio-params": get_property("audio-params"),
+                        }
+
+                    last_readback = await self._deps.drain_worker(read_live_state)
+                    live_path = last_readback["path"]
+                    live_paused = last_readback["pause"]
+                    live_idle = last_readback["idle-active"]
+                    live_time_pos = last_readback["time-pos"]
+                    live_audio_params = last_readback["audio-params"]
                     time_active = isinstance(live_time_pos, (int, float))
                     audio_active = isinstance(live_audio_params, Mapping) and bool(live_audio_params)
                     path_matches = not request.target_url or live_path == request.target_url
@@ -504,7 +530,7 @@ class _RuntimeSourceMixin:
     async def set_source_volume(self, volume: int, transition_id: str) -> None:
         set_volume = getattr(self._player, "set_volume", None) if self._deps.player_is_running() else None
         if callable(set_volume):
-            set_volume(volume)
+            await self._deps.drain_worker(set_volume, volume)
             # set_volume short-circuits when the cached state already matches,
             # which can mask a muted MPV if the async listener state is stale.
             # Re-assert the volume directly at the audible commit boundary so a
@@ -512,7 +538,11 @@ class _RuntimeSourceMixin:
             set_property = getattr(self._player, "set_property", None)
             if callable(set_property):
                 try:
-                    set_property("volume", max(0, min(100, int(volume))))
+                    await self._deps.drain_worker(
+                        set_property,
+                        "volume",
+                        max(0, min(100, int(volume))),
+                    )
                 except Exception as exc:
                     logger.warning("Playback transition source volume re-assert failed: %s", exc)
         logger.info(
@@ -543,10 +573,9 @@ class _RuntimeSourceMixin:
                 set_volume = getattr(self._player, "set_volume", None)
                 if callable(set_volume):
                     try:
-                        set_volume(0)
+                        await self._deps.drain_worker(set_volume, 0)
                     except Exception:
                         logger.warning("Failed to attenuate MPV after transition failure", exc_info=True)
-                self._player.set_pause(True)
+                await self._deps.drain_worker(self._player.set_pause, True)
             except Exception:
                 logger.warning("Failed to pause MPV after transition failure", exc_info=True)
-

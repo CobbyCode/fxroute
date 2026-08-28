@@ -1262,6 +1262,40 @@ def _current_playback_commit_id() -> str | None:
     return playback_state.current_playback_commit_id()
 
 
+@asynccontextmanager
+async def _manual_transport_guard(expected_epoch: int | None = None):
+    """Serialize one manual transport mutation against the Coordinator.
+
+    The epoch is captured before any await (or supplied by callers that
+    awaited before entering), so a transition that starts, or starts and
+    completes, while the caller was waiting invalidates the action instead of
+    letting it apply to a newer committed context.
+    """
+    coordinator = playback_transition_coordinator
+    lock = getattr(coordinator, "lock", None)
+    if lock is None:
+        if (
+            _playback_transition_is_active()
+            or (
+                expected_epoch is not None
+                and playback_state.playback_transition_epoch != expected_epoch
+            )
+        ):
+            raise HTTPException(status_code=409, detail="A playback transition is in progress")
+        yield
+        return
+
+    captured_epoch = (
+        expected_epoch
+        if expected_epoch is not None
+        else playback_state.playback_transition_epoch
+    )
+    async with lock:
+        if playback_state.playback_transition_epoch != captured_epoch:
+            raise HTTPException(status_code=409, detail="A playback transition completed first")
+        yield
+
+
 def _publish_playback_context_commit(commit_token: str | None) -> None:
     """Publish the playback-context token exactly once at the app boundary.
 
@@ -1281,7 +1315,13 @@ async def _publish_committed_playback_owner(owner: str, transition_id: str | Non
     payloads carry ``playback_owner`` for display only and must never be the
     freshest copy the frontend resolves against.  Publishing here keeps the
     owner and the committed context token on the same broadcast path.
+
+    A committed owner change is a playback intent: advancing the intent
+    generation here also invalidates queued external claims of the *other*
+    provider (a stale Spotify claim must not resume over a newer Qobuz start
+    and vice versa).
     """
+    playback_state.mark_playback_intent_changed()
     playback_state.current_playback_owner = owner
     _publish_playback_context_commit(transition_id)
     player_state = runtime.player_instance.state if runtime.player_instance else None
@@ -2014,7 +2054,7 @@ async def _wait_for_player_audio_samplerate(
     *,
     expected_url: str | None = None,
 ) -> Optional[int]:
-    rate = _get_player_audio_samplerate()
+    rate = await _drain_worker(_get_player_audio_samplerate)
     state = runtime.player_instance.state if runtime.player_instance else {}
     if rate and (not expected_url or state.get("current_file") == expected_url):
         return rate
@@ -2024,7 +2064,7 @@ async def _wait_for_player_audio_samplerate(
         state = runtime.player_instance.state if runtime.player_instance else {}
         if expected_url and state.get("current_file") != expected_url:
             continue
-        rate = _get_player_audio_samplerate()
+        rate = await _drain_worker(_get_player_audio_samplerate)
         if rate:
             return rate
     return None
@@ -2056,7 +2096,7 @@ async def _wait_for_radio_live_rate_after_load(
                 playback_state.playback_transition_epoch,
             )
             return None
-        rate = _get_player_audio_samplerate()
+        rate = await _drain_worker(_get_player_audio_samplerate)
         if isinstance(rate, int) and rate > 0:
             if previous_rate is None or rate != previous_rate:
                 return rate
@@ -2414,6 +2454,7 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
     the read-only derived owner is only a fallback for display and must never
     suppress the commit that makes the owner persist across a pause.
     """
+    claim_intent_generation = playback_state.playback_intent_generation
     if playback_state.current_playback_owner == "qobuz":
         return await get_qobuz_ui_state()
     qobuz_state = await get_qobuz_ui_state()
@@ -2424,7 +2465,10 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
         # Same re-validation contract as the Spotify claim: the guard above
         # runs before the transition lock, so a claim queued behind an
         # FXRoute-initiated Qobuz start must be re-checked inside the lock.
-        return playback_state.current_playback_owner == "qobuz"
+        return (
+            playback_state.current_playback_owner == "qobuz"
+            or playback_state.playback_intent_generation != claim_intent_generation
+        )
 
     track = _qobuz_target_track_from_state(qobuz_state)
     target_rate = _qobuz_target_rate(qobuz_state)
@@ -2466,6 +2510,7 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
     the read-only derived owner is only a fallback for display and must never
     suppress the commit that makes the owner persist across a pause.
     """
+    claim_intent_generation = playback_state.playback_intent_generation
     if playback_state.current_playback_owner == "spotify":
         return await get_spotify_ui_state()
     data = await get_spotify_ui_state()
@@ -2478,7 +2523,10 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
         # gate a second time over already-audible audio.  The Coordinator
         # re-validates inside the lock; the initiating start commits the
         # owner synchronously before the queued claim can acquire it.
-        return playback_state.current_playback_owner == "spotify"
+        return (
+            playback_state.current_playback_owner == "spotify"
+            or playback_state.playback_intent_generation != claim_intent_generation
+        )
 
     target_rate = _coordinator_target_rate("spotify")
     rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
@@ -2929,7 +2977,7 @@ async def pause_spotify_for_local_playback_broadcast():
 async def pause_local_playback_for_spotify_broadcast():
     try:
         if runtime.player_instance and runtime.player_instance._running:
-            runtime.player_instance.stop_playback()
+            await _drain_worker(runtime.player_instance.stop_playback)
             playback_state.current_track_info = None
             await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
             released = await _wait_for_pipewire_mpv_release()
@@ -2964,7 +3012,7 @@ async def lifespan(app: FastAPI):
         try:
             await _drain_worker(runtime.player_instance.start)
             logger.info("MPV player started")
-            ensure_local_source_volume()
+            await _drain_worker(ensure_local_source_volume)
         except MPVNotInstalledError as exc:
             logger.error("Failed to start MPV: %s", exc)
 
@@ -3834,10 +3882,11 @@ async def pause_playback():
         raise HTTPException(status_code=409, detail="Nothing is currently loaded to pause or resume")
     # v0.9.4 contract: this endpoint is a pure MPV pause toggle.  It must not
     # rebuild the committed source/rate/graph just because transport changed.
-    runtime.player_instance.pause()
-    new_state = runtime.player_instance.state
-    _mark_player_state_authoritative(new_state)
-    _mark_playback_intent_changed()
+    async with _manual_transport_guard():
+        await _drain_worker(runtime.player_instance.pause)
+        new_state = runtime.player_instance.state
+        _mark_player_state_authoritative(new_state)
+        _mark_playback_intent_changed()
     return {
         "status": "paused" if new_state.get("paused") else "playing",
         "playback": build_playback_payload(new_state),
@@ -3906,7 +3955,9 @@ async def _route_global_control(action: str, request: Request | None = None) -> 
 
 @app.post("/api/playback/toggle")
 async def toggle_playback():
-    routed = await _route_global_control("toggle")
+    toggle_epoch = playback_state.playback_transition_epoch
+    async with _manual_transport_guard(expected_epoch=toggle_epoch):
+        routed = await _route_global_control("toggle")
     if routed is not None:
         return routed
     if not runtime.player_instance or not runtime.player_instance._running:
@@ -3925,10 +3976,11 @@ async def toggle_playback():
         if not was_paused:
             # Same-source pause is transport only.  Resuming below remains a
             # Coordinator transition because it is a Local/Radio play action.
-            runtime.player_instance.pause()
-            new_state = runtime.player_instance.state
-            _mark_player_state_authoritative(new_state)
-            _mark_playback_intent_changed()
+            async with _manual_transport_guard(expected_epoch=toggle_epoch):
+                await _drain_worker(runtime.player_instance.pause)
+                new_state = runtime.player_instance.state
+                _mark_player_state_authoritative(new_state)
+                _mark_playback_intent_changed()
             return {
                 "status": "playing" if not new_state.get("paused") else "paused",
                 "playback": build_playback_payload(new_state),
@@ -3940,11 +3992,13 @@ async def toggle_playback():
             # and graph are unchanged while paused, so a full Coordinator
             # transition (gate close, quiet, effects/graph re-verification) is
             # pure latency and makes the footer flash.  Unpause directly,
-            # symmetric to the pause fast path above.
-            runtime.player_instance.set_pause(False)
-            new_state = runtime.player_instance.state
-            _mark_player_state_authoritative(new_state)
-            _mark_playback_intent_changed()
+            # symmetric to the pause fast path above.  The pre-await epoch
+            # rejects a context that a transition committed in the meantime.
+            async with _manual_transport_guard(expected_epoch=toggle_epoch):
+                await _drain_worker(runtime.player_instance.set_pause, False)
+                new_state = runtime.player_instance.state
+                _mark_player_state_authoritative(new_state)
+                _mark_playback_intent_changed()
             return {
                 "status": "playing" if not new_state.get("paused") else "paused",
                 "playback": build_playback_payload(new_state),
@@ -4021,30 +4075,49 @@ async def stop_playback():
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
-    if playback_state.current_track_info and playback_state.current_track_info.get("source") == "radio":
-        playback_state.last_radio_track_info = dict(playback_state.current_track_info)
-    _mark_playback_intent_changed()
-    playback_state.current_track_info = None
-    playback_state.current_playback_owner = None
-    radio_reconnect.reset()
-    playback_queue.queue.reset()
-    playback_queue.queue.reset_mpv_loop_state()
-    runtime.player_instance.stop_playback()
-    _mark_player_state_authoritative(runtime.player_instance.state)
-    # Playback is idle: a force-rate pin left by the last source rate is stale
-    # under an auto policy and would keep the live samplerate payload pinned to
-    # that rate (and previously misreported mode=fixed).  Clear it so the
-    # graph is unpinned and the payload reflects the auto policy.  Fixed
-    # policies keep their pin (they intentionally hold the configured rate).
-    try:
-        status = get_samplerate_status()
-    except Exception:
-        status = None
-    samplerate.clear_auto_policy_force_rate(
-        int((status or {}).get("active_rate") or 0),
-        status=status,
-        idle=True,
-    )
+    async with _manual_transport_guard():
+        owner = playback_state.current_playback_owner
+        _mark_playback_intent_changed()
+        if owner == "spotify":
+            # Update the cached provider state before clearing the owner so
+            # the read-only owner derivation cannot immediately re-derive
+            # spotify from stale Playing telemetry, then wait bounded for the
+            # renderer's sink input to actually disappear.
+            data = await spotify_pause()
+            playback_state.latest_spotify_state = data
+            try:
+                await _wait_for_pipewire_spotify_release()
+            except Exception:
+                pass
+        elif owner == "qobuz":
+            await qobuz_pause()
+            try:
+                await _wait_for_pipewire_qobuz_release()
+            except Exception:
+                pass
+        if playback_state.current_track_info and playback_state.current_track_info.get("source") == "radio":
+            playback_state.last_radio_track_info = dict(playback_state.current_track_info)
+        playback_state.current_track_info = None
+        playback_state.current_playback_owner = None
+        radio_reconnect.reset()
+        playback_queue.queue.reset()
+        playback_queue.queue.reset_mpv_loop_state()
+        await _drain_worker(runtime.player_instance.stop_playback)
+        _mark_player_state_authoritative(runtime.player_instance.state)
+        # Playback is idle: a force-rate pin left by the last source rate is stale
+        # under an auto policy and would keep the live samplerate payload pinned to
+        # that rate (and previously misreported mode=fixed).  Clear it so the
+        # graph is unpinned and the payload reflects the auto policy.  Fixed
+        # policies keep their pin (they intentionally hold the configured rate).
+        try:
+            status = await asyncio.to_thread(get_samplerate_status)
+        except Exception:
+            status = None
+        samplerate.clear_auto_policy_force_rate(
+            int((status or {}).get("active_rate") or 0),
+            status=status,
+            idle=True,
+        )
     return {"status": "stopped"}
 
 @app.post("/api/volume")
@@ -4060,7 +4133,7 @@ async def set_volume(request: Request):
         volume_result = await _set_canonical_output_volume(vol)
     except SystemVolumeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
-    ensure_local_source_volume()
+    await _drain_worker(ensure_local_source_volume)
     await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
     return {"volume": volume_result["volume"]}
 
@@ -4108,6 +4181,8 @@ async def previous_playback():
 async def clear_playback_queue():
     if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
+    if _playback_transition_is_active():
+        raise HTTPException(status_code=409, detail="A playback transition is in progress")
 
     had_queue = len(playback_queue.queue.tracks) > 1
     playback_queue.queue.reset()
@@ -4196,7 +4271,9 @@ async def set_playback_loop(request: Request):
 
 @app.post("/api/playback/seek")
 async def seek_playback(request: Request):
-    routed = await _route_global_control("seek", request)
+    seek_epoch = playback_state.playback_transition_epoch
+    async with _manual_transport_guard(expected_epoch=seek_epoch):
+        routed = await _route_global_control("seek", request)
     if routed is not None:
         return routed
     if not runtime.player_instance or not runtime.player_instance._running:
@@ -4217,8 +4294,9 @@ async def seek_playback(request: Request):
     # request body was being read.  Never seek or mark intent mid-transition.
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
-    runtime.player_instance.seek(pos)
-    _mark_playback_intent_changed()
+    async with _manual_transport_guard(expected_epoch=seek_epoch):
+        await _drain_worker(runtime.player_instance.seek, pos)
+        _mark_playback_intent_changed()
     return {"status": "ok", "position": pos, "playback": build_playback_payload(runtime.player_instance.state)}
 
 @app.get("/api/status")
@@ -4685,49 +4763,27 @@ async def save_audio_output_mode_route(request: Request):
             await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-mode-params")
             return result
 
-        if runtime.dsp_runtime is None:
-            context = await _coordinator_current_playback_context()
-            status = get_samplerate_status()
-            target_rate = status.get("active_rate")
-            if not isinstance(target_rate, int) or target_rate <= 0:
-                target_rate = status.get("force_rate")
-            if not isinstance(target_rate, int) or target_rate <= 0:
-                raise RuntimeError("current hardware sample rate is unavailable")
-            await _run_coordinated_transition(TransitionRequest(
-                operation="output-mode-switch",
-                source=str(context.get("source") or "local"),
-                target_rate=target_rate,
-                target_url=context.get("target_url"),
-                target_track=dict(context.get("target_track") or {}),
-                should_play=bool(context.get("should_play")),
-                rate_change=False,
-                reload_source=False,
-                detail="api-audio-output-mode",
-                output_mode_target=dict(target["overview"]),
-                output_mode_config=dict(target["config"]),
-            ))
-            result = with_subwoofer_derived_delays(get_audio_output_overview())
-            await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
-            return result
-
-        previous_overview = get_audio_output_overview()
-        try:
-            await runtime.dsp_runtime.guarded_rebuild(
-                target["overview"],
-                guard_db=mode_transition_guard(target["overview"]),
-                apply_candidate=lambda: None,
-                apply_previous=lambda: None,
-                settle_seconds=0.0,
-            )
-            result = persist_audio_output_mode(target["config"])
-        except Exception:
-            try:
-                await runtime.dsp_runtime.sync(previous_overview)
-            except Exception:
-                logger.exception("Failed to restore native DSP after output-mode transition failure")
-            raise
-
-        result = with_subwoofer_derived_delays(result)
+        context = await _coordinator_current_playback_context()
+        status = get_samplerate_status()
+        target_rate = status.get("active_rate")
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            target_rate = status.get("force_rate")
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            raise RuntimeError("current hardware sample rate is unavailable")
+        await _run_coordinated_transition(TransitionRequest(
+            operation="output-mode-switch",
+            source=str(context.get("source") or "local"),
+            target_rate=target_rate,
+            target_url=context.get("target_url"),
+            target_track=dict(context.get("target_track") or {}),
+            should_play=bool(context.get("should_play")),
+            rate_change=False,
+            reload_source=False,
+            detail="api-audio-output-mode",
+            output_mode_target=dict(target["overview"]),
+            output_mode_config=dict(target["config"]),
+        ))
+        result = with_subwoofer_derived_delays(get_audio_output_overview())
         if runtime.dsp_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
@@ -4767,7 +4823,7 @@ async def audio_bluetooth_overview():
 async def _pause_all_app_playback_for_external_input() -> None:
     try:
         if runtime.player_instance and runtime.player_instance._running:
-            runtime.player_instance.stop_playback()
+            await _drain_worker(runtime.player_instance.stop_playback)
             await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
             released = await _wait_for_pipewire_mpv_release()
             if not released:
@@ -4955,7 +5011,7 @@ async def select_music_library(request: Request):
             await asyncio.gather(*active_refreshes, return_exceptions=True)
         if runtime.player_instance is not None and runtime.player_instance._running:
             _mark_playback_intent_changed()
-            runtime.player_instance.stop_playback()
+            await _drain_worker(runtime.player_instance.stop_playback)
             playback_state.current_track_info = None
             playback_state.last_track_info = None
         playback_queue.queue.reset()
@@ -5106,14 +5162,18 @@ async def api_streaming_provider_action(provider_id: str, action: str, request: 
 
     This is the provider-level transport contract (no FXRoute source
     transition). The existing ``/api/spotify/*`` endpoints keep their source
-    handoff semantics for Spotify.  Qobuz start actions (``play``/``toggle``
-    out of Paused/Stopped) are routed through the authoritative source
-    handoff instead of the raw provider transport; all other Qobuz actions
-    stay transport-only on the provider.
+    handoff semantics for Spotify. Spotify and Qobuz start actions
+    (``play``/``toggle`` out of Paused/Stopped) are routed through the
+    authoritative source handoff instead of the raw provider transport;
+    all other actions stay transport-only on the provider.
     """
     provider = streaming.get_provider(provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
+    if provider_id == "spotify" and action == "play":
+        return await api_spotify_play()
+    if provider_id == "spotify" and action == "toggle":
+        return await api_spotify_toggle()
     if provider_id == "qobuz" and action in ("play", "toggle"):
         return await _qobuz_ui_start_action(action)
     if action == "seek":

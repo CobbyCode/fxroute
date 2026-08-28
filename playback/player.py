@@ -55,6 +55,11 @@ class MPVWrapper:
             "end_entry_id": None,
             "_seq": 0,
         }
+        # Last published coherent state snapshot.  ``state`` serves this
+        # without taking the command lock, so event-loop readers never queue
+        # behind a blocking IPC command; every mutation path publishes a new
+        # snapshot under the lock in _notify_callbacks.
+        self._state_snapshot: Dict[str, Any] = dict(self._state)
         self._callbacks = []
         self._callback_tasks: set[asyncio.Task] = set()
         self._next_callback_token = 0
@@ -297,6 +302,10 @@ class MPVWrapper:
             reconnect_delay = min(reconnect_delay * 2, LISTENER_RECONNECT_DELAY_MAX)
 
     def _handle_event(self, event: Dict[str, Any]):
+        with self.lock:
+            self._handle_event_locked(event)
+
+    def _handle_event_locked(self, event: Dict[str, Any]):
         event_name = event.get("event")
         changed = False
 
@@ -629,8 +638,10 @@ class MPVWrapper:
 
     def _notify_callbacks(self):
         """Notify all callbacks with current state."""
-        self._state["_seq"] = int(self._state.get("_seq") or 0) + 1
-        snapshot = self._state.copy()
+        with self.lock:
+            self._state["_seq"] = int(self._state.get("_seq") or 0) + 1
+            self._state_snapshot = self._state.copy()
+        snapshot = self._state_snapshot.copy()
         for callback, callback_loop, token in list(self._callbacks):
             try:
                 if inspect.iscoroutinefunction(callback):
@@ -704,8 +715,12 @@ class MPVWrapper:
 
     @property
     def state(self) -> Dict[str, Any]:
-        """Get current state."""
-        return self._state.copy()
+        """Get current state.
+
+        Served from the last coherent published snapshot so readers never
+        block on the command lock (a worker may hold it across IPC I/O).
+        """
+        return self._state_snapshot.copy()
 
 
 player: Optional[MPVWrapper] = None

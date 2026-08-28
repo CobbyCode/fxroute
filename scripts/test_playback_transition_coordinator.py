@@ -1072,7 +1072,6 @@ class PlayerLoadContractTests(unittest.TestCase):
         player._state["paused"] = True
         player._state["current_file"] = "/music/old.flac"
         player._send_command = lambda *args: {"error": "success"}
-        player._notify_callbacks = lambda: None
 
         player.loadfile("/music/new.flac")
         self.assertTrue(player.state["paused"])

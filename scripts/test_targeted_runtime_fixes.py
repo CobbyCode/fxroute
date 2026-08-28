@@ -524,6 +524,48 @@ class MPVListenerTests(unittest.TestCase):
         wrapper._handle_event({"event": "property-change", "name": "volume", "data": 42.0})
         self.assertEqual(wrapper._state["volume"], 42)
 
+    def test_listener_state_update_waits_for_state_lock(self):
+        wrapper = player.MPVWrapper()
+        started = threading.Event()
+        finished = threading.Event()
+
+        def update_state():
+            started.set()
+            wrapper._handle_event({"event": "property-change", "name": "volume", "data": 42.0})
+            finished.set()
+
+        with wrapper.lock:
+            thread = threading.Thread(target=update_state)
+            thread.start()
+            self.assertTrue(started.wait(1.0))
+            self.assertFalse(finished.wait(0.05))
+
+        thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(wrapper.state["volume"], 42)
+
+    def test_state_snapshot_does_not_wait_for_command_lock(self):
+        wrapper = player.MPVWrapper()
+        wrapper._notify_callbacks()
+        started = threading.Event()
+        finished = threading.Event()
+        snapshots = []
+
+        def read_state():
+            started.set()
+            snapshots.append(wrapper.state)
+            finished.set()
+
+        with wrapper.lock:
+            thread = threading.Thread(target=read_state)
+            thread.start()
+            self.assertTrue(started.wait(1.0))
+            self.assertTrue(finished.wait(0.05))
+
+        thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(snapshots[0]["volume"], 100)
+
     def test_listener_reconnects_after_socket_close(self):
         wrapper = player.MPVWrapper()
         tmpdir = tempfile.mkdtemp()

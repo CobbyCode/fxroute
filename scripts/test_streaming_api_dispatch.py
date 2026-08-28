@@ -323,6 +323,32 @@ class GenericTransportActionTests(unittest.TestCase):
         pause.assert_awaited_once()
         run.assert_not_awaited()
 
+    def test_generic_spotify_play_uses_authoritative_handoff(self):
+        provider = mock.Mock(play=mock.AsyncMock(return_value={"status": "Playing"}))
+        with mock.patch.object(
+            main_module.streaming, "get_provider", return_value=provider
+        ), mock.patch.object(
+            main_module, "api_spotify_play", new=mock.AsyncMock(return_value={"status": "Playing"})
+        ) as handoff:
+            resp = self.client.post("/api/streaming/spotify/play")
+
+        self.assertEqual(resp.status_code, 200)
+        handoff.assert_awaited_once_with()
+        provider.play.assert_not_awaited()
+
+    def test_generic_spotify_toggle_uses_authoritative_handoff(self):
+        provider = mock.Mock(toggle=mock.AsyncMock(return_value={"status": "Playing"}))
+        with mock.patch.object(
+            main_module.streaming, "get_provider", return_value=provider
+        ), mock.patch.object(
+            main_module, "api_spotify_toggle", new=mock.AsyncMock(return_value={"status": "Playing"})
+        ) as handoff:
+            resp = self.client.post("/api/streaming/spotify/toggle")
+
+        self.assertEqual(resp.status_code, 200)
+        handoff.assert_awaited_once_with()
+        provider.toggle.assert_not_awaited()
+
 
 class QobuzUiStartHandoffTests(unittest.IsolatedAsyncioTestCase):
     """Qobuz UI play/toggle must ride the authoritative source handoff and
@@ -475,10 +501,12 @@ class SpotifyClaimRaceTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self._orig_owner = main_module.playback_state.current_playback_owner
+        self._orig_intent_generation = main_module.playback_state.playback_intent_generation
         main_module.playback_state.current_playback_owner = None
 
     async def asyncTearDown(self):
         main_module.playback_state.current_playback_owner = self._orig_owner
+        main_module.playback_state.playback_intent_generation = self._orig_intent_generation
 
     def _committed_result(self):
         return type("Result", (), {
@@ -566,6 +594,42 @@ class SpotifyClaimRaceTests(unittest.IsolatedAsyncioTestCase):
         broadcast.assert_awaited_once()
         self.assertEqual(result["status"], "Playing")
 
+    async def test_claim_queued_behind_newer_playback_intent_is_skipped(self):
+        main_module.playback_state.current_playback_owner = "local"
+
+        async def run_transition(request):
+            main_module.playback_state.mark_playback_intent_changed()
+            if await request.skip_if_committed_owner():
+                return self._skipped_result()
+            return self._committed_result()
+
+        patches = self._patches(run_transition)
+        with patches[0], patches[1], patches[2], patches[3] as publish, patches[4] as broadcast:
+            await main_module._claim_spotify_playback("playerctl-playing")
+
+        publish.assert_not_awaited()
+        broadcast.assert_not_awaited()
+        self.assertEqual(main_module.playback_state.current_playback_owner, "local")
+
+    async def test_claim_queued_behind_other_provider_start_is_skipped(self):
+        # A Qobuz start committed its owner (and advanced the intent
+        # generation) while this Spotify claim waited for the lock: the claim
+        # must not resume Spotify over the newer Qobuz context.
+        async def run_transition(request):
+            main_module.playback_state.mark_playback_intent_changed()
+            main_module.playback_state.current_playback_owner = "qobuz"
+            if await request.skip_if_committed_owner():
+                return self._skipped_result()
+            return self._committed_result()
+
+        patches = self._patches(run_transition)
+        with patches[0], patches[1], patches[2], patches[3] as publish, patches[4] as broadcast:
+            await main_module._claim_spotify_playback("playerctl-playing")
+
+        publish.assert_not_awaited()
+        broadcast.assert_not_awaited()
+        self.assertEqual(main_module.playback_state.current_playback_owner, "qobuz")
+
 
 class QobuzClaimRaceTests(unittest.IsolatedAsyncioTestCase):
     """The qbzd claim watcher must re-validate the committed owner inside
@@ -582,10 +646,12 @@ class QobuzClaimRaceTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self._orig_owner = main_module.playback_state.current_playback_owner
+        self._orig_intent_generation = main_module.playback_state.playback_intent_generation
         main_module.playback_state.current_playback_owner = None
 
     async def asyncTearDown(self):
         main_module.playback_state.current_playback_owner = self._orig_owner
+        main_module.playback_state.playback_intent_generation = self._orig_intent_generation
 
     def _committed_result(self):
         return type("Result", (), {
@@ -677,6 +743,25 @@ class QobuzClaimRaceTests(unittest.IsolatedAsyncioTestCase):
         pin.assert_awaited_once()
         broadcast.assert_awaited_once()
         self.assertEqual(result["status"], "Playing")
+
+    async def test_claim_queued_behind_newer_playback_intent_is_skipped(self):
+        main_module.playback_state.current_playback_owner = "local"
+
+        async def run_transition(request):
+            main_module.playback_state.mark_playback_intent_changed()
+            if await request.skip_if_committed_owner():
+                return self._skipped_result()
+            return self._committed_result()
+
+        patches = self._patches(run_transition)
+        with patches[0], patches[1], patches[2], patches[3] as publish, \
+                patches[4] as pin, patches[5] as broadcast:
+            await main_module._claim_qobuz_playback("qbzd-playing")
+
+        publish.assert_not_awaited()
+        pin.assert_not_awaited()
+        broadcast.assert_not_awaited()
+        self.assertEqual(main_module.playback_state.current_playback_owner, "local")
 
 
 if __name__ == "__main__":

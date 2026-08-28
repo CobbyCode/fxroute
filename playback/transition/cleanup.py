@@ -245,6 +245,16 @@ class _TransitionCleanupMixin:
                     "Output-mode runtime rollback failed; keeping the failure gate latched",
                     exc_info=True,
                 )
+        elif request.operation == "sample-rate-policy":
+            rollback_policy = getattr(self.runtime, "rollback_sample_rate_policy", None)
+            if callable(rollback_policy):
+                try:
+                    await rollback_policy(request, snapshot)
+                except Exception:
+                    logger.warning(
+                        "Sample-rate policy rollback failed; keeping the failure gate latched",
+                        exc_info=True,
+                    )
         if source_policy.is_mpv_source(request.source):
             # The source was attenuated to 0 during the quiet stage.
             # A failed transition must not leave it muted forever:
@@ -505,4 +515,3 @@ class _TransitionCleanupMixin:
         self.last_error = error.as_status()
         stages.log("failed")
         return error
-

@@ -84,6 +84,8 @@ class _RuntimeSnapshotMixin:
             "current_track": dict(self._deps.get_current_track_info() or {}),
             "playback_intent_generation": self._deps.get_playback_intent_generation(),
         }
+        if request.operation == "sample-rate-policy":
+            snapshot["sample_rate_policy"] = samplerate.load_sample_rate_policy()
         if request.operation == "output-mode-switch":
             snapshot["output_mode_overview"] = copy.deepcopy(
                 await asyncio.to_thread(
@@ -99,6 +101,7 @@ class _RuntimeSnapshotMixin:
                 else None
             )
             snapshot["spotify"] = await self._deps.get_spotify_ui_state()
+            snapshot["qobuz"] = await self._deps.get_qobuz_ui_state()
         else:
             # Frozen once per transition; the graph-diagnosis stages reuse it
             # instead of re-running the full pactl/pw-cli output enumeration.
@@ -213,16 +216,16 @@ class _RuntimeSnapshotMixin:
         # then invalidate only the active context. last_track_info is
         # deliberately untouched so the caller can offer a retry.  The
         # committed queue state is preserved.
-        self._stop_staged_target_and_invalidate()
+        await self._stop_staged_target_and_invalidate()
         return {"invalidate": True}
 
-    def _stop_staged_target_and_invalidate(self) -> None:
+    async def _stop_staged_target_and_invalidate(self) -> None:
         """Stop a staged MPV target and invalidate only the active context."""
         if self._deps.player_is_running():
             try:
                 set_volume = getattr(self._player, "set_volume", None)
                 if callable(set_volume):
-                    set_volume(0)
+                    await self._deps.drain_worker(set_volume, 0)
             except Exception:
                 logger.warning(
                     "Failed to attenuate MPV during failed transition abort",
@@ -231,9 +234,11 @@ class _RuntimeSnapshotMixin:
             try:
                 stop_playback = getattr(self._player, "stop_playback", None)
                 if callable(stop_playback):
-                    stop_playback()
+                    await self._deps.drain_worker(stop_playback)
                 else:
-                    self._player.set_pause(True)
+                    await self._deps.drain_worker(
+                        self._player.set_pause, True
+                    )
             except Exception:
                 logger.warning(
                     "Failed to stop staged MPV target during transition abort",

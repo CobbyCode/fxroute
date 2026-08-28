@@ -609,6 +609,8 @@ class _RuntimeVerificationMixin:
             )
 
         spotify_stream_rate = None
+        qobuz_stream_rate = None
+        qobuz_state: dict[str, Any] | None = None
         if request.source == "spotify" and request.should_play:
             source_rate = self._deps.coordinator_source_rate("spotify", request.target_track)
             spotify_stream_rate = await self._deps.wait_for_spotify_sink_input_samplerate(expected_rate=source_rate)
@@ -616,6 +618,25 @@ class _RuntimeVerificationMixin:
                 raise RuntimeError(
                     "Spotify stream rate mismatch during output-mode commit: "
                     f"expected={source_rate} actual={spotify_stream_rate}"
+                )
+        elif request.source == "qobuz" and request.should_play:
+            # A Connect track change after the request was built invalidates
+            # the cached track rate; the live qbzd state read here is the
+            # fresher authority (falling back to the request track rate).
+            qobuz_state = await self._deps.get_qobuz_ui_state()
+            fresh_rate = qobuz_state.get("sample_rate")
+            source_rate = (
+                samplerate.effective_playback_rate(fresh_rate)
+                if isinstance(fresh_rate, int) and fresh_rate > 0
+                else self._deps.coordinator_source_rate("qobuz", request.target_track)
+            )
+            qobuz_stream_rate = await self._deps.wait_for_qobuz_sink_input_samplerate(
+                expected_rate=source_rate
+            )
+            if qobuz_stream_rate != source_rate:
+                raise RuntimeError(
+                    "Qobuz stream rate mismatch during output-mode commit: "
+                    f"expected={source_rate} actual={qobuz_stream_rate}"
                 )
 
         if source_policy.is_mpv_source(request.source) and request.target_url:
@@ -636,7 +657,8 @@ class _RuntimeVerificationMixin:
             if not request.should_play and spotify_state.get("status") == "Playing":
                 raise RuntimeError("Spotify was not left paused for output-mode commit")
         elif request.source == "qobuz":
-            qobuz_state = await self._deps.get_qobuz_ui_state()
+            if qobuz_state is None:
+                qobuz_state = await self._deps.get_qobuz_ui_state()
             if request.should_play and qobuz_state.get("status") != "Playing":
                 raise RuntimeError("Qobuz did not resume for output-mode commit")
             if not request.should_play and qobuz_state.get("status") == "Playing":
@@ -650,6 +672,7 @@ class _RuntimeVerificationMixin:
             "active_rate": rate.get("active_rate"),
             "force_rate": rate.get("force_rate"),
             "spotify_stream_rate": spotify_stream_rate,
+            "qobuz_stream_rate": qobuz_stream_rate,
         }
 
     async def verify_committed_transition(self, request: TransitionRequest) -> dict[str, Any]:

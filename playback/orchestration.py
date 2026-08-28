@@ -84,6 +84,9 @@ class PlaybackOrchestrator:
         track = track or {}
         if source == "spotify":
             return 44100
+        if source == "qobuz":
+            value = track.get("sample_rate_hz")
+            return value if isinstance(value, int) and value > 0 else 44100
         if source == "radio":
             return int(track.get("sample_rate_hz") or 44100)
         value = track.get("sample_rate_hz")
@@ -308,7 +311,9 @@ class PlaybackOrchestrator:
         source = str(context.get("source") or "local")
         source_rate = self.coordinator_source_rate(source, context.get("target_track"))
         if source_policy.is_mpv_source(source) and context.get("target_url"):
-            live_rate = self._deps.get_player_audio_samplerate()
+            live_rate = await asyncio.to_thread(
+                self._deps.get_player_audio_samplerate
+            )
             if isinstance(live_rate, int) and live_rate > 0:
                 source_rate = live_rate
         target_rate = samplerate.effective_playback_rate(source_rate, policy)

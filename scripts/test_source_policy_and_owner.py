@@ -143,6 +143,22 @@ class PlaybackOwnerTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(self.main.playback_state.current_playback_owner, "tidal")
 
+    async def test_publish_committed_playback_owner_advances_intent(self):
+        # A committed owner change is a playback intent: queued external
+        # claims of the other provider must be invalidated by the generation
+        # advance so a stale claim cannot resume over the newer context.
+        before = self.main.playback_state.playback_intent_generation
+        with mock.patch.object(self.main.manager, "broadcast", new=mock.AsyncMock()), mock.patch.object(
+            self.main, "build_playback_payload", return_value={}
+        ), mock.patch.object(
+            self.main.runtime, "player_instance", mock.Mock(state={})
+        ):
+            await self.main._publish_committed_playback_owner("qobuz", "tr-1")
+        self.assertEqual(self.main.playback_state.current_playback_owner, "qobuz")
+        self.assertEqual(
+            self.main.playback_state.playback_intent_generation, before + 1
+        )
+
     async def test_qobuz_claim_commits_owner_despite_readonly_derivation(self):
         # qbzd playing externally while nothing is committed: the claim must
         # COMMIT the owner instead of short-circuiting on the read-only

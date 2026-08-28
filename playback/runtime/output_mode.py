@@ -8,6 +8,7 @@ adapter instance and reads the attributes declared on the class below.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 from dataclasses import replace
@@ -18,7 +19,6 @@ from audio.samplerate import (
     OUTPUT_MODE_STEREO,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_MODES,
-    persist_sample_rate_policy,
 )
 from streaming.spotify.provider import play as spotify_play
 import playback.source_policy as source_policy
@@ -46,7 +46,7 @@ class _RuntimeOutputModeMixin:
     async def commit_sample_rate_policy(self, request: TransitionRequest) -> dict[str, Any]:
         if not request.sample_rate_policy:
             raise RuntimeError("sample-rate transition has no durable policy")
-        policy = persist_sample_rate_policy(request.sample_rate_policy)
+        policy = samplerate.persist_sample_rate_policy(request.sample_rate_policy)
         if policy.get("mode") == "auto":
             # The guarded readback already verified the graph is stable at the
             # target.  A leftover force-rate pin at the graph default (written
@@ -60,6 +60,43 @@ class _RuntimeOutputModeMixin:
                 request.target_rate, app_policy=policy
             )
         return {"sample_rate_policy": policy}
+
+    async def rollback_sample_rate_policy(
+        self,
+        request: TransitionRequest,
+        snapshot: Mapping[str, Any] | None,
+    ) -> None:
+        """Restore the pre-transition policy and its live force-rate pin.
+
+        The transition may have re-pinned or cleared the PipeWire force-rate
+        before failing, so restoring only the JSON policy would leave the
+        graph pinned to the failed target (auto) or unpinned (fixed).  The
+        snapshot carries the authoritative pre-transition rate; the durable
+        policy write comes first so a pin restore failure still leaves the
+        configuration consistent with the policy.
+        """
+        previous_policy = (snapshot or {}).get("sample_rate_policy")
+        if not isinstance(previous_policy, Mapping):
+            raise RuntimeError("sample-rate rollback has no previous policy")
+        samplerate.persist_sample_rate_policy(previous_policy)
+        previous_rate = (snapshot or {}).get("active_rate")
+        previous_force = (snapshot or {}).get("force_rate")
+        if isinstance(previous_rate, int) and previous_rate > 0:
+            if previous_policy.get("mode") == "fixed" and isinstance(previous_force, int) and previous_force > 0:
+                try:
+                    samplerate.set_pipewire_force_rate(previous_force)
+                except Exception as exc:
+                    logger.warning(
+                        "Sample-rate rollback force-rate restore failed: rate=%s error=%s",
+                        previous_force,
+                        exc,
+                    )
+            elif previous_policy.get("mode") == "auto":
+                samplerate.clear_auto_policy_force_rate(
+                    previous_rate,
+                    app_policy=previous_policy,
+                    status={"active_rate": previous_rate},
+                )
 
     async def rollback_output_mode_runtime(
         self,
@@ -136,7 +173,9 @@ class _RuntimeOutputModeMixin:
                 and not previous_player.get("paused")
                 and not previous_player.get("ended")
             )
-            self._player.set_pause(not should_play)
+            await self._deps.drain_worker(
+                self._player.set_pause, not should_play
+            )
             state = dict(self._player.state if self._player else {})
             if should_play and (state.get("paused") or not state.get("playing")):
                 raise RuntimeError("local transport did not resume after output-mode commit")
@@ -153,9 +192,7 @@ class _RuntimeOutputModeMixin:
         elif request.source == "qobuz":
             should_play = (snapshot.get("qobuz") or {}).get("status") == "Playing"
             if should_play:
-                data = await self._deps.get_qobuz_ui_state()
-                if data.get("status") not in {"Playing", "playing"}:
-                    raise RuntimeError("Qobuz did not resume after output-mode commit")
+                await self.start_target_source(replace(request, should_play=True))
             else:
                 await self._deps.qobuz_pause()
 
