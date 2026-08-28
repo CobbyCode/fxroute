@@ -455,10 +455,12 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-subwoofer-channel-group {
     grid-column: 3 / -1;
     display: grid;
-    /* Polarity (short "Norm"/"Inv" select) needs clearly less width than
-       Level/Alignment: giving it a smaller track frees room so the number
-       columns keep their compact controls while the gaps grow calmer. */
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.78fr);
+    /* Polarity (single-letter "N"/"I" select) needs clearly less width than
+       Level/Alignment: the content-sized third track hugs the short field
+       label, so no dead space opens beside the compact select while both
+       number columns share the remaining width evenly. Sub 1 and Sub 2 use
+       the same group class and stay symmetric. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
     align-items: end;
     gap: 0.8rem;
     background: rgba(8, 47, 73, 0.2);
@@ -537,7 +539,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 /* Subwoofer selects share the common #tab-effects control metrics; these
    rules only cap the inline width so the compact groups stay aligned. The
-   polarity cap matches the short "Norm"/"Inv" options so no dead space
+   polarity cap matches the single-letter "N"/"I" options so no dead space
    opens between the text and the native arrow. The select type selector is
    load-bearing: #tab-effects .url-input (equal specificity, later in the
    file) would otherwise keep width:100% alive and stretch the selects back
@@ -549,7 +551,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 #tab-effects select.effects-subwoofer-polarity-select {
-    width: min(100%, 5.2rem);
+    width: min(100%, 3.4rem);
     min-width: 0;
     max-width: 100%;
 }
@@ -1207,7 +1209,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 #tab-effects .stepper-control .stepper-input {
-    width: 2.7rem;
+    width: 3.1rem;
     min-width: 0;
     min-height: 0;
     height: auto;
@@ -1215,10 +1217,10 @@ input[type="number"]::-webkit-outer-spin-button {
     background: transparent;
     /* Centering and readability come only from internal presentation: the
        compact outer size is load-bearing for the 3-column sub rows (Level /
-       Alignment / Polarity share tight 1fr tracks) and must stay near the
-       original footprint. Zero horizontal padding lets the full value
-       ("-39.9", "-12.5") render unclipped at the unchanged width and puts
-       the unit snug against the value area. */
+       Alignment / Polarity share tight tracks) and must stay near the
+       original footprint. 3.1rem fits the widest alignment value ("-39.9")
+       unclipped next to its unit; the unit stays snug against the value
+       area. */
     text-align: center;
     padding: 0.35rem 0;
     font-size: 0.92rem;
@@ -1242,7 +1244,7 @@ input[type="number"]::-webkit-outer-spin-button {
         width: 34px;
     }
     #tab-effects .stepper-control .stepper-input {
-        width: 3rem;
+        width: 3.4rem;
     }
 }
 /* ============================================================
