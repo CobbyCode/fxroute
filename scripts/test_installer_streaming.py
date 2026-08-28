@@ -153,13 +153,16 @@ spotify_desktop_supported
         cleanup = extract_function(self.install, "cleanup_active_temp_dir")
         with tempfile.TemporaryDirectory() as td:
             active_dir = Path(td) / "active-provider-work"
+            staged_binary = Path(td) / ".spotifyd.staged"
             result = subprocess.run(
                 [
                     "bash",
                     "-c",
                     f"set -Eeuo pipefail\n{cleanup}\n"
                     f"mkdir -p {active_dir}\n"
+                    f"printf staged > {staged_binary}\n"
                     f"FXROUTE_ACTIVE_TEMP_DIR={active_dir}\n"
+                    f"FXROUTE_ACTIVE_STAGED_BINARY={staged_binary}\n"
                     "trap cleanup_active_temp_dir EXIT\n"
                     "exit 17\n",
                 ],
@@ -168,6 +171,12 @@ spotify_desktop_supported
             )
             self.assertEqual(result.returncode, 17, result.stderr)
             self.assertFalse(active_dir.exists())
+            self.assertFalse(staged_binary.exists())
+
+    def test_spotifyd_source_build_registers_staged_binary_for_exit_cleanup(self):
+        body = extract_function(self.install, "build_spotifyd_from_source")
+        self.assertIn("FXROUTE_ACTIVE_STAGED_BINARY=\"$staged_binary\"", body)
+        self.assertIn("FXROUTE_ACTIVE_STAGED_BINARY=\"\"", body)
 
     def test_spotifyd_runtime_libraries_are_checked_before_service_setup(self):
         runtime_check = extract_function(self.install, "spotifyd_runtime_missing_libraries")
@@ -216,10 +225,217 @@ spotify_desktop_supported
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), expected)
 
-    def test_spotifyd_debian13_arm_runtime_limit_is_documented(self):
-        for detail in ("Debian 13", "libssl.so.1.1", "libcrypto.so.1.1"):
+    def test_spotifyd_debian13_arm_source_build_fallback_is_documented(self):
+        for detail in ("Debian 13", "libssl.so.1.1", "libcrypto.so.1.1", "source build"):
             self.assertIn(detail, self.installer_docs)
-        self.assertRegex(self.installer_docs, r"(?i)service.{0,80}(disabled|skipped)")
+        self.assertIn("SPOTIFYD_SOURCE_SHA512", self.install)
+        self.assertIn("build_spotifyd_from_source", self.install)
+
+    def test_spotifyd_source_archive_is_pinned_and_verified(self):
+        self.assertRegex(
+            self.install,
+            r'SPOTIFYD_SOURCE_SHA512="[0-9a-f]{128}"',
+        )
+        self.assertIn(
+            "https://github.com/Spotifyd/spotifyd/archive/refs/tags/v${SPOTIFYD_VERSION}.tar.gz",
+            self.install,
+        )
+        body = extract_function(self.install, "build_spotifyd_from_source")
+        self.assertIn('sha512sum -c -', body)
+        self.assertIn('"$SPOTIFYD_SOURCE_SHA512"', body)
+        self.assertIn(
+            'build --release --locked --jobs 1 --config profile.release.lto=false',
+            body,
+        )
+        # Default upstream feature set (pulse + ALSA + DBus MPRIS) is what
+        # FXRoute configures; no feature override is applied.
+        self.assertNotIn("--features", body)
+
+    def test_spotifyd_source_build_has_per_manager_build_dependencies(self):
+        body = extract_function(self.install, "spotifyd_source_build_packages_for_manager")
+        code = f'''{body}
+for manager in apt dnf zypper pacman; do
+  printf '%s|%s|%s\\n' "$manager" "$(spotifyd_source_build_packages_for_manager "$manager" aarch64)" "$(spotifyd_source_build_packages_for_manager "$manager" armv7)"
+done
+'''
+        result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = {
+            "apt": (
+                "libssl-dev pkg-config libdbus-1-dev libasound2-dev libpulse-dev",
+                "libssl-dev pkg-config libdbus-1-dev libasound2-dev libpulse-dev cmake clang libclang-dev make",
+            ),
+            "dnf": (
+                "openssl-devel pkgconf-pkg-config dbus-devel alsa-lib-devel pulseaudio-libs-devel",
+                "openssl-devel pkgconf-pkg-config dbus-devel alsa-lib-devel pulseaudio-libs-devel cmake clang-devel make",
+            ),
+            "zypper": (
+                "libopenssl-3-devel pkgconf-pkg-config dbus-1-devel alsa-devel libpulse-devel",
+                "libopenssl-3-devel pkgconf-pkg-config dbus-1-devel alsa-devel libpulse-devel cmake clang-devel make",
+            ),
+            "pacman": (
+                "openssl pkgconf dbus alsa-lib libpulse",
+                "openssl pkgconf dbus alsa-lib libpulse cmake clang make",
+            ),
+        }
+        for line in result.stdout.splitlines():
+            manager, aarch64, armv7 = line.split("|", 2)
+            self.assertEqual((aarch64, armv7), expected[manager])
+
+    def test_spotifyd_source_build_requires_modern_rust(self):
+        self.assertRegex(self.install, r'SPOTIFYD_RUST_MIN_VERSION="1\.88"')
+        self.assertRegex(self.install, r'SPOTIFYD_RUST_TOOLCHAIN_VERSION="1\.88\.0"')
+        self.assertRegex(self.install, r'SPOTIFYD_RUSTUP_VERSION="1\.28\.2"')
+        for checksum in (
+            "8001042452984f280a5ecf7de5654980361c5cbdc003c20b3fcd98426317201d0e21dca40d5f1bbdb1e46c6945d10a05ce3cf6f3a730489b54d4ac19fd312478",
+            "b4adcc9d587b05b261cdae9bec589d262b7d5326bfad8d100bc8066f29ffdcb332053ae018566a5e8f3b2ee177b9eb1595e2c3712fb0a6e935da49c89a56ca59",
+            "ed7aace85fc1ef2886aadfd6b683384f09f04bb033965ed2cd095ca5708b0ec40d637ba5227ef04889ac43df9fbdbf752cebfafe14af26a7a9866bde178cf181",
+        ):
+            self.assertIn(checksum, self.install)
+        body = extract_function(self.install, "ensure_spotifyd_build_toolchain")
+        self.assertIn("rustup-init", body)
+        self.assertIn("SPOTIFYD_RUSTUP_VERSION", body)
+        self.assertIn("SPOTIFYD_RUST_TOOLCHAIN_VERSION", body)
+        self.assertIn("spotifyd_target_cargo_path", body)
+        meets_body = extract_function(self.install, "spotifyd_rust_meets_minimum")
+        self.assertIn("sort -V", meets_body)
+
+    def test_spotifyd_source_build_uses_target_user_cargo(self):
+        build_body = extract_function(self.install, "build_spotifyd_from_source")
+        self.assertIn("spotifyd_target_cargo_path", build_body)
+        self.assertIn('PATH=$FXROUTE_TARGET_HOME/.cargo/bin:$PATH', build_body)
+        self.assertNotIn('cargo_bin="$(command -v cargo', build_body)
+
+    def test_spotifyd_source_build_is_memory_bounded(self):
+        body = extract_function(self.install, "build_spotifyd_from_source")
+        self.assertIn(
+            'build --release --locked --jobs 1 --config profile.release.lto=false',
+            body,
+        )
+        self.assertIn("FXROUTE_ACTIVE_TEMP_DIR", body)
+
+    def test_spotifyd_source_build_does_not_replace_foreign_local_binary(self):
+        body = extract_function(self.install, "build_spotifyd_from_source")
+        self.assertIn('local destination="$HOME/.local/bin/spotifyd"', body)
+        self.assertIn('[[ -e "$destination" || -L "$destination" ]]', body)
+        self.assertIn("SPOTIFYD_INSTALLED_BY_FXROUTE", body)
+
+    def test_spotifyd_source_fallback_preserves_foreign_service(self):
+        body = extract_function(self.install, "install_spotifyd")
+        self.assertIn("user_unit_exists spotifyd.service", body)
+        self.assertIn("SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -ne 1", body)
+
+    def test_spotifyd_source_build_replaces_binary_atomically(self):
+        body = extract_function(self.install, "build_spotifyd_from_source")
+        self.assertIn("staged_binary", body)
+        self.assertIn("FXROUTE_ACTIVE_STAGED_BINARY", body)
+        self.assertIn('mktemp "$HOME/.local/bin/.spotifyd.', body)
+        self.assertIn('mv -f "$staged_binary" "$destination"', body)
+        self.assertIn("trap - RETURN", body)
+
+    def test_spotifyd_source_build_keeps_dependency_failure_optional(self):
+        body = extract_function(self.install, "build_spotifyd_from_source")
+        self.assertIn(
+            'if ! install_missing_provider_packages "$build_package_text"',
+            body,
+        )
+
+    def test_spotifyd_source_build_reports_binary_install_failure(self):
+        body = extract_function(self.install, "build_spotifyd_from_source")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_bin = root / "bin"
+            target_home = root / "home"
+            fake_bin.mkdir()
+            (target_home / ".cargo" / "bin").mkdir(parents=True)
+            (fake_bin / "curl").write_text(
+                "#!/bin/sh\n"
+                "out=\n"
+                "while [ $# -gt 0 ]; do\n"
+                "  if [ \"$1\" = -o ]; then out=$2; shift 2; else shift; fi\n"
+                "done\n"
+                ": > \"$out\"\n"
+            )
+            (fake_bin / "sha512sum").write_text(
+                "#!/bin/sh\n"
+                "cat >/dev/null\n"
+            )
+            (fake_bin / "tar").write_text(
+                "#!/bin/sh\n"
+                "out=\n"
+                "while [ $# -gt 0 ]; do\n"
+                "  if [ \"$1\" = -C ]; then out=$2; shift 2; else shift; fi\n"
+                "done\n"
+                "mkdir -p \"$out/spotifyd-0.4.2\"\n"
+            )
+            (target_home / ".cargo" / "bin" / "cargo").write_text(
+                "#!/bin/sh\n"
+                "mkdir -p target/release\n"
+                "printf built > target/release/spotifyd\n"
+                "chmod 755 target/release/spotifyd\n"
+            )
+            for path in (
+                fake_bin / "curl",
+                fake_bin / "sha512sum",
+                fake_bin / "tar",
+                target_home / ".cargo" / "bin" / "cargo",
+            ):
+                path.chmod(0o755)
+            code = f"""
+set -Eeuo pipefail
+run_cmd() {{ "$@"; }}
+run_as_target_user() {{
+  if [[ "$1" == install ]]; then return 73; fi
+  "$@"
+}}
+install_missing_provider_packages() {{ :; }}
+spotifyd_source_build_packages_for_manager() {{ echo deps; }}
+ensure_spotifyd_build_toolchain() {{ :; }}
+warn() {{ :; }}
+log() {{ :; }}
+pass() {{ :; }}
+PACKAGE_MANAGER=apt
+HOST_ARCH=aarch64
+SPOTIFYD_VERSION=0.4.2
+SPOTIFYD_SOURCE_SHA512=pin
+FXROUTE_TARGET_HOME={target_home}
+HOME={target_home}
+PATH={fake_bin}:/usr/bin:/bin
+{body}
+if build_spotifyd_from_source; then
+  printf 'success\\n'
+else
+  printf 'failure\\n'
+fi
+"""
+            result = subprocess.run(
+                ["bash", "-c", code],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "failure")
+
+    def test_spotifyd_missing_runtime_libs_trigger_source_build_then_continue(self):
+        body = extract_function(self.install, "install_spotifyd")
+        self.assertIn("build_spotifyd_from_source", body)
+        # After a successful source build the flow must re-run the runtime
+        # check and continue to config + service setup instead of giving up.
+        self.assertIn("spotifyd_runtime_missing_libraries", body)
+        self.assertIn("write_spotifyd_config", body)
+        self.assertIn("configure_spotifyd_service", body)
+
+    def test_spotifyd_source_built_is_recorded_in_install_state(self):
+        self.assertIn("SPOTIFYD_SOURCE_BUILT", self.install)
+        state_body = extract_function(self.install, "write_install_state")
+        ownership_body = extract_function(self.install, "load_provider_ownership_state")
+        self.assertIn('"source_built"', state_body)
+        self.assertIn("providers.spotifyd.source_built", ownership_body)
+
+    def test_spotifyd_docs_describe_unity_volume_configuration(self):
+        self.assertIn('volume_controller = "none"', self.installer_docs)
+        self.assertIn("playback", self.installer_docs)
+        self.assertIn("volume levels", self.installer_docs)
 
     def test_spotifyd_config_has_device_mpris_and_pipewire_without_credentials_or_volume(self):
         body = extract_function(self.install, "write_spotifyd_config")

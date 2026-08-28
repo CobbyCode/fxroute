@@ -39,6 +39,13 @@ function extractFunction(source, name) {
 const notPlayingContent = new Function(
     `return ${extractFunction(src, 'notPlayingContent')}`,
 )();
+const buildStatusBits = new Function(
+    `return ${extractFunction(src, 'buildStatusBits')}`,
+)();
+
+assert.deepEqual(buildStatusBits('spotify', { connected: true }), ['Connected']);
+assert.deepEqual(buildStatusBits('spotify', { spotifyd_standby: true }), ['Connected']);
+assert.deepEqual(buildStatusBits('spotify', { connected: false }), []);
 
 // Standby: idle spotifyd daemon reads as ready, with Connect guidance.
 assert.deepEqual(
@@ -72,26 +79,34 @@ assert.deepEqual(
     { title: 'Nothing is playing. Start a track from the Qobuz app.', message: '' },
 );
 
+// A visible MPRIS player can be connected but stopped; that is different
+// from Spotify not running at all.
+assert.deepEqual(
+    notPlayingContent('spotify', { status: 'Stopped', connected: true }),
+    { title: 'Nothing is playing.', message: '' },
+);
+
 // The flags never leak across providers.
 assert.deepEqual(
     notPlayingContent('spotify', { status: 'Stopped', qbzd_standby: true }),
-    { title: 'Spotify is not running.', message: '' },
+    { title: 'Spotify is not running.', message: 'Start it to use Spotify Connect.' },
 );
 
-// Without the flag the classic not-running message is preserved.
+// Without the flag the classic not-running message is preserved, with the
+// same start guidance the qbzd unavailable state offers.
 assert.deepEqual(
     notPlayingContent('spotify', { status: 'Stopped' }),
-    { title: 'Spotify is not running.', message: '' },
+    { title: 'Spotify is not running.', message: 'Start it to use Spotify Connect.' },
 );
 assert.deepEqual(
     notPlayingContent('spotify', {}),
-    { title: 'Spotify is not running.', message: '' },
+    { title: 'Spotify is not running.', message: 'Start it to use Spotify Connect.' },
 );
 
 // Missing data object must not throw.
 assert.deepEqual(
     notPlayingContent('spotify'),
-    { title: 'Spotify is not running.', message: '' },
+    { title: 'Spotify is not running.', message: 'Start it to use Spotify Connect.' },
 );
 
 // Other providers keep their messages; the flag never leaks into them.

@@ -8,6 +8,7 @@ MPRIS is required; the low-level ``_run``/``list_players`` helpers are patched.
 """
 
 import asyncio
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -216,6 +217,7 @@ class SpotifyStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(status["source"], "spotify")
         self.assertEqual(status["backend"], "desktop")
+        self.assertTrue(status["connected"])
         self.assertEqual(status["status"], "Playing")
         self.assertEqual(status["artist"], "Artist Name")
         self.assertEqual(status["title"], "Track Title")
@@ -236,6 +238,7 @@ class SpotifyStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("streaming.spotify.mpris.playerctl_available", return_value=False):
             status = await provider.status()
         self.assertFalse(status["available"])
+        self.assertFalse(status.get("connected", False))
         self.assertEqual(status["status"], "Stopped")
         self.assertEqual(status["source"], "spotify")
 
@@ -277,13 +280,25 @@ class SpotifydStandbyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_standby_false_without_spotifyd_name(self):
         with mock.patch("streaming.spotify.mpris._find_dbus_send", return_value="/usr/bin/dbus-send"), \
+             mock.patch("streaming.spotify.mpris._find_pgrep", return_value=None, create=True), \
              mock.patch("asyncio.create_subprocess_exec",
                         new=self._fake_dbus_send(["org.mpris.MediaPlayer2.com.blitzfc.qbz"])):
             self.assertFalse(await spotifyd_standby())
 
     async def test_standby_false_when_dbus_send_missing(self):
-        with mock.patch("streaming.spotify.mpris._find_dbus_send", return_value=None):
+        with mock.patch("streaming.spotify.mpris._find_dbus_send", return_value=None), \
+             mock.patch("streaming.spotify.mpris._find_pgrep", return_value=None, create=True):
             self.assertFalse(await spotifyd_standby())
+
+    async def test_standby_detects_running_process_without_dbus_send(self):
+        async def fake_exec(*args, **kwargs):
+            self.assertEqual(args[1:], ("-u", str(os.getuid()), "-x", "spotifyd"))
+            return await self._fake_dbus_send(["1234"])(*args, **kwargs)
+
+        with mock.patch("streaming.spotify.mpris._find_dbus_send", return_value=None), \
+             mock.patch("streaming.spotify.mpris._find_pgrep", return_value="/usr/bin/pgrep", create=True), \
+             mock.patch("asyncio.create_subprocess_exec", new=fake_exec):
+            self.assertTrue(await spotifyd_standby())
 
     async def test_status_flags_standby_when_no_mpris_player(self):
         async def fake_run(*args, timeout=4.0):
@@ -297,6 +312,7 @@ class SpotifydStandbyTests(unittest.IsolatedAsyncioTestCase):
             status = await provider.status()
 
         self.assertEqual(status["status"], "Stopped")
+        self.assertTrue(status["connected"])
         self.assertTrue(status["spotifyd_standby"])
 
     async def test_status_omits_standby_flag_when_daemon_absent(self):
@@ -311,6 +327,7 @@ class SpotifydStandbyTests(unittest.IsolatedAsyncioTestCase):
             status = await provider.status()
 
         self.assertEqual(status["status"], "Stopped")
+        self.assertFalse(status.get("connected", False))
         self.assertNotIn("spotifyd_standby", status)
 
 

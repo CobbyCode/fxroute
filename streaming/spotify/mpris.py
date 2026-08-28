@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -133,6 +134,7 @@ async def list_players(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> list[str
 
 
 _dbus_send_path: str | None = None
+_pgrep_path: str | None = None
 
 
 def _find_dbus_send() -> str | None:
@@ -143,37 +145,72 @@ def _find_dbus_send() -> str | None:
     return _dbus_send_path
 
 
-async def spotifyd_standby(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> bool:
-    """Return whether an idle spotifyd daemon is visible on the session bus.
+def _find_pgrep() -> str | None:
+    global _pgrep_path
+    if _pgrep_path is not None:
+        return _pgrep_path
+    _pgrep_path = shutil.which("pgrep")
+    return _pgrep_path
 
-    spotifyd 0.4.x keeps its controls interface name registered for the whole
-    daemon lifetime but only exposes MPRIS while a Connect session is active,
-    so this detects the daemon even when playerctl sees no Spotify player.
-    """
-    cmd = _find_dbus_send()
+
+async def spotifyd_process_running(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> bool:
+    """Return whether a spotifyd process is running in this user session."""
+    cmd = _find_pgrep()
     if cmd is None:
         return False
     proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
             cmd,
-            "--session",
-            "--print-reply",
-            "--dest=org.freedesktop.DBus",
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus.ListNames",
+            "-u",
+            str(os.getuid()),
+            "-x",
+            "spotifyd",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        if proc.returncode != 0:
-            return False
-        return SPOTIFYD_DBUS_NAME_PREFIX in stdout.decode(errors="ignore")
+        return proc.returncode == 0 and bool(stdout.strip())
     except (asyncio.TimeoutError, OSError) as exc:
-        logger.debug("dbus-send ListNames failed: %s", exc)
+        logger.debug("pgrep spotifyd failed: %s", exc)
         return False
     finally:
         await _stop_process(proc)
+
+
+async def spotifyd_standby(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> bool:
+    """Return whether an idle spotifyd daemon is visible to this user.
+
+    spotifyd 0.4.x keeps its controls interface name registered for the whole
+    daemon lifetime but only exposes MPRIS while a Connect session is active,
+    so this detects the daemon even when playerctl sees no Spotify player. The
+    process fallback covers the period before spotifyd starts its D-Bus task.
+    """
+    cmd = _find_dbus_send()
+    if cmd is not None:
+        proc: asyncio.subprocess.Process | None = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                cmd,
+                "--session",
+                "--print-reply",
+                "--dest=org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus.ListNames",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            if proc.returncode == 0 and SPOTIFYD_DBUS_NAME_PREFIX in stdout.decode(errors="ignore"):
+                return True
+        except (asyncio.TimeoutError, OSError) as exc:
+            logger.debug("dbus-send ListNames failed: %s", exc)
+        finally:
+            await _stop_process(proc)
+
+    # Before the first Connect session spotifyd has not started its D-Bus
+    # server future yet, so the process is the reliable standby signal.
+    return await spotifyd_process_running(timeout)
 
 
 async def detect_running_backend(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> str | None:

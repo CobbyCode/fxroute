@@ -334,6 +334,8 @@ assert.ok(!bitsBuilder.includes("PROVIDER_META.tidal.name"),
     'the status label must not repeat the provider name (Tidal is the page title)');
 assert.ok(bitsBuilder.includes("['Connected']"),
     'all providers must share the identical Connected status language');
+assert.ok(bitsBuilder.includes('data.connected === true'),
+    'Spotify Connected status must require a live backend signal');
 
 // The served navigation changes visible copy only, not the provider id.
 assert.ok(html.includes('data-tab="tidal"') && html.includes('<span>Tidal</span>'),

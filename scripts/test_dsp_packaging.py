@@ -10,6 +10,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DspPackagingTests(unittest.TestCase):
+    def test_fxroute_service_leaves_realtime_policy_to_pipewire(self):
+        service = (ROOT / "fxroute.service").read_text()
+        installer = (ROOT / "install.sh").read_text()
+        for text in (service, installer):
+            self.assertNotIn("LimitRTPRIO", text)
+            self.assertNotIn("LimitMEMLOCK", text)
+
+    def test_native_dsp_leaves_realtime_thread_policy_to_pipewire(self):
+        source = (ROOT / "native_dsp/pipewire_engine.c").read_text()
+        self.assertNotIn("configure_realtime_thread", source)
+        self.assertNotIn("pthread_setschedparam", source)
+
     def test_installer_builds_native_dsp_without_easyeffects_runtime(self):
         script = (ROOT / "install.sh").read_text()
         self.assertIn('build_native_dsp_engine()', script)

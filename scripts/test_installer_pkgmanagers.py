@@ -91,7 +91,7 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
     def test_manjaro_package_lists(self):
         self.assertIn("core_packages=(python python-pip mpv ffmpeg playerctl)", self.text)
         self.assertIn(
-            "audio_stack_packages=(bluez bluez-utils wireplumber pipewire pipewire-pulse libpulse)",
+            "audio_stack_packages=(bluez bluez-utils wireplumber pipewire pipewire-pulse libpulse rtkit)",
             self.text,
         )
 
@@ -389,8 +389,19 @@ systemctl() {{ SYSTEMCTL_CALLS="$SYSTEMCTL_CALLS|systemctl $*"; return 0; }}
         self.assertIn("loginctl show-user", self.text)
         self.assertIn("enable_user_session_persistence\n", self.text)
 
-    def test_rtkit_is_not_forced_as_an_audio_dependency(self):
-        self.assertNotIn("rtkit", self.text.lower())
+    def test_rtkit_is_installed_for_pipewire_realtime_fallback(self):
+        self.assertIn("rtkit", self.text.lower())
+        native_packages = _extract_function(self.text, "ensure_native_packages")
+        for manager in ("apt", "dnf", "zypper", "pacman"):
+            match = re.search(
+                rf"{manager}\).*?audio_stack_packages=\(([^)]*)\)",
+                native_packages,
+                re.DOTALL,
+            )
+            self.assertIsNotNone(match)
+            self.assertIn("rtkit", match.group(1).split())
+        native_body = _extract_function(self.text, "ensure_native_packages")
+        self.assertIn("package_installed rtkit", native_body)
 
     def test_spotify_autostart_default_is_x86_64_only(self):
         self.assertIn('[[ "$(uname -m)" != "x86_64" ]]', self.text)

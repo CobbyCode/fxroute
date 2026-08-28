@@ -316,7 +316,9 @@
     // label with a dot-led pill. The detail string stays in the tooltip and
     // backend implementation names are never surfaced.
     function buildStatusBits(providerId, data) {
-        if (providerId === 'spotify') return ['Connected'];
+        if (providerId === 'spotify') {
+            return data.connected === true || data.spotifyd_standby === true ? ['Connected'] : [];
+        }
         if (providerId === 'qobuz') {
             return (data.connected || data.authenticated === true) ? ['Connected'] : [];
         }
@@ -533,7 +535,12 @@
                 message: '',
             };
         }
-        if (providerId === 'spotify') return { title: 'Spotify is not running.', message: '' };
+        if (providerId === 'spotify' && data && data.connected === true) {
+            return { title: 'Nothing is playing.', message: '' };
+        }
+        // Runtime-down state class (C): keep the provider-identifying
+        // "not running" wording and add the same start guidance qbzd offers.
+        if (providerId === 'spotify') return { title: 'Spotify is not running.', message: 'Start it to use Spotify Connect.' };
         if (providerId === 'qobuz') return { title: 'Nothing is playing. Start a track from the Qobuz app.', message: '' };
         if (providerId === 'tidal') return { title: 'Nothing is playing.', message: '' };
         return { title: 'Nothing is playing.', message: '' };

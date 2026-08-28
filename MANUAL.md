@@ -98,7 +98,7 @@ Use **Spotify** to control a Spotify player running in the same Linux user sessi
 - **Spotify Desktop** — the official desktop client, controlled through MPRIS. Requires an X11/Wayland desktop session.
 - **spotifyd** — a headless Spotify player that also works in a session without a desktop. It uses the PipeWire-Pulse backend and MPRIS.
 
-FXRoute detects the running backend and shows the player state in the Spotify tab. When the backend is running but idle (for example spotifyd waiting for a Spotify Connect session), the tab shows a standby state instead of an error. Both backends offer the same control surface:
+FXRoute detects the running backend and shows the player state in the Spotify tab. When the backend is running but idle (for example spotifyd waiting for a Spotify Connect session), the tab shows **Ready for Spotify Connect.** instead of an error. If Spotify is not running, it shows **Spotify is not running.** and explains how to start Spotify Connect. Both backends offer the same control surface:
 
 - play/pause
 - previous/next track
@@ -110,6 +110,8 @@ FXRoute detects the running backend and shows the player state in the Spotify ta
 FXRoute refreshes Spotify metadata from local desktop events and lightweight polling, so automatic next-track changes should update title, artist, cover, duration, and position without needing a manual browser action.
 
 FXRoute does not replace Spotify Connect. It controls the local player through the session, so Spotify must be installed on, reachable from, and logged in on the audio PC. The spotifyd variant is configured with a fixed Zeroconf port so the phone can find the FXRoute player reliably.
+
+On ARM hosts where the pinned spotifyd v0.4.2 release binary needs unavailable OpenSSL 1.1 libraries (for example Debian 13/Trixie), the installer builds the same pinned release from source against the host runtime. This can take several minutes. If the source build cannot complete, spotifyd remains unavailable rather than installing obsolete OpenSSL packages.
 
 The regular Spotify desktop client also supports Spotify Lossless for eligible Premium accounts. Enable **Lossless** in a current Spotify desktop client (version 1.2.67 or newer) to stream available music at up to 24-bit/44.1 kHz FLAC while FXRoute continues to provide remote playback control. FXRoute controls the client; it does not provide the Spotify stream itself. Lossless is not available through spotifyd.
 
@@ -128,7 +130,7 @@ Spotify volume is the provider's own volume. The playback-bar slider remains the
 
 ## 7. Qobuz
 
-The Qobuz tab controls a **Qobuz Connect** player on the audio PC. Playback starts from the Qobuz app: run `"$HOME/.local/bin/qbzd" setup` once after installation, enable Qobuz Connect, then select the FXRoute device from the Qobuz app. The FXRoute tab then shows what is playing and offers the same transport controls as the other sources. While qbzd is running but no FXRoute device is active, the tab shows a standby state instead of an error. The controls are:
+The Qobuz tab controls a **Qobuz Connect** player on the audio PC. Playback starts from the Qobuz app: run `"$HOME/.local/bin/qbzd" setup` once after installation, enable Qobuz Connect, then select the FXRoute device from the Qobuz app. The FXRoute tab then shows what is playing and offers the same transport controls as the other sources. While qbzd is running but no FXRoute device is active, the tab shows **Ready for Qobuz Connect.** instead of an error. When no track is active, it says **Nothing is playing. Start a track from the Qobuz app.** The controls are:
 
 - play/pause
 - previous/next track
@@ -140,7 +142,7 @@ Stream quality follows your Qobuz account and the selected Qobuz app settings. T
 
 ## 8. TIDAL
 
-The TIDAL tab is a full catalog browser. After logging in you can browse, search, favorite, and play without leaving FXRoute.
+The TIDAL tab is a full catalog browser. After logging in you can browse, search, favorite, and play without leaving FXRoute. The connected state is shown as **Connected** in the browse toolbar; when no native track is active, the player says **Nothing is playing.**
 
 Log in from the TIDAL tab:
 

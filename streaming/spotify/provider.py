@@ -78,6 +78,7 @@ class SpotifyProvider(StreamingProvider):
             "position": 0.0,
             "duration": 0.0,
             "volume": 100,
+            "connected": False,
         }
 
         if not result["available"]:
@@ -104,8 +105,10 @@ class SpotifyProvider(StreamingProvider):
             # Connect" from a plain "nothing playing".
             if await mpris.spotifyd_standby():
                 result["spotifyd_standby"] = True
+                result["connected"] = True
             return result
 
+        result["connected"] = True
         parts = meta.split("|")
         if len(parts) >= 1:
             result["status"] = parts[0]
