@@ -54,6 +54,9 @@
     // ---------------------------------------------------------------------
     // [title, artist, album, genre, year, duration, sampleRate]
     const TRACK_SEEDS = [
+        // Cover-art credit: the demo artwork pool is by jmort125; this entry
+        // surfaces the credit in the library without a separate credit UI.
+        ['Cover Art', 'jmort125', 'Cover Art', 'Electronic', 2024, 210, 48000],
         ['Neon Rain', 'Alistair Kade', 'Neon Rain', 'Synthwave', 2023, 214, 44100],
         ['Midnight Arcade', 'Alistair Kade', 'Neon Rain', 'Synthwave', 2023, 189, 44100],
         ['Chrome Sunset', 'Alistair Kade', 'Neon Rain', 'Synthwave', 2023, 243, 44100],
