@@ -1018,8 +1018,14 @@ async def _run_auto_sub_22_stereo_optimize(
         all_right_sweeps = list(right_results) + list(right_fine_results)
         left_baseline = _auto_sub_result_for_delay(all_left_sweeps, original_left_alignment)
         right_baseline = _auto_sub_result_for_delay(all_right_sweeps, original_right_alignment)
-        left_confirm = final_gain_left if accepted_step1_sides["left"] else _auto_sub_result_for_delay(all_left_sweeps, best_left)
-        right_confirm = final_gain_right if accepted_step1_sides["right"] else _auto_sub_result_for_delay(all_right_sweeps, best_right)
+        # Prefer the final measured per-side sweep (gain verification or
+        # polarity-refined winner) so the confirmation always reflects the
+        # applied pair; fall back to the scan sweep at the accepted delay.
+        def _points_sweep(sweep: dict[str, Any] | None) -> dict[str, Any] | None:
+            return sweep if sweep and _auto_sub_has_points(sweep, "points") else None
+
+        left_confirm = _points_sweep(final_gain_left) or _auto_sub_result_for_delay(all_left_sweeps, best_left)
+        right_confirm = _points_sweep(final_gain_right) or _auto_sub_result_for_delay(all_right_sweeps, best_right)
 
         # One shared vertical offset from baseline L+R bass region so that
         # Before/After and L/R relative level differences are preserved.

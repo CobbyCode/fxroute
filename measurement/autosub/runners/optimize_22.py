@@ -645,13 +645,22 @@ async def _run_auto_sub_22_optimize(
              and (_auto_sub_has_points(r, "points_left") or _auto_sub_has_points(r, "points_right"))),
             None,
         )
-        confirm_22_sweep = final_gain_sweep if gain_verdict["accepted"] else next(
-            (r for r in all_22_sweeps
-             if round(float(r.get("sub1_alignment_ms", r.get("delay_ms", 0.0))), 2) == round(float(best_sub1), 2)
-             and round(float(r.get("sub2_alignment_ms", 0.0)), 2) == round(float(best_sub2), 2)
-             and (_auto_sub_has_points(r, "points_left") or _auto_sub_has_points(r, "points_right"))),
-            None,
-        )
+        # Prefer the final measured sweep (gain verification or polarity-refined
+        # winner) so the confirmation always reflects the applied pair; fall
+        # back to the scan sweep at the accepted winner pair.
+        confirm_22_sweep = None
+        if final_gain_sweep and (
+            _auto_sub_has_points(final_gain_sweep, "points_left") or _auto_sub_has_points(final_gain_sweep, "points_right")
+        ):
+            confirm_22_sweep = final_gain_sweep
+        else:
+            confirm_22_sweep = next(
+                (r for r in all_22_sweeps
+                 if round(float(r.get("sub1_alignment_ms", r.get("delay_ms", 0.0))), 2) == round(float(best_sub1), 2)
+                 and round(float(r.get("sub2_alignment_ms", 0.0)), 2) == round(float(best_sub2), 2)
+                 and (_auto_sub_has_points(r, "points_left") or _auto_sub_has_points(r, "points_right"))),
+                None,
+            )
         baseline_measurement = None
         confirmation_measurement = None
         _offset_db = _auto_sub_shared_bass_offset(
@@ -664,8 +673,10 @@ async def _run_auto_sub_22_optimize(
                 offset_db=_offset_db,
             )
         if confirm_22_sweep:
+            confirm_sub1 = float(confirm_22_sweep.get("sub1_alignment_ms", best_sub1))
+            confirm_sub2 = float(confirm_22_sweep.get("sub2_alignment_ms", best_sub2))
             confirmation_measurement = _auto_sub_measurement_from_sweep(
-                confirm_22_sweep, "After", f"AutoSub 2.2 Optimized (S1 {best_sub1:.1f} / S2 {best_sub2:.1f} ms)",
+                confirm_22_sweep, "After", f"AutoSub 2.2 Optimized (S1 {confirm_sub1:.1f} / S2 {confirm_sub2:.1f} ms)",
                 offset_db=_offset_db,
             )
 

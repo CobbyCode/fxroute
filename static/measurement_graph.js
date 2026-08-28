@@ -160,30 +160,6 @@
                 const isReviewTrace = trace.role === 'raw-review';
                 const traceColor = entry.graphColor || '#6ee7b7';
 
-                // Subtle area fill under current primary curve
-                if (entry.current && !isReviewTrace && trace.points.length > 1) {
-                    const fillGrad = ctx.createLinearGradient(0, bounds.top, 0, bounds.top + bounds.height);
-                    fillGrad.addColorStop(0, 'rgba(110, 231, 183, 0.15)');
-                    fillGrad.addColorStop(1, 'rgba(110, 231, 183, 0.0)');
-                    ctx.fillStyle = fillGrad;
-                    ctx.beginPath();
-                    trace.points.forEach(([frequency, level], pointIndex) => {
-                        const x = dsp.measurementFrequencyToX(frequency, bounds);
-                        const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, dsp.measurementDbToY(level, bounds, range)));
-                        if (pointIndex === 0) {
-                            ctx.moveTo(x, bounds.top + bounds.height);
-                            ctx.lineTo(x, y);
-                        } else {
-                            ctx.lineTo(x, y);
-                        }
-                    });
-                    const lastPoint = trace.points[trace.points.length - 1];
-                    const lastX = dsp.measurementFrequencyToX(lastPoint[0], bounds);
-                    ctx.lineTo(lastX, bounds.top + bounds.height);
-                    ctx.closePath();
-                    ctx.fill();
-                }
-
                 ctx.strokeStyle = traceColor;
                 ctx.lineWidth = entry.current ? 2.6 : (isReviewTrace ? 1.6 : 2.0);
                 ctx.setLineDash(entry.current ? [] : (isReviewTrace ? [5, 4] : [8, 5]));

@@ -724,8 +724,22 @@ async def _run_auto_sub_optimize(
                 offset_db=_offset_db,
             )
         confirm_delay = best_delay if auto_apply else current_alignment
-        confirmation_sweep = final_gain_sweep if gain_verdict["accepted"] else _auto_sub_result_for_delay(all_sweep_results, confirm_delay)
-        if confirmation_sweep and (_auto_sub_has_points(confirmation_sweep, "points_left") or _auto_sub_has_points(confirmation_sweep, "points_right")):
+
+        def _points_sweep(sweep: dict[str, Any] | None) -> dict[str, Any] | None:
+            return sweep if sweep and (
+                _auto_sub_has_points(sweep, "points_left") or _auto_sub_has_points(sweep, "points_right")
+            ) else None
+
+        # Prefer the final measured sweep (gain verification or polarity-refined
+        # winner) so the confirmation always reflects the applied state; fall
+        # back to the scan sweep at the confirmed delay.
+        confirmation_sweep = _points_sweep(final_gain_sweep) or _points_sweep(
+            _auto_sub_result_for_delay(all_sweep_results, confirm_delay)
+        )
+        if confirmation_sweep:
+            sweep_delay = confirmation_sweep.get("delay_ms")
+            if sweep_delay is not None:
+                confirm_delay = float(sweep_delay)
             confirm_label = "After" if auto_apply else "Current"
             confirmation_measurement = _auto_sub_measurement_from_sweep(
                 confirmation_sweep, confirm_label, f"AutoSub {confirm_label} ({confirm_delay:.1f} ms)",

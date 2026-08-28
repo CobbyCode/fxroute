@@ -538,15 +538,18 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 /* Subwoofer selects share the common #tab-effects control metrics; these
    rules only cap the inline width so the compact groups stay aligned. The
    polarity cap matches the short "Norm"/"Inv" options so no dead space
-   opens between the text and the native arrow. */
-#tab-effects .effects-subwoofer-compact-select {
+   opens between the text and the native arrow. The select type selector is
+   load-bearing: #tab-effects .url-input (equal specificity, later in the
+   file) would otherwise keep width:100% alive and stretch the selects back
+   across their grid tracks. */
+#tab-effects select.effects-subwoofer-compact-select {
     width: min(100%, 5.2rem);
     min-width: 0;
     max-width: 100%;
 }
 
-#tab-effects .effects-subwoofer-polarity-select {
-    width: min(100%, 4.6rem);
+#tab-effects select.effects-subwoofer-polarity-select {
+    width: min(100%, 5.2rem);
     min-width: 0;
     max-width: 100%;
 }
