@@ -12951,6 +12951,19 @@ function collectEffectsExtras() {
     };
 }
 
+// The extras API merges only explicitly supplied fields, and a present
+// loudnessEnabled is the canonical Loudness/Volume transition signal.
+// Send it only on an actual enabled-state change (relative to the last
+// known server state) so unrelated extras saves never take the canonical
+// volume write path.  With unknown server state it is still sent.
+function buildEffectsExtrasSaveBody(extras, serverExtras) {
+    const body = { ...extras };
+    if (serverExtras && !!body.loudnessEnabled === !!serverExtras.loudness?.enabled) {
+        delete body.loudnessEnabled;
+    }
+    return body;
+}
+
 async function _doSaveEffectsExtras(phase) {
     if (effectsCompareLoadInFlight || effectsExtrasSaveInFlight) {
         effectsExtrasPendingResave = true;
@@ -12962,11 +12975,12 @@ async function _doSaveEffectsExtras(phase) {
         setEffectsExtrasFeedback('Saving…', '');
     }
     const extras = collectEffectsExtras();
+    const body = buildEffectsExtrasSaveBody(extras, state.dsp?.global_extras);
     try {
         const resp = await fetch('/api/dsp/extras', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(extras),
+            body: JSON.stringify(body),
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save output extras');
