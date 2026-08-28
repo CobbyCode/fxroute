@@ -111,7 +111,7 @@ FXRoute refreshes Spotify metadata from local desktop events and lightweight pol
 
 FXRoute does not replace Spotify Connect. It controls the local player through the session, so Spotify must be installed on, reachable from, and logged in on the audio PC. The spotifyd variant is configured with a fixed Zeroconf port so the phone can find the FXRoute player reliably.
 
-On ARM hosts where the pinned spotifyd v0.4.2 release binary needs unavailable OpenSSL 1.1 libraries (for example Debian 13/Trixie), the installer builds the same pinned release from source against the host runtime. This can take several minutes. If the source build cannot complete, spotifyd remains unavailable rather than installing obsolete OpenSSL packages.
+On aarch64 hosts where the pinned spotifyd v0.4.2 release binary needs unavailable OpenSSL 1.1 libraries (for example Debian 13/Trixie), the installer uses the versioned FXRoute ARM64 prebuilt, which is built against an OpenSSL 3/glibc 2.35 baseline and verified by SHA-256. If the artifact cannot be downloaded or verified, spotifyd remains unavailable rather than installing obsolete OpenSSL packages or building on the host.
 
 The regular Spotify desktop client also supports Spotify Lossless for eligible Premium accounts. Enable **Lossless** in a current Spotify desktop client (version 1.2.67 or newer) to stream available music at up to 24-bit/44.1 kHz FLAC while FXRoute continues to provide remote playback control. FXRoute controls the client; it does not provide the Spotify stream itself. Lossless is not available through spotifyd.
 

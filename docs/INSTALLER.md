@@ -60,7 +60,7 @@ session.
 | Provider | Release or package | Supported host | Installer result |
 | --- | --- | --- | --- |
 | Spotify Desktop | Native `spotify-client` on apt; `com.spotify.Client` Flatpak otherwise | x86_64 with X11 or Wayland desktop session | Installs the official client, keyring/Secret-Service support, and optional autostart integration |
-| spotifyd | v0.4.2 full/MPRIS build; pinned source build on hosts where the release binaries are incompatible with the runtime | x86_64 with a compatible runtime; aarch64/armv7 (source-built on e.g. Debian 13/Trixie where the release links OpenSSL 1.1) | Installs `~/.local/bin/spotifyd`, a user service, and a minimal MPRIS/PipeWire-Pulse config with fixed Zeroconf TCP port 4444 |
+| spotifyd | v0.4.2 full/MPRIS release; FXRoute ARM64 prebuilt v1 for aarch64 | x86_64 with a compatible runtime; aarch64 with the FXRoute artifact; armv7 where the release runtime is available | Installs `~/.local/bin/spotifyd`, a user service, and a minimal MPRIS/PipeWire-Pulse config with fixed Zeroconf TCP port 4444 |
 | Qobuz/qbzd | v2.0.2 standalone build | amd64, aarch64 | Installs `~/.local/bin/qbzd`, Avahi/mDNS support, `qconnect.volume_mode=locked`, and a `qbzd run` user service |
 | TIDAL | `tidalapi==0.8.11` in the FXRoute venv | Any supported FXRoute Python host | Adds the optional dependency used by FXRoute's existing PKCE login flow |
 
@@ -68,22 +68,20 @@ The base installer supports apt, dnf, zypper, and pacman. Unsupported
 architectures are reported without downloading or building replacement
 provider binaries.
 
-The v0.4.2 ARM release binaries are not compatible with Debian 13/Trixie:
-they require the obsolete `libssl.so.1.1` and `libcrypto.so.1.1`, which Debian
-13 does not provide. The installer checks the downloaded binary with `ldd`
-and, when those libraries are missing, builds spotifyd v0.4.2 from the pinned
-upstream source archive against the host runtime instead. The source build
-uses the upstream default feature set (`alsa_backend`, `pulseaudio_backend`,
-`dbus_mpris`) and requires Rust 1.88.0 plus the distro OpenSSL development
-headers; the installer installs that minimal pinned toolchain via a checksum-
-verified rustup-init binary only when needed. ARMv7 also needs the CMake, Make,
-and Clang/libclang packages used by the upstream AWS-LC bindgen build. The built
-binary is verified with `ldd` again, is
-recorded like any FXRoute-owned binary (path + sha256 in install state), and
-the service is enabled normally. If the source build or its runtime check
-fails, spotifyd is recorded as unavailable and an FXRoute-owned service is
-disabled, exactly like the release-binary failure path. The installer never
-installs end-of-life OpenSSL 1.1 packages or fetches an unpinned artifact.
+The v0.4.2 aarch64 release binary is not compatible with Debian 13/Trixie: it
+requires the obsolete `libssl.so.1.1` and `libcrypto.so.1.1`, which Debian 13
+does not provide. For aarch64 the installer downloads the versioned FXRoute
+artifact from the `spotifyd-arm64-v1` release and verifies its pinned
+SHA-256 before extracting it. The artifact uses the same full/MPRIS provider
+features as the upstream release and is built against OpenSSL 3 and glibc
+2.35; the build provenance and runtime dependencies are documented in
+[`docs/SPOTIFYD-ARM64-BUILD.md`](SPOTIFYD-ARM64-BUILD.md). The installed binary
+is checked with `ldd`, recorded like any FXRoute-owned binary (path + sha256 in
+install state), and the service is enabled normally. If the artifact download,
+checksum, or runtime check fails, spotifyd is recorded as unavailable and an
+FXRoute-owned service is disabled, exactly like the release-binary failure
+path. The installer never installs end-of-life OpenSSL 1.1 packages and never
+builds spotifyd on the target host.
 
 ## First Run
 

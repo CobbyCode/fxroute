@@ -24,14 +24,10 @@ SELECT_TIDAL=0
 HOST_ARCH="$(uname -m)"
 
 SPOTIFYD_VERSION="0.4.2"
-# Pin of the upstream v0.4.2 source archive used for the local source-build
-# fallback when the release binaries are incompatible with the host runtime
-# (e.g. aarch64 on Debian 13/Trixie, where the release links OpenSSL 1.1).
-SPOTIFYD_SOURCE_SHA512="03a28037db2389a9415cde985dbf8c639c38d8000da5985178833fc5250249da5798f426e9b6e89c18762ff2d05b1331590905ef818f1430fe1c7e2507020898"
-SPOTIFYD_RUST_MIN_VERSION="1.88"
-SPOTIFYD_RUST_TOOLCHAIN_VERSION="1.88.0"
-# Checksums for the architecture-specific rustup-init 1.28.2 binaries.
-SPOTIFYD_RUSTUP_VERSION="1.28.2"
+SPOTIFYD_ARM64_ARTIFACT_VERSION="1"
+SPOTIFYD_ARM64_ARCHIVE="spotifyd-${SPOTIFYD_VERSION}-linux-aarch64-fxroute-${SPOTIFYD_ARM64_ARTIFACT_VERSION}.tar.gz"
+SPOTIFYD_ARM64_SHA256="6afe154e14801df34eac5d161b5891155fa7d57f42affb38a4d96c999e5ebbe6"
+SPOTIFYD_ARM64_DOWNLOAD_URL="https://github.com/CobbyCode/fxroute/releases/download/spotifyd-arm64-v${SPOTIFYD_ARM64_ARTIFACT_VERSION}/${SPOTIFYD_ARM64_ARCHIVE}"
 QBZD_VERSION="2.0.2"
 SPOTIFYD_ZEROCONF_PORT="4444"
 CIFS_HELPER_SHA256="a878afbf1927bdd14ed3049df39a41929a54cd18a1ab89a377ba1ed4c4b453d8"
@@ -2618,11 +2614,13 @@ install_spotifyd_binary() {
   local archive=""
   local archive_url=""
   local checksum=""
+  local checksum_algorithm=""
   local work=""
   local extracted=""
-  local binary=""
   local existing_path=""
   local current_sha256=""
+  local destination="$HOME/.local/bin/spotifyd"
+  local staged_binary=""
 
   existing_path="$(spotifyd_binary_path || true)"
   if [[ $SPOTIFYD_INSTALLED_BY_FXROUTE -eq 1 ]]; then
@@ -2665,30 +2663,68 @@ install_spotifyd_binary() {
     x86_64)
       archive="spotifyd-linux-x86_64-full.tar.gz"
       checksum="a5872771a22c0dc4f7cb409cc1e47b09262a4d9939e4e8829592846d2dc93b722254b1e154efecf28a9c2309df5701b6ae6aa7c4862b8a89b34bf851268057b7"
+      archive_url="https://github.com/Spotifyd/spotifyd/releases/download/v${SPOTIFYD_VERSION}/${archive}"
+      checksum_algorithm="sha512"
       ;;
     aarch64)
-      archive="spotifyd-linux-aarch64-full.tar.gz"
-      checksum="f93451e7e6537e4fad76c4cfb6e28f20da39c0c3614ee523cc8d6c98b4a913649598aed66bb2a032ab48b90a38970a2c0206eaec656721b131d3b28c4ac5112c"
+      archive="$SPOTIFYD_ARM64_ARCHIVE"
+      checksum="$SPOTIFYD_ARM64_SHA256"
+      archive_url="$SPOTIFYD_ARM64_DOWNLOAD_URL"
+      checksum_algorithm="sha256"
       ;;
     armv7)
       archive="spotifyd-linux-armv7-full.tar.gz"
       checksum="befed77ab3ba5b688ad0c054890576010135a8ba007422385ee3a68763a7ae99a566e010fb29f75c429354245c600da8abc826de4a57ad616c7b2a05dcf8b9b8"
+      archive_url="https://github.com/Spotifyd/spotifyd/releases/download/v${SPOTIFYD_VERSION}/${archive}"
+      checksum_algorithm="sha512"
       ;;
   esac
 
-  archive_url="https://github.com/Spotifyd/spotifyd/releases/download/v${SPOTIFYD_VERSION}/${archive}"
   work="$(mktemp -d -t fxroute-spotifyd.XXXXXX)"
   FXROUTE_ACTIVE_TEMP_DIR="$work"
-  trap 'rm -rf "${work:-}"' RETURN
-  run_cmd curl -fL --retry 3 -o "$work/$archive" "$archive_url"
-  printf '%s  %s\n' "$checksum" "$work/$archive" | sha512sum -c -
-  run_cmd tar -xzf "$work/$archive" -C "$work"
+  trap 'rm -rf "${work:-}" || true; [[ -z "${staged_binary:-}" ]] || run_as_target_user rm -f "$staged_binary" || true; FXROUTE_ACTIVE_STAGED_BINARY=""; FXROUTE_ACTIVE_TEMP_DIR=""; trap - RETURN' RETURN
+  if ! run_cmd curl -fL --retry 3 -o "$work/$archive" "$archive_url"; then
+    warn "spotifyd archive could not be downloaded"
+    return 1
+  fi
+  if [[ "$checksum_algorithm" == "sha256" ]]; then
+    if ! printf '%s  %s\n' "$checksum" "$work/$archive" | sha256sum -c -; then
+      warn "spotifyd archive checksum mismatch"
+      return 1
+    fi
+  else
+    if ! printf '%s  %s\n' "$checksum" "$work/$archive" | sha512sum -c -; then
+      warn "spotifyd archive checksum mismatch"
+      return 1
+    fi
+  fi
+  if ! run_cmd tar -xzf "$work/$archive" -C "$work"; then
+    warn "spotifyd archive could not be extracted"
+    return 1
+  fi
   extracted="$(find "$work" -type f -name spotifyd -print -quit)"
-  [[ -n "$extracted" ]] || die "spotifyd archive did not contain a binary"
+  if [[ -z "$extracted" ]]; then
+    warn "spotifyd archive did not contain a binary"
+    return 1
+  fi
   chmod -R a+rX "$work"
-  run_as_target_user mkdir -p "$HOME/.local/bin"
-  run_as_target_user install -m 755 "$extracted" "$HOME/.local/bin/spotifyd"
-  SPOTIFYD_BINARY_PATH="$HOME/.local/bin/spotifyd"
+  run_as_target_user mkdir -p "$(dirname -- "$destination")"
+  if ! staged_binary="$(run_as_target_user mktemp "$HOME/.local/bin/.spotifyd.XXXXXX")"; then
+    warn "Could not stage $destination"
+    return 1
+  fi
+  FXROUTE_ACTIVE_STAGED_BINARY="$staged_binary"
+  if ! run_as_target_user install -m 755 "$extracted" "$staged_binary"; then
+    warn "Could not stage $destination"
+    return 1
+  fi
+  if ! run_as_target_user mv -f "$staged_binary" "$destination"; then
+    warn "Could not install $destination atomically"
+    return 1
+  fi
+  staged_binary=""
+  FXROUTE_ACTIVE_STAGED_BINARY=""
+  SPOTIFYD_BINARY_PATH="$destination"
   SPOTIFYD_INSTALLED_BY_FXROUTE=1
   SPOTIFYD_BINARY_SHA256="$(sha256sum "$SPOTIFYD_BINARY_PATH" | awk '{print $1}')"
   rm -rf "$work"
@@ -2774,232 +2810,6 @@ spotifyd_service_identity_is_intact() {
   [[ "$current_sha256" == "$SPOTIFYD_SERVICE_SHA256" ]]
 }
 
-spotifyd_rust_version() {
-  local rust_version_output=""
-
-  rust_version_output="$(run_as_target_user bash -c 'PATH="$HOME/.cargo/bin:$PATH"; rustc --version' 2>/dev/null)" \
-    || return 1
-  sed -n 's/^rustc \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' <<<"$rust_version_output"
-}
-
-spotifyd_rustup_target() {
-  case "${1:-${HOST_ARCH:-$(uname -m)}}" in
-    x86_64) printf 'x86_64-unknown-linux-gnu\n' ;;
-    aarch64|arm64) printf 'aarch64-unknown-linux-gnu\n' ;;
-    armv7l|armv7|armhf) printf 'arm-unknown-linux-gnueabihf\n' ;;
-    *) return 1 ;;
-  esac
-}
-
-spotifyd_rustup_checksum() {
-  case "$1" in
-    x86_64-unknown-linux-gnu)
-      printf '%s\n' '8001042452984f280a5ecf7de5654980361c5cbdc003c20b3fcd98426317201d0e21dca40d5f1bbdb1e46c6945d10a05ce3cf6f3a730489b54d4ac19fd312478'
-      ;;
-    aarch64-unknown-linux-gnu)
-      printf '%s\n' 'b4adcc9d587b05b261cdae9bec589d262b7d5326bfad8d100bc8066f29ffdcb332053ae018566a5e8f3b2ee177b9eb1595e2c3712fb0a6e935da49c89a56ca59'
-      ;;
-    arm-unknown-linux-gnueabihf)
-      printf '%s\n' 'ed7aace85fc1ef2886aadfd6b683384f09f04bb033965ed2cd095ca5708b0ec40d637ba5227ef04889ac43df9fbdbf752cebfafe14af26a7a9866bde178cf181'
-      ;;
-    *) return 1 ;;
-  esac
-}
-
-spotifyd_target_cargo_path() {
-  local cargo_bin="$FXROUTE_TARGET_HOME/.cargo/bin/cargo"
-
-  if [[ -x "$cargo_bin" ]]; then
-    printf '%s\n' "$cargo_bin"
-    return 0
-  fi
-  if ! cargo_bin="$(run_as_target_user bash -c 'PATH="$HOME/.cargo/bin:$PATH"; command -v cargo' 2>/dev/null)"; then
-    return 1
-  fi
-  [[ -x "$cargo_bin" ]] || return 1
-  printf '%s\n' "$cargo_bin"
-}
-
-spotifyd_rust_meets_minimum() {
-  local version="$1"
-  [[ -n "$version" ]] || return 1
-  [[ "$(printf '%s\n%s\n' "$SPOTIFYD_RUST_MIN_VERSION" "$version" | sort -V | head -1)" == "$SPOTIFYD_RUST_MIN_VERSION" ]]
-}
-
-ensure_spotifyd_build_toolchain() {
-  local rust_version=""
-  local rustup_script=""
-  local rustup_target=""
-  local rustup_checksum=""
-  local rustup_url=""
-  local cargo_bin=""
-
-  rust_version="$(spotifyd_rust_version || true)"
-  cargo_bin="$(spotifyd_target_cargo_path || true)"
-  if spotifyd_rust_meets_minimum "$rust_version" && [[ -n "$cargo_bin" ]]; then
-    return 0
-  fi
-  if ! command -v curl >/dev/null 2>&1; then
-    warn "spotifyd source build skipped: curl is required to install the Rust toolchain"
-    return 1
-  fi
-  rustup_target="$(spotifyd_rustup_target || true)"
-  rustup_checksum="$(spotifyd_rustup_checksum "$rustup_target" || true)"
-  if [[ -z "$rustup_target" || -z "$rustup_checksum" ]]; then
-    warn "spotifyd source build skipped: no pinned Rust bootstrap is available for $HOST_ARCH"
-    return 1
-  fi
-  rustup_url="https://static.rust-lang.org/rustup/archive/${SPOTIFYD_RUSTUP_VERSION}/${rustup_target}/rustup-init"
-  log "Installing a minimal Rust toolchain for the spotifyd source build"
-  rustup_script="$(run_as_target_user mktemp /tmp/fxroute-rustup.XXXXXX)" || return 1
-  if ! run_cmd run_as_target_user curl -fL --retry 3 -o "$rustup_script" "$rustup_url"; then
-    run_as_target_user rm -f "$rustup_script"
-    warn "spotifyd source build skipped: could not download the rustup installer"
-    return 1
-  fi
-  if ! printf '%s  %s\n' "$rustup_checksum" "$rustup_script" \
-    | run_as_target_user sha512sum -c - >/dev/null 2>&1; then
-    run_as_target_user rm -f "$rustup_script"
-    warn "spotifyd source build skipped: rustup installer checksum mismatch"
-    return 1
-  fi
-  if ! run_as_target_user chmod 755 "$rustup_script"; then
-    run_as_target_user rm -f "$rustup_script"
-    warn "spotifyd source build skipped: rustup installer could not be made executable"
-    return 1
-  fi
-  if ! run_as_target_user "$rustup_script" -y --profile minimal \
-    --default-toolchain "$SPOTIFYD_RUST_TOOLCHAIN_VERSION" >/dev/null 2>&1; then
-    run_as_target_user rm -f "$rustup_script"
-    warn "spotifyd source build skipped: Rust toolchain installation failed"
-    return 1
-  fi
-  run_as_target_user rm -f "$rustup_script"
-  rust_version="$(spotifyd_rust_version || true)"
-  cargo_bin="$(spotifyd_target_cargo_path || true)"
-  if ! spotifyd_rust_meets_minimum "$rust_version" || [[ -z "$cargo_bin" ]]; then
-    warn "spotifyd source build skipped: Rust toolchain is not usable after installation"
-    return 1
-  fi
-  pass "Rust toolchain available for the spotifyd source build"
-  return 0
-}
-
-spotifyd_source_build_packages_for_manager() {
-  local packages=""
-
-  case "$1" in
-    apt) packages="libssl-dev pkg-config libdbus-1-dev libasound2-dev libpulse-dev" ;;
-    dnf) packages="openssl-devel pkgconf-pkg-config dbus-devel alsa-lib-devel pulseaudio-libs-devel" ;;
-    zypper) packages="libopenssl-3-devel pkgconf-pkg-config dbus-1-devel alsa-devel libpulse-devel" ;;
-    pacman) packages="openssl pkgconf dbus alsa-lib libpulse" ;;
-    *) return 1 ;;
-  esac
-
-  if [[ "${2:-}" == armv7 ]]; then
-    case "$1" in
-      apt) packages+=" cmake clang libclang-dev make" ;;
-      dnf|zypper) packages+=" cmake clang-devel make" ;;
-      pacman) packages+=" cmake clang make" ;;
-    esac
-  fi
-  printf '%s\n' "$packages"
-}
-
-build_spotifyd_from_source() {
-  local build_package_text=""
-  local work=""
-  local archive="spotifyd-${SPOTIFYD_VERSION}-src.tar.gz"
-  local archive_url="https://github.com/Spotifyd/spotifyd/archive/refs/tags/v${SPOTIFYD_VERSION}.tar.gz"
-  local src_dir=""
-  local built_binary=""
-  local cargo_bin=""
-  local destination="$HOME/.local/bin/spotifyd"
-  local staged_binary=""
-  local binary_sha256=""
-
-  if [[ "$PACKAGE_MANAGER" != "apt" && "$PACKAGE_MANAGER" != "dnf" \
-    && "$PACKAGE_MANAGER" != "zypper" && "$PACKAGE_MANAGER" != "pacman" ]]; then
-    return 1
-  fi
-  if [[ -e "$destination" || -L "$destination" ]] \
-    && [[ "$SPOTIFYD_INSTALLED_BY_FXROUTE" -ne 1 || "$SPOTIFYD_BINARY_PATH" != "$destination" ]]; then
-    warn "spotifyd source build skipped: preserving the foreign binary at $destination"
-    return 1
-  fi
-  build_package_text="$(spotifyd_source_build_packages_for_manager "$PACKAGE_MANAGER" "$(spotifyd_arch_for_host)")"
-  [[ -n "$build_package_text" ]] || return 1
-  if ! install_missing_provider_packages "$build_package_text"; then
-    warn "spotifyd source build skipped: required build dependencies could not be installed"
-    return 1
-  fi
-  ensure_spotifyd_build_toolchain || return 1
-
-  work="$(run_as_target_user mktemp -d -t fxroute-spotifyd-build.XXXXXX)" || return 1
-  FXROUTE_ACTIVE_TEMP_DIR="$work"
-  trap 'run_as_target_user rm -rf "${work:-}" || true; [[ -z "${staged_binary:-}" ]] || run_as_target_user rm -f "$staged_binary" || true; FXROUTE_ACTIVE_STAGED_BINARY=""; FXROUTE_ACTIVE_TEMP_DIR=""; trap - RETURN' RETURN
-  if ! run_cmd run_as_target_user curl -fL --retry 3 -o "$work/$archive" "$archive_url"; then
-    warn "spotifyd source build skipped: could not download the pinned source archive"
-    return 1
-  fi
-  if ! printf '%s  %s\n' "$SPOTIFYD_SOURCE_SHA512" "$work/$archive" \
-    | run_as_target_user sha512sum -c - >/dev/null 2>&1; then
-    warn "spotifyd source build skipped: pinned source archive checksum mismatch"
-    return 1
-  fi
-  if ! run_as_target_user tar -xzf "$work/$archive" -C "$work"; then
-    warn "spotifyd source build skipped: could not extract the pinned source archive"
-    return 1
-  fi
-  src_dir="$(run_as_target_user find "$work" -maxdepth 1 -type d -name "spotifyd-${SPOTIFYD_VERSION}" -print -quit 2>/dev/null || true)"
-  [[ -n "$src_dir" ]] || return 1
-
-  cargo_bin="$(spotifyd_target_cargo_path || true)"
-  [[ -n "$cargo_bin" ]] || return 1
-  log "Building spotifyd v${SPOTIFYD_VERSION} from source (${HOST_ARCH}); this can take several minutes"
-  # spotifyd pulls a large librespot graph; serialize rustc jobs so the
-  # fallback also works on small ARM boards and installer VMs. The upstream
-  # release profile enables LTO, which can exceed 2 GB during the final link.
-  if ! run_as_target_user env "PATH=$FXROUTE_TARGET_HOME/.cargo/bin:$PATH" \
-    bash -c "cd \"$src_dir\" && \"$cargo_bin\" build --release --locked --jobs 1 --config profile.release.lto=false"; then
-    warn "spotifyd source build failed"
-    return 1
-  fi
-  built_binary="$src_dir/target/release/spotifyd"
-  if ! run_as_target_user test -f "$built_binary" -a -x "$built_binary"; then
-    warn "spotifyd source build produced no executable"
-    return 1
-  fi
-  if ! run_as_target_user mkdir -p "$HOME/.local/bin"; then
-    warn "spotifyd source build failed: could not create $HOME/.local/bin"
-    return 1
-  fi
-  if ! staged_binary="$(run_as_target_user mktemp "$HOME/.local/bin/.spotifyd.XXXXXX")"; then
-    warn "spotifyd source build failed: could not stage $destination"
-    return 1
-  fi
-  FXROUTE_ACTIVE_STAGED_BINARY="$staged_binary"
-  if ! run_as_target_user install -m 755 "$built_binary" "$staged_binary"; then
-    warn "spotifyd source build failed: could not stage $destination"
-    return 1
-  fi
-  if ! run_as_target_user mv -f "$staged_binary" "$destination"; then
-    warn "spotifyd source build failed: could not install $destination atomically"
-    return 1
-  fi
-  staged_binary=""
-  FXROUTE_ACTIVE_STAGED_BINARY=""
-  if ! binary_sha256="$(sha256sum "$destination" | awk '{print $1}')" || [[ -z "$binary_sha256" ]]; then
-    warn "spotifyd source build failed: could not verify the installed binary"
-    return 1
-  fi
-  SPOTIFYD_BINARY_PATH="$destination"
-  SPOTIFYD_INSTALLED_BY_FXROUTE=1
-  SPOTIFYD_BINARY_SHA256="$binary_sha256"
-  pass "spotifyd v${SPOTIFYD_VERSION} built from source against the host runtime (${HOST_ARCH})"
-  return 0
-}
-
 install_spotifyd() {
   local was_present=0
   local spotifyd_path=""
@@ -3013,7 +2823,11 @@ install_spotifyd() {
   fi
 
   [[ -n "$(spotifyd_binary_path || true)" ]] && was_present=1
-  install_spotifyd_binary
+  if ! install_spotifyd_binary; then
+    SPOTIFYD_PROVIDER_STATUS="unavailable; prebuilt download or verification failed"
+    warn "spotifyd prebuilt could not be installed; leaving the provider unavailable"
+    return 0
+  fi
   if [[ $SPOTIFYD_BINARY_IDENTITY_CHANGED -eq 1 ]]; then
     SPOTIFYD_PROVIDER_STATUS="owned binary changed; preserved"
     return 0
@@ -3042,7 +2856,7 @@ install_spotifyd() {
   if [[ -n "$missing_runtime" ]]; then
     if user_unit_exists spotifyd.service && [[ $SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -ne 1 ]]; then
       SPOTIFYD_PROVIDER_STATUS="unavailable; missing runtime libraries: ${missing_runtime//$'\n'/, }; existing foreign service preserved"
-      warn "spotifyd cannot run on this host; preserving the existing non-FXRoute spotifyd.service and skipping the source build so it cannot continue using the incompatible binary"
+      warn "spotifyd cannot run on this host; preserving the existing non-FXRoute spotifyd.service and skipping replacement so it cannot continue using the incompatible binary"
       return 0
     fi
     if [[ $SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]]; then
@@ -3051,28 +2865,12 @@ install_spotifyd() {
         warn "spotifyd has missing runtime libraries, but its FXRoute-owned user service could not be disabled"
       fi
     fi
-    warn "spotifyd release binary cannot run on this host; missing runtime libraries: ${missing_runtime//$'\n'/, }. Attempting a pinned source build against the host runtime..."
-    if build_spotifyd_from_source; then
-      SPOTIFYD_SOURCE_BUILT=1
-      spotifyd_path="$(spotifyd_binary_path || true)"
-      if ! missing_runtime="$(spotifyd_runtime_missing_libraries "$spotifyd_path")"; then
-        SPOTIFYD_PROVIDER_STATUS="unavailable; runtime dependency check failed after source build"
-        warn "spotifyd runtime dependencies could not be verified after the source build; preserving the binary and service"
-        return 0
-      fi
-      if [[ -n "$missing_runtime" ]]; then
-        SPOTIFYD_PROVIDER_STATUS="unavailable; missing runtime libraries: ${missing_runtime//$'\n'/, } (also after source build)"
-        warn "spotifyd still cannot run on this host after the source build; missing runtime libraries: ${missing_runtime//$'\n'/, }."
-        return 0
-      fi
-    else
-      SPOTIFYD_PROVIDER_STATUS="unavailable; missing runtime libraries: ${missing_runtime//$'\n'/, }; source build failed"
-      if [[ $service_disable_failed -eq 1 ]]; then
-        SPOTIFYD_PROVIDER_STATUS+="; service disable failed"
-      fi
-      warn "spotifyd cannot run on this host; missing runtime libraries: ${missing_runtime//$'\n'/, }. The pinned source build also failed, so spotifyd stays unavailable."
-      return 0
+    SPOTIFYD_PROVIDER_STATUS="unavailable; missing runtime libraries: ${missing_runtime//$'\n'/, }"
+    if [[ $service_disable_failed -eq 1 ]]; then
+      SPOTIFYD_PROVIDER_STATUS+="; service disable failed"
     fi
+    warn "spotifyd cannot run on this host; missing runtime libraries: ${missing_runtime//$'\n'/, }. The pinned prebuilt stays unavailable."
+    return 0
   fi
   write_spotifyd_config
   configure_spotifyd_service
@@ -3089,9 +2887,6 @@ install_spotifyd() {
     SPOTIFYD_PROVIDER_STATUS="already present; service/config preserved or completed"
   else
     SPOTIFYD_PROVIDER_STATUS="installed/configured by FXRoute"
-  fi
-  if [[ $SPOTIFYD_SOURCE_BUILT -eq 1 ]]; then
-    SPOTIFYD_PROVIDER_STATUS+=" (built from source)"
   fi
   echo "spotifyd first run: select FXRoute in Spotify Connect. If OAuth is needed, stop the service and run:"
   echo "  systemctl --user stop spotifyd && ${spotifyd_path:-$HOME/.local/bin/spotifyd} authenticate --config-path $HOME/.config/spotifyd/spotifyd.conf"

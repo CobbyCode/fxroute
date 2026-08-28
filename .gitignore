@@ -32,6 +32,9 @@ manual_backup.zip
 # Generated native helper binary
 native_dsp/build/
 
+# Generated provider build artifacts
+/dist/
+
 # Optional local demo library (never tracked)
 /demo-library/
 
