@@ -3724,9 +3724,12 @@ function renderPeakWarningBadge(activeOverride = null) {
         elements.outputLevelBadge.classList.toggle('hidden', !(showPeak || showVu));
         elements.outputLevelBadge.style.visibility = '';
         elements.outputLevelBadge.classList.toggle('is-peak', showPeak);
+        /* Peak only recolors the badge: keep the exact VU text/format so the
+           display never changes width when the peak state toggles. */
+        const vuText = showVu ? formatOutputLevelBadgeDb(vuDb) : '';
         elements.outputLevelBadge.textContent = showPeak
-            ? '0 dB'
-            : (showVu ? formatOutputLevelBadgeDb(vuDb) : '');
+            ? (vuText || formatOutputLevelBadgeDb(0))
+            : vuText;
         elements.outputLevelBadge.title = showPeak
             ? `Post-DSP output peak detected on ${title}`
             : (showVu ? `Post-DSP output level (slow VU) on ${title}` : '');

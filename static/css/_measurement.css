@@ -667,6 +667,13 @@
     align-items: center;
 }
 
+/* Match the effects steppers: the value sits centered between the
+   -/+ buttons instead of hugging the left field edge. */
+.measurement-peq-stepper .measurement-peq-number-input {
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
 .measurement-peq-number-input {
     appearance: textfield;
     -moz-appearance: textfield;

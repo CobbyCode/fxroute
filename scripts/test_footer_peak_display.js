@@ -119,10 +119,24 @@ renderWarning({
     detected_l: false,
     detected_r: false,
 });
-assert.equal(badge.textContent, '0 dB', 'peak must have an explicit 0 dB fallback');
+assert.equal(badge.textContent, '00 dB', 'peak fallback must reuse the VU number format');
 assert.equal(badge.classList.contains('hidden'), false, 'peak fallback must not be hidden');
 assert.equal(badge.classList.contains('is-peak'), true, 'peak fallback must use peak styling');
 assert.match(badge.title, /peak detected/i, 'peak fallback must explain the state');
+
+/* Regression: the peak state must only recolor the badge. Switching to peak
+   with a fresh VU value must keep the exact same text (format and width) as
+   the preceding normal render. */
+renderWarning({
+    available: true,
+    detected: false,
+    vu_db: -3,
+    vu_fresh: true,
+    detected_l: false,
+    detected_r: false,
+});
+assert.equal(badge.textContent, '-03 dB', 'pre-peak VU value must remain unchanged');
+const prePeakText = badge.textContent;
 
 renderWarning({
     available: true,
@@ -132,8 +146,10 @@ renderWarning({
     detected_l: true,
     detected_r: false,
 });
-assert.equal(badge.textContent, '0 dB', 'peak must override the normal VU text');
+assert.equal(badge.textContent, prePeakText, 'peak must keep the VU text so the display never jumps');
+assert.equal(badge.textContent, sandbox.formatOutputLevelBadgeDb(-3), 'peak text must come from the shared VU formatter');
 assert.equal(badge.classList.contains('is-peak'), true, 'fresh peak must use peak styling');
+assert.match(badge.title, /peak detected/i, 'fresh peak must explain the state');
 
 assert.match(playbackCss, /\.output-level-badge\.is-peak\s*\{[\s\S]*?color:\s*#ff5a5f/,
     'peak badge must use the existing meter red');
