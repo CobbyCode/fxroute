@@ -7,13 +7,68 @@ import logging
 import math
 import re
 import shutil
-import wave
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from dsp.persistence import DSPPresetStore, DSPStateStore, clean_name
 
 logger = logging.getLogger(__name__)
+
+
+def parse_wav_frames(path: Path) -> Dict[str, Any]:
+    """Parse a RIFF/WAVE file into its fmt parameters and raw data bytes.
+
+    Understands the encodings the native kernel loader
+    (native_dsp/dsp.c ``load_wav``) supports: PCM 16/24/32 bit and IEEE
+    float 32 bit. Python's ``wave`` module is not usable here because it
+    rejects IEEE float WAVs (format tag 3) — the measurement FIR export
+    writes exactly that.
+    """
+    raw = path.read_bytes()
+    if len(raw) < 12 or raw[0:4] != b"RIFF" or raw[8:12] != b"WAVE":
+        raise ValueError(f"IR file is not a RIFF/WAVE file: {path.name}")
+    fmt: Optional[bytes] = None
+    data: Optional[bytes] = None
+    offset = 12
+    while offset + 8 <= len(raw):
+        chunk_id = raw[offset:offset + 4]
+        size = int.from_bytes(raw[offset + 4:offset + 8], "little")
+        body = raw[offset + 8:offset + 8 + size]
+        if chunk_id == b"fmt " and fmt is None:
+            fmt = body
+        elif chunk_id == b"data" and data is None:
+            data = body
+        offset += 8 + size + (size & 1)
+    if fmt is None or data is None or len(fmt) < 16:
+        raise ValueError(f"IR WAV file is missing fmt/data chunks: {path.name}")
+    params = {
+        "format": int.from_bytes(fmt[0:2], "little"),
+        "channels": int.from_bytes(fmt[2:4], "little"),
+        "rate": int.from_bytes(fmt[4:8], "little"),
+        "bits": int.from_bytes(fmt[14:16], "little"),
+    }
+    if params["bits"] == 0 or params["bits"] % 8:
+        raise ValueError(f"IR WAV file has an unsupported sample size: {params['bits']} bits")
+    if len(data) % (params["bits"] // 8):
+        raise ValueError(f"IR WAV data is truncated: {path.name}")
+    params["samples"] = len(data) // (params["bits"] // 8)
+    params["data"] = data
+    return params
+
+
+def build_wav_bytes(channels: int, rate: int, bits: int, format_tag: int, data: bytes) -> bytes:
+    """Serialize a canonical 44-byte-header RIFF/WAVE file."""
+    byte_rate = rate * channels * (bits // 8)
+    block_align = channels * (bits // 8)
+    return b"".join([
+        b"RIFF", (36 + len(data)).to_bytes(4, "little"), b"WAVE",
+        b"fmt ", (16).to_bytes(4, "little"),
+        format_tag.to_bytes(2, "little"), channels.to_bytes(2, "little"),
+        rate.to_bytes(4, "little"), byte_rate.to_bytes(4, "little"),
+        block_align.to_bytes(2, "little"), bits.to_bytes(2, "little"),
+        b"data", len(data).to_bytes(4, "little"),
+        data,
+    ])
 
 
 class UnsupportedPluginError(ValueError):
@@ -995,24 +1050,34 @@ class DSPManager:
                        right_source_path: Path, right_filename: str,
                        merged_name: str) -> dict:
         del left_filename, right_filename
-        with wave.open(str(left_source_path), "rb") as left, wave.open(str(right_source_path), "rb") as right:
-            left_format = (left.getnchannels(), left.getsampwidth(), left.getframerate(), left.getnframes())
-            right_format = (right.getnchannels(), right.getsampwidth(), right.getframerate(), right.getnframes())
-            if left_format[0] != 1 or right_format[0] != 1:
-                raise ValueError("Dual IR inputs must be mono WAV files")
-            if left_format[1:] != right_format[1:]:
-                raise ValueError("Dual IR WAV formats must match")
-            left_frames = left.readframes(left.getnframes())
-            right_frames = right.readframes(right.getnframes())
-        width = left_format[1]
-        stereo = bytearray()
-        for offset in range(0, len(left_frames), width):
-            stereo.extend(left_frames[offset:offset + width])
-            stereo.extend(right_frames[offset:offset + width])
+        left = parse_wav_frames(left_source_path)
+        right = parse_wav_frames(right_source_path)
+        if left["format"] != right["format"] or left["bits"] != right["bits"] \
+                or left["rate"] != right["rate"]:
+            raise ValueError("Dual IR WAV formats must match")
+        if left["channels"] != 1 or right["channels"] != 1:
+            raise ValueError("Dual IR inputs must be mono WAV files")
+        if not ((left["format"] == 1 and left["bits"] in (16, 24, 32))
+                or (left["format"] == 3 and left["bits"] == 32)):
+            raise ValueError(
+                f"Dual IR WAV encoding is not kernel-supported: format {left['format']} "
+                f"with {left['bits']} bits (need PCM 16/24/32 bit or IEEE float 32 bit)"
+            )
+        width = left["bits"] // 8
+        samples = max(left["samples"], right["samples"])
+        # Pad a shorter channel with silence so the interleaved sample count
+        # matches (the measurement flow always generates equal lengths).
+        left_data = left["data"].ljust(samples * width, b"\x00")
+        right_data = right["data"].ljust(samples * width, b"\x00")
+        stereo = bytearray(samples * width * 2)
+        for byte_offset in range(width):
+            stereo[byte_offset::2 * width] = left_data[byte_offset::width]
+            stereo[width + byte_offset::2 * width] = right_data[byte_offset::width]
         destination = self.irs_dir / Path(merged_name).name
-        with wave.open(str(destination), "wb") as output:
-            output.setparams((2, width, left_format[2], left_format[3], "NONE", ""))
-            output.writeframes(stereo)
+        destination.write_bytes(build_wav_bytes(
+            channels=2, rate=left["rate"], bits=left["bits"],
+            format_tag=left["format"], data=bytes(stereo),
+        ))
         return {"name": destination.name, "basename": destination.stem,
                 "path": str(destination), "size": destination.stat().st_size}
 
