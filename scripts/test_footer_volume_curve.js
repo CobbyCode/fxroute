@@ -17,12 +17,36 @@ function extractFunction(name) {
     let depth = 0;
     let quote = '';
     let escaped = false;
+    let lineComment = false;
+    let blockComment = false;
     for (let index = brace; index < appSource.length; index += 1) {
         const character = appSource[index];
+        const nextCharacter = appSource[index + 1];
+        if (lineComment) {
+            if (character === '\n') lineComment = false;
+            continue;
+        }
+        if (blockComment) {
+            if (character === '*' && nextCharacter === '/') {
+                blockComment = false;
+                index += 1;
+            }
+            continue;
+        }
         if (quote) {
             if (escaped) escaped = false;
             else if (character === '\\') escaped = true;
             else if (character === quote) quote = '';
+            continue;
+        }
+        if (character === '/' && nextCharacter === '/') {
+            lineComment = true;
+            index += 1;
+            continue;
+        }
+        if (character === '/' && nextCharacter === '*') {
+            blockComment = true;
+            index += 1;
             continue;
         }
         if (`'"\``.includes(character)) quote = character;
@@ -53,6 +77,15 @@ const sandbox = {
     state: { playback: { volume: 0 } },
     queueVolumeSend(volume) { sentVolume = volume; },
     showVolumeDisplayTemporarily() {},
+    window: { __footerSource: 'spotify' },
+    isStreamingFooterSource() { return true; },
+    footerContentFreezeActive() { return false; },
+    renderTrackFavoriteButton() {},
+    updatePlaybackCover() {},
+    renderFooterModeButtons() {},
+    setFooterProgressState() {},
+    renderPeakWarningBadge() {},
+    document: { getElementById() { return null; } },
 };
 
 vm.createContext(sandbox);
@@ -65,7 +98,9 @@ vm.runInContext([
     extractFunction('setRangeProgress'),
     extractFunction('renderVolumeControlsFromActualVolume'),
     extractFunction('setLocalVolume'),
+    extractFunction('applyRemoteVolume'),
     extractFunction('handleVolumeChange'),
+    extractFunction('updateFooterForStreamingOwner'),
 ].join('\n'), sandbox);
 
 for (const value of [0, 25, 50, 75, 100]) {
@@ -92,5 +127,38 @@ for (const value of [0, 25, 50, 75, 100]) {
     assert.equal(volumeDisplay.textContent, `${value}%`, `external master ${value}% must set footer display`);
     assert.equal(volumeSlider.style.progress, `${value}%`, `footer progress must match ${value}%`);
 }
+
+function setVolumeSyncState({ requestInFlight, graceActive, pending = null }) {
+    vm.runInContext(`
+        volumeGestureActive = false;
+        volumeRequestInFlight = ${requestInFlight};
+        pendingVolume = ${pending};
+        optimisticVolume = 75;
+        lastConfirmedVolume = 25;
+        volumeSyncGraceUntil = ${graceActive ? 'Date.now() + VOLUME_SYNC_GRACE_MS' : '0'};
+        state.playback.volume = 75;
+        renderVolumeControlsFromActualVolume(75);
+    `, sandbox);
+}
+
+setVolumeSyncState({ requestInFlight: true, graceActive: false });
+sandbox.updateFooterForStreamingOwner({ available: false, volume: 25 });
+assert.equal(sandbox.state.playback.volume, 75, 'streaming poll must not replace a pending local volume');
+assert.equal(volumeSlider.value, 75, 'streaming poll must not move the slider during a volume request');
+
+setVolumeSyncState({ requestInFlight: false, graceActive: true });
+sandbox.updateFooterForStreamingOwner({ available: false, volume: 25 });
+assert.equal(sandbox.state.playback.volume, 75, 'streaming poll must not replace a locally confirmed volume during grace');
+assert.equal(volumeSlider.value, 75, 'streaming poll must not move the slider during volume sync grace');
+
+setVolumeSyncState({ requestInFlight: false, graceActive: false, pending: 75 });
+sandbox.updateFooterForStreamingOwner({ available: false, volume: 25 });
+assert.equal(sandbox.state.playback.volume, 75, 'streaming poll must not replace a queued local volume');
+assert.equal(volumeSlider.value, 75, 'streaming poll must not move the slider while a volume send is queued');
+
+setVolumeSyncState({ requestInFlight: false, graceActive: false });
+sandbox.updateFooterForStreamingOwner({ available: false, volume: 25 });
+assert.equal(sandbox.state.playback.volume, 25, 'streaming poll must apply a remote volume outside local sync');
+assert.equal(volumeSlider.value, 25, 'streaming poll must render a remote volume outside local sync');
 
 console.log('PASS  scripts/test_footer_volume_curve.js (neutral footer master mapping)');

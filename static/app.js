@@ -14029,9 +14029,11 @@ function updateFooterForStreamingOwner(data) {
     elements.playbackBar?.classList.toggle('has-media', hasMedia);
     elements.playbackBar?.classList.toggle('is-playing', hasMedia && data.status === 'Playing');
     elements.playbackBar?.classList.toggle('is-paused', hasMedia && data.status === 'Paused');
-    if (typeof data.volume === 'number' && !volumeGestureActive) {
-        state.playback.volume = data.volume;
-        renderVolumeControlsFromActualVolume(data.volume);
+    if (typeof data.volume === 'number') {
+        applyRemoteVolume(data.volume);
+        if (!volumeGestureActive && !volumeRequestInFlight && pendingVolume === null) {
+            renderVolumeControlsFromActualVolume(state.playback.volume);
+        }
     }
     if (!hasMedia) {
         renderFooterModeButtons();
