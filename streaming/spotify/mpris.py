@@ -236,20 +236,14 @@ async def detect_backend(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> str | 
     The running MPRIS player is authoritative. When nothing is running, fall
     back to the install profile so a desktop client that is installed but not
     running still reports ``Stopped`` instead of unavailable (preserving the
-    existing desktop behavior). A running spotifyd daemon is preferred over
-    that profile fallback, even when its MPRIS player is still hidden in
-    standby.
+    existing desktop behavior).
     """
     running = await detect_running_backend(timeout)
     if running is not None:
         return running
-    desktop_installed = _spotify_desktop_installed()
-    spotifyd_installed = _spotifyd_installed()
-    if desktop_installed and spotifyd_installed and await spotifyd_standby(timeout):
-        return "spotifyd"
-    if desktop_installed:
+    if _spotify_desktop_installed():
         return "desktop"
-    if spotifyd_installed:
+    if _spotifyd_installed():
         return "spotifyd"
     return None
 
