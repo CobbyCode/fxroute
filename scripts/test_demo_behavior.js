@@ -494,6 +494,27 @@ const radio = state.getPlayback();
     assert.ok(autoSub21Done.result.coarse_winner && Number.isFinite(autoSub21Done.result.coarse_winner.delay_ms));
     assert.ok(autoSub21Done.result.runner_up && Number.isFinite(autoSub21Done.result.runner_up.delay_ms));
     assert.ok(autoSub21Done.result.fine_scan && autoSub21Done.result.fine_scan.status === 'completed');
+    // 2.2 Stereo Bass: per-side stages and winners (Left Sub / Right Sub).
+    await (await demoFetch('/api/audio/output-mode', { method: 'POST', body: JSON.stringify({ mode: 'subwoofer-2.2-stereo' }) })).json();
+    const sbOutputs = await (await demoFetch('/api/audio/outputs')).json();
+    assert.match(sbOutputs.output_mode.routing.status, /Left Sub/);
+    assert.match(sbOutputs.output_mode.routing.status, /Right Sub/);
+    const autoSubSbStart = await (await demoFetch('/api/measurements/auto-sub-optimize/start', { method: 'POST' })).json();
+    const sbStageAt = (ms) => context.FXROUTE_DEMO_API.autoSubJobPayload(autoSubSbStart.job.id, ms);
+    assert.equal(sbStageAt(3000).progress.stage, 'left_sub');
+    assert.equal(sbStageAt(5000).progress.stage, 'right_sub');
+    const autoSubSbDone = sbStageAt(100000);
+    assert.equal(autoSubSbDone.status, 'completed');
+    assert.equal(autoSubSbDone.result.mode, 'subwoofer-2.2-stereo');
+    assert.ok(autoSubSbDone.result.left_winner && Number.isFinite(autoSubSbDone.result.left_winner.delay_ms));
+    assert.ok(autoSubSbDone.result.right_winner && Number.isFinite(autoSubSbDone.result.right_winner.delay_ms));
+    assert.ok(Number.isFinite(autoSubSbDone.result.applied_sub1_alignment_ms));
+    assert.ok(Number.isFinite(autoSubSbDone.result.applied_sub2_alignment_ms));
+    assert.ok(Number.isFinite(autoSubSbDone.result.overall_score_pct));
+    assert.ok(autoSubSbDone.result.winner && Number.isFinite(autoSubSbDone.result.winner.overall_score_pct));
+    const sbOutputsAfter = await (await demoFetch('/api/audio/outputs')).json();
+    assert.equal(sbOutputsAfter.output_mode.derived_sub1_delay_ms, autoSubSbDone.result.applied_sub1_alignment_ms);
+    assert.equal(sbOutputsAfter.output_mode.derived_sub2_delay_ms, autoSubSbDone.result.applied_sub2_alignment_ms);
     // Restore the demo's default 2.2 mode.
     await (await demoFetch('/api/audio/output-mode', { method: 'POST', body: JSON.stringify({ mode: 'subwoofer-2.2' }) })).json();
 

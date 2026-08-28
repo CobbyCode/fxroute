@@ -818,7 +818,11 @@
                 outputMode.available = true;
                 outputMode.required_channels = mode === 'stereo' ? 2 : 4;
                 outputMode.effective_output_channels = selectedOutput().channels;
-                outputMode.routing = { status: mode === 'stereo' ? 'Out 1/2 Main' : 'Out 1/2 Main · Out 3/4 Sub' };
+                outputMode.routing = {
+                    status: mode === 'stereo' ? 'Out 1/2 Main'
+                        : mode === 'subwoofer-2.2-stereo' ? 'Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub'
+                            : 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2',
+                };
                 return j(outputsPayload());
             }
             return j(outputMode);
