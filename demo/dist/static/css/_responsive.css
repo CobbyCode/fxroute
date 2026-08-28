@@ -1,0 +1,1874 @@
+/* Shared detail track-row body (library album detail + Tidal album/playlist
+   detail): track number, round play button, stacked title/sub, favorite,
+   duration. One visual language for both providers; the row container chrome
+   above is shared too. */
+.track-index {
+    flex: 0 0 auto;
+    width: 1.4rem;
+    text-align: right;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+}
+.track-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+}
+.track-info .track-title {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.track-sub {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.track-album {
+    flex: 0 1 30%;
+    min-width: 0;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Desktop-only brand scale-down (~12%): the whole logo lockup shrinks
+   uniformly so the first nav tab keeps more clearance from the brand
+   without touching the nav buttons or rebalancing the header. */
+
+/* Mobile touch targets: keep the header power button tappable on narrow
+   screens (base 38px, refreshed at all widths below). */
+
+/* Small phones: slightly smaller brand lockup than the 760px tablet size.
+   Placed after the 760px override so these win on narrow screens. */
+
+/* Mobile: tighten the Spotify/Qobuz player; Tidal browse stays compact and the
+   search row may wrap so the button never overflows the viewport. Detail
+   headers (library + Tidal) keep the compact side-by-side hero at every
+   width: back button on its own right-aligned line, cover anchored left, meta
+   block right beside it and left-aligned. No stacking, no centered hero. */
+
+
+/* Respect reduced-motion preference: collapse animations and transitions. */
+
+/* =========================================================================
+   Playback footer — canonical 3 ranges
+   ========================================================================= */
+@media (min-width: 1181px) {
+    .playback-bar {
+        grid-template-columns:
+            minmax(280px, 430px)
+            minmax(390px, 1fr)
+            minmax(150px, 220px)
+            minmax(220px, 300px);
+        row-gap: clamp(.9rem, 1.35vw, 1.35rem);
+        column-gap: clamp(.75rem, 1.2vw, 1.25rem);
+        bottom: 5px;
+        min-height: 98px;
+        padding-block: .55rem;
+    }
+    .playback-bar .track-info {
+        width: min(100%, 430px);
+        max-width: 430px;
+    }
+    .playback-bar .controls {
+        width: min(100%, 360px);
+        max-width: 360px;
+        min-width: 0;
+        justify-self: start;
+        margin-left: 0;
+        margin-right: 0;
+        padding-right: 0;
+    }
+    .volume-control {
+        width: 100%;
+        max-width: 360px;
+        min-width: 0;
+        grid-template-columns: 24px minmax(130px, 1fr) 2.5rem;
+        column-gap: .42rem;
+    }
+    .volume-slider {
+        width: 100%;
+        max-width: none;
+        min-width: 0;
+    }
+    .volume-display {
+        width: 2.5rem;
+        min-width: 2.5rem;
+        justify-content: flex-end;
+        text-align: right;
+        padding: 0;
+    }
+    .playback-center { gap: .56rem; }
+    .transport-controls {
+        margin-top: 1px;
+        min-height: 46px;
+    }
+    .control-btn {
+        width: 46px;
+        height: 46px;
+        font-size: 1.04rem;
+    }
+    .control-btn-secondary {
+        width: 34px;
+        height: 34px;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 28px;
+        height: 28px;
+    }
+    .track-copy { gap: .28rem; }
+    .playback-meta-row { min-height: 1.1rem; }
+    .playback-meter {
+        grid-template-columns: .62rem 112px 2.48rem;
+        column-gap: .18rem;
+        justify-self: center;
+    }
+    .output-level-badge {
+        width: 2.48rem;
+        min-width: 2.48rem;
+        margin-left: -.04rem;
+        justify-content: flex-start;
+        text-align: left;
+    }
+    /* Desktop slider paint and thumb geometry (also applied at ≥901px). */
+    .seek-slider::-webkit-slider-runnable-track,
+    .volume-slider::-webkit-slider-runnable-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-moz-range-track,
+    .volume-slider::-moz-range-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
+    .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
+    /* Chromium anchors the thumb to the track top when the track is shorter
+       than the thumb; lift it by half the size difference so the thumb sits
+       centered on the 4.5px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
+}
+
+@media (min-width: 701px) and (max-width: 1180px) {
+    .playback-bar {
+        bottom: 5px;
+        width: calc(100vw - 16px);
+        min-height: 116px;
+        grid-template-columns:
+            minmax(220px, .96fr)
+            minmax(240px, 1.18fr)
+            minmax(170px, .78fr);
+        grid-template-rows: minmax(46px, auto) minmax(42px, auto);
+        grid-template-areas:
+            "track transport meter"
+            "track transport volume";
+        column-gap: clamp(.72rem, 1.2vw, 1rem);
+        row-gap: .4rem;
+        align-items: center;
+        padding: .6rem .9rem .64rem;
+        border-radius: var(--radius-xl);
+    }
+    .playback-bar .track-info {
+        grid-template-columns: 60px minmax(0, 1fr);
+        gap: .7rem;
+        max-width: none;
+        min-width: 0;
+    }
+    .playback-visual {
+        width: 60px;
+        height: 60px;
+        border-radius: var(--radius-md);
+    }
+    .track-copy,
+    .track-copy-main,
+    .playback-meta-row {
+        min-width: 0;
+        max-width: 100%;
+    }
+    .track-copy { gap: .24rem; }
+    .playback-meta-row {
+        min-height: 1.1rem;
+        overflow: hidden;
+    }
+    .samplerate-status {
+        max-width: calc(100% - 3rem);
+        flex: 1 1 auto;
+    }
+    .queue-status {
+        flex: 0 0 auto;
+    }
+    .playback-center {
+        width: 100%;
+        gap: .56rem;
+        align-self: center;
+    }
+    .transport-controls {
+        min-height: 42px;
+        margin: 0;
+        gap: .3rem;
+    }
+    .control-btn {
+        width: 42px;
+        height: 42px;
+        font-size: .96rem;
+    }
+    .control-btn-secondary {
+        width: 32px;
+        height: 32px;
+        font-size: .86rem;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 26px;
+        height: 26px;
+        font-size: .76rem;
+    }
+    .seek-row {
+        grid-template-columns: 2.65rem minmax(100px, 1fr) 2.65rem;
+        gap: .42rem;
+        min-width: 0;
+        margin-top: .02rem;
+    }
+    .playback-meter {
+        width: max-content;
+        max-width: none;
+        grid-template-columns: .58rem 82px;
+        grid-template-rows: 4px 4px;
+        column-gap: .26rem;
+        row-gap: .42rem;
+        justify-self: center;
+        align-self: end;
+        margin: 0 0 .2rem;
+    }
+    .meter-segments {
+        grid-template-columns: repeat(8, minmax(3px, 1fr));
+        width: 82px;
+        min-width: 82px;
+        max-width: 82px;
+        gap: 1.7px;
+    }
+    .meter-segments i { height: 4px; }
+    .playback-bar .controls {
+        width: min(100%, 235px);
+        max-width: 235px;
+        justify-self: center;
+        align-self: start;
+        margin-top: .2rem;
+        padding: 0;
+    }
+    .volume-control {
+        width: 100%;
+        justify-self: center;
+        margin: 0 auto;
+        grid-template-columns: 20px minmax(0, 1fr) 2.25rem;
+        gap: .42rem;
+    }
+    .volume-slider { min-width: 0; }
+    .volume-display {
+        min-width: 2.25rem;
+        justify-content: flex-start;
+    }
+    /* Tablet slider paint and thumb geometry (applied at ≥901px). */
+    .seek-slider::-webkit-slider-runnable-track,
+    .volume-slider::-webkit-slider-runnable-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-moz-range-track,
+    .volume-slider::-moz-range-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
+    .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
+    /* Chromium anchors the thumb to the track top when the track is shorter
+       than the thumb; lift it by half the size difference so the thumb sits
+       centered on the 4.5px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
+}
+
+@media (max-width: 700px) {
+    .playback-bar {
+        bottom: max(3px, env(safe-area-inset-bottom));
+        width: calc(100vw - 12px);
+        min-height: 0;
+        grid-template-columns: minmax(0, 1fr) 84px;
+        grid-template-rows: auto auto auto;
+        grid-template-areas:
+            "track meter"
+            "transport transport"
+            "volume volume";
+        column-gap: .6rem;
+        row-gap: .66rem;
+        align-items: center;
+        padding: .76rem .7rem .82rem;
+        border-radius: 18px;
+    }
+    .playback-bar .track-info {
+        grid-template-columns: 50px minmax(0, 1fr);
+        gap: .6rem;
+        max-width: none;
+        align-self: center;
+    }
+    .playback-visual {
+        width: 50px;
+        height: 50px;
+        border-radius: 11px;
+    }
+    .track-copy { gap: .18rem; }
+    .track-copy-main { gap: .25rem; }
+    .playback-bar .track-title,
+    .playback-bar .song-info .sc-title {
+        font-size: .86rem;
+        line-height: 1.15;
+    }
+    .playback-bar .track-artist,
+    .playback-bar .song-info .sc-artist {
+        display: block;
+        font-size: .68rem;
+    }
+    .track-favorite-btn,
+    .track-row-favorite,
+    .track-fav,
+    .streaming-fav {
+        width: 28px;
+        height: 28px;
+        min-height: 28px;
+        margin-top: -.08rem;
+        font-size: 1.08rem;
+    }
+    .playback-meta-row {
+        gap: .25rem;
+        min-height: 1rem;
+        margin-top: 0;
+    }
+    .samplerate-status,
+    .queue-status {
+        min-height: 1rem;
+        padding: .06rem .38rem;
+        font-size: .56rem;
+    }
+    .playback-center {
+        width: 100%;
+        gap: .72rem;
+        align-self: center;
+        margin: 0;
+    }
+    .transport-controls {
+        min-height: 40px;
+        margin: 0;
+        gap: .32rem;
+    }
+    .control-btn {
+        width: 40px;
+        height: 40px;
+        font-size: .92rem;
+    }
+    .control-btn-secondary {
+        width: 29px;
+        height: 29px;
+        font-size: .8rem;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 24px;
+        height: 24px;
+        font-size: .72rem;
+    }
+    .seek-row {
+        width: 100%;
+        grid-template-columns: 2.55rem minmax(0, 1fr) 2.55rem;
+        row-gap: .38rem;
+        column-gap: .4rem;
+        margin: 0;
+    }
+    .seek-time {
+        text-align: center;
+        font-size: .59rem;
+    }
+    .seek-slider,
+    .volume-slider {
+        width: 100%;
+        min-width: 0;
+    }
+    .playback-meter {
+        width: 84px;
+        max-width: 84px;
+        grid-template-columns: .52rem 62px;
+        grid-template-rows: 4px 4px;
+        column-gap: .22rem;
+        row-gap: .4rem;
+        justify-self: end;
+        align-self: center;
+        min-height: 20px;
+        margin: 0;
+    }
+    .meter-channel { font-size: .5rem; }
+    .meter-segments {
+        grid-template-columns: repeat(6, minmax(3px, 1fr));
+        width: 62px;
+        min-width: 62px;
+        max-width: 62px;
+        gap: 1.6px;
+    }
+    .meter-segments i {
+        height: 4px;
+        border-radius: 999px;
+    }
+    .output-level-badge { display: none; }
+    .playback-bar .controls {
+        width: min(100%, 430px);
+        max-width: none;
+        justify-self: center;
+        padding: 0;
+        margin: 0;
+    }
+    .volume-control {
+        width: 100%;
+        grid-template-columns: 2.55rem minmax(0, 1fr) 2.55rem;
+        row-gap: .44rem;
+        column-gap: .4rem;
+    }
+    .volume-icon {
+        width: 20px;
+        height: 20px;
+        justify-self: center;
+    }
+    .volume-icon svg {
+        width: 18px;
+        height: 18px;
+    }
+    .volume-slider { height: 5px; }
+    .volume-slider::-webkit-slider-thumb { width: 15.5px; height: 15.5px; }
+    .volume-slider::-moz-range-thumb { width: 15.5px; height: 15.5px; }
+    .volume-display {
+        width: 2.55rem;
+        min-width: 2.55rem;
+        justify-content: flex-end;
+        text-align: right;
+        padding-right: .08rem;
+        font-size: .64rem;
+    }
+    /* Phone: no-media fallback keeps track + volume only. */
+    .playback-bar:not(.has-media) {
+        grid-template-areas:
+            "track track"
+            "volume volume";
+    }
+    .playback-bar:not(.has-media) .playback-center,
+    .playback-bar:not(.has-media) .playback-meter { display: none; }
+    /* Phone slider paint and thumb geometry. */
+    .seek-slider::-webkit-slider-runnable-track,
+    .volume-slider::-webkit-slider-runnable-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-moz-range-track,
+    .volume-slider::-moz-range-track {
+        height: 4.5px;
+        border-radius: 999px;
+        background: linear-gradient(to right,
+            var(--accent) 0%,
+            var(--accent) var(--range-progress),
+            rgba(255,255,255,.10) var(--range-progress),
+            rgba(255,255,255,.10) 100%);
+    }
+    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    /* Chromium anchors the thumb to the track top when the track is shorter
+       than the thumb; lift it by half the size difference so the thumb sits
+       centered on the 4.5px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 15.5px) / 2); }
+
+    @media (max-width: 360px) {
+        .playback-bar .track-info {
+            grid-template-columns: 46px minmax(0, 1fr);
+            gap: .5rem;
+        }
+        .playback-visual {
+            width: 46px;
+            height: 46px;
+        }
+        .playback-bar {
+            grid-template-columns: minmax(0, 1fr) 78px;
+            row-gap: .6rem;
+            padding-inline: .6rem;
+        }
+        .playback-meter {
+            width: 78px;
+            max-width: 78px;
+            grid-template-columns: .5rem 57px;
+        }
+        .meter-segments {
+            width: 57px;
+            min-width: 57px;
+            max-width: 57px;
+        }
+        .seek-row,
+        .volume-control {
+            grid-template-columns: 2.35rem minmax(0, 1fr) 2.35rem;
+            column-gap: .34rem;
+        }
+        .volume-display {
+            width: 2.35rem;
+            min-width: 2.35rem;
+        }
+    }
+
+    @media (max-width: 390px) {
+        .playback-bar {
+            grid-template-areas: "track track" "transport transport" "volume volume";
+        }
+        .playback-meter { display: none; }
+    }
+}
+
+/* =========================================================================
+   Shared component queries — grouped by range
+   ========================================================================= */
+@media (hover: none), (pointer: coarse) {
+    /* from _layout.css */
+    .brand-lockup-button[data-tooltip]::after,
+        .power-btn[data-tooltip]::after {
+            display: none;
+        }
+
+    /* from _radio.css */
+    #tracks-list .folder-actions {
+            opacity: 1;
+        }
+
+}
+
+@media (max-width: 540px) {
+    /* from _layout.css */
+    .power-btn-icon { width: 20px; height: 20px; }
+
+    /* from _playback.css */
+    .power-btn { width: 44px; height: 44px; }
+
+}
+
+@media (max-width: 980px) {
+    /* from _streaming.css */
+    .measurement-layout {
+            grid-template-columns: 1fr;
+        }
+
+        .measurement-dialog {
+            min-height: auto;
+        }
+
+}
+
+@media (min-width: 641px) and (max-width: 980px) {
+    .measurement-overlay {
+        padding: 0.5rem;
+    }
+    .measurement-dialog {
+        width: min(1040px, calc(100vw - 1rem));
+        min-height: min(960px, calc(100vh - 1rem));
+        max-height: calc(100vh - 1rem);
+        padding: 1rem;
+    }
+    .measurement-actions-top {
+        align-items: flex-start;
+    }
+    .measurement-workflow-list {
+        width: 100%;
+    }
+    .measurement-graph-wrap {
+        padding: 0.9rem;
+    }
+    .measurement-graph {
+        min-height: 460px;
+    }
+    .measurement-peq-editor-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem 0.8rem;
+        align-items: start;
+    }
+    .measurement-peq-direct-input-field {
+        grid-column: auto;
+    }
+    .measurement-peq-stepper {
+        grid-template-columns: 42px minmax(96px, 1fr) 42px;
+    }
+    .measurement-peq-editor-actions {
+        grid-column: 1 / -1;
+        justify-content: flex-start;
+    }
+    .library-search-field {
+        flex-basis: clamp(260px, 30vw, 400px);
+        width: clamp(260px, 30vw, 400px);
+    }
+    .library-selection-toolbar .btn-secondary {
+        min-width: 104px;
+    }
+}
+
+@media (min-width: 600px) and (max-width: 640px) {
+    .measurement-overlay {
+        padding: 0.5rem;
+        align-items: stretch;
+    }
+    .measurement-dialog {
+        width: min(1040px, calc(100vw - 1rem));
+        min-height: min(960px, calc(100vh - 1rem));
+        max-height: calc(100vh - 1rem);
+        padding: 1rem;
+        border-radius: var(--radius-xl);
+    }
+    .measurement-actions-top {
+        align-items: flex-start;
+    }
+    .measurement-workflow-list {
+        width: 100%;
+    }
+    .measurement-graph-wrap {
+        padding: 0.9rem;
+    }
+    .measurement-graph {
+        min-height: 460px;
+    }
+    .measurement-peq-editor-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem 0.8rem;
+        align-items: start;
+    }
+    .measurement-peq-direct-input-field {
+        grid-column: auto;
+    }
+    .measurement-peq-stepper {
+        grid-template-columns: 42px minmax(96px, 1fr) 42px;
+    }
+    .measurement-peq-editor-actions {
+        grid-column: 1 / -1;
+        justify-content: flex-start;
+    }
+}
+
+@media (min-width: 600px) and (max-width: 980px) and (orientation: portrait) {
+    /* from _streaming.css */
+    .measurement-graph {
+            height: min(430px, 42vh);
+            min-height: 0;
+        }
+
+}
+
+@media (max-width: 599px) {
+    /* from _streaming.css */
+    .measurement-overlay {
+            padding: 0.5rem;
+            overflow-x: hidden;
+            align-items: center;
+        }
+
+        .measurement-dialog {
+            width: min(100%, calc(100vw - 1rem));
+            min-height: auto;
+            max-height: calc(100dvh - 1rem);
+            padding: 0.85rem;
+            border-radius: var(--radius-lg);
+            overflow-x: hidden;
+        }
+
+        .measurement-dialog input,
+        .measurement-dialog select,
+        .measurement-dialog textarea {
+            font-size: 16px;
+        }
+
+        .measurement-card-header-split,
+        .measurement-list-row,
+        .measurement-actions-top {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .measurement-graph-header-actions {
+            width: 100%;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 0.55rem;
+            margin-left: 0;
+            align-items: stretch;
+        }
+
+        .measurement-graph-header-actions .measurement-view-toggle {
+            grid-column: 1;
+            grid-row: 1;
+            min-width: 0;
+            justify-content: flex-start;
+        }
+
+        .measurement-graph-header-actions .measurement-clear-btn {
+            grid-column: 2;
+            grid-row: 1;
+            width: 100%;
+        }
+
+        .measurement-graph-header-actions #measurement-assist-mode,
+        .measurement-graph-header-actions #measurement-target-curve {
+            grid-row: 2;
+            width: 100%;
+            min-width: 0;
+        }
+
+        .measurement-graph-header-actions #measurement-assist-mode {
+            grid-column: 1;
+        }
+
+        .measurement-graph-header-actions #measurement-target-curve {
+            grid-column: 2;
+        }
+
+        .measurement-summary {
+            text-align: left;
+            max-width: none;
+        }
+
+        .measurement-saved-merge-action.is-inert,
+        .measurement-saved-delete-action.is-inert {
+            display: none;
+        }
+
+        .measurement-saved-group > summary,
+        .measurement-saved-toolbar button,
+        .measurement-select-all-toggle {
+            font-size: 16px;
+            touch-action: manipulation;
+        }
+
+        .measurement-graph {
+            min-height: 260px;
+        }
+
+        .measurement-convolver-grid { grid-template-columns: 1fr; }
+        .measurement-peq-panel-header {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        #measurement-custom-house-curve-panel {
+            grid-template-columns: 1fr;
+        }
+
+        #measurement-custom-house-curve-panel > .field-group,
+        #measurement-custom-house-curve-panel > .measurement-peq-take-row {
+            grid-column: 1 / -1;
+        }
+
+        #measurement-custom-house-curve-panel > .measurement-peq-take-row {
+            flex-direction: column;
+            align-items: stretch;
+            min-width: 0;
+        }
+
+        #measurement-custom-house-curve-panel > .measurement-peq-take-row .btn-primary {
+            width: 100%;
+        }
+
+        .measurement-peq-editor-grid {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .measurement-peq-editor-grid .measurement-peq-direct-input-field {
+            grid-column: 1 / -1;
+        }
+
+        .measurement-peq-stepper {
+            grid-template-columns: 44px minmax(0, 1fr) 44px;
+        }
+
+        .measurement-peq-editor-grid .url-input {
+            font-size: 16px;
+        }
+
+        .measurement-peq-editor-actions,
+        .measurement-peq-take-row,
+        .measurement-save-row {
+            justify-content: stretch;
+        }
+
+        .measurement-save-row,
+        .measurement-workflow-list {
+            align-items: stretch;
+        }
+
+        .measurement-workflow-list {
+            flex: 0 0 auto;
+            width: 100%;
+            gap: 0.9rem;
+        }
+
+        .measurement-workflow-group {
+            display: flex;
+            align-items: stretch;
+            flex-direction: column;
+            gap: 0.55rem;
+        }
+
+        .measurement-workflow-menu {
+            width: 100%;
+        }
+
+        .measurement-workflow-menu-panel {
+            position: static;
+            width: 100%;
+            max-width: none;
+            box-sizing: border-box;
+        }
+
+        .measurement-workflow-row {
+            display: flex;
+            align-items: stretch;
+            flex-direction: column;
+            gap: 0.55rem;
+        }
+
+        .measurement-repeat-help {
+            flex: 0 0 auto;
+        }
+
+        #measurement-sweep-toggle,
+        #measurement-repeat-start,
+        #measurement-hybrid-open,
+    #measurement-auto-sub-start,
+        #measurement-spl-calibration-open {
+            width: 100%;
+            min-width: 0;
+        }
+
+        .spl-calibration-dialog {
+            width: min(100%, calc(100vw - 1rem));
+            max-height: calc(100dvh - 1rem);
+            padding: 0.85rem;
+            border-radius: var(--radius-lg);
+        }
+
+        .hybrid-measurement-dialog {
+            width: min(100%, calc(100vw - 1rem));
+            max-height: calc(100dvh - 1rem);
+            padding: 0.85rem;
+            border-radius: var(--radius-lg);
+        }
+
+        .hybrid-wizard-grid { grid-template-columns: 1fr; }
+        .hybrid-room-view { min-height: 300px; }
+        .hybrid-step-card { min-height: 390px; }
+        .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
+
+        .measurement-channel-chip-row,
+        .measurement-smoothing-chips {
+            width: 100%;
+            justify-content: flex-start;
+        }
+
+        .measurement-channel-chip-row {
+            justify-content: center;
+        }
+
+        #measurement-setup-toggle {
+            align-self: stretch;
+            margin-top: 0.15rem;
+        }
+
+        .measurement-card-setup,
+        .measurement-card-setup .measurement-stack,
+        .measurement-card-setup .field-group {
+            min-width: 0;
+        }
+
+        .measurement-input-channel-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .measurement-card-setup .url-input,
+        #measurement-input-refresh {
+            width: 100%;
+            min-width: 0;
+        }
+
+        .measurement-calibration-select-row {
+            grid-template-columns: 1fr;
+        }
+
+        .measurement-calibration-select-row .btn-secondary,
+        .measurement-calibration-select-row .btn-danger {
+            width: 100%;
+            min-width: 0;
+        }
+
+        .measurement-peq-editor-actions .btn-danger,
+        .measurement-peq-take-row .btn-secondary,
+        .measurement-save-row .btn-secondary,
+        #measurement-repeat-start,
+        #measurement-setup-toggle {
+            width: 100%;
+        }
+
+        .measurement-peq-step-btn {
+            width: 44px;
+        }
+
+}
+
+@media (min-width: 1200px) and (max-width: 2559px) {
+    /* from _playback.css */
+    .radio-search-input-wrap {
+            margin-inline: 6.5rem;
+        }
+
+}
+
+@media (min-width: 900px) and (max-width: 1199px) {
+    /* from _playback.css */
+    .radio-search-input-wrap {
+            margin-inline: 5.125rem;
+        }
+
+}
+
+@media (min-width: 2560px) {
+    /* from _playback.css */
+    .radio-search-input-wrap {
+            margin-inline: 4.125rem;
+        }
+        .manage-dialog {
+            width: min(620px, 100%);
+        }
+
+}
+
+@media (min-width: 701px) and (max-width: 1199px) {
+    .radio-panel-header {
+            grid-template-columns: minmax(0, 1fr) minmax(420px, calc(100% - 13.8rem)) minmax(0, 1fr);
+        }
+
+}
+
+@media (max-width: 900px) {
+    /* from _playback.css */
+    .manage-dialog {
+            width: min(620px, 100%);
+        }
+        .effects-grid {
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+        .effects-card { padding: 1.25rem; }
+        .effects-actions-right { justify-content: flex-end; }
+
+}
+
+@media (max-width: 1180px) {
+    /* from _playback.css */
+    .library-actions-row {
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        .playlist-save-row {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.5rem;
+            margin-bottom: 0.7rem;
+        }
+        .playlist-save-controls {
+            width: 100%;
+            flex: 0 1 auto;
+        }
+        /* TIDAL save row: with the full-width controls container the five
+           controls wrap left-aligned instead of overflowing. */
+        .tidal-playlist-save-row .playlist-save-controls {
+            flex-wrap: wrap;
+        }
+
+}
+
+@media (max-width: 1180px) and (min-width: 601px) {
+    /* from _playback.css */
+    .library-actions-row {
+            margin-bottom: var(--action-gap);
+        }
+
+}
+
+@media (max-width: 600px) {
+    /* from _playback.css */
+    .library-toolbar,
+        .effects-header-actions {
+            gap: var(--action-gap-mobile);
+        }
+        .library-toolbar {
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
+        }
+        .library-toolbar::-webkit-scrollbar {
+            display: none;
+        }
+
+        .brand-subtitle {
+            display: none;
+        }
+        .track-artist {
+            display: block;
+            min-width: 0;
+            max-width: 100%;
+            font-size: 0.72rem;
+            line-height: 1.2;
+        }
+        .library-toolbar #toggle-import {
+            width: auto;
+            min-width: 104px;
+            max-width: none;
+            height: auto;
+            min-height: 44px;
+            max-height: none;
+            padding: 0.55rem 0.8rem;
+            font-size: 0.84rem;
+            line-height: 1;
+            align-self: center;
+            white-space: nowrap;
+            overflow: visible;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #tab-library {
+            padding-top: 0;
+        }
+        #tab-effects {
+            padding-top: 0;
+        }
+        .header {
+            flex-direction: row;
+            gap: 0.65rem;
+        }
+        .brand-lockup {
+            gap: 0.5rem;
+            flex: 1;
+            min-width: 0;
+        }
+        .brand-text-block {
+            gap: 0.06rem;
+            padding-top: 0;
+        }
+        .manage-overlay {
+            padding: 0.75rem;
+            align-items: flex-end;
+        }
+        .manage-dialog {
+            width: 100%;
+            max-height: 85vh;
+            overflow: auto;
+            border-radius: 18px 18px 0 0;
+        }
+        .manage-dialog-header {
+            flex-direction: column;
+            align-items: stretch;
+        }
+        .radio-manage-submit-row {
+            justify-content: stretch;
+        }
+        .radio-manage-submit-row .btn-primary,
+        .manage-dialog-header .btn-secondary {
+            width: 100%;
+        }
+        .settings-maintenance-actions {
+            grid-template-columns: 1fr;
+            width: 100%;
+            margin-left: 0;
+        }
+        .btn-ghost {
+            font-size: 0.78rem;
+            padding: 0.3rem 0.55rem;
+            min-height: 32px;
+        }
+        .btn-ghost-icon {
+            font-size: 0.85rem;
+        }
+        /* Library tighter */
+        .library-actions-row {
+            align-items: stretch;
+            justify-content: flex-start;
+            flex-wrap: wrap;
+            margin-bottom: 0.5rem;
+        }
+        .library-search-wrap {
+            flex-basis: 100%;
+            width: 100%;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 104px;
+            gap: var(--action-gap-mobile, 8px);
+            align-items: stretch;
+        }
+        .library-search-field {
+            flex: 1 1 auto;
+            width: 100%;
+            min-width: 0;
+        }
+        .library-selection-toolbar {
+            width: 100%;
+            min-width: 0;
+        }
+        .library-selection-toolbar .btn-secondary {
+            flex: 0 0 auto;
+            width: 100%;
+            min-width: 0;
+            height: 44px;
+            min-height: 44px;
+        }
+        .track-item { padding: 0.7rem 0.75rem; }
+        /* Download */
+        .playlist-save-row {
+            flex-wrap: nowrap;
+            align-items: stretch;
+            margin-bottom: 0.7rem;
+        }
+        .playlist-save-controls {
+            width: 100%;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 104px;
+            gap: var(--action-gap-mobile, 8px);
+            align-items: stretch;
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .playlist-save-row .url-input {
+            flex: initial;
+            width: 100%;
+            min-width: 0;
+            font-size: 0.84rem;
+            padding: 0.28rem 0.5rem;
+        }
+        #save-playlist {
+            width: 100%;
+            min-width: 0;
+            height: 44px;
+            min-height: 44px;
+        }
+        .download-form { flex-direction: column; }
+        .download-form .btn-primary,
+        .download-form .btn-danger { width: 100%; }
+        /* Effects */
+        #tab-effects,
+        #tab-effects .effects-shell,
+        #tab-effects .effects-grid,
+        #tab-effects .effects-card {
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+        }
+        #tab-effects,
+        #tab-effects .effects-shell {
+            overflow-x: clip;
+        }
+        .effects-shell { padding: 0; }
+        .effects-header {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .effects-header-actions { justify-content: flex-start; }
+        .effects-peq-band-fields {
+            grid-template-columns: 1fr;
+        }
+        .effects-peq-band-header,
+        .effects-peq-pane-header {
+            flex-direction: column;
+            align-items: stretch;
+        }
+        .effects-actions-row .btn-primary,
+        .effects-actions-row .btn-danger,
+        .effects-actions-row .btn-secondary { width: 100%; min-width: unset; }
+        .effects-actions-right { flex-direction: column; align-items: stretch; }
+        .toast-container {
+            right: 0.5rem;
+            left: 0.5rem;
+            max-width: calc(100% - 1rem);
+        }
+
+    /* from _playback.css */
+    .cover-detail-card {
+            bottom: calc(102px + 8px + 14px);
+            width: min(400px, calc(100vw - 1.2rem));
+            grid-template-columns: 1fr;
+            grid-template-areas:
+                "cover"
+                "info"
+                "history"
+                "queue";
+        }
+        .cover-detail-cover-col {
+            align-items: center;
+        }
+        .cover-detail-cover {
+            width: auto;
+            max-width: 100%;
+            max-height: 34vh;
+            margin-inline: auto;
+        }
+        .cover-detail-extra {
+            align-items: center;
+            text-align: center;
+        }
+
+    /* from _playback.css */
+    .brand-mark { width: 35px; height: 35px; border-radius: 10px; font-size: 0.84rem; }
+        .brand-title { font-size: 0.98rem; }
+
+}
+
+@media (max-width: 760px) {
+    /* from _playback.css */
+    #tab-effects .url-input,
+        #tab-effects select,
+        #tab-effects textarea {
+            font-size: 16px;
+        }
+
+        #tab-effects .effects-actions-rew-dual {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 0.7rem;
+        }
+
+        #tab-effects .effects-actions-peq-dual,
+        #tab-effects .effects-actions-combine {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 0.7rem;
+        }
+
+        #tab-effects .effects-actions-peq-dual .effects-rew-dual-name-input {
+            max-width: none;
+        }
+
+        #tab-effects .effects-actions-rew-dual .effects-rew-dual-name-input,
+        #tab-effects .effects-actions-peq-dual .effects-rew-dual-name-input,
+        #tab-effects .effects-actions-combine .effects-combine-name-input {
+            width: 100%;
+            max-width: none;
+            min-width: 0;
+            min-height: 36px;
+            height: 36px;
+            padding: 0.4rem 0.7rem;
+            font-size: 16px;
+            line-height: 1.2;
+        }
+
+        #tab-effects .effects-actions-rew-dual .btn-primary,
+        #tab-effects .effects-actions-rew-dual .btn-secondary,
+        #tab-effects .effects-actions-peq-dual .btn-primary,
+        #tab-effects .effects-actions-combine .btn-primary {
+            width: auto;
+            min-width: 88px;
+            min-height: 36px;
+            height: 36px;
+            padding: 0.4rem 0.85rem;
+        }
+
+    /* from _playback.css */
+    .header { min-height: 64px; padding: .72rem .8rem; }
+        .tabs { justify-content: space-between; }
+        .tab-btn { flex: 1 0 auto; min-width: 86px; min-height: 44px; padding: .48rem .62rem; }
+        .tab-content { padding: 1rem .75rem calc(1.5rem + var(--playback-footer-space)); }
+        .radio-panel { padding: .9rem; border-radius: 18px; }
+        .radio-panel-header { gap: .65rem; }
+        .stations-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+        .station-card { padding: .58rem; border-radius: 15px; }
+        .station-name { font-size: .88rem; }
+
+    /* from _responsive.css */
+    .streaming-provider-player {
+            min-height: 0;
+            justify-content: flex-start;
+        }
+        .streaming-now-playing {
+            padding: 1.15rem 1rem 1.3rem;
+            gap: 0.75rem;
+        }
+        .streaming-cover { width: 180px; height: 180px; }
+        .tidal-toolbar { gap: 0.35rem; }
+        .tidal-subbar { gap: 0.35rem; }
+        .tidal-subbar .streaming-search { width: 100%; }
+        .streaming-search-row { flex-wrap: nowrap; }
+        .streaming-search-row .streaming-search-input { flex: 1 1 0; width: 100%; }
+        .album-detail-header,
+        .streaming-detail-header {
+            grid-template-columns: auto minmax(0, 1fr);
+            grid-template-areas:
+                "back back"
+                "cover meta";
+            align-items: start;
+            gap: 0.9rem;
+        }
+        .album-detail-back { justify-self: end; }
+        /* Mobile: the favorite star flows inline right after the title text so it
+           stays visually coupled to multi-line titles instead of floating at the
+           right edge of the hero. Plain inline flow: titles wrap normally, the
+           star takes only its own width, no fixed positioning. */
+        .album-detail-title-row,
+        .tidal-detail-title-row {
+            display: block;
+        }
+        .album-detail-name,
+        .tidal-detail-title-row .streaming-detail-title {
+            display: inline;
+        }
+        .album-detail-title-row .album-favorite-toggle,
+        .tidal-detail-title-row .album-favorite-toggle {
+            display: inline-flex;
+            vertical-align: middle;
+            margin-left: 0.45rem;
+        }
+        .track-album { display: none; }
+        .streaming-btn,
+        .track-play { min-width: 44px; min-height: 44px; }
+
+    /* from _effects.css */
+    .effects-card-subwoofer-header,
+        .effects-subwoofer-controls,
+        .effects-subwoofer-frequency-row {
+            grid-template-columns: 1fr;
+        }
+
+        .effects-subwoofer-controls {
+            display: grid;
+        }
+
+        .effects-subwoofer-global-group,
+        .effects-subwoofer-channel-group {
+            grid-column: 1;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        /* 2.2 mode pins Sub 1/Sub 2 to base-grid columns with (0,3,0)
+           specificity; re-reset them (and the derived-delays row) so the
+           single-column stack carries no implicit extra tracks. */
+        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
+        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group,
+        .effects-subwoofer-derived-delays {
+            grid-column: 1;
+        }
+
+        .effects-subwoofer-frequency-row {
+            gap: 0.55rem;
+        }
+
+    /* from _effects.css */
+    .effects-rew-dual-grid,
+        .effects-combine-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .effects-actions-rew-dual,
+        .effects-actions-peq-dual,
+        .effects-actions-combine {
+            flex-direction: row;
+            align-items: center;
+            justify-content: flex-start;
+            flex-wrap: wrap;
+        }
+
+        .effects-actions-rew-dual .effects-rew-dual-name-input,
+        .effects-actions-peq-dual .effects-rew-dual-name-input {
+            flex: 0 1 170px;
+            max-width: 170px;
+            width: 170px;
+        }
+
+        .effects-actions-rew-dual .btn-primary,
+        .effects-actions-rew-dual .btn-secondary,
+        .effects-actions-peq-dual .btn-primary,
+        .effects-actions-peq-dual .btn-secondary {
+            width: auto;
+            min-width: 96px;
+            flex: 0 0 auto;
+        }
+
+        .effects-peq-add-row {
+            grid-template-columns: 1fr auto;
+        }
+
+        .effects-peq-mode-field {
+            max-width: none;
+        }
+
+    /* from _effects.css */
+    .effects-loudness-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr);
+            align-items: center;
+        }
+
+        .effects-loudness-controls {
+            display: inline-flex;
+            width: max-content;
+            max-width: 100%;
+            gap: 0.65rem;
+        }
+
+        .effects-loudness-controls .effects-inline-control {
+            flex-wrap: nowrap;
+        }
+
+        .effects-bass-row,
+        .effects-bass-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            flex-wrap: wrap;
+        }
+
+        .effects-extras-inner {
+            width: 100%;
+            padding: 0.95rem 0.9rem;
+        }
+
+}
+
+@media (min-width: 761px) and (max-width: 1100px) {
+    /* Keep the TIDAL navigation and direct-search field on one tablet row.
+       The relative basis gives the tabs the remaining space without making
+       the search field carry its desktop width. */
+    .tidal-subbar {
+        flex-wrap: nowrap;
+    }
+    .tidal-subbar .view-tabs {
+        flex: 1 1 auto;
+    }
+    .tidal-subbar .streaming-search {
+        flex: 0 1 34vw;
+        width: auto;
+    }
+
+    /* Tablet subwoofer layout: two control columns (merged with the TIDAL
+       tablet block above; identical media condition). Scoped to ≥761px so
+       the one-column mobile layout at ≤760px wins the cascade. */
+    .effects-subwoofer-controls {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .effects-subwoofer-global-group,
+    .effects-subwoofer-channel-group {
+        grid-column: auto;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .effects-subwoofer-channel-group {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
+        grid-column: auto;
+    }
+
+    .effects-subwoofer-derived-delays {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (min-width: 601px) and (max-width: 760px) {
+    /* Brand tablet size (38px) scoped to 601-760px. The 600px small-phone
+       block above must win at ≤600px; the 760px tablet size used to be
+       declared later in the cascade and overrode it. */
+    .brand-mark { width: 38px; height: 38px; }
+    .brand-title { font-size: 1.08rem; }
+    .brand-subtitle { font-size: .62rem; }
+}
+
+@media (max-width: 767px) {
+    /* from _playback.css */
+    .measurement-overlay {
+            padding: 0.5rem;
+            align-items: center;
+            overflow-x: hidden;
+        }
+
+        .measurement-dialog {
+            width: min(100%, calc(100vw - 1rem));
+            min-height: auto;
+            max-height: calc(100dvh - 1rem);
+            padding: 0.85rem;
+            border-radius: var(--radius-lg);
+            overflow-x: hidden;
+        }
+
+        .measurement-saved-group > summary,
+        .measurement-saved-toolbar button,
+        .measurement-select-all-toggle {
+            font-size: 16px;
+            touch-action: manipulation;
+        }
+
+        .measurement-saved-group {
+            padding: 0.1rem 0.1rem 0.25rem;
+        }
+
+        .measurement-saved-group > summary {
+            padding: 0.45rem 0.55rem;
+        }
+
+        .measurement-saved-list {
+            gap: 0.5rem;
+            padding: 0 0.15rem 0.15rem;
+        }
+
+        .measurement-saved-toolbar,
+        .measurement-saved-toolbar-selection {
+            gap: 0.5rem;
+        }
+        .measurement-saved-toolbar {
+            justify-content: space-between;
+        }
+        .measurement-saved-toolbar-selection {
+            flex: 1 1 auto;
+        }
+        .measurement-saved-delete-action,
+        .measurement-saved-merge-action {
+            width: 38px;
+            min-width: 38px;
+            padding-inline: 0;
+            font-size: 1rem;
+        }
+        .measurement-saved-delete-action .label-full,
+        .measurement-saved-merge-action .label-full,
+        .measurement-saved-close-action .label-full {
+            display: none;
+        }
+        .measurement-saved-delete-action .label-compact,
+        .measurement-saved-merge-action .label-compact,
+        .measurement-saved-close-action .label-compact {
+            display: inline;
+        }
+        .measurement-saved-close-action {
+            width: 38px;
+            min-width: 38px;
+            padding-inline: 0;
+            font-size: 1rem;
+        }
+
+        .measurement-list-item {
+            gap: 0.24rem;
+            padding: 0.62rem 0.68rem;
+        }
+
+        .measurement-list-row {
+            gap: 0.45rem;
+        }
+
+        .measurement-toggle {
+            gap: 0.48rem;
+        }
+
+        .measurement-saved-toolbar button {
+            min-height: 36px;
+            padding: 0.42rem 0.72rem;
+        }
+
+}
+
+@media (min-width: 601px) {
+    /* from _playback.css */
+    .cover-detail-card:has(#cover-detail-queue:not(.hidden)) {
+            grid-template-areas:
+                "cover queue"
+                "info queue";
+            /* Keep the left column compact: the queue spans both rows and can be
+               taller than the left content; with auto 1fr only the info row
+               absorbs the extra height, so no gap appears between the cover
+               tag block and the meta block. */
+            grid-template-rows: auto 1fr;
+        }
+
+}
+
+@media (min-width: 761px) {
+    /* from _playback.css */
+    .brand-lockup { gap: 0.56rem; }
+        .brand-mark {
+            width: 37px;
+            height: 37px;
+            border-radius: 10px;
+            font-size: 0.84rem;
+        }
+        .brand-text-block { gap: 0.1rem; }
+        .brand-title { font-size: 1.07rem; }
+        .brand-subtitle { font-size: 0.62rem; }
+
+}
+
+@media (min-width: 940px) {
+    /* from _playback.css */
+    .tabs {
+            width: max-content;
+            margin: -72px auto 0;
+            height: 72px;
+            align-items: center;
+            background: transparent;
+            border-bottom: 0;
+            padding: 0;
+            pointer-events: none;
+        }
+        .tab-btn { pointer-events: auto; min-width: 124px; }
+
+}
+
+@media (max-width: 420px) {
+    /* from _playback.css */
+    .header-status { gap: .32rem; }
+        .tabs { gap: .12rem; padding-inline: .38rem; }
+        .tab-btn { min-width: 74px; font-size: .78rem; gap: .22rem; }
+        .tab-glyph { width: .8rem; font-size: .8rem; }
+        .stations-grid { gap: .58rem; }
+
+}
+
+@media (max-width: 640px) {
+    /* from _responsive.css */
+    .album-detail-cover,
+        .tidal-detail-header .streaming-detail-cover {
+            width: 120px;
+            height: 120px;
+        }
+
+    /* from _library.css */
+    .albums-grid,
+        .tidal-tiles,
+        .streaming-similar-grid {
+            grid-template-columns: repeat(auto-fit, minmax(160px, 160px));
+        }
+        .track-duration {
+            flex-basis: 3.8rem;
+            font-size: 0.8rem;
+        }
+
+    /* from _radio.css */
+    .track-row-favorite,
+        .track-fav,
+        .streaming-fav {
+            width: 40px;
+            height: 40px;
+            min-height: 40px;
+            flex-basis: 40px;
+            font-size: 1rem;
+        }
+
+}
+
+@media (max-width: 700px) {
+    /* from _overlays.css */
+    .radio-panel-header {
+            grid-template-columns: 1fr auto;
+        }
+        .radio-search-field {
+            display: block;
+            grid-column: 1 / -1;
+            grid-row: 2;
+            max-width: none;
+        }
+
+    /* from _effects.css */
+    .effects-compare-actions {
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+}
+
+@media (max-width: 720px) {
+    /* from _radio.css */
+    .library-import-grid {
+            grid-template-columns: 1fr;
+        }
+
+}
+
+@media (min-width: 768px) {
+    /* from _effects.css */
+    .effects-shell {
+            padding: 0 1.5rem 1.5rem;
+        }
+
+        .effects-header {
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .effects-grid {
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem;
+        }
+
+        .effects-card {
+            padding: 1.5rem;
+        }
+
+        .effects-card-extras {
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+
+}
+
+@media (min-width: 480px) {
+    /* from _effects.css */
+    .effects-compare-fields {
+            grid-template-columns: 1fr 1fr;
+        }
+
+}
+
+@media (max-width: 1100px) {
+    /* from _effects.css */
+    .effects-peq-dual-grid {
+            grid-template-columns: 1fr;
+        }
+
+}
+
+@media (max-width: 520px) {
+    /* from _effects.css */
+    .effects-subwoofer-global-group,
+        .effects-subwoofer-channel-group {
+            grid-template-columns: 1fr;
+        }
+
+}
+
+/* Detail heroes keep the shared single-row composition on tablets; only the
+   cover column narrows to preserve the available reading width. */
+@media (min-width: 601px) and (max-width: 1099px) {
+    .album-detail--hero .detail-hero-header,
+    .streaming-detail--hero .detail-hero-header {
+        grid-template-columns: minmax(170px, 24vw) minmax(0, 1fr) auto;
+        grid-template-areas: "cover meta back";
+        gap: 0.75rem 1.1rem;
+        min-height: 0;
+        padding: 1rem;
+    }
+}
+
+/* Larger heroes keep the metadata visually suspended between the cover and
+   the lower edge. The intrinsic title row lets the favorite read as part of
+   the title zone instead of floating at the far edge of a wide column. */
+@media (min-width: 601px) {
+    .album-detail--hero .detail-hero-meta,
+    .streaming-detail--hero .detail-hero-meta {
+        align-self: start;
+        margin-block-start: clamp(0.5rem, calc(12vw - 5.1rem), 3.2rem);
+    }
+}
+
+/* Phones use the cover as the first visual beat instead of forcing a narrow
+   side-by-side title column. This keeps long artist/album names readable and
+   gives the image enough scale to carry the hero. */
+@media (max-width: 600px) {
+    .album-detail--hero .detail-hero-header,
+    .streaming-detail--hero .detail-hero-header {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            "back"
+            "cover"
+            "meta";
+        align-items: start;
+        gap: 0.9rem;
+        min-height: 0;
+        padding: 0.9rem;
+        border-radius: 20px;
+    }
+    .album-detail--hero .detail-hero-header .detail-hero-cover,
+    .streaming-detail--hero .detail-hero-header .detail-hero-cover {
+        width: min(62vw, 220px);
+        max-width: 100%;
+        justify-self: center;
+        align-self: start;
+    }
+    .album-detail--hero .detail-hero-meta,
+    .streaming-detail--hero .detail-hero-meta {
+        align-self: stretch;
+        padding: 0.1rem 0 0.2rem;
+    }
+    .album-detail--hero .album-detail-name,
+    .streaming-detail--hero .tidal-detail-title {
+        display: block;
+    }
+    .album-detail--hero .detail-hero-title,
+    .streaming-detail--hero .detail-hero-title {
+        font-size: clamp(1.3rem, 6.2vw, 1.8rem);
+    }
+    .album-detail--hero .detail-hero-header .album-detail-back,
+    .streaming-detail--hero .detail-hero-header .album-detail-back {
+        justify-self: start;
+    }
+    .streaming-detail--hero #tidal-detail-play {
+        width: 100%;
+    }
+}
+
+/* Prefers reduced motion — keep at end. !important is required here: the
+   generic star rule must beat every specific animation/transition rule
+   (e.g. .content-state--loading::before) without touching the normal
+   cascade. These are the only non-utility !important in the stylesheet. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+            scroll-behavior: auto !important;
+        }
+}

@@ -1,10 +1,9 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
+<meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>FXRoute</title>
+    <title>FXRoute Web-Demo (simulated)</title>
     <meta name="description" content="FXRoute: local audio control for routing, DSP and multi-provider playback.">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.9.12">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=0.9.12">
@@ -14,8 +13,19 @@
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
     <link rel="stylesheet" href="/static/style.css?v=0.9.160">
+    <link rel="stylesheet" href="./demo/demo.css?v=1">
 </head>
 <body>
+    <!-- Demo transport: must load before the real app scripts -->
+    <script src="./demo/data/library.js?v=3"></script>
+    <script src="./demo/data/radio.js?v=1"></script>
+    <script src="./demo/data/measurements.js?v=1"></script>
+    <script src="./demo/state.js?v=8"></script>
+    <script src="./demo/routes.js?v=8"></script>
+    <script src="./demo/streaming.js?v=1"></script>
+    <script src="./demo/ws.js?v=1"></script>
+    <script src="./demo/boot.js?v=1"></script>
+
     <h1 class="visually-hidden">FXRoute</h1>
     <a class="skip-link" href="#tab-content">Skip to content</a>
 
@@ -1375,7 +1385,6 @@
 
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
-
     <script src="/static/measurement_dsp.js?v=0.9.12"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.12"></script>
     <script src="/static/measurement_ui.js?v=0.9.12"></script>

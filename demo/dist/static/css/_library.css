@@ -1,0 +1,1527 @@
+/* ── Albums grid ─────────────────────────────────────────────── */
+/* Shared tile basis with TIDAL tiles and radio station cards
+   (see --tile-* tokens); auto-fit keeps columns equal-width and
+   centered instead of stretching the last row edge-to-edge. */
+.albums-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)));
+    justify-content: center;
+    gap: var(--tile-gap);
+    margin-top: 1.25rem;
+}
+.album-card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 18px;
+    padding: 0.82rem;
+    cursor: pointer;
+    transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), border-color 0.18s var(--ease), background 0.18s var(--ease);
+    position: relative;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 0.8rem;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+}
+.album-art-wrap {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 15px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+}
+.album-art {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+    object-position: center;
+    padding: 0.35rem;
+    background: rgba(0,0,0,0.08);
+}
+.album-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+    border-color: rgba(255,255,255,0.14);
+    background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
+}
+.album-card:active {
+    transform: scale(0.98) translateY(-1px);
+}
+.album-card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.album-card-smart {
+    border-color: rgba(74, 222, 128, 0.24);
+}
+.album-smart-badge {
+    position: absolute;
+    top: 0.55rem;
+    left: 0.55rem;
+    z-index: var(--z-base);
+    padding: 0.22rem 0.46rem;
+    border-radius: 999px;
+    border: 1px solid rgba(74, 222, 128, 0.35);
+    background: rgba(8, 20, 14, 0.78);
+    color: rgba(187, 247, 208, 0.96);
+    font-size: 0.68rem;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+/* Favorite heart on normal album cards — same language as the TIDAL
+   .streaming-fav on album tiles: absolute top-right on the cover, semi-
+   transparent background, round button. */
+.album-card-fav {
+    position: absolute;
+    top: 1.05rem;
+    right: 1.05rem;
+    z-index: var(--z-raised);
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(8, 18, 26, 0.72);
+    backdrop-filter: blur(4px);
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: color .12s var(--ease), border-color .12s var(--ease), transform .12s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.album-card-fav:hover,
+.album-card-fav.is-active { color: var(--accent); border-color: var(--accent); }
+.album-card-fav:active { transform: scale(.92); }
+.album-card-fav:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* List view: the heart leaves the cover corner and joins the row end. */
+.albums-grid.is-list .album-card-fav {
+    position: static;
+    order: 5;
+    z-index: auto;
+    width: 34px;
+    height: 34px;
+    min-height: 34px;
+    margin-left: auto;
+    background: transparent;
+    backdrop-filter: none;
+}
+.album-name {
+    font-weight: 700;
+    font-size: 0.98rem;
+    color: var(--text-primary);
+    line-height: 1.3;
+    letter-spacing: -0.015em;
+    min-height: 2.55em;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.album-artist {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-top: -0.4rem;
+}
+
+/* ── Albums list view (shared with TIDAL tiles) ──────────────── */
+/* Same objects, compact-row presentation: square mini cover left,
+   name + subtitle beside it. Only the container layout changes. */
+.albums-grid.is-list,
+.tidal-tiles.is-list {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 860px;
+    margin-left: auto;
+    margin-right: auto;
+    gap: 0.55rem;
+    margin-top: 1rem;
+}
+.albums-grid.is-list .album-card,
+.tidal-tiles.is-list .album-card {
+    flex-direction: row;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-md);
+    gap: 0.85rem;
+}
+.albums-grid.is-list .album-art-wrap,
+.tidal-tiles.is-list .album-art-wrap {
+    width: 52px;
+    height: 52px;
+    flex: 0 0 52px;
+    border-radius: 10px;
+}
+.albums-grid.is-list .album-art,
+.tidal-tiles.is-list .album-art { padding: 2px; }
+.albums-grid.is-list .album-name,
+.tidal-tiles.is-list .album-name {
+    min-height: 0;
+    -webkit-line-clamp: 1;
+    font-size: 0.95rem;
+}
+.albums-grid.is-list .playlist-collage-cell.is-fallback { padding: 8%; }
+.albums-grid.is-list .album-smart-badge {
+    top: 0.3rem;
+    left: 0.3rem;
+    font-size: 0.58rem;
+}
+
+/* ── Playlist cards + cover collage ─────────────────────────────── */
+.playlist-card {
+    border-color: rgba(74, 222, 128, 0.18);
+}
+.playlist-collage {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    gap: 2px;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.35);
+}
+.playlist-collage-cell {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.playlist-collage-cell.is-fallback {
+    object-fit: contain;
+    padding: 12%;
+    opacity: 0.9;
+    background: rgba(9, 17, 27, 0.85);
+}
+.playlist-collage--1 {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+}
+.playlist-collage--2 {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr;
+}
+.playlist-collage--3 {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+.playlist-collage--3 .playlist-collage-cell:first-child {
+    grid-column: 1 / -1;
+}
+.playlist-collage--4 {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+.playlist-collage-fallback {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #080808;
+}
+.playlist-collage-fallback-mark {
+    width: 54%;
+    height: 54%;
+    opacity: 0.9;
+    object-fit: contain;
+}
+.playlist-detail-cover {
+    position: relative;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+/* ── Album detail ────────────────────────────────────────────── */
+.album-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+/* Baseline detail header grid for the library album/playlist and TIDAL details.
+   The artwork-led roots below opt into the larger framed hero composition. */
+.album-detail-header,
+.streaming-detail-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "cover meta back";
+    align-items: start;
+    gap: 1.2rem;
+}
+.album-detail-cover,
+.streaming-detail-cover {
+    grid-area: cover;
+}
+.album-detail-meta,
+.streaming-detail-main {
+    grid-area: meta;
+    min-width: 0;
+}
+.album-detail-back {
+    grid-area: back;
+    align-self: start;
+    justify-self: end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    min-height: 34px;
+    padding: 0.26rem 0.56rem;
+    border-radius: 7px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+    font-weight: 650;
+    font-family: inherit;
+    cursor: pointer;
+    transition: color 0.15s var(--ease), border-color 0.15s var(--ease), background 0.15s var(--ease), transform 0.1s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.album-detail-back:hover {
+    color: var(--text-primary);
+    border-color: rgba(255,255,255,0.16);
+    background: rgba(255,255,255,0.04);
+}
+.album-detail-back:active {
+    transform: translateY(1px);
+}
+.album-detail-back:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.album-detail-cover {
+    width: 160px;
+    height: 160px;
+    border-radius: 14px;
+    object-fit: contain;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+}
+.album-detail-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.album-detail-title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.45rem;
+}
+.album-detail-name {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+    min-width: 0;
+}
+.album-detail-artist {
+    font-size: 1rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+.album-detail-count {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+.album-favorite-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    flex: 0 0 auto;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 1.32rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+.album-favorite-toggle.active {
+    color: #facc15;
+}
+.album-favorite-toggle:hover {
+    color: var(--text-primary);
+}
+.album-favorite-toggle.active:hover {
+    color: #fde047;
+}
+.album-favorite-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+}
+
+.album-detail-facts {
+    display: flex;
+    flex-direction: column;
+    gap: 0.22rem;
+    margin-top: 0.22rem;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    line-height: 1.35;
+}
+.album-detail-about {
+    margin-top: 0.42rem;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    line-height: 1.38;
+}
+.album-detail-about summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    width: fit-content;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-weight: 650;
+    list-style: none;
+}
+.album-detail-about summary::-webkit-details-marker {
+    display: none;
+}
+.album-detail-about summary::before {
+    content: "▸";
+    font-size: 0.78rem;
+    line-height: 1;
+    color: var(--text-secondary);
+}
+.album-detail-about[open] summary::before {
+    content: "▾";
+}
+.album-detail-about p {
+    margin: 0.35rem 0 0;
+    max-width: 64ch;
+}
+
+/* Artwork-led detail heroes: the local album and playlist details and the
+   TIDAL detail roots share the same framed composition. */
+.album-detail--hero,
+.streaming-detail--hero {
+    gap: clamp(1rem, 1.8vw, 1.5rem);
+}
+.album-detail--hero .detail-hero-header,
+.streaming-detail--hero .detail-hero-header {
+    position: relative;
+    display: grid;
+    grid-template-columns: clamp(200px, 22vw, 280px) minmax(0, 1fr) auto;
+    grid-template-areas: "cover meta back";
+    align-items: center;
+    gap: clamp(1.1rem, 2.4vw, 2.4rem);
+    min-height: clamp(280px, 24vw, 360px);
+    padding: clamp(1rem, 2.2vw, 2rem);
+    overflow: hidden;
+    isolation: isolate;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 24px;
+    background: linear-gradient(135deg, rgba(23, 31, 35, 0.96), rgba(13, 14, 18, 0.98) 72%);
+    box-shadow: 0 22px 50px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+.detail-hero-header::before,
+.detail-hero-header::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+.detail-hero-header::before {
+    z-index: var(--z-base);
+    background:
+        linear-gradient(90deg, rgba(10, 13, 17, 0.5), rgba(10, 13, 17, 0.84) 54%, rgba(10, 13, 17, 0.94)),
+        linear-gradient(180deg, rgba(6, 8, 11, 0.08), rgba(6, 8, 11, 0.34));
+}
+.detail-hero-header::after {
+    z-index: var(--z-base);
+    background: radial-gradient(circle at 14% 20%, rgba(110, 231, 183, 0.12), transparent 34%);
+    mix-blend-mode: screen;
+    opacity: 0.55;
+}
+.detail-header-backdrop {
+    position: absolute;
+    z-index: var(--z-underlay);
+    inset: -12%;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0.34;
+    filter: blur(36px) saturate(1.25);
+    transform: scale(1.08);
+}
+.detail-header-backdrop[hidden] {
+    display: none;
+}
+.detail-header-backdrop:empty {
+    display: none;
+}
+.detail-header-backdrop img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.album-detail--hero .detail-hero-header > :not(.detail-header-backdrop),
+.streaming-detail--hero .detail-hero-header > :not(.detail-header-backdrop) {
+    position: relative;
+    z-index: var(--z-raised);
+}
+.album-detail--hero .detail-hero-header .detail-hero-cover,
+.streaming-detail--hero .detail-hero-header .detail-hero-cover {
+    grid-area: cover;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    min-width: 0;
+    align-self: center;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 20px;
+    background: rgba(7, 10, 13, 0.7);
+    box-shadow: 0 18px 36px rgba(0, 0, 0, 0.42), 0 0 0 6px rgba(255, 255, 255, 0.018);
+}
+.album-detail--hero .detail-hero-cover {
+    object-fit: cover;
+    padding: 0;
+}
+.streaming-detail--hero .detail-hero-cover img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.streaming-detail--hero .detail-hero-cover:empty {
+    display: grid;
+    place-items: center;
+    background-color: #080808;
+    background-image: url('/static/artwork-placeholder.svg?v=2');
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+}
+.album-detail--hero .detail-hero-meta,
+.streaming-detail--hero .detail-hero-meta {
+    grid-area: meta;
+    align-self: center;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.62rem;
+    min-width: 0;
+    max-width: 780px;
+    padding-bottom: 0.15rem;
+}
+.album-detail--hero .detail-hero-title-row,
+.streaming-detail--hero .detail-hero-title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.7rem;
+    width: fit-content;
+    max-width: 100%;
+    min-width: 0;
+}
+.album-detail--hero .detail-hero-title,
+.streaming-detail--hero .detail-hero-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: clamp(1.4rem, 2.4vw, 2.6rem);
+    font-weight: 720;
+    line-height: 1.08;
+    letter-spacing: -0.045em;
+    overflow-wrap: anywhere;
+}
+.album-detail--hero .album-detail-artist,
+.streaming-detail--hero .tidal-detail-artist {
+    color: rgba(236, 236, 240, 0.82);
+    font-size: clamp(1rem, 1.55vw, 1.3rem);
+    line-height: 1.25;
+}
+.album-detail--hero .album-detail-count,
+.streaming-detail--hero .streaming-detail-facts,
+.album-detail--hero .album-detail-facts {
+    margin-top: 0;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.45;
+}
+.album-detail--hero .album-detail-facts,
+.streaming-detail--hero .streaming-detail-facts {
+    gap: 0.28rem;
+}
+.album-detail--hero .album-detail-about,
+.streaming-detail--hero .album-detail-about,
+.streaming-detail--hero .tidal-artist-about {
+    margin-top: 0.15rem;
+    color: rgba(208, 211, 219, 0.82);
+    font-size: 0.9rem;
+    line-height: 1.55;
+}
+.album-detail--hero .album-favorite-toggle,
+.streaming-detail--hero .album-favorite-toggle {
+    width: 42px;
+    height: 42px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 50%;
+    background: rgba(7, 10, 13, 0.38);
+    color: var(--text-secondary);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+.album-detail--hero .detail-hero-title-row > .album-favorite-toggle,
+.streaming-detail--hero .detail-hero-title-row > .album-favorite-toggle {
+    align-self: flex-start;
+    margin: 0;
+}
+.album-detail--hero .album-favorite-toggle:hover,
+.streaming-detail--hero .album-favorite-toggle:hover,
+.album-detail--hero .album-favorite-toggle.active,
+.streaming-detail--hero .album-favorite-toggle.active {
+    border-color: rgba(110, 231, 183, 0.62);
+    color: var(--accent);
+    background: rgba(110, 231, 183, 0.1);
+}
+.album-detail--hero .detail-hero-header .album-detail-back,
+.streaming-detail--hero .detail-hero-header .album-detail-back {
+    grid-area: back;
+    align-self: start;
+    justify-self: end;
+    min-height: 38px;
+    padding: 0.35rem 0.7rem;
+    border-color: rgba(255, 255, 255, 0.13);
+    background: rgba(7, 10, 13, 0.34);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+.streaming-detail--hero #tidal-detail-play {
+    min-height: 42px;
+    margin-top: 0.25rem;
+    padding-inline: 1.05rem;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+}
+.album-detail--hero > .album-detail-tracks,
+.streaming-detail--hero > .streaming-results {
+    margin-top: 0.2rem;
+}
+.album-detail-tracks {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.album-detail-tracks .track-item {
+    align-items: center;
+}
+.album-discover {
+    margin-top: 0.55rem;
+}
+.album-discover-panel {
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+}
+.album-discover-panel summary {
+    position: relative;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    padding-left: 1.8rem;
+    width: fit-content;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-weight: 650;
+    list-style: none;
+}
+.album-discover-panel summary::-webkit-details-marker {
+    display: none;
+}
+.album-discover-panel summary::before {
+    content: "▸";
+    position: absolute;
+    left: 0.9rem;
+    margin-left: 0;
+    top: 0.34rem;
+    font-size: 0.78rem;
+    line-height: 1;
+    color: var(--text-secondary);
+}
+.album-discover-panel[open] summary::before {
+    content: "▾";
+}
+.album-discover-panel summary small {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-weight: 500;
+}
+.album-discover-list {
+    display: grid;
+    gap: 0.28rem;
+    margin: 0.5rem 0 0;
+    padding: 0;
+    list-style: none;
+}
+.album-discover-item {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.7rem;
+    min-height: 2.1rem;
+    padding: 0.42rem 0.56rem;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: rgba(15, 23, 42, 0.22);
+}
+.album-discover-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+.track-item-empty {
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 0.88rem;
+    cursor: default;
+}
+.track-duration {
+    align-self: stretch;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex: 0 0 4.4rem;
+    padding: 0.8rem 0 0.8rem 0.4rem;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+/* ============================================================
+   Library tab
+   ============================================================ */
+#tab-library {
+    --control-gap: 12px;
+    padding-top: 0.55rem;
+}
+.library-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    gap: var(--control-gap);
+    flex-wrap: wrap;
+}
+.library-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--action-gap);
+    flex-wrap: wrap;
+}
+.library-actions-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--control-gap);
+    flex-wrap: nowrap;
+    margin: 0.15rem 0 1.15rem;
+    /* Same horizontal separator as the TIDAL subbar so both browse headers
+       share one underline language. */
+    border-bottom: 1px solid var(--border-strong);
+    padding-bottom: 0.5rem;
+}
+.library-view-toggle {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+}
+.library-search-wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--action-gap);
+    flex: 0 1 auto;
+    margin-left: auto;
+    min-width: 0;
+}
+.library-search-field {
+    flex: 0 1 clamp(400px, 36vw, 700px);
+    width: clamp(400px, 36vw, 700px);
+    min-width: 0;
+    position: relative;
+}
+.library-search-input {
+    width: 100%;
+    padding-right: 2.1rem;
+    font-size: 0.86rem;
+}
+.library-search-input::-webkit-search-cancel-button,
+.library-search-input::-webkit-search-decoration {
+    appearance: none;
+    -webkit-appearance: none;
+}
+.library-search-clear {
+    position: absolute;
+    right: 0.32rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.55rem;
+    height: 1.55rem;
+    border: 0;
+    border-radius: 999px;
+    background: var(--border);
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.42;
+    -webkit-tap-highlight-color: transparent;
+}
+.library-search-clear:not(:disabled) {
+    opacity: 1;
+}
+.library-search-clear:not(:disabled):hover {
+    background: var(--border-strong);
+    color: var(--text-primary);
+}
+.library-search-clear:disabled {
+    cursor: default;
+}
+.library-search-clear:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.library-selection-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--action-gap);
+    flex-wrap: nowrap;
+    flex: 0 0 auto;
+}
+.library-selection-toolbar .btn-secondary {
+    min-width: 118px;
+}
+.playlist-save-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: nowrap;
+    overflow: hidden;
+}
+.playlist-save-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--control-gap);
+    min-width: 0;
+    flex: 0 1 auto;
+}
+.playlist-save-controls #save-playlist {
+    min-width: 74px;
+}
+.playlist-save-row .url-input {
+    flex: 0 1 160px;
+    min-width: 0;
+    font-size: 0.88rem;
+    padding: 0.3rem 0.6rem;
+}
+/* TIDAL save row: the library save concept extended with the "add to
+   existing playlist" target, so the row wraps instead of clipping. */
+.tidal-playlist-save-row {
+    flex-wrap: wrap;
+    overflow: visible;
+    gap: var(--action-gap);
+}
+/* Compact and left-aligned like the library save row: the controls sit at
+   the row start with a uniform 12px gap (--action-gap). Single line on
+   roomy viewports; the responsive rules switch to wrapping when the tab
+   runs out of width. --control-gap is scoped to the library tab, so the
+   TIDAL row pins its own spacing instead of silently collapsing. */
+.tidal-playlist-save-row .playlist-save-controls {
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    gap: var(--action-gap);
+}
+.tidal-playlist-save-row .url-input[type="text"] {
+    flex: 0 1 160px;
+}
+.tidal-playlist-save-row select.url-input {
+    flex: 0 1 200px;
+}
+.tidal-playlist-save-error {
+    flex: 0 0 100%;
+    color: var(--danger);
+    font-size: 0.84rem;
+    margin-top: 0.15rem;
+}
+.playlist-item {
+    position: relative;
+}
+.playlist-download-btn,
+.playlist-delete-btn,
+.folder-action-btn--delete {
+    flex: 0 0 auto;
+    align-self: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    transition: color .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
+}
+.playlist-download-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-dim);
+}
+.playlist-delete-btn:hover,
+.folder-action-btn--delete:hover {
+    color: var(--danger);
+    border-color: var(--danger);
+    background: var(--danger-dim);
+}
+.playlist-download-btn:focus-visible,
+.playlist-delete-btn:focus-visible,
+.folder-action-btn--delete:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.library-import-panel {
+    margin-bottom: 0.85rem;
+}
+.import-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+.import-form-row {
+    margin-bottom: 0;
+}
+#library-info {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-top: 0.75rem;
+}
+.library-folder-path {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin: 0 0 0.6rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+.library-folder-path button {
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    border-radius: 999px;
+    padding: 0.25rem 0.55rem;
+    cursor: pointer;
+}
+.library-folder-path button:hover {
+    background: var(--bg-hover);
+}
+.library-folder-back {
+    margin-left: auto;
+    flex: 0 0 auto;
+    min-height: 34px;
+    padding: 0.26rem 0.56rem;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.84rem;
+    font-weight: 650;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.library-folder-back:hover {
+    color: var(--text-primary);
+    border-color: rgba(255,255,255,0.16);
+    background: rgba(255,255,255,0.04);
+}
+.library-folder-back:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.folder-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex-shrink: 0;
+    opacity: 0.72;
+    transition: opacity 0.15s var(--ease);
+}
+.folder-item:hover .folder-actions,
+.folder-actions:focus-within {
+    opacity: 1;
+}
+.folder-action-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.82rem;
+    line-height: 1;
+}
+.folder-action-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border-color: var(--border);
+}
+.folder-action-btn:focus-visible {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border-color: var(--border);
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.track-item {
+    display: flex;
+    align-items: stretch;
+    gap: 0.75rem;
+    min-height: 52px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+    padding: 0 0.8rem;
+    background: var(--bg-surface);
+    cursor: pointer;
+    transition: background 0.15s var(--ease);
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+.track-item:last-child { border-bottom:none; }
+.track-item:hover { background: var(--bg-hover); }
+.track-item.selected { background: rgba(110, 231, 255, 0.08); }
+.track-item.active {
+    background: var(--accent-dim);
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.32);
+}
+.track-item.active .track-title {
+    color: #f0fff8;
+}
+.track-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.92rem;
+    font-weight: 500;
+}
+.track-artist {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    min-width: 90px;
+    text-align: right;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.album-detail-tracks .track-row-favorite {
+    margin-left: .1rem;
+}
+
+/* ============================================================
+   Library list rows — shared card language with the album detail
+   (rounded bordered rows, stacked title/sub, round play + heart).
+   Applies to the Tracks / Folders / Playlist lists only; the Albums
+   grid and the album-detail rows keep their existing rules.
+   ============================================================ */
+#tracks-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+#tracks-list .track-item {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    min-height: 0;
+    min-width: 0;
+    transition: background 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+#tracks-list .track-item:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+}
+#tracks-list .track-item.selected {
+    background: var(--accent-dim);
+    border-color: rgba(110, 231, 183, 0.35);
+}
+#tracks-list .track-item.active {
+    background: var(--accent-dim);
+    border-color: rgba(110, 231, 183, 0.45);
+}
+#tracks-list .track-item.active .track-play {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+#tracks-list .track-item.active .track-title {
+    color: #f0fff8;
+}
+#tracks-list .track-item .track-info {
+    flex: 1;
+    min-width: 0;
+    gap: 0.12rem;
+}
+#tracks-list .track-artist {
+    text-align: left;
+    min-width: 0;
+    flex-shrink: 1;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+#tracks-list .folder-item,
+#tracks-list .playlist-item {
+    align-items: center;
+}
+#tracks-list .folder-actions {
+    opacity: 0;
+}
+#tracks-list .folder-item:hover .folder-actions,
+#tracks-list .folder-actions:focus-within {
+    opacity: 1;
+}
+
+/* Small square album-cover thumbnail on the left of a track row, shared
+   with the streaming track rows. */
+.track-thumb {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 auto;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--bg-elevated);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.track-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.track-thumb:empty {
+    background-color: #080808;
+    background-image: url('/static/artwork-placeholder.svg?v=2');
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+}
+
+/* ============================================================
+   Download / import shared
+   ============================================================ */
+.download-form {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+.library-import-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 0.95rem;
+}
+.library-import-option {
+    min-width: 0;
+}
+.library-import-option .upload-area {
+    min-height: 124px;
+}
+.library-import-option .upload-area-text,
+.upload-area-url-station .upload-area-text {
+    min-height: 2.6em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.library-import-option .upload-area-filename,
+.upload-area-url-station .upload-area-filename {
+    min-height: 1.2em;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 500;
+    line-height: 1.35;
+}
+.upload-area-url {
+    margin-bottom: 0.75rem;
+    padding: 1rem 1rem 0.95rem;
+    border-style: solid;
+    background: linear-gradient(180deg, rgba(110,231,183,0.05), rgba(110,231,183,0.04));
+}
+.upload-area-url-primary {
+    min-height: 124px;
+    border-width: 2px;
+    border-style: dashed;
+    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(110,231,183,0.05));
+}
+.upload-area-file-primary {
+    min-height: 124px;
+}
+.upload-area-url-station {
+    min-height: 112px;
+    border-width: 2px;
+    border-style: dashed;
+    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(110,231,183,0.05));
+}
+.upload-area-url .upload-area-icon {
+    font-size: 1.1rem;
+}
+.upload-area-url-primary .upload-area-icon {
+    font-size: 1.4rem;
+}
+.upload-area-url-station .upload-area-icon {
+    font-size: 1.45rem;
+}
+.upload-area-url .upload-area-text,
+.upload-area-file-primary .upload-area-text,
+.upload-area-url-station .upload-area-text {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+.upload-area-text-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0.015;
+    border: 0;
+    background: transparent;
+    color: transparent;
+    cursor: text;
+    z-index: var(--z-raised);
+}
+.upload-area-text-input:focus {
+    outline: none;
+}
+.library-import-cancel-row {
+    justify-content: flex-end;
+    margin-top: -0.1rem;
+}
+
+.download-form .btn-primary,
+.download-form .btn-secondary,
+.download-form .btn-danger {
+    min-width: fit-content;
+}
+.url-input {
+    flex: 1;
+    max-width: 100%;
+    min-width: 200px;
+    padding: 0.7rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    font-family: inherit;
+    transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+    box-sizing: border-box;
+    min-height: 44px;
+}
+.url-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.url-input::placeholder { color: var(--text-muted); }
+.download-status {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 1.1rem 1.25rem;
+    min-height: 80px;
+    font-size: 0.9rem;
+}
+.library-import-panel .download-status {
+    min-height: 0;
+}
+.download-progress { margin-bottom: 0.5rem; }
+.progress-bar {
+    width: 100%;
+    height: 6px;
+    background: var(--bg-elevated);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 0.6rem 0;
+}
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+    border-radius: 3px;
+    transition: width 0.3s var(--ease);
+    width: 0%;
+}
+
+/* =========================================================================
+   Spotify tab: the tab renders through the shared streaming shell today
+   (static/streaming.js .streaming-shell), so the legacy in-tab player rules
+   are gone. No provider-specific panel offset may exist — Spotify and Qobuz
+   must start at the same height.
+   ========================================================================= */
+
+/* ============ Cover detail card (shared radio/library) ============ */
+.cover-detail-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-cover-detail-backdrop);
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
+.cover-detail-card {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(102px + 8px + 14px);
+    z-index: var(--z-cover-detail);
+    width: min(720px, calc(100vw - 2rem));
+    max-height: calc(100vh - 102px - 8px - 14px - 1rem);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--bg-hover) transparent;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xl);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    padding: 0.95rem;
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    grid-template-areas:
+        "cover info"
+        "cover history"
+        "cover queue";
+    gap: 0.85rem 1.1rem;
+    align-items: start;
+    touch-action: manipulation;
+}
+/* Wide layout, local playback with an active queue: move the whole meta
+   block (incl. tech line and tag-info block) under the cover into the left
+   column; the right column then holds only the queue heading + list.
+   Radio, library without a queue and the narrow layout keep the original
+   arrangement (queue section carries .hidden when no queue is active). */
+
+.cover-detail-cover-col {
+    grid-area: cover;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    min-width: 0;
+}
+.cover-detail-cover {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: var(--radius-lg);
+    background: var(--bg-hover);
+    display: block;
+}
+.cover-detail-extra {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+    min-width: 0;
+}
+.cover-detail-extra-line {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cover-detail-info {
+    grid-area: info;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.cover-detail-source {
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--accent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cover-detail-title {
+    font-size: 1.15rem;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+.cover-detail-artist {
+    font-size: 0.95rem;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cover-detail-album {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cover-detail-tech {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono, monospace);
+    margin-top: 0.15rem;
+}
+.cover-detail-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    min-width: 0;
+}
+.cover-detail-heading {
+    margin: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+.cover-detail-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.cover-detail-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.38rem 0.55rem;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    min-width: 0;
+}
+.cover-detail-row.current {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+}
+/* Library queue rows are interactive (jump to index via canonical play path).
+   Radio "Recently played" rows stay non-interactive. */
+.cover-detail-row[data-queue-index] {
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.cover-detail-row[data-queue-index]:hover {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.16);
+}
+.cover-detail-row[data-queue-index]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    background: rgba(255, 255, 255, 0.06);
+}
+.cover-detail-row[data-queue-index].current:hover {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    cursor: default;
+}
+.cover-detail-row-index {
+    flex: 0 0 auto;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    min-width: 1.4rem;
+    text-align: right;
+}
+.cover-detail-row-current-mark {
+    flex: 0 0 auto;
+    color: var(--accent);
+    font-size: 0.8rem;
+}
+.cover-detail-row-body {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+}
+.cover-detail-row-title {
+    font-size: 0.92rem;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cover-detail-row-artist {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#cover-detail-history {
+    grid-area: history;
+}
+#cover-detail-queue {
+    grid-area: queue;
+}
+.cover-detail-card::-webkit-scrollbar {
+    width: 5px;
+}
+.cover-detail-card::-webkit-scrollbar-track {
+    background: transparent;
+}
+.cover-detail-card::-webkit-scrollbar-thumb {
+    background: var(--bg-hover);
+    border-radius: 3px;
+}

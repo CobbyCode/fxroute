@@ -1,0 +1,690 @@
+/* =========================================================================
+   Responsive — consolidated (Task 4)
+   Playback: 3 canonical ranges (desktop/tablet/phone) + shared grouped by range
+   ========================================================================= */
+/* =========================================================================
+   Streaming provider tabs (Spotify / Qobuz / TIDAL)
+   ========================================================================= */
+.streaming-shell {
+    padding: 0.7rem 0;
+}
+.streaming-provider {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+}
+
+/* Player pages (Spotify/Qobuz) share one top-anchored stage: the now-playing
+   card starts at the top of the stage, so both pages have the same vertical
+   geometry no matter how their metadata heights differ. The provider status
+   lives inside the card (top-right chip); catalog providers (TIDAL) keep a
+   full-width browser surface with the standalone status line. */
+.streaming-provider-player {
+    min-height: calc(100dvh - 18rem);
+    justify-content: flex-start;
+}
+
+/* The shared hidden contract for every streaming component: the per-element
+   display rules below (flex/grid) must never override the JS-toggled hidden
+   attribute, otherwise empty state and now-playing card show at the same
+   time. Scoped to the streaming shell, provider-neutral. */
+.streaming-provider [hidden] {
+    display: none !important;
+}
+
+/* Empty / not-connected state */
+.streaming-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: min(100%, 960px);
+    margin: 0 auto;
+    padding: 1.5rem 1.25rem;
+    text-align: center;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    /* Standby is not an active state: neutral edge like the DSP cards. */
+    border-top: 3px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+}
+.streaming-empty-icon {
+    font-size: 2.25rem;
+    margin-bottom: 0.5rem;
+    opacity: 0.4;
+}
+.streaming-empty-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+}
+.streaming-empty-msg {
+    color: var(--text-muted);
+    font-size: 0.88rem;
+    margin: 0.3rem 0 0;
+    line-height: 1.45;
+    max-width: 34rem;
+}
+.streaming-empty-actions {
+    margin-top: 1rem;
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+/* Now-playing card — the shared player composition for Spotify/Qobuz. A
+   compact, centered single-column player: cover on top, metadata, transport
+   and a progress bar that stops well short of the card edges. Quality facts
+   live in the global footer meta-tag, not in the card. */
+.streaming-now-playing {
+    width: 100%;
+    max-width: 560px;
+    margin: 0 auto;
+    position: relative;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    /* Active playback keeps the mint edge (same logic as the DSP A/B card). */
+    border-top: 3px solid var(--accent);
+    border-radius: var(--radius-lg);
+    padding: 1.5rem 1.5rem 1.7rem;
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-areas:
+        "header"
+        "cover"
+        "meta"
+        "controls"
+        "secondary"
+        "progress";
+    justify-items: center;
+    text-align: center;
+    gap: 0.7rem;
+}
+/* Card header row: provider name left, status chip right — one calm,
+   symmetric line inside the card. Replaces the standalone page titles that
+   used to sit above the card. */
+.streaming-card-header {
+    grid-area: header;
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+.streaming-provider-name {
+    min-width: 0;
+    font-size: 0.8rem;
+    font-weight: 650;
+    letter-spacing: 0.03em;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* Shared connected-status pill for every streaming provider: one compact,
+   restrained status language in the Spotify/Qobuz card header and the TIDAL
+   browse toolbar. The mint dot is the only accent; the label stays muted gray
+   and the pill is clearly smaller and calmer than an action button (same
+   typography, height, radius and spacing everywhere). The provider/backend
+   detail lives in the tooltip. */
+.streaming-status {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    max-width: 62%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.1rem 0.55rem;
+}
+.streaming-status::before {
+    content: '';
+    flex: 0 0 auto;
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 50%;
+    background: var(--accent);
+}
+.streaming-cover-wrap {
+    grid-area: cover;
+    display: flex;
+    justify-content: center;
+}
+.streaming-cover {
+    width: 200px;
+    height: 200px;
+    border-radius: var(--radius-md);
+    object-fit: cover;
+    background: var(--bg-elevated);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+}
+.streaming-meta {
+    grid-area: meta;
+    min-width: 0;
+    width: 100%;
+    align-self: center;
+}
+.streaming-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.streaming-artist {
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 0.2rem;
+}
+.streaming-album {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    opacity: 0.85;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 0.2rem;
+}
+/* Transport */
+.streaming-controls {
+    grid-area: controls;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.15rem;
+}
+.streaming-btn {
+    background: var(--bg-elevated);
+    border: 1.5px solid var(--border-strong);
+    color: var(--text-primary);
+    border-radius: 50%;
+    width: 46px;
+    height: 46px;
+    font-size: 1.05rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, transform 0.1s, border-color 0.15s;
+}
+.streaming-btn:hover { background: var(--bg-hover); border-color: var(--accent); }
+.streaming-btn:active { transform: scale(0.93); }
+.streaming-btn-main {
+    width: 56px;
+    height: 56px;
+    font-size: 1.35rem;
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+    border-width: 2px;
+}
+.streaming-btn-main:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.streaming-secondary {
+    grid-area: secondary;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+}
+.streaming-btn-sm {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: var(--radius-sm);
+    min-width: 104px;
+    height: 34px;
+    padding: 0 0.75rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    user-select: none;
+}
+.streaming-btn-sm:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-strong);
+    background: var(--bg-hover);
+}
+.streaming-btn-sm.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-dim);
+}
+.streaming-btn-sm-icon { font-size: 0.95rem; line-height: 1; }
+.streaming-btn-sm-label { font-size: 0.78rem; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; }
+
+.streaming-progress-row {
+    grid-area: progress;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    max-width: 360px;
+    padding-top: 0.15rem;
+}
+.streaming-time {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    min-width: 2.5rem;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+.streaming-progress {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: var(--bg-elevated);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+    min-width: 0;
+}
+.streaming-progress::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+}
+.streaming-progress:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 4px rgba(110,231,183,.14);
+}
+.streaming-progress::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    cursor: pointer;
+}
+.streaming-progress:disabled { opacity: 0.4; cursor: default; }
+
+/* Provider content (TIDAL) */
+.streaming-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    width: 100%;
+}
+
+/* Auth */
+.streaming-auth {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    max-width: 42rem;
+}
+.streaming-auth-title { font-size: 1.05rem; font-weight: 700; color: var(--text-primary); margin: 0; }
+.streaming-auth-hint { color: var(--text-muted); font-size: 0.85rem; line-height: 1.45; margin: 0; }
+.streaming-auth-steps { margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; }
+.streaming-auth-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; margin-top: 0.25rem; }
+.streaming-auth-url-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.streaming-auth-url {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.76rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.6rem;
+    color: var(--text-secondary);
+    word-break: break-all;
+    user-select: all;
+}
+.streaming-auth-input { width: 100%; }
+.streaming-auth-device-code {
+    font-size: 1.6rem;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    color: var(--text-primary);
+    text-align: center;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.6rem;
+}
+.streaming-auth-error { color: var(--error, #f87171); font-size: 0.82rem; margin: 0; }
+
+/* Browse (categories / search). Spans the full content column — the same
+   width the album/playlist detail header uses — so the toolbar actions and
+   the search group (right-aligned in rows 1/2) share one right edge with
+   the detail Back button and browse <-> detail never shifts horizontally. */
+.streaming-browse {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.tidal-toolbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.4rem 0.8rem;
+}
+.tidal-toolbar-title {
+    margin: 0;
+    justify-self: start;
+}
+.tidal-toolbar-actions {
+    justify-self: end;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+/* Second row: the single Tracks/Albums/Artists/Playlists navigation left,
+   search group right — the library pattern. All four categories share the
+   compact .view-tab component (no separate Favorites level, no inner
+   category chips), and the subbar carries the underline. */
+.tidal-subbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 0.8rem;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border-strong);
+    padding-bottom: 0.5rem;
+}
+.tidal-subbar .view-tabs {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+.tidal-subbar .streaming-search {
+    min-width: 0;
+    width: min(100%, 430px);
+    margin-left: auto;
+}
+.streaming-search { display: flex; flex-direction: column; gap: 0.7rem; }
+.streaming-search-row { display: flex; gap: 0.5rem; align-items: center; width: 100%; }
+.streaming-search-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100%;
+    height: 44px;
+    padding: 0.55rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.86rem;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+.streaming-search-input::placeholder { color: var(--text-muted); }
+.streaming-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+
+.streaming-results { min-height: 2rem; }
+#tidal-fav-results,
+#tidal-search-items { margin-top: 0.35rem; }
+.tidal-search-results-header { display: flex; flex-direction: column; gap: 0.6rem; }
+.streaming-results-title { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 700; }
+.streaming-results-heading {
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin: 0.9rem 0 0.4rem;
+}
+.streaming-results-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.streaming-result-cover {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 auto;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--bg-elevated);
+}
+.streaming-result-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Neutral placeholder for rows without art (e.g. TIDAL artists without a
+   picture). */
+.streaming-result-cover:empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #080808;
+    background-image: url('/static/artwork-placeholder.svg?v=2');
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+}
+.streaming-result-info,
+.streaming-result .track-info { flex: 1; min-width: 0; }
+
+
+.streaming-detail { display: flex; flex-direction: column; gap: 0.7rem; }
+/* The detail header grid (cover/meta/back) is the shared rule defined with
+   .album-detail-header above; this block keeps the streaming-specific chrome. */
+.streaming-detail-cover {
+    width: 132px;
+    height: 132px;
+    flex: 0 0 auto;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-elevated);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+}
+.streaming-detail-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.streaming-detail-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+.streaming-detail-title {
+    min-width: 0;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+    /* Long titles wrap inside the meta column like the library album title;
+       they are never clipped or pushed out of the container. */
+}
+.streaming-detail-artist {
+    min-width: 0;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+.streaming-detail-facts {
+    min-width: 0;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin: 0;
+}
+
+/* TIDAL detail-specific type and spacing sit on top of the shared artwork-led
+   hero. Album, artist and playlist retain their existing actions and facts. */
+.tidal-detail-header .streaming-detail-cover {
+    width: 160px;
+    height: 160px;
+    border-radius: 14px;
+}
+.tidal-detail-meta { gap: 0.3rem; }
+.tidal-detail-title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.45rem;
+    min-width: 0;
+    max-width: 100%;
+}
+.tidal-detail-title-row .streaming-detail-title {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.tidal-detail-title { font-size: 1.4rem; font-weight: 700; }
+.tidal-detail-artist { font-size: 1rem; color: var(--text-secondary); margin: 0; }
+.tidal-detail-facts { font-size: 0.86rem; color: var(--text-secondary); line-height: 1.35; margin: 0; }
+
+/* TIDAL playlist header info: the description or the single-artist about
+   share the album facts rhythm; long descriptions stay bounded. */
+.tidal-playlist-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 0;
+    max-width: 64ch;
+    margin-top: 0.2rem;
+}
+.tidal-playlist-description {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    line-height: 1.45;
+}
+
+/* TIDAL artist about: directly visible in the hero, reusing the library
+   .album-detail-about text styling (colors, size, max-width) without its
+   accordion. Long bios clamp to a few lines with a subtle More/Less toggle. */
+.tidal-artist-about { margin-top: 0.5rem; }
+.streaming-about-text {
+    margin: 0;
+    max-width: 64ch;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    line-height: 1.45;
+}
+.streaming-about-text.is-clamped {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.about-more-toggle {
+    margin-top: 0.3rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.8rem;
+    font-weight: 650;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.about-more-toggle:hover { color: var(--text-secondary); }
+.about-more-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* TIDAL Albums / Artists / Playlists browse surfaces reuse the Library
+   album-card grid + tile so they look the same as the local collection:
+   large square cover, name, subtitle, heart in the corner. Track lists
+   keep the compact streaming-result rows. */
+.tidal-tiles {
+    display: grid;
+    /* Same shared tile basis as the Library albums grid so both surfaces
+       keep one tile rhythm; radio reads its narrower derivative token. */
+    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)));
+    justify-content: center;
+    gap: var(--tile-gap);
+    margin-top: 1.25rem;
+    list-style: none;
+    padding: 0;
+}
+.tidal-tiles .album-card .streaming-fav {
+    position: absolute;
+    top: 0.55rem;
+    right: 0.55rem;
+    z-index: var(--z-raised);
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    background: rgba(8, 18, 26, 0.72);
+    backdrop-filter: blur(4px);
+}
+/* List view: the heart leaves the cover corner and joins the row end
+   (same canonical favorite control, only repositioned). */
+.tidal-tiles.is-list .album-card .streaming-fav {
+    position: static;
+    order: 5;
+    z-index: auto;
+    width: 34px;
+    height: 34px;
+    min-height: 34px;
+    margin-left: auto;
+    background: transparent;
+    backdrop-filter: none;
+}
+
+/* Discover Similar artist tiles: cover placeholder (reuses the shared
+   .streaming-result-cover tile) + name, responsive grid. */
+.streaming-similar-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)));
+    justify-content: center;
+    gap: var(--tile-gap);
+    width: 100%;
+    max-width: calc(100% - 2rem);
+    margin: 0.5rem auto 0;
+    padding: 0;
+    list-style: none;
+}
+.streaming-similar-item {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.streaming-similar-item .streaming-result-cover {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    border-radius: 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    overflow: hidden;
+}
+.streaming-similar-item .streaming-result-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.streaming-similar-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-weight: 600;
+    text-align: center;
+}
+.streaming-similar-item:hover .streaming-similar-name { color: var(--text-primary); }

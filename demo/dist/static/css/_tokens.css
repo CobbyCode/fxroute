@@ -1,0 +1,86 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* FXRoute — Redesigned Styles */
+/* Dark, warm, product-like. Touch-friendly. */
+
+/* Geist variable (SIL OFL 1.1, bundled in static/fonts/): one file covers
+   all weights, so no extra cuts are needed. font-display: swap keeps first
+   paint on the system fallback. */
+@font-face {
+    font-family: 'Geist';
+    src: url('fonts/Geist.woff2?v=0.9.149') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Geist Mono';
+    src: url('fonts/GeistMono.woff2?v=0.9.149') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
+:root {
+    --bg-primary:    #0d0d0f;
+    --bg-surface:    #161619;
+    --bg-elevated:   #1e1e22;
+    --bg-hover:      #26262b;
+    --bg-input:      #1c1c20;
+    --text-primary:   #ececf0;
+    --text-secondary: #a0a0ac;
+    --text-muted:     #848490;
+    --accent:        #6ee7b7;   /* fresh teal */
+    --accent-dim:    rgba(110, 231, 183, 0.12);
+    --accent-hover:  #4dd8a0;
+    --danger:        #f87171;
+    --danger-dim:    rgba(248, 113, 113, 0.12);
+    --success:       #34d399;
+    --border:        rgba(255, 255, 255, 0.06);
+    --border-strong: rgba(255, 255, 255, 0.10);
+    --scrollbar:     var(--bg-hover);
+    --shadow:        rgba(0, 0, 0, 0.4);
+    --radius-sm:  8px;
+    --radius-md:  12px;
+    --radius-lg:  16px;
+    --radius-xl:  20px;
+    --action-gap: 12px;
+    --action-gap-mobile: 8px;
+    /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
+       cards derive their column sizing from these two values so all three
+       surfaces keep one tile rhythm across breakpoints. Radio reads a
+       narrower derivative; vertical scroll comfort beats horizontal fill. */
+    --tile-min: 208px;
+    --tile-min-radio: 164px;
+    --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
+    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    --playback-footer-space: 142px;
+    /* Stacking-order tokens: semantic names for the layering the stylesheet
+       already implements. Values are the historical literal z-index numbers,
+       preserved exactly so the visible order is unchanged; the tokens only
+       make the hierarchy legible and give one place to adjust a layer.
+       Ascending from the page background to the topmost transient layer. */
+    --z-underlay:        0;      /* blurred detail-hero backdrop */
+    --z-base:            1;      /* badges, hero gradient overlays, seat in the room view */
+    --z-raised:          2;      /* interactive controls on tiles/covers, room mic, cover */
+    --z-tabs:            4;      /* tab bar (header) */
+    --z-header-menu:     80;     /* open power menu */
+    --z-playback-bar:    100;    /* fixed playback footer */
+    --z-banner:          1002;   /* offline/disconnect banner */
+    --z-toast:           1005;   /* transient toasts */
+    --z-header-menu-open: 1006;  /* header stacking context raised while the menu is open */
+    --z-cover-detail-backdrop: 1040;
+    --z-cover-detail:    1041;   /* cover detail card */
+    --z-overlay:         1100;   /* generic modal overlay (manage/settings) */
+    --z-measurement:     1200;   /* measurement dialog overlay */
+    --z-measurement-hybrid: 1230;/* hybrid measurement overlay */
+    --z-skip-link:       2000;   /* visually-hidden skip link */
+    --z-tooltip:         3000;   /* custom header tooltips */
+    --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    --font-mono: 'Geist Mono', ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    /* Native form controls (select option popups, autofill, scrollbars)
+       follow the dark theme instead of the system light scheme. */
+    color-scheme: dark;
+    /* Native control accents (checkboxes, radios) use the brand mint. */
+    accent-color: var(--accent);
+}
