@@ -157,6 +157,13 @@ class SpotifyBackendTests(unittest.IsolatedAsyncioTestCase):
              mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=True):
             self.assertEqual(await detect_backend(), "spotifyd")
 
+    async def test_detect_backend_prefers_running_spotifyd_standby_over_desktop_profile(self):
+        with mock.patch("streaming.spotify.mpris.list_players", new=_players([])), \
+             mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=True), \
+             mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=True), \
+             mock.patch("streaming.spotify.mpris.spotifyd_standby", return_value=True):
+            self.assertEqual(await detect_backend(), "spotifyd")
+
     async def test_detect_backend_none_when_neither_installed(self):
         with mock.patch("streaming.spotify.mpris.list_players", new=_players([])), \
              mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=False), \
