@@ -6666,9 +6666,6 @@ async function createDualFilterPreset() {
         formData.append('headroom_gain_db', String(extras.headroomGainDb));
         formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
         formData.append('autogain_target_db', String(extras.autogainTargetDb));
-        formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
-        formData.append('delay_left_ms', String(extras.delayLeftMs));
-        formData.append('delay_right_ms', String(extras.delayRightMs));
         formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
         formData.append('bass_amount', String(extras.bassAmount));
         formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
@@ -8220,9 +8217,6 @@ function appendMeasurementConvolverExtras(formData) {
     formData.append('headroom_gain_db', String(extras.headroomGainDb));
     formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
     formData.append('autogain_target_db', String(extras.autogainTargetDb));
-    formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
-    formData.append('delay_left_ms', String(extras.delayLeftMs));
-    formData.append('delay_right_ms', String(extras.delayRightMs));
     formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
     formData.append('bass_amount', String(extras.bassAmount));
     formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
@@ -12012,9 +12006,6 @@ async function importRewPeqPreset() {
     formData.append('headroom_gain_db', String(extras.headroomGainDb));
     formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
     formData.append('autogain_target_db', String(extras.autogainTargetDb));
-    formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
-    formData.append('delay_left_ms', String(extras.delayLeftMs));
-    formData.append('delay_right_ms', String(extras.delayRightMs));
     formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
     formData.append('bass_amount', String(extras.bassAmount));
     formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
@@ -13183,9 +13174,6 @@ async function createConvolverPreset() {
     formData.append('headroom_gain_db', String(extras.headroomGainDb));
     formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
     formData.append('autogain_target_db', String(extras.autogainTargetDb));
-    formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
-    formData.append('delay_left_ms', String(extras.delayLeftMs));
-    formData.append('delay_right_ms', String(extras.delayRightMs));
     formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
     formData.append('bass_amount', String(extras.bassAmount));
     formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
