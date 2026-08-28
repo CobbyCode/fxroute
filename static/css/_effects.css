@@ -455,9 +455,12 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-subwoofer-channel-group {
     grid-column: 3 / -1;
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    /* Polarity (short "Norm"/"Inv" select) needs clearly less width than
+       Level/Alignment: giving it a smaller track frees room so the number
+       columns keep their compact controls while the gaps grow calmer. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.78fr);
     align-items: end;
-    gap: 0.7rem;
+    gap: 0.8rem;
     background: rgba(8, 47, 73, 0.2);
     border-color: rgba(110, 231, 183, 0.26);
 }
@@ -533,16 +536,19 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 /* Subwoofer selects share the common #tab-effects control metrics; these
-   rules only cap the inline width so the compact groups stay aligned. */
-#tab-effects .effects-subwoofer-polarity-select,
+   rules only cap the inline width so the compact groups stay aligned. The
+   polarity cap matches the short "Norm"/"Inv" options so no dead space
+   opens between the text and the native arrow. */
 #tab-effects .effects-subwoofer-compact-select {
     width: min(100%, 5.2rem);
     min-width: 0;
     max-width: 100%;
 }
 
-#tab-effects .effects-subwoofer-compact-select {
-    width: min(100%, 4.8rem);
+#tab-effects .effects-subwoofer-polarity-select {
+    width: min(100%, 4.6rem);
+    min-width: 0;
+    max-width: 100%;
 }
 
 .effects-filter-import-area.is-busy {
@@ -740,7 +746,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .delay-input-wrap {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
+    /* Stepper wraps hold a single child, so this gap only spaces the
+       SPL-calibration number from its unit; keep it snug like the steppers. */
+    gap: 0.2rem;
 }
 
 /* Bigger up/down arrows for number inputs */
@@ -754,9 +762,13 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .delay-unit {
     flex-shrink: 0;
-    font-size: 0.82rem;
-    color: var(--text-secondary);
+    /* Match .stepper-unit typography so every number+unit pair reads the
+       same across the UI. */
+    color: var(--text-muted);
+    font-size: 0.78rem;
     font-weight: 600;
+    line-height: 1;
+    user-select: none;
 }
 
 .effects-extras-feedback {
@@ -1094,7 +1106,11 @@ input[type="number"]::-webkit-outer-spin-button {
     max-width: 100%;
     min-width: 0;
     flex: 0 0 auto;
-    width: 5.2rem;
+    /* Steppers override width/alignment below; outside them this class now
+       only styles the SPL-calibration field: centered value, width sized to
+       the widest entry ("130.0") so the unit sits close like in steppers. */
+    width: 4.6rem;
+    text-align: center;
 }
 #tab-effects .delay-field-compact .delay-number-input {
     width: 4.6rem;
