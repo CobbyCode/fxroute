@@ -5276,7 +5276,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
    rules only cap the inline width so the compact groups stay aligned. */
 #tab-effects .effects-subwoofer-polarity-select,
 #tab-effects .effects-subwoofer-compact-select {
-    width: min(100%, 5.6rem);
+    width: min(100%, 5.2rem);
     min-width: 0;
     max-width: 100%;
 }
@@ -5928,17 +5928,20 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 #tab-effects .stepper-control .stepper-input {
-    width: 2.6rem;
+    width: 2.7rem;
     min-width: 0;
     min-height: 0;
     height: auto;
     border: 0;
     background: transparent;
-    /* Centering must come only from internal presentation: the compact
-       width/padding are load-bearing for the 3-column sub rows (Level /
-       Alignment / Polarity share tight 1fr tracks) and must not grow. */
+    /* Centering and readability come only from internal presentation: the
+       compact outer size is load-bearing for the 3-column sub rows (Level /
+       Alignment / Polarity share tight 1fr tracks) and must stay near the
+       original footprint. Zero horizontal padding lets the full value
+       ("-39.9", "-12.5") render unclipped at the unchanged width and puts
+       the unit snug against the value area. */
     text-align: center;
-    padding: 0.35rem 0.1rem;
+    padding: 0.35rem 0;
     font-size: 0.92rem;
 }
 
