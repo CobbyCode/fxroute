@@ -2,15 +2,17 @@
 
 """Focused tests for the qbzd journal-driven remote volume coupling.
 
-Verifies that FXRoute maps the phone slider intent (``volume_mode=locked:
-ignoring remote SetVolume(0.NNN); player stays at 100%`` journal line) onto
-master *deltas* through the shared translator, without ever touching qbzd's
-own gain or the Loudness work point.
+Verifies the absolute-adoption contract (2026-08-28 revision, live-verified on
+.104): the Qobuz app maintains a persistent per-renderer volume slider and
+pushes its value on Connect activation and on every gesture (0.01-step slider
+drags). The FXRoute master therefore *adopts* each observed locked-mode value
+instead of applying deltas — the previous anchor+delta design left the phone
+display and the master permanently offset (phone 0% vs master 13%, gestures
+moving both in parallel), while absolute adoption is Spotify-Connect-like sync.
 
-Live-verified contract (2026-08-21, .104): the Qobuz app pushes its own media
-volume as an absolute remote SetVolume right after every Connect activation.
-That value anchors the controller scale and must never move the master; only
-later changes are user gestures applied as relative steps.
+The 2026-08-21 anchor rationale ("the activation push is the phone's media
+volume and must never move the master") was disproved by the same traces: the
+push equals the app's own slider state, not the ephemeral media volume.
 
 No journald or subprocess is required: the parser, the debouncing translator
 and the async watch loop are exercised with canned input.
@@ -80,7 +82,7 @@ class ParseTests(unittest.TestCase):
 
     def test_timestamped_journal_prefix_is_accepted(self):
         line = (
-            "Aug 21 05:46:25 fxroute qbzd[1076]: 2026-08-21 05:46:25.846 INFO  "
+            "Aug 28 21:11:10 fxroute qbzd[1079]: 2026-08-28 21:11:10.647 INFO  "
             "qbzd::qconnect::engine " + _LOCKED_LINE
         )
         self.assertEqual(parse_ignored_volume(line), 45)
@@ -112,87 +114,82 @@ class ParseTests(unittest.TestCase):
         self.assertFalse(is_software_volume_apply(None))
 
 
-class DeltaTranslatorTests(unittest.IsolatedAsyncioTestCase):
-    """The shared delta semantics: anchor first, deltas afterwards."""
+class AbsoluteTranslatorTests(unittest.IsolatedAsyncioTestCase):
+    """Every observed value is an absolute renderer-volume intent."""
 
     def _translator(self, applied, active=True):
-        async def apply_delta(delta):
-            applied.append(delta)
+        async def apply_value(value):
+            applied.append(value)
 
         return QobuzRemoteVolumeTranslator(
             is_active=lambda: active,
-            apply_volume_delta=apply_delta,
+            apply_volume_value=apply_value,
         )
 
-    async def test_first_value_anchors_without_applying(self):
+    async def test_first_session_value_adopts_controller_volume(self):
+        # The activation push is the app's renderer slider: the master adopts
+        # it, which is what keeps the two displays aligned at connect time.
         applied = []
         translator = self._translator(applied)
-        self.assertFalse(translator.submit(100))
-        self.assertTrue(translator.anchored)
-        self.assertIsNone(translator.pending)
+        self.assertTrue(translator.submit(37))
+        self.assertEqual(translator.pending, 37)
         await translator.flush()
-        self.assertEqual(applied, [])
+        self.assertEqual(applied, [37])
 
-    async def test_next_value_applies_relative_delta(self):
+    async def test_next_value_writes_absolute_not_delta(self):
         applied = []
         translator = self._translator(applied)
         translator.submit(100)
-        self.assertTrue(translator.submit(96))
         await translator.flush()
-        self.assertEqual(applied, [-4])
+        translator.submit(96)
+        await translator.flush()
+        self.assertEqual(applied, [100, 96])
 
-    async def test_burst_applies_net_delta_exactly_once(self):
+    async def test_burst_collapses_to_latest_value(self):
         applied = []
         translator = self._translator(applied)
         translator.submit(100)
         translator.submit(99)
         translator.submit(98)
-        self.assertEqual(translator.pending, -2)
+        self.assertEqual(translator.pending, 98)
         await translator.flush()
-        self.assertEqual(applied, [-2])
-        # A following single step continues from the advanced anchor.
-        translator.submit(94)
-        await translator.flush()
-        self.assertEqual(applied, [-2, -4])
+        self.assertEqual(applied, [98])
 
-    async def test_round_trip_back_to_anchor_nets_zero(self):
+    async def test_identical_repeat_produces_no_write(self):
         applied = []
         translator = self._translator(applied)
         translator.submit(100)
-        translator.submit(96)
-        translator.submit(100)
-        self.assertIsNone(translator.pending)
         await translator.flush()
-        self.assertEqual(applied, [])
-
-    async def test_identical_repeat_value_produces_no_delta(self):
-        applied = []
-        translator = self._translator(applied)
-        translator.submit(100)
         self.assertFalse(translator.submit(100))
         await translator.flush()
-        self.assertEqual(applied, [])
+        self.assertEqual(applied, [100])
 
-    async def test_activation_resets_anchor_and_pending(self):
+    async def test_fresh_session_readopts_same_value(self):
+        # The dedupe only holds inside a session: after a reactivation the
+        # connect-time push must adopt again, even for the same value.
+        applied = []
+        translator = self._translator(applied)
+        translator.submit(50)
+        await translator.flush()
+        translator.observe_activation()
+        self.assertTrue(translator.submit(50))
+        await translator.flush()
+        self.assertEqual(applied, [50, 50])
+
+    async def test_pending_value_is_dropped_on_activation(self):
         applied = []
         translator = self._translator(applied)
         translator.submit(100)
-        translator.submit(96)
         translator.observe_activation()
-        self.assertFalse(translator.anchored)
         self.assertIsNone(translator.pending)
         await translator.flush()
         self.assertEqual(applied, [])
-        # The next observation re-anchors instead of applying a stale delta.
-        self.assertFalse(translator.submit(37))
-        await translator.flush()
-        self.assertEqual(applied, [])
 
-    async def test_inactive_owner_drops_intent_and_anchor(self):
+    async def test_inactive_owner_drops_intent(self):
         applied = []
         translator = self._translator(applied, active=False)
         self.assertFalse(translator.submit(50))
-        self.assertFalse(translator.anchored)
+        self.assertIsNone(translator.pending)
         await translator.flush()
         self.assertEqual(applied, [])
 
@@ -200,111 +197,78 @@ class DeltaTranslatorTests(unittest.IsolatedAsyncioTestCase):
         applied = []
         translator = self._translator(applied, active=True)
         translator.submit(100)
-        translator.submit(96)
         translator.is_active = lambda: False
         await translator.flush()
         self.assertEqual(applied, [])
+        self.assertIsNone(translator.pending)
 
-    async def test_failed_write_preserves_delta_for_retry(self):
+    async def test_failed_write_keeps_value_for_retry(self):
         applied = []
         attempts = 0
 
-        async def apply_delta(delta):
+        async def apply_value(value):
             nonlocal attempts
             attempts += 1
             if attempts == 1:
                 raise RuntimeError("temporary volume failure")
-            applied.append(delta)
+            applied.append(value)
 
         translator = QobuzRemoteVolumeTranslator(
             is_active=lambda: True,
-            apply_volume_delta=apply_delta,
+            apply_volume_value=apply_value,
         )
         translator.submit(40)
         translator.submit(70)
 
         with self.assertRaisesRegex(RuntimeError, "temporary volume failure"):
             await translator.flush()
-        self.assertTrue(translator.anchored)
-        self.assertEqual(translator.pending, 30)
+        self.assertEqual(translator.pending, 70)
 
         await translator.flush()
-        self.assertEqual(applied, [30])
+        self.assertEqual(applied, [70])
 
-    async def test_failed_write_rebases_observation_seen_during_write(self):
+    async def test_committed_write_with_failed_readback_retries_idempotently(self):
+        # Absolute writes are idempotent: a readback failure after a committed
+        # write is retried with the same value and can never double-apply.
         applied = []
         attempts = 0
-        write_started = asyncio.Event()
-        release_write = asyncio.Event()
 
-        async def apply_delta(delta):
+        async def apply_value(value):
             nonlocal attempts
             attempts += 1
+            applied.append(value)
             if attempts == 1:
-                write_started.set()
-                await release_write.wait()
-                raise RuntimeError("temporary volume failure")
-            applied.append(delta)
+                raise RuntimeError("readback failed after set")
 
         translator = QobuzRemoteVolumeTranslator(
             is_active=lambda: True,
-            apply_volume_delta=apply_delta,
+            apply_volume_value=apply_value,
         )
-        translator.submit(40)
         translator.submit(70)
-        flush_task = asyncio.create_task(translator.flush())
-        await write_started.wait()
-        translator.submit(100)
-        release_write.set()
-
-        with self.assertRaisesRegex(RuntimeError, "temporary volume failure"):
-            await flush_task
-        self.assertEqual(translator.pending, 60)
-
+        with self.assertRaisesRegex(RuntimeError, "readback failed"):
+            await translator.flush()
+        self.assertEqual(translator.pending, 70)
         await translator.flush()
-        self.assertEqual(applied, [60])
-
-    async def test_applied_write_failure_commits_without_retrying_delta(self):
-        class AppliedWriteError(RuntimeError):
-            volume_write_applied = True
-
-        applied = []
-
-        async def apply_delta(delta):
-            applied.append(delta)
-            raise AppliedWriteError("readback failed after set")
-
-        translator = QobuzRemoteVolumeTranslator(
-            is_active=lambda: True,
-            apply_volume_delta=apply_delta,
-        )
-        translator.submit(40)
-        translator.submit(70)
-        await translator.flush()
-
-        self.assertEqual(applied, [30])
-        self.assertIsNone(translator.pending)
-        self.assertFalse(translator.submit(70))
-        self.assertTrue(translator.submit(65))
+        self.assertEqual(applied, [70, 70])
 
     async def test_owner_loss_cancels_inflight_write(self):
-        active = True
         applied = []
         write_started = asyncio.Event()
         write_cancelled = asyncio.Event()
 
-        async def apply_delta(delta):
+        async def apply_value(value):
             write_started.set()
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 write_cancelled.set()
                 raise
-            applied.append(delta)
+            applied.append(value)
 
+        active = True
         translator = QobuzRemoteVolumeTranslator(
             is_active=lambda: active,
-            apply_volume_delta=apply_delta,
+            apply_volume_value=apply_value,
         )
         translator.submit(40)
         translator.submit(70)
@@ -316,7 +280,6 @@ class DeltaTranslatorTests(unittest.IsolatedAsyncioTestCase):
         await flush_task
 
         self.assertEqual(applied, [])
-        self.assertFalse(translator.anchored)
         self.assertIsNone(translator.pending)
 
 
@@ -351,6 +314,7 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
     def _fake_spawn(self, proc):
         async def spawn(*args, **kwargs):
             return proc
+
         return spawn
 
     def _real_sleep_patch(self, watch):
@@ -358,11 +322,11 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         # timeout; patched AsyncMocks would starve it (no await yields).
         return mock.patch.object(watch, "_sleep", new=lambda delay: asyncio.sleep(delay))
 
-    async def test_loop_applies_phone_deltas_when_qobuz_owns(self):
+    async def test_loop_applies_phone_values_when_qobuz_owns(self):
         applied = []
 
-        async def apply_delta(delta):
-            applied.append(delta)
+        async def apply_value(value):
+            applied.append(value)
 
         proc = self._fake_proc(lines=[
             _LOCKED_LINE,
@@ -373,7 +337,7 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
             ),
             debounce_seconds=0.0,
         )
@@ -384,16 +348,15 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
                 except asyncio.TimeoutError:  # loop waits on backoff forever after EOF
                     pass
             await asyncio.sleep(0.05)
-            # 45 anchors; 31 and 29 are gestures relative to the running anchor.
-            self.assertEqual(applied, [-14, -2])
+            self.assertEqual(applied, [45, 31, 29])
 
     async def test_value_seen_during_master_write_is_drained_without_next_event(self):
         applied = []
         write_started = asyncio.Event()
         release_write = asyncio.Event()
 
-        async def apply_delta(delta):
-            applied.append(delta)
+        async def apply_value(value):
+            applied.append(value)
             if len(applied) == 1:
                 write_started.set()
                 await release_write.wait()
@@ -401,74 +364,70 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
-                apply_volume_delta=apply_delta,
-            ),
-            debounce_seconds=0.0,
-        )
-
-        self.assertFalse(watch._translator.submit(40))  # anchor at 40
-        self.assertTrue(watch._translator.submit(70))   # pending 40 -> 70
-        watch._schedule_drain()
-        drain_task = watch._drain_task
-        self.assertIsNotNone(drain_task)
-        await write_started.wait()
-
-        self.assertTrue(watch._translator.submit(100))  # final value arrives mid-write
-        watch._schedule_drain()  # the active drain must retain this pending value
-        release_write.set()
-        await drain_task
-
-        self.assertEqual(applied, [30, 30])
-
-    async def test_failed_master_write_is_retried(self):
-        applied = []
-        attempts = 0
-
-        async def apply_delta(delta):
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise RuntimeError("temporary volume failure")
-            applied.append(delta)
-
-        watch = QobuzVolumeWatch(
-            QobuzVolumeWatchDependencies(
-                is_active=lambda: True,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
             ),
             debounce_seconds=0.0,
         )
 
         watch._translator.submit(40)
+        watch._schedule_drain()
+        drain_task = watch._drain_task
+        await write_started.wait()
+
+        watch._translator.submit(70)   # final value arrives mid-write
+        watch._schedule_drain()  # the active drain must retain this pending value
+        release_write.set()
+        await drain_task
+
+        self.assertEqual(applied, [40, 70])
+
+    async def test_failed_master_write_is_retried(self):
+        applied = []
+        attempts = 0
+
+        async def apply_value(value):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("temporary volume failure")
+            applied.append(value)
+
+        watch = QobuzVolumeWatch(
+            QobuzVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume_value=apply_value,
+            ),
+            debounce_seconds=0.0,
+        )
+
         watch._translator.submit(70)
         watch._schedule_drain()
         await watch._drain_task
 
-        self.assertEqual(applied, [30])
+        self.assertEqual(applied, [70])
 
     async def test_owner_loss_cancels_inflight_master_write(self):
-        active = True
         applied = []
         write_started = asyncio.Event()
         write_cancelled = asyncio.Event()
 
-        async def apply_delta(delta):
+        async def apply_value(value):
             write_started.set()
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 write_cancelled.set()
                 raise
-            applied.append(delta)
+            applied.append(value)
 
+        active = True
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: active,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
             ),
             debounce_seconds=0.0,
         )
-        watch._translator.submit(40)
         watch._translator.submit(70)
         watch._schedule_drain()
         drain_task = watch._drain_task
@@ -479,39 +438,36 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         await drain_task
 
         self.assertEqual(applied, [])
-        self.assertFalse(watch._translator.anchored)
         self.assertIsNone(watch._translator.pending)
 
     async def test_stop_resets_translator_after_cancelling_drain(self):
         write_started = asyncio.Event()
 
-        async def apply_delta(_delta):
+        async def apply_value(_value):
             write_started.set()
             await asyncio.Event().wait()
 
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
             ),
             debounce_seconds=0.0,
         )
-        watch._translator.submit(40)
         watch._translator.submit(70)
         watch._schedule_drain()
         await write_started.wait()
 
         await watch.stop()
 
-        self.assertFalse(watch._translator.anchored)
         self.assertIsNone(watch._translator.pending)
 
-    async def test_loop_respawns_after_eof_keeping_anchor(self):
+    async def test_loop_respawns_after_eof(self):
         applied = []
         spawned = []
 
-        async def apply_delta(delta):
-            applied.append(delta)
+        async def apply_value(value):
+            applied.append(value)
 
         first = self._fake_proc(lines=[_LOCKED_LINE])
         second = self._fake_proc(lines=[_locked_line("0.050")])
@@ -527,7 +483,7 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
             ),
             debounce_seconds=0.0,
         )
@@ -536,9 +492,9 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(asyncio.TimeoutError):
                     await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
         await asyncio.sleep(0.05)
-        # The respawn is transparent for an ongoing session: 45 anchored before
-        # the EOF, so the post-respawn 5 is a -40 gesture, not a new baseline.
-        self.assertEqual(applied, [-40])
+        # The respawn is transparent for an ongoing session: each observed
+        # value is written absolutely, across the journalctl restart.
+        self.assertEqual(applied, [45, 5])
         # journalctl was (re)spawned after the first EOF, with the tail command.
         self.assertGreaterEqual(len(spawned), 2)
         self.assertEqual(spawned[0][3], "qbzd.service")
@@ -546,14 +502,14 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
     async def test_loop_ignores_intents_while_qobuz_does_not_own(self):
         applied = []
 
-        async def apply_delta(delta):
-            applied.append(delta)
+        async def apply_value(value):
+            applied.append(value)
 
         proc = self._fake_proc(lines=[_LOCKED_LINE])
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: False,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
             ),
             debounce_seconds=0.0,
         )
@@ -564,102 +520,18 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
         self.assertEqual(applied, [])
 
-    async def test_inactive_volume_observation_reanchors_without_session_event(self):
-        applied = []
-        active = True
-
-        async def apply_delta(delta):
-            applied.append(delta)
-
-        proc = self._fake_proc(lines=[
-            _locked_line("0.400"),  # initial anchor
-            _locked_line("0.700"),  # would be a +30 gesture
-            _locked_line("0.800"),  # observed while ownership is lost
-            _locked_line("0.250"),  # new-session anchor, no SET_ACTIVE line
-            _locked_line("0.200"),  # first gesture in the new session
-        ], gap=0.0)
-        read_line = proc.stdout.readline
-        line_count = 0
-
-        async def read_with_owner_changes():
-            nonlocal active, line_count
-            line = await read_line()
-            line_count += 1
-            if line_count == 3:
-                active = False
-            elif line_count == 4:
-                active = True
-            return line
-
-        proc.stdout.readline = read_with_owner_changes
-        watch = QobuzVolumeWatch(
-            QobuzVolumeWatchDependencies(
-                is_active=lambda: active,
-                apply_volume_delta=apply_delta,
-            ),
-            debounce_seconds=0.0,
-        )
-        with mock.patch("asyncio.create_subprocess_exec", new=self._fake_spawn(proc)):
-            with self._real_sleep_patch(watch):
-                try:
-                    await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
-                except asyncio.TimeoutError:
-                    pass
-        await asyncio.sleep(0.05)
-
-        self.assertEqual(applied, [-5])
-
-    async def test_silent_owner_loss_reanchors_without_volume_event(self):
-        active = True
-        inactive_seen = asyncio.Event()
-        applied = []
-
-        def is_active():
-            if not active:
-                inactive_seen.set()
-            return active
-
-        async def apply_delta(delta):
-            applied.append(delta)
-
-        watch = QobuzVolumeWatch(
-            QobuzVolumeWatchDependencies(
-                is_active=is_active,
-                apply_volume_delta=apply_delta,
-            ),
-            debounce_seconds=0.0,
-        )
-        owner_monitor = asyncio.create_task(watch._monitor_owner_state())
-        try:
-            await asyncio.sleep(0)
-            self.assertFalse(watch._translator.submit(40))
-            active = False
-            await asyncio.wait_for(inactive_seen.wait(), timeout=1.0)
-            await asyncio.sleep(0)
-            self.assertFalse(watch._translator.anchored)
-
-            active = True
-            self.assertFalse(watch._translator.submit(25))
-            self.assertTrue(watch._translator.submit(20))
-            await watch._translator.flush()
-        finally:
-            owner_monitor.cancel()
-            await asyncio.gather(owner_monitor, return_exceptions=True)
-
-        self.assertEqual(applied, [-5])
-
     async def test_loop_warns_once_on_software_mode_lines(self):
         applied = []
 
-        async def apply_delta(delta):
-            applied.append(delta)
+        async def apply_value(value):
+            applied.append(value)
 
         software_line = "[QConnect] Renderer command applied: SetVolume { volume: Some(69) }"
         proc = self._fake_proc(lines=[software_line, software_line])
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
             ),
             debounce_seconds=0.0,
         )
@@ -675,23 +547,21 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(warn.call_count, 1)
         self.assertEqual(applied, [])
 
-
     async def test_loop_notifies_device_state_on_activation_lines(self):
         applied = []
         device_events = []
 
-        async def apply_delta(delta):
-            applied.append(delta)
+        async def apply_value(value):
+            applied.append(value)
 
         proc = self._fake_proc(lines=[
             _ACTIVATION_LINE,
             _locked_line("0.500"),
-            _DEACTIVATION_LINE,
         ])
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
                 on_device_active=lambda value: device_events.append(value),
             ),
             debounce_seconds=0.0,
@@ -703,17 +573,17 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
                 except asyncio.TimeoutError:
                     pass
             await asyncio.sleep(0.05)
-        # Selection tracking follows the renderer commands; the volume anchor
-        # still resets on activation (50 anchors, no master write).
-        self.assertEqual(device_events, [True, False])
-        self.assertEqual(applied, [])
+        # Selection tracking follows the renderer commands; the app's
+        # post-activation push is adopted absolutely.
+        self.assertEqual(device_events, [True])
+        self.assertEqual(applied, [50])
 
     async def test_bootstrap_recovers_last_selection_state(self):
         seen = []
         applied = []
 
-        async def apply_delta(delta):
-            applied.append(delta)
+        async def apply_value(value):
+            applied.append(value)
 
         history = "\n".join([
             _ACTIVATION_LINE,
@@ -733,7 +603,7 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
                 on_device_active=lambda value: seen.append(value),
             ),
             debounce_seconds=0.0,
@@ -747,8 +617,8 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         seen = []
         applied = []
 
-        async def apply_delta(delta):
-            applied.append(delta)
+        async def apply_value(value):
+            applied.append(value)
 
         class EmptyProc:
             returncode = 0
@@ -762,7 +632,7 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
                 on_device_active=lambda value: seen.append(value),
             ),
             debounce_seconds=0.0,
@@ -776,20 +646,22 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
 class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
     """The five contract scenarios, exercised end-to-end through the loop.
 
-    Source of truth: live trace on .104, 2026-08-21 06:06-06:07 — the phone
-    activated FXRoute via Connect and the app pushed SET_VOLUME 100 six seconds
-    later; the master jumped 37 -> 100 before any hardware press.
+    Source of truth: live traces on .104 — 2026-08-28 21:07-21:11, the phone
+    sat at 0% while the master stayed at 13%, and a drag up to 26% and back
+    netted +1 on the master (13 -> 14): deltas preserved the offset forever.
+    The absolute contract adopted here makes the master track the controller
+    value so both displays show the same number.
     """
 
     def _watch(self, applied, lines):
-        async def apply_delta(delta):
-            applied.append(delta)
+        async def apply_value(value):
+            applied.append(value)
 
         proc = _fake_proc_static(lines)
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
-                apply_volume_delta=apply_delta,
+                apply_volume_value=apply_value,
             ),
             debounce_seconds=0.0,
         )
@@ -805,53 +677,57 @@ class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
         await asyncio.sleep(0.05)
 
-    async def test_connect_activation_and_sync_push_do_not_move_master(self):
+    async def test_connect_activation_push_adopts_controller_volume(self):
         applied = []
         watch, proc = self._watch(applied, [
             _ACTIVATION_LINE,
-            _locked_line("1.000"),   # app pushes the phone's own media volume
+            _locked_line("1.000"),   # app pushes its renderer slider position
         ])
         await self._run(watch, proc)
-        self.assertEqual(applied, [])
+        self.assertEqual(applied, [100])
 
-    async def test_initial_source_value_100_does_not_move_master(self):
-        applied = []
-        watch, proc = self._watch(applied, [
-            _locked_line("1.000"),   # watcher start mid-session: pure baseline
-        ])
-        await self._run(watch, proc)
-        self.assertEqual(applied, [])
-
-    async def test_first_real_gesture_moves_master_by_its_delta(self):
+    async def test_gesture_moves_master_to_the_absolute_controller_value(self):
         applied = []
         watch, proc = self._watch(applied, [
             _ACTIVATION_LINE,
-            _locked_line("1.000"),   # connect sync anchors at 100
-            _locked_line("0.990"),   # first hardware press (down)
+            _locked_line("1.000"),
+            _locked_line("0.990"),   # first hardware/slider gesture
         ])
         await self._run(watch, proc)
-        self.assertEqual(applied, [-1])
+        # Push and gesture arrive within one debounce window in the static
+        # fixture, so they collapse to the latest controller value.
+        self.assertEqual(applied, [99])
+
+    async def test_drag_burst_lands_on_its_final_value(self):
+        applied = []
+        watch, proc = self._watch(applied, [
+            _locked_line("0.500"),
+            _locked_line("0.450"),
+            _locked_line("0.470"),   # drag continues; latest value wins
+        ])
+        await self._run(watch, proc)
+        self.assertEqual(applied[-1], 47)
 
     async def test_no_provider_master_feedback_loop(self):
         applied = []
         # A master write never reaches qbzd's journal, so the only observations
-        # are genuine remote values; repeats of already-applied values dedup.
+        # are genuine remote values; repeats of the applied value dedup.
         watch, proc = self._watch(applied, [
             _locked_line("0.500"),
             _locked_line("0.450"),
             _locked_line("0.450"),   # echo/repeat of the applied value
         ])
         await self._run(watch, proc)
-        self.assertEqual(applied, [-5])
+        self.assertEqual(applied, [45])
 
     async def test_loudness_work_point_is_never_touched(self):
-        # The bridge's only output is the canonical master delta writer; it has
-        # no handle on loudness state by construction. Pin the dependency
-        # surface: exactly is_active + apply_volume_delta + the optional
+        # The bridge's only output is the canonical master writer; it has no
+        # handle on loudness state by construction. Pin the dependency
+        # surface: exactly is_active + apply_volume_value + the optional
         # device-selection notifier, nothing else.
         self.assertEqual(
             set(QobuzVolumeWatchDependencies.__dataclass_fields__.keys()),
-            {"is_active", "apply_volume_delta", "on_device_active"},
+            {"is_active", "apply_volume_value", "on_device_active"},
         )
         applied = []
         watch, proc = self._watch(applied, [
@@ -859,7 +735,7 @@ class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
             _locked_line("0.480"),
         ])
         await self._run(watch, proc)
-        self.assertEqual(applied, [-2])
+        self.assertEqual(applied, [48])
 
 
 if __name__ == "__main__":

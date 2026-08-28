@@ -16,15 +16,25 @@ maps each intent onto the canonical FXRoute master volume. qbzd's own gain is
 never written here; the unity pin lives at the Qobuz claim/start path
 (``set_volume(100)`` works in locked mode through the local control plane).
 
-Remote values are translated into master *deltas* (see
-:mod:`playback.remote_volume`): the first value after a Connect activation is
-the controller scale's anchor and never moves the master — live-verified on
-.104, the Qobuz app pushes its own media volume as an absolute SetVolume right
-after every activation, which previously hijacked the master (37 -> 100).
+Remote values are translated into **absolute master writes** (see
+:class:`playback.remote_volume.RemoteVolumeAbsoluteTranslator`): the Qobuz app
+maintains a persistent per-renderer volume slider and pushes its value on
+Connect activation and on every gesture (live-verified on .104, 2026-08-28:
+0.01-step slider drags; the activation push equals the last slider position).
+The master adopts each observed value, so the phone display and the FXRoute
+display show the same number — Spotify-Connect-like sync.
+
+Contract history: the 2026-08-21 design anchored the first post-activation
+value and applied later values as deltas, because a connect-time push was
+believed to be the phone's media volume and must not hijack the master
+(37 -> 100 was live-observed). The 0.01-step slider traces disproved the
+media-volume reading — the push is the app's own renderer slider — and the
+anchor design left the controller and master permanently offset (phone 0% vs
+master 13%, gestures moving both in parallel). Absolute adoption replaces it.
 
 The parser only recognizes locked-mode lines, so in ``software`` mode this
 watch is a silent no-op. The translator debounces the drag burst (a phone drag
-emits one line per step) so the net delta of a gesture is applied exactly once.
+emits one line per step) so each debounce window writes the latest value once.
 """
 
 from __future__ import annotations
@@ -36,7 +46,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from playback.remote_volume import RemoteVolumeDeltaTranslator
+from playback.remote_volume import RemoteVolumeAbsoluteTranslator
 
 logger = logging.getLogger(__name__)
 
@@ -106,9 +116,9 @@ def is_software_volume_apply(line: str | None) -> bool:
     return _APPLIED_VOLUME_RE.search(line) is not None
 
 
-# Historical name for the shared delta translator; the Qobuz bridge was the
+# Historical name for the Qobuz volume translator; the Qobuz bridge was the
 # first consumer and tests reference it by this name.
-QobuzRemoteVolumeTranslator = RemoteVolumeDeltaTranslator
+QobuzRemoteVolumeTranslator = RemoteVolumeAbsoluteTranslator
 
 
 @dataclass
@@ -116,14 +126,14 @@ class QobuzVolumeWatchDependencies:
     """Live services the qbzd journal volume watch needs."""
 
     is_active: Callable[[], bool]
-    apply_volume_delta: Callable[[int], Awaitable[Any]]
+    apply_volume_value: Callable[[int], Awaitable[Any]]
     # Optional: notified when the journal shows this device becoming (True)
     # or ceasing to be (False) the actively selected Connect renderer.
     on_device_active: Callable[[bool], None] | None = None
 
 
 class QobuzVolumeWatch:
-    """Tail qbzd's journal and route locked-mode remote volume deltas to master."""
+    """Tail qbzd's journal and route locked-mode remote volumes to the master."""
 
     def __init__(
         self,
@@ -135,9 +145,9 @@ class QobuzVolumeWatch:
         self._deps = deps
         self._journal_command = list(journal_command or JOURNALCTL_COMMAND)
         self._debounce_seconds = debounce_seconds
-        self._translator = RemoteVolumeDeltaTranslator(
+        self._translator = RemoteVolumeAbsoluteTranslator(
             is_active=deps.is_active,
-            apply_volume_delta=deps.apply_volume_delta,
+            apply_volume_value=deps.apply_volume_value,
         )
         self.watch_task: asyncio.Task | None = None
         self._drain_task: asyncio.Task | None = None

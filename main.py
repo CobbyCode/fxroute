@@ -1012,8 +1012,8 @@ qobuz_player_watch = QobuzPlayerWatch(QobuzWatchDependencies(
 ))
 qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
     is_active=lambda: _resolve_playback_owner() == "qobuz" and connect_state.is_device_active() is not False,
-    apply_volume_delta=lambda delta: _apply_remote_volume_delta(
-        delta,
+    apply_volume_value=lambda value: _apply_remote_volume_value(
+        value,
         owner="qobuz",
         source_active=lambda: connect_state.is_device_active() is not False,
     ),
@@ -2164,6 +2164,43 @@ async def _apply_remote_volume_delta(
             return
         current = get_output_volume_safe()
         requested = max(0, min(100, int(round(float(current + delta_percent)))))
+        try:
+            await _drain_worker(set_output_volume, requested)
+        finally:
+            if owner is not None and not owner_is_current():
+                try:
+                    await _drain_worker(set_output_volume, current)
+                except Exception as exc:
+                    logger.warning("Failed to restore master after remote owner loss: %s", exc)
+
+
+async def _apply_remote_volume_value(
+    volume_percent: int,
+    *,
+    owner: str | None = None,
+    source_active: Callable[[], bool] | None = None,
+) -> None:
+    """Apply an absolute remote Connect volume to the canonical master.
+
+    The Qobuz app maintains a persistent per-renderer volume slider and pushes
+    its value on Connect activation and on gestures. The master adopts the
+    value so the phone display and the FXRoute display stay identical; delta
+    semantics would preserve a permanent controller-to-master offset instead.
+    The owner check is repeated while holding the canonical write lock, and an
+    owner transition during the non-cancellable worker call restores the
+    pre-write master (same contract as :func:`_apply_remote_volume_delta`).
+    """
+    owner_is_current = lambda: (
+        (owner is None or _resolve_playback_owner() == owner)
+        and (source_active is None or source_active())
+    )
+    if not owner_is_current():
+        return
+    async with _canonical_volume_write_lock():
+        if not owner_is_current():
+            return
+        current = get_output_volume_safe()
+        requested = max(0, min(100, int(round(float(volume_percent)))))
         try:
             await _drain_worker(set_output_volume, requested)
         finally:
