@@ -1179,9 +1179,7 @@ input[type="number"]::-webkit-outer-spin-button {
 .stepper-unit {
     flex: 0 0 auto;
     align-self: center;
-    /* Balanced air to the value (left) and the + button (right) so short
-       and long values ("2 dB", "-12.5 ms", "200 Hz") never touch either. */
-    padding: 0 0.45rem 0 0.15rem;
+    padding-right: 0.15rem;
     color: var(--text-muted);
     font-size: 0.78rem;
     font-weight: 600;
@@ -1190,19 +1188,18 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 #tab-effects .stepper-control .stepper-input {
-    width: 3rem;
+    width: 2.6rem;
     min-width: 0;
     min-height: 0;
     height: auto;
     border: 0;
     background: transparent;
+    /* Centering must come only from internal presentation: the compact
+       width/padding are load-bearing for the 3-column sub rows (Level /
+       Alignment / Polarity share tight 1fr tracks) and must not grow. */
     text-align: center;
-    /* Symmetric horizontal padding keeps the value truly centered between
-       the +/- buttons; the box fits the widest value (-12.5 / 200) without
-       scrolling, which is what made numbers look off-center before. */
-    padding: 0.35rem 0.2rem;
+    padding: 0.35rem 0.1rem;
     font-size: 0.92rem;
-    font-variant-numeric: tabular-nums;
 }
 
 .stepper-control input[type="number"]::-webkit-inner-spin-button,
@@ -1223,7 +1220,7 @@ input[type="number"]::-webkit-outer-spin-button {
         width: 34px;
     }
     #tab-effects .stepper-control .stepper-input {
-        width: 3.2rem;
+        width: 3rem;
     }
 }
 /* ============================================================
