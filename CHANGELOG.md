@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.14 (2026-08-28)
+
+### Native DSP / ARM64
+- Landed the ARM64 Crystalizer optimization: NEON split-complex FFTs,
+  pairwise inverse transforms, stereo processing, batched 2x oversampling, and
+  an exact zero-block short-circuit after the overlap history has flushed.
+- Reworked the convolver direct head with a linear two-copy window and
+  independent accumulators, reducing ARM64 CPU cost while preserving output
+  behavior.
+- Vectorized finite stereo Peak/VU metric chunks with a scalar fallback for
+  non-finite samples, and backed off idle/steady-state peak-monitor discovery
+  polling to reduce ARM64 monitor overhead.
+- Repaired native DSP process launching and kept the optional realtime launcher
+  path opt-in with a graceful fallback.
+
+### Effects / output
+- Output-extras saves now send `loudnessEnabled` only when the Loudness enabled
+  state actually changes, so unrelated limiter, bass, or tone edits no longer
+  enter the canonical Loudness/volume transition path.
+
 ## 0.9.13 (2026-08-26)
 
 ### Installer / platforms
