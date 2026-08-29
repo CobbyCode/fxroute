@@ -1943,6 +1943,75 @@ class MeasurementStore:
 # Auto Sub Optimize — scoring helper
 # ---------------------------------------------------------------------------
 
+_AUTO_SUB_ANCHOR_LOW_HZ = 200.0
+_AUTO_SUB_ANCHOR_HIGH_HZ = 600.0
+_AUTO_SUB_ANCHOR_MIN_POINTS = 3
+_AUTO_SUB_ANCHOR_MAX_CORRECTION_DB = 1.5
+
+
+def auto_sub_chain_anchor_db(points: Any) -> float | None:
+    """Median dB of the main-only 200-600 Hz region, or None when unavailable.
+
+    The subwoofer is low-passed around the crossover, so this region tracks
+    the measurement-chain gain state instead of the evaluated sub alignment
+    or polarity. Occasional ~1 dB chain gain excursions otherwise bias the
+    absolute mean metric and the low-guard reference. Needs at least three
+    points inside the band.
+    """
+    if not isinstance(points, list):
+        return None
+    dbs: list[float] = []
+    for point in points:
+        if not (isinstance(point, (list, tuple)) and len(point) >= 2):
+            continue
+        try:
+            frequency_hz, db = float(point[0]), float(point[1])
+        except (TypeError, ValueError):
+            continue
+        if (
+            math.isfinite(frequency_hz) and math.isfinite(db)
+            and _AUTO_SUB_ANCHOR_LOW_HZ <= frequency_hz <= _AUTO_SUB_ANCHOR_HIGH_HZ
+        ):
+            dbs.append(db)
+    if len(dbs) < _AUTO_SUB_ANCHOR_MIN_POINTS:
+        return None
+    dbs.sort()
+    mid = len(dbs) // 2
+    return dbs[mid] if len(dbs) % 2 == 1 else (dbs[mid - 1] + dbs[mid]) / 2.0
+
+
+def _auto_sub_anchor_shift_db(anchor_db: float | None, reference_db: float | None) -> float | None:
+    """Capped correction that pulls one sweep's chain anchor to the reference."""
+    if anchor_db is None or reference_db is None:
+        return None
+    return max(
+        -_AUTO_SUB_ANCHOR_MAX_CORRECTION_DB,
+        min(_AUTO_SUB_ANCHOR_MAX_CORRECTION_DB, reference_db - anchor_db),
+    )
+
+
+def _auto_sub_anchor_reference_db(anchors: list[float | None]) -> float | None:
+    """Median over the valid per-sweep anchors, robust against minority excursions."""
+    valid = sorted(anchor for anchor in anchors if anchor is not None)
+    if len(valid) < 2:
+        return None
+    mid = len(valid) // 2
+    return valid[mid] if len(valid) % 2 == 1 else (valid[mid - 1] + valid[mid]) / 2.0
+
+
+def _auto_sub_deep_notch_penalty_db(dip_severity_db: float) -> float:
+    """Linear deep-notch penalty: 0 at <=7 dB, 0.5 at >=15 dB.
+
+    A smooth ramp replaces the former steps at 10/15 dB; a 1-2 dB dip
+    difference no longer doubles the penalty at a threshold.
+    """
+    if dip_severity_db <= 7.0:
+        return 0.0
+    if dip_severity_db >= 15.0:
+        return 0.5
+    return (dip_severity_db - 7.0) / 8.0 * 0.5
+
+
 def score_sub_alignment_candidates(
     candidates: list[dict[str, Any]],
     crossover_hz: int,
@@ -2005,13 +2074,27 @@ def score_sub_alignment_candidates(
             return 0.06 + ((loss_db - 6.0) * 0.06)
         return min(0.45, 0.18 + ((loss_db - 8.0) * 0.08))
 
+    # Chain-gain anchor normalization: correct per-sweep level offsets so
+    # candidates compare on response shape rather than capture level. The
+    # set median anchors the nominal chain state; corrections are capped to
+    # stay clear of genuine level differences. Sweeps without a usable
+    # anchor are left untouched.
+    anchors = [auto_sub_chain_anchor_db(c.get("points") or []) for c in candidates]
+    anchor_reference_db = _auto_sub_anchor_reference_db(anchors)
+    anchor_shifts = [_auto_sub_anchor_shift_db(anchor, anchor_reference_db) for anchor in anchors]
+
+    def _anchored_points(points: Any, shift: float | None) -> Any:
+        if not shift or not isinstance(points, list):
+            return points
+        return [[point[0], point[1] + shift] for point in points if isinstance(point, (list, tuple)) and len(point) >= 2]
+
     primary = []
     secondary = []
     low_guard = []
     low_guard_min_hz = fc * 0.35
     low_guard_max_hz = fc * 0.75
-    for c in candidates:
-        pts = c.get("points") or []
+    for index, c in enumerate(candidates):
+        pts = _anchored_points(c.get("points") or [], anchor_shifts[index])
         pri = _band_metrics(pts, fc * 0.5, fc * 2.0)
         sec = _band_metrics(pts, fc * 0.75, fc * 1.5)
         low = _band_metrics(pts, low_guard_min_hz, low_guard_max_hz)
@@ -2022,7 +2105,13 @@ def score_sub_alignment_candidates(
     reference_low_guard = None
     low_guard_reference = "best_low_guard"
     if low_guard_reference_points:
-        reference_low_guard = _band_metrics(low_guard_reference_points, low_guard_min_hz, low_guard_max_hz)
+        reference_shift = _auto_sub_anchor_shift_db(
+            auto_sub_chain_anchor_db(low_guard_reference_points), anchor_reference_db,
+        )
+        reference_low_guard = _band_metrics(
+            _anchored_points(low_guard_reference_points, reference_shift),
+            low_guard_min_hz, low_guard_max_hz,
+        )
         low_guard_reference = "provided_points"
     elif low_guard_reference_delay_ms is not None:
         try:
@@ -2093,13 +2182,7 @@ def score_sub_alignment_candidates(
 
         # --- hard penalty for deep notches ---
         dip_severity = pri["mean"] - pri["min"]
-        deep_notch_penalty = 0.0
-        if dip_severity > 15.0:
-            deep_notch_penalty = 0.5
-        elif dip_severity > 10.0:
-            deep_notch_penalty = 0.3
-        elif dip_severity > 7.0:
-            deep_notch_penalty = 0.15
+        deep_notch_penalty = _auto_sub_deep_notch_penalty_db(dip_severity)
 
         score_pri = (
             n_pri_mean[i] * 0.40
@@ -2142,6 +2225,11 @@ def score_sub_alignment_candidates(
             "min_secondary_db": round(sec["min"], 1),
             "swing_secondary_db": round(sec["swing"], 1),
             "deep_notch_penalty": deep_notch_penalty,
+            "chain_anchor_db": round(anchors[i], 2) if anchors[i] is not None else None,
+            "chain_anchor_deviation_db": (
+                round(anchors[i] - anchor_reference_db, 2)
+                if anchors[i] is not None and anchor_reference_db is not None else None
+            ),
         })
 
     # Sort by score descending

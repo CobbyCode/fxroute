@@ -17,6 +17,7 @@ from typing import Any
 from ..candidates import (
     _auto_sub_apply_candidate,
     _auto_sub_clamped_delay,
+    _auto_sub_coarse_winner_at_scan_edge,
     _auto_sub_fine_delay_candidates,
     _auto_sub_fine_trigger_reasons,
     _auto_sub_opposite_polarity,
@@ -47,13 +48,16 @@ from ..measurement import (
     _measure_auto_sub_combined_candidate,
 )
 from ..scoring import (
+    _auto_sub_anchor_shifted_points,
     _auto_sub_best_scan_result,
     _auto_sub_candidate_ledger,
+    _auto_sub_display_anchor_reference_db,
     _auto_sub_has_points,
     _auto_sub_measurement_from_sweep,
     _auto_sub_rank_results,
     _auto_sub_result_for_delay,
     _auto_sub_select_accepted_winner,
+    _auto_sub_select_polarity_shared_winner,
     _auto_sub_shared_bass_offset,
     _score_auto_sub_combined_candidates,
 )
@@ -216,10 +220,18 @@ async def _run_auto_sub_optimize(
         final_decision_pool = list(sweep_results)
 
         if fine_trigger_reasons:
-            fine_delays = _auto_sub_fine_delay_candidates(coarse_winner, coarse_runner_up, step_ms, {round(float(delay), 2) for delay in scan_delays})
+            coarse_winner_edge = _auto_sub_coarse_winner_at_scan_edge(
+                float(coarse_winner.get("delay_ms", 0.0) or 0.0), scan_delays,
+            )
+            fine_delays = _auto_sub_fine_delay_candidates(
+                coarse_winner, coarse_runner_up, step_ms,
+                {round(float(delay), 2) for delay in scan_delays},
+                scan_delays=scan_delays,
+            )
             fine_scan.update({
                 "triggered": True,
                 "candidates": fine_delays,
+                "coarse_winner_at_scan_edge": coarse_winner_edge,
                 "status": "running" if fine_delays else "skipped",
             })
             job["fine_scan"] = fine_scan
@@ -472,26 +484,27 @@ async def _run_auto_sub_optimize(
                 original_highpass=original_highpass,
             )
             try:
-                polarity_scoring = _score_auto_sub_combined_candidates(
+                gate_scoring = _score_auto_sub_combined_candidates(
                     [dict(gain_winner, delay_ms=0.0), dict(alt, delay_ms=1.0)], crossover_hz=fc,
                     low_guard_reference_delay_ms=0.0,
                 )
-                scored_incumbent = _auto_sub_result_for_delay(polarity_scoring["results"], 0.0) or {}
-                scored_alt = _auto_sub_result_for_delay(polarity_scoring["results"], 1.0) or {}
-                polarity_check.update(_auto_sub_polarity_decision(scored_incumbent, scored_alt))
-                polarity_check.update({"alternative": opposite, "incumbent_score": scored_incumbent.get("score"), "alternative_score": scored_alt.get("score")})
-                if polarity_check["accepted"]:
-                    final_polarity = opposite
-                    gain_winner = alt
-                    polarity_check["selected"] = opposite
+                scored_incumbent = _auto_sub_result_for_delay(gate_scoring["results"], 0.0) or {}
+                scored_alt = _auto_sub_result_for_delay(gate_scoring["results"], 1.0) or {}
+                # Gate only: decide whether inverted refinement candidates are
+                # worth measuring. The flip itself is decided from the shared
+                # set below.
+                gate_decision = _auto_sub_polarity_decision(scored_incumbent, scored_alt)
+                polarity_check["gate"] = gate_decision
+                if gate_decision["accepted"]:
                     local_delays = [
                         _auto_sub_clamped_delay(applied_delay + offset)
                         for offset in (-_auto_sub_step_ms(fc) / 2.0, -_auto_sub_step_ms(fc) / 4.0,
                                        _auto_sub_step_ms(fc) / 4.0, _auto_sub_step_ms(fc) / 2.0)
                     ]
-                    polarity_fine: list[dict[str, Any]] = [alt]
+                    invert_rows: list[dict[str, Any]] = [dict(alt, delay_ms=1.0)]
+                    measured_by_placeholder: dict[float, dict[str, Any]] = {1.0: alt}
                     for idx, delay in enumerate(local_delays):
-                        polarity_fine.append(await _measure_auto_sub_combined_candidate(
+                        measured = await _measure_auto_sub_combined_candidate(
                             delay_ms=delay, job=job, candidate_index=idx + 1, total=len(local_delays),
                             sweep_index_start=total + 3 + idx * 2, sweep_total=total + 2 + len(local_delays) * 2,
                             stage="polarity_fine", fc=fc, input_id=input_id,
@@ -500,14 +513,42 @@ async def _run_auto_sub_optimize(
                             calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
                             auto_sub_rate=auto_sub_rate, original_level=original_level,
                             original_polarity=opposite, original_highpass=original_highpass,
-                        ))
-                    fine_scored = _score_auto_sub_combined_candidates(polarity_fine, crossover_hz=fc)
-                    fine_best = fine_scored["winner"]
-                    fine_measured = _auto_sub_result_for_delay(polarity_fine, float(fine_best.get("delay_ms", applied_delay)))
-                    if fine_measured:
-                        applied_delay = float(fine_best["delay_ms"])
-                        gain_winner = fine_measured
-                    polarity_check["fine_scan"] = {"candidates": local_delays, "winner": fine_best}
+                        )
+                        placeholder = 2.0 + idx
+                        invert_rows.append(dict(measured, delay_ms=placeholder))
+                        measured_by_placeholder[placeholder] = measured
+                    shared_scoring = _score_auto_sub_combined_candidates(
+                        [dict(gain_winner, delay_ms=0.0)] + invert_rows,
+                        crossover_hz=fc, low_guard_reference_delay_ms=0.0,
+                    )
+                    shared_decision = _auto_sub_select_polarity_shared_winner(shared_scoring["results"])
+                    polarity_check["shared_set"] = shared_decision
+                    winner_placeholder = float(shared_decision["alternative_delay_ms"] or 1.0)
+                    polarity_check["fine_scan"] = {
+                        "candidates": local_delays,
+                        "winner": measured_by_placeholder.get(winner_placeholder),
+                    }
+                    if shared_decision["accepted"]:
+                        selected_measured = measured_by_placeholder.get(winner_placeholder) or alt
+                        final_polarity = opposite
+                        gain_winner = selected_measured
+                        applied_delay = _auto_sub_clamped_delay(float(selected_measured.get("delay_ms", applied_delay) or applied_delay))
+                        polarity_check["accepted"] = True
+                        polarity_check["score_gain"] = shared_decision["score_gain"]
+                        polarity_check["reason"] = shared_decision["reason"]
+                        polarity_check["selected"] = opposite
+                        polarity_check["selected_delay_ms"] = applied_delay
+                    else:
+                        polarity_check["reason"] = shared_decision["reason"]
+                        polarity_check["selected"] = original_polarity
+                else:
+                    polarity_check.update(gate_decision)
+                    polarity_check["selected"] = original_polarity
+                polarity_check.update({
+                    "alternative": opposite,
+                    "incumbent_score": scored_incumbent.get("score"),
+                    "alternative_score": scored_alt.get("score"),
+                })
             except Exception as exc:
                 logger.warning("Auto-sub polarity check unavailable; restoring incumbent: %s", exc)
                 final_polarity = original_polarity
@@ -658,9 +699,17 @@ async def _run_auto_sub_optimize(
             "accepted_step1" if gain_verdict.get("accepted") else "restored"
         )
         score_final_source = correction_after if decision == "accepted_step2" else (gain_after if decision == "accepted_step1" else job["auto_gain"])
+        result_reason = ((correction_verdict or gain_verdict) or {}).get("reason")
+        if (
+            decision == "accepted_step1" and correction_verdict
+            and not correction_verdict.get("accepted")
+            and "step1_retained" not in correction_verdict
+        ):
+            # Make explicit which step the rejection reason belongs to.
+            result_reason = f"Step-1 retained; step-2 correction rejected ({correction_verdict.get('reason')})"
         _auto_sub_gain_log_line("AUTOGAIN_RESULT", {
             "gain_final": final_gain_level, "score_final": _auto_sub_gain_log_score(score_final_source),
-            "decision": decision, "reason": ((correction_verdict or gain_verdict) or {}).get("reason"),
+            "decision": decision, "reason": result_reason,
             "delay_final": applied_delay,
         })
         job["auto_gain"].update({
@@ -714,6 +763,29 @@ async def _run_auto_sub_optimize(
         confirmation_measurement = None
         all_sweep_results = list(sweep_results) + list(fine_results)
         baseline_sweep = _auto_sub_result_for_delay(all_sweep_results, current_alignment)
+
+        # Chain-anchor display correction: pull each trace back to the run's
+        # median 200-600 Hz main-only level so an occasional chain gain
+        # excursion no longer fakes a Before/After level change. Relative
+        # differences are preserved.
+        _display_anchor_reference_db = _auto_sub_display_anchor_reference_db([
+            points for sweep in list(all_sweep_results) + [final_gain_sweep]
+            for points in (sweep.get("points_left") or [], sweep.get("points_right") or [])
+        ])
+
+        def _anchor_adjusted_combined_sweep(sweep: dict[str, Any] | None) -> dict[str, Any] | None:
+            if not sweep:
+                return sweep
+            adjusted = dict(sweep)
+            adjusted["points_left"] = _auto_sub_anchor_shifted_points(
+                sweep.get("points_left") or [], _display_anchor_reference_db,
+            )
+            adjusted["points_right"] = _auto_sub_anchor_shifted_points(
+                sweep.get("points_right") or [], _display_anchor_reference_db,
+            )
+            return adjusted
+
+        baseline_sweep = _anchor_adjusted_combined_sweep(baseline_sweep)
         _offset_db = _auto_sub_shared_bass_offset(
             baseline_sweep.get("points_left") if baseline_sweep else [],
             baseline_sweep.get("points_right") if baseline_sweep else [],
@@ -736,6 +808,7 @@ async def _run_auto_sub_optimize(
         confirmation_sweep = _points_sweep(final_gain_sweep) or _points_sweep(
             _auto_sub_result_for_delay(all_sweep_results, confirm_delay)
         )
+        confirmation_sweep = _anchor_adjusted_combined_sweep(confirmation_sweep)
         if confirmation_sweep:
             sweep_delay = confirmation_sweep.get("delay_ms")
             if sweep_delay is not None:
@@ -781,6 +854,8 @@ async def _run_auto_sub_optimize(
             "coarse_valid_count": len(valid),
             "fine_valid_count": len(fine_valid),
             "fine_scan": fine_scan,
+            "coarse_winner_at_scan_edge": fine_scan.get("coarse_winner_at_scan_edge"),
+            "display_anchor_reference_db": _display_anchor_reference_db,
             "baseline_measurement": baseline_measurement,
             "confirmation_measurement": confirmation_measurement,
         }

@@ -10,11 +10,21 @@ import math
 from typing import Any
 from uuid import uuid4
 
-from measurement.store import score_sub_alignment_candidates
+from measurement.store import (
+    auto_sub_chain_anchor_db,
+    score_sub_alignment_candidates,
+)
 
-from .candidates import _auto_sub_22_name, _auto_sub_clamped_delay, _auto_sub_score_value
+from .candidates import (
+    _AUTO_SUB_MIN_POLARITY_ACCEPT_GAIN,
+    _auto_sub_22_name,
+    _auto_sub_clamped_delay,
+    _auto_sub_score_value,
+)
 
 logger = logging.getLogger(__name__)
+
+_AUTO_SUB_DISPLAY_ANCHOR_MAX_SHIFT_DB: float = 1.5
 
 _AUTO_SUB_MIN_ALIGNMENT_SCORE_GAIN: float = 0.01
 
@@ -110,6 +120,74 @@ def _validate_auto_sub_target_curve_snapshot(raw_snapshot: str) -> tuple[dict[st
         points.append([frequency_hz, db])
         previous_frequency = frequency_hz
     return {"key": key, "label": label, "provenance": provenance, "points": points}, None
+
+def _auto_sub_select_polarity_shared_winner(
+    scored_results: list[dict[str, Any]],
+    *,
+    incumbent_delay_ms: float = 0.0,
+    min_score_gain: float = _AUTO_SUB_MIN_POLARITY_ACCEPT_GAIN,
+) -> dict[str, Any]:
+    """Decide a polarity flip from one shared normalization set.
+
+    *scored_results* must come from scoring the incumbent (delay placeholder
+    ``incumbent_delay_ms``) together with every inverted-polarity candidate
+    (delay placeholders above it). Comparing within one set avoids the
+    two-candidate min-max vote in which 0.1 dB differences flip binary
+    metric wins.
+    """
+    incumbent_key = round(float(incumbent_delay_ms), 2)
+    incumbent = _auto_sub_result_for_delay(scored_results, incumbent_key)
+    incumbent_score = _auto_sub_score_value(incumbent) if incumbent else 0.0
+    invert_rows = [
+        result for result in scored_results
+        if round(float(result.get("delay_ms", 0.0) or 0.0), 2) != incumbent_key
+    ]
+    best_invert = max(invert_rows, key=_auto_sub_score_value) if invert_rows else None
+    best_invert_score = _auto_sub_score_value(best_invert) if best_invert else 0.0
+    gain = best_invert_score - incumbent_score if best_invert else 0.0
+    accepted = bool(best_invert) and incumbent is not None and gain >= min_score_gain
+    return {
+        "accepted": accepted,
+        "score_gain": round(gain, 4),
+        "min_score_gain": min_score_gain,
+        "incumbent_score": round(incumbent_score, 4),
+        "alternative_score": round(best_invert_score, 4),
+        "alternative_delay_ms": best_invert.get("delay_ms") if best_invert else None,
+        "candidate_count": len(scored_results),
+        "reason": (
+            "alternative_clearly_better_in_shared_set" if accepted
+            else "incumbent_protected_unclear_advantage"
+        ),
+    }
+
+def _auto_sub_display_anchor_reference_db(point_sets: list) -> float | None:
+    """Median chain anchor across a run's sweeps for display level correction.
+
+    Before/After traces are each corrected against this reference so a
+    measurement-chain gain excursion on one sweep no longer fakes a level
+    change in the graph. Relative differences between traces are preserved.
+    """
+    anchors = [auto_sub_chain_anchor_db(points) for points in point_sets]
+    valid = sorted(anchor for anchor in anchors if anchor is not None)
+    if len(valid) < 2:
+        return None
+    mid = len(valid) // 2
+    return valid[mid] if len(valid) % 2 == 1 else (valid[mid - 1] + valid[mid]) / 2.0
+
+def _auto_sub_anchor_shifted_points(points: list, reference_db: float | None) -> list:
+    """Shift display points by the capped chain-anchor correction."""
+    if reference_db is None or not isinstance(points, list):
+        return points
+    anchor = auto_sub_chain_anchor_db(points)
+    if anchor is None:
+        return points
+    shift = max(
+        -_AUTO_SUB_DISPLAY_ANCHOR_MAX_SHIFT_DB,
+        min(_AUTO_SUB_DISPLAY_ANCHOR_MAX_SHIFT_DB, reference_db - anchor),
+    )
+    if abs(shift) < 0.01:
+        return points
+    return [[point[0], point[1] + shift] for point in points]
 
 def _auto_sub_measurement_from_sweep(
     sweep_result: dict[str, Any],

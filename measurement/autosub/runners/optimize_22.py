@@ -16,6 +16,7 @@ from audio.samplerate import (
 from dsp.runtime import BassManagementConfig
 from typing import Any
 from ..candidates import (
+    _AUTO_SUB_MIN_POLARITY_ACCEPT_GAIN,
     _auto_sub_22_candidate_subwoofers,
     _auto_sub_22_global_config,
     _auto_sub_22_sub,
@@ -51,7 +52,9 @@ from ..measurement import (
     _measure_auto_sub_combined_candidate,
 )
 from ..scoring import (
+    _auto_sub_anchor_shifted_points,
     _auto_sub_candidate_ledger,
+    _auto_sub_display_anchor_reference_db,
     _auto_sub_has_points,
     _auto_sub_measurement_from_sweep,
     _auto_sub_result_for_delay,
@@ -356,8 +359,13 @@ async def _run_auto_sub_22_optimize(
         polarity_winner = polarity_scoring["winner"]
         incumbent_scored = _auto_sub_result_for_delay(polarity_scoring["results"], 0.0) or {}
         alternative_scored = polarity_winner if float(polarity_winner.get("delay_ms", 0.0)) != 0.0 else {}
-        polarity_decision = _auto_sub_polarity_decision(incumbent_scored, alternative_scored) if alternative_scored else {
-            "accepted": False, "reason": "incumbent_best", "score_gain": 0.0, "min_score_gain": 0.03,
+        # The candidate set is already scored in one shared normalization
+        # pass; the flip still requires the raised acceptance margin.
+        polarity_decision = _auto_sub_polarity_decision(
+            incumbent_scored, alternative_scored, min_score_gain=_AUTO_SUB_MIN_POLARITY_ACCEPT_GAIN,
+        ) if alternative_scored else {
+            "accepted": False, "reason": "incumbent_best", "score_gain": 0.0,
+            "min_score_gain": _AUTO_SUB_MIN_POLARITY_ACCEPT_GAIN,
         }
         if polarity_decision["accepted"]:
             selected_idx = int(round(float(alternative_scored["delay_ms"])))
@@ -582,13 +590,21 @@ async def _run_auto_sub_22_optimize(
             "accepted_step1" if gain_verdict.get("accepted") else "restored"
         )
         score_final_source = correction_after if decision == "accepted_step2" else (gain_after if decision == "accepted_step1" else job["auto_gain"])
+        result_reason = ((correction_verdict or gain_verdict) or {}).get("reason")
+        if (
+            decision == "accepted_step1" and correction_verdict
+            and not correction_verdict.get("accepted")
+            and "step1_retained" not in correction_verdict
+        ):
+            # Make explicit which step the rejection reason belongs to.
+            result_reason = f"Step-1 retained; step-2 correction rejected ({correction_verdict.get('reason')})"
         _auto_sub_gain_log_line("AUTOGAIN_RESULT", {
             "gain_final": {
                 "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
                 "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
             },
             "score_final": _auto_sub_gain_log_score(score_final_source), "decision": decision,
-            "reason": ((correction_verdict or gain_verdict) or {}).get("reason"),
+            "reason": result_reason,
             "delay_final": {"sub1_ms": best_sub1, "sub2_ms": best_sub2},
         })
         job["auto_gain"].update({
@@ -663,6 +679,28 @@ async def _run_auto_sub_22_optimize(
             )
         baseline_measurement = None
         confirmation_measurement = None
+        # Chain-anchor display correction: pull each trace back to the run's
+        # median 200-600 Hz main-only level so an occasional chain gain
+        # excursion no longer fakes a Before/After level change.
+        _display_anchor_reference_db = _auto_sub_display_anchor_reference_db([
+            points for sweep in list(all_22_sweeps)
+            for points in (sweep.get("points_left") or [], sweep.get("points_right") or [])
+        ])
+
+        def _anchor_adjusted_combined_sweep(sweep: dict[str, Any] | None) -> dict[str, Any] | None:
+            if not sweep:
+                return sweep
+            adjusted = dict(sweep)
+            adjusted["points_left"] = _auto_sub_anchor_shifted_points(
+                sweep.get("points_left") or [], _display_anchor_reference_db,
+            )
+            adjusted["points_right"] = _auto_sub_anchor_shifted_points(
+                sweep.get("points_right") or [], _display_anchor_reference_db,
+            )
+            return adjusted
+
+        baseline_22_sweep = _anchor_adjusted_combined_sweep(baseline_22_sweep)
+        confirm_22_sweep = _anchor_adjusted_combined_sweep(confirm_22_sweep)
         _offset_db = _auto_sub_shared_bass_offset(
             baseline_22_sweep.get("points_left") if baseline_22_sweep else [],
             baseline_22_sweep.get("points_right") if baseline_22_sweep else [],

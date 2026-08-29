@@ -8,6 +8,7 @@ import asyncio
 import copy
 import json
 import logging
+import statistics
 
 from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
@@ -15,10 +16,11 @@ from audio.samplerate import (
     set_audio_output_mode,
 )
 from dsp.runtime import BassManagementConfig
-from measurement.store import score_sub_alignment_candidates
+from measurement.store import auto_sub_chain_anchor_db, score_sub_alignment_candidates
 from typing import Any
 from uuid import uuid4
 from ..candidates import (
+    _AUTO_SUB_MIN_POLARITY_GATE_GAIN,
     _auto_sub_22_candidate_subwoofers,
     _auto_sub_22_global_config,
     _auto_sub_22_stereo_name,
@@ -26,6 +28,7 @@ from ..candidates import (
     _auto_sub_22_verify_alignment,
     _auto_sub_apply_candidate,
     _auto_sub_clamped_delay,
+    _auto_sub_coarse_winner_at_scan_edge,
     _auto_sub_fine_delay_candidates,
     _auto_sub_opposite_polarity,
     _auto_sub_polarity_decision,
@@ -59,17 +62,26 @@ from ..measurement import (
     _measure_auto_sub_candidate,
 )
 from ..scoring import (
+    _auto_sub_anchor_shifted_points,
     _auto_sub_best_scan_result,
     _auto_sub_candidate_ledger,
     _auto_sub_delay_key,
+    _auto_sub_display_anchor_reference_db,
     _auto_sub_has_points,
     _auto_sub_rank_results,
     _auto_sub_result_for_delay,
     _auto_sub_select_accepted_winner,
+    _auto_sub_select_polarity_shared_winner,
     _auto_sub_shared_bass_offset,
 )
 
 logger = logging.getLogger(__name__)
+
+# Deep-bass sum regression (20-40 Hz, both subs vs single-sub baseline) that
+# triggers a polarity-flip revert before the Gain stage. Without a flip the
+# second sub can only add energy here, so a clear drop means the flipped sub
+# anti-phase cancels the other one.
+_AUTO_SUB_DEEP_BASS_REGRESSION_DB: float = 2.5
 
 
 async def _run_auto_sub_22_stereo_optimize(
@@ -158,6 +170,7 @@ async def _run_auto_sub_22_stereo_optimize(
             + planned_left_fine_total
             + len(right_scan_delays)
             + planned_right_fine_total
+            + 2  # deep-bass check: one both-subs sweep per side before the Gain stage
         )
 
         left_results: list[dict[str, Any]] = []
@@ -216,11 +229,15 @@ async def _run_auto_sub_22_stereo_optimize(
         _auto_sub_rank_results(left_coarse_scoring["results"])
         left_coarse_winner = left_coarse_scoring["winner"]
         left_coarse_runner_up = left_coarse_scoring.get("runner_up")
+        left_fine_edge = _auto_sub_coarse_winner_at_scan_edge(
+            float(left_coarse_winner.get("delay_ms", 0.0) or 0.0), left_scan_delays,
+        )
         left_fine_delays = _auto_sub_fine_delay_candidates(
             left_coarse_winner,
             left_coarse_runner_up,
             step_ms,
             {round(float(delay), 2) for delay in left_scan_delays},
+            scan_delays=left_scan_delays,
         )
         left_fine_results: list[dict[str, Any]] = []
         left_fine_valid: list[dict[str, Any]] = []
@@ -236,6 +253,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 "status": "running" if left_fine_delays else "skipped",
                 "coarse_winner": left_coarse_winner,
                 "coarse_runner_up": left_coarse_runner_up,
+                "coarse_winner_at_scan_edge": left_fine_edge,
                 "candidates": left_fine_delays,
             },
             "right": {"status": "pending", "candidates": []},
@@ -397,11 +415,15 @@ async def _run_auto_sub_22_stereo_optimize(
         _auto_sub_rank_results(right_coarse_scoring["results"])
         right_coarse_winner = right_coarse_scoring["winner"]
         right_coarse_runner_up = right_coarse_scoring.get("runner_up")
+        right_fine_edge = _auto_sub_coarse_winner_at_scan_edge(
+            float(right_coarse_winner.get("delay_ms", 0.0) or 0.0), right_scan_delays,
+        )
         right_fine_delays = _auto_sub_fine_delay_candidates(
             right_coarse_winner,
             right_coarse_runner_up,
             step_ms,
             {round(float(delay), 2) for delay in right_scan_delays},
+            scan_delays=right_scan_delays,
         )
         right_fine_results: list[dict[str, Any]] = []
         right_fine_valid: list[dict[str, Any]] = []
@@ -422,6 +444,7 @@ async def _run_auto_sub_22_stereo_optimize(
             "status": "running" if right_fine_delays else "skipped",
             "coarse_winner": right_coarse_winner,
             "coarse_runner_up": right_coarse_runner_up,
+            "coarse_winner_at_scan_edge": right_fine_edge,
             "candidates": right_fine_delays,
         }
         if right_fine_delays:
@@ -591,6 +614,10 @@ async def _run_auto_sub_22_stereo_optimize(
         gain_right_winner = _auto_sub_result_for_delay(list(right_results) + list(right_fine_results), best_right) or {}
         selected_left_polarity = str(original_left.get("polarity", "normal"))
         selected_right_polarity = str(original_right.get("polarity", "normal"))
+        alignment_left_winner = gain_left_winner
+        alignment_right_winner = gain_right_winner
+        alignment_best_left = best_left
+        alignment_best_right = best_right
         stereo_polarity: dict[str, Any] = {}
 
         async def _check_stereo_polarity(
@@ -614,20 +641,25 @@ async def _run_auto_sub_22_stereo_optimize(
                 sub2_polarity=selected_right_polarity if is_left else opposite,
             )
             rows = [dict(incumbent, delay_ms=0.0, points=incumbent.get("points") or []), dict(alt, delay_ms=1.0)]
-            scoring = score_sub_alignment_candidates(rows, crossover_hz=fc, low_guard_reference_delay_ms=0.0)
-            scored_incumbent = _auto_sub_result_for_delay(scoring["results"], 0.0) or {}
-            scored_alt = _auto_sub_result_for_delay(scoring["results"], 1.0) or {}
-            decision = _auto_sub_polarity_decision(scored_incumbent, scored_alt)
-            decision.update({"incumbent": incumbent_polarity, "alternative": opposite, "selected": incumbent_polarity})
-            if not decision["accepted"]:
+            gate_scoring = score_sub_alignment_candidates(rows, crossover_hz=fc, low_guard_reference_delay_ms=0.0)
+            scored_incumbent = _auto_sub_result_for_delay(gate_scoring["results"], 0.0) or {}
+            scored_alt = _auto_sub_result_for_delay(gate_scoring["results"], 1.0) or {}
+            gate_decision = _auto_sub_polarity_decision(scored_incumbent, scored_alt)
+            decision = {
+                "incumbent": incumbent_polarity, "alternative": opposite, "selected": incumbent_polarity,
+                "gate": gate_decision,
+            }
+            if not gate_decision["accepted"]:
+                decision["reason"] = gate_decision["reason"]
                 return incumbent, delay, incumbent_polarity, decision
             local_step = _auto_sub_step_ms(fc) / 4.0
-            local_rows = [alt]
+            invert_rows: list[dict[str, Any]] = [dict(alt, delay_ms=1.0, points=alt.get("points") or [])]
+            measured_by_placeholder: dict[float, dict[str, Any]] = {1.0: alt}
             for idx, candidate_delay in enumerate([
                 _auto_sub_clamped_delay(delay - 2 * local_step), _auto_sub_clamped_delay(delay - local_step),
                 _auto_sub_clamped_delay(delay + local_step), _auto_sub_clamped_delay(delay + 2 * local_step),
             ]):
-                local_rows.append(await _measure_auto_sub_candidate(
+                measured = await _measure_auto_sub_candidate(
                     delay_ms=candidate_delay, job=job, candidate_index=idx + 1, total=4,
                     stage=f"{side}_polarity_fine", fc=fc, input_id=input_id, channel=side,
                     mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
@@ -641,12 +673,34 @@ async def _run_auto_sub_22_stereo_optimize(
                     active_subs=("sub1",) if is_left else ("sub2",),
                     sub1_polarity=opposite if is_left else selected_left_polarity,
                     sub2_polarity=selected_right_polarity if is_left else opposite,
-                ))
-            fine_scoring = score_sub_alignment_candidates(local_rows, crossover_hz=fc)
-            fine_winner = fine_scoring["winner"]
-            selected = _auto_sub_result_for_delay(local_rows, float(fine_winner["delay_ms"])) or alt
-            decision.update({"selected": opposite, "fine_scan": {"candidate_count": 4, "winner": fine_winner}})
-            return selected, float(fine_winner["delay_ms"]), opposite, decision
+                )
+                placeholder = 2.0 + idx
+                invert_rows.append(dict(measured, delay_ms=placeholder, points=measured.get("points") or []))
+                measured_by_placeholder[placeholder] = measured
+            # Final decision from one shared normalization set: the incumbent
+            # (placeholder 0.0) against every inverted candidate. This replaces
+            # the former two-candidate min-max vote and keeps the comparison
+            # valid after the delay refinement.
+            shared_scoring = score_sub_alignment_candidates(
+                [dict(incumbent, delay_ms=0.0, points=incumbent.get("points") or [])] + invert_rows,
+                crossover_hz=fc, low_guard_reference_delay_ms=0.0,
+            )
+            shared_decision = _auto_sub_select_polarity_shared_winner(shared_scoring["results"])
+            decision["shared_set"] = shared_decision
+            decision["fine_scan"] = {
+                "candidate_count": len(invert_rows) - 1,
+                "winner": measured_by_placeholder.get(float(shared_decision["alternative_delay_ms"] or 1.0)),
+            }
+            if not shared_decision["accepted"]:
+                decision["reason"] = shared_decision["reason"]
+                decision["selected"] = incumbent_polarity
+                return incumbent, delay, incumbent_polarity, decision
+            selected_measured = measured_by_placeholder.get(float(shared_decision["alternative_delay_ms"] or 1.0)) or alt
+            selected_delay = _auto_sub_clamped_delay(float(selected_measured.get("delay_ms", delay) or delay))
+            decision["selected"] = opposite
+            decision["reason"] = shared_decision["reason"]
+            decision["selected_delay_ms"] = selected_delay
+            return selected_measured, selected_delay, opposite, decision
 
         gain_left_winner, best_left, selected_left_polarity, stereo_polarity["left"] = await _check_stereo_polarity(
             "left", gain_left_winner, best_left, selected_left_polarity,
@@ -654,6 +708,115 @@ async def _run_auto_sub_22_stereo_optimize(
         gain_right_winner, best_right, selected_right_polarity, stereo_polarity["right"] = await _check_stereo_polarity(
             "right", gain_right_winner, best_right, selected_right_polarity,
         )
+
+        # Deep-bass sum check: the alignment and polarity stages evaluate one
+        # sub at a time, so an inverted polarity can win per side while the
+        # two subs anti-phase cancel in the deep bass where both contribute.
+        # Both subs play here; a regression beyond the threshold reverts the
+        # polarity flips and falls back to the normal-polarity alignment
+        # winners before the Gain stage.
+        job["stage"] = "deep_bass_check"
+        job["message"] = "Auto Sub Optimize: verifying deep-bass sum with both subs active"
+        deep_bass_snapshot = _auto_sub_snapshot_copy(original_config_snapshot)
+        deep_bass_snapshot.setdefault("subwoofers", {}).setdefault("sub1", {})["polarity"] = selected_left_polarity
+        deep_bass_snapshot.setdefault("subwoofers", {}).setdefault("sub2", {})["polarity"] = selected_right_polarity
+        await asyncio.to_thread(
+            set_audio_output_mode,
+            OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(deep_bass_snapshot),
+            _auto_sub_22_candidate_subwoofers(
+                deep_bass_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                active_subs=("sub1", "sub2"),
+            ),
+        )
+        if _dsp_runtime() is not None:
+            await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+        deep_bass_left = await _measure_auto_sub_candidate(
+            delay_ms=best_left, job=job, candidate_index=1, total=2, stage="deep_bass_check", fc=fc,
+            input_id=input_id, channel="left", mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
+            calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
+            auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+            original_level=0.0, original_polarity="normal", original_highpass=True,
+            measure_channel="left", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            original_config_snapshot=deep_bass_snapshot, sub1_alignment_ms=best_left,
+            sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
+        )
+        deep_bass_right = await _measure_auto_sub_candidate(
+            delay_ms=best_right, job=job, candidate_index=2, total=2, stage="deep_bass_check", fc=fc,
+            input_id=input_id, channel="right", mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
+            calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
+            auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+            original_level=0.0, original_polarity="normal", original_highpass=True,
+            measure_channel="right", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            original_config_snapshot=deep_bass_snapshot, sub1_alignment_ms=best_left,
+            sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
+        )
+
+        def _deep_bass_delta_db(check_sweep: dict[str, Any], baseline_sweep: dict[str, Any]) -> float | None:
+            check_points = check_sweep.get("points") or []
+            baseline_points = baseline_sweep.get("points") or []
+            check_band = [db for hz, db in check_points if 20.0 <= hz <= 40.0]
+            baseline_band = [db for hz, db in baseline_points if 20.0 <= hz <= 40.0]
+            if len(check_band) < 3 or len(baseline_band) < 3:
+                return None
+            delta = statistics.mean(check_band) - statistics.mean(baseline_band)
+            check_anchor = auto_sub_chain_anchor_db(check_points)
+            baseline_anchor = auto_sub_chain_anchor_db(baseline_points)
+            if check_anchor is not None and baseline_anchor is not None:
+                delta -= float(check_anchor) - float(baseline_anchor)
+            return delta
+
+        deep_bass_deltas = {
+            "left": _deep_bass_delta_db(
+                deep_bass_left,
+                _auto_sub_result_for_delay(list(left_results) + list(left_fine_results), original_left_alignment) or {},
+            ),
+            "right": _deep_bass_delta_db(
+                deep_bass_right,
+                _auto_sub_result_for_delay(list(right_results) + list(right_fine_results), original_right_alignment) or {},
+            ),
+        }
+        deep_bass_original_polarity = {
+            "left": str(original_left.get("polarity", "normal")),
+            "right": str(original_right.get("polarity", "normal")),
+        }
+        deep_bass_selected_polarity = {"left": selected_left_polarity, "right": selected_right_polarity}
+        flipped_sides = [
+            side for side in ("left", "right")
+            if deep_bass_selected_polarity[side] != deep_bass_original_polarity[side]
+        ]
+        regressed_sides = [
+            side for side, delta in deep_bass_deltas.items()
+            if delta is not None and delta < -_AUTO_SUB_DEEP_BASS_REGRESSION_DB
+        ]
+        deep_bass_reverted = bool(regressed_sides and flipped_sides)
+        if deep_bass_reverted:
+            selected_left_polarity = deep_bass_original_polarity["left"]
+            selected_right_polarity = deep_bass_original_polarity["right"]
+            gain_left_winner = alignment_left_winner
+            gain_right_winner = alignment_right_winner
+            best_left = alignment_best_left
+            best_right = alignment_best_right
+            for side in flipped_sides:
+                polarity_entry = stereo_polarity.get(side) or {}
+                polarity_entry["selected"] = deep_bass_original_polarity[side]
+                polarity_entry["deep_bass_revert"] = True
+        deep_bass_check = {
+            "band_hz": [20.0, 40.0],
+            "threshold_regression_db": _AUTO_SUB_DEEP_BASS_REGRESSION_DB,
+            "deltas_db": {side: (round(delta, 3) if delta is not None else None) for side, delta in deep_bass_deltas.items()},
+            "flipped_sides": flipped_sides,
+            "regressed_sides": regressed_sides,
+            "reverted_polarity": deep_bass_reverted,
+            "action": (
+                "polarity_flips_reverted" if deep_bass_reverted
+                else ("recorded_regression" if regressed_sides else "passed")
+            ),
+        }
+        job["deep_bass_check"] = deep_bass_check
+        logger.info("AUTOSUB_DEEPBASS job=%s %s", job_id, json.dumps(deep_bass_check, sort_keys=True))
+
         polarity_snapshot = _auto_sub_snapshot_copy(original_config_snapshot)
         polarity_snapshot.setdefault("subwoofers", {}).setdefault("sub1", {})["polarity"] = selected_left_polarity
         polarity_snapshot.setdefault("subwoofers", {}).setdefault("sub2", {})["polarity"] = selected_right_polarity
@@ -957,13 +1120,22 @@ async def _run_auto_sub_22_stereo_optimize(
                     score_final_source["channels"][side] = copy.deepcopy(gain_after["channels"][side])
         else:
             score_final_source = job["auto_gain"]
+        result_reason = ((correction_verdict or gain_verdict) or {}).get("reason")
+        if (
+            decision == "accepted_step1" and correction_verdict
+            and not correction_verdict.get("accepted")
+            and "step1_retained" not in correction_verdict
+        ):
+            # The plain verdict reason reads like the retained Step-1 was
+            # rejected; make explicit which step the reason belongs to.
+            result_reason = f"Step-1 retained; step-2 correction rejected ({correction_verdict.get('reason')})"
         _auto_sub_gain_log_line("AUTOGAIN_RESULT", {
             "gain_final": {
                 "left": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
                 "right": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
             },
             "score_final": _auto_sub_gain_log_score(score_final_source), "decision": decision,
-            "reason": ((correction_verdict or gain_verdict) or {}).get("reason"),
+            "reason": result_reason,
             "delay_final": {"left_ms": best_left, "right_ms": best_right},
         })
         job["auto_gain"].update({
@@ -1027,6 +1199,30 @@ async def _run_auto_sub_22_stereo_optimize(
         left_confirm = _points_sweep(final_gain_left) or _auto_sub_result_for_delay(all_left_sweeps, best_left)
         right_confirm = _points_sweep(final_gain_right) or _auto_sub_result_for_delay(all_right_sweeps, best_right)
 
+        # Chain-anchor display correction: each trace is pulled back to the
+        # run's median 200-600 Hz main-only level so an occasional chain gain
+        # excursion on one sweep no longer fakes a Before/After level change.
+        # Relative Before/After and L/R differences are preserved.
+        _display_anchor_reference_db = _auto_sub_display_anchor_reference_db(
+            [sweep.get("points") for sweep in list(all_left_sweeps) + list(all_right_sweeps)
+             + [final_gain_left, final_gain_right] if _points_sweep(sweep)]
+        )
+
+        def _anchor_adjusted_sweep(sweep: dict[str, Any] | None) -> dict[str, Any] | None:
+            if not _points_sweep(sweep):
+                return sweep
+            shifted = _auto_sub_anchor_shifted_points(sweep.get("points") or [], _display_anchor_reference_db)
+            if shifted is sweep.get("points"):
+                return sweep
+            adjusted = dict(sweep)
+            adjusted["points"] = shifted
+            return adjusted
+
+        left_baseline = _anchor_adjusted_sweep(left_baseline)
+        right_baseline = _anchor_adjusted_sweep(right_baseline)
+        left_confirm = _anchor_adjusted_sweep(left_confirm)
+        right_confirm = _anchor_adjusted_sweep(right_confirm)
+
         # One shared vertical offset from baseline L+R bass region so that
         # Before/After and L/R relative level differences are preserved.
         _stereo_offset_db = _auto_sub_shared_bass_offset(
@@ -1072,6 +1268,9 @@ async def _run_auto_sub_22_stereo_optimize(
             "auto_applied": True,
             "apply_decision": "applied_22_stereo_separate_lr",
             "candidate_ledger": candidate_ledger,
+            "deep_bass_check": job.get("deep_bass_check"),
+            "coarse_winner_at_scan_edge": {"left": left_fine_edge, "right": right_fine_edge},
+            "display_anchor_reference_db": _display_anchor_reference_db,
             "crossover_hz": fc,
             "confidence": "left_right_separate",
             "winner": {

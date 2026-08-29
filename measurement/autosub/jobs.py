@@ -9,6 +9,7 @@ import json
 import logging
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
@@ -46,6 +47,9 @@ _AUTO_SUB_TIMING_MARKS = [
 # clip; between the predicted stage and the DAC only the sink volume applies.
 _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS = 0.0
 _AUTO_SUB_STAGE_PEAK_MISMATCH_DB = 1.0
+
+# Persisted autosub-job-<id>.json snapshots kept in the measurements jobs dir.
+_AUTO_SUB_SNAPSHOT_KEEP = 40
 
 
 def _capture_auto_sub_playback_gain() -> dict[str, Any]:
@@ -346,6 +350,60 @@ def _log_auto_sub_timing_summary(job: dict[str, Any]) -> None:
         )
         logger.info("Auto-sub timing: L avg=%.1fms R avg=%.1fms", l_avg, r_avg)
 
+def _persist_auto_sub_job_snapshot(job: dict[str, Any], job_id: str) -> None:
+    """Write the final job state next to the persisted sweep records.
+
+    AutoSub job state lives only in memory and is cleaned up after 600 s.
+    The snapshot keeps the candidate ledger, rankings, polarity evidence,
+    deep-bass check, gain verdicts and display measurements available for
+    later analysis. Failures are logged and never affect the job outcome.
+    """
+    try:
+        store = _measurement_store()
+        jobs_dir = getattr(store, "jobs_dir", None) if store is not None else None
+        if not jobs_dir:
+            return
+        target_dir = Path(jobs_dir) / "autosub"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        snapshot = {
+            "job_id": job_id,
+            "mode": job.get("mode"),
+            "status": job.get("status"),
+            "message": job.get("message"),
+            "crossover_hz": job.get("crossover_hz"),
+            "step_ms": job.get("step_ms"),
+            "original_alignment_ms": job.get("original_alignment_ms"),
+            "original_sub1_alignment_ms": job.get("original_sub1_alignment_ms"),
+            "original_sub2_alignment_ms": job.get("original_sub2_alignment_ms"),
+            "result": job.get("result"),
+            "auto_gain": job.get("auto_gain"),
+            "polarity_check": job.get("polarity_check"),
+            "deep_bass_check": job.get("deep_bass_check"),
+            "fine_scan": job.get("fine_scan"),
+            "sweep_timings": job.get("_sweep_timings"),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
+        target = target_dir / f"autosub-job-{job_id}.json"
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(snapshot, default=str), encoding="utf-8")
+        tmp.replace(target)
+        _prune_auto_sub_snapshots(target_dir)
+        logger.info("AUTOSUB job=%s result snapshot persisted: %s", job_id, target)
+    except Exception:
+        logger.exception("AUTOSUB job=%s result snapshot persistence failed", job_id)
+
+def _prune_auto_sub_snapshots(target_dir: Path) -> None:
+    """Keep only the newest AutoSub job snapshots."""
+    try:
+        snapshots = sorted(target_dir.glob("autosub-job-*.json"), key=lambda path: path.stat().st_mtime)
+        for stale in snapshots[:max(0, len(snapshots) - _AUTO_SUB_SNAPSHOT_KEEP)]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
 def _finalize_autosub_job(job: dict[str, Any] | None, job_id: str) -> None:
     """Transition an AutoSub job to cancelled and log cleanup.
 
@@ -383,6 +441,8 @@ def _finalize_autosub_job(job: dict[str, Any] | None, job_id: str) -> None:
         job["result"]["main_references"] = json.loads(json.dumps(job.get("main_references"))) if job.get("main_references") else None
         job["result"]["main_target_anchor"] = json.loads(json.dumps(job.get("main_target_anchor"))) if job.get("main_target_anchor") else None
         job["result"]["polarity_check"] = json.loads(json.dumps(job.get("polarity_check"))) if job.get("polarity_check") else None
+    if str(job.get("status") or "").lower() in {"completed", "failed"}:
+        _persist_auto_sub_job_snapshot(job, job_id)
     logger.info("AUTOSUB job=%s cleanup complete state=%s", job_id, job.get("status") or "idle")
 
 async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> None:

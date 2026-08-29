@@ -59,11 +59,15 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertTrue(verdict["accepted"])
 
     def test_verification_reverts_when_either_channel_is_worse(self):
-        verdict = autosub._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 1.4), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
+        verdict = autosub._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 2.1), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
         self.assertFalse(verdict["accepted"])
         self.assertFalse(verdict["channels"]["right"]["accepted"])
 
-    def test_verification_tolerates_quarter_db_measurement_noise(self):
+    def test_verification_tolerates_sub_noise_floor_residual_growth(self):
+        # The residual metric's run-to-run spread is ~0.5 dB; growth below the
+        # 1.0 dB tolerance is measurement noise, not a harmful Gain step.
+        verdict = autosub._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 1.4), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
+        self.assertTrue(verdict["accepted"])
         verdict = autosub._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(1.24, 1.25), main.OUTPUT_MODE_SUBWOOFER_21)
         self.assertTrue(verdict["accepted"])
 

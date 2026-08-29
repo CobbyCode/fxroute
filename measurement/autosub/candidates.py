@@ -20,6 +20,14 @@ from .deps import _dsp_runtime
 
 logger = logging.getLogger(__name__)
 
+# Polarity acceptance thresholds: the cheap gate only decides whether
+# refinement candidates are measured at all; the final flip decision is made
+# from one shared normalization set (incumbent + all inverted candidates) and
+# requires a clearly larger margin, because a polarity flip is a structural
+# change that must not hinge on a two-candidate min-max vote.
+_AUTO_SUB_MIN_POLARITY_GATE_GAIN: float = 0.03
+_AUTO_SUB_MIN_POLARITY_ACCEPT_GAIN: float = 0.08
+
 
 def _auto_sub_cancelled_candidate(delay_ms: float, stage: str) -> dict[str, Any]:
     return {
@@ -232,9 +240,15 @@ def _auto_sub_opposite_polarity(polarity: str) -> str:
     return "normal" if str(polarity).lower() == "invert" else "invert"
 
 def _auto_sub_polarity_decision(
-    incumbent: dict[str, Any], alternative: dict[str, Any], *, min_score_gain: float = 0.03,
+    incumbent: dict[str, Any], alternative: dict[str, Any], *,
+    min_score_gain: float = _AUTO_SUB_MIN_POLARITY_GATE_GAIN,
 ) -> dict[str, Any]:
-    """Protect the active polarity unless a measured alternative is clearly better."""
+    """Cheap gate protecting the active polarity against unclear alternatives.
+
+    This gate only decides whether inverted refinement candidates are worth
+    measuring at all; the final flip decision must come from
+    `_auto_sub_select_polarity_shared_winner` on the complete candidate set.
+    """
     incumbent_score = _auto_sub_score_value(incumbent)
     alternative_score = _auto_sub_score_value(alternative)
     gain = alternative_score - incumbent_score
@@ -262,13 +276,39 @@ def _auto_sub_direct_neighbors(delay_a: float, delay_b: float, scan_delays: list
             return True
     return False
 
+def _auto_sub_coarse_winner_at_scan_edge(
+    winner_delay_ms: float, scan_delays: list[float],
+) -> str | None:
+    """Return 'below'/'above' when the coarse winner sits on the scan edge.
+
+    A winner on the edge means the coarse window could not see past it, so
+    the fine scan should extend in that direction and the result should say
+    so explicitly instead of clamping silently.
+    """
+    if not scan_delays:
+        return None
+    delays = sorted(float(delay) for delay in scan_delays)
+    delay = float(winner_delay_ms)
+    if abs(delay - delays[0]) <= 0.05:
+        return "below"
+    if abs(delay - delays[-1]) <= 0.05:
+        return "above"
+    return None
+
 def _auto_sub_fine_delay_candidates(
     winner: dict[str, Any],
     runner_up: dict[str, Any] | None,
     step_ms: float,
     existing_delays: set[float],
+    scan_delays: list[float] | None = None,
 ) -> list[float]:
-    """Generate 4-6 fine delays around the coarse winner area."""
+    """Generate 4-6 fine delays around the coarse winner area.
+
+    When the coarse winner sits on the scan edge, the coarse window could
+    not look beyond it; the offsets then extend up to one full coarse step
+    past that edge, and runner-up bridging is skipped so the edge direction
+    always survives the candidate cap.
+    """
     winner_delay = float(winner.get("delay_ms", 0.0))
     fine_step = step_ms / 4.0
     offsets: list[float] = []
@@ -276,7 +316,11 @@ def _auto_sub_fine_delay_candidates(
     # Always sample winner +/- 0.25 and +/- 0.5 coarse step.
     offsets.extend([-2.0 * fine_step, -fine_step, fine_step, 2.0 * fine_step])
 
-    if runner_up is not None:
+    edge = _auto_sub_coarse_winner_at_scan_edge(winner_delay, scan_delays or [])
+    if edge:
+        direction = -1.0 if edge == "below" else 1.0
+        offsets.extend([direction * 3.0 * fine_step, direction * 4.0 * fine_step])
+    elif runner_up is not None:
         runner_delay = float(runner_up.get("delay_ms", winner_delay))
         delta = runner_delay - winner_delay
         if 0.05 < abs(delta) <= (step_ms + 0.05):

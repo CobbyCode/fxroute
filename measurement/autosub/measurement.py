@@ -23,6 +23,8 @@ from audio.samplerate import (
 from audio.system_volume import get_output_volume_unclamped
 from dsp.runtime import BassManagementConfig
 
+from measurement.store import auto_sub_chain_anchor_db
+
 from .candidates import (
     _auto_sub_22_candidate_subwoofers,
     _auto_sub_22_global_config,
@@ -870,6 +872,9 @@ def _calculate_auto_sub_gain(
                 "raw_recommendation_db": round(raw_gain, 3), "recommendation_db": round(bounded, 3),
                 "clamped": bounded != raw_gain, "median_absolute_deviation_db": round(mad, 3),
                 "confidence": confidence,
+                "chain_anchor_db": (
+                    round(anchor_value, 3) if (anchor_value := auto_sub_chain_anchor_db(points)) is not None else None
+                ),
                 "reason": f"{len(usable)} points across {coverage_octaves:.2f} octaves; MAD {mad:.2f} dB",
             }
         if mode in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
@@ -917,26 +922,55 @@ def _auto_sub_gain_deltas(
     delta = bounded(recommendation["delta_db"])
     return {"left": delta, "right": delta}
 
+# Verdict tolerance for the Target-residual comparison: must exceed the
+# residual metric's run-to-run spread (~0.5 dB) while staying far below the
+# multi-dB shift a harmful Gain step would produce.
+_AUTO_SUB_GAIN_VERDICT_TOLERANCE_DB: float = 1.0
+
 def _auto_sub_gain_verdict(before: dict[str, Any], after: dict[str, Any], mode: str) -> dict[str, Any]:
-    """Accept one Gain attempt unless its residual Target error grows by >0.25 dB."""
-    verdict = {"accepted": False, "reason": None, "channels": {}}
+    """Accept one Gain attempt unless its residual Target error grows notably.
+
+    Both diagnostics carry the main-only 200-600 Hz chain anchor of their
+    input curves. A chain gain excursion between the two measurements shifts
+    the measured residual without any real response change, so the after
+    residual is anchor-corrected before the comparison whenever both anchors
+    are available.
+
+    The acceptance tolerance must exceed the metric's run-to-run spread
+    (~0.5 dB from room/chain variation); a genuinely harmful bounded Gain
+    step moves the residual by several dB. The former 0.25 dB threshold sat
+    below the noise floor and produced noise-driven rejections.
+    """
+    tolerance_db = _AUTO_SUB_GAIN_VERDICT_TOLERANCE_DB
+    verdict: dict[str, Any] = {"accepted": False, "reason": None, "channels": {}, "tolerance_db": tolerance_db}
     if not before.get("gain_calculated") or not after.get("gain_calculated"):
         verdict["reason"] = "Gain verification inputs unavailable"
         return verdict
     names = ("left", "right")
     accepted = True
     for name in names:
-        before_error = abs(float(before["channels"][name]["raw_recommendation_db"]))
-        after_error = abs(float(after["channels"][name]["raw_recommendation_db"]))
-        channel_ok = after_error <= before_error + 0.25
+        before_channel = before["channels"][name]
+        after_channel = after["channels"][name]
+        before_error = abs(float(before_channel["raw_recommendation_db"]))
+        after_signed = float(after_channel["raw_recommendation_db"])
+        after_error = abs(after_signed)
+        anchor_adjustment_db = None
+        before_anchor = before_channel.get("chain_anchor_db")
+        after_anchor = after_channel.get("chain_anchor_db")
+        if before_anchor is not None and after_anchor is not None:
+            anchor_adjustment_db = round(float(after_anchor) - float(before_anchor), 3)
+            after_error = abs(after_signed + anchor_adjustment_db)
+        channel_ok = after_error <= before_error + tolerance_db
         accepted = accepted and channel_ok
         verdict["channels"][name] = {
             "before_absolute_residual_db": round(before_error, 3),
-            "after_absolute_residual_db": round(after_error, 3),
+            "after_absolute_residual_db": round(abs(after_signed), 3),
+            "adjusted_after_absolute_residual_db": round(after_error, 3),
+            "anchor_adjustment_db": anchor_adjustment_db,
             "accepted": channel_ok,
         }
     verdict["accepted"] = accepted
-    verdict["reason"] = "Gain verification passed" if accepted else "After residual exceeded pre-Gain residual by more than 0.25 dB"
+    verdict["reason"] = "Gain verification passed" if accepted else "After residual exceeded pre-Gain residual by more than 1.0 dB"
     return verdict
 
 def _auto_sub_gain_response_correction(
@@ -955,14 +989,26 @@ def _auto_sub_gain_response_correction(
             step = float(applied_step[side])
             if abs(step) < 0.05:
                 raise ValueError(f"{side} first Gain step is too small to measure sensitivity")
-            before_delta = float(before["channels"][side]["target_delta_db"])
-            after_delta = float(after["channels"][side]["target_delta_db"])
+            before_channel = before["channels"][side]
+            after_channel = after["channels"][side]
+            before_delta = float(before_channel["target_delta_db"])
+            after_delta = float(after_channel["target_delta_db"])
+            anchor_adjusted = False
+            before_anchor = before_channel.get("chain_anchor_db")
+            after_anchor = after_channel.get("chain_anchor_db")
+            if before_anchor is not None and after_anchor is not None:
+                # Remove a chain gain excursion between the two measurements
+                # so the sensitivity reflects the response, not the capture.
+                after_delta = after_delta + (float(after_anchor) - float(before_anchor))
+                anchor_adjusted = True
             response_change = before_delta - after_delta
             sensitivity = response_change / step
             plausible = math.isfinite(sensitivity) and 0.2 <= sensitivity <= 2.0
             result["channels"][side] = {
                 "before_target_delta_db": round(before_delta, 3),
-                "after_target_delta_db": round(after_delta, 3),
+                "after_target_delta_db": round(float(after_channel["target_delta_db"]), 3),
+                "anchor_adjusted_after_target_delta_db": round(after_delta, 3) if anchor_adjusted else None,
+                "anchor_adjusted": anchor_adjusted,
                 "applied_step_db": round(step, 3),
                 "response_change_db": round(response_change, 3),
                 "response_change_per_db": round(sensitivity, 4),
