@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main  # noqa: E402
 import radio.api as radio_api
+import safe_http
 import radio.stations as stations
 
 TICK_INTERVAL = 0.01
@@ -100,9 +101,19 @@ class BrowserFakeResponse:
     def __init__(self, data):
         self.data = data
         self.status_code = 200
+        self.headers = {}
+        self.is_redirect = False
+        self._body = json.dumps(data).encode("utf-8")
 
     def json(self):
         return self.data
+
+    def iter_content(self, chunk_size=8192):
+        for pos in range(0, len(self._body), chunk_size):
+            yield self._body[pos:pos + chunk_size]
+
+    def close(self):
+        pass
 
 
 def browser_item(index=1):
@@ -316,7 +327,7 @@ class StationEventLoopOffloadTests(unittest.TestCase):
         ]))
 
         async def scenario(ticks):
-            with patch("radio.api.requests.get", return_value=BrowserFakeResponse([browser_item()])):
+            with patch("safe_http.requests.Session.get", return_value=BrowserFakeResponse([browser_item()])):
                 task = asyncio.ensure_future(radio_api.add_station_browser_selection("uuid-1"))
                 await asyncio.to_thread(helper.enters[0].wait)
                 live_ticks = await self._measure_liveness(ticks)
@@ -629,7 +640,7 @@ class StationEventLoopOffloadTests(unittest.TestCase):
         ]))
 
         async def scenario(ticks):
-            with patch("radio.api.requests.get", return_value=BrowserFakeResponse([browser_item()])):
+            with patch("safe_http.requests.Session.get", return_value=BrowserFakeResponse([browser_item()])):
                 task1 = asyncio.ensure_future(radio_api.add_station_browser_selection("uuid-1"))
                 await asyncio.to_thread(helper.enters[0].wait)
                 task2 = asyncio.ensure_future(radio_api.add_station_browser_selection("uuid-1"))

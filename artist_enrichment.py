@@ -61,6 +61,8 @@ from urllib.parse import quote
 
 import requests
 
+from safe_http import ENRICHMENT_JSON_MAX_BYTES, safe_get
+
 logger = logging.getLogger(__name__)
 
 MUSICBRAINZ_API = "https://musicbrainz.org/ws/2"
@@ -613,11 +615,12 @@ class ArtistEnrichmentService:
         if self._backend is not None:
             return self._backend._request_json(url, params)
         self._rate_limit()
-        response = requests.get(
+        response = safe_get(
             url,
             params=params,
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
             timeout=12,
+            max_bytes=ENRICHMENT_JSON_MAX_BYTES,
         )
         if response.status_code == 404:
             return {}

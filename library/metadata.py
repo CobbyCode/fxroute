@@ -15,6 +15,8 @@ from urllib.parse import quote
 
 import requests
 
+from safe_http import COVER_ART_MAX_BYTES, ENRICHMENT_JSON_MAX_BYTES, safe_get
+
 logger = logging.getLogger(__name__)
 
 # Artist/release enrichment (MusicBrainz matching, Wikipedia/Wikidata about
@@ -33,6 +35,7 @@ from artist_enrichment import (
 )
 
 COVER_ART_API = "https://coverartarchive.org"
+COVER_ART_MAX_BYTES = 8 * 1024 * 1024  # single cover image
 MISSING_RETENTION_SECONDS = 60 * 24 * 60 * 60
 MAX_ENRICH_PER_SCAN = 8
 
@@ -689,7 +692,13 @@ class LibraryMetadataStore:
 
     def _request_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         self._rate_limit()
-        response = requests.get(url, params=params, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}, timeout=12)
+        response = safe_get(
+            url,
+            params=params,
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+            timeout=12,
+            max_bytes=ENRICHMENT_JSON_MAX_BYTES,
+        )
         if response.status_code == 404:
             return {}
         response.raise_for_status()
@@ -744,7 +753,12 @@ class LibraryMetadataStore:
         response = None
         for url in candidates:
             self._rate_limit()
-            response = requests.get(url, headers={"User-Agent": USER_AGENT, "Accept": "image/*"}, timeout=10, allow_redirects=True)
+            response = safe_get(
+                url,
+                headers={"User-Agent": USER_AGENT, "Accept": "image/*"},
+                timeout=10,
+                max_bytes=COVER_ART_MAX_BYTES,
+            )
             if response.status_code == 404:
                 continue
             response.raise_for_status()

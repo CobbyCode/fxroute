@@ -4,11 +4,12 @@
 import asyncio
 import json
 import os
+import socket
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import requests
 
@@ -16,6 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import radio.api as radio_api
 import radio.stations as stations
+import safe_http
+
+
+def fake_dns_public(host, port=None, **kwargs):
+    return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 0))]
 
 
 def browser_item(index=1):
@@ -40,6 +46,11 @@ class FakeResponse:
     def __init__(self, data, status=200):
         self.data = data
         self.status_code = status
+        self.headers = {}
+        self.is_redirect = False
+        self._body = json.dumps(data).encode("utf-8") if not isinstance(data, (bytes, str)) else (
+            data.encode("utf-8") if isinstance(data, str) else data
+        )
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -47,6 +58,14 @@ class FakeResponse:
 
     def json(self):
         return self.data
+
+    def iter_content(self, chunk_size=8192):
+        body = self._body if isinstance(self._body, bytes) else str(self._body).encode()
+        for pos in range(0, len(body), chunk_size):
+            yield body[pos:pos + chunk_size]
+
+    def close(self):
+        pass
 
 
 class RadioBrowserTests(unittest.TestCase):
@@ -59,6 +78,12 @@ class RadioBrowserTests(unittest.TestCase):
         path.write_text("[]\n", encoding="utf-8")
         stations._cached_stations = None
         radio_api._station_mutation_lock = None
+        # safe_http fetches resolve DNS inside validate_public_url; pin it to a
+        # public answer so tests never touch real DNS (same pattern as
+        # test_ssrf_radio_hardening.py).
+        dns_patch = patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public)
+        dns_patch.start()
+        self.addCleanup(dns_patch.stop)
 
     def tearDown(self):
         stations._cached_stations = None
@@ -69,7 +94,7 @@ class RadioBrowserTests(unittest.TestCase):
             os.environ["XDG_CONFIG_HOME"] = self.previous_config_home
         self.temp_dir.cleanup()
 
-    @patch("radio.api.requests.get")
+    @patch("safe_http.requests.Session.get")
     def test_search_contract_uses_four_independent_or_queries(self, mock_get):
         def response_for(*_args, **kwargs):
             field = next(key for key in ("name", "country", "language", "tag") if key in kwargs["params"])
@@ -100,7 +125,7 @@ class RadioBrowserTests(unittest.TestCase):
             self.assertEqual(call.kwargs["headers"]["User-Agent"], expected_user_agent)
         self.assertCountEqual(field_sets, [["name"], ["country"], ["language"], ["tag"]])
 
-    @patch("radio.api.requests.get")
+    @patch("safe_http.requests.Session.get")
     def test_search_merges_deduplicates_ranks_and_limits(self, mock_get):
         items_by_field = {}
         for field_index, field in enumerate(("name", "country", "language", "tag")):
@@ -125,7 +150,7 @@ class RadioBrowserTests(unittest.TestCase):
         for index, urls in enumerate(result_urls):
             self.assertFalse(any(urls & other for other in result_urls[index + 1:]))
 
-    @patch("radio.api.requests.get")
+    @patch("safe_http.requests.Session.get")
     def test_search_filters_codec_specific_low_bitrate_results(self, mock_get):
         low_aac = browser_item(101)
         low_aac.update(codec="AAC", bitrate=95)
@@ -164,20 +189,20 @@ class RadioBrowserTests(unittest.TestCase):
             {"uuid-102", "uuid-104", "uuid-106", "uuid-108", "uuid-109"},
         )
 
-    @patch("radio.api.requests.get", side_effect=requests.Timeout())
+    @patch("safe_http.requests.Session.get", side_effect=requests.Timeout())
     def test_timeout_is_reported_cleanly(self, _mock_get):
         with self.assertRaises(radio_api.HTTPException) as context:
             asyncio.run(radio_api.search_station_browser("ambient"))
         self.assertEqual(context.exception.status_code, 504)
 
-    @patch("radio.api.requests.get")
+    @patch("safe_http.requests.Session.get")
     def test_invalid_provider_response_is_rejected(self, mock_get):
         mock_get.return_value = FakeResponse({"unexpected": True})
         with self.assertRaises(radio_api.HTTPException) as context:
             asyncio.run(radio_api.search_station_browser("ambient"))
         self.assertEqual(context.exception.status_code, 502)
 
-    @patch("radio.api.requests.get")
+    @patch("safe_http.requests.Session.get")
     def test_add_by_uuid_uses_input_url_and_is_idempotent(self, mock_get):
         item = browser_item(7)
         item["url"] = "https://example.test/direct-input"

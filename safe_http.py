@@ -38,6 +38,9 @@ DEFAULT_FETCH_READ_CHUNK_BYTES = 64 * 1024
 RADIO_PLAYLIST_FETCH_MAX_BYTES = 1 * 1024 * 1024   # .pls / .m3u / .m3u8 playlist resolution
 SOMAFM_PAGE_FETCH_MAX_BYTES = 2 * 1024 * 1024      # somafm.com metadata page (HTML)
 SOMAFM_ARTWORK_FETCH_MAX_BYTES = 8 * 1024 * 1024   # station artwork image
+ENRICHMENT_JSON_MAX_BYTES = 4 * 1024 * 1024        # MusicBrainz / Wikidata / Wikipedia JSON
+RADIO_BROWSER_FETCH_MAX_BYTES = 4 * 1024 * 1024    # radio-browser station search JSON
+COVER_ART_MAX_BYTES = 8 * 1024 * 1024              # CoverArtArchive cover image
 
 _PRIVATE_V4_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),        # "this network"

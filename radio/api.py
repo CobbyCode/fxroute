@@ -15,6 +15,8 @@ import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from safe_http import RADIO_BROWSER_FETCH_MAX_BYTES, safe_get
+
 from radio.stations import (
     add_catalog_station,
     add_station,
@@ -175,11 +177,12 @@ def _radio_browser_request(path: str, params: dict) -> list:
         timeout = RADIO_BROWSER_TIMEOUT if attempt == 0 else RADIO_BROWSER_RETRY_TIMEOUT
         for base_url in mirrors:
             try:
-                response = requests.get(
+                response = safe_get(
                     f"{base_url}{path}",
                     params=params,
                     headers={"User-Agent": _fxroute_user_agent()},
                     timeout=timeout,
+                    max_bytes=RADIO_BROWSER_FETCH_MAX_BYTES,
                 )
                 if response.status_code == 200:
                     data = response.json()
