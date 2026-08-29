@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse
 
 import audio.samplerate as samplerate
 import audio.samplerate_orchestration as samplerate_orchestration
-from http_errors import bad_request
+from http_errors import bad_request, internal_error
 from measurement.store import (
     MEASUREMENT_DEFAULT_SAMPLE_RATE,
     measurement_setup_settings_from_payload,
@@ -1467,7 +1467,7 @@ async def start_measurement(
     except ValueError as exc:
         raise bad_request(exc)
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error("Measurement start failed", exc)
     return {"status": "ok", "job": job}
 
 @router.post("/api/measurements/lr-repeat/start")
@@ -1527,7 +1527,7 @@ async def start_lr_repeat_measurement(
     except ValueError as exc:
         raise bad_request(exc)
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error("LR-repeat measurement start failed", exc)
     return {"status": "ok", "job": job}
 
 @router.get("/api/measurements/jobs/{job_id}")

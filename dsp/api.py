@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 import zip_album
-from http_errors import bad_request
+from http_errors import bad_request, internal_error
 from dsp.effects_extras import (
     is_pure_loudness_strength_change,
     is_runtime_autogain_loudness_change,
@@ -203,7 +203,8 @@ def _raise_dsp_http_error(exc: Exception) -> None:
     if isinstance(exc, ValueError):
         raise bad_request(exc) from exc
     if isinstance(exc, RuntimeError):
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        # Runtime state errors may carry internal detail; log fully, return generic.
+        raise internal_error("DSP operation failed", exc) from exc
     raise exc
 
 
@@ -490,8 +491,7 @@ async def upload_dsp_ir(file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"DSP IR upload failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error("DSP IR upload failed", e)
     finally:
         if tmp_path is not None:
             try:
@@ -828,8 +828,7 @@ async def create_convolver_preset_with_ir(
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
     except Exception as e:
-        logger.error(f"DSP create-with-ir failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error("DSP create-with-ir failed", e)
     finally:
         if tmp_path is not None:
             try:

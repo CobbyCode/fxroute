@@ -32,7 +32,7 @@ from starlette.middleware import Middleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from config import get_settings
-from http_errors import bad_request
+from http_errors import bad_request, internal_error
 from library.sources import MusicLibraryManager
 from radio.metadata import RadioMetadataService
 
@@ -5049,8 +5049,7 @@ async def start_download(request: Request):
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
-        logger.error(f"Download error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error("Download start failed", e)
 
 @app.post("/api/download/cancel")
 async def cancel_download():
@@ -5234,7 +5233,7 @@ def _tidal_http_error(exc: Exception) -> HTTPException:
             tidal_playback.KIND_UNSUPPORTED: 501,
         }.get(exc.kind, 500)
         return HTTPException(status_code=status, detail=str(exc))
-    return HTTPException(status_code=500, detail=str(exc))
+    return internal_error("Streaming provider request failed", exc)
 
 
 def _provider_catalog_method(provider_id: str, name: str):
