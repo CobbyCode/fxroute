@@ -447,7 +447,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-subwoofer-global-group {
     grid-column: 1 / span 2;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, max-content);
+    /* Same principle as the channel groups: equal tracks, every control
+       centered under its heading. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: end;
     gap: 0.7rem;
 }
@@ -455,12 +457,10 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-subwoofer-channel-group {
     grid-column: 3 / -1;
     display: grid;
-    /* Polarity (single-letter "N"/"I" select) needs clearly less width than
-       Level/Alignment: the content-sized third track hugs the short field
-       label, so no dead space opens beside the compact select while both
-       number columns share the remaining width evenly. Sub 1 and Sub 2 use
-       the same group class and stay symmetric. */
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    /* One principle for every field: equal tracks, each control centered
+       under its own heading (field-group centering below). No per-control
+       track sizing; Sub 1 and Sub 2 share this class and stay symmetric. */
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     align-items: end;
     gap: 0.8rem;
     background: rgba(8, 47, 73, 0.2);
@@ -493,22 +493,19 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     min-width: 0;
     gap: 0.42rem;
     justify-content: end;
+    /* Headings and controls share one center axis, so every box sits
+       centered under its heading at any track width. */
+    align-items: center;
 }
 
 .effects-subwoofer-control-group .field-group label {
     display: flex;
     align-items: flex-end;
+    justify-content: center;
     min-height: 2.05em;
     color: var(--text-secondary);
     font-size: 0.8rem;
     line-height: 1.14;
-}
-
-.effects-subwoofer-frequency-row {
-    display: flex;
-    align-items: center;
-    min-width: 0;
-    gap: 0.45rem;
 }
 
 .effects-subwoofer-derived-delays {
@@ -537,23 +534,19 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     align-self: end;
 }
 
-/* Subwoofer selects share the common #tab-effects control metrics; these
-   rules only cap the inline width so the compact groups stay aligned. The
-   polarity cap matches the single-letter "N"/"I" options so no dead space
-   opens between the text and the native arrow. The select type selector is
+/* Subwoofer selects share the common #tab-effects control metrics; one
+   shared cap fits the widest option ("On") with generous room beside the
+   single-letter "N"/"I" polarity values, and centered text keeps the box
+   calm between heading and native arrow. The select type selector is
    load-bearing: #tab-effects .url-input (equal specificity, later in the
    file) would otherwise keep width:100% alive and stretch the selects back
    across their grid tracks. */
-#tab-effects select.effects-subwoofer-compact-select {
-    width: min(100%, 5.2rem);
-    min-width: 0;
-    max-width: 100%;
-}
-
+#tab-effects select.effects-subwoofer-compact-select,
 #tab-effects select.effects-subwoofer-polarity-select {
-    width: min(100%, 3.4rem);
+    width: min(100%, 4.2rem);
     min-width: 0;
     max-width: 100%;
+    text-align: center;
 }
 
 .effects-filter-import-area.is-busy {
