@@ -1500,13 +1500,6 @@
     .effects-subwoofer-global-group,
     .effects-subwoofer-channel-group {
         grid-column: auto;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    /* Channels keep the shared three-column row (Level / Alignment /
-       Polarity); only Global stacks to two columns here. */
-    .effects-subwoofer-channel-group {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
@@ -1516,6 +1509,19 @@
 
     .effects-subwoofer-derived-delays {
         grid-column: 1 / -1;
+    }
+}
+
+/* Narrow tablet: before the three channel columns could ever run into each
+   other, Polarity wraps centered below Level and Alignment. */
+@media (min-width: 761px) and (max-width: 860px) {
+    .effects-subwoofer-channel-group {
+        grid-template-columns: repeat(2, auto);
+    }
+
+    .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
+        grid-column: 1 / -1;
+        justify-self: center;
     }
 }
 

@@ -5187,9 +5187,11 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-subwoofer-global-group {
     grid-column: 1 / span 2;
     display: grid;
-    /* Same principle as the channel groups: equal tracks, every control
-       centered under its heading. */
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* Same principle as the channel groups: tracks hug their content and
+       the leftover width becomes even spacing, so controls can neither
+       overlap nor clip at any card width. */
+    grid-template-columns: repeat(2, auto);
+    justify-content: space-evenly;
     align-items: end;
     gap: 0.7rem;
 }
@@ -5197,10 +5199,14 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-subwoofer-channel-group {
     grid-column: 3 / -1;
     display: grid;
-    /* One principle for every field: equal tracks, each control centered
-       under its own heading (field-group centering below). No per-control
-       track sizing; Sub 1 and Sub 2 share this class and stay symmetric. */
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    /* One principle for every field: tracks hug their content (steppers and
+       selects keep their compact fixed sizes) and the leftover width becomes
+       even spacing between the columns. Nothing can overlap or clip, no
+       per-control track sizing, and Sub 1 / Sub 2 share the class and stay
+       symmetric. Headings and controls share one center axis (field-group
+       centering below). */
+    grid-template-columns: repeat(3, auto);
+    justify-content: space-evenly;
     align-items: end;
     gap: 0.8rem;
     background: rgba(8, 47, 73, 0.2);
@@ -8169,13 +8175,6 @@ input[type="number"]::-webkit-outer-spin-button {
     .effects-subwoofer-global-group,
     .effects-subwoofer-channel-group {
         grid-column: auto;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    /* Channels keep the shared three-column row (Level / Alignment /
-       Polarity); only Global stacks to two columns here. */
-    .effects-subwoofer-channel-group {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
@@ -8185,6 +8184,19 @@ input[type="number"]::-webkit-outer-spin-button {
 
     .effects-subwoofer-derived-delays {
         grid-column: 1 / -1;
+    }
+}
+
+/* Narrow tablet: before the three channel columns could ever run into each
+   other, Polarity wraps centered below Level and Alignment. */
+@media (min-width: 761px) and (max-width: 860px) {
+    .effects-subwoofer-channel-group {
+        grid-template-columns: repeat(2, auto);
+    }
+
+    .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
+        grid-column: 1 / -1;
+        justify-self: center;
     }
 }
 
