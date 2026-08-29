@@ -2274,7 +2274,7 @@ function renderSettingsPanel() {
                 : '2.2 requires a selected output device with at least 4 channels.';
         } else if (mode === 'subwoofer-2.2-stereo') {
             elements.settingsOutputModeHint.textContent = outputMode.available
-                ? `2.2 Stereo Bass fixed routing active: Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub.`
+                ? `2.2 Stereo Bass fixed routing active: Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2.`
                 : '2.2 Stereo Bass requires a selected output device with at least 4 channels.';
         } else {
             elements.settingsOutputModeHint.textContent = channels
@@ -12571,7 +12571,7 @@ function renderSubwooferPanel() {
     const subwoofers = normalizeSubwoofersSettings(outputMode.subwoofers || {}, subwoofer);
     if (elements.effectsSubwooferRouting) {
         const routingStatus = is22Mode
-            ? (is22StereoMode ? 'Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub' : 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2')
+            ? 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2'
             : (outputMode.routing?.status || 'Out 1/2 Main · Out 3/4 Sub');
         const slope = subwoofer.slope || 'LR24';
         elements.effectsSubwooferRouting.textContent = `${routingStatus} · ${slope}`;
@@ -12580,14 +12580,14 @@ function renderSubwooferPanel() {
         elements.effectsSubwooferModeBadge.textContent = is22StereoMode ? '2.2 Stereo Bass active' : is22Mode ? '2.2 active' : '2.1 active';
         elements.effectsSubwooferModeBadge.classList.toggle('is-active', true);
     }
-    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = is22StereoMode ? 'Left Sub level' : is22Mode ? 'Sub 1 level' : 'Sub level';
-    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = is22StereoMode ? 'Left Sub alignment' : is22Mode ? 'Sub 1 alignment' : 'Sub alignment';
-    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = is22StereoMode ? 'Left Sub polarity' : is22Mode ? 'Sub 1 polarity' : 'Sub polarity';
-    if (elements.effectsSubwooferSub1GroupLabel) elements.effectsSubwooferSub1GroupLabel.textContent = is22StereoMode ? 'Left Sub' : is22Mode ? 'Sub 1' : 'Subwoofer';
-    if (elements.effectsSubwooferSub2GroupLabel) elements.effectsSubwooferSub2GroupLabel.textContent = is22StereoMode ? 'Right Sub' : 'Sub 2';
-    if (elements.effectsSubwooferSub2LevelLabel) elements.effectsSubwooferSub2LevelLabel.textContent = is22StereoMode ? 'Right Sub level' : 'Sub 2 level';
-    if (elements.effectsSubwooferSub2DelayLabel) elements.effectsSubwooferSub2DelayLabel.textContent = is22StereoMode ? 'Right Sub alignment' : 'Sub 2 alignment';
-    if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = is22StereoMode ? 'Right Sub polarity' : 'Sub 2 polarity';
+    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = is22Mode ? 'Sub 1 level' : 'Sub level';
+    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = is22Mode ? 'Sub 1 alignment' : 'Sub alignment';
+    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = is22Mode ? 'Sub 1 polarity' : 'Sub polarity';
+    if (elements.effectsSubwooferSub1GroupLabel) elements.effectsSubwooferSub1GroupLabel.textContent = is22Mode ? 'Sub 1' : 'Subwoofer';
+    if (elements.effectsSubwooferSub2GroupLabel) elements.effectsSubwooferSub2GroupLabel.textContent = 'Sub 2';
+    if (elements.effectsSubwooferSub2LevelLabel) elements.effectsSubwooferSub2LevelLabel.textContent = 'Sub 2 level';
+    if (elements.effectsSubwooferSub2DelayLabel) elements.effectsSubwooferSub2DelayLabel.textContent = 'Sub 2 alignment';
+    if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = 'Sub 2 polarity';
     elements.effectsSubwooferSub2Fields?.forEach(field => field.classList.toggle('hidden', !is22Mode));
     elements.effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
     if (elements.effectsSubwooferFrequencyNumber && !_activeEditing.has(elements.effectsSubwooferFrequencyNumber)) {
