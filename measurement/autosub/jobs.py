@@ -378,6 +378,8 @@ def _persist_auto_sub_job_snapshot(job: dict[str, Any], job_id: str) -> None:
             "result": job.get("result"),
             "auto_gain": job.get("auto_gain"),
             "polarity_check": job.get("polarity_check"),
+            "balance_check": job.get("balance_check"),
+            "confirmation_gate": job.get("confirmation_gate"),
             "deep_bass_check": job.get("deep_bass_check"),
             "fine_scan": job.get("fine_scan"),
             "sweep_timings": job.get("_sweep_timings"),

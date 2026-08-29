@@ -17,7 +17,12 @@ from measurement.autosub.candidates import (
     _auto_sub_coarse_winner_at_scan_edge,
     _auto_sub_fine_delay_candidates,
 )
-from measurement.autosub.measurement import _auto_sub_gain_verdict
+from measurement.autosub.measurement import (
+    _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+    _auto_sub_gain_verdict,
+    _auto_sub_local_dip_db,
+    _auto_sub_local_dip_gate_sides,
+)
 from measurement.autosub.scoring import (
     _auto_sub_anchor_shifted_points,
     _auto_sub_display_anchor_reference_db,
@@ -203,6 +208,50 @@ class DisplayAnchorTests(unittest.TestCase):
     def test_points_without_anchor_returned_unchanged(self):
         bass_only = [[hz, 50.0] for hz in (20.0, 40.0, 80.0)]
         self.assertIs(_auto_sub_anchor_shifted_points(bass_only, 51.2), bass_only)
+
+
+class LocalDipGateTests(unittest.TestCase):
+    GRID = [40.0 * (2.0 ** (index / 12.0)) for index in range(73)]  # 40..160 Hz, 1/12 oct
+
+    def curve(self, level_fn) -> list[list[float]]:
+        return [[hz, level_fn(hz)] for hz in self.GRID]
+
+    def test_flat_curve_has_no_local_dip(self):
+        self.assertAlmostEqual(_auto_sub_local_dip_db(self.curve(lambda hz: 50.0), 40.0, 160.0), 0.0, places=6)
+
+    def test_local_notch_is_measured_against_its_surround(self):
+        # A narrow 8 dB notch at 74 Hz on a 50 dB base.
+        def level(hz):
+            return 50.0 - 8.0 * math.exp(-((math.log2(hz / 74.0)) ** 2) / 0.004)
+        dip = _auto_sub_local_dip_db(self.curve(level), 40.0, 160.0)
+        self.assertGreater(dip, 2.5)
+
+    def test_broadband_level_shift_and_balance_tilt_do_not_trip_the_metric(self):
+        # A -4.7 dB sub level trim shifts everything down; a balance change
+        # tilts smoothly. Neither may look like a local dip.
+        def tilt(hz):
+            return 50.0 - 4.7 - 2.0 * (math.log2(hz / 80.0))
+        shifted = _auto_sub_local_dip_db(self.curve(lambda hz: 45.3), 40.0, 160.0)
+        tilted = _auto_sub_local_dip_db(self.curve(tilt), 40.0, 160.0)
+        self.assertAlmostEqual(shifted, 0.0, places=6)
+        self.assertLess(abs(tilted), 1.0)
+
+    def test_gate_sides_and_tolerance(self):
+        before = {"left": 6.9, "right": 6.9}
+        self.assertEqual(_auto_sub_local_dip_gate_sides(before, {"left": 9.0, "right": 10.08}, 2.5), ["right"])
+        self.assertEqual(_auto_sub_local_dip_gate_sides(before, {"left": 9.0, "right": 9.0}, 2.5), [])
+        self.assertEqual(
+            _auto_sub_local_dip_gate_sides(before, {"left": None, "right": 12.0}, _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB),
+            ["right"],
+        )
+        self.assertEqual(_auto_sub_local_dip_gate_sides(before, {"left": None, "right": None}, 2.5), [])
+
+    def test_tolerance_matches_real_run_signature(self):
+        # Real rejected run: Before 6.91 -> After 10.08 at the new 74 Hz notch.
+        self.assertLess(10.08 - 6.91, _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB + 1.5)
+        self.assertGreater(10.08, 6.91 + _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB)
+        # Real accepted 2.2-mono outcome: Before 17.01 -> After 9.77.
+        self.assertLess(9.77, 17.01 + _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB)
 
 
 class JobSnapshotPersistenceTests(unittest.TestCase):

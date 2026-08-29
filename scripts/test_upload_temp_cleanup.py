@@ -189,7 +189,9 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
                 await dsp_api.upload_dsp_ir(file=upload)
 
         self.assertEqual(ctx.exception.status_code, 500)
-        self.assertIn("client disconnected", str(ctx.exception.detail))
+        # Since the generic-500 change the detail body no longer carries the
+        # internal reason; the specific error is only logged.
+        self.assertEqual(str(ctx.exception.detail), "Internal server error")
 
     async def test_bundle_cancellation_during_read_cleans_temp_zip(self):
         upload = FakeUpload("bundle.zip", cancel=True)

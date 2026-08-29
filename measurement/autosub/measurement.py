@@ -927,6 +927,46 @@ def _auto_sub_gain_deltas(
 # multi-dB shift a harmful Gain step would produce.
 _AUTO_SUB_GAIN_VERDICT_TOLERANCE_DB: float = 1.0
 
+# Confirmation-gate tolerance for the deepest local dip (curve minus
+# 1/1-octave moving-median surround, 0.5*fc..2*fc). Derived from real runs:
+# same-state repeats move the metric by <=0.47 dB, a balance-only level
+# change by <=0.69 dB, the accepted real outcomes stayed <=+0.7 dB versus
+# Before, while the rejected real 2.2-stereo run showed +3.17 dB at the new
+# 74 Hz notch. 2.5 dB sits ~5x above the noise floor and clearly below the
+# observed failure signature.
+_AUTO_SUB_LOCAL_DIP_TOLERANCE_DB: float = 2.5
+
+def _auto_sub_local_dip_db(points: list, low_hz: float, high_hz: float) -> float | None:
+    """Depth of the deepest local dip versus the 1/1-octave median surround.
+
+    Unlike mean-based shape metrics this is immune to broadband level or
+    balance changes: a sub level trim moves the local median along, while a
+    new interference notch keeps its depth. Returns positive dB, or None
+    when the band support is too small.
+    """
+    if not isinstance(points, list) or len(points) < 8:
+        return None
+    try:
+        smoothed = _auto_sub_one_octave_smooth(points)
+    except (ValueError, TypeError):
+        return None
+    usable = [p for p in smoothed if low_hz <= float(p[0]) <= high_hz]
+    if len(usable) < 8:
+        return None
+    curve = _auto_sub_log_interpolate_points(points, [float(p[0]) for p in usable])
+    deviations = [float(c[1]) - float(s[1]) for c, s in zip(curve, usable)]
+    return round(-min(deviations), 2)
+
+def _auto_sub_local_dip_gate_sides(
+    before_dips: dict[str, float | None], final_dips: dict[str, float | None], tolerance_db: float,
+) -> list[str]:
+    """Sides whose final local dip exceeds the Before state by the tolerance."""
+    return [
+        side for side in ("left", "right")
+        if final_dips.get(side) is not None and before_dips.get(side) is not None
+        and final_dips[side] > before_dips[side] + tolerance_db
+    ]
+
 def _auto_sub_gain_verdict(before: dict[str, Any], after: dict[str, Any], mode: str) -> dict[str, Any]:
     """Accept one Gain attempt unless its residual Target error grows notably.
 
