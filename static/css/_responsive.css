@@ -1490,9 +1490,12 @@
         width: auto;
     }
 
-    /* Tablet subwoofer layout: two control columns (merged with the TIDAL
-       tablet block above; identical media condition). Scoped to ≥761px so
-       the one-column mobile layout at ≤760px wins the cascade. */
+    /* Tablet subwoofer layout: Global across the full width, Sub 1 and
+       Sub 2 sharing the row below (merged with the TIDAL tablet block
+       above; identical media condition). Scoped to ≥761px so the
+       one-column mobile layout at ≤760px wins the cascade. Base-grid
+       placements (grid-column on the groups and the 2.2 column pins) all
+       collapse to plain auto flow so DOM order lays out the rows. */
     .effects-subwoofer-controls {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -1500,6 +1503,10 @@
     .effects-subwoofer-global-group,
     .effects-subwoofer-channel-group {
         grid-column: auto;
+    }
+
+    .effects-subwoofer-global-group {
+        grid-column: 1 / -1;
     }
 
     .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
