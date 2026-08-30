@@ -460,6 +460,28 @@ class InstallIsoContractTests(unittest.TestCase):
             runner,
         )
 
+    def test_qemu_verifier_consumes_piped_output_before_matching(self):
+        runner = self.read("iso/test-leap-16-iso.sh")
+
+        self.assertIn(
+            "sshd -T | grep -Fx 'passwordauthentication no' >/dev/null",
+            runner,
+        )
+        self.assertIn(
+            "sshd -T | grep -Fx 'kbdinteractiveauthentication no' >/dev/null",
+            runner,
+        )
+        self.assertIn(
+            "sshd -T | grep -E '^permitrootlogin (prohibit-password|without-password)$' >/dev/null",
+            runner,
+        )
+        self.assertNotIn("sshd -T | grep -Fxq", runner)
+        self.assertNotIn("sshd -T | grep -Eq", runner)
+        self.assertNotIn(
+            "pactl list sinks short | awk '{print $2}' | grep -Fxq",
+            runner,
+        )
+
     def test_iso_documentation_describes_build_credentials_and_wlan_limit(self):
         docs = self.read("docs/INSTALL-ISO.md")
 

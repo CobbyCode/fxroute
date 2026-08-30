@@ -312,9 +312,9 @@ test -f "$sshd_config"
 grep -Fxq 'PasswordAuthentication no' "$sshd_config"
 grep -Fxq 'KbdInteractiveAuthentication no' "$sshd_config"
 grep -Fxq 'PermitRootLogin prohibit-password' "$sshd_config"
-sshd -T | grep -Fxq 'passwordauthentication no'
-sshd -T | grep -Fxq 'kbdinteractiveauthentication no'
-sshd -T | grep -Eq '^permitrootlogin (prohibit-password|without-password)$'
+sshd -T | grep -Fx 'passwordauthentication no' >/dev/null
+sshd -T | grep -Fx 'kbdinteractiveauthentication no' >/dev/null
+sshd -T | grep -E '^permitrootlogin (prohibit-password|without-password)$' >/dev/null
 root_password_hash="$(getent shadow root | cut -d: -f2)"
 case "$root_password_hash" in
   ""|\!*|\**)
@@ -366,7 +366,7 @@ rpm -q openssh-server >/dev/null
 test -x /home/fxroute/fxroute/native_dsp/build/fxroute-dsp
 systemctl --user --machine=fxroute@ is-enabled fxroute.service
 systemctl --user --machine=fxroute@ is-active fxroute.service
-runuser -u fxroute -- env XDG_RUNTIME_DIR=/run/user/$(id -u fxroute) pactl list sinks short | awk '{print $2}' | grep -Fxq fxroute_dsp_sink
+runuser -u fxroute -- env XDG_RUNTIME_DIR=/run/user/$(id -u fxroute) pactl list sinks short | awk '{print $2}' | grep -Fx 'fxroute_dsp_sink' >/dev/null
 curl --fail --silent http://127.0.0.1:8000/api/status >/dev/null
 EOF
 }
@@ -428,7 +428,7 @@ done
 pgrep -u fxroute -f '(^|/)chrome( |$)' >/dev/null
 pgrep -u fxroute -f '127\.0\.0\.1:8000' >/dev/null
 systemctl --user --machine=fxroute@ is-active fxroute.service
-runuser -u fxroute -- env XDG_RUNTIME_DIR=/run/user/$(id -u fxroute) pactl list sinks short | awk '{print $2}' | grep -Fxq fxroute_dsp_sink
+runuser -u fxroute -- env XDG_RUNTIME_DIR=/run/user/$(id -u fxroute) pactl list sinks short | awk '{print $2}' | grep -Fx 'fxroute_dsp_sink' >/dev/null
 curl --fail --silent http://127.0.0.1:8000/api/status >/dev/null
 EOF
 }
