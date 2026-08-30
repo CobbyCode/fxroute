@@ -8703,21 +8703,9 @@ function getMeasurementConvolverRangeHandleAtPosition(x, y, bounds) {
 }
 
 function drawMeasurementTargetCurve(ctx, bounds, range) {
-    let points = getMeasurementTargetCurvePreview().points;
-    if (!points || !points.length) points = measurementConvolverCurves.neutral.points;
+    const curve = getMeasurementTargetCurvePreview();
+    const points = curve.points || measurementConvolverCurves.neutral.points;
     if (getMeasurementActiveEditor() === 'houseCurve' && !points.length) return;
-    // In AutoSub Before/After view, place the target on the same vertical
-    // reference as the measured traces: they are drawn relative to the
-    // baseline bass median (shared display offset), so shift the target by
-    // the same amount instead of using raw absolute dB values.
-    let displayPoints = points;
-    if (window.FXRouteAutoSubTarget) {
-        const entries = getGraphMeasurementEntries();
-        const offsetDb = window.FXRouteAutoSubTarget.getAutoSubDisplayOffsetDb(entries);
-        if (offsetDb !== null) {
-            displayPoints = window.FXRouteAutoSubTarget.shiftTargetPoints(points, offsetDb);
-        }
-    }
     const frequencies = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
     ctx.save();
     ctx.strokeStyle = '#6ee7b7';
@@ -8726,7 +8714,7 @@ function drawMeasurementTargetCurve(ctx, bounds, range) {
     ctx.beginPath();
     frequencies.forEach((frequency, index) => {
         const x = measurementFrequencyToX(frequency, bounds);
-        const levelDb = MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(displayPoints, frequency);
+        const levelDb = MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(points, frequency);
         const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(levelDb, bounds, range)));
         if (index === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
