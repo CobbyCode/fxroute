@@ -66,6 +66,7 @@ from ..measurement import (
 )
 from ..scoring import (
     _auto_sub_anchor_shifted_points,
+    _auto_sub_applied_anchor_shift,
     _auto_sub_best_scan_result,
     _auto_sub_candidate_ledger,
     _auto_sub_delay_key,
