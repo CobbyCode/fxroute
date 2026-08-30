@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.9.15 (2026-08-31)
+
+### Installer / platforms
+- Added the openSUSE Leap 16 x86_64 installation ISO with headless and KDE
+  Plasma desktop profiles, a reproducible build, and a first-boot setup that
+  prepares a git checkout so the normal git-based FXRoute updater works and
+  user state is preserved.
+- ARM64 installs use a verified spotifyd prebuilt.
+- Updates from pre-0.9.12 installs now also remove the obsolete
+  `easyeffects.py`, `easyeffects_persistence.py`, and `subwoofer_runtime.py`
+  root modules.
+
+### Measurement / AutoSub
+- Saved measurements show the AutoSub target curve at the exact scored
+  position together with the final sub gains; confirmation sweeps are
+  reliable and graph lines stay clean.
+- AutoSub candidate selection, polarity, gain verdicts and the deep-bass sum
+  check are more robust; the balance-first flow ends in a final Before/After
+  confirmation gate.
+- Trace display offsets propagate correctly through the measurement UI
+  normalization.
+
+### Playback / DSP
+- Closed playback ownership races and hardened transition cleanup.
+- Unified Qobuz and Spotify remote volume pickup semantics: push anchors and
+  gesture adoption keep phone and master volume in sync.
+- Dual IR upload accepts float32 WAV pairs, and preset creation forms no
+  longer send removed delay extras.
+
+### Security
+- MusicBrainz/Wikidata, CoverArt, and Radio Browser fetches are routed
+  through `safe_http.safe_get`, and internal errors no longer leak response
+  bodies (generic 500s).
+
+### UI
+- Reworked subwoofer controls: compact steppers with units, single-letter
+  polarity, overlap-proof distribution, side-by-side tablet layout, and the
+  short Sub 1 / Sub 2 labels in 2.2; the volume slider stays stable during
+  sync.
+
+### Fixed
+- Corrected the maximum dual-PEQ native DSP test constant (267 controls) so
+  the native suite is green again.
+
 ## 0.9.14 (2026-08-28)
 
 ### Native DSP / ARM64
