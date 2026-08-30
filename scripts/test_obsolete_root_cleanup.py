@@ -49,6 +49,9 @@ MOCK_OBSOLETE = (
     "stations.py",
     "autosub.py",
     "volume_contract.py",
+    "easyeffects.py",
+    "easyeffects_persistence.py",
+    "subwoofer_runtime.py",
 )
 
 MOCK_PACKAGE_FILES = (
@@ -189,7 +192,16 @@ class ObsoleteRootManifestCompletenessTests(unittest.TestCase):
         # Post-migration moves of root modules into packages are added
         # explicitly (each must come with a matching package rename):
         # power.py -> audio/power.py.
-        cls.renamed_sources = renamed_sources | {"power.py"}
+        # Modules removed outright (not renamed) by later commits are added
+        # explicitly as well, so the completeness test keeps covering them:
+        # easyeffects.py / easyeffects_persistence.py / subwoofer_runtime.py
+        # were dropped by the native DSP engine switch (dee1bbf).
+        cls.renamed_sources = renamed_sources | {
+            "power.py",
+            "easyeffects.py",
+            "easyeffects_persistence.py",
+            "subwoofer_runtime.py",
+        }
 
     def test_manifest_contains_all_renamed_root_modules(self):
         missing = sorted(self.renamed_sources - set(cleanup.OBSOLETE_ROOT_MODULES))

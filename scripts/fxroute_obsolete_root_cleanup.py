@@ -16,9 +16,11 @@ Safety rules:
 - .env, .venv, media/cache, presets, measurements, runtime state and all
   other unmanaged files are never touched.
 
-The manifest was derived from the rename history of the migration commits
-via ``git log --diff-filter=R -M --name-status`` (sources without a '/');
-do not extend it by hand without a matching package rename.
+Most of the manifest was derived from the rename history of the migration
+commits via ``git log --diff-filter=R -M --name-status`` (sources without a
+'/'); a few entries (marked in the list) were removed outright by later
+commits instead of being renamed and are maintained by hand alongside the
+completeness test.
 """
 
 from __future__ import annotations
@@ -86,6 +88,11 @@ OBSOLETE_ROOT_MODULES = frozenset({
     "radio_api.py",
     "radio_metadata.py",
     "stations.py",
+    # Removed (not renamed) by the native DSP engine switch (dee1bbf);
+    # included so installs from before 0.9.12 are cleaned up as well.
+    "easyeffects.py",
+    "easyeffects_persistence.py",
+    "subwoofer_runtime.py",
 })
 
 # New-layout marker files: the cleanup only runs once every marker exists,
