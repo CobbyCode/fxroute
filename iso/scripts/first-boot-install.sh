@@ -188,7 +188,9 @@ enable_git_updates() {
   git -C "$target" checkout -q -f -B main "$build_commit"
   git -C "$target" config branch.main.remote origin
   git -C "$target" config branch.main.merge refs/heads/main
-  chown -R "$FXROUTE_USER":"$(id -gn "$FXROUTE_USER")" "$target/.git"
+  # The root-run checkout above rewrites tracked files; hand the whole
+  # install tree back to the fxroute user so git-based updates can write it.
+  chown -R "$FXROUTE_USER":"$(id -gn "$FXROUTE_USER")" "$target"
   printf '%s\n' "Prepared git-based updates from $remote_url at $build_commit"
 }
 enable_git_updates
