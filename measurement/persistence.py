@@ -562,6 +562,13 @@ class MeasurementPersistence:
             }
             if trace.get("role"):
                 item["role"] = str(trace.get("role"))
+            display_offset_db = trace.get("display_offset_db")
+            if (
+                isinstance(display_offset_db, (int, float))
+                and not isinstance(display_offset_db, bool)
+                and math.isfinite(display_offset_db)
+            ):
+                item["display_offset_db"] = float(display_offset_db)
             normalized.append(item)
         return normalized
 

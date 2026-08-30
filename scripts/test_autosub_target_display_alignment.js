@@ -6,7 +6,7 @@
 // Coordinate systems (verified against real .104 run data):
 //   raw          = sweep analysis output before normalization
 //   normalized   = raw - normalized_by_db            (per sweep!)
-//   displayed    = normalized - anchor_shift - shared_offset
+//   displayed    = normalized + anchor_shift - shared_offset
 //   calibrated   = raw = normalized + normalized_by_db
 //
 // Scoring/Gain work in the CALIBRATED coordinate: the target is placed at
@@ -14,12 +14,12 @@
 //
 // New runs embed exact metadata:
 //   - autosub_meta.target_vertical_offset_db  (run's tvo)
-//   - trace.display_offset_db                 (nb + anchor_shift + shared)
+//   - trace.display_offset_db                 (nb - anchor_shift + shared)
 // and the exact displayed target position is:
 //   target_displayed_db = target + tvo - display_offset_db
 //
 // Tests:
-//  1. Exact path: resolveTargetOffsetDb returns tvo - display_offset_db from
+//  1. Exact path: resolveTargetOffsetDb returns display_offset_db - tvo from
 //     embedded run metadata.
 //  2. Legacy fallback: bass-median shared reference when no metadata exists.
 //  3. The offset is derived only when 'auto_sub' measurements are on screen
@@ -27,6 +27,7 @@
 //  4. Shifting the target preserves its shape exactly (constant dB offset).
 //  5. app.js draws the target from the shifted points (source-level contract).
 //  6. End-to-end math on a real AutoSub job snapshot pulled from .104.
+//  7. Saved runs resolve the Target Curve captured when AutoSub started.
 
 const assert = require('assert/strict');
 const path = require('path');
@@ -89,7 +90,29 @@ window.FXRouteAutoSubTarget = autosubTarget;
 }
 
 // ---------------------------------------------------------------------------
-// 4. Offset is derived only for auto_sub measurements
+// 4. Saved AutoSub entries provide their run's immutable Target Curve
+// ---------------------------------------------------------------------------
+{
+    assert.equal(typeof autosubTarget.resolveTargetCurve, 'function',
+        'AutoSub target module must resolve the curve captured for the run');
+    const runTarget = {
+        key: 'house:run-target',
+        label: 'Run Target',
+        provenance: 'uploaded',
+        points: [[20, 6], [100, 2], [20000, -4]],
+    };
+    const saved = {
+        id: 'saved-a1', measurement_kind: 'auto_sub',
+        autosub_meta: { target: runTarget },
+        traces: [{ points: [[20, 0], [100, 1], [20000, -2]] }],
+    };
+    assert.deepEqual(autosubTarget.resolveTargetCurve([saved]), runTarget);
+    assert.equal(autosubTarget.resolveTargetCurve([{ measurement_kind: '', autosub_meta: { target: runTarget } }]), null,
+        'normal measurements must not override the selected UI Target Curve');
+}
+
+// ---------------------------------------------------------------------------
+// 5. Offset is derived only for auto_sub measurements
 // ---------------------------------------------------------------------------
 {
     const normal = {
@@ -102,7 +125,7 @@ window.FXRouteAutoSubTarget = autosubTarget;
 }
 
 // ---------------------------------------------------------------------------
-// 5. Shape preservation (constant offset only)
+// 6. Shape preservation (constant offset only)
 // ---------------------------------------------------------------------------
 {
     const raw = [[20, 5], [80, 3], [1000, 0], [20000, -5]];
@@ -116,12 +139,14 @@ window.FXRouteAutoSubTarget = autosubTarget;
 }
 
 // ---------------------------------------------------------------------------
-// 6. app.js draw path contract
+// 7. app.js draw path contract
 // ---------------------------------------------------------------------------
 {
     const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
     assert.ok(source.includes('window.FXRouteAutoSubTarget.resolveTargetOffsetDb(entries)'),
         'drawMeasurementTargetCurve must resolve the target offset from the graph entries');
+    assert.ok(source.includes('window.FXRouteAutoSubTarget.resolveTargetCurve(entries)'),
+        'drawMeasurementTargetCurve must use the Target Curve captured for the AutoSub run');
     assert.ok(source.includes('shiftTargetPoints(points, offsetDb)'),
         'drawMeasurementTargetCurve must draw the target from the shifted points');
     assert.ok(source.includes('getMeasurementConvolverCurveDbFromPoints(displayPoints, frequency)'),
@@ -136,7 +161,7 @@ window.FXRouteAutoSubTarget = autosubTarget;
 }
 
 // ---------------------------------------------------------------------------
-// 7. Real AutoSub job snapshot from .104 (end-to-end coordinate check)
+// 8. Real AutoSub job snapshot from .104 (end-to-end coordinate check)
 // ---------------------------------------------------------------------------
 {
     const fixturePath = path.join(__dirname, 'fixtures', 'autosub-job-22s-sample.json');

@@ -57,7 +57,7 @@ function normalizeMeasurementTrace(trace = {}, index = 0) {
         role: String(trace.role || ''),
         points,
         // AutoSub: exact calibrated->display correction for this trace
-        // (normalized_by_db + anchor shift + shared bass offset). Consumed by
+        // (normalized_by_db - anchor shift + shared bass offset). Consumed by
         // static/autosub_target.js to place the target at the scored position.
         ...(Number.isFinite(Number(trace.display_offset_db))
             ? { display_offset_db: Number(trace.display_offset_db) }

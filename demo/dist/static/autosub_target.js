@@ -5,7 +5,7 @@
  * Coordinate systems (verified against real .104 run data):
  *   raw          = sweep analysis output before normalization
  *   normalized   = raw - normalized_by_db            (per sweep!)
- *   displayed    = normalized - anchor_shift - shared_offset
+ *   displayed    = normalized + anchor_shift - shared_offset
  *   calibrated   = raw = normalized + normalized_by_db
  *
  * Scoring/Gain work in the CALIBRATED coordinate: the target is placed at
@@ -14,7 +14,7 @@
  *
  * New runs therefore embed exact metadata:
  *   - autosub_meta.target_vertical_offset_db  (the run's tvo)
- *   - trace.display_offset_db                 (nb + anchor_shift + shared)
+ *   - trace.display_offset_db                 (nb - anchor_shift + shared)
  * and the exact displayed target position is:
  *   target_displayed_db = target + tvo - display_offset_db
  *
@@ -90,6 +90,24 @@
         return bassMedianDb(pointLists);
     }
 
+    /** Return the immutable Target Curve captured for the visible AutoSub run. */
+    function resolveTargetCurve(entries) {
+        if (!Array.isArray(entries)) return null;
+        for (const entry of entries.filter(isAutoSubMeasurement)) {
+            const target = entry.autosub_meta && entry.autosub_meta.target;
+            if (!target || !Array.isArray(target.points) || target.points.length < 2) continue;
+            const validPoints = target.points.every((point) => (
+                Array.isArray(point)
+                && point.length === 2
+                && Number.isFinite(Number(point[0]))
+                && Number(point[0]) > 0
+                && Number.isFinite(Number(point[1]))
+            ));
+            if (validPoints) return target;
+        }
+        return null;
+    }
+
     /**
      * Exact scored target offset for the AutoSub set currently on screen.
      *
@@ -100,7 +118,7 @@
      *
      * The backend embeds:
      *   autosub_meta.target_vertical_offset_db  (run's tvo, calibrated coords)
-     *   trace.display_offset_db                 (nb + anchor_shift + shared)
+     *   trace.display_offset_db                 (nb - anchor_shift + shared)
      * Scoring places the target at (target + tvo) in calibrated coordinates;
      * since displayed = calibrated - display_offset_db, the exact displayed
      * target position is target + tvo - display_offset_db, so the value to
@@ -145,6 +163,7 @@
         BASS_HIGH_HZ,
         bassMedianDb,
         getAutoSubDisplayOffsetDb,
+        resolveTargetCurve,
         resolveTargetOffsetDb,
         isAutoSubMeasurement,
         shiftTargetPoints,

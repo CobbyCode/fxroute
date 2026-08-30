@@ -83,6 +83,12 @@ def _auto_sub_shared_bass_offset(
     mid = len(sorted_dbs) // 2
     return sorted_dbs[mid] if len(sorted_dbs) % 2 == 1 else (sorted_dbs[mid - 1] + sorted_dbs[mid]) / 2.0
 
+def _auto_sub_display_offset_db(
+    normalized_by_db: float, anchor_shift_db: float, shared_offset_db: float,
+) -> float:
+    """Return the calibrated-to-display offset for an adjusted trace."""
+    return round(float(normalized_by_db) - float(anchor_shift_db) + float(shared_offset_db), 4)
+
 def _validate_auto_sub_target_curve_snapshot(raw_snapshot: str) -> tuple[dict[str, Any] | None, str | None]:
     """Validate and detach the browser-selected Target Curve for one AutoSub job."""
     if not str(raw_snapshot or "").strip():
@@ -208,19 +214,18 @@ def _auto_sub_result_meta(
 
     The frontend renders this as the saved-measurement summary line (target
     label + final sub gains) instead of the generic timing line.  The target
-    label comes from the job's own target curve snapshot, never from the
+    curve comes from the job's own target curve snapshot, never from the
     later-selected UI curve.
 
     *target_vertical_offset_db* is the run's scored anchor offset (median of
     ``calibrated_main_db - target_db`` in the anchor band).  Together with the
-    per-trace ``display_offset_db`` (nb + anchor shift + shared bass offset)
+    per-trace ``display_offset_db`` (nb - anchor shift + shared bass offset)
     the frontend reconstructs the exact scored target position in display
     coordinates: ``target + tvo - display_offset_db``.
     """
     target_curve = job.get("target_curve") if isinstance(job.get("target_curve"), dict) else None
-    target_label = str((target_curve or {}).get("label") or "").strip()
     meta: dict[str, Any] = {
-        "target": {"label": target_label} if target_label else None,
+        "target": json.loads(json.dumps(target_curve)) if target_curve else None,
     }
     if target_vertical_offset_db is not None:
         meta["target_vertical_offset_db"] = round(float(target_vertical_offset_db), 4)
@@ -288,7 +293,7 @@ def _auto_sub_measurement_from_sweep(
         result["autosub_meta"] = meta
     # Exact display-coordinate correction already applied to these traces:
     # displayed = calibrated - display_offset_db, where
-    # display_offset_db = normalized_by_db + anchor_shift + shared_offset_db.
+    # display_offset_db = normalized_by_db - anchor_shift + shared_offset_db.
     # Scoring places the target at (target + tvo) in calibrated coordinates,
     # so the frontend draws it at target + tvo - display_offset_db.
     left_nb = sweep_result.get("normalized_by_db_left")
@@ -296,11 +301,11 @@ def _auto_sub_measurement_from_sweep(
     left_shift = sweep_result.get("display_anchor_shift_db_left") or 0.0
     right_shift = sweep_result.get("display_anchor_shift_db_right") or 0.0
     if isinstance(left_nb, (int, float)) and len(left_points) >= 3:
-        traces[0]["display_offset_db"] = round(float(left_nb) + float(left_shift) + float(offset_db), 4)
+        traces[0]["display_offset_db"] = _auto_sub_display_offset_db(left_nb, left_shift, offset_db)
     if isinstance(right_nb, (int, float)) and len(right_points) >= 3:
         right_trace_index = 1 if traces else 0
-        traces[right_trace_index]["display_offset_db"] = round(
-            float(right_nb) + float(right_shift) + float(offset_db), 4
+        traces[right_trace_index]["display_offset_db"] = _auto_sub_display_offset_db(
+            right_nb, right_shift, offset_db,
         )
     return result
 
@@ -883,4 +888,3 @@ def _auto_sub_candidate_ledger(
         ledger.append(row)
         logger.info("AUTOSUB_CANDIDATE %s", json.dumps(row, sort_keys=True, separators=(",", ":")))
     return ledger
-

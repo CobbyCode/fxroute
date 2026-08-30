@@ -70,6 +70,7 @@ from ..scoring import (
     _auto_sub_best_scan_result,
     _auto_sub_candidate_ledger,
     _auto_sub_delay_key,
+    _auto_sub_display_offset_db,
     _auto_sub_display_anchor_reference_db,
     _auto_sub_has_points,
     _auto_sub_rank_results,
@@ -1428,8 +1429,8 @@ async def _run_auto_sub_22_stereo_optimize(
                     trace = {"kind": "measured", "label": f"{label} L", "role": "left", "points": points}
                     if isinstance(left_sweep.get("normalized_by_db"), (int, float)):
                         _shift = float(left_sweep.get("display_anchor_shift_db") or 0.0)
-                        trace["display_offset_db"] = round(
-                            float(left_sweep["normalized_by_db"]) + _shift + float(offset_db), 4
+                        trace["display_offset_db"] = _auto_sub_display_offset_db(
+                            left_sweep["normalized_by_db"], _shift, offset_db,
                         )
                     traces.append(trace)
             if right_sweep:
@@ -1439,8 +1440,8 @@ async def _run_auto_sub_22_stereo_optimize(
                     trace = {"kind": "measured", "label": f"{label} R", "role": "right", "points": points}
                     if isinstance(right_sweep.get("normalized_by_db"), (int, float)):
                         _shift = float(right_sweep.get("display_anchor_shift_db") or 0.0)
-                        trace["display_offset_db"] = round(
-                            float(right_sweep["normalized_by_db"]) + _shift + float(offset_db), 4
+                        trace["display_offset_db"] = _auto_sub_display_offset_db(
+                            right_sweep["normalized_by_db"], _shift, offset_db,
                         )
                     traces.append(trace)
             return {"id": f"autosub-{base_id}", "name": name, "traces": traces} if traces else None
