@@ -833,6 +833,14 @@ async def _run_auto_sub_22_optimize(
             adjusted["points_right"] = _auto_sub_anchor_shifted_points(
                 sweep.get("points_right") or [], _display_anchor_reference_db,
             )
+            # Record applied per-side shifts so the frontend can place the
+            # scored target in the exact display coordinate of each trace.
+            adjusted["display_anchor_shift_db_left"] = _auto_sub_applied_anchor_shift(
+                sweep.get("points_left") or [], _display_anchor_reference_db,
+            )
+            adjusted["display_anchor_shift_db_right"] = _auto_sub_applied_anchor_shift(
+                sweep.get("points_right") or [], _display_anchor_reference_db,
+            )
             return adjusted
 
         baseline_22_sweep = _anchor_adjusted_combined_sweep(baseline_22_sweep)
@@ -860,7 +868,14 @@ async def _run_auto_sub_22_optimize(
             "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
             "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
         }
-        _autosub_meta = _auto_sub_result_meta(job, OUTPUT_MODE_SUBWOOFER_22, _final_levels)
+        # Run's scored anchor offset (calibrated coords); the frontend combines
+        # it with each trace's display_offset_db to place the target exactly.
+        _target_anchor = job.get("main_target_anchor") if isinstance(job.get("main_target_anchor"), dict) else None
+        _tvo = _target_anchor.get("target_vertical_offset_db") if _target_anchor else None
+        _autosub_meta = _auto_sub_result_meta(
+            job, OUTPUT_MODE_SUBWOOFER_22, _final_levels,
+            target_vertical_offset_db=float(_tvo) if isinstance(_tvo, (int, float)) else None,
+        )
         for _measurement in (baseline_measurement, confirmation_measurement):
             if _measurement is not None:
                 _measurement["measurement_kind"] = "auto_sub"

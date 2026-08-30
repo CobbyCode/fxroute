@@ -175,6 +175,19 @@ def _auto_sub_display_anchor_reference_db(point_sets: list) -> float | None:
     mid = len(valid) // 2
     return valid[mid] if len(valid) % 2 == 1 else (valid[mid - 1] + valid[mid]) / 2.0
 
+def _auto_sub_applied_anchor_shift(points: list, reference_db: float | None) -> float:
+    """The capped chain-anchor correction that would be applied to *points*."""
+    if reference_db is None or not isinstance(points, list):
+        return 0.0
+    anchor = auto_sub_chain_anchor_db(points)
+    if anchor is None:
+        return 0.0
+    shift = max(
+        -_AUTO_SUB_DISPLAY_ANCHOR_MAX_SHIFT_DB,
+        min(_AUTO_SUB_DISPLAY_ANCHOR_MAX_SHIFT_DB, reference_db - anchor),
+    )
+    return shift if abs(shift) >= 0.01 else 0.0
+
 def _auto_sub_anchor_shifted_points(points: list, reference_db: float | None) -> list:
     """Shift display points by the capped chain-anchor correction."""
     if reference_db is None or not isinstance(points, list):
@@ -182,27 +195,35 @@ def _auto_sub_anchor_shifted_points(points: list, reference_db: float | None) ->
     anchor = auto_sub_chain_anchor_db(points)
     if anchor is None:
         return points
-    shift = max(
-        -_AUTO_SUB_DISPLAY_ANCHOR_MAX_SHIFT_DB,
-        min(_AUTO_SUB_DISPLAY_ANCHOR_MAX_SHIFT_DB, reference_db - anchor),
-    )
-    if abs(shift) < 0.01:
+    shift = _auto_sub_applied_anchor_shift(points, reference_db)
+    if shift == 0.0:
         return points
     return [[point[0], point[1] + shift] for point in points]
 
-def _auto_sub_result_meta(job: dict[str, Any], mode: str, final_levels_db: dict[str, float]) -> dict[str, Any]:
+def _auto_sub_result_meta(
+    job: dict[str, Any], mode: str, final_levels_db: dict[str, float],
+    *, target_vertical_offset_db: float | None = None,
+) -> dict[str, Any]:
     """Build the AutoSub result metadata embedded into saved measurements.
 
     The frontend renders this as the saved-measurement summary line (target
     label + final sub gains) instead of the generic timing line.  The target
     label comes from the job's own target curve snapshot, never from the
     later-selected UI curve.
+
+    *target_vertical_offset_db* is the run's scored anchor offset (median of
+    ``calibrated_main_db - target_db`` in the anchor band).  Together with the
+    per-trace ``display_offset_db`` (nb + anchor shift + shared bass offset)
+    the frontend reconstructs the exact scored target position in display
+    coordinates: ``target + tvo - display_offset_db``.
     """
     target_curve = job.get("target_curve") if isinstance(job.get("target_curve"), dict) else None
     target_label = str((target_curve or {}).get("label") or "").strip()
     meta: dict[str, Any] = {
         "target": {"label": target_label} if target_label else None,
     }
+    if target_vertical_offset_db is not None:
+        meta["target_vertical_offset_db"] = round(float(target_vertical_offset_db), 4)
     if mode == OUTPUT_MODE_SUBWOOFER_21:
         if "sub" in final_levels_db:
             meta["final_gains_db"] = {"sub": round(float(final_levels_db["sub"]), 2)}
@@ -265,6 +286,22 @@ def _auto_sub_measurement_from_sweep(
     }
     if meta:
         result["autosub_meta"] = meta
+    # Exact display-coordinate correction already applied to these traces:
+    # displayed = calibrated - display_offset_db, where
+    # display_offset_db = normalized_by_db + anchor_shift + shared_offset_db.
+    # Scoring places the target at (target + tvo) in calibrated coordinates,
+    # so the frontend draws it at target + tvo - display_offset_db.
+    left_nb = sweep_result.get("normalized_by_db_left")
+    right_nb = sweep_result.get("normalized_by_db_right")
+    left_shift = sweep_result.get("display_anchor_shift_db_left") or 0.0
+    right_shift = sweep_result.get("display_anchor_shift_db_right") or 0.0
+    if isinstance(left_nb, (int, float)) and len(left_points) >= 3:
+        traces[0]["display_offset_db"] = round(float(left_nb) + float(left_shift) + float(offset_db), 4)
+    if isinstance(right_nb, (int, float)) and len(right_points) >= 3:
+        right_trace_index = 1 if traces else 0
+        traces[right_trace_index]["display_offset_db"] = round(
+            float(right_nb) + float(right_shift) + float(offset_db), 4
+        )
     return result
 
 def _auto_sub_select_accepted_winner(

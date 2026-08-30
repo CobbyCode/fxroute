@@ -8704,8 +8704,23 @@ function getMeasurementConvolverRangeHandleAtPosition(x, y, bounds) {
 
 function drawMeasurementTargetCurve(ctx, bounds, range) {
     const curve = getMeasurementTargetCurvePreview();
-    const points = curve.points || measurementConvolverCurves.neutral.points;
+    let points = curve.points || measurementConvolverCurves.neutral.points;
     if (getMeasurementActiveEditor() === 'houseCurve' && !points.length) return;
+    // In AutoSub Before/After view, place the target at the exact scored
+    // position. The backend embeds autosub_meta.target_vertical_offset_db
+    // (the run's scored anchor offset in calibrated coords) and stamps each
+    // trace with its own display_offset_db (nb + anchor shift + shared
+    // offset); resolveTargetOffsetDb() returns tvo - display_offset_db so the
+    // shifted target sits in the same display coordinate as the traces.
+    // Legacy runs without metadata fall back to the shared bass reference.
+    let displayPoints = points;
+    if (window.FXRouteAutoSubTarget) {
+        const entries = getGraphMeasurementEntries();
+        const offsetDb = window.FXRouteAutoSubTarget.resolveTargetOffsetDb(entries);
+        if (offsetDb !== null) {
+            displayPoints = window.FXRouteAutoSubTarget.shiftTargetPoints(points, offsetDb);
+        }
+    }
     const frequencies = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
     ctx.save();
     ctx.strokeStyle = '#6ee7b7';
@@ -8714,7 +8729,7 @@ function drawMeasurementTargetCurve(ctx, bounds, range) {
     ctx.beginPath();
     frequencies.forEach((frequency, index) => {
         const x = measurementFrequencyToX(frequency, bounds);
-        const levelDb = MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(points, frequency);
+        const levelDb = MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(displayPoints, frequency);
         const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(levelDb, bounds, range)));
         if (index === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);

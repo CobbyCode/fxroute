@@ -52,6 +52,7 @@ from ..measurement import (
 )
 from ..scoring import (
     _auto_sub_anchor_shifted_points,
+    _auto_sub_applied_anchor_shift,
     _auto_sub_best_scan_result,
     _auto_sub_candidate_ledger,
     _auto_sub_display_anchor_reference_db,
@@ -925,6 +926,14 @@ async def _run_auto_sub_optimize(
             adjusted["points_right"] = _auto_sub_anchor_shifted_points(
                 sweep.get("points_right") or [], _display_anchor_reference_db,
             )
+            # Record applied per-side shifts so the frontend can place the
+            # scored target in the exact display coordinate of each trace.
+            adjusted["display_anchor_shift_db_left"] = _auto_sub_applied_anchor_shift(
+                sweep.get("points_left") or [], _display_anchor_reference_db,
+            )
+            adjusted["display_anchor_shift_db_right"] = _auto_sub_applied_anchor_shift(
+                sweep.get("points_right") or [], _display_anchor_reference_db,
+            )
             return adjusted
 
         baseline_sweep = _anchor_adjusted_combined_sweep(baseline_sweep)
@@ -962,7 +971,14 @@ async def _run_auto_sub_optimize(
             )
 
         _final_level = final_gain_level if auto_apply else balanced_level
-        _autosub_meta = _auto_sub_result_meta(job, OUTPUT_MODE_SUBWOOFER_21, {"sub": _final_level})
+        # Run's scored anchor offset (calibrated coords); the frontend combines
+        # it with each trace's display_offset_db to place the target exactly.
+        _target_anchor = job.get("main_target_anchor") if isinstance(job.get("main_target_anchor"), dict) else None
+        _tvo = _target_anchor.get("target_vertical_offset_db") if _target_anchor else None
+        _autosub_meta = _auto_sub_result_meta(
+            job, OUTPUT_MODE_SUBWOOFER_21, {"sub": _final_level},
+            target_vertical_offset_db=float(_tvo) if isinstance(_tvo, (int, float)) else None,
+        )
         for _measurement in (baseline_measurement, confirmation_measurement):
             if _measurement is not None:
                 _measurement["measurement_kind"] = "auto_sub"

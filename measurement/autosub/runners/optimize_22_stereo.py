@@ -1398,6 +1398,11 @@ async def _run_auto_sub_22_stereo_optimize(
                 return sweep
             adjusted = dict(sweep)
             adjusted["points"] = shifted
+            # Remember the shift that was applied so the per-trace
+            # display_offset_db (calibrated -> displayed) stays exact.
+            adjusted["display_anchor_shift_db"] = _auto_sub_applied_anchor_shift(
+                sweep.get("points") or [], _display_anchor_reference_db,
+            )
             return adjusted
 
         left_baseline = _anchor_adjusted_sweep(left_baseline)
@@ -1419,12 +1424,24 @@ async def _run_auto_sub_22_stereo_optimize(
                 pts = left_sweep.get("points") or []
                 if isinstance(pts, list) and len(pts) >= 3:
                     points = [[float(p[0]), float(p[1]) - offset_db] for p in pts]
-                    traces.append({"kind": "measured", "label": f"{label} L", "role": "left", "points": points})
+                    trace = {"kind": "measured", "label": f"{label} L", "role": "left", "points": points}
+                    if isinstance(left_sweep.get("normalized_by_db"), (int, float)):
+                        _shift = float(left_sweep.get("display_anchor_shift_db") or 0.0)
+                        trace["display_offset_db"] = round(
+                            float(left_sweep["normalized_by_db"]) + _shift + float(offset_db), 4
+                        )
+                    traces.append(trace)
             if right_sweep:
                 pts = right_sweep.get("points") or []
                 if isinstance(pts, list) and len(pts) >= 3:
                     points = [[float(p[0]), float(p[1]) - offset_db] for p in pts]
-                    traces.append({"kind": "measured", "label": f"{label} R", "role": "right", "points": points})
+                    trace = {"kind": "measured", "label": f"{label} R", "role": "right", "points": points}
+                    if isinstance(right_sweep.get("normalized_by_db"), (int, float)):
+                        _shift = float(right_sweep.get("display_anchor_shift_db") or 0.0)
+                        trace["display_offset_db"] = round(
+                            float(right_sweep["normalized_by_db"]) + _shift + float(offset_db), 4
+                        )
+                    traces.append(trace)
             return {"id": f"autosub-{base_id}", "name": name, "traces": traces} if traces else None
 
         baseline_measurement = _stereo_measurement_from_lr(
@@ -1438,11 +1455,17 @@ async def _run_auto_sub_22_stereo_optimize(
             _stereo_offset_db,
         )
 
-        # Final per-side sub gains for the saved-measurement metadata.
-        _autosub_meta = _auto_sub_result_meta(job, OUTPUT_MODE_SUBWOOFER_22_STEREO, {
-            "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
-            "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
-        })
+        # Run's scored anchor offset (calibrated coords); the frontend combines
+        # it with each trace's display_offset_db to place the target exactly.
+        _target_anchor = job.get("main_target_anchor") if isinstance(job.get("main_target_anchor"), dict) else None
+        _tvo = _target_anchor.get("target_vertical_offset_db") if _target_anchor else None
+        _autosub_meta = _auto_sub_result_meta(
+            job, OUTPUT_MODE_SUBWOOFER_22_STEREO, {
+                "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
+                "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
+            },
+            target_vertical_offset_db=float(_tvo) if isinstance(_tvo, (int, float)) else None,
+        )
         for _measurement in (baseline_measurement, confirmation_measurement):
             if _measurement is not None:
                 _measurement["measurement_kind"] = "auto_sub"
