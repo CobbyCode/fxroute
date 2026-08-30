@@ -143,6 +143,56 @@ export HOME="$fxroute_home"
   --providers none \
   --yes
 
+# Re-create a git checkout inside the installed tree so the standard
+# git-based updater (scripts/update_fxroute.sh) works on ISO installs.
+# Best effort: a transient GitHub outage must not fail the first boot.
+enable_git_updates() {
+  local target="$fxroute_home/fxroute"
+  local remote_url="https://github.com/CobbyCode/fxroute.git"
+  local build_commit="" attempt=""
+
+  if ! command -v git >/dev/null 2>&1; then
+    printf '%s\n' "git is not installed; git-based FXRoute updates unavailable" >&2
+    return 0
+  fi
+  if git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -f /opt/fxroute-iso-build-commit ]]; then
+    build_commit="$(tr -d '[:space:]' < /opt/fxroute-iso-build-commit)"
+    [[ "$build_commit" =~ ^[0-9a-f]{40}$ ]] || build_commit=""
+  fi
+
+  git -C "$target" init -q -b main
+  git -C "$target" remote add origin "$remote_url"
+  for attempt in 1 2 3; do
+    if git -C "$target" \
+        -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+        fetch -q --no-tags origin \
+        "+refs/heads/main:refs/remotes/origin/main"; then
+      break
+    fi
+    if [[ "$attempt" -eq 3 ]]; then
+      printf '%s\n' "Could not fetch the FXRoute git history; git-based updates stay disabled" >&2
+      return 0
+    fi
+    sleep 5
+  done
+
+  if [[ -n "$build_commit" ]] \
+      && git -C "$target" cat-file -e "$build_commit^{commit}" 2>/dev/null; then
+    :
+  else
+    build_commit="$(git -C "$target" rev-parse origin/main)"
+  fi
+  git -C "$target" checkout -q -f -B main "$build_commit"
+  git -C "$target" config branch.main.remote origin
+  git -C "$target" config branch.main.merge refs/heads/main
+  chown -R "$FXROUTE_USER":"$(id -gn "$FXROUTE_USER")" "$target/.git"
+  printf '%s\n' "Prepared git-based updates from $remote_url at $build_commit"
+}
+enable_git_updates
+
 install_desktop_stack() {
   local chrome_repo="https://dl.google.com/linux/chrome/rpm/stable/x86_64"
   local chrome_key_url="https://dl.google.com/linux/linux_signing_key.pub"

@@ -218,6 +218,7 @@ git -C "$ROOT_DIR" ls-files -z \
 tar --list --file="$SOURCE_ARCHIVE" >/dev/null || die "Could not read generated source archive"
 
 cp -- "$SOURCE_ARCHIVE" "$STAGE_DIR/fxroute/source.tar"
+git -C "$ROOT_DIR" rev-parse HEAD > "$STAGE_DIR/fxroute/build-commit"
 cp -- "$ROOT_DIR/iso/scripts/first-boot-install.sh" "$STAGE_DIR/fxroute/scripts/first-boot-install.sh"
 chmod 755 "$STAGE_DIR/fxroute/scripts/first-boot-install.sh"
 

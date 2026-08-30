@@ -368,6 +368,10 @@ systemctl --user --machine=fxroute@ is-enabled fxroute.service
 systemctl --user --machine=fxroute@ is-active fxroute.service
 runuser -u fxroute -- env XDG_RUNTIME_DIR=/run/user/$(id -u fxroute) pactl list sinks short | awk '{print $2}' | grep -Fx 'fxroute_dsp_sink' >/dev/null
 curl --fail --silent http://127.0.0.1:8000/api/status >/dev/null
+test -d /home/fxroute/fxroute/.git
+test "$(git -C /home/fxroute/fxroute remote get-url origin)" = 'https://github.com/CobbyCode/fxroute.git'
+runuser -u fxroute -- env HOME=/home/fxroute bash -lc 'cd /home/fxroute/fxroute && scripts/update_fxroute.sh --check >/tmp/fxroute-update-check.log 2>&1'
+grep -Eqi 'already up to date|update available|reconciliation is incomplete' /tmp/fxroute-update-check.log
 EOF
 }
 
@@ -430,6 +434,10 @@ pgrep -u fxroute -f '127\.0\.0\.1:8000' >/dev/null
 systemctl --user --machine=fxroute@ is-active fxroute.service
 runuser -u fxroute -- env XDG_RUNTIME_DIR=/run/user/$(id -u fxroute) pactl list sinks short | awk '{print $2}' | grep -Fx 'fxroute_dsp_sink' >/dev/null
 curl --fail --silent http://127.0.0.1:8000/api/status >/dev/null
+test -d /home/fxroute/fxroute/.git
+test "$(git -C /home/fxroute/fxroute remote get-url origin)" = 'https://github.com/CobbyCode/fxroute.git'
+runuser -u fxroute -- env HOME=/home/fxroute bash -lc 'cd /home/fxroute/fxroute && scripts/update_fxroute.sh --check >/tmp/fxroute-update-check.log 2>&1'
+grep -Eqi 'already up to date|update available|reconciliation is incomplete' /tmp/fxroute-update-check.log
 EOF
 }
 

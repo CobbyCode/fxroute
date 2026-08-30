@@ -58,6 +58,7 @@
       "ca-certificates",
       "iproute2",
       "openssh-server",
+      "git",
       "plasma6-session",
       "sddm-qt6",
       "plasma6-pa",
@@ -80,6 +81,11 @@
     {
       "url": "device:/fxroute/source.tar",
       "destination": "/opt/fxroute-iso-source.tar",
+      "permissions": "0644"
+    },
+    {
+      "url": "device:/fxroute/build-commit",
+      "destination": "/opt/fxroute-iso-build-commit",
       "permissions": "0644"
     },
     {

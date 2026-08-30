@@ -326,6 +326,49 @@ class InstallIsoContractTests(unittest.TestCase):
             )
             self.assertEqual(init_script["permissions"], "0755")
 
+    def test_profiles_install_git_for_the_update_helper(self):
+        for profile_name in ("headless", "desktop"):
+            profile = json.loads((PROFILE_DIR / f"{profile_name}.jsonnet").read_text())
+            self.assertIn("git", profile["software"]["packages"])
+
+    def test_profiles_stage_the_build_commit_marker(self):
+        for profile_name in ("headless", "desktop"):
+            profile = json.loads((PROFILE_DIR / f"{profile_name}.jsonnet").read_text())
+            files = {entry["destination"]: entry for entry in profile["files"]}
+            marker = files["/opt/fxroute-iso-build-commit"]
+            self.assertEqual(marker["url"], "device:/fxroute/build-commit")
+            self.assertEqual(marker["permissions"], "0644")
+
+    def test_builder_records_the_built_commit_for_update_setup(self):
+        build = self.read("iso/build-leap-16-iso.sh")
+
+        self.assertIn(
+            'git -C "$ROOT_DIR" rev-parse HEAD > "$STAGE_DIR/fxroute/build-commit"',
+            build,
+        )
+
+    def test_first_boot_prepares_git_based_updates(self):
+        script = self.read("iso/scripts/first-boot-install.sh")
+
+        self.assertIn("https://github.com/CobbyCode/fxroute.git", script)
+        self.assertIn("enable_git_updates", script)
+        self.assertIn("/opt/fxroute-iso-build-commit", script)
+        self.assertIn("fetch -q --no-tags origin", script)
+        self.assertIn("http.lowSpeedLimit=1000", script)
+        self.assertIn("for attempt in 1 2 3; do", script)
+        self.assertIn("checkout -q -f -B main", script)
+        self.assertIn("config branch.main.remote origin", script)
+        self.assertIn('chown -R "$FXROUTE_USER"', script)
+        # The git update setup is best effort and must never fail the install.
+        self.assertIn("updates stay disabled", script)
+
+    def test_verifier_checks_the_git_update_path(self):
+        runner = self.read("iso/test-leap-16-iso.sh")
+
+        self.assertIn("test -d /home/fxroute/fxroute/.git", runner)
+        self.assertIn("update_fxroute.sh --check", runner)
+        self.assertIn("reconciliation is incomplete", runner)
+
     def test_profiles_install_and_enable_the_first_boot_service(self):
         for profile_name in ("headless", "desktop"):
             profile = json.loads((PROFILE_DIR / f"{profile_name}.jsonnet").read_text())

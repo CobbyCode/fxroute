@@ -97,6 +97,27 @@ first-boot attempt remains recorded for diagnostics but is retried on the next
 boot. An in-progress marker also makes an interrupted first boot recoverable
 without leaving a partial install target behind.
 
+## Updates
+
+ISO installs do not ship a `.git` directory, so the first-boot setup
+re-creates one after `install.sh` finishes: it inits a repo in
+`~/fxroute`, adds the public GitHub `origin`, fetches `main`, and checks
+out the commit the ISO was built from (recorded on the media as
+`/opt/fxroute-iso-build-commit`). This makes the normal git-based update
+flow work unchanged:
+
+```bash
+cd ~/fxroute && scripts/update_fxroute.sh
+```
+
+The fetch is best effort with three bounded attempts; if GitHub is
+unreachable during first boot, FXRoute still installs and runs, and the
+checkout can be prepared later with the same `git init`/`fetch`/`checkout`
+steps. User state is not affected by updates: presets, measurements,
+provider credentials and runtime state live in `~/.config/fxroute` and
+`~/.env`-style configuration stays in place (`.env`, `.venv`,
+`media/cache`, `native_dsp/build`, and `backups/` are gitignored).
+
 ## QEMU Verification
 
 The runner creates a new 40 GiB disk for each profile, boots the ISO, waits for
