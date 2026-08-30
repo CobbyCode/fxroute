@@ -93,16 +93,18 @@
     /**
      * Exact scored target offset for the AutoSub set currently on screen.
      *
-     * Returns the offset to SUBTRACT from (target + tvo) so the target lands
-     * in the display coordinate of the traces, or null when the exact
-     * transform is not available (no AutoSub entries, no metadata, or a
-     * normal measurement graph is shown).
+     * Returns the value to pass to shiftTargetPoints() so the target lands in
+     * the display coordinate of the traces, or null when the exact transform
+     * is not available (no AutoSub entries, no metadata, or a normal
+     * measurement graph is shown).
      *
      * The backend embeds:
      *   autosub_meta.target_vertical_offset_db  (run's tvo, calibrated coords)
      *   trace.display_offset_db                 (nb + anchor_shift + shared)
-     * and the exact displayed target position is:
-     *   target_displayed = target + tvo - display_offset_db
+     * Scoring places the target at (target + tvo) in calibrated coordinates;
+     * since displayed = calibrated - display_offset_db, the exact displayed
+     * target position is target + tvo - display_offset_db, so the value to
+     * subtract from the target points is (display_offset_db - tvo).
      */
     function resolveTargetOffsetDb(entries) {
         if (!Array.isArray(entries)) return null;
@@ -117,7 +119,7 @@
             for (const trace of entry.traces || []) {
                 const displayOffset = finiteNumber(trace.display_offset_db);
                 if (displayOffset !== null) {
-                    return tvo - displayOffset;
+                    return displayOffset - tvo;
                 }
             }
         }
