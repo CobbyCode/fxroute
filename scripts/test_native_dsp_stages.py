@@ -164,7 +164,10 @@ def test_parser_loads_manager_generated_maximum_dual_peq(tmp_path):
     )
 
     equalizer_stage = config.read_text().split("stage_end", 1)[0]
-    assert equalizer_stage.count("control ") == 268
+    # Per side: 20 present bands x 6 controls + 12 empty bands x 1 control;
+    # plus g_in/g_out/mode.  2 x (120 + 12) + 3 = 267 since 6167980 removed
+    # the dual-mode "clink" control.
+    assert equalizer_stage.count("control ") == 267
     assert result.returncode == 0, result.stderr
 
 
