@@ -1812,6 +1812,33 @@ ensure_smb_packages() {
   [[ ${#missing[@]} -eq 0 ]] || pkg_install "${missing[@]}"
 }
 
+zypper_python_package() {
+  local package_kind="$1"
+  local os_release_path="${2:-/etc/os-release}"
+  local distro_id=""
+  local version_id=""
+
+  distro_id="$(sed -n 's/^ID=//p' "$os_release_path" 2>/dev/null | head -n 1 | tr -d '"')"
+  version_id="$(sed -n 's/^VERSION_ID=//p' "$os_release_path" 2>/dev/null | head -n 1 | tr -d '"')"
+  if [[ "$distro_id" == "opensuse-leap" ]]; then
+    case "$version_id" in
+      16|16.*)
+        case "$package_kind" in
+          pip) printf 'python313-pip\n' ;;
+          virtualenv) printf 'python313-virtualenv\n' ;;
+          *) return 1 ;;
+        esac
+        return 0
+        ;;
+    esac
+  fi
+  case "$package_kind" in
+    pip) printf 'python3-pip\n' ;;
+    virtualenv) printf 'python3-virtualenv\n' ;;
+    *) return 1 ;;
+  esac
+}
+
 ensure_native_packages() {
   local core_packages=()
   local support_packages=(curl git socat tar)
@@ -1821,6 +1848,8 @@ ensure_native_packages() {
   local missing_audio_stack=()
   local need_venv_pkg=0
   local need_bt_plugin_pkg=0
+  local zypper_pip_package=""
+  local zypper_venv_package=""
 
   case "$PACKAGE_MANAGER" in
     apt)
@@ -1832,7 +1861,9 @@ ensure_native_packages() {
       audio_stack_packages=(bluez wireplumber pipewire-utils pipewire-pulseaudio pulseaudio-utils rtkit)
       ;;
     zypper)
-      core_packages=(python3 python3-pip mpv ffmpeg playerctl)
+      zypper_pip_package="$(zypper_python_package pip)"
+      zypper_venv_package="$(zypper_python_package virtualenv)"
+      core_packages=(python3 "$zypper_pip_package" mpv ffmpeg playerctl)
       audio_stack_packages=(bluez wireplumber pipewire-tools pipewire-pulseaudio pulseaudio-utils pipewire-spa-plugins-0_2 rtkit)
       ;;
     pacman)
@@ -1890,7 +1921,7 @@ ensure_native_packages() {
         pkg_install python3-virtualenv
         ;;
       zypper)
-        pkg_install python3-virtualenv
+        pkg_install "$zypper_venv_package"
         ;;
       pacman)
         # python on Arch/Manjaro ships the venv module; no extra package needed.

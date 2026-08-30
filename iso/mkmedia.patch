@@ -1,0 +1,28 @@
+--- mkmedia
++++ mkmedia
+@@ -488,5 +488,5 @@
+ umask 0022;
+-
+-$ENV{PATH} = "$LIBEXECDIR/mkmedia:/usr/bin:/bin:/usr/sbin:/sbin";
++$ENV{PATH} = ($ENV{FXROUTE_MKMEDIA_TOOL_DIR} ? "$ENV{FXROUTE_MKMEDIA_TOOL_DIR}:" : "") .
++  "$LIBEXECDIR/mkmedia:/usr/bin:/bin:/usr/sbin:/sbin";
++
+-
+ if(!$iso_backend) {
+@@ -1764,8 +1765,8 @@
+     if($_[0] =~ m#(.+)/([^/]+)#) {
+       $n = "$tmp_new/$1/$2";
+-      system "mkdir -p '$tmp_new/$1'; cp '$f' '$tmp_new/$1'";
++      system "mkdir -p '$tmp_new/$1'; cp -p '$f' '$tmp_new/$1'";
+     }
+     elsif($_[0] !~ m#/#) {
+       $n = "$tmp_new/$_[0]";
+-      system "cp '$f' '$tmp_new'";
++      system "cp -p '$f' '$tmp_new'";
+     }
+@@ -4107,4 +4108,4 @@
+           $ent .= $_;
+           next if !/^\s*\}?\s*$/;
+-          $ent =~ s/$inst_regexp/$1$2 - $opt_new_boot_entry$1/;
++          $ent =~ s/$inst_regexp/$1$opt_new_boot_entry$1/;
+           my $k = $kernel->{current}{kernel};
