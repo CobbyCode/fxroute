@@ -1380,8 +1380,7 @@
 
     /* from _effects.css */
     .effects-card-subwoofer-header,
-        .effects-subwoofer-controls,
-        .effects-subwoofer-frequency-row {
+        .effects-subwoofer-controls {
             grid-template-columns: 1fr;
         }
 
@@ -1402,10 +1401,6 @@
         .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group,
         .effects-subwoofer-derived-delays {
             grid-column: 1;
-        }
-
-        .effects-subwoofer-frequency-row {
-            gap: 0.55rem;
         }
 
     /* from _effects.css */
@@ -1495,9 +1490,12 @@
         width: auto;
     }
 
-    /* Tablet subwoofer layout: two control columns (merged with the TIDAL
-       tablet block above; identical media condition). Scoped to ≥761px so
-       the one-column mobile layout at ≤760px wins the cascade. */
+    /* Tablet subwoofer layout: Global across the full width, Sub 1 and
+       Sub 2 sharing the row below (merged with the TIDAL tablet block
+       above; identical media condition). Scoped to ≥761px so the
+       one-column mobile layout at ≤760px wins the cascade. Base-grid
+       placements (grid-column on the groups and the 2.2 column pins) all
+       collapse to plain auto flow so DOM order lays out the rows. */
     .effects-subwoofer-controls {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -1505,11 +1503,10 @@
     .effects-subwoofer-global-group,
     .effects-subwoofer-channel-group {
         grid-column: auto;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .effects-subwoofer-channel-group {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+    .effects-subwoofer-global-group {
+        grid-column: 1 / -1;
     }
 
     .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
@@ -1519,6 +1516,19 @@
 
     .effects-subwoofer-derived-delays {
         grid-column: 1 / -1;
+    }
+}
+
+/* Narrow tablet: before the three channel columns could ever run into each
+   other, Polarity wraps centered below Level and Alignment. */
+@media (min-width: 761px) and (max-width: 860px) {
+    .effects-subwoofer-channel-group {
+        grid-template-columns: repeat(2, auto);
+    }
+
+    .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
+        grid-column: 1 / -1;
+        justify-self: center;
     }
 }
 

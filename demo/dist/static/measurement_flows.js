@@ -219,8 +219,8 @@ async function pollAutoSubJob(jobId) {
                         coarse: 'Coarse',
                         sub1_coarse: 'Optimizing Sub 1',
                         sub2_coarse: 'Optimizing Sub 2',
-                        left_sub: 'Optimizing Left Sub',
-                        right_sub: 'Optimizing Right Sub',
+                        left_sub: 'Optimizing Sub 1',
+                        right_sub: 'Optimizing Sub 2',
                         combined_matrix: 'Combined Matrix',
                     };
                     const stageLabel = stageLabels[progress.stage] || 'Coarse';
@@ -311,8 +311,8 @@ async function handleAutoSubResult(job) {
     const winner = result.winner || {};
     if (deps.isSubwoofer22Mode(result.mode) || Number.isFinite(result.applied_sub1_alignment_ms) || Number.isFinite(result.applied_sub2_alignment_ms)) {
         const isStereoBassResult = result.mode === 'subwoofer-2.2-stereo';
-        const sub1Label = isStereoBassResult ? 'Left Sub' : 'Sub 1';
-        const sub2Label = isStereoBassResult ? 'Right Sub' : 'Sub 2';
+        const sub1Label = 'Sub 1';
+        const sub2Label = 'Sub 2';
         const modeLabel = isStereoBassResult ? '2.2 Stereo Bass' : '2.2';
         const originalSub1 = Number.isFinite(result.original_sub1_alignment_ms) ? result.original_sub1_alignment_ms : null;
         const originalSub2 = Number.isFinite(result.original_sub2_alignment_ms) ? result.original_sub2_alignment_ms : null;

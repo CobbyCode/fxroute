@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.160">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.166">
     <link rel="stylesheet" href="./demo/demo.css?v=1">
 </head>
 <body>
@@ -554,15 +554,13 @@
                                     <div class="effects-subwoofer-control-group effects-subwoofer-global-group">
                                         <div class="effects-subwoofer-group-label">Global</div>
                                         <div class="field-group">
-                                            <label for="effects-subwoofer-frequency-number">Crossover frequency</label>
-                                            <div class="effects-subwoofer-frequency-row">
-                                                <div class="delay-input-wrap">
-                                                    <div class="stepper-control">
-                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease crossover frequency">&minus;</button>
-                                                        <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
-                                                        <span class="stepper-unit" aria-hidden="true">Hz</span>
-                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase crossover frequency">+</button>
-                                                    </div>
+                                            <label for="effects-subwoofer-frequency-number">Crossover</label>
+                                            <div class="delay-input-wrap">
+                                                <div class="stepper-control">
+                                                    <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease crossover frequency">&minus;</button>
+                                                    <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
+                                                    <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                    <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase crossover frequency">+</button>
                                                 </div>
                                             </div>
                                         </div>
@@ -601,8 +599,8 @@
                                         <div class="field-group effects-subwoofer-polarity-field">
                                             <label id="effects-subwoofer-polarity-label" for="effects-subwoofer-polarity">Sub polarity</label>
                                             <select id="effects-subwoofer-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
-                                                <option value="normal">Norm</option>
-                                                <option value="invert">Inv</option>
+                                                <option value="normal">N</option>
+                                                <option value="invert">I</option>
                                             </select>
                                         </div>
                                     </div>
@@ -633,8 +631,8 @@
                                         <div class="field-group effects-subwoofer-polarity-field">
                                             <label for="effects-subwoofer-sub2-polarity">Sub 2 polarity</label>
                                             <select id="effects-subwoofer-sub2-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
-                                                <option value="normal">Norm</option>
-                                                <option value="invert">Inv</option>
+                                                <option value="normal">N</option>
+                                                <option value="invert">I</option>
                                             </select>
                                         </div>
                                     </div>
@@ -1386,12 +1384,13 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
     <script src="/static/measurement_dsp.js?v=0.9.12"></script>
+    <script src="/static/autosub_target.js?v=0.9.12"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.12"></script>
     <script src="/static/measurement_ui.js?v=0.9.12"></script>
-    <script src="/static/measurement_graph.js?v=0.9.13"></script>
-    <script src="/static/measurement_flows.js?v=0.9.16"></script>
+    <script src="/static/measurement_graph.js?v=0.9.14"></script>
+    <script src="/static/measurement_flows.js?v=0.9.17"></script>
     <script src="/static/radio.js?v=0.9.15"></script>
-    <script src="/static/app.js?v=0.9.91"></script>
+    <script src="/static/app.js?v=0.9.94"></script>
     <script src="/static/streaming.js?v=0.9.56"></script>
 </body>
 </html>

@@ -2274,7 +2274,7 @@ function renderSettingsPanel() {
                 : '2.2 requires a selected output device with at least 4 channels.';
         } else if (mode === 'subwoofer-2.2-stereo') {
             elements.settingsOutputModeHint.textContent = outputMode.available
-                ? `2.2 Stereo Bass fixed routing active: Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub.`
+                ? `2.2 Stereo Bass fixed routing active: Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2.`
                 : '2.2 Stereo Bass requires a selected output device with at least 4 channels.';
         } else {
             elements.settingsOutputModeHint.textContent = channels
@@ -6666,9 +6666,6 @@ async function createDualFilterPreset() {
         formData.append('headroom_gain_db', String(extras.headroomGainDb));
         formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
         formData.append('autogain_target_db', String(extras.autogainTargetDb));
-        formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
-        formData.append('delay_left_ms', String(extras.delayLeftMs));
-        formData.append('delay_right_ms', String(extras.delayRightMs));
         formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
         formData.append('bass_amount', String(extras.bassAmount));
         formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
@@ -8220,9 +8217,6 @@ function appendMeasurementConvolverExtras(formData) {
     formData.append('headroom_gain_db', String(extras.headroomGainDb));
     formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
     formData.append('autogain_target_db', String(extras.autogainTargetDb));
-    formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
-    formData.append('delay_left_ms', String(extras.delayLeftMs));
-    formData.append('delay_right_ms', String(extras.delayRightMs));
     formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
     formData.append('bass_amount', String(extras.bassAmount));
     formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
@@ -8710,8 +8704,23 @@ function getMeasurementConvolverRangeHandleAtPosition(x, y, bounds) {
 
 function drawMeasurementTargetCurve(ctx, bounds, range) {
     const curve = getMeasurementTargetCurvePreview();
-    const points = curve.points || measurementConvolverCurves.neutral.points;
+    let points = curve.points || measurementConvolverCurves.neutral.points;
     if (getMeasurementActiveEditor() === 'houseCurve' && !points.length) return;
+    // In AutoSub Before/After view, place the target at the exact scored
+    // position. The backend embeds autosub_meta.target_vertical_offset_db
+    // (the run's scored anchor offset in calibrated coords) and stamps each
+    // trace with its own display_offset_db (nb + anchor shift + shared
+    // offset); resolveTargetOffsetDb() returns tvo - display_offset_db so the
+    // shifted target sits in the same display coordinate as the traces.
+    // Legacy runs without metadata fall back to the shared bass reference.
+    let displayPoints = points;
+    if (window.FXRouteAutoSubTarget) {
+        const entries = getGraphMeasurementEntries();
+        const offsetDb = window.FXRouteAutoSubTarget.resolveTargetOffsetDb(entries);
+        if (offsetDb !== null) {
+            displayPoints = window.FXRouteAutoSubTarget.shiftTargetPoints(points, offsetDb);
+        }
+    }
     const frequencies = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
     ctx.save();
     ctx.strokeStyle = '#6ee7b7';
@@ -8720,7 +8729,7 @@ function drawMeasurementTargetCurve(ctx, bounds, range) {
     ctx.beginPath();
     frequencies.forEach((frequency, index) => {
         const x = measurementFrequencyToX(frequency, bounds);
-        const levelDb = MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(points, frequency);
+        const levelDb = MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(displayPoints, frequency);
         const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(levelDb, bounds, range)));
         if (index === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
@@ -10342,6 +10351,8 @@ async function saveCurrentMeasurement() {
                     name,
                     channel: ch,
                     traces: [{...trace, channel: ch}],
+                    measurement_kind: measurement.measurement_kind || 'auto_sub',
+                    autosub_meta: measurement.autosub_meta || null,
                 });
             });
         });
@@ -12012,9 +12023,6 @@ async function importRewPeqPreset() {
     formData.append('headroom_gain_db', String(extras.headroomGainDb));
     formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
     formData.append('autogain_target_db', String(extras.autogainTargetDb));
-    formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
-    formData.append('delay_left_ms', String(extras.delayLeftMs));
-    formData.append('delay_right_ms', String(extras.delayRightMs));
     formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
     formData.append('bass_amount', String(extras.bassAmount));
     formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
@@ -12580,7 +12588,7 @@ function renderSubwooferPanel() {
     const subwoofers = normalizeSubwoofersSettings(outputMode.subwoofers || {}, subwoofer);
     if (elements.effectsSubwooferRouting) {
         const routingStatus = is22Mode
-            ? (is22StereoMode ? 'Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub' : 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2')
+            ? 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2'
             : (outputMode.routing?.status || 'Out 1/2 Main · Out 3/4 Sub');
         const slope = subwoofer.slope || 'LR24';
         elements.effectsSubwooferRouting.textContent = `${routingStatus} · ${slope}`;
@@ -12589,14 +12597,14 @@ function renderSubwooferPanel() {
         elements.effectsSubwooferModeBadge.textContent = is22StereoMode ? '2.2 Stereo Bass active' : is22Mode ? '2.2 active' : '2.1 active';
         elements.effectsSubwooferModeBadge.classList.toggle('is-active', true);
     }
-    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = is22StereoMode ? 'Left Sub level' : is22Mode ? 'Sub 1 level' : 'Sub level';
-    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = is22StereoMode ? 'Left Sub alignment' : is22Mode ? 'Sub 1 alignment' : 'Sub alignment';
-    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = is22StereoMode ? 'Left Sub polarity' : is22Mode ? 'Sub 1 polarity' : 'Sub polarity';
-    if (elements.effectsSubwooferSub1GroupLabel) elements.effectsSubwooferSub1GroupLabel.textContent = is22StereoMode ? 'Left Sub' : is22Mode ? 'Sub 1' : 'Subwoofer';
-    if (elements.effectsSubwooferSub2GroupLabel) elements.effectsSubwooferSub2GroupLabel.textContent = is22StereoMode ? 'Right Sub' : 'Sub 2';
-    if (elements.effectsSubwooferSub2LevelLabel) elements.effectsSubwooferSub2LevelLabel.textContent = is22StereoMode ? 'Right Sub level' : 'Sub 2 level';
-    if (elements.effectsSubwooferSub2DelayLabel) elements.effectsSubwooferSub2DelayLabel.textContent = is22StereoMode ? 'Right Sub alignment' : 'Sub 2 alignment';
-    if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = is22StereoMode ? 'Right Sub polarity' : 'Sub 2 polarity';
+    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = is22Mode ? 'Sub 1 level' : 'Sub level';
+    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = is22Mode ? 'Sub 1 alignment' : 'Sub alignment';
+    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = is22Mode ? 'Sub 1 polarity' : 'Sub polarity';
+    if (elements.effectsSubwooferSub1GroupLabel) elements.effectsSubwooferSub1GroupLabel.textContent = is22Mode ? 'Sub 1' : 'Subwoofer';
+    if (elements.effectsSubwooferSub2GroupLabel) elements.effectsSubwooferSub2GroupLabel.textContent = 'Sub 2';
+    if (elements.effectsSubwooferSub2LevelLabel) elements.effectsSubwooferSub2LevelLabel.textContent = 'Sub 2 level';
+    if (elements.effectsSubwooferSub2DelayLabel) elements.effectsSubwooferSub2DelayLabel.textContent = 'Sub 2 alignment';
+    if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = 'Sub 2 polarity';
     elements.effectsSubwooferSub2Fields?.forEach(field => field.classList.toggle('hidden', !is22Mode));
     elements.effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
     if (elements.effectsSubwooferFrequencyNumber && !_activeEditing.has(elements.effectsSubwooferFrequencyNumber)) {
@@ -13183,9 +13191,6 @@ async function createConvolverPreset() {
     formData.append('headroom_gain_db', String(extras.headroomGainDb));
     formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
     formData.append('autogain_target_db', String(extras.autogainTargetDb));
-    formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
-    formData.append('delay_left_ms', String(extras.delayLeftMs));
-    formData.append('delay_right_ms', String(extras.delayRightMs));
     formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
     formData.append('bass_amount', String(extras.bassAmount));
     formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
@@ -14041,9 +14046,11 @@ function updateFooterForStreamingOwner(data) {
     elements.playbackBar?.classList.toggle('has-media', hasMedia);
     elements.playbackBar?.classList.toggle('is-playing', hasMedia && data.status === 'Playing');
     elements.playbackBar?.classList.toggle('is-paused', hasMedia && data.status === 'Paused');
-    if (typeof data.volume === 'number' && !volumeGestureActive) {
-        state.playback.volume = data.volume;
-        renderVolumeControlsFromActualVolume(data.volume);
+    if (typeof data.volume === 'number') {
+        applyRemoteVolume(data.volume);
+        if (!volumeGestureActive && !volumeRequestInFlight && pendingVolume === null) {
+            renderVolumeControlsFromActualVolume(state.playback.volume);
+        }
     }
     if (!hasMedia) {
         renderFooterModeButtons();
