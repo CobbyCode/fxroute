@@ -95,6 +95,36 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
             self.text,
         )
 
+    def test_zypper_python_package_names_follow_the_openSUSE_release(self):
+        self.assertIn("zypper_python_package", self.text)
+        self.assertIn('python313-pip', self.text)
+        self.assertIn('python313-virtualenv', self.text)
+        self.assertIn('python3-pip', self.text)
+        self.assertIn('python3-virtualenv', self.text)
+        self.assertIn('VERSION_ID', self.text)
+
+        helper = _extract_function(self.text, "zypper_python_package")
+        with tempfile.TemporaryDirectory() as td:
+            leap_release = Path(td) / "leap-os-release"
+            leap_release.write_text('ID="opensuse-leap"\nVERSION_ID="16.0"\n')
+            tumbleweed_release = Path(td) / "tumbleweed-os-release"
+            tumbleweed_release.write_text('ID="opensuse-tumbleweed"\nVERSION_ID="20260801"\n')
+            for release, expected in (
+                (leap_release, "python313-pip"),
+                (tumbleweed_release, "python3-pip"),
+            ):
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        f'{helper}\nprintf "%s\\n" "$(zypper_python_package pip {release})"\n',
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, f"{expected}\n")
+
     def test_smb_runtime_packages_for_all_supported_distros(self):
         expected = (
             'apt) echo "smbclient cifs-utils libglib2.0-bin gvfs gvfs-backends gvfs-fuse"',
