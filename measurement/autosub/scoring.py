@@ -15,6 +15,7 @@ from measurement.store import (
     score_sub_alignment_candidates,
 )
 
+from audio.samplerate.constants import OUTPUT_MODE_SUBWOOFER_21
 from .candidates import (
     _AUTO_SUB_MIN_POLARITY_ACCEPT_GAIN,
     _auto_sub_22_name,
@@ -189,20 +190,46 @@ def _auto_sub_anchor_shifted_points(points: list, reference_db: float | None) ->
         return points
     return [[point[0], point[1] + shift] for point in points]
 
+def _auto_sub_result_meta(job: dict[str, Any], mode: str, final_levels_db: dict[str, float]) -> dict[str, Any]:
+    """Build the AutoSub result metadata embedded into saved measurements.
+
+    The frontend renders this as the saved-measurement summary line (target
+    label + final sub gains) instead of the generic timing line.  The target
+    label comes from the job's own target curve snapshot, never from the
+    later-selected UI curve.
+    """
+    target_curve = job.get("target_curve") if isinstance(job.get("target_curve"), dict) else None
+    target_label = str((target_curve or {}).get("label") or "").strip()
+    meta: dict[str, Any] = {
+        "target": {"label": target_label} if target_label else None,
+    }
+    if mode == OUTPUT_MODE_SUBWOOFER_21:
+        if "sub" in final_levels_db:
+            meta["final_gains_db"] = {"sub": round(float(final_levels_db["sub"]), 2)}
+    else:
+        gains = {key: round(float(final_levels_db[key]), 2) for key in ("sub1", "sub2") if key in final_levels_db}
+        if gains:
+            meta["final_gains_db"] = gains
+    return meta
+
 def _auto_sub_measurement_from_sweep(
     sweep_result: dict[str, Any],
     label: str,
     name: str,
     offset_db: float | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convert an AutoSub sweep result into a frontend-compatible measurement dict.
 
     When *offset_db* is provided it is used as the shared vertical reference
     for all traces.  When omitted, the shared offset is computed from the
-    combined bass-region (20‑200 Hz) dB values of the L + R points inside
+    combined bass-region (20‑200 Hz) dB values of the L + R points inside
     *sweep_result*, which is the correct default for a single-sweep call
-    (2.1 / 2.2 Mono).  Callers that need a cross-sweep shared offset
-    (2.2 Stereo) can pre-compute it and pass it explicitly.
+    (2.1 / 2.2 Mono).  Callers that need a cross-sweep shared offset
+    (2.2 Stereo) can pre-compute it and pass it explicitly.
+
+    When *meta* is provided it is embedded as ``autosub_meta`` so the saved
+    measurement can display the run's target curve and final sub gains.
     """
     traces: list[dict[str, Any]] = []
     base_id = uuid4().hex[:12]
@@ -231,11 +258,14 @@ def _auto_sub_measurement_from_sweep(
             "points": points,
         })
 
-    return {
+    result = {
         "id": f"autosub-{base_id}",
         "name": name,
         "traces": traces,
     }
+    if meta:
+        result["autosub_meta"] = meta
+    return result
 
 def _auto_sub_select_accepted_winner(
     *,

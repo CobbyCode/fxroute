@@ -529,6 +529,8 @@ class MeasurementPersistence:
             result["notes"] = [str(item) for item in payload.get("notes") if str(item).strip()]
         if payload.get("analysis") and isinstance(payload.get("analysis"), dict):
             result["analysis"] = payload["analysis"]
+        if payload.get("autosub_meta") and isinstance(payload.get("autosub_meta"), dict):
+            result["autosub_meta"] = payload["autosub_meta"]
         if payload.get("audio_output_context") and isinstance(payload.get("audio_output_context"), dict):
             result["audio_output_context"] = payload["audio_output_context"]
         if source_path is not None:

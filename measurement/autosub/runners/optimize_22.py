@@ -60,6 +60,7 @@ from ..scoring import (
     _auto_sub_display_anchor_reference_db,
     _auto_sub_has_points,
     _auto_sub_measurement_from_sweep,
+    _auto_sub_result_meta,
     _auto_sub_result_for_delay,
     _auto_sub_shared_bass_offset,
     _score_auto_sub_combined_candidates,
@@ -855,6 +856,15 @@ async def _run_auto_sub_22_optimize(
 
         job["status"] = "completed"
         gate_action = (job.get("confirmation_gate") or {}).get("action", "final_kept")
+        _final_levels = {
+            "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
+            "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
+        }
+        _autosub_meta = _auto_sub_result_meta(job, OUTPUT_MODE_SUBWOOFER_22, _final_levels)
+        for _measurement in (baseline_measurement, confirmation_measurement):
+            if _measurement is not None:
+                _measurement["measurement_kind"] = "auto_sub"
+                _measurement["autosub_meta"] = _autosub_meta
         gate_suffix = {
             "alignment_reverted_balance_kept": "; final state regressed locally - incumbent pair kept, balance applied",
             "reverted_to_original": "; final state regressed locally - original state restored",

@@ -72,6 +72,7 @@ from ..scoring import (
     _auto_sub_display_anchor_reference_db,
     _auto_sub_has_points,
     _auto_sub_rank_results,
+    _auto_sub_result_meta,
     _auto_sub_result_for_delay,
     _auto_sub_select_accepted_winner,
     _auto_sub_select_polarity_shared_winner,
@@ -1436,6 +1437,16 @@ async def _run_auto_sub_22_stereo_optimize(
             f"AutoSub 2.2S Optimized (L {best_left:.1f} / R {best_right:.1f} ms)",
             _stereo_offset_db,
         )
+
+        # Final per-side sub gains for the saved-measurement metadata.
+        _autosub_meta = _auto_sub_result_meta(job, OUTPUT_MODE_SUBWOOFER_22_STEREO, {
+            "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
+            "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
+        })
+        for _measurement in (baseline_measurement, confirmation_measurement):
+            if _measurement is not None:
+                _measurement["measurement_kind"] = "auto_sub"
+                _measurement["autosub_meta"] = _autosub_meta
 
         job["result"] = {
             "mode": OUTPUT_MODE_SUBWOOFER_22_STEREO,

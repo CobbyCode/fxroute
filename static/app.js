@@ -10336,6 +10336,8 @@ async function saveCurrentMeasurement() {
                     name,
                     channel: ch,
                     traces: [{...trace, channel: ch}],
+                    measurement_kind: measurement.measurement_kind || 'auto_sub',
+                    autosub_meta: measurement.autosub_meta || null,
                 });
             });
         });

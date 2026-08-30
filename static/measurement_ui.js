@@ -72,6 +72,7 @@ function normalizeMeasurementEntry(measurement = {}, index = 0) {
         input_device: measurement.input_device || {},
         input_channels: measurement.input_channels || {},
         calibration: measurement.calibration || {},
+        autosub_meta: measurement.autosub_meta || null,
         summary: measurement.summary || {},
         review_summary: measurement.review_summary || {},
         analysis: measurement.analysis || {},
@@ -708,7 +709,44 @@ function formatMeasurementLrRepeatDelta(measurement = {}, repeat = {}) {
     return `L/R delta ${formatSignedMeasurementMs(globalDeltaMs)} · ${laterText}`;
 }
 
+function getMeasurementAutoSubSummary(measurement = {}) {
+    const meta = measurement?.autosub_meta || null;
+    if (!meta || typeof meta !== 'object') return null;
+    const parts = [];
+    const targetLabel = String(meta?.target?.label || '').trim();
+    if (targetLabel) parts.push(`Target: ${targetLabel}`);
+    const gains = meta?.final_gains_db || null;
+    if (gains && typeof gains === 'object') {
+        const gainText = (value, decimals = 1) => {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) return '';
+            const rounded = Math.round(numeric * 10) / 10;
+            const sign = rounded > 0 ? '+' : (rounded < 0 ? '\u2212' : '');
+            return `${sign}${Math.abs(rounded).toFixed(decimals)} dB`;
+        };
+        const sub1 = gainText(gains.sub1);
+        if (sub1) parts.push(`Sub 1 ${sub1}`);
+        const sub2 = gainText(gains.sub2);
+        if (sub2) parts.push(`Sub 2 ${sub2}`);
+    }
+    if (!parts.length) return null;
+    const line = parts.join(' · ');
+    return {
+        status: 'autosub',
+        label: 'AutoSub',
+        line,
+        detail: `${line} · AutoSub result metadata`,
+        delayMs: null,
+        arrivalSamples: null,
+        source: 'autosub_meta',
+    };
+}
+
 function getMeasurementTimingInfo(measurement = {}) {
+    if (String(measurement?.measurement_kind || '').trim() === 'auto_sub') {
+        const autoSubSummary = getMeasurementAutoSubSummary(measurement);
+        if (autoSubSummary) return autoSubSummary;
+    }
     const referencePath = measurement?.analysis?.reference_path || {};
     const impulse = measurement?.analysis?.impulse_response || {};
     const repeat = measurement?.analysis?.lr_repeat || null;
@@ -912,6 +950,7 @@ function hybridSpeakerName(channel) {
         getMeasurementLrRepeatGlobalDeltaMs,
         formatMeasurementLrRepeatDelta,
         getMeasurementTimingInfo,
+        getMeasurementAutoSubSummary,
         getMeasurementJobStatus,
         normalizeMeasurementKind,
         getMeasurementJobResultMeasurement,

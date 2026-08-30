@@ -70,6 +70,7 @@ from measurement.autosub.scoring import (
     _auto_sub_measurement_from_sweep,
     _auto_sub_rank_results,
     _auto_sub_result_for_delay,
+    _auto_sub_result_meta,
     _auto_sub_score_single_channel_fallback,
     _auto_sub_scoring_confidence,
     _auto_sub_select_accepted_winner,
