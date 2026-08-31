@@ -160,7 +160,24 @@ def _auto_sub_step_ms(fc: int) -> float:
     return (1000.0 / float(fc)) / 16.0
 
 def _auto_sub_clamped_delay(delay_ms: float) -> float:
-    return round(max(-40.0, min(40.0, float(delay_ms))), 2)
+    # "+ 0.0" normalizes -0.0 to 0.0 so scan windows never emit a negative
+    # zero delay (a -0.0 winner delay silently broke the falsy `or` fallbacks
+    # downstream and desynced the scored winner from the applied config).
+    return round(max(-40.0, min(40.0, float(delay_ms))), 2) + 0.0
+
+def _auto_sub_winner_delay_ms(winner: dict[str, Any] | None, fallback_ms: float) -> float:
+    """Delay of a scoring winner with an explicit fallback for missing data.
+
+    ``float(winner.get("delay_ms", fallback) or fallback)`` silently
+    substitutes the fallback for a legitimate 0.00 ms winner because 0.0 is
+    falsy: the real run auto-sub-799f3bd5d1ab scored a 0.0 ms right winner
+    and applied the incumbent delay instead, desyncing the scored result
+    from the applied configuration. An explicit None check keeps 0.0 as 0.0.
+    """
+    value = (winner or {}).get("delay_ms")
+    if value is None:
+        return _auto_sub_clamped_delay(float(fallback_ms))
+    return _auto_sub_clamped_delay(float(value))
 
 def _auto_sub_sweep_profile(fc: float) -> dict[str, float]:
     """Build the bass-focused AutoSub sweep profile for a crossover frequency."""

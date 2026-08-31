@@ -413,6 +413,7 @@ async def _measure_auto_sub_candidate(
                 "normalized_by_db": normalized_by_db,
                 "calibrated_points": calibrated_points,
                 "exact_sub_mute": bool(exact_sub_mute),
+                "alignment_samples": analysis.get("alignment_samples"),
                 "measurement_channel": str(measurement.get("channel") or channel),
                 "sample_rate": analysis.get("sample_rate"),
                 "stage_output_peaks": stage_peak_comparison,

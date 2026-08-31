@@ -28,6 +28,7 @@ from ..candidates import (
     _restore_auto_sub_original_config,
     _auto_sub_snapshot_copy,
     _auto_sub_sweep_profile,
+    _auto_sub_winner_delay_ms,
 )
 from ..deps import (
     _AUTO_SUB_JOBS,
@@ -260,7 +261,7 @@ async def _run_auto_sub_22_optimize(
             low_guard_reference_delay_ms=original_sub1_alignment,
         )
         sub1_winner = sub1_scoring["winner"]
-        sub1_winner_delay = _auto_sub_clamped_delay(float(sub1_winner.get("delay_ms", original_sub1_alignment) or original_sub1_alignment))
+        sub1_winner_delay = _auto_sub_winner_delay_ms(sub1_winner, original_sub1_alignment)
 
         job["stage"] = "sub2_coarse"
         for idx, delay_ms in enumerate(sub2_scan_delays):
@@ -309,7 +310,7 @@ async def _run_auto_sub_22_optimize(
             low_guard_reference_delay_ms=original_sub2_alignment,
         )
         sub2_winner = sub2_scoring["winner"]
-        sub2_winner_delay = _auto_sub_clamped_delay(float(sub2_winner.get("delay_ms", original_sub2_alignment) or original_sub2_alignment))
+        sub2_winner_delay = _auto_sub_winner_delay_ms(sub2_winner, original_sub2_alignment)
 
         sub1_matrix = _matrix_delays(sub1_winner_delay)
         sub2_matrix = _matrix_delays(sub2_winner_delay)

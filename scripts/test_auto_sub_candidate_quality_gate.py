@@ -85,8 +85,8 @@ class CandidatePlausibilityGateTests(unittest.TestCase):
         self.assertEqual(len(exclusions), 1)
         self.assertEqual(round(float(exclusions[0]["delay_ms"]), 2), 1.76)
         self.assertEqual(exclusions[0]["side"], "main")
-        self.assertLess(exclusions[0]["deviation_db"], -10.0)
-        self.assertGreater(exclusions[0]["deviation_db"], -40.0)
+        self.assertLess(exclusions[0]["energy_deviation_db"], -10.0)
+        self.assertGreater(exclusions[0]["energy_deviation_db"], -40.0)
         self.assertEqual([round(float(r["delay_ms"]), 2) for r in kept], [
             -3.12, -2.34, -1.56, -0.78, 0.0, 0.78, 1.17, 1.36, 1.56, 1.95, 2.34, 3.12,
         ])
@@ -112,7 +112,7 @@ class CandidatePlausibilityGateTests(unittest.TestCase):
         self.assertEqual(round(float(marked[0]["delay_ms"]), 2), 1.76)
         self.assertEqual(marked[0]["exclusion_reason"], _AUTO_SUB_PLAUSIBILITY_EXCLUSION_REASON)
         self.assertEqual(marked[0]["plausibility"]["side"], "main")
-        self.assertIn("deviation_db", marked[0]["plausibility"])
+        self.assertIn("energy_deviation_db", marked[0]["plausibility"])
         for row in kept:
             self.assertNotIn("exclusion_reason", row)
 
@@ -140,7 +140,7 @@ class CandidatePlausibilityGateTests(unittest.TestCase):
         ]
         kept, exclusions = _auto_sub_gate_candidate_rows(rows, FC, context="test")
         self.assertEqual(len(exclusions), 1)
-        self.assertGreater(exclusions[0]["deviation_db"], 6.0)
+        self.assertGreater(exclusions[0]["energy_deviation_db"], 6.0)
         self.assertEqual([round(float(r["delay_ms"]), 2) for r in kept], [0.78, 1.56])
 
     def test_gate_skips_rows_without_calibration_metadata(self):
@@ -176,7 +176,7 @@ class CandidatePlausibilityGateTests(unittest.TestCase):
         ]
         kept, exclusions = _auto_sub_gate_candidate_rows(rows, FC, context="test")
         self.assertEqual(len(exclusions), 1)
-        self.assertGreater(exclusions[0]["deviation_db"], 6.0)
+        self.assertGreater(exclusions[0]["energy_deviation_db"], 6.0)
         self.assertEqual([round(float(r["delay_ms"]), 2) for r in kept], [-0.78, 0.0, 0.78, 1.56])
 
     def test_chain_gain_excursion_within_anchor_correction_is_kept(self):
@@ -243,6 +243,61 @@ class CandidatePlausibilityGateTests(unittest.TestCase):
         )
 
 
+class ArrivalShiftGateTests(unittest.TestCase):
+    def test_arrival_shift_excludes_degraded_sweep(self):
+        # Healthy sweeps jitter by the capture quantum (1024 samples); the
+        # degraded chain shifted every subsequent arrival by 25600 samples.
+        rows = [
+            row(0.0, flat_points(50.0), alignment_samples=78268),
+            row(0.78, flat_points(50.1), alignment_samples=79292),
+            row(1.56, flat_points(49.9), alignment_samples=78268),
+            row(2.34, flat_points(50.05), alignment_samples=52668),
+        ]
+        kept, exclusions = _auto_sub_gate_candidate_rows(rows, FC, context="test")
+        self.assertEqual(len(exclusions), 1)
+        self.assertEqual(exclusions[0]["reason"], "implausible_arrival_shift")
+        self.assertEqual(round(float(exclusions[0]["delay_ms"]), 2), 2.34)
+        self.assertLess(exclusions[0]["arrival_shift_samples"], -10000)
+        self.assertEqual([round(float(r["delay_ms"]), 2) for r in kept], [0.0, 0.78, 1.56])
+
+    def test_arrival_quantum_jitter_is_kept(self):
+        rows = [
+            row(0.0, flat_points(50.0), alignment_samples=77244),
+            row(0.78, flat_points(50.1), alignment_samples=78268),
+            row(1.56, flat_points(49.9), alignment_samples=79292),
+            row(2.34, flat_points(50.05), alignment_samples=77244),
+        ]
+        kept, exclusions = _auto_sub_gate_candidate_rows(rows, FC, context="test")
+        self.assertEqual(exclusions, [])
+        self.assertEqual(len(kept), 4)
+
+    def test_rows_without_alignment_data_skip_the_arrival_check(self):
+        rows = [row(0.0, flat_points(50.0)), row(0.78, flat_points(50.1)), row(1.56, flat_points(49.9))]
+        kept, exclusions = _auto_sub_gate_candidate_rows(rows, FC, context="test")
+        self.assertEqual(exclusions, [])
+        self.assertEqual(len(kept), 3)
+
+
+class WinnerDelayTests(unittest.TestCase):
+    def test_zero_and_negative_zero_winner_delays_are_kept(self):
+        from measurement.autosub.candidates import _auto_sub_winner_delay_ms
+
+        # A legitimate 0.00 ms winner must not fall back to the incumbent
+        # delay: float(0.0) or fallback silently substituted the fallback and
+        # desynced the scored winner from the applied configuration.
+        self.assertEqual(_auto_sub_winner_delay_ms({"delay_ms": -0.0}, 2.34), 0.0)
+        self.assertEqual(_auto_sub_winner_delay_ms({"delay_ms": 0.0}, 2.34), 0.0)
+        self.assertEqual(_auto_sub_winner_delay_ms({"delay_ms": -3.32}, 2.34), -3.32)
+        self.assertEqual(_auto_sub_winner_delay_ms({"delay_ms": 5.46}, 2.34), 5.46)
+
+    def test_missing_winner_delay_falls_back(self):
+        from measurement.autosub.candidates import _auto_sub_winner_delay_ms
+
+        self.assertEqual(_auto_sub_winner_delay_ms({}, 2.34), 2.34)
+        self.assertEqual(_auto_sub_winner_delay_ms(None, 2.34), 2.34)
+        self.assertEqual(_auto_sub_winner_delay_ms({"delay_ms": None}, 2.34), 2.34)
+
+
 class UncertainTiebreakTests(unittest.IsolatedAsyncioTestCase):
     def scoring_with(self, results, confidence):
         return {
@@ -300,6 +355,64 @@ class UncertainTiebreakTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await _auto_sub_remeasure_tiebreak(
             scoring=scoring, rows=rows, measure=measure, crossover_hz=FC,
         ))
+
+    async def test_degraded_remeasures_are_rejected_and_original_decision_stands(self):
+        rows = [
+            row(0.0, notched_points(50.0, 80.0, 8.0), alignment_samples=78268),
+            row(1.0, notched_points(50.0, 80.0, 9.0), alignment_samples=78268),
+            row(2.0, notched_points(50.0, 80.0, 12.0), alignment_samples=79292),
+        ]
+        scoring = self.scoring_with(
+            [self.result_row(0.0, 0.501), self.result_row(1.0, 0.5005), self.result_row(2.0, 0.1)],
+            "uncertain",
+        )
+
+        async def measure(delay_ms, index):
+            # Degraded chain state: collapsed bass and a constant arrival
+            # shift, exactly like the real 799f3bd5d1ab tiebreak remeasures.
+            return row(float(delay_ms), notched_points(38.0, 80.0, 9.0), alignment_samples=52668)
+
+        outcome = await _auto_sub_remeasure_tiebreak(
+            scoring=scoring, rows=rows, measure=measure, crossover_hz=FC,
+            low_guard_reference_delay_ms=0.0,
+        )
+        self.assertIsNotNone(outcome)
+        self.assertFalse(outcome["applied"])
+        self.assertIsNone(outcome["scoring"])
+        self.assertEqual(len(outcome["diagnostics"]["measure_failures"]), 2)
+        self.assertEqual(
+            outcome["diagnostics"]["measure_failures"][0]["reason"],
+            "remeasure_implausible",
+        )
+        for original in rows:
+            self.assertNotIn("tiebreak_remeasured", original)
+            self.assertNotIn("plausibility", original)
+
+    async def test_partial_remeasure_failure_keeps_the_healthy_confirmation(self):
+        rows = [
+            row(0.0, notched_points(50.0, 80.0, 8.0), alignment_samples=78268),
+            row(1.0, notched_points(50.0, 80.0, 9.0), alignment_samples=78268),
+            row(2.0, notched_points(50.0, 80.0, 12.0), alignment_samples=79292),
+        ]
+        scoring = self.scoring_with(
+            [self.result_row(0.0, 0.501), self.result_row(1.0, 0.5005)], "uncertain",
+        )
+
+        async def measure(delay_ms, index):
+            if index == 0:
+                return row(0.0, flat_points(50.0), alignment_samples=78268)  # confirmed healthy
+            return row(1.0, flat_points(38.0), alignment_samples=52668)  # degraded
+
+        outcome = await _auto_sub_remeasure_tiebreak(
+            scoring=scoring, rows=rows, measure=measure, crossover_hz=FC,
+            low_guard_reference_delay_ms=0.0,
+        )
+        self.assertIsNotNone(outcome)
+        self.assertTrue(outcome["applied"])
+        self.assertEqual(len(outcome["measured_results"]), 1)
+        self.assertEqual(len(outcome["diagnostics"]["measure_failures"]), 1)
+        self.assertTrue(rows[0]["tiebreak_remeasured"])
+        self.assertNotIn("tiebreak_remeasured", rows[1])
 
     async def test_failed_remeasures_keep_the_original_decision(self):
         rows = [row(0.0, flat_points(50.0)), row(1.0, flat_points(49.9))]

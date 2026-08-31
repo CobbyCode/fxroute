@@ -413,6 +413,16 @@ _AUTO_SUB_PLAUSIBILITY_MIN_BAND_POINTS: int = 10
 _AUTO_SUB_PLAUSIBILITY_MIN_ASSESSABLE: int = 3
 _AUTO_SUB_PLAUSIBILITY_EXCLUSION_REASON: str = "implausible_bass_energy"
 
+# Direct-arrival shift dimension: the analyzer locks each sweep's arrival
+# independently, so healthy candidates only jitter by the capture quantum
+# (1024 samples observed) while a degraded chain shifted every subsequent
+# arrival by a constant 25600 samples (the 799f3bd5d1ab run). The bound is a
+# robust MAD multiple with an absolute floor of four quanta, far below the
+# observed failure and far above the healthy jitter.
+_AUTO_SUB_PLAUSIBILITY_ARRIVAL_MAD_MULTIPLIER = 8
+_AUTO_SUB_PLAUSIBILITY_ARRIVAL_FLOOR_SAMPLES: float = 4096.0
+_AUTO_SUB_PLAUSIBILITY_ARRIVAL_EXCLUSION_REASON: str = "implausible_arrival_shift"
+
 
 def _auto_sub_gate_row_alignment_key(row: dict[str, Any]) -> tuple[float, ...]:
     """Alignment coordinates of one candidate row (pair-aware for 2.2 mono)."""
@@ -444,13 +454,16 @@ def _auto_sub_gate_candidate_rows(
     scorer itself uses. Both collapse and inflation beyond
     ``_AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB`` are implausible.
 
-    Conservative by design: rows without a usable calibration coordinate or
-    band support are never excluded, the gate needs at least three
-    assessable candidates, a strict majority of normal candidates (a broadly
-    broken chain state excludes nothing), and for every excluded row at least
-    one normal neighbour within one scan step — the defect must be specific
-    to this candidate, not shared by its neighbours. Scoring formulas,
-    weights and all remaining candidates are untouched.
+    Conservative by design: rows without usable calibration or alignment
+    data are never excluded, the gate needs at least three assessable
+    candidates, a consistent normal majority (a broadly broken chain state
+    excludes nothing), and for every excluded row at least one normal
+    neighbour within one scan step — the defect must be specific to this
+    candidate, not shared by its neighbours. Two deviation dimensions are
+    checked: band-energy density (delay-invariant physics) and the
+    direct-arrival alignment (stable across a scan modulo capture-quantum
+    jitter). Scoring formulas, weights and all remaining candidates are
+    untouched.
 
     Works on single-side rows (``points``/``normalized_by_db``) and on dual
     L/R rows (``points_left``/``points_right``); a dual row is excluded when
@@ -494,6 +507,12 @@ def _auto_sub_gate_candidate_rows(
                 "key": _auto_sub_gate_row_alignment_key(row),
                 "power_db": power_db,
                 "anchor_db": auto_sub_chain_anchor_db(points),
+                "alignment_samples": (
+                    float(row.get("alignment_samples"))
+                    if isinstance(row.get("alignment_samples"), (int, float))
+                    and math.isfinite(float(row.get("alignment_samples")))
+                    else None
+                ),
             })
     if len(entries) < _AUTO_SUB_PLAUSIBILITY_MIN_ASSESSABLE:
         return list(rows), []
@@ -517,11 +536,33 @@ def _auto_sub_gate_candidate_rows(
             entry["reference_power_db"] = reference_power_db
             deviation = entry["corrected_power_db"] - reference_power_db
             entry["deviation_db"] = round(deviation, 2)
-            entry["verdict"] = (
+            entry["energy_verdict"] = (
                 "low" if deviation < -_AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB
                 else "high" if deviation > _AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB
                 else "normal"
             )
+            entry["verdict"] = entry["energy_verdict"]
+
+    # Arrival-shift dimension (row-level, shared by both sides of a dual row):
+    # the DSP delay changes between candidates cannot move the locked arrival
+    # beyond capture-quantum jitter, so a constant large shift marks a
+    # degraded capture chain, not a response to the delay change.
+    alignments = [entry["alignment_samples"] for entry in entries if entry["alignment_samples"] is not None]
+    arrival_reference = None
+    arrival_bound = None
+    if len(alignments) >= 2:
+        arrival_reference = statistics.median(alignments)
+        arrival_mad = statistics.median(abs(value - arrival_reference) for value in alignments)
+        arrival_bound = max(
+            _AUTO_SUB_PLAUSIBILITY_ARRIVAL_MAD_MULTIPLIER * arrival_mad,
+            _AUTO_SUB_PLAUSIBILITY_ARRIVAL_FLOOR_SAMPLES,
+        )
+        for entry in entries:
+            if entry["alignment_samples"] is None:
+                continue
+            entry["arrival_shift_samples"] = round(entry["alignment_samples"] - arrival_reference, 1)
+            if entry["energy_verdict"] == "normal" and abs(entry["arrival_shift_samples"]) > arrival_bound:
+                entry["verdict"] = "arrival"
 
     normals = [entry for entry in entries if entry["verdict"] == "normal"]
     if len(normals) * 2 <= len(entries):
@@ -548,22 +589,31 @@ def _auto_sub_gate_candidate_rows(
             continue
         entry["verdict"] = "excluded"
         excluded_rows.add(id(entry["row"]))
+        energy_deviant = entry["energy_verdict"] in ("low", "high")
+        reason_code = (
+            _AUTO_SUB_PLAUSIBILITY_EXCLUSION_REASON
+            if energy_deviant
+            else _AUTO_SUB_PLAUSIBILITY_ARRIVAL_EXCLUSION_REASON
+        )
         details = {
             "side": entry["side"],
             "band_hz": [round(band_low_hz, 1), round(band_high_hz, 1)],
             "mean_power_db": round(entry["power_db"], 2),
             "reference_power_db": round(entry["reference_power_db"], 2),
-            "deviation_db": entry["deviation_db"],
-            "bound_db": _AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB,
+            "energy_deviation_db": entry["deviation_db"],
+            "energy_bound_db": _AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB,
             "chain_anchor_db": (
                 round(entry["anchor_db"], 2) if entry["anchor_db"] is not None else None
             ),
             "alignment": list(entry["key"]),
         }
+        if entry.get("arrival_shift_samples") is not None:
+            details["arrival_shift_samples"] = entry["arrival_shift_samples"]
+            details["arrival_bound_samples"] = round(arrival_bound, 1)
         row = entry["row"]
-        row["exclusion_reason"] = _AUTO_SUB_PLAUSIBILITY_EXCLUSION_REASON
+        row["exclusion_reason"] = reason_code
         row["plausibility"] = details
-        exclusions.append({"delay_ms": row.get("delay_ms"), **details})
+        exclusions.append({"delay_ms": row.get("delay_ms"), "reason": reason_code, **details})
 
     if not excluded_rows:
         return list(rows), []
@@ -589,6 +639,105 @@ def _auto_sub_needs_tiebreak(scoring: dict[str, Any]) -> bool:
     )
 
 
+def _auto_sub_remeasure_is_plausible(
+    remeasured: dict[str, Any],
+    reference_rows: list[dict[str, Any]],
+    crossover_hz: int,
+) -> tuple[bool, dict[str, Any]]:
+    """Accept a tiebreak re-measure only when it matches the original set.
+
+    Compares the re-measured sweep's calibrated band-energy density (power
+    domain, capped anchor correction) and its direct-arrival alignment
+    against the robust median of the original candidate rows. A re-measure
+    captured during a degraded chain state — the 799f3bd5d1ab run re-measured
+    both top candidates with a constant 25600-sample arrival shift and
+    collapsed bass — must never replace healthy original points.
+    """
+    fc = float(crossover_hz)
+    band_low_hz, band_high_hz = fc * 0.35, fc * 2.0
+
+    def assess(row: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
+        points = row.get("points") or []
+        normalized_by = row.get("normalized_by_db")
+        if not isinstance(normalized_by, (int, float)) or not math.isfinite(float(normalized_by)):
+            return None, None, None
+        calibrated = [
+            [point[0], point[1] + float(normalized_by)]
+            for point in points
+            if isinstance(point, (list, tuple)) and len(point) >= 2
+        ]
+        power_db = _auto_sub_band_mean_power_db(
+            calibrated, band_low_hz, band_high_hz,
+            min_points=_AUTO_SUB_PLAUSIBILITY_MIN_BAND_POINTS,
+        )
+        anchor = auto_sub_chain_anchor_db(points) if power_db is not None else None
+        alignment = row.get("alignment_samples")
+        alignment = (
+            float(alignment)
+            if isinstance(alignment, (int, float)) and math.isfinite(float(alignment))
+            else None
+        )
+        return power_db, anchor, alignment
+
+    reference_powers: list[tuple[float, float | None]] = []
+    reference_alignments: list[float] = []
+    for row in reference_rows:
+        power_db, anchor, alignment = assess(row)
+        if power_db is None:
+            continue
+        reference_powers.append((power_db, anchor))
+        if alignment is not None:
+            reference_alignments.append(alignment)
+    if len(reference_powers) < _AUTO_SUB_PLAUSIBILITY_MIN_ASSESSABLE:
+        return True, {"verdict": "reference_not_assessable"}
+
+    anchors = sorted(anchor for _power, anchor in reference_powers if anchor is not None)
+    anchor_reference = statistics.median(anchors) if len(anchors) >= 2 else None
+
+    def corrected_power(power_db: float, anchor: float | None) -> float:
+        correction = 0.0
+        if anchor_reference is not None and anchor is not None:
+            correction = max(
+                -_AUTO_SUB_ANCHOR_MAX_CORRECTION_DB,
+                min(_AUTO_SUB_ANCHOR_MAX_CORRECTION_DB, anchor_reference - anchor),
+            )
+        return power_db + correction
+
+    reference_power_db = statistics.median(
+        corrected_power(power_db, anchor) for power_db, anchor in reference_powers
+    )
+
+    remeasured_power, remeasured_anchor, remeasured_alignment = assess(remeasured)
+    if remeasured_power is None:
+        return True, {"verdict": "remeasure_not_assessable"}
+    energy_deviation = corrected_power(remeasured_power, remeasured_anchor) - reference_power_db
+    details: dict[str, Any] = {
+        "energy_deviation_db": round(energy_deviation, 2),
+        "energy_bound_db": _AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB,
+    }
+    plausible = abs(energy_deviation) <= _AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB
+
+    if remeasured_alignment is not None and reference_alignments:
+        median_alignment = statistics.median(reference_alignments)
+        alignment_mad = statistics.median(
+            abs(value - median_alignment) for value in reference_alignments
+        )
+        arrival_bound = max(
+            _AUTO_SUB_PLAUSIBILITY_ARRIVAL_MAD_MULTIPLIER * alignment_mad,
+            _AUTO_SUB_PLAUSIBILITY_ARRIVAL_FLOOR_SAMPLES,
+        )
+        arrival_shift = remeasured_alignment - median_alignment
+        details.update({
+            "arrival_shift_samples": round(arrival_shift, 1),
+            "arrival_bound_samples": round(arrival_bound, 1),
+        })
+        if abs(arrival_shift) > arrival_bound:
+            plausible = False
+
+    details["verdict"] = "plausible" if plausible else "implausible"
+    return plausible, details
+
+
 async def _auto_sub_remeasure_tiebreak(
     *,
     scoring: dict[str, Any],
@@ -600,12 +749,16 @@ async def _auto_sub_remeasure_tiebreak(
     """Confirm an uncertain near-tie with one fresh sweep per top candidate.
 
     The top two candidates are re-measured once with the unchanged scan
-    configuration. Successfully re-measured points replace the original
-    points in place — the same row dicts, so downstream gain and incumbent
-    lookups see the confirmed data — and the full candidate set is re-scored
-    with the unchanged scorer, so the decision is made from confirmed
-    measurements. Returned sweep failures keep the original decision and are
-    reported in the diagnostics; raised sweep errors (peak safety) propagate.
+    configuration. A re-measure is only accepted when it passes the same
+    plausibility assessment as the original candidates (band energy and
+    arrival alignment against the original set) — a re-measure captured in a
+    degraded chain state must not replace healthy original points.
+    Successfully validated points replace the originals in place — the same
+    row dicts, so downstream gain and incumbent lookups see the confirmed
+    data — and the full candidate set is re-scored with the unchanged
+    scorer, so the decision is made from confirmed measurements. Re-measures
+    that fail or fail validation keep the original decision and are reported
+    in the diagnostics; raised sweep errors (peak safety) propagate.
     """
     if not _auto_sub_needs_tiebreak(scoring):
         return None
@@ -616,7 +769,16 @@ async def _auto_sub_remeasure_tiebreak(
     for index, delay in enumerate(top_delays):
         result = await measure(float(delay), index)
         if result.get("status") == "completed" and _auto_sub_has_points(result):
-            measured_results.append(result)
+            plausible, quality = _auto_sub_remeasure_is_plausible(result, rows, crossover_hz)
+            if plausible:
+                measured_results.append(result)
+            else:
+                failures.append({
+                    "delay_ms": delay,
+                    "status": result.get("status"),
+                    "reason": "remeasure_implausible",
+                    "quality": quality,
+                })
         else:
             failures.append({
                 "delay_ms": delay,

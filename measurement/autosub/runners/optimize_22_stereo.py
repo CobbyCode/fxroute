@@ -36,6 +36,7 @@ from ..candidates import (
     _auto_sub_snapshot_copy,
     _auto_sub_step_ms,
     _auto_sub_sweep_profile,
+    _auto_sub_winner_delay_ms,
 )
 from ..deps import (
     _AUTO_SUB_JOBS,
@@ -480,7 +481,7 @@ async def _run_auto_sub_22_stereo_optimize(
             incumbent_winner=left_incumbent_winner,
         )
         left_winner = left_acceptance["accepted_winner"]
-        best_left = _auto_sub_clamped_delay(float(left_winner.get("delay_ms", original_left_alignment) or original_left_alignment))
+        best_left = _auto_sub_winner_delay_ms(left_winner, original_left_alignment)
         job["fine_scan"]["left"]["final_winner"] = left_winner
         job["fine_scan"]["left"]["final_results"] = left_scoring["results"]
         job["fine_scan"]["left"]["accepted_winner"] = left_winner
@@ -683,7 +684,7 @@ async def _run_auto_sub_22_stereo_optimize(
             incumbent_winner=right_incumbent_winner,
         )
         right_winner = right_acceptance["accepted_winner"]
-        best_right = _auto_sub_clamped_delay(float(right_winner.get("delay_ms", original_right_alignment) or original_right_alignment))
+        best_right = _auto_sub_winner_delay_ms(right_winner, original_right_alignment)
         job["fine_scan"]["right"]["final_winner"] = right_winner
         job["fine_scan"]["right"]["final_results"] = right_scoring["results"]
         job["fine_scan"]["right"]["accepted_winner"] = right_winner
