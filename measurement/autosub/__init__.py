@@ -101,8 +101,10 @@ from measurement.autosub.jobs import (
 )
 
 from measurement.autosub.measurement import (
+    _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
     _analyze_auto_sub_main_target_anchor,
     _auto_sub_22_snapshot_with_gain,
+    _auto_sub_balance_transfer_deltas,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
     _auto_sub_gain_log_score,
@@ -115,6 +117,7 @@ from measurement.autosub.measurement import (
     _auto_sub_reconstruct_calibrated_points,
     _auto_sub_stereo_corridor_violation,
     _auto_sub_stereo_probe_plan,
+    _auto_sub_target_residual_raw_db,
     _auto_sub_third_octave_smooth,
     _calculate_auto_sub_gain,
     _capture_auto_sub_main_references,

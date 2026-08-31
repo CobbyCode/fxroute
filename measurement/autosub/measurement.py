@@ -824,6 +824,43 @@ def _auto_sub_stereo_probe_plan(
     result["reason"] = "Bounded Stereo corridor probe planned" if result["available"] else "No Stereo side qualified for a bounded corridor probe"
     return result
 
+def _auto_sub_target_residual_raw_db(
+    points: list[list[float]] | None, target_curve: dict[str, Any] | None,
+    anchor: dict[str, Any] | None, crossover_hz: int,
+) -> tuple[float, float, list[list[float]]]:
+    """Unbounded anchored-Target residual (median Target-minus-curve) of one curve.
+
+    Shared definition for the Gain diagnostics and the balance-trim
+    configuration transfer. Returns ``(raw_residual_db, mad_db, usable_points)``
+    with ``usable_points`` the 1/1-octave-smoothed curve restricted to the
+    decision band. Raises ValueError when curve/Target/anchor support is
+    insufficient.
+    """
+    if not isinstance(anchor, dict) or anchor.get("status") != "ready":
+        raise ValueError("Main/Target anchor is unavailable")
+    vertical_offset = float(anchor.get("target_vertical_offset_db"))
+    if not math.isfinite(vertical_offset):
+        raise ValueError("Target vertical offset is invalid")
+    target_points = (target_curve or {}).get("points")
+    if not isinstance(target_points, list) or len(target_points) < 2:
+        raise ValueError("Target snapshot is unavailable")
+    requested_low = max(20.0, float(crossover_hz) * 0.5)
+    requested_high = float(crossover_hz) * 2.0
+    smoothed = _auto_sub_one_octave_smooth(points)
+    usable = [point for point in smoothed if requested_low <= point[0] <= requested_high]
+    target_on_winner = _auto_sub_log_interpolate_points(target_points, [point[0] for point in usable])
+    if len(target_on_winner) != len(usable) or len(usable) < 8:
+        raise ValueError("curve/Target support has fewer than 8 common points")
+    smoothed_target = _auto_sub_one_octave_smooth(target_on_winner)
+    deviations = [
+        (target_point[1] + vertical_offset) - curve_point[1]
+        for curve_point, target_point in zip(usable, smoothed_target)
+    ]
+    target_delta = statistics.median(deviations)
+    mad = statistics.median(abs(value - target_delta) for value in deviations)
+    return target_delta, mad, usable
+
+
 def _calculate_auto_sub_gain(
     *, mode: str, target_curve: dict[str, Any] | None, anchor: dict[str, Any] | None,
     winner_curves: dict[str, list[list[float]]], crossover_hz: int,
@@ -836,30 +873,8 @@ def _calculate_auto_sub_gain(
         "bounds_db": [-6.0, 6.0], "reason": None, "channels": {},
     }
     try:
-        if not isinstance(anchor, dict) or anchor.get("status") != "ready":
-            raise ValueError("Main/Target anchor is unavailable")
-        vertical_offset = float(anchor.get("target_vertical_offset_db"))
-        if not math.isfinite(vertical_offset):
-            raise ValueError("Target vertical offset is invalid")
-        target_points = (target_curve or {}).get("points")
-        if not isinstance(target_points, list) or len(target_points) < 2:
-            raise ValueError("Target snapshot is unavailable")
-        requested_low = max(20.0, float(crossover_hz) * 0.5)
-        requested_high = float(crossover_hz) * 2.0
         for channel, points in winner_curves.items():
-            smoothed = _auto_sub_one_octave_smooth(points)
-            usable = [point for point in smoothed if requested_low <= point[0] <= requested_high]
-            target_on_winner = _auto_sub_log_interpolate_points(target_points, [point[0] for point in usable])
-            if len(target_on_winner) != len(usable) or len(usable) < 8:
-                raise ValueError(f"{channel} winner/Target support has fewer than 8 common points")
-            smoothed_target = _auto_sub_one_octave_smooth(target_on_winner)
-            deviations = [
-                (target_point[1] + vertical_offset) - winner_point[1]
-                for winner_point, target_point in zip(usable, smoothed_target)
-            ]
-            target_delta = statistics.median(deviations)
-            raw_gain = target_delta
-            mad = statistics.median(abs(value - target_delta) for value in deviations)
+            raw_gain, mad, usable = _auto_sub_target_residual_raw_db(points, target_curve, anchor, crossover_hz)
             bounded = min(6.0, max(-6.0, raw_gain))
             coverage_octaves = math.log2(usable[-1][0] / usable[0][0])
             confidence = "high" if len(usable) >= 24 and coverage_octaves >= 1.5 and mad <= 1.5 else (
@@ -868,7 +883,7 @@ def _calculate_auto_sub_gain(
             result["channels"][channel] = {
                 "frequency_range_hz": [round(usable[0][0], 3), round(usable[-1][0], 3)],
                 "point_count": len(usable), "coverage_octaves": round(coverage_octaves, 3),
-                "target_delta_db": round(target_delta, 3),
+                "target_delta_db": round(raw_gain, 3),
                 "raw_recommendation_db": round(raw_gain, 3), "recommendation_db": round(bounded, 3),
                 "clamped": bounded != raw_gain, "median_absolute_deviation_db": round(mad, 3),
                 "confidence": confidence,
@@ -921,6 +936,96 @@ def _auto_sub_gain_deltas(
         }
     delta = bounded(recommendation["delta_db"])
     return {"left": delta, "right": delta}
+
+
+# A side counts as alignment-changed when the accepted delay differs from the
+# delay the balance trim was measured for by more than this tolerance (same
+# tolerance the scan-edge and neighbour checks use).
+_AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS: float = 0.05
+
+
+def _auto_sub_balance_transfer_deltas(
+    *,
+    balance_deltas_db: dict[str, float],
+    winner_residuals_db: dict[str, float | None],
+    incumbent_residuals_db: dict[str, float | None],
+    alignment_changed: dict[str, bool],
+    max_abs_db: float = 6.0,
+) -> dict[str, Any]:
+    """Final sub trim per channel after the alignment decision.
+
+    The balance stage measures the anchored-Target residual of the incumbent
+    configuration at the original sub level and applies it as a trim. That
+    residual describes the incumbent configuration only: after the
+    alignment changed, the post-alignment residual measured at the balanced
+    level still contains the part of the balance trim the first application
+    did not realise (band-median response is below 1 dB per dB of sub
+    trim). Adding that full residual on top of the old trim re-closes the
+    same room excess a second time and produced the documented over-damping.
+
+    Transfer rule per channel whose alignment changed::
+
+        applied delta = winner residual - incumbent residual
+        implied total = balance trim + (winner residual - incumbent residual)
+
+    where both residuals are measured at the same balanced level. The implied
+    total is the single-stage residual the end configuration would have
+    received; the returned ``deltas_db`` is the increment to apply on top of
+    the still-applied balance trim. Channels whose alignment did not change
+    keep the existing fine-trim behaviour (the residual of the same
+    configuration is applied on top). When the incumbent residual is
+    unavailable for a changed channel, the balance trim stands alone
+    (increment 0) instead of guessing or accumulating.
+    """
+    sides = ("left", "right")
+    result: dict[str, Any] = {
+        "available": False, "deltas_db": {}, "channels": {}, "reason": None,
+        "alignment_changed": {side: bool(alignment_changed.get(side)) for side in sides},
+    }
+    try:
+        limit = abs(float(max_abs_db))
+        if not math.isfinite(limit) or limit <= 0:
+            raise ValueError("Transfer bound is invalid")
+        any_changed = any(result["alignment_changed"].values())
+        if not any_changed:
+            result["reason"] = "Accepted alignment matches the balance configuration; transfer not applicable"
+            return result
+        for side in sides:
+            balance_delta = float(balance_deltas_db.get(side, 0.0) or 0.0)
+            winner_residual = winner_residuals_db.get(side)
+            incumbent_residual = incumbent_residuals_db.get(side)
+            if not result["alignment_changed"][side]:
+                if winner_residual is None:
+                    raise ValueError(f"{side} winner residual is unavailable")
+                increment = float(winner_residual)
+                mode = "fine_trim_same_configuration"
+            elif winner_residual is None:
+                raise ValueError(f"{side} winner residual is unavailable")
+            elif incumbent_residual is None:
+                # Without the incumbent's balanced-level residual the
+                # level-consistent delta is unknown; keep the measured
+                # balance trim instead of guessing or accumulating.
+                increment = 0.0
+                mode = "fallback_balance_only"
+            else:
+                increment = float(winner_residual) - float(incumbent_residual)
+                mode = "configuration_transfer"
+            bounded = min(limit, max(-limit, increment))
+            result["deltas_db"][side] = bounded
+            result["channels"][side] = {
+                "balance_delta_db": round(balance_delta, 3),
+                "winner_residual_db": round(float(winner_residual), 3) if winner_residual is not None else None,
+                "incumbent_residual_db": round(float(incumbent_residual), 3) if incumbent_residual is not None else None,
+                "delta_db": round(bounded, 3),
+                "implied_total_db": round(balance_delta + bounded, 3),
+                "mode": mode if result["alignment_changed"][side] else "fine_trim_same_configuration",
+                "clamped": bounded != increment,
+            }
+        result["available"] = True
+        result["reason"] = "Balance trim transferred to the accepted configuration"
+    except (TypeError, ValueError, KeyError) as exc:
+        result["reason"] = str(exc)
+    return result
 
 # Verdict tolerance for the Target-residual comparison: must exceed the
 # residual metric's run-to-run spread (~0.5 dB) while staying far below the
