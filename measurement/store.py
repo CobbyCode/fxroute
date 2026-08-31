@@ -2012,6 +2012,34 @@ def _auto_sub_deep_notch_penalty_db(dip_severity_db: float) -> float:
     return (dip_severity_db - 7.0) / 8.0 * 0.5
 
 
+def _auto_sub_band_mean_power_db(points: Any, low_hz: float, high_hz: float, *, min_points: int = 3) -> float | None:
+    """Mean linear power per point (dB) over points inside [low_hz, high_hz).
+
+    Averages strictly in the power domain (10^(dB/10)), never by summing dB,
+    so it is a true band-energy density. Requires at least *min_points*
+    finite points inside the band, otherwise returns None.
+    """
+    if not isinstance(points, list):
+        return None
+    count = 0
+    energy = 0.0
+    for point in points:
+        if not (isinstance(point, (list, tuple)) and len(point) >= 2):
+            continue
+        try:
+            frequency_hz, db = float(point[0]), float(point[1])
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(frequency_hz) and math.isfinite(db)):
+            continue
+        if low_hz <= frequency_hz < high_hz:
+            count += 1
+            energy += 10.0 ** (db / 10.0)
+    if count < min_points:
+        return None
+    return 10.0 * math.log10(energy / count)
+
+
 def score_sub_alignment_candidates(
     candidates: list[dict[str, Any]],
     crossover_hz: int,
@@ -2091,6 +2119,7 @@ def score_sub_alignment_candidates(
     primary = []
     secondary = []
     low_guard = []
+    anchored_band_points = []
     low_guard_min_hz = fc * 0.35
     low_guard_max_hz = fc * 0.75
     for index, c in enumerate(candidates):
@@ -2101,6 +2130,7 @@ def score_sub_alignment_candidates(
         primary.append(pri)
         secondary.append(sec)
         low_guard.append(low)
+        anchored_band_points.append(pts)
 
     reference_low_guard = None
     low_guard_reference = "best_low_guard"
@@ -2184,6 +2214,20 @@ def score_sub_alignment_candidates(
         dip_severity = pri["mean"] - pri["min"]
         deep_notch_penalty = _auto_sub_deep_notch_penalty_db(dip_severity)
 
+        # Diagnostic only (never part of the score): energy density of the
+        # narrow +-1/8-octave band around fc relative to the primary band,
+        # computed in the power domain on the anchored points. Negative
+        # values expose a broad crossover-region deficit that mean/dip/swing
+        # metrics over 0.5*fc..2*fc average away.
+        candidate_pts = anchored_band_points[i]
+        narrow_power_db = _auto_sub_band_mean_power_db(candidate_pts, fc * 2.0 ** (-0.125), fc * 2.0 ** 0.125)
+        primary_power_db = _auto_sub_band_mean_power_db(candidate_pts, fc * 0.5, fc * 2.0)
+        fc_narrow_deficit_db = (
+            round(narrow_power_db - primary_power_db, 2)
+            if narrow_power_db is not None and primary_power_db is not None
+            else None
+        )
+
         score_pri = (
             n_pri_mean[i] * 0.40
             + n_pri_dip[i] * 0.25
@@ -2225,6 +2269,7 @@ def score_sub_alignment_candidates(
             "min_secondary_db": round(sec["min"], 1),
             "swing_secondary_db": round(sec["swing"], 1),
             "deep_notch_penalty": deep_notch_penalty,
+            "fc_narrow_deficit_db": fc_narrow_deficit_db,
             "chain_anchor_db": round(anchors[i], 2) if anchors[i] is not None else None,
             "chain_anchor_deviation_db": (
                 round(anchors[i] - anchor_reference_db, 2)

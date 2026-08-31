@@ -75,8 +75,10 @@ from ..scoring import (
     _auto_sub_delay_key,
     _auto_sub_display_offset_db,
     _auto_sub_display_anchor_reference_db,
+    _auto_sub_gate_candidate_rows,
     _auto_sub_has_points,
     _auto_sub_rank_results,
+    _auto_sub_remeasure_tiebreak,
     _auto_sub_result_meta,
     _auto_sub_result_for_delay,
     _auto_sub_select_accepted_winner,
@@ -293,6 +295,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 return
 
         left_valid = _valid(left_results)
+        left_valid, _ = _auto_sub_gate_candidate_rows(left_valid, fc, context="left_coarse")
         if not left_valid:
             job["status"] = "failed"
             job["message"] = "No valid Left Sub sweep results to score"
@@ -377,6 +380,7 @@ async def _run_auto_sub_22_stereo_optimize(
                     await _restore_original_config()
                     return
             left_fine_valid = _valid(left_fine_results)
+            left_fine_valid, _ = _auto_sub_gate_candidate_rows(left_fine_valid, fc, context="left_fine")
             if left_fine_valid:
                 left_fine_scoring = score_sub_alignment_candidates(
                     left_fine_valid,
@@ -404,12 +408,61 @@ async def _run_auto_sub_22_stereo_optimize(
                     "sweep_count": len(left_fine_delays),
                 })
 
+        async def _left_tiebreak_measure(delay_ms: float, index: int) -> dict[str, Any]:
+            # Mirrors the left alignment scan configuration for one delay.
+            return await _measure_auto_sub_candidate(
+                delay_ms=delay_ms, job=job, candidate_index=index + 1, total=2,
+                stage="left_tiebreak", fc=fc, input_id=input_id, channel="left",
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_ref=calibration_ref, calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+                original_level=0.0, original_polarity="normal", original_highpass=True,
+                measure_channel="left", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                original_config_snapshot=balanced_snapshot,
+                sub1_alignment_ms=delay_ms, sub2_alignment_ms=original_right_alignment,
+                active_subs=("sub1",),
+            )
+
+        async def _right_tiebreak_measure(delay_ms: float, index: int) -> dict[str, Any]:
+            # Mirrors the right alignment scan configuration for one delay;
+            # best_left is read at call time (the left winner is final then).
+            return await _measure_auto_sub_candidate(
+                delay_ms=delay_ms, job=job, candidate_index=index + 1, total=2,
+                stage="right_tiebreak", fc=fc, input_id=input_id, channel="right",
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_ref=calibration_ref, calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+                original_level=0.0, original_polarity="normal", original_highpass=True,
+                measure_channel="right", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                original_config_snapshot=balanced_snapshot,
+                sub1_alignment_ms=best_left, sub2_alignment_ms=delay_ms,
+                active_subs=("sub2",),
+            )
+
         left_final_valid = left_valid + left_fine_valid
+        left_final_valid, _ = _auto_sub_gate_candidate_rows(left_final_valid, fc, context="left_combined")
         left_scoring = score_sub_alignment_candidates(
             left_final_valid,
             crossover_hz=fc,
             low_guard_reference_delay_ms=original_left_alignment,
         )
+        # An uncertain near-tie is confirmed with one fresh sweep per top
+        # candidate before the winner is accepted (see helper docstring).
+        left_tiebreak = await _auto_sub_remeasure_tiebreak(
+            scoring=left_scoring,
+            rows=left_final_valid,
+            measure=_left_tiebreak_measure,
+            crossover_hz=fc,
+            low_guard_reference_delay_ms=original_left_alignment,
+        )
+        if left_tiebreak and left_tiebreak["applied"]:
+            left_scoring = left_tiebreak["scoring"]
+        if left_tiebreak:
+            job["fine_scan"]["left"]["tiebreak"] = left_tiebreak["diagnostics"]
         _auto_sub_rank_results(left_scoring["results"])
         left_scan_by_delay: dict[float, str] = {}
         for result in left_valid:
@@ -479,6 +532,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 return
 
         right_valid = _valid(right_results)
+        right_valid, _ = _auto_sub_gate_candidate_rows(right_valid, fc, context="right_coarse")
         if not right_valid:
             job["status"] = "failed"
             job["message"] = "No valid Right Sub sweep results to score"
@@ -566,6 +620,7 @@ async def _run_auto_sub_22_stereo_optimize(
                     await _restore_original_config()
                     return
             right_fine_valid = _valid(right_fine_results)
+            right_fine_valid, _ = _auto_sub_gate_candidate_rows(right_fine_valid, fc, context="right_fine")
             if right_fine_valid:
                 right_fine_scoring = score_sub_alignment_candidates(
                     right_fine_valid,
@@ -594,11 +649,23 @@ async def _run_auto_sub_22_stereo_optimize(
                 })
 
         right_final_valid = right_valid + right_fine_valid
+        right_final_valid, _ = _auto_sub_gate_candidate_rows(right_final_valid, fc, context="right_combined")
         right_scoring = score_sub_alignment_candidates(
             right_final_valid,
             crossover_hz=fc,
             low_guard_reference_delay_ms=original_right_alignment,
         )
+        right_tiebreak = await _auto_sub_remeasure_tiebreak(
+            scoring=right_scoring,
+            rows=right_final_valid,
+            measure=_right_tiebreak_measure,
+            crossover_hz=fc,
+            low_guard_reference_delay_ms=original_right_alignment,
+        )
+        if right_tiebreak and right_tiebreak["applied"]:
+            right_scoring = right_tiebreak["scoring"]
+        if right_tiebreak:
+            job["fine_scan"]["right"]["tiebreak"] = right_tiebreak["diagnostics"]
         _auto_sub_rank_results(right_scoring["results"])
         right_scan_by_delay: dict[float, str] = {}
         for result in right_valid:
@@ -650,6 +717,22 @@ async def _run_auto_sub_22_stereo_optimize(
             + _auto_sub_candidate_ledger(
                 right_fine_results, right_scoring, mode="2.2_stereo", phase="right_fine", channel="right",
                 roles={"fine_winner": right_fine_accepted_candidate, "final_accepted_winner": right_winner},
+            )
+            + (
+                _auto_sub_candidate_ledger(
+                    left_tiebreak["measured_results"], left_scoring, mode="2.2_stereo",
+                    phase="left_tiebreak", channel="left",
+                    roles={"final_accepted_winner": left_winner},
+                )
+                if left_tiebreak and left_tiebreak["measured_results"] else []
+            )
+            + (
+                _auto_sub_candidate_ledger(
+                    right_tiebreak["measured_results"], right_scoring, mode="2.2_stereo",
+                    phase="right_tiebreak", channel="right",
+                    roles={"final_accepted_winner": right_winner},
+                )
+                if right_tiebreak and right_tiebreak["measured_results"] else []
             )
         )
 

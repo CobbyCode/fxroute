@@ -61,6 +61,7 @@ from ..scoring import (
     _auto_sub_anchor_shifted_points,
     _auto_sub_candidate_ledger,
     _auto_sub_display_anchor_reference_db,
+    _auto_sub_gate_candidate_rows,
     _auto_sub_has_points,
     _auto_sub_measurement_from_sweep,
     _auto_sub_result_meta,
@@ -252,8 +253,9 @@ async def _run_auto_sub_22_optimize(
             job["error"] = {"detail": "Sub 1 coarse sweeps failed or produced insufficient data"}
             await _restore_original_config()
             return
+        gated_coarse1, _ = _auto_sub_gate_candidate_rows(coarse1_results, fc, context="sub1_coarse")
         sub1_scoring = _score_auto_sub_combined_candidates(
-            coarse1_results,
+            gated_coarse1,
             crossover_hz=fc,
             low_guard_reference_delay_ms=original_sub1_alignment,
         )
@@ -300,8 +302,9 @@ async def _run_auto_sub_22_optimize(
             job["error"] = {"detail": "Sub 2 coarse sweeps failed or produced insufficient data"}
             await _restore_original_config()
             return
+        gated_coarse2, _ = _auto_sub_gate_candidate_rows(coarse2_results, fc, context="sub2_coarse")
         sub2_scoring = _score_auto_sub_combined_candidates(
-            coarse2_results,
+            gated_coarse2,
             crossover_hz=fc,
             low_guard_reference_delay_ms=original_sub2_alignment,
         )
@@ -377,8 +380,9 @@ async def _run_auto_sub_22_optimize(
             await _restore_original_config()
             return
 
+        gated_matrix, _ = _auto_sub_gate_candidate_rows(matrix_results, fc, context="combined_matrix")
         matrix_scoring = _score_auto_sub_matrix_candidates(
-            matrix_results,
+            gated_matrix,
             crossover_hz=fc,
             original_sub1_alignment_ms=original_sub1_alignment,
             original_sub2_alignment_ms=original_sub2_alignment,

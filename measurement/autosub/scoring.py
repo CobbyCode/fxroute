@@ -7,10 +7,13 @@ from __future__ import annotations
 import json
 import logging
 import math
-from typing import Any
+import statistics
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from measurement.store import (
+    _AUTO_SUB_ANCHOR_MAX_CORRECTION_DB,
+    _auto_sub_band_mean_power_db,
     auto_sub_chain_anchor_db,
     score_sub_alignment_candidates,
 )
@@ -21,6 +24,7 @@ from .candidates import (
     _auto_sub_22_name,
     _auto_sub_clamped_delay,
     _auto_sub_score_value,
+    _auto_sub_step_ms,
 )
 
 logger = logging.getLogger(__name__)
@@ -389,6 +393,296 @@ def _auto_sub_scoring_confidence(results: list[dict[str, Any]]) -> str:
     if margin > 0.05:
         return "close"
     return "uncertain"
+
+
+# ---------------------------------------------------------------------------
+# Candidate plausibility gate
+# ---------------------------------------------------------------------------
+
+# A delay change only redistributes band-integrated main+sub energy: with main
+# M and sub S the wide-band sum |M + S*e^{jphi}|^2 averages to |M|^2 + |S|^2,
+# independent of the delay phase phi. Neighbouring delays therefore cannot
+# move the calibrated energy density over the scorer's evaluated region
+# (0.35*fc..2*fc) by more than measurement noise. A large deviation is a
+# capture/analysis artifact (for example a collapsed bass band despite a
+# normal 200-600 Hz chain anchor) and must not enter the scorer's min-max
+# normalization set, where one such sweep defined both ends of every metric
+# and flipped a real winner decision.
+_AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB: float = 6.0
+_AUTO_SUB_PLAUSIBILITY_MIN_BAND_POINTS: int = 10
+_AUTO_SUB_PLAUSIBILITY_MIN_ASSESSABLE: int = 3
+_AUTO_SUB_PLAUSIBILITY_EXCLUSION_REASON: str = "implausible_bass_energy"
+
+
+def _auto_sub_gate_row_alignment_key(row: dict[str, Any]) -> tuple[float, ...]:
+    """Alignment coordinates of one candidate row (pair-aware for 2.2 mono)."""
+    sub1 = row.get("sub1_alignment_ms")
+    sub2 = row.get("sub2_alignment_ms")
+    if isinstance(sub1, (int, float)) and isinstance(sub2, (int, float)):
+        return (round(float(sub1), 2), round(float(sub2), 2))
+    return (round(float(row.get("delay_ms", 0.0) or 0.0), 2),)
+
+
+def _auto_sub_gate_row_distance(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    """Delay distance between two rows; the larger axis for pair rows."""
+    if len(a) == 2 and len(b) == 2:
+        return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+    return abs(a[0] - b[0])
+
+
+def _auto_sub_gate_candidate_rows(
+    rows: list[dict[str, Any]],
+    crossover_hz: int,
+    *,
+    context: str = "",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Exclude physically implausible candidate sweeps from a scoring set.
+
+    Compares each candidate's calibrated band-energy density (power domain,
+    never summed dB) over the scorer's evaluated region against the robust
+    set median, with the same capped 200-600 Hz chain-anchor correction the
+    scorer itself uses. Both collapse and inflation beyond
+    ``_AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB`` are implausible.
+
+    Conservative by design: rows without a usable calibration coordinate or
+    band support are never excluded, the gate needs at least three
+    assessable candidates, a strict majority of normal candidates (a broadly
+    broken chain state excludes nothing), and for every excluded row at least
+    one normal neighbour within one scan step — the defect must be specific
+    to this candidate, not shared by its neighbours. Scoring formulas,
+    weights and all remaining candidates are untouched.
+
+    Works on single-side rows (``points``/``normalized_by_db``) and on dual
+    L/R rows (``points_left``/``points_right``); a dual row is excluded when
+    either of its measured sides is implausible. Excluded rows are marked in
+    place with ``exclusion_reason``/``plausibility`` so the candidate ledger
+    reports them; the returned list drops them from the scoring input.
+
+    Returns ``(kept_rows, exclusions)``.
+    """
+    fc = float(crossover_hz)
+    band_low_hz = fc * 0.35
+    band_high_hz = fc * 2.0
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row.get("points_left"), list) or isinstance(row.get("points_right"), list):
+            side_keys = (
+                ("left", "points_left", "normalized_by_db_left"),
+                ("right", "points_right", "normalized_by_db_right"),
+            )
+        else:
+            side_keys = (("main", "points", "normalized_by_db"),)
+        for side, points_key, normalized_key in side_keys:
+            points = row.get(points_key) or []
+            normalized_by = row.get(normalized_key)
+            if not isinstance(normalized_by, (int, float)) or not math.isfinite(float(normalized_by)):
+                continue
+            calibrated = [
+                [point[0], point[1] + float(normalized_by)]
+                for point in points
+                if isinstance(point, (list, tuple)) and len(point) >= 2
+            ]
+            power_db = _auto_sub_band_mean_power_db(
+                calibrated, band_low_hz, band_high_hz,
+                min_points=_AUTO_SUB_PLAUSIBILITY_MIN_BAND_POINTS,
+            )
+            if power_db is None:
+                continue
+            entries.append({
+                "row": row,
+                "side": side,
+                "key": _auto_sub_gate_row_alignment_key(row),
+                "power_db": power_db,
+                "anchor_db": auto_sub_chain_anchor_db(points),
+            })
+    if len(entries) < _AUTO_SUB_PLAUSIBILITY_MIN_ASSESSABLE:
+        return list(rows), []
+
+    by_side: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        by_side.setdefault(entry["side"], []).append(entry)
+    for group in by_side.values():
+        anchors = sorted(entry["anchor_db"] for entry in group if entry["anchor_db"] is not None)
+        anchor_reference = statistics.median(anchors) if len(anchors) >= 2 else None
+        for entry in group:
+            correction = 0.0
+            if anchor_reference is not None and entry["anchor_db"] is not None:
+                correction = max(
+                    -_AUTO_SUB_ANCHOR_MAX_CORRECTION_DB,
+                    min(_AUTO_SUB_ANCHOR_MAX_CORRECTION_DB, anchor_reference - entry["anchor_db"]),
+                )
+            entry["corrected_power_db"] = entry["power_db"] + correction
+        reference_power_db = statistics.median(entry["corrected_power_db"] for entry in group)
+        for entry in group:
+            entry["reference_power_db"] = reference_power_db
+            deviation = entry["corrected_power_db"] - reference_power_db
+            entry["deviation_db"] = round(deviation, 2)
+            entry["verdict"] = (
+                "low" if deviation < -_AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB
+                else "high" if deviation > _AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB
+                else "normal"
+            )
+
+    normals = [entry for entry in entries if entry["verdict"] == "normal"]
+    if len(normals) * 2 <= len(entries):
+        # No robust normal majority: the shared chain state itself is
+        # suspect, so nothing is excluded (conservative fallback).
+        return list(rows), []
+
+    step_ms = _auto_sub_step_ms(crossover_hz)
+    exclusions: list[dict[str, Any]] = []
+    excluded_rows: set[int] = set()
+    for entry in entries:
+        if entry["verdict"] == "normal":
+            continue
+        neighbour_ok = any(
+            other is not entry
+            and other["verdict"] == "normal"
+            and other["side"] == entry["side"]
+            and _auto_sub_gate_row_distance(other["key"], entry["key"]) <= step_ms + 1e-9
+            for other in entries
+        )
+        if not neighbour_ok:
+            # The deviation is not specific to this candidate; leave it in.
+            entry["verdict"] = "unconfirmed"
+            continue
+        entry["verdict"] = "excluded"
+        excluded_rows.add(id(entry["row"]))
+        details = {
+            "side": entry["side"],
+            "band_hz": [round(band_low_hz, 1), round(band_high_hz, 1)],
+            "mean_power_db": round(entry["power_db"], 2),
+            "reference_power_db": round(entry["reference_power_db"], 2),
+            "deviation_db": entry["deviation_db"],
+            "bound_db": _AUTO_SUB_PLAUSIBILITY_MAX_DEVIATION_DB,
+            "chain_anchor_db": (
+                round(entry["anchor_db"], 2) if entry["anchor_db"] is not None else None
+            ),
+            "alignment": list(entry["key"]),
+        }
+        row = entry["row"]
+        row["exclusion_reason"] = _AUTO_SUB_PLAUSIBILITY_EXCLUSION_REASON
+        row["plausibility"] = details
+        exclusions.append({"delay_ms": row.get("delay_ms"), **details})
+
+    if not excluded_rows:
+        return list(rows), []
+    kept = [row for row in rows if id(row) not in excluded_rows]
+    logger.info(
+        "AUTOSUB_PLAUSIBILITY %s excluded=%d kept=%d details=%s",
+        context or "unspecified", len(exclusions), len(kept),
+        json.dumps(exclusions, sort_keys=True),
+    )
+    return kept, exclusions
+
+
+# ---------------------------------------------------------------------------
+# Uncertain near-tie re-measurement
+# ---------------------------------------------------------------------------
+
+def _auto_sub_needs_tiebreak(scoring: dict[str, Any]) -> bool:
+    """True when the scorer itself reports an uncertain top-two near-tie."""
+    return bool(
+        scoring.get("confidence") == "uncertain"
+        and scoring.get("runner_up") is not None
+        and scoring.get("results")
+    )
+
+
+async def _auto_sub_remeasure_tiebreak(
+    *,
+    scoring: dict[str, Any],
+    rows: list[dict[str, Any]],
+    measure: Callable[[float, int], Awaitable[dict[str, Any]]],
+    crossover_hz: int,
+    low_guard_reference_delay_ms: float | None = None,
+) -> dict[str, Any] | None:
+    """Confirm an uncertain near-tie with one fresh sweep per top candidate.
+
+    The top two candidates are re-measured once with the unchanged scan
+    configuration. Successfully re-measured points replace the original
+    points in place — the same row dicts, so downstream gain and incumbent
+    lookups see the confirmed data — and the full candidate set is re-scored
+    with the unchanged scorer, so the decision is made from confirmed
+    measurements. Returned sweep failures keep the original decision and are
+    reported in the diagnostics; raised sweep errors (peak safety) propagate.
+    """
+    if not _auto_sub_needs_tiebreak(scoring):
+        return None
+    top_results = scoring["results"][:2]
+    top_delays = [_auto_sub_delay_key(result) for result in top_results]
+    measured_results: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for index, delay in enumerate(top_delays):
+        result = await measure(float(delay), index)
+        if result.get("status") == "completed" and _auto_sub_has_points(result):
+            measured_results.append(result)
+        else:
+            failures.append({
+                "delay_ms": delay,
+                "status": result.get("status"),
+                "error": result.get("error"),
+            })
+    original_winner = top_results[0].get("delay_ms")
+    diagnostics: dict[str, Any] = {
+        "triggered": True,
+        "reason": "confidence_uncertain",
+        "confidence_before": scoring.get("confidence"),
+        "top_before": [
+            {"delay_ms": result.get("delay_ms"), "score": result.get("score")}
+            for result in top_results
+        ],
+        "remeasured": [],
+        "measure_failures": failures,
+        "applied": False,
+    }
+    if not measured_results:
+        diagnostics["reason"] = "confidence_uncertain_remeasure_failed"
+        return {
+            "applied": False, "scoring": None, "rows": rows,
+            "measured_results": [], "diagnostics": diagnostics,
+        }
+
+    rows_by_delay = {_auto_sub_delay_key(row): row for row in rows}
+    for result in measured_results:
+        row = rows_by_delay.get(_auto_sub_delay_key(result))
+        if row is None:
+            continue
+        update = {
+            "points": result.get("points") or [],
+            "normalized_by_db": result.get("normalized_by_db"),
+            "sweep_id": result.get("sweep_id", row.get("sweep_id", "")),
+            "tiebreak_remeasured": True,
+        }
+        if result.get("calibrated_points"):
+            update["calibrated_points"] = result["calibrated_points"]
+        row.update(update)
+        diagnostics["remeasured"].append({
+            "delay_ms": result.get("delay_ms"), "status": result.get("status"),
+        })
+    new_scoring = score_sub_alignment_candidates(
+        rows,
+        crossover_hz=crossover_hz,
+        low_guard_reference_delay_ms=low_guard_reference_delay_ms,
+    )
+    diagnostics.update({
+        "applied": True,
+        "confidence_after": new_scoring.get("confidence"),
+        "top_after": [
+            {"delay_ms": result.get("delay_ms"), "score": result.get("score")}
+            for result in new_scoring["results"][:2]
+        ],
+        "winner_before": original_winner,
+        "winner_after": new_scoring["results"][0].get("delay_ms"),
+        "changed": new_scoring["results"][0].get("delay_ms") != original_winner,
+    })
+    return {
+        "applied": True,
+        "scoring": new_scoring,
+        "rows": rows,
+        "measured_results": measured_results,
+        "diagnostics": diagnostics,
+    }
 
 def _auto_sub_score_single_channel_fallback(
     candidates: list[dict[str, Any]],
@@ -857,7 +1151,13 @@ def _auto_sub_candidate_ledger(
         scored = scored_by_key.get(candidate_key)
         included = scored is not None
         reason = None
-        if not eligible:
+        marked_reason = candidate.get("exclusion_reason")
+        if isinstance(marked_reason, str) and marked_reason:
+            # Explicit upstream exclusion (candidate plausibility gate): the
+            # row never entered the scoring input, so report that reason.
+            reason = str(marked_reason)
+            included = False
+        elif not eligible:
             if channel == "left":
                 reason = "left_insufficient_points"
             elif channel == "right":
@@ -893,6 +1193,7 @@ def _auto_sub_candidate_ledger(
             "eligible_for_scoring": eligible,
             "included_in_scoring": included,
             "exclusion_reason": reason,
+            "plausibility": candidate.get("plausibility"),
             "score": scored.get("score") if scored else None,
             "final_score": scored.get("final_score", scored.get("score")) if scored else None,
             "score_pct": scored.get("score_pct") if scored else None,

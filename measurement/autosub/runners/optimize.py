@@ -59,6 +59,7 @@ from ..scoring import (
     _auto_sub_best_scan_result,
     _auto_sub_candidate_ledger,
     _auto_sub_display_anchor_reference_db,
+    _auto_sub_gate_candidate_rows,
     _auto_sub_has_points,
     _auto_sub_measurement_from_sweep,
     _auto_sub_result_meta,
@@ -247,8 +248,9 @@ async def _run_auto_sub_optimize(
             return
 
         step_ms = _auto_sub_step_ms(fc)
+        coarse_gate_rows, _ = _auto_sub_gate_candidate_rows(sweep_results, fc, context="coarse")
         coarse_scoring = _score_auto_sub_combined_candidates(
-            sweep_results,
+            coarse_gate_rows,
             crossover_hz=fc,
             low_guard_reference_delay_ms=current_alignment,
         )
@@ -345,8 +347,9 @@ async def _run_auto_sub_optimize(
 
                 fine_valid = [r for r in fine_results if _auto_sub_has_points(r, "points_left") or _auto_sub_has_points(r, "points_right")]
                 if fine_valid:
+                    fine_gate_rows, _ = _auto_sub_gate_candidate_rows(fine_results, fc, context="fine")
                     fine_scoring = _score_auto_sub_combined_candidates(
-                        fine_results,
+                        fine_gate_rows,
                         crossover_hz=fc,
                         low_guard_reference_delay_ms=current_alignment,
                     )
@@ -361,7 +364,9 @@ async def _run_auto_sub_optimize(
                         "runner_up": fine_scoring.get("runner_up"),
                         "results": fine_scoring["results"],
                     })
-                    combined_valid = valid + fine_valid
+                    combined_valid, _ = _auto_sub_gate_candidate_rows(
+                        valid + fine_valid, fc, context="combined",
+                    )
                     final_decision_pool = list(combined_valid)
                     final_scoring = _score_auto_sub_combined_candidates(
                         combined_valid,
