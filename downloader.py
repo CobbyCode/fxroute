@@ -59,7 +59,11 @@ class Downloader:
                 [self._ytdlp_bin(), "--version"],
                 capture_output=True,
                 text=True,
-                timeout=5
+                # Python startup alone can take tens of seconds on slow
+                # boards or under emulation; a tight timeout crashes the
+                # app at every start instead of only when yt-dlp is truly
+                # missing.
+                timeout=30,
             )
             if result.returncode == 0:
                 logger.info(f"Found yt-dlp: {result.stdout.strip()}")

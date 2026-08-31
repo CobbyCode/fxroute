@@ -1,0 +1,15 @@
+[Unit]
+Description=FXRoute Armbian first-boot installation
+Wants=network-online.target armbian-firstrun.service
+After=network-online.target armbian-firstrun.service ssh.service
+ConditionPathExists=/opt/fxroute-armbian/source.tar
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/fxroute-armbian-first-boot.sh
+Restart=on-failure
+RestartSec=30s
+TimeoutStartSec=2h
+
+[Install]
+WantedBy=multi-user.target
