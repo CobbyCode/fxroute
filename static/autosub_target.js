@@ -14,15 +14,13 @@
  *
  * New runs therefore embed exact metadata:
  *   - autosub_meta.target_vertical_offset_db  (the run's tvo)
+ *   - autosub_meta.main_reference_points      (calibrated Main L/R)
  *   - trace.display_offset_db                 (nb - anchor_shift + shared)
- * and the exact displayed target position is:
- *   target_displayed_db = target + tvo - display_offset_db
+ * The graph recomputes tvo from those Main points for the currently selected
+ * curve, so changing the UI target changes both shape and robust level anchor.
  *
- * For legacy runs without this metadata we fall back to the shared bass
- * reference (median 20-200 Hz of the visible traces) so the target at least
- * sits on the same vertical reference as the traces. No fixed dB constants
- * are used anywhere; Neutral, Harman and custom targets all work because the
- * offset is derived per run.
+ * The current graph Target Curve remains UI-owned. autosub_meta.target records
+ * which curve the run used for its result summary, but never selects a curve.
  */
 (function (root, factory) {
     const api = factory(root);
@@ -30,10 +28,6 @@
     if (typeof module === 'object' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : window, function (root) {
     'use strict';
-
-    // Must match the backend's _auto_sub_shared_bass_offset band.
-    const BASS_LOW_HZ = 20.0;
-    const BASS_HIGH_HZ = 200.0;
 
     function isAutoSubMeasurement(measurement) {
         return String((measurement && measurement.measurement_kind) || '') === 'auto_sub';
@@ -43,69 +37,52 @@
         return typeof value === 'number' && Number.isFinite(value) ? value : null;
     }
 
-    /**
-     * Median dB over the 20-200 Hz band of the given point lists.
-     * Returns null when no points fall inside the band.
-     */
-    function bassMedianDb(pointLists) {
-        const dbs = [];
-        for (const points of pointLists) {
-            if (!Array.isArray(points)) continue;
-            for (const point of points) {
-                if (!Array.isArray(point) || point.length < 2) continue;
-                const hz = Number(point[0]);
-                const db = Number(point[1]);
-                if (Number.isFinite(hz) && Number.isFinite(db) && hz >= BASS_LOW_HZ && hz <= BASS_HIGH_HZ) {
-                    dbs.push(db);
-                }
-            }
-        }
-        if (!dbs.length) return null;
-        dbs.sort((a, b) => a - b);
-        const mid = dbs.length >> 1;
-        return dbs.length % 2 ? dbs[mid] : (dbs[mid - 1] + dbs[mid]) / 2;
+    function median(values) {
+        if (!values.length) return null;
+        const sorted = [...values].sort((a, b) => a - b);
+        const middle = sorted.length >> 1;
+        return sorted.length % 2
+            ? sorted[middle]
+            : (sorted[middle - 1] + sorted[middle]) / 2;
     }
 
-    /**
-     * Legacy fallback: the shared vertical reference (display offset) used by
-     * the AutoSub traces currently visible in the graph, or null when the
-     * graph is not showing an AutoSub Before/After set.
-     *
-     * Entries are already-normalized display entries (graph entries), i.e.
-     * the backend's offset has been applied to their points.
-     */
-    function getAutoSubDisplayOffsetDb(entries) {
-        if (!Array.isArray(entries)) return null;
-        const autoSubEntries = entries.filter(isAutoSubMeasurement);
-        if (!autoSubEntries.length) return null;
-        const pointLists = [];
-        for (const entry of autoSubEntries) {
-            for (const trace of entry.traces || []) {
-                if (Array.isArray(trace.points) && trace.points.length) {
-                    pointLists.push(trace.points);
-                }
-            }
-        }
-        if (!pointLists.length) return null;
-        return bassMedianDb(pointLists);
-    }
-
-    /** Return the immutable Target Curve captured for the visible AutoSub run. */
-    function resolveTargetCurve(entries) {
-        if (!Array.isArray(entries)) return null;
-        for (const entry of entries.filter(isAutoSubMeasurement)) {
-            const target = entry.autosub_meta && entry.autosub_meta.target;
-            if (!target || !Array.isArray(target.points) || target.points.length < 2) continue;
-            const validPoints = target.points.every((point) => (
-                Array.isArray(point)
-                && point.length === 2
-                && Number.isFinite(Number(point[0]))
-                && Number(point[0]) > 0
-                && Number.isFinite(Number(point[1]))
-            ));
-            if (validPoints) return target;
+    function targetDbAtFrequency(points, frequencyHz) {
+        if (!Array.isArray(points) || points.length < 2 || !(frequencyHz > 0)) return null;
+        const firstHz = Number(points[0][0]);
+        const lastHz = Number(points[points.length - 1][0]);
+        if (!Number.isFinite(firstHz) || !Number.isFinite(lastHz)
+            || frequencyHz < firstHz || frequencyHz > lastHz) return null;
+        for (let index = 1; index < points.length; index += 1) {
+            const lowHz = Number(points[index - 1][0]);
+            const lowDb = Number(points[index - 1][1]);
+            const highHz = Number(points[index][0]);
+            const highDb = Number(points[index][1]);
+            if (![lowHz, lowDb, highHz, highDb].every(Number.isFinite)
+                || !(lowHz > 0) || !(highHz > lowHz)) return null;
+            if (frequencyHz > highHz) continue;
+            const ratio = Math.log(frequencyHz / lowHz) / Math.log(highHz / lowHz);
+            return lowDb + (highDb - lowDb) * ratio;
         }
         return null;
+    }
+
+    function targetVerticalOffsetDb(meta, targetPoints) {
+        const references = meta && meta.main_reference_points;
+        if (!references || !Array.isArray(targetPoints) || targetPoints.length < 2) return null;
+        const offsets = [];
+        for (const side of ['left', 'right']) {
+            const points = references[side];
+            if (!Array.isArray(points) || !points.length) return null;
+            for (const point of points) {
+                if (!Array.isArray(point) || point.length < 2) return null;
+                const frequencyHz = Number(point[0]);
+                const mainDb = Number(point[1]);
+                const targetDb = targetDbAtFrequency(targetPoints, frequencyHz);
+                if (!Number.isFinite(mainDb) || targetDb === null) return null;
+                offsets.push(mainDb - targetDb);
+            }
+        }
+        return median(offsets);
     }
 
     /**
@@ -113,26 +90,23 @@
      *
      * Returns the value to pass to shiftTargetPoints() so the target lands in
      * the display coordinate of the traces, or null when the exact transform
-     * is not available (no AutoSub entries, no metadata, or a normal
-     * measurement graph is shown).
+     * is not available (no AutoSub entries, incomplete current metadata, or a
+     * normal measurement graph is shown).
      *
-     * The backend embeds:
-     *   autosub_meta.target_vertical_offset_db  (run's tvo, calibrated coords)
-     *   trace.display_offset_db                 (nb - anchor_shift + shared)
-     * Scoring places the target at (target + tvo) in calibrated coordinates;
-     * since displayed = calibrated - display_offset_db, the exact displayed
-     * target position is target + tvo - display_offset_db, so the value to
-     * subtract from the target points is (display_offset_db - tvo).
+     * The backend embeds calibrated Main reference points and each trace's
+     * display offset. Recomputing tvo as median(Main - current Target) keeps
+     * target switching shape- and level-aware. Since displayed = calibrated -
+     * display_offset_db, the value subtracted from the target is
+     * (display_offset_db - tvo).
      */
-    function resolveTargetOffsetDb(entries) {
+    function resolveTargetOffsetDb(entries, targetPoints) {
         if (!Array.isArray(entries)) return null;
         const autoSubEntries = entries.filter(isAutoSubMeasurement);
         if (!autoSubEntries.length) return null;
 
-        // Prefer the exact metadata chain (new runs).
         for (const entry of autoSubEntries) {
             const meta = entry.autosub_meta || {};
-            const tvo = finiteNumber(meta.target_vertical_offset_db);
+            const tvo = targetVerticalOffsetDb(meta, targetPoints);
             if (tvo === null) continue;
             for (const trace of entry.traces || []) {
                 const displayOffset = finiteNumber(trace.display_offset_db);
@@ -142,8 +116,7 @@
             }
         }
 
-        // Legacy fallback: shared bass reference (no exact metadata available).
-        return getAutoSubDisplayOffsetDb(entries);
+        return null;
     }
 
     /**
@@ -159,12 +132,8 @@
     }
 
     return {
-        BASS_LOW_HZ,
-        BASS_HIGH_HZ,
-        bassMedianDb,
-        getAutoSubDisplayOffsetDb,
-        resolveTargetCurve,
         resolveTargetOffsetDb,
+        targetVerticalOffsetDb,
         isAutoSubMeasurement,
         shiftTargetPoints,
     };

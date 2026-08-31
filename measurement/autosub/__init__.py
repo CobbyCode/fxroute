@@ -111,8 +111,6 @@ from measurement.autosub.measurement import (
     _auto_sub_gain_response_correction,
     _auto_sub_gain_verdict,
     _auto_sub_log_interpolate_points,
-    _auto_sub_lr24_frequency_for_attenuation,
-    _auto_sub_lr24_highpass_attenuation_db,
     _auto_sub_one_octave_smooth,
     _auto_sub_reconstruct_calibrated_points,
     _auto_sub_stereo_corridor_violation,

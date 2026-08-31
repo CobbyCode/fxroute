@@ -103,13 +103,16 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 await autosub._capture_auto_sub_main_references(
                     job=job, fc=80, input_id="mic", mic_input_channel="1",
                     reference_input_channel="", calibration_ref="", calibration_filename=None,
-                    calibration_bytes=None, auto_sub_sweep_profile={}, auto_sub_rate=48_000,
+                    calibration_bytes=None, auto_sub_rate=48_000,
                     output_mode=mode, original_config_snapshot=original_snapshot(mode),
                 )
             self.assertEqual(len(calls), 2)
             self.assertEqual([call["channel"] for call in calls], ["left", "right"])
             self.assertTrue(all(call["exact_sub_mute"] for call in calls))
             self.assertTrue(all(call["active_subs"] == ("sub1", "sub2") for call in calls))
+            self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_start_hz"] == 10.0 for call in calls))
+            self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_end_hz"] == 22_000.0 for call in calls))
+            self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_seconds"] == 11.0 for call in calls))
             self.assertEqual(job["main_references"]["status"], "completed")
             for side in ("left", "right"):
                 self.assertEqual(set(job["main_references"][side]), {
@@ -133,13 +136,20 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             await autosub._capture_auto_sub_main_references(
                 job=job, fc=80, input_id="mic", mic_input_channel="1", reference_input_channel="",
                 calibration_ref="", calibration_filename=None, calibration_bytes=None,
-                auto_sub_sweep_profile={}, auto_sub_rate=48_000,
+                auto_sub_rate=48_000,
                 output_mode=main.OUTPUT_MODE_SUBWOOFER_21,
                 original_config_snapshot=original_snapshot(main.OUTPUT_MODE_SUBWOOFER_21),
             )
         self.assertEqual(job["main_references"]["status"], "unavailable")
         self.assertIn("left", job["auto_gain"]["reason"])
         self.assertNotIn("status", job)  # Existing optimization state is not failed here.
+
+    def test_candidate_profile_remains_bass_focused(self):
+        for crossover_hz, expected_high_hz in ((40, 600.0), (80, 640.0), (200, 1600.0)):
+            profile = autosub._auto_sub_sweep_profile(crossover_hz)
+            self.assertEqual(profile["sweep_start_hz"], 20.0)
+            self.assertEqual(profile["sweep_end_hz"], expected_high_hz)
+            self.assertLessEqual(profile["sweep_seconds"], 3.5)
 
     async def test_candidate_restores_exact_mute_on_success_error_and_cancel(self):
         # Realistic sweep profile: the candidate path runs the native DSP peak

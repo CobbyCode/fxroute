@@ -23,6 +23,7 @@ from measurement.store import (
     SWEEP_V2_LEAD_IN_SECONDS,
     SWEEP_V2_SECONDS,
     SWEEP_V2_TAIL_SECONDS,
+    default_measurement_sweep_profile,
 )
 from measurement.repeat_runner import MeasurementRepeatRunner
 
@@ -77,7 +78,7 @@ def main() -> None:
         try:
             store = MeasurementStore(home=root)
             assert isinstance(store._repeat_runner, MeasurementRepeatRunner)
-            sweep_profile = store._default_measurement_sweep_profile()
+            sweep_profile = default_measurement_sweep_profile()
             assert sweep_profile["sweep_seconds"] == SWEEP_V2_SECONDS
             assert sweep_profile["lead_in_seconds"] == SWEEP_V2_LEAD_IN_SECONDS
             assert sweep_profile["tail_seconds"] == SWEEP_V2_TAIL_SECONDS

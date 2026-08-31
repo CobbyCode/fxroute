@@ -138,8 +138,8 @@ async def _run_auto_sub_optimize(
             job=job, fc=fc, input_id=input_id,
             mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
             calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
-            auto_sub_rate=auto_sub_rate, output_mode=OUTPUT_MODE_SUBWOOFER_21,
+            calibration_bytes=calibration_bytes, auto_sub_rate=auto_sub_rate,
+            output_mode=OUTPUT_MODE_SUBWOOFER_21,
             original_config_snapshot=original_config_snapshot,
         )
         if _auto_sub_cancel_requested(job):
