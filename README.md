@@ -74,6 +74,7 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
 - selectable local and SMB music libraries, with SMB share discovery and manual `smb://` share entry
 - optional Spotify Desktop, spotifyd, Qobuz/qbzd, and TIDAL installer support; see [docs/INSTALLER.md](docs/INSTALLER.md)
+- reproducible headless ARM64 Armbian image builds for Raspberry Pi 4/5 and other Armbian boards; see [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md)
 - installer support for the native DSP build, systemd user service, PipeWire/BlueZ dependencies, firewall comfort rules, and `.local` LAN naming
 - installer package-manager support for apt (Debian/Ubuntu), dnf (Fedora),
   zypper (openSUSE), and pacman (Arch/Manjaro); package-manager preparation
