@@ -13,6 +13,7 @@
 
     const ui = window.FXRouteMeasurementUI || {};
     const dsp = window.FXRouteMeasurementDsp || {};
+    const autoSubTarget = window.FXRouteAutoSubTarget || {};
 
     let deps = {
         getCanvas: () => null,
@@ -23,6 +24,8 @@
         getVisibleMeasurementEntries: () => [],
         getVisibleMeasurementColorById: () => ({}),
         getMeasurementDisplayTraces: () => [],
+        getMeasurementTargetCurvePreview: () => null,
+        getAutoSubDisplayReferenceEntries: () => [],
         buildMeasurementIrGraphEntry: () => null,
         drawMeasurementIrGraph: () => {},
         drawMeasurementTargetCurve: () => {},
@@ -83,7 +86,12 @@
             const entry = builder(measurement, { current: false, graphColor: visibleColorById[measurement.id] });
             if (entry) entries.push(entry);
         });
-        return entries;
+        if (deps.getMeasurementGraphView() === 'ir' || typeof autoSubTarget.alignAutoSubEntries !== 'function') {
+            return entries;
+        }
+        const targetPoints = deps.getMeasurementTargetCurvePreview()?.points || [];
+        const referenceEntries = deps.getAutoSubDisplayReferenceEntries();
+        return autoSubTarget.alignAutoSubEntries(entries, targetPoints, referenceEntries);
     }
 
 

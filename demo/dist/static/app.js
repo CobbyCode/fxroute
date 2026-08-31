@@ -24,6 +24,8 @@ window.FXRouteMeasurementGraph?.init({
     getVisibleMeasurementEntries,
     getVisibleMeasurementColorById,
     getMeasurementDisplayTraces,
+    getMeasurementTargetCurvePreview,
+    getAutoSubDisplayReferenceEntries,
     buildMeasurementIrGraphEntry,
     drawMeasurementIrGraph,
     drawMeasurementTargetCurve,
@@ -7339,6 +7341,16 @@ function getMeasurementDisplayTraces(measurement = {}) {
     return traces;
 }
 
+function getAutoSubDisplayReferenceEntries() {
+    const entriesById = new Map();
+    [...(state.measurement.measurements || []), ...getCurrentMeasurementEntries()]
+        .filter(measurement => window.FXRouteAutoSubTarget?.isAutoSubMeasurement(measurement))
+        .forEach((measurement, index) => {
+            entriesById.set(String(measurement.id || `current-${index}`), measurement);
+        });
+    return [...entriesById.values()];
+}
+
 function measurementSmoothingHalfWindowOctaves(mode = '1/6-oct') {
     return MeasurementDsp.measurementSmoothingHalfWindowOctaves(mode);
 }
@@ -8703,20 +8715,9 @@ function getMeasurementConvolverRangeHandleAtPosition(x, y, bounds) {
 }
 
 function drawMeasurementTargetCurve(ctx, bounds, range) {
-    const entries = getGraphMeasurementEntries();
     const curve = getMeasurementTargetCurvePreview();
-    let points = curve.points || measurementConvolverCurves.neutral.points;
+    const points = curve.points || measurementConvolverCurves.neutral.points;
     if (getMeasurementActiveEditor() === 'houseCurve' && !points.length) return;
-    // In AutoSub Before/After view, anchor the current target shape against
-    // the run's calibrated Main references, then transform it with the trace's
-    // exact display offset.
-    let displayPoints = points;
-    if (window.FXRouteAutoSubTarget) {
-        const offsetDb = window.FXRouteAutoSubTarget.resolveTargetOffsetDb(entries, points);
-        if (offsetDb !== null) {
-            displayPoints = window.FXRouteAutoSubTarget.shiftTargetPoints(points, offsetDb);
-        }
-    }
     const frequencies = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
     ctx.save();
     ctx.strokeStyle = '#6ee7b7';
@@ -8725,7 +8726,7 @@ function drawMeasurementTargetCurve(ctx, bounds, range) {
     ctx.beginPath();
     frequencies.forEach((frequency, index) => {
         const x = measurementFrequencyToX(frequency, bounds);
-        const levelDb = MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(displayPoints, frequency);
+        const levelDb = MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(points, frequency);
         const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(levelDb, bounds, range)));
         if (index === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);

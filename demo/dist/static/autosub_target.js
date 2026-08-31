@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /**
- * AutoSub-aware Target-Curve vertical alignment for the measurement graph.
+ * AutoSub trace alignment for the measurement graph.
  *
  * Coordinate systems (verified against real .104 run data):
  *   raw          = sweep analysis output before normalization
@@ -8,16 +8,14 @@
  *   displayed    = normalized + anchor_shift - shared_offset
  *   calibrated   = raw = normalized + normalized_by_db
  *
- * Scoring/Gain work in the CALIBRATED coordinate: the target is placed at
- * (target + tvo), where tvo = job.main_target_anchor.target_vertical_offset_db
- * = median(calibrated_main_db - target_db) over the anchor band.
+ * Scoring/Gain work in the CALIBRATED coordinate. Graph traces are moved as
+ * one rigid set into the normal measurement coordinate, where the selected
+ * Target Curve keeps its unshifted shape (Neutral at 0 dB).
  *
- * New runs therefore embed exact metadata:
- *   - autosub_meta.target_vertical_offset_db  (the run's tvo)
- *   - autosub_meta.main_reference_points      (calibrated Main L/R)
- *   - trace.display_offset_db                 (nb - anchor_shift + shared)
- * The graph recomputes tvo from those Main points for the currently selected
- * curve, so changing the UI target changes both shape and robust level anchor.
+ * Saved runs embed the calibrated Main L/R reference points and each trace's
+ * calibrated-to-display offset. The graph recomputes the broadband Main/Target
+ * anchor for the currently selected curve and applies the inverse of the old
+ * target shift to the traces instead.
  *
  * The current graph Target Curve remains UI-owned. autosub_meta.target records
  * which curve the run used for its result summary, but never selects a curve.
@@ -47,11 +45,11 @@
     }
 
     function targetDbAtFrequency(points, frequencyHz) {
-        if (!Array.isArray(points) || points.length < 2 || !(frequencyHz > 0)) return null;
+        if (!Array.isArray(points) || !points.length || !(frequencyHz > 0)) return null;
         const firstHz = Number(points[0][0]);
-        const lastHz = Number(points[points.length - 1][0]);
-        if (!Number.isFinite(firstHz) || !Number.isFinite(lastHz)
-            || frequencyHz < firstHz || frequencyHz > lastHz) return null;
+        const firstDb = Number(points[0][1]);
+        if (!Number.isFinite(firstHz) || !(firstHz > 0) || !Number.isFinite(firstDb)) return null;
+        if (frequencyHz <= firstHz || points.length === 1) return firstDb;
         for (let index = 1; index < points.length; index += 1) {
             const lowHz = Number(points[index - 1][0]);
             const lowDb = Number(points[index - 1][1]);
@@ -63,12 +61,12 @@
             const ratio = Math.log(frequencyHz / lowHz) / Math.log(highHz / lowHz);
             return lowDb + (highDb - lowDb) * ratio;
         }
-        return null;
+        return Number(points[points.length - 1][1]);
     }
 
     function targetVerticalOffsetDb(meta, targetPoints) {
         const references = meta && meta.main_reference_points;
-        if (!references || !Array.isArray(targetPoints) || targetPoints.length < 2) return null;
+        if (!references || !Array.isArray(targetPoints) || !targetPoints.length) return null;
         const offsets = [];
         for (const side of ['left', 'right']) {
             const points = references[side];
@@ -85,56 +83,80 @@
         return median(offsets);
     }
 
-    /**
-     * Exact scored target offset for the AutoSub set currently on screen.
-     *
-     * Returns the value to pass to shiftTargetPoints() so the target lands in
-     * the display coordinate of the traces, or null when the exact transform
-     * is not available (no AutoSub entries, incomplete current metadata, or a
-     * normal measurement graph is shown).
-     *
-     * The backend embeds calibrated Main reference points and each trace's
-     * display offset. Recomputing tvo as median(Main - current Target) keeps
-     * target switching shape- and level-aware. Since displayed = calibrated -
-     * display_offset_db, the value subtracted from the target is
-     * (display_offset_db - tvo).
-     */
-    function resolveTargetOffsetDb(entries, targetPoints) {
-        if (!Array.isArray(entries)) return null;
-        const autoSubEntries = entries.filter(isAutoSubMeasurement);
-        if (!autoSubEntries.length) return null;
-
-        for (const entry of autoSubEntries) {
-            const meta = entry.autosub_meta || {};
-            const tvo = targetVerticalOffsetDb(meta, targetPoints);
-            if (tvo === null) continue;
-            for (const trace of entry.traces || []) {
-                const displayOffset = finiteNumber(trace.display_offset_db);
-                if (displayOffset !== null) {
-                    return displayOffset - tvo;
-                }
-            }
+    function mainReferenceKey(meta) {
+        const references = meta && meta.main_reference_points;
+        if (!references) return null;
+        const normalized = {};
+        for (const side of ['left', 'right']) {
+            const points = references[side];
+            if (!Array.isArray(points) || !points.length) return null;
+            normalized[side] = points.map((point) => [Number(point[0]), Number(point[1])]);
         }
-
-        return null;
+        return JSON.stringify(normalized);
     }
 
     /**
-     * Shift target-curve [freq, db] points by the given constant offset.
-     * The curve shape is unchanged (single constant per point).
+     * Move each saved AutoSub run as one rigid set into the selected Target
+     * Curve's normal graph coordinate. A single median display offset per run
+     * keeps Before/After and L/R differences unchanged and order-independent.
      */
-    function shiftTargetPoints(points, offsetDb) {
-        if (offsetDb === null || offsetDb === undefined || !Array.isArray(points)) return points;
-        return points.map((point) => {
-            if (!Array.isArray(point) || point.length < 2) return point;
-            return [Number(point[0]), Number(point[1]) - offsetDb];
+    function alignAutoSubEntries(entries, targetPoints, referenceEntries = entries) {
+        if (!Array.isArray(entries)) return entries;
+        const groups = new Map();
+        const groupKeyByEntryIndex = new Map();
+
+        (Array.isArray(referenceEntries) ? referenceEntries : entries).forEach((entry) => {
+            if (!isAutoSubMeasurement(entry)) return;
+            const meta = entry.autosub_meta || {};
+            const key = mainReferenceKey(meta);
+            const targetOffset = targetVerticalOffsetDb(meta, targetPoints);
+            if (key === null || targetOffset === null) return;
+
+            if (!groups.has(key)) {
+                groups.set(key, { targetOffset, displayOffsets: [], complete: true });
+            }
+            const group = groups.get(key);
+            if (Math.abs(group.targetOffset - targetOffset) > 1e-9) group.complete = false;
+            const traces = Array.isArray(entry.traces) ? entry.traces : [];
+            if (!traces.length) group.complete = false;
+            traces.forEach((trace) => {
+                const displayOffset = finiteNumber(trace.display_offset_db);
+                if (displayOffset === null) group.complete = false;
+                else group.displayOffsets.push(displayOffset);
+            });
+        });
+
+        entries.forEach((entry, entryIndex) => {
+            if (!isAutoSubMeasurement(entry)) return;
+            const meta = entry.autosub_meta || {};
+            const key = mainReferenceKey(meta);
+            if (key !== null && targetVerticalOffsetDb(meta, targetPoints) !== null) {
+                groupKeyByEntryIndex.set(entryIndex, key);
+            }
+        });
+
+        const shiftByGroupKey = new Map();
+        groups.forEach((group, key) => {
+            if (!group.complete || !group.displayOffsets.length) return;
+            shiftByGroupKey.set(key, median(group.displayOffsets) - group.targetOffset);
+        });
+
+        return entries.map((entry, entryIndex) => {
+            const shiftDb = shiftByGroupKey.get(groupKeyByEntryIndex.get(entryIndex));
+            if (!Number.isFinite(shiftDb)) return entry;
+            return {
+                ...entry,
+                traces: entry.traces.map((trace) => ({
+                    ...trace,
+                    points: trace.points.map((point) => [Number(point[0]), Number(point[1]) + shiftDb]),
+                })),
+            };
         });
     }
 
     return {
-        resolveTargetOffsetDb,
+        alignAutoSubEntries,
         targetVerticalOffsetDb,
         isAutoSubMeasurement,
-        shiftTargetPoints,
     };
 });

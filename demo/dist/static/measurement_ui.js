@@ -56,9 +56,8 @@ function normalizeMeasurementTrace(trace = {}, index = 0) {
         color: String(trace.color || ['#6ee7b7', '#a78bfa', '#f59e0b', '#60a5fa'][index % 4]),
         role: String(trace.role || ''),
         points,
-        // AutoSub: exact calibrated->display correction for this trace
-        // (normalized_by_db - anchor shift + shared bass offset). Consumed by
-        // static/autosub_target.js to place the target at the scored position.
+        // AutoSub calibrated-to-display correction. The graph uses it with
+        // saved Main references to move AutoSub traces into its normal axis.
         ...(Number.isFinite(Number(trace.display_offset_db))
             ? { display_offset_db: Number(trace.display_offset_db) }
             : {}),

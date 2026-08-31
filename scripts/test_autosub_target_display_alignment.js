@@ -1,205 +1,170 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
-//
-// AutoSub Target-Curve vertical alignment tests.
-//
-// Coordinate systems (verified against real .104 run data):
-//   raw          = sweep analysis output before normalization
-//   normalized   = raw - normalized_by_db            (per sweep!)
-//   displayed    = normalized + anchor_shift - shared_offset
-//   calibrated   = raw = normalized + normalized_by_db
-//
-// Scoring/Gain work in the CALIBRATED coordinate: the target is placed at
-// (target + tvo), where tvo = job.main_target_anchor.target_vertical_offset_db.
-//
-// New runs embed exact metadata:
-//   - autosub_meta.target_vertical_offset_db  (run's tvo)
-//   - trace.display_offset_db                 (nb - anchor_shift + shared)
-// and the exact displayed target position is:
-//   target_displayed_db = target + tvo - display_offset_db
-//
-// Tests:
-//  1. Exact path: resolveTargetOffsetDb returns display_offset_db - tvo from
-//     embedded run metadata.
-//  2. Missing exact metadata does not create a compatibility fallback.
-//  3. The offset is derived only when 'auto_sub' measurements are on screen
-//     (normal measurement graphs are untouched).
-//  4. Shifting the target preserves its shape exactly (constant dB offset).
-//  5. app.js draws the target from the shifted points (source-level contract).
-//  6. End-to-end math on a real AutoSub job snapshot pulled from .104.
-//  7. Saved run metadata never overrides the current graph Target Curve.
 
 const assert = require('assert/strict');
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
 
 global.window = global;
 
 const autosubTarget = require(path.join(__dirname, '..', 'static', 'autosub_target.js'));
 window.FXRouteAutoSubTarget = autosubTarget;
+const measurementUi = require(path.join(__dirname, '..', 'static', 'measurement_ui.js'));
 
-// ---------------------------------------------------------------------------
-// 1. EXACT path: tvo - display_offset_db from embedded run metadata
-// ---------------------------------------------------------------------------
-{
-    const currentTarget = [[20, 0], [20000, 0]];
-    const entries = [{
-        id: 'a1', measurement_kind: 'auto_sub',
-        autosub_meta: {
-            target: { points: [[20, 6], [20000, 6]] },
-            target_vertical_offset_db: -32.6385,
-            main_reference_points: {
-                left: [[120, -26.6385], [1000, -26.6385], [8000, -26.6385]],
-                right: [[120, -26.6385], [1000, -26.6385], [8000, -26.6385]],
-            },
-        },
-        traces: [
-            { label: 'Before L', display_offset_db: -75.466, points: [[20, -0.5], [100, 0], [500, 1]] },
-            { label: 'Before R', display_offset_db: -73.893, points: [[20, 1.2], [100, 0], [500, 1]] },
-        ],
-    }];
-    const off = autosubTarget.resolveTargetOffsetDb(entries, currentTarget);
-    // shift value = display_offset_db - tvo = -75.466 - (-26.6385) = -48.8275
-    assert.equal(off, (-75.466) - (-26.6385));
-    // displayed target = target - (display_offset_db - tvo)
-    //   = target + tvo - display_offset_db  (exact scored position)
-    const target = [[20, 0], [100, -3], [1000, -6]];
-    const displayed = autosubTarget.shiftTargetPoints(target, off);
-    // Check the scored relation reproduced in display coordinates:
-    // displayed_trace = calibrated - display_offset_db
-    // displayed_target(20Hz) = target(20) + tvo - display_offset_db
-    //   = 0 + (-26.6385) + 75.466 = 48.8275
-    assert.equal(displayed[0][1], 0 + (-26.6385) - (-75.466));
+const neutralTarget = [[20, 0], [20000, 0]];
+const runTarget = [[20, 6], [20000, 6]];
+const mainReferencePoints = {
+    left: [[120, 4], [1000, 4], [8000, 4]],
+    right: [[120, 4], [1000, 4], [8000, 4]],
+};
+const autosubMeta = {
+    target: { key: 'run-target', label: 'Run Target', points: runTarget },
+    target_vertical_offset_db: -2,
+    main_reference_points: mainReferencePoints,
+};
 
-    const runTargetOffset = autosubTarget.resolveTargetOffsetDb(
-        entries, entries[0].autosub_meta.target.points,
-    );
-    assert.equal(runTargetOffset, (-75.466) - (-32.6385));
-    assert.notEqual(off, runTargetOffset,
-        'switching target shape must recompute its vertical anchor from the saved Main references');
+function savedAutoSubEntry(id, label, displayOffsetDb, levels) {
+    return {
+        id,
+        measurement_kind: 'auto_sub',
+        autosub_meta: autosubMeta,
+        traces: [{
+            label,
+            display_offset_db: displayOffsetDb,
+            points: [[20, levels[0]], [100, levels[1]], [500, levels[2]]],
+        }],
+    };
 }
 
-// ---------------------------------------------------------------------------
-// 2. No fallback for obsolete AutoSub metadata shapes
-// ---------------------------------------------------------------------------
+// Custom targets use the same endpoint extension as the graph renderer. This
+// keeps broadband Main references usable when a custom file covers only part
+// of 120-8000 Hz or the editor currently contains one point.
 {
-    const incomplete = {
-        id: 'a1', measurement_kind: 'auto_sub',
-        traces: [{ label: 'Before L', points: [[20, -3], [100, -1], [500, 0]] }],
-    };
-    assert.equal(autosubTarget.resolveTargetOffsetDb([incomplete]), null,
-        'obsolete runs without exact display metadata must not create a parallel target path');
+    const entry = savedAutoSubEntry('before-l', 'Before L', 10, [-2, 0, 1]);
+    const narrowTarget = [[500, 0], [1000, 2]];
+    const narrowAligned = autosubTarget.alignAutoSubEntries([entry], narrowTarget);
+    assert.deepEqual(narrowAligned[0].traces[0].points, [[20, 6], [100, 8], [500, 9]]);
+
+    const onePointAligned = autosubTarget.alignAutoSubEntries([entry], [[1000, 1]]);
+    assert.deepEqual(onePointAligned[0].traces[0].points, [[20, 5], [100, 7], [500, 8]]);
 }
 
-// ---------------------------------------------------------------------------
-// 3. Saved AutoSub metadata does not expose a graph Target Curve override
-// ---------------------------------------------------------------------------
+// Built-in shaped targets remain selected and unmodified while the AutoSub
+// set receives one constant vertical shift.
+for (const key of ['bk', 'harman']) {
+    const targetPoints = measurementUi.measurementConvolverCurves[key].points;
+    const targetSnapshot = targetPoints.map(point => [...point]);
+    const entry = savedAutoSubEntry(`${key}-before`, 'Before L', 10, [-2, 0, 1]);
+    const aligned = autosubTarget.alignAutoSubEntries([entry], targetPoints);
+    const shifts = aligned[0].traces[0].points.map((point, index) => (
+        point[1] - entry.traces[0].points[index][1]
+    ));
+    assert.ok(shifts.every(shift => Math.abs(shift - shifts[0]) < 1e-9),
+        `${key} must apply one constant shift to the AutoSub trace`);
+    assert.deepEqual(targetPoints, targetSnapshot, `${key} target shape must stay unchanged`);
+}
+
+// Saved split traces from one run must move as one rigid set into the normal
+// graph coordinate. Median display offset 10 minus current Neutral anchor 4
+// gives a +6 dB trace shift, while the Neutral target itself remains at 0 dB.
 {
-    const runTarget = {
-        key: 'house:run-target',
-        label: 'Run Target',
-        provenance: 'uploaded',
-        points: [[20, 6], [100, 2], [20000, -4]],
-    };
-    const saved = {
-        id: 'saved-a1', measurement_kind: 'auto_sub',
-        autosub_meta: { target: runTarget },
-        traces: [{ points: [[20, 0], [100, 1], [20000, -2]] }],
-    };
+    const entries = [
+        savedAutoSubEntry('before-l', 'Before L', 7, [-2, 0, 1]),
+        savedAutoSubEntry('before-r', 'Before R', 9, [-1, 1, 2]),
+        savedAutoSubEntry('after-l', 'After L', 11, [0, 3, 4]),
+        savedAutoSubEntry('after-r', 'After R', 13, [1, 4, 5]),
+    ];
+    const aligned = autosubTarget.alignAutoSubEntries(entries, neutralTarget);
+
+    assert.deepEqual(aligned.map(entry => entry.traces[0].points), [
+        [[20, 4], [100, 6], [500, 7]],
+        [[20, 5], [100, 7], [500, 8]],
+        [[20, 6], [100, 9], [500, 10]],
+        [[20, 7], [100, 10], [500, 11]],
+    ]);
+    assert.deepEqual(neutralTarget, [[20, 0], [20000, 0]],
+        'the selected target stays in the normal graph coordinate');
+
+    for (let pointIndex = 0; pointIndex < 3; pointIndex += 1) {
+        const beforeDifference = entries[2].traces[0].points[pointIndex][1]
+            - entries[0].traces[0].points[pointIndex][1];
+        const afterDifference = aligned[2].traces[0].points[pointIndex][1]
+            - aligned[0].traces[0].points[pointIndex][1];
+        assert.equal(afterDifference, beforeDifference,
+            'Before/After relative differences must remain unchanged');
+    }
+    assert.deepEqual(entries[0].traces[0].points, [[20, -2], [100, 0], [500, 1]],
+        'alignment must not mutate saved measurements');
+
+    const beforeOnly = autosubTarget.alignAutoSubEntries([entries[0]], neutralTarget, entries);
+    assert.deepEqual(beforeOnly[0].traces[0].points, [[20, 4], [100, 6], [500, 7]],
+        'hiding sibling traces from the run must not change the display coordinate');
+}
+
+// The current target owns both shape and anchor. The target stored with the
+// AutoSub run remains metadata and must not lock graph selection.
+{
+    const entry = savedAutoSubEntry('before-l', 'Before L', 10, [-2, 0, 1]);
+    const currentCustomTarget = [[20, 1], [20000, 1]];
+    const neutralAligned = autosubTarget.alignAutoSubEntries([entry], neutralTarget);
+    const customAligned = autosubTarget.alignAutoSubEntries([entry], currentCustomTarget);
+
+    assert.deepEqual(neutralAligned[0].traces[0].points, [[20, 4], [100, 6], [500, 7]]);
+    assert.deepEqual(customAligned[0].traces[0].points, [[20, 5], [100, 7], [500, 8]],
+        'changing the current target must recompute the trace display anchor');
+    assert.notDeepEqual(currentCustomTarget, runTarget,
+        'the fixture must use a current target different from the stored run target');
     assert.equal(autosubTarget.resolveTargetCurve, undefined,
-        'stored AutoSub target remains summary metadata, not graph selection state');
-    assert.equal(saved.autosub_meta.target.label, 'Run Target');
+        'stored AutoSub target remains information only');
 }
 
-// ---------------------------------------------------------------------------
-// 5. Offset is derived only for auto_sub measurements
-// ---------------------------------------------------------------------------
+// Normal measurements are already in the canonical graph coordinate and are
+// untouched, including in a mixed normal/AutoSub graph.
 {
     const normal = {
-        id: 'm1', measurement_kind: '',
-        traces: [{ label: 'L', points: [[20, -3], [100, -1], [500, 0]] }],
+        id: 'normal',
+        measurement_kind: '',
+        traces: [{ label: 'Normal', points: [[20, -3], [100, 0], [500, 2]] }],
     };
-    assert.equal(autosubTarget.resolveTargetOffsetDb([normal]), null,
-        'normal measurement graphs must not shift the target curve');
-    assert.equal(autosubTarget.resolveTargetOffsetDb([]), null);
+    const autosub = savedAutoSubEntry('before-l', 'Before L', 10, [-2, 0, 1]);
+    const aligned = autosubTarget.alignAutoSubEntries([normal, autosub], neutralTarget);
+    assert.deepEqual(aligned[0], normal);
+    assert.deepEqual(aligned[1].traces[0].points, [[20, 4], [100, 6], [500, 7]]);
 }
 
-// ---------------------------------------------------------------------------
-// 6. Shape preservation (constant offset only)
-// ---------------------------------------------------------------------------
+// Incomplete metadata has no alternate or compatibility display path.
 {
-    const raw = [[20, 5], [80, 3], [1000, 0], [20000, -5]];
-    const shifted = autosubTarget.shiftTargetPoints(raw, -2.5);
-    assert.deepEqual(shifted, [[20, 7.5], [80, 5.5], [1000, 2.5], [20000, -2.5]]);
-    for (let i = 0; i < raw.length; i++) {
-        assert.equal(shifted[i][1] - raw[i][1], 2.5, 'constant offset per point');
-    }
-    // null offset -> untouched
-    assert.deepEqual(autosubTarget.shiftTargetPoints(raw, null), raw);
+    const incomplete = {
+        id: 'old-autosub',
+        measurement_kind: 'auto_sub',
+        traces: [{ label: 'Before L', points: [[20, -3], [100, -1], [500, 0]] }],
+    };
+    assert.deepEqual(autosubTarget.alignAutoSubEntries([incomplete], neutralTarget), [incomplete]);
+    assert.deepEqual(autosubTarget.alignAutoSubEntries([], neutralTarget), []);
 }
 
-// ---------------------------------------------------------------------------
-// 7. app.js draw path contract
-// ---------------------------------------------------------------------------
+// Source-level integration contract: graph entries are aligned from the
+// current target before range calculation/drawing; target drawing stays raw.
 {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
-    assert.ok(source.includes('window.FXRouteAutoSubTarget.resolveTargetOffsetDb(entries, points)'),
-        'drawMeasurementTargetCurve must resolve the target offset from the graph entries');
-    assert.ok(source.includes('const curve = getMeasurementTargetCurvePreview();'),
-        'drawMeasurementTargetCurve must use the current UI Target Curve');
-    assert.ok(!source.includes('window.FXRouteAutoSubTarget.resolveTargetCurve(entries)'),
-        'saved AutoSub metadata must not override the current UI Target Curve');
-    assert.ok(source.includes('shiftTargetPoints(points, offsetDb)'),
-        'drawMeasurementTargetCurve must draw the target from the shifted points');
-    assert.ok(source.includes('getMeasurementConvolverCurveDbFromPoints(displayPoints, frequency)'),
-        'the plotted level must come from the shifted display points');
-    // no fixed dB constants introduced
-    assert.ok(!/displayPoints\s*=.*[+\-]=?\s*\d+(\.\d+)?\s*;/.test(source),
-        'no fixed dB offsets in the target display path');
-    // index.html must load the module
+    const graphSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_graph.js'), 'utf8');
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+    assert.ok(graphSource.includes('alignAutoSubEntries(entries, targetPoints, referenceEntries)'),
+        'measurement graph must align AutoSub traces before rendering');
+    assert.ok(appSource.includes('getMeasurementTargetCurvePreview,'),
+        'graph alignment must receive the current UI target');
+    assert.ok(appSource.includes('getAutoSubDisplayReferenceEntries,'),
+        'graph alignment must receive hidden sibling traces from saved AutoSub runs');
+    assert.ok(!appSource.includes('resolveTargetOffsetDb(entries, points)'),
+        'target drawing must not move into an AutoSub-only coordinate');
+    assert.ok(!appSource.includes('shiftTargetPoints(points, offsetDb)'),
+        'target points must remain in the normal graph coordinate');
+    assert.ok(appSource.includes('const curve = getMeasurementTargetCurvePreview();'),
+        'the graph must continue to draw the current UI target');
+
     const html = fs.readFileSync(path.join(__dirname, '..', 'static', 'index.html'), 'utf8');
-    assert.ok(/autosub_target\.js\?v=\d+\.\d+\.\d+/.test(html),
-        'index.html must load autosub_target.js with a versioned query string');
-}
-
-// ---------------------------------------------------------------------------
-// 8. Real AutoSub job snapshot from .104 (end-to-end coordinate check)
-// ---------------------------------------------------------------------------
-{
-    const fixturePath = path.join(__dirname, 'fixtures', 'autosub-job-22s-sample.json');
-    if (fs.existsSync(fixturePath)) {
-        const job = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
-        const result = job.result;
-        const anchor = result.main_target_anchor || {};
-        assert.equal(anchor.status, 'ready', 'fixture must be an anchored run');
-
-        // Old fixture: no display_offset_db on traces and no tvo in meta.
-        const measurements = [result.baseline_measurement, result.confirmation_measurement]
-            .filter(Boolean);
-        for (const m of measurements) m.measurement_kind = 'auto_sub';
-
-        // Development snapshots without the current exact metadata are not
-        // supported by a separate graph path.
-        const offsetDb = autosubTarget.resolveTargetOffsetDb(measurements);
-        assert.equal(offsetDb, null);
-
-        // Simulate a current run: inject the exact metadata the backend embeds
-        // and verify the exact scored-position path.
-        const tvo = anchor.target_vertical_offset_db;
-        const m0 = measurements[0];
-        m0.autosub_meta = {
-            target_vertical_offset_db: tvo,
-            main_reference_points: Object.fromEntries(
-                ['left', 'right'].map(side => [side, anchor.sides[side].aligned_points.map(point => point.slice(0, 2))]),
-            ),
-        };
-        m0.traces[0].display_offset_db = -75.466; // nb + shift + shared (L)
-        const exactOff = autosubTarget.resolveTargetOffsetDb(measurements, result.target_curve.points);
-        assert.equal(exactOff, (-75.466) - tvo,
-            'new runs must resolve the exact scored offset (display_offset_db - tvo)');
-    } else {
-        console.log('SKIP fixture-based end-to-end check (no fixture present)');
-    }
+    assert.ok(/autosub_target\.js\?v=\d+\.\d+\.\d+/.test(html));
+    assert.ok(/measurement_graph\.js\?v=\d+\.\d+\.\d+/.test(html));
+    assert.ok(/app\.js\?v=\d+\.\d+\.\d+/.test(html));
 }
 
 console.log('PASS test_autosub_target_display_alignment.js');
