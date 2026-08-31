@@ -81,6 +81,27 @@ class AutoSubResultMetaTests(unittest.TestCase):
         meta = _auto_sub_result_meta({"target_curve": TARGET}, "subwoofer-2.2", {"sub1": 1.1, "sub2": -0.6})
         json.dumps(meta)
 
+    def test_main_reference_points_are_embedded_for_target_switching(self) -> None:
+        job = {
+            "target_curve": TARGET,
+            "main_target_anchor": {
+                "sides": {
+                    "left": {"aligned_points": [[120.1234, -40.1234, 1.5], [1000, -42, 0]]},
+                    "right": {"aligned_points": [[120.1234, -41.1234, 1.5], [1000, -43, 0]]},
+                },
+            },
+        }
+        meta = _auto_sub_result_meta(
+            job,
+            "subwoofer-2.2-stereo",
+            {"sub1": 0.0, "sub2": 0.0},
+            target_vertical_offset_db=-42.0,
+        )
+        self.assertEqual(meta["main_reference_points"], {
+            "left": [[120.123, -40.123], [1000.0, -42.0]],
+            "right": [[120.123, -41.123], [1000.0, -43.0]],
+        })
+
 
 class AutoSubMeasurementEmbedTests(unittest.TestCase):
     def test_display_offset_transform_applies_anchor_shift_with_inverse_sign(self) -> None:
@@ -151,6 +172,10 @@ class AutoSubMeasurementPersistenceTests(unittest.TestCase):
                 "autosub_meta": {
                     "target": TARGET,
                     "target_vertical_offset_db": -2.25,
+                    "main_reference_points": {
+                        "left": [[120.0, -2.0], [8000.0, -4.0]],
+                        "right": [[120.0, -2.5], [8000.0, -4.5]],
+                    },
                     "final_gains_db": {"sub": 1.1},
                 },
             }
@@ -162,6 +187,10 @@ class AutoSubMeasurementPersistenceTests(unittest.TestCase):
                 self.assertEqual(measurement["traces"][0]["display_offset_db"], 13.5)
                 self.assertEqual(measurement["autosub_meta"]["target"], TARGET)
                 self.assertEqual(measurement["autosub_meta"]["target_vertical_offset_db"], -2.25)
+                self.assertEqual(
+                    measurement["autosub_meta"]["main_reference_points"],
+                    payload["autosub_meta"]["main_reference_points"],
+                )
 
 
 if __name__ == "__main__":

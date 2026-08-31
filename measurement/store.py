@@ -96,6 +96,19 @@ CAPTURE_LEVEL_STATUS_MIN_DBFS = -90.0
 CLOCK_DRIFT_WARN_PPM = 3_000.0
 CHANNEL_CORRELATION_WARN_THRESHOLD = 0.985
 
+
+def default_measurement_sweep_profile() -> dict[str, float]:
+    return {
+        "sweep_start_hz": SWEEP_START_HZ,
+        "sweep_end_hz": SWEEP_END_HZ,
+        "sweep_seconds": SWEEP_V2_SECONDS,
+        "lead_in_seconds": SWEEP_V2_LEAD_IN_SECONDS,
+        "tail_seconds": SWEEP_V2_TAIL_SECONDS,
+        "record_preroll_seconds": HOST_SWEEP_RECORD_PREROLL_SECONDS,
+        "record_postroll_seconds": HOST_SWEEP_RECORD_POSTROLL_SECONDS,
+    }
+
+
 def _detailed_measurement_diagnostics_enabled() -> bool:
     return logger.isEnabledFor(logging.DEBUG)
 
@@ -660,19 +673,6 @@ class MeasurementStore:
                         section.pop(path_key, None)
         return public
 
-
-    @staticmethod
-    def _default_measurement_sweep_profile() -> dict[str, float]:
-        return {
-            "sweep_start_hz": SWEEP_START_HZ,
-            "sweep_end_hz": SWEEP_END_HZ,
-            "sweep_seconds": SWEEP_V2_SECONDS,
-            "lead_in_seconds": SWEEP_V2_LEAD_IN_SECONDS,
-            "tail_seconds": SWEEP_V2_TAIL_SECONDS,
-            "record_preroll_seconds": HOST_SWEEP_RECORD_PREROLL_SECONDS,
-            "record_postroll_seconds": HOST_SWEEP_RECORD_POSTROLL_SECONDS,
-        }
-
     def _execute_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
         job_id = str(job["id"])
         owner_job_id = str(job.get("_owner_job_id") or job_id)
@@ -694,7 +694,7 @@ class MeasurementStore:
         # Single Sweep. This keeps Acoustic-only Repeat, ER Repeat, and Single
         # Sweep directly comparable in low-frequency magnitude. A shorter
         # repeat should be a future explicit "Fast L/R Repeat" mode.
-        sweep_profile = self._default_measurement_sweep_profile()
+        sweep_profile = default_measurement_sweep_profile()
         custom = job.get("sweep_profile")
         if isinstance(custom, dict) and custom:
             for key in ("sweep_start_hz", "sweep_end_hz", "sweep_seconds", "lead_in_seconds",

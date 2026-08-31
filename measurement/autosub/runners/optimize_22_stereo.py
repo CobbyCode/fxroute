@@ -49,8 +49,10 @@ from ..jobs import (
     _log_auto_sub_timing_summary,
 )
 from ..measurement import (
+    _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
     _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
     _auto_sub_22_snapshot_with_gain,
+    _auto_sub_balance_transfer_deltas,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
     _auto_sub_gain_log_score,
@@ -60,6 +62,7 @@ from ..measurement import (
     _auto_sub_local_dip_gate_sides,
     _auto_sub_stereo_corridor_violation,
     _auto_sub_stereo_probe_plan,
+    _auto_sub_target_residual_raw_db,
     _calculate_auto_sub_gain,
     _capture_auto_sub_main_references,
     _measure_auto_sub_candidate,
@@ -160,8 +163,8 @@ async def _run_auto_sub_22_stereo_optimize(
             job=job, fc=fc, input_id=input_id,
             mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
             calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
-            auto_sub_rate=auto_sub_rate, output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            calibration_bytes=calibration_bytes, auto_sub_rate=auto_sub_rate,
+            output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
             original_config_snapshot=original_config_snapshot,
         )
         if _auto_sub_cancel_requested(job):
@@ -904,6 +907,59 @@ async def _run_auto_sub_22_stereo_optimize(
         )
         logger.info("AUTOSUB_GAIN mode=2.2_stereo diagnostics=%s", json.dumps(job["auto_gain"], sort_keys=True))
         gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_22_STEREO, max_abs_db=6.0)
+        # Per-side configuration check: the balance trim was measured for the
+        # incumbent alignments. A side whose accepted alignment differs no
+        # longer owns that trim; its final delta is the level-consistent
+        # transfer (balance trim + measured configuration delta at the same
+        # balanced level) instead of accumulating the stale trim.
+        alignment_changed = {
+            "left": abs(best_left - original_left_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
+            "right": abs(best_right - original_right_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
+        }
+        incumbent_residuals: dict[str, float | None] = {}
+        for side, sweeps, original_alignment in (
+            ("left", list(left_results) + list(left_fine_results), original_left_alignment),
+            ("right", list(right_results) + list(right_fine_results), original_right_alignment),
+        ):
+            incumbent_residuals[side] = None
+            if not alignment_changed[side]:
+                continue
+            incumbent_result = _auto_sub_result_for_delay(sweeps, original_alignment)
+            incumbent_points = (incumbent_result or {}).get("calibrated_points") or []
+            try:
+                raw_residual, _mad, _usable = _auto_sub_target_residual_raw_db(
+                    incumbent_points, job.get("target_curve"), job.get("main_target_anchor"), fc,
+                )
+                incumbent_residuals[side] = raw_residual
+            except (ValueError, TypeError, KeyError, IndexError):
+                incumbent_residuals[side] = None
+        winner_residuals = {
+            side: ((job["auto_gain"].get("channels") or {}).get(side) or {}).get("raw_recommendation_db")
+            for side in ("left", "right")
+        }
+        balance_transfer = _auto_sub_balance_transfer_deltas(
+            balance_deltas_db=balance_deltas,
+            winner_residuals_db=winner_residuals,
+            incumbent_residuals_db=incumbent_residuals,
+            alignment_changed=alignment_changed,
+        )
+        if balance_transfer.get("available"):
+            first_step_deltas = dict(balance_transfer["deltas_db"])
+            job["auto_gain"]["configuration_transfer"] = json.loads(json.dumps(balance_transfer))
+            logger.info(
+                "AUTOSUB_TRANSFER job=%s mode=2.2_stereo %s", job_id,
+                json.dumps(job["auto_gain"]["configuration_transfer"], sort_keys=True),
+            )
+        else:
+            first_step_deltas = dict(gain_deltas)
+            job["auto_gain"]["configuration_transfer"] = {
+                "available": False, "reason": balance_transfer.get("reason"),
+                "alignment_changed": alignment_changed,
+            }
+            logger.info(
+                "AUTOSUB_TRANSFER job=%s mode=2.2_stereo unavailable reason=%s", job_id,
+                balance_transfer.get("reason"),
+            )
         _auto_sub_gain_log_line("AUTOGAIN_INIT", {
             "mode": OUTPUT_MODE_SUBWOOFER_22_STEREO, "xo_hz": fc,
             "target": (job.get("target_curve") or {}).get("label"),
@@ -912,13 +968,13 @@ async def _run_auto_sub_22_stereo_optimize(
             "gain_before": {"left": float(original_left.get("level_db", 0.0)), "right": float(original_right.get("level_db", 0.0))},
             "winner_delta_left": (job["auto_gain"].get("channels", {}).get("left") or {}).get("target_delta_db"),
             "winner_delta_right": (job["auto_gain"].get("channels", {}).get("right") or {}).get("target_delta_db"),
-            "combined_delta_db": None, "first_step_db": gain_deltas,
+            "combined_delta_db": None, "first_step_db": first_step_deltas,
         })
         gain_snapshot = _auto_sub_22_snapshot_with_gain(
             polarity_snapshot,
-            left_delta_db=gain_deltas.get("left", 0.0), right_delta_db=gain_deltas.get("right", 0.0),
+            left_delta_db=first_step_deltas.get("left", 0.0), right_delta_db=first_step_deltas.get("right", 0.0),
         )
-        if gain_deltas:
+        if first_step_deltas:
             await asyncio.to_thread(
                 set_audio_output_mode,
                 OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(gain_snapshot),
@@ -964,7 +1020,7 @@ async def _run_auto_sub_22_stereo_optimize(
             for side in ("left", "right")
         }
         retained_step1_deltas = {
-            side: gain_deltas.get(side, 0.0) if accepted_step1_sides[side] else 0.0
+            side: first_step_deltas.get(side, 0.0) if accepted_step1_sides[side] else 0.0
             for side in ("left", "right")
         }
         step1_retained = any(accepted_step1_sides.values())
@@ -1011,14 +1067,26 @@ async def _run_auto_sub_22_stereo_optimize(
                 "channels": gain_verdict.get("channels", {}),
                 "step1_retained": True,
             }
+        elif alignment_changed["left"] or alignment_changed["right"]:
+            # The transferred delta is the final single-stage trim for the
+            # accepted configuration. Chasing the remaining anchored-median
+            # residual would re-close the balance stage's unrealised share on
+            # the new configuration - the documented accumulation defect - so
+            # the response-correction and stereo-probe stages stay off.
+            correction_verdict = {
+                "accepted": False,
+                "reason": "Balance trim transferred to the accepted alignment; residual re-closure skipped",
+                "channels": {},
+                "step1_retained": True,
+            }
         else:
             correction_plan = _auto_sub_gain_response_correction(
-                job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                job["auto_gain"], gain_after, first_step_deltas, OUTPUT_MODE_SUBWOOFER_22_STEREO,
             )
             correction_deltas = correction_plan.get("deltas_db") or {}
             if not correction_plan.get("available"):
                 stereo_probe_plan = _auto_sub_stereo_probe_plan(
-                    correction_plan=correction_plan, gain_after=gain_after, gain_deltas=gain_deltas,
+                    correction_plan=correction_plan, gain_after=gain_after, gain_deltas=first_step_deltas,
                     accepted_step1_sides=accepted_step1_sides,
                     after_points={
                         "left": gain_after_left.get("calibrated_points") or [],

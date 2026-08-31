@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import re
@@ -42,6 +43,8 @@ from measurement.constants import (
     IR_WINDOW_PRE_SECONDS,
     IR_WINDOW_VARIABLE_HIGH_HZ,
     IR_WINDOW_VARIABLE_LOW_HZ,
+    LEVEL_REFERENCE_MAX_HZ,
+    LEVEL_REFERENCE_MIN_HZ,
     MIN_TRUSTED_POINTS,
     RESPONSE_OUTLIER_FAIL_DB,
     RESPONSE_OUTLIER_MIN_HZ,
@@ -67,6 +70,18 @@ from measurement.constants import (
 logger = logging.getLogger(__name__)
 
 
+def measurement_level_reference_db(points: list[list[float]]) -> float | None:
+    """Median level in the normal measurement's broadband reference band."""
+    values = [
+        float(point[1])
+        for point in points
+        if len(point) >= 2
+        and LEVEL_REFERENCE_MIN_HZ <= float(point[0]) <= LEVEL_REFERENCE_MAX_HZ
+        and math.isfinite(float(point[1]))
+    ]
+    return float(np.median(values)) if values else None
+
+
 def _detailed_measurement_diagnostics_enabled() -> bool:
     return logger.isEnabledFor(logging.DEBUG)
 
@@ -77,6 +92,7 @@ class MeasurementAnalyzer:
     def __init__(self, store, capture_quality_error):
         self._store = store
         self._capture_quality_error = capture_quality_error
+        self._sweep_level_calibration_cache: dict[tuple[Any, ...], float] = {}
 
     def _build_impulse_response_debug_segment(
         self,
@@ -341,6 +357,11 @@ class MeasurementAnalyzer:
             magnitude_impulse_response,
             sample_rate,
         )
+        sweep_level_calibration_db = self._sweep_level_calibration_db(
+            reference_sweep=reference_sweep,
+            inverse_sweep=inverse_sweep,
+            sample_rate=sample_rate,
+        )
         variable_window_meta["magnitude_resampling_policy"] = "drift-estimate-not-applied"
         variable_window_meta["magnitude_drift_resampling_applied"] = False
         reference_ir_peak = float(np.max(np.abs(reference_impulse_response))) if reference_impulse_response.size else 0.0
@@ -417,6 +438,7 @@ class MeasurementAnalyzer:
             frequencies=response_frequencies,
             magnitude=response_magnitude,
             calibration_curve=calibration_curve,
+            sweep_level_calibration_db=sweep_level_calibration_db,
         )
         needs_direct_response, needs_complex_response = self._hybrid_analysis_requirements(measurement_role)
         direct_window = None
@@ -438,6 +460,7 @@ class MeasurementAnalyzer:
                     frequencies=direct_frequencies,
                     magnitude=direct_magnitude,
                     calibration_curve=calibration_curve,
+                    sweep_level_calibration_db=sweep_level_calibration_db,
                 )
                 direct_lower_hz = float(direct_window["gated_direct_lower_limit_hz"])
                 direct_window["points"] = [
@@ -482,6 +505,7 @@ class MeasurementAnalyzer:
             "trusted_points": display_data["trusted_points"],
             "review_points": display_data["review_points"],
             "normalized_by_db": round(display_data["normalized_by"], 3),
+            "sweep_level_calibration_db": round(sweep_level_calibration_db, 3),
             "rms_dbfs": round(rms_dbfs, 2),
             "peak_dbfs": round(peak_dbfs, 2),
             "window_count": 1,
@@ -604,12 +628,57 @@ class MeasurementAnalyzer:
 
 
 
+    def _sweep_level_calibration_db(
+        self,
+        *,
+        reference_sweep: np.ndarray,
+        inverse_sweep: np.ndarray,
+        sample_rate: int,
+    ) -> float:
+        """Remove the inverse sweep's profile-dependent absolute gain."""
+        signature = hashlib.blake2b(digest_size=32)
+        signature.update(np.ascontiguousarray(reference_sweep).view(np.uint8))
+        signature.update(np.ascontiguousarray(inverse_sweep).view(np.uint8))
+        cache_key = (
+            int(sample_rate),
+            reference_sweep.dtype.str,
+            int(reference_sweep.size),
+            inverse_sweep.dtype.str,
+            int(inverse_sweep.size),
+            signature.digest(),
+        )
+        cached = self._sweep_level_calibration_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        reference_ir = self._fft_convolve(
+            reference_sweep.astype(np.float64),
+            inverse_sweep.astype(np.float64),
+        )
+        _, reference_magnitude, _ = self._build_variable_window_response(
+            reference_ir,
+            int(sample_rate),
+        )
+        finite_magnitude = reference_magnitude[
+            np.isfinite(reference_magnitude) & (reference_magnitude > 0.0)
+        ]
+        if not finite_magnitude.size:
+            raise RuntimeError("Sweep level calibration produced no finite response")
+        levels_db = 20.0 * np.log10(np.maximum(finite_magnitude, 1e-12))
+        plateau = levels_db[levels_db >= float(np.max(levels_db)) - 3.0]
+        if not plateau.size:
+            raise RuntimeError("Sweep level calibration produced no passband plateau")
+        calibration_db = float(np.median(plateau))
+        self._sweep_level_calibration_cache[cache_key] = calibration_db
+        return calibration_db
+
     def _build_display_points(
         self,
         *,
         frequencies: np.ndarray,
         magnitude: np.ndarray,
         calibration_curve: tuple[np.ndarray, np.ndarray] | None,
+        sweep_level_calibration_db: float = 0.0,
     ) -> dict[str, Any]:
         analysis_limit_hz = min(float(frequencies[-1]) - 1.0, SWEEP_END_HZ)
         display_max_hz = min(analysis_limit_hz, TRUSTED_MAX_HZ)
@@ -660,14 +729,15 @@ class MeasurementAnalyzer:
             max_hz=trusted_max_hz,
         )
 
-        reference_values = [db for freq, db in trusted_points if 120.0 <= freq <= 8_000.0] or raw_db_values
-        normalized_by = float(np.median(reference_values)) if reference_values else 0.0
+        normalized_by = measurement_level_reference_db(trusted_points)
+        if normalized_by is None:
+            normalized_by = float(np.median(raw_db_values)) if raw_db_values else 0.0
         normalized_trusted_points = [[freq, round(db - normalized_by, 3)] for freq, db in trusted_points]
         normalized_review_points = [[freq, round(db - normalized_by, 3)] for freq, db in raw_points]
         return {
             "trusted_points": normalized_trusted_points,
             "review_points": normalized_review_points,
-            "normalized_by": normalized_by,
+            "normalized_by": normalized_by - float(sweep_level_calibration_db),
             "trusted_band": (trusted_min_hz, trusted_max_hz),
             "raw_point_count": len(raw_points),
             "trusted_band_meta": trusted_band_meta,

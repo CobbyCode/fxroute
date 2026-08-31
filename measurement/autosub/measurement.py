@@ -23,7 +23,9 @@ from audio.samplerate import (
 from audio.system_volume import get_output_volume_unclamped
 from dsp.runtime import BassManagementConfig
 
-from measurement.store import auto_sub_chain_anchor_db
+from measurement.analyzer import measurement_level_reference_db
+from measurement.constants import LEVEL_REFERENCE_MAX_HZ, LEVEL_REFERENCE_MIN_HZ
+from measurement.store import auto_sub_chain_anchor_db, default_measurement_sweep_profile
 
 from .candidates import (
     _auto_sub_22_candidate_subwoofers,
@@ -507,55 +509,6 @@ def _auto_sub_log_interpolate_points(
         result.append([frequency, round(value, 6)])
     return result
 
-def _auto_sub_lr24_highpass_attenuation_db(
-    frequency_hz: float, crossover_hz: float, sample_rate: float,
-) -> float:
-    """Return the exact cascaded digital Butterworth-2 high-pass response used by the helper."""
-    frequency = float(frequency_hz)
-    crossover = float(crossover_hz)
-    rate = float(sample_rate)
-    if not all(math.isfinite(value) and value > 0 for value in (frequency, crossover, rate)):
-        raise ValueError("LR24 response inputs must be finite and positive")
-    if frequency >= rate / 2 or crossover >= rate / 2:
-        raise ValueError("LR24 response inputs must remain below Nyquist")
-    omega_0 = 2.0 * math.pi * crossover / rate
-    cos_0, sin_0 = math.cos(omega_0), math.sin(omega_0)
-    alpha = sin_0 / (2.0 * math.sqrt(0.5))
-    a0 = 1.0 + alpha
-    b0 = ((1.0 + cos_0) * 0.5) / a0
-    b1 = (-(1.0 + cos_0)) / a0
-    b2 = b0
-    a1 = (-2.0 * cos_0) / a0
-    a2 = (1.0 - alpha) / a0
-    omega = 2.0 * math.pi * frequency / rate
-    z1 = complex(math.cos(omega), -math.sin(omega))
-    z2 = z1 * z1
-    one_stage = (b0 + b1 * z1 + b2 * z2) / (1.0 + a1 * z1 + a2 * z2)
-    lr24_magnitude = abs(one_stage) ** 2
-    return 20.0 * math.log10(max(lr24_magnitude, 1e-300))
-
-def _auto_sub_lr24_frequency_for_attenuation(
-    crossover_hz: float, sample_rate: float, max_attenuation_db: float,
-) -> float:
-    """Find the first frequency above XO whose digital LR24 attenuation passes the threshold."""
-    threshold = float(max_attenuation_db)
-    if not math.isfinite(threshold) or threshold >= 0:
-        raise ValueError("LR24 attenuation threshold must be finite and below 0 dB")
-    low = float(crossover_hz)
-    high = min(float(sample_rate) * 0.49, max(low * 2.0, low + 1.0))
-    while _auto_sub_lr24_highpass_attenuation_db(high, crossover_hz, sample_rate) < threshold:
-        next_high = min(float(sample_rate) * 0.49, high * 2.0)
-        if next_high <= high:
-            raise ValueError("LR24 attenuation threshold is outside usable digital support")
-        high = next_high
-    for _ in range(64):
-        middle = (low + high) * 0.5
-        if _auto_sub_lr24_highpass_attenuation_db(middle, crossover_hz, sample_rate) >= threshold:
-            high = middle
-        else:
-            low = middle
-    return high
-
 def _analyze_auto_sub_main_target_anchor(
     *, target_curve: dict[str, Any] | None, main_references: dict[str, Any] | None,
     crossover_hz: int, main_highpass_enabled: bool,
@@ -568,12 +521,11 @@ def _analyze_auto_sub_main_target_anchor(
         "gain_calculated": False,
         "crossover_frequency_hz": int(crossover_hz),
         "main_highpass_enabled": bool(main_highpass_enabled),
+        "reference_band_hz": [LEVEL_REFERENCE_MIN_HZ, LEVEL_REFERENCE_MAX_HZ],
         "criteria": {
-            "lower_bound_rule": "max(common support, exact digital LR24 frequency at -1.0 dB)" if main_highpass_enabled else "max(common support, crossover)",
-            "lower_bound_justification": "With Main HP enabled, exclude points where the known helper transfer attenuates Main by more than 1.0 dB; with HP disabled, exclude below-XO bass because this gate is for Main reference above the sub integration boundary.",
-            "lr24_transfer": "two cascaded Butterworth-2 high-pass biquads; |H_LR24(e^jw)|=|B(e^jw)/A(e^jw)|^2",
-            "maximum_main_hp_attenuation_db": -1.0 if main_highpass_enabled else None,
-            "upper_bound_rule": "minimum of actual support and 4x crossover; excludes the measured high-frequency capture floor",
+            "level_reference": "normal measurement median from 120-8000 Hz, applied to calibrated Main minus relative Target",
+            "lower_bound_rule": "maximum of common support and normal measurement level-reference minimum",
+            "upper_bound_rule": "minimum of common support and normal measurement level-reference maximum",
             "minimum_points_per_side": 8,
             "minimum_log_span_octaves": 1.0,
             "support_qc_scope": "structural sampling adequacy only; it does not assert acoustic correctness",
@@ -629,20 +581,12 @@ def _analyze_auto_sub_main_target_anchor(
     if sample_rates["left"] != sample_rates["right"]:
         diagnostics["reason"] = "Main-only L/R sample rates do not match"
         return diagnostics
-    if main_highpass_enabled:
-        transfer_lower = _auto_sub_lr24_frequency_for_attenuation(crossover_hz, sample_rates["left"], -1.0)
-        diagnostics["lr24_lower_bound_hz"] = round(transfer_lower, 6)
-        diagnostics["lr24_attenuation_at_lower_bound_db"] = round(
-            _auto_sub_lr24_highpass_attenuation_db(transfer_lower, crossover_hz, sample_rates["left"]), 6,
-        )
-        usable_low = max(common_low, transfer_lower)
-    else:
-        usable_low = max(common_low, float(crossover_hz))
-    usable_high = min(common_high, float(crossover_hz) * 4.0)
+    usable_low = max(common_low, LEVEL_REFERENCE_MIN_HZ)
+    usable_high = min(common_high, LEVEL_REFERENCE_MAX_HZ)
     diagnostics["common_support_hz"] = [round(common_low, 6), round(common_high, 6)]
     diagnostics["usable_band_hz"] = [round(usable_low, 6), round(usable_high, 6)]
     if usable_high <= usable_low:
-        diagnostics["reason"] = "No common Target/Main support remains in the HP/XO-safe anchor band"
+        diagnostics["reason"] = "No common Target/Main support remains in the broadband level-reference band"
         return diagnostics
     span_octaves = math.log2(usable_high / usable_low)
     diagnostics["usable_span_octaves"] = round(span_octaves, 6)
@@ -676,13 +620,17 @@ def _analyze_auto_sub_main_target_anchor(
     if failures:
         diagnostics["reason"] = "; ".join(failures)
         return diagnostics
-    anchor_offsets = [
-        point[1] - point[2]
+    anchor_offset_points = [
+        [point[0], point[1] - point[2]]
         for side in ("left", "right")
         for point in diagnostics["sides"][side]["aligned_points"]
     ]
-    diagnostics["target_vertical_offset_db"] = round(statistics.median(anchor_offsets), 6)
-    diagnostics["target_anchor_statistic"] = "median(calibrated_main_db - relative_target_db), pooled L/R"
+    target_vertical_offset_db = measurement_level_reference_db(anchor_offset_points)
+    if target_vertical_offset_db is None:
+        diagnostics["reason"] = "Broadband Main/Target level reference is unavailable"
+        return diagnostics
+    diagnostics["target_vertical_offset_db"] = round(target_vertical_offset_db, 6)
+    diagnostics["target_anchor_statistic"] = "normal measurement 120-8000 Hz median(calibrated_main_db - relative_target_db), pooled L/R"
     diagnostics["status"] = "ready"
     diagnostics["reason"] = "Anchor inputs passed"
     diagnostics["target"] = {
@@ -824,6 +772,43 @@ def _auto_sub_stereo_probe_plan(
     result["reason"] = "Bounded Stereo corridor probe planned" if result["available"] else "No Stereo side qualified for a bounded corridor probe"
     return result
 
+def _auto_sub_target_residual_raw_db(
+    points: list[list[float]] | None, target_curve: dict[str, Any] | None,
+    anchor: dict[str, Any] | None, crossover_hz: int,
+) -> tuple[float, float, list[list[float]]]:
+    """Unbounded anchored-Target residual (median Target-minus-curve) of one curve.
+
+    Shared definition for the Gain diagnostics and the balance-trim
+    configuration transfer. Returns ``(raw_residual_db, mad_db, usable_points)``
+    with ``usable_points`` the 1/1-octave-smoothed curve restricted to the
+    decision band. Raises ValueError when curve/Target/anchor support is
+    insufficient.
+    """
+    if not isinstance(anchor, dict) or anchor.get("status") != "ready":
+        raise ValueError("Main/Target anchor is unavailable")
+    vertical_offset = float(anchor.get("target_vertical_offset_db"))
+    if not math.isfinite(vertical_offset):
+        raise ValueError("Target vertical offset is invalid")
+    target_points = (target_curve or {}).get("points")
+    if not isinstance(target_points, list) or len(target_points) < 2:
+        raise ValueError("Target snapshot is unavailable")
+    requested_low = max(20.0, float(crossover_hz) * 0.5)
+    requested_high = float(crossover_hz) * 2.0
+    smoothed = _auto_sub_one_octave_smooth(points)
+    usable = [point for point in smoothed if requested_low <= point[0] <= requested_high]
+    target_on_winner = _auto_sub_log_interpolate_points(target_points, [point[0] for point in usable])
+    if len(target_on_winner) != len(usable) or len(usable) < 8:
+        raise ValueError("curve/Target support has fewer than 8 common points")
+    smoothed_target = _auto_sub_one_octave_smooth(target_on_winner)
+    deviations = [
+        (target_point[1] + vertical_offset) - curve_point[1]
+        for curve_point, target_point in zip(usable, smoothed_target)
+    ]
+    target_delta = statistics.median(deviations)
+    mad = statistics.median(abs(value - target_delta) for value in deviations)
+    return target_delta, mad, usable
+
+
 def _calculate_auto_sub_gain(
     *, mode: str, target_curve: dict[str, Any] | None, anchor: dict[str, Any] | None,
     winner_curves: dict[str, list[list[float]]], crossover_hz: int,
@@ -836,30 +821,8 @@ def _calculate_auto_sub_gain(
         "bounds_db": [-6.0, 6.0], "reason": None, "channels": {},
     }
     try:
-        if not isinstance(anchor, dict) or anchor.get("status") != "ready":
-            raise ValueError("Main/Target anchor is unavailable")
-        vertical_offset = float(anchor.get("target_vertical_offset_db"))
-        if not math.isfinite(vertical_offset):
-            raise ValueError("Target vertical offset is invalid")
-        target_points = (target_curve or {}).get("points")
-        if not isinstance(target_points, list) or len(target_points) < 2:
-            raise ValueError("Target snapshot is unavailable")
-        requested_low = max(20.0, float(crossover_hz) * 0.5)
-        requested_high = float(crossover_hz) * 2.0
         for channel, points in winner_curves.items():
-            smoothed = _auto_sub_one_octave_smooth(points)
-            usable = [point for point in smoothed if requested_low <= point[0] <= requested_high]
-            target_on_winner = _auto_sub_log_interpolate_points(target_points, [point[0] for point in usable])
-            if len(target_on_winner) != len(usable) or len(usable) < 8:
-                raise ValueError(f"{channel} winner/Target support has fewer than 8 common points")
-            smoothed_target = _auto_sub_one_octave_smooth(target_on_winner)
-            deviations = [
-                (target_point[1] + vertical_offset) - winner_point[1]
-                for winner_point, target_point in zip(usable, smoothed_target)
-            ]
-            target_delta = statistics.median(deviations)
-            raw_gain = target_delta
-            mad = statistics.median(abs(value - target_delta) for value in deviations)
+            raw_gain, mad, usable = _auto_sub_target_residual_raw_db(points, target_curve, anchor, crossover_hz)
             bounded = min(6.0, max(-6.0, raw_gain))
             coverage_octaves = math.log2(usable[-1][0] / usable[0][0])
             confidence = "high" if len(usable) >= 24 and coverage_octaves >= 1.5 and mad <= 1.5 else (
@@ -868,7 +831,7 @@ def _calculate_auto_sub_gain(
             result["channels"][channel] = {
                 "frequency_range_hz": [round(usable[0][0], 3), round(usable[-1][0], 3)],
                 "point_count": len(usable), "coverage_octaves": round(coverage_octaves, 3),
-                "target_delta_db": round(target_delta, 3),
+                "target_delta_db": round(raw_gain, 3),
                 "raw_recommendation_db": round(raw_gain, 3), "recommendation_db": round(bounded, 3),
                 "clamped": bounded != raw_gain, "median_absolute_deviation_db": round(mad, 3),
                 "confidence": confidence,
@@ -921,6 +884,96 @@ def _auto_sub_gain_deltas(
         }
     delta = bounded(recommendation["delta_db"])
     return {"left": delta, "right": delta}
+
+
+# A side counts as alignment-changed when the accepted delay differs from the
+# delay the balance trim was measured for by more than this tolerance (same
+# tolerance the scan-edge and neighbour checks use).
+_AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS: float = 0.05
+
+
+def _auto_sub_balance_transfer_deltas(
+    *,
+    balance_deltas_db: dict[str, float],
+    winner_residuals_db: dict[str, float | None],
+    incumbent_residuals_db: dict[str, float | None],
+    alignment_changed: dict[str, bool],
+    max_abs_db: float = 6.0,
+) -> dict[str, Any]:
+    """Final sub trim per channel after the alignment decision.
+
+    The balance stage measures the anchored-Target residual of the incumbent
+    configuration at the original sub level and applies it as a trim. That
+    residual describes the incumbent configuration only: after the
+    alignment changed, the post-alignment residual measured at the balanced
+    level still contains the part of the balance trim the first application
+    did not realise (band-median response is below 1 dB per dB of sub
+    trim). Adding that full residual on top of the old trim re-closes the
+    same room excess a second time and produced the documented over-damping.
+
+    Transfer rule per channel whose alignment changed::
+
+        applied delta = winner residual - incumbent residual
+        implied total = balance trim + (winner residual - incumbent residual)
+
+    where both residuals are measured at the same balanced level. The implied
+    total is the single-stage residual the end configuration would have
+    received; the returned ``deltas_db`` is the increment to apply on top of
+    the still-applied balance trim. Channels whose alignment did not change
+    keep the existing fine-trim behaviour (the residual of the same
+    configuration is applied on top). When the incumbent residual is
+    unavailable for a changed channel, the balance trim stands alone
+    (increment 0) instead of guessing or accumulating.
+    """
+    sides = ("left", "right")
+    result: dict[str, Any] = {
+        "available": False, "deltas_db": {}, "channels": {}, "reason": None,
+        "alignment_changed": {side: bool(alignment_changed.get(side)) for side in sides},
+    }
+    try:
+        limit = abs(float(max_abs_db))
+        if not math.isfinite(limit) or limit <= 0:
+            raise ValueError("Transfer bound is invalid")
+        any_changed = any(result["alignment_changed"].values())
+        if not any_changed:
+            result["reason"] = "Accepted alignment matches the balance configuration; transfer not applicable"
+            return result
+        for side in sides:
+            balance_delta = float(balance_deltas_db.get(side, 0.0) or 0.0)
+            winner_residual = winner_residuals_db.get(side)
+            incumbent_residual = incumbent_residuals_db.get(side)
+            if not result["alignment_changed"][side]:
+                if winner_residual is None:
+                    raise ValueError(f"{side} winner residual is unavailable")
+                increment = float(winner_residual)
+                mode = "fine_trim_same_configuration"
+            elif winner_residual is None:
+                raise ValueError(f"{side} winner residual is unavailable")
+            elif incumbent_residual is None:
+                # Without the incumbent's balanced-level residual the
+                # level-consistent delta is unknown; keep the measured
+                # balance trim instead of guessing or accumulating.
+                increment = 0.0
+                mode = "fallback_balance_only"
+            else:
+                increment = float(winner_residual) - float(incumbent_residual)
+                mode = "configuration_transfer"
+            bounded = min(limit, max(-limit, increment))
+            result["deltas_db"][side] = bounded
+            result["channels"][side] = {
+                "balance_delta_db": round(balance_delta, 3),
+                "winner_residual_db": round(float(winner_residual), 3) if winner_residual is not None else None,
+                "incumbent_residual_db": round(float(incumbent_residual), 3) if incumbent_residual is not None else None,
+                "delta_db": round(bounded, 3),
+                "implied_total_db": round(balance_delta + bounded, 3),
+                "mode": mode if result["alignment_changed"][side] else "fine_trim_same_configuration",
+                "clamped": bounded != increment,
+            }
+        result["available"] = True
+        result["reason"] = "Balance trim transferred to the accepted configuration"
+    except (TypeError, ValueError, KeyError) as exc:
+        result["reason"] = str(exc)
+    return result
 
 # Verdict tolerance for the Target-residual comparison: must exceed the
 # residual metric's run-to-run spread (~0.5 dB) while staying far below the
@@ -1117,7 +1170,6 @@ async def _capture_auto_sub_main_references(
     calibration_ref: str,
     calibration_filename: str | None,
     calibration_bytes: bytes | None,
-    auto_sub_sweep_profile: dict[str, Any],
     auto_sub_rate: int,
     output_mode: str,
     original_config_snapshot: dict[str, Any],
@@ -1142,6 +1194,7 @@ async def _capture_auto_sub_main_references(
         "left": {"status": "pending"},
         "right": {"status": "pending"},
     }
+    main_reference_sweep_profile = default_measurement_sweep_profile()
     results: dict[str, dict[str, Any]] = {}
     for index, side in enumerate(("left", "right"), start=1):
         if _auto_sub_cancel_requested(job):
@@ -1162,7 +1215,7 @@ async def _capture_auto_sub_main_references(
             calibration_ref=calibration_ref,
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
-            auto_sub_sweep_profile=auto_sub_sweep_profile,
+            auto_sub_sweep_profile=main_reference_sweep_profile,
             auto_sub_rate=auto_sub_rate,
             original_level=float(subwoofer.get("sub_level_db", 0.0) or 0.0),
             original_polarity=str(subwoofer.get("sub_polarity") or "normal"),
@@ -1403,4 +1456,3 @@ async def _measure_auto_sub_combined_candidate(
             "sub2_polarity": sub2_polarity,
         })
     return candidate
-

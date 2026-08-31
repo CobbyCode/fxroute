@@ -21,13 +21,13 @@
 // Tests:
 //  1. Exact path: resolveTargetOffsetDb returns display_offset_db - tvo from
 //     embedded run metadata.
-//  2. Legacy fallback: bass-median shared reference when no metadata exists.
+//  2. Missing exact metadata does not create a compatibility fallback.
 //  3. The offset is derived only when 'auto_sub' measurements are on screen
 //     (normal measurement graphs are untouched).
 //  4. Shifting the target preserves its shape exactly (constant dB offset).
 //  5. app.js draws the target from the shifted points (source-level contract).
 //  6. End-to-end math on a real AutoSub job snapshot pulled from .104.
-//  7. Saved runs resolve the Target Curve captured when AutoSub started.
+//  7. Saved run metadata never overrides the current graph Target Curve.
 
 const assert = require('assert/strict');
 const path = require('path');
@@ -39,31 +39,26 @@ const autosubTarget = require(path.join(__dirname, '..', 'static', 'autosub_targ
 window.FXRouteAutoSubTarget = autosubTarget;
 
 // ---------------------------------------------------------------------------
-// 1. Bass-median parity with the backend helper (legacy fallback basis)
+// 1. EXACT path: tvo - display_offset_db from embedded run metadata
 // ---------------------------------------------------------------------------
 {
-    const points = [[20, -10], [100, -5], [300, -2]];
-    // backend: sorted [-10, -5] -> median -7.5 (300 Hz is outside the band)
-    assert.equal(autosubTarget.bassMedianDb([points]), -7.5);
-    // even count averages the middle pair
-    assert.equal(autosubTarget.bassMedianDb([[[20, 0], [80, 2], [150, 4], [300, 9]]]), 2);
-    // out-of-band only -> null
-    assert.equal(autosubTarget.bassMedianDb([[[500, 1], [600, 2]]]), null);
-}
-
-// ---------------------------------------------------------------------------
-// 2. EXACT path: tvo - display_offset_db from embedded run metadata
-// ---------------------------------------------------------------------------
-{
+    const currentTarget = [[20, 0], [20000, 0]];
     const entries = [{
         id: 'a1', measurement_kind: 'auto_sub',
-        autosub_meta: { target_vertical_offset_db: -26.6385 },
+        autosub_meta: {
+            target: { points: [[20, 6], [20000, 6]] },
+            target_vertical_offset_db: -32.6385,
+            main_reference_points: {
+                left: [[120, -26.6385], [1000, -26.6385], [8000, -26.6385]],
+                right: [[120, -26.6385], [1000, -26.6385], [8000, -26.6385]],
+            },
+        },
         traces: [
             { label: 'Before L', display_offset_db: -75.466, points: [[20, -0.5], [100, 0], [500, 1]] },
             { label: 'Before R', display_offset_db: -73.893, points: [[20, 1.2], [100, 0], [500, 1]] },
         ],
     }];
-    const off = autosubTarget.resolveTargetOffsetDb(entries);
+    const off = autosubTarget.resolveTargetOffsetDb(entries, currentTarget);
     // shift value = display_offset_db - tvo = -75.466 - (-26.6385) = -48.8275
     assert.equal(off, (-75.466) - (-26.6385));
     // displayed target = target - (display_offset_db - tvo)
@@ -75,26 +70,31 @@ window.FXRouteAutoSubTarget = autosubTarget;
     // displayed_target(20Hz) = target(20) + tvo - display_offset_db
     //   = 0 + (-26.6385) + 75.466 = 48.8275
     assert.equal(displayed[0][1], 0 + (-26.6385) - (-75.466));
+
+    const runTargetOffset = autosubTarget.resolveTargetOffsetDb(
+        entries, entries[0].autosub_meta.target.points,
+    );
+    assert.equal(runTargetOffset, (-75.466) - (-32.6385));
+    assert.notEqual(off, runTargetOffset,
+        'switching target shape must recompute its vertical anchor from the saved Main references');
 }
 
 // ---------------------------------------------------------------------------
-// 3. LEGACY fallback: bass-median shared reference when metadata is absent
+// 2. No fallback for obsolete AutoSub metadata shapes
 // ---------------------------------------------------------------------------
 {
-    const legacy = {
+    const incomplete = {
         id: 'a1', measurement_kind: 'auto_sub',
         traces: [{ label: 'Before L', points: [[20, -3], [100, -1], [500, 0]] }],
     };
-    assert.equal(autosubTarget.resolveTargetOffsetDb([legacy]), -2,
-        'legacy runs must fall back to the shared bass median');
+    assert.equal(autosubTarget.resolveTargetOffsetDb([incomplete]), null,
+        'obsolete runs without exact display metadata must not create a parallel target path');
 }
 
 // ---------------------------------------------------------------------------
-// 4. Saved AutoSub entries provide their run's immutable Target Curve
+// 3. Saved AutoSub metadata does not expose a graph Target Curve override
 // ---------------------------------------------------------------------------
 {
-    assert.equal(typeof autosubTarget.resolveTargetCurve, 'function',
-        'AutoSub target module must resolve the curve captured for the run');
     const runTarget = {
         key: 'house:run-target',
         label: 'Run Target',
@@ -106,9 +106,9 @@ window.FXRouteAutoSubTarget = autosubTarget;
         autosub_meta: { target: runTarget },
         traces: [{ points: [[20, 0], [100, 1], [20000, -2]] }],
     };
-    assert.deepEqual(autosubTarget.resolveTargetCurve([saved]), runTarget);
-    assert.equal(autosubTarget.resolveTargetCurve([{ measurement_kind: '', autosub_meta: { target: runTarget } }]), null,
-        'normal measurements must not override the selected UI Target Curve');
+    assert.equal(autosubTarget.resolveTargetCurve, undefined,
+        'stored AutoSub target remains summary metadata, not graph selection state');
+    assert.equal(saved.autosub_meta.target.label, 'Run Target');
 }
 
 // ---------------------------------------------------------------------------
@@ -143,10 +143,12 @@ window.FXRouteAutoSubTarget = autosubTarget;
 // ---------------------------------------------------------------------------
 {
     const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
-    assert.ok(source.includes('window.FXRouteAutoSubTarget.resolveTargetOffsetDb(entries)'),
+    assert.ok(source.includes('window.FXRouteAutoSubTarget.resolveTargetOffsetDb(entries, points)'),
         'drawMeasurementTargetCurve must resolve the target offset from the graph entries');
-    assert.ok(source.includes('window.FXRouteAutoSubTarget.resolveTargetCurve(entries)'),
-        'drawMeasurementTargetCurve must use the Target Curve captured for the AutoSub run');
+    assert.ok(source.includes('const curve = getMeasurementTargetCurvePreview();'),
+        'drawMeasurementTargetCurve must use the current UI Target Curve');
+    assert.ok(!source.includes('window.FXRouteAutoSubTarget.resolveTargetCurve(entries)'),
+        'saved AutoSub metadata must not override the current UI Target Curve');
     assert.ok(source.includes('shiftTargetPoints(points, offsetDb)'),
         'drawMeasurementTargetCurve must draw the target from the shifted points');
     assert.ok(source.includes('getMeasurementConvolverCurveDbFromPoints(displayPoints, frequency)'),
@@ -171,44 +173,28 @@ window.FXRouteAutoSubTarget = autosubTarget;
         const anchor = result.main_target_anchor || {};
         assert.equal(anchor.status, 'ready', 'fixture must be an anchored run');
 
-        // Legacy run: no display_offset_db on traces, no tvo in meta.
+        // Old fixture: no display_offset_db on traces and no tvo in meta.
         const measurements = [result.baseline_measurement, result.confirmation_measurement]
             .filter(Boolean);
         for (const m of measurements) m.measurement_kind = 'auto_sub';
 
-        // Without exact metadata the module must use the legacy bass fallback.
+        // Development snapshots without the current exact metadata are not
+        // supported by a separate graph path.
         const offsetDb = autosubTarget.resolveTargetOffsetDb(measurements);
-        assert.ok(Number.isFinite(offsetDb), 'offset must be derived from the displayed traces');
+        assert.equal(offsetDb, null);
 
-        const target = result.target_curve;
-        const displayed = autosubTarget.shiftTargetPoints(target.points, offsetDb);
-
-        // Shape preservation on the real curve
-        for (let i = 0; i < target.points.length; i++) {
-            assert.equal(
-                displayed[i][1] - target.points[i][1],
-                -(offsetDb),
-                'constant offset per point on the real target curve',
-            );
-        }
-
-        // Legacy semantics: displayed target bass median = raw median - offset,
-        // i.e. the target sits on the same shared vertical reference as the
-        // displayed traces (bass median basis).
-        const bassMedian = (pts) => {
-            const v = pts.filter(([hz]) => hz >= 20 && hz <= 200).map(([, db]) => db).sort((a, b) => a - b);
-            const n = v.length;
-            return n ? (n % 2 ? v[(n - 1) / 2] : (v[n / 2 - 1] + v[n / 2]) / 2) : null;
-        };
-        assert.equal(bassMedian(displayed), bassMedian(target.points) - offsetDb);
-
-        // Simulate a NEW run: inject the exact metadata the new backend embeds
+        // Simulate a current run: inject the exact metadata the backend embeds
         // and verify the exact scored-position path.
         const tvo = anchor.target_vertical_offset_db;
         const m0 = measurements[0];
-        m0.autosub_meta = { target_vertical_offset_db: tvo };
+        m0.autosub_meta = {
+            target_vertical_offset_db: tvo,
+            main_reference_points: Object.fromEntries(
+                ['left', 'right'].map(side => [side, anchor.sides[side].aligned_points.map(point => point.slice(0, 2))]),
+            ),
+        };
         m0.traces[0].display_offset_db = -75.466; // nb + shift + shared (L)
-        const exactOff = autosubTarget.resolveTargetOffsetDb(measurements);
+        const exactOff = autosubTarget.resolveTargetOffsetDb(measurements, result.target_curve.points);
         assert.equal(exactOff, (-75.466) - tvo,
             'new runs must resolve the exact scored offset (display_offset_db - tvo)');
     } else {

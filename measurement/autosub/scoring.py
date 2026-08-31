@@ -217,11 +217,9 @@ def _auto_sub_result_meta(
     curve comes from the job's own target curve snapshot, never from the
     later-selected UI curve.
 
-    *target_vertical_offset_db* is the run's scored anchor offset (median of
-    ``calibrated_main_db - target_db`` in the anchor band).  Together with the
-    per-trace ``display_offset_db`` (nb - anchor shift + shared bass offset)
-    the frontend reconstructs the exact scored target position in display
-    coordinates: ``target + tvo - display_offset_db``.
+    *target_vertical_offset_db* records the run's scored anchor offset. The
+    calibrated Main points let the frontend recompute that same robust anchor
+    for whichever Target Curve is currently selected in the graph.
     """
     target_curve = job.get("target_curve") if isinstance(job.get("target_curve"), dict) else None
     meta: dict[str, Any] = {
@@ -229,6 +227,23 @@ def _auto_sub_result_meta(
     }
     if target_vertical_offset_db is not None:
         meta["target_vertical_offset_db"] = round(float(target_vertical_offset_db), 4)
+    anchor = job.get("main_target_anchor") if isinstance(job.get("main_target_anchor"), dict) else {}
+    anchor_sides = anchor.get("sides") if isinstance(anchor.get("sides"), dict) else {}
+    main_reference_points: dict[str, list[list[float]]] = {}
+    for side in ("left", "right"):
+        side_data = anchor_sides.get(side) if isinstance(anchor_sides.get(side), dict) else {}
+        aligned_points = side_data.get("aligned_points") if isinstance(side_data.get("aligned_points"), list) else []
+        points: list[list[float]] = []
+        for point in aligned_points:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            frequency_hz, main_db = float(point[0]), float(point[1])
+            if math.isfinite(frequency_hz) and frequency_hz > 0 and math.isfinite(main_db):
+                points.append([round(frequency_hz, 3), round(main_db, 3)])
+        if points:
+            main_reference_points[side] = points
+    if all(side in main_reference_points for side in ("left", "right")):
+        meta["main_reference_points"] = main_reference_points
     if mode == OUTPUT_MODE_SUBWOOFER_21:
         if "sub" in final_levels_db:
             meta["final_gains_db"] = {"sub": round(float(final_levels_db["sub"]), 2)}

@@ -8704,22 +8704,15 @@ function getMeasurementConvolverRangeHandleAtPosition(x, y, bounds) {
 
 function drawMeasurementTargetCurve(ctx, bounds, range) {
     const entries = getGraphMeasurementEntries();
-    const autoSubTargetCurve = window.FXRouteAutoSubTarget
-        ? window.FXRouteAutoSubTarget.resolveTargetCurve(entries)
-        : null;
-    const curve = autoSubTargetCurve || getMeasurementTargetCurvePreview();
+    const curve = getMeasurementTargetCurvePreview();
     let points = curve.points || measurementConvolverCurves.neutral.points;
     if (getMeasurementActiveEditor() === 'houseCurve' && !points.length) return;
-    // In AutoSub Before/After view, place the target at the exact scored
-    // position. The backend embeds autosub_meta.target_vertical_offset_db
-    // (the run's scored anchor offset in calibrated coords) and stamps each
-    // trace with its own display_offset_db (nb - anchor shift + shared
-    // offset); resolveTargetOffsetDb() returns display_offset_db - tvo so the
-    // shifted target sits in the same display coordinate as the traces.
-    // Legacy runs without metadata fall back to the shared bass reference.
+    // In AutoSub Before/After view, anchor the current target shape against
+    // the run's calibrated Main references, then transform it with the trace's
+    // exact display offset.
     let displayPoints = points;
     if (window.FXRouteAutoSubTarget) {
-        const offsetDb = window.FXRouteAutoSubTarget.resolveTargetOffsetDb(entries);
+        const offsetDb = window.FXRouteAutoSubTarget.resolveTargetOffsetDb(entries, points);
         if (offsetDb !== null) {
             displayPoints = window.FXRouteAutoSubTarget.shiftTargetPoints(points, offsetDb);
         }

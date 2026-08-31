@@ -38,7 +38,9 @@ from ..jobs import (
     _log_auto_sub_timing_summary,
 )
 from ..measurement import (
+    _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
     _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+    _auto_sub_balance_transfer_deltas,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
     _auto_sub_gain_log_score,
@@ -46,6 +48,7 @@ from ..measurement import (
     _auto_sub_gain_verdict,
     _auto_sub_local_dip_db,
     _auto_sub_local_dip_gate_sides,
+    _auto_sub_target_residual_raw_db,
     _calculate_auto_sub_gain,
     _capture_auto_sub_main_references,
     _measure_auto_sub_combined_candidate,
@@ -135,8 +138,8 @@ async def _run_auto_sub_optimize(
             job=job, fc=fc, input_id=input_id,
             mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
             calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
-            auto_sub_rate=auto_sub_rate, output_mode=OUTPUT_MODE_SUBWOOFER_21,
+            calibration_bytes=calibration_bytes, auto_sub_rate=auto_sub_rate,
+            output_mode=OUTPUT_MODE_SUBWOOFER_21,
             original_config_snapshot=original_config_snapshot,
         )
         if _auto_sub_cancel_requested(job):
@@ -627,7 +630,46 @@ async def _run_auto_sub_optimize(
         )
         logger.info("AUTOSUB_GAIN mode=2.1 diagnostics=%s", json.dumps(job["auto_gain"], sort_keys=True))
         gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_21, max_abs_db=6.0)
-        applied_gain_delta = gain_deltas.get("left", 0.0)
+        # The balance trim was measured at the original alignment. When the
+        # accepted delay differs, transfer the trim to the accepted
+        # configuration (plus its own measured level delta) instead of
+        # re-closing the old configuration's residual on top of the old trim.
+        alignment_changed = abs(applied_delay - current_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS
+        incumbent_residual_common: float | None = None
+        if alignment_changed:
+            incumbent_candidate = _auto_sub_result_for_delay(list(sweep_results), current_alignment) or {}
+            try:
+                residual_left, _mad_l, _u_l = _auto_sub_target_residual_raw_db(
+                    incumbent_candidate.get("calibrated_points_left") or [], job.get("target_curve"),
+                    job.get("main_target_anchor"), fc,
+                )
+                residual_right, _mad_r, _u_r = _auto_sub_target_residual_raw_db(
+                    incumbent_candidate.get("calibrated_points_right") or [], job.get("target_curve"),
+                    job.get("main_target_anchor"), fc,
+                )
+                incumbent_residual_common = (residual_left + residual_right) / 2.0
+            except (ValueError, TypeError, KeyError, IndexError):
+                incumbent_residual_common = None
+        winner_residual_common = (job["auto_gain"].get("recommendation") or {}).get("raw_delta_db")
+        balance_transfer = _auto_sub_balance_transfer_deltas(
+            balance_deltas_db={"left": balance_delta, "right": balance_delta},
+            winner_residuals_db={"left": winner_residual_common, "right": winner_residual_common},
+            incumbent_residuals_db={"left": incumbent_residual_common, "right": incumbent_residual_common},
+            alignment_changed={"left": alignment_changed, "right": alignment_changed},
+        )
+        if balance_transfer.get("available"):
+            applied_gain_delta = float(balance_transfer["deltas_db"].get("left", 0.0))
+            job["auto_gain"]["configuration_transfer"] = json.loads(json.dumps(balance_transfer))
+            logger.info(
+                "AUTOSUB_TRANSFER job=%s mode=2.1 %s", job_id,
+                json.dumps(job["auto_gain"]["configuration_transfer"], sort_keys=True),
+            )
+        else:
+            applied_gain_delta = gain_deltas.get("left", 0.0)
+            job["auto_gain"]["configuration_transfer"] = {
+                "available": False, "reason": balance_transfer.get("reason"),
+                "alignment_changed": balance_transfer.get("alignment_changed"),
+            }
         _auto_sub_gain_log_line("AUTOGAIN_INIT", {
             "mode": OUTPUT_MODE_SUBWOOFER_21, "xo_hz": fc,
             "target": (job.get("target_curve") or {}).get("label"),
@@ -640,7 +682,7 @@ async def _run_auto_sub_optimize(
             "first_step_db": applied_gain_delta,
         })
         gained_level = max(-24.0, min(12.0, balanced_level + applied_gain_delta))
-        if gain_deltas:
+        if abs(applied_gain_delta) > 0.0005:
             await asyncio.to_thread(set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, {
                 "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
                 "sub_level_db": gained_level, "sub_polarity": final_polarity,
@@ -668,6 +710,8 @@ async def _run_auto_sub_optimize(
         )
         gain_verdict = _auto_sub_gain_verdict(job["auto_gain"], gain_after, OUTPUT_MODE_SUBWOOFER_21)
         final_gain_deltas = gain_deltas if gain_verdict["accepted"] else {"left": 0.0, "right": 0.0}
+        if gain_verdict["accepted"] and (job["auto_gain"].get("configuration_transfer") or {}).get("available"):
+            final_gain_deltas = {"left": applied_gain_delta, "right": applied_gain_delta}
         final_gain_level = gained_level if gain_verdict["accepted"] else balanced_level
         final_gain_sweep = gain_after_sweep if gain_verdict["accepted"] else gain_winner
         correction_deltas: dict[str, float] = {}
@@ -682,6 +726,16 @@ async def _run_auto_sub_optimize(
             })
             if _dsp_runtime() is not None:
                 await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+        elif (job["auto_gain"].get("configuration_transfer") or {}).get("available"):
+            # The transferred trim is the final single-stage trim for the
+            # accepted configuration; the response-correction step must not
+            # re-close the balance stage's unrealized residual on top of it.
+            correction_verdict = {
+                "accepted": False,
+                "reason": "Balance trim transferred to the accepted alignment; residual re-closure skipped",
+                "channels": {},
+                "step1_retained": True,
+            }
         else:
             correction_plan = _auto_sub_gain_response_correction(
                 job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_21,

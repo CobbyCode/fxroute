@@ -41,8 +41,10 @@ from ..jobs import (
     _log_auto_sub_timing_summary,
 )
 from ..measurement import (
+    _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
     _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
     _auto_sub_22_snapshot_with_gain,
+    _auto_sub_balance_transfer_deltas,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
     _auto_sub_gain_log_score,
@@ -50,6 +52,7 @@ from ..measurement import (
     _auto_sub_gain_verdict,
     _auto_sub_local_dip_db,
     _auto_sub_local_dip_gate_sides,
+    _auto_sub_target_residual_raw_db,
     _calculate_auto_sub_gain,
     _capture_auto_sub_main_references,
     _measure_auto_sub_combined_candidate,
@@ -139,8 +142,8 @@ async def _run_auto_sub_22_optimize(
             job=job, fc=fc, input_id=input_id,
             mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
             calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
-            auto_sub_rate=auto_sub_rate, output_mode=OUTPUT_MODE_SUBWOOFER_22,
+            calibration_bytes=calibration_bytes, auto_sub_rate=auto_sub_rate,
+            output_mode=OUTPUT_MODE_SUBWOOFER_22,
             original_config_snapshot=original_config_snapshot,
         )
         if _auto_sub_cancel_requested(job):
@@ -464,6 +467,48 @@ async def _run_auto_sub_22_optimize(
         )
         logger.info("AUTOSUB_GAIN mode=2.2_mono diagnostics=%s", json.dumps(job["auto_gain"], sort_keys=True))
         gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_22, max_abs_db=6.0)
+        # The balance trim was measured at the original sub pair. When the
+        # accepted matrix pair differs, transfer the trim to the accepted
+        # configuration (plus its own measured level delta) instead of
+        # re-closing the old configuration's residual on top of the old trim.
+        alignment_changed = (
+            abs(best_sub1 - original_sub1_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS
+            or abs(best_sub2 - original_sub2_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS
+        )
+        incumbent_residual_common: float | None = None
+        if alignment_changed:
+            incumbent_candidate = _auto_sub_result_for_delay(list(coarse1_results), original_sub1_alignment) or {}
+            try:
+                residual_left, _mad_l, _u_l = _auto_sub_target_residual_raw_db(
+                    incumbent_candidate.get("calibrated_points_left") or [], job.get("target_curve"),
+                    job.get("main_target_anchor"), fc,
+                )
+                residual_right, _mad_r, _u_r = _auto_sub_target_residual_raw_db(
+                    incumbent_candidate.get("calibrated_points_right") or [], job.get("target_curve"),
+                    job.get("main_target_anchor"), fc,
+                )
+                incumbent_residual_common = (residual_left + residual_right) / 2.0
+            except (ValueError, TypeError, KeyError, IndexError):
+                incumbent_residual_common = None
+        winner_residual_common = (job["auto_gain"].get("recommendation") or {}).get("raw_delta_db")
+        balance_transfer = _auto_sub_balance_transfer_deltas(
+            balance_deltas_db={"left": balance_deltas.get("left", 0.0), "right": balance_deltas.get("left", 0.0)},
+            winner_residuals_db={"left": winner_residual_common, "right": winner_residual_common},
+            incumbent_residuals_db={"left": incumbent_residual_common, "right": incumbent_residual_common},
+            alignment_changed={"left": alignment_changed, "right": alignment_changed},
+        )
+        if balance_transfer.get("available"):
+            gain_deltas = dict(balance_transfer["deltas_db"])
+            job["auto_gain"]["configuration_transfer"] = json.loads(json.dumps(balance_transfer))
+            logger.info(
+                "AUTOSUB_TRANSFER job=%s mode=2.2_mono %s", job_id,
+                json.dumps(job["auto_gain"]["configuration_transfer"], sort_keys=True),
+            )
+        else:
+            job["auto_gain"]["configuration_transfer"] = {
+                "available": False, "reason": balance_transfer.get("reason"),
+                "alignment_changed": balance_transfer.get("alignment_changed"),
+            }
         _auto_sub_gain_log_line("AUTOGAIN_INIT", {
             "mode": OUTPUT_MODE_SUBWOOFER_22, "xo_hz": fc,
             "target": (job.get("target_curve") or {}).get("label"),
@@ -565,6 +610,16 @@ async def _run_auto_sub_22_optimize(
             )
             if _dsp_runtime() is not None:
                 await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+        elif (job["auto_gain"].get("configuration_transfer") or {}).get("available"):
+            # The transferred trim is the final single-stage trim for the
+            # accepted configuration; the response-correction step must not
+            # re-close the balance stage's unrealized residual on top of it.
+            correction_verdict = {
+                "accepted": False,
+                "reason": "Balance trim transferred to the accepted alignment; residual re-closure skipped",
+                "channels": {},
+                "step1_retained": True,
+            }
         else:
             correction_plan = _auto_sub_gain_response_correction(
                 job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_22,
