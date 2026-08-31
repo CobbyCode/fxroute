@@ -155,7 +155,10 @@ enable_git_updates() {
     printf '%s\n' "git is not installed; git-based FXRoute updates unavailable" >&2
     return 0
   fi
-  if git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # Everything runs as the target user: the install tree is fxroute-owned,
+  # and git refuses repositories with a different owner (dubious ownership).
+  if runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+      git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     return 0
   fi
   if [[ -f /opt/fxroute-iso-build-commit ]]; then
@@ -163,10 +166,10 @@ enable_git_updates() {
     [[ "$build_commit" =~ ^[0-9a-f]{40}$ ]] || build_commit=""
   fi
 
-  git -C "$target" init -q -b main
-  git -C "$target" remote add origin "$remote_url"
+  runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" init -q -b main
+  runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" remote add origin "$remote_url"
   for attempt in 1 2 3; do
-    if git -C "$target" \
+    if runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" \
         -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
         fetch -q --no-tags origin \
         "+refs/heads/main:refs/remotes/origin/main"; then
@@ -180,17 +183,17 @@ enable_git_updates() {
   done
 
   if [[ -n "$build_commit" ]] \
-      && git -C "$target" cat-file -e "$build_commit^{commit}" 2>/dev/null; then
+      && runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+          git -C "$target" cat-file -e "$build_commit^{commit}" 2>/dev/null; then
     :
   else
-    build_commit="$(git -C "$target" rev-parse origin/main)"
+    build_commit="$(runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+      git -C "$target" rev-parse origin/main)"
   fi
-  git -C "$target" checkout -q -f -B main "$build_commit"
-  git -C "$target" config branch.main.remote origin
-  git -C "$target" config branch.main.merge refs/heads/main
-  # The root-run checkout above rewrites tracked files; hand the whole
-  # install tree back to the fxroute user so git-based updates can write it.
-  chown -R "$FXROUTE_USER":"$(id -gn "$FXROUTE_USER")" "$target"
+  runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+    git -C "$target" checkout -q -f -B main "$build_commit"
+  runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" config branch.main.remote origin
+  runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" config branch.main.merge refs/heads/main
   printf '%s\n' "Prepared git-based updates from $remote_url at $build_commit"
 }
 enable_git_updates

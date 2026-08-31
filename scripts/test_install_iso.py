@@ -358,7 +358,9 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("for attempt in 1 2 3; do", script)
         self.assertIn("checkout -q -f -B main", script)
         self.assertIn("config branch.main.remote origin", script)
-        self.assertIn('chown -R "$FXROUTE_USER"', script)
+        # Git runs as the target user: the install tree is fxroute-owned and
+        # git refuses repositories with a different owner (dubious ownership).
+        self.assertIn('runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home"', script)
         # The git update setup is best effort and must never fail the install.
         self.assertIn("updates stay disabled", script)
 
