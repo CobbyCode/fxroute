@@ -218,6 +218,16 @@ git -C "$ROOT_DIR" ls-files -z \
 tar --list --file="$SOURCE_ARCHIVE" >/dev/null || die "Could not read generated source archive"
 
 cp -- "$SOURCE_ARCHIVE" "$STAGE_DIR/fxroute/source.tar"
+# Release ISOs must be built from a pushed commit: the first-boot setup
+# fetches origin/main and checks out the built commit; if it is not on the
+# remote the guest would otherwise fall back to an older release.  Dev/test
+# ISOs may opt out explicitly.
+if ! git -C "$ROOT_DIR" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+  if [[ "${FXROUTE_ISO_ALLOW_UNPUSHED:-0}" != "1" ]]; then
+    die "HEAD is not an ancestor of origin/main; push the ISO source commit first (or set FXROUTE_ISO_ALLOW_UNPUSHED=1 for a dev/test ISO)."
+  fi
+  printf '[iso] warning: building from an unpushed commit; first-boot updates will use a local snapshot commit\n'
+fi
 git -C "$ROOT_DIR" rev-parse HEAD > "$STAGE_DIR/fxroute/build-commit"
 cp -- "$ROOT_DIR/iso/scripts/first-boot-install.sh" "$STAGE_DIR/fxroute/scripts/first-boot-install.sh"
 chmod 755 "$STAGE_DIR/fxroute/scripts/first-boot-install.sh"

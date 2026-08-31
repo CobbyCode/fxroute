@@ -347,6 +347,13 @@ class InstallIsoContractTests(unittest.TestCase):
             build,
         )
 
+    def test_builder_refuses_unpushed_source_commits(self):
+        build = self.read("iso/build-leap-16-iso.sh")
+
+        self.assertIn('git -C "$ROOT_DIR" merge-base --is-ancestor HEAD origin/main', build)
+        self.assertIn("FXROUTE_ISO_ALLOW_UNPUSHED", build)
+        self.assertIn("push the ISO source commit first", build)
+
     def test_first_boot_prepares_git_based_updates(self):
         script = self.read("iso/scripts/first-boot-install.sh")
 
@@ -361,6 +368,10 @@ class InstallIsoContractTests(unittest.TestCase):
         # Git runs as the target user: the install tree is fxroute-owned and
         # git refuses repositories with a different owner (dubious ownership).
         self.assertIn('runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home"', script)
+        # Unpushed dev/test ISOs must never overwrite the installed tree with
+        # an older checkout; they record a local snapshot commit instead.
+        self.assertIn("reset -q --soft origin/main", script)
+        self.assertIn("FXRoute ISO install snapshot", script)
         # The git update setup is best effort and must never fail the install.
         self.assertIn("updates stay disabled", script)
 

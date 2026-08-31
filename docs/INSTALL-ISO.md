@@ -113,10 +113,16 @@ cd ~/fxroute && scripts/update_fxroute.sh
 The fetch is best effort with three bounded attempts; if GitHub is
 unreachable during first boot, FXRoute still installs and runs, and the
 checkout can be prepared later with the same `git init`/`fetch`/`checkout`
-steps. User state is not affected by updates: presets, measurements,
-provider credentials and runtime state live in `~/.config/fxroute` and
-`~/.env`-style configuration stays in place (`.env`, `.venv`,
-`media/cache`, `native_dsp/build`, and `backups/` are gitignored).
+steps. When the ISO was built from a commit that is not on GitHub
+(development or test builds, `FXROUTE_ISO_ALLOW_UNPUSHED=1`), the first
+boot never overwrites the installed tree with an older published
+checkout; it records the installed state as a local commit on top of
+`origin/main` instead, and the builder refuses unpushed sources for
+normal (non-opt-in) builds. User state is not affected by updates:
+presets, measurements, provider credentials and runtime state live in
+`~/.config/fxroute` and `~/.env`-style configuration stays in place
+(`.env`, `.venv`, `media/cache`, `native_dsp/build`, and `backups/` are
+gitignored).
 
 ## QEMU Verification
 

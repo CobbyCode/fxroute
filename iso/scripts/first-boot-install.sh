@@ -185,13 +185,20 @@ enable_git_updates() {
   if [[ -n "$build_commit" ]] \
       && runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
           git -C "$target" cat-file -e "$build_commit^{commit}" 2>/dev/null; then
-    :
+    # The built commit is on the remote: make the tree exactly match it.
+    runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+      git -C "$target" checkout -q -f -B main "$build_commit"
   else
-    build_commit="$(runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
-      git -C "$target" rev-parse origin/main)"
+    # Development/test ISO: the built commit is not on the remote.  Never
+    # overwrite the freshly installed tree with an older checkout; record
+    # the installed state as a local commit on top of origin/main instead.
+    runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" reset -q --soft origin/main
+    runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" add -A
+    runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+      git -C "$target" -c user.name="FXRoute ISO Install" -c user.email="install@fxroute.local" \
+      commit -q -m "FXRoute ISO install snapshot"
+    build_commit="$(runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" rev-parse HEAD)"
   fi
-  runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
-    git -C "$target" checkout -q -f -B main "$build_commit"
   runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" config branch.main.remote origin
   runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" config branch.main.merge refs/heads/main
   printf '%s\n' "Prepared git-based updates from $remote_url at $build_commit"
