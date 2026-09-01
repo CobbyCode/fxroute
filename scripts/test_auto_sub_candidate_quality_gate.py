@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from measurement.store import score_sub_alignment_candidates
+from measurement.autosub.measurement import _auto_sub_chain_health_check
 from measurement.autosub.scoring import (
     _AUTO_SUB_PLAUSIBILITY_EXCLUSION_REASON,
     _auto_sub_gate_candidate_rows,
@@ -296,6 +297,32 @@ class WinnerDelayTests(unittest.TestCase):
         self.assertEqual(_auto_sub_winner_delay_ms({}, 2.34), 2.34)
         self.assertEqual(_auto_sub_winner_delay_ms(None, 2.34), 2.34)
         self.assertEqual(_auto_sub_winner_delay_ms({"delay_ms": None}, 2.34), 2.34)
+
+
+class ChainHealthTests(unittest.TestCase):
+    def test_healthy_quantum_jitter_passes(self):
+        job = {}
+        for align in (77244, 78268, 79292, 78268, 77244):
+            self.assertIsNone(_auto_sub_chain_health_check(job, align, 48000))
+        self.assertEqual(len(job["chain_alignment_samples"]), 5)
+
+    def test_constant_arrival_shift_aborts(self):
+        job = {}
+        for align in (78268, 78268, 78268):
+            self.assertIsNone(_auto_sub_chain_health_check(job, align, 48000))
+        health = _auto_sub_chain_health_check(job, 52668, 48000)
+        self.assertIsNotNone(health)
+        self.assertLess(health["arrival_shift_samples"], -10000)
+        self.assertGreater(health["arrival_bound_samples"], 0)
+
+    def test_missing_alignment_is_ignored(self):
+        job = {"chain_alignment_samples": [78268.0, 78268.0]}
+        self.assertIsNone(_auto_sub_chain_health_check(job, None, 48000))
+
+    def test_baseline_requires_three_samples(self):
+        job = {}
+        self.assertIsNone(_auto_sub_chain_health_check(job, 52668, 48000))
+        self.assertIsNone(_auto_sub_chain_health_check(job, 52668, 48000))
 
 
 class UncertainTiebreakTests(unittest.IsolatedAsyncioTestCase):

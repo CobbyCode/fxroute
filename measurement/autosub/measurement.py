@@ -47,6 +47,7 @@ from .jobs import (
     _auto_sub_stage_peak_prediction,
     auto_sub_sink_gain_from_master_percent,
     AutoSubPeakSafetyError,
+    AutoSubChainHealthError,
 )
 
 logger = logging.getLogger(__name__)
@@ -403,6 +404,19 @@ async def _measure_auto_sub_candidate(
             calibrated_points = None
             if normalized_by_db is not None:
                 calibrated_points = _auto_sub_reconstruct_calibrated_points(points, normalized_by_db)
+            chain_health = _auto_sub_chain_health_check(
+                job, analysis.get("alignment_samples"), analysis.get("sample_rate"),
+            )
+            if chain_health:
+                logger.error(
+                    "AUTOSUB_CHAIN_HEALTH job=%s channel=%s delay=%.2f %s",
+                    job.get("id") or "", channel, delay_ms, json.dumps(chain_health, sort_keys=True),
+                )
+                raise AutoSubChainHealthError(
+                    "AutoSub stopped: the capture chain arrival shifted by "
+                    f"{chain_health['arrival_shift_samples'] / 1000:.1f} ms against the run baseline "
+                    "(audio device state degraded) — reset the audio stack (or reboot) and retry",
+                )
             return _return_candidate({
                 "delay_ms": delay_ms,
                 "name": str(delay_ms),
@@ -434,6 +448,8 @@ async def _measure_auto_sub_candidate(
             "stage_output_peaks": stage_peak_comparison or {"predicted": stage_peak_prediction},
         })
     except AutoSubPeakSafetyError:
+        raise
+    except AutoSubChainHealthError:
         raise
     except Exception as exc:
         logger.exception("Auto-sub: sweep error for delay %.2f ms", delay_ms)
@@ -891,6 +907,42 @@ def _auto_sub_gain_deltas(
 # delay the balance trim was measured for by more than this tolerance (same
 # tolerance the scan-edge and neighbour checks use).
 _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS: float = 0.05
+
+
+def _auto_sub_chain_health_check(
+    job: dict[str, Any],
+    alignment_samples: float | int | None,
+    sample_rate: float | int | None,
+) -> dict[str, Any] | None:
+    """Detect a persistent reference-vs-mic arrival displacement mid-run.
+
+    The analyzer locks each capture's arrival independently, so healthy
+    sweeps jitter only by capture-quantum steps (1024 samples at 48 kHz)
+    around a constant baseline. A constant displacement far beyond that —
+    25600 samples in the 799f3bd5d1ab run, left by the output device's
+    resync pre-filling its buffer — corrupts every subsequent capture until
+    the audio stack is reset, so the run must abort instead of grinding
+    through disturbed sweeps. Returns the evidence dict when degraded, else
+    None.
+    """
+    if not isinstance(alignment_samples, (int, float)) or not math.isfinite(float(alignment_samples)):
+        return None
+    history = job.setdefault("chain_alignment_samples", [])
+    history.append(float(alignment_samples))
+    if len(history) < 3:
+        return None
+    window = history[-8:]
+    baseline = statistics.median(window)
+    shift = float(alignment_samples) - baseline
+    bound = max(4096.0, float(sample_rate or 48000) / 12.0)
+    if abs(shift) <= bound:
+        return None
+    return {
+        "arrival_shift_samples": round(shift, 1),
+        "arrival_bound_samples": round(bound, 1),
+        "baseline_samples": round(baseline, 1),
+        "current_samples": round(float(alignment_samples), 1),
+    }
 
 
 def _auto_sub_balance_transfer_deltas(

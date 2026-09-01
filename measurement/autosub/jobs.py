@@ -134,6 +134,17 @@ async def cancel_auto_sub_optimize_job(job_id: str):
 class AutoSubPeakSafetyError(RuntimeError):
     """Abort the complete AutoSub run after a native-DSP peak safety failure."""
 
+class AutoSubChainHealthError(RuntimeError):
+    """Abort the complete AutoSub run after the capture chain degraded.
+
+    Raised when a sweep's direct-arrival alignment shifts far beyond capture
+    quantum jitter against the run's own baseline: the audio device state
+    (resync-pre-filled output buffer, 799f3bd5d1ab) then corrupts every
+    subsequent capture, and continuing would run disturbed audio and score
+    garbage instead of stopping with a clear remediation message.
+    """
+
+
 def auto_sub_sink_gain_from_master_percent(percent: int | float, *, clamp_upper: bool = True) -> float:
     """Linear gain the hardware sink applies for a master percent.
 
