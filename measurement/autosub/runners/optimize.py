@@ -912,12 +912,26 @@ async def _run_auto_sub_optimize(
                     if _dsp_runtime() is not None:
                         await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
                     confirmation_gate["action"] = "alignment_reverted_balance_kept"
+                    # The gate reverted the fine trim and kept only the
+                    # balance; the gain diagnostics must describe the state
+                    # that was actually committed.
+                    job["auto_gain"].update({
+                        "applied": False, "reverted": True,
+                        "final_deltas_db": dict(final_gain_deltas),
+                        "final_level_db": balanced_level,
+                    })
                 else:
                     await _restore_original_config()
                     final_gain_sweep = balance_sweep
                     final_gain_level = original_level
                     applied_delay = current_alignment
+                    final_gain_deltas = {"left": 0.0, "right": 0.0}
                     confirmation_gate["action"] = "reverted_to_original"
+                    job["auto_gain"].update({
+                        "applied": False, "reverted": True,
+                        "final_deltas_db": {"left": 0.0, "right": 0.0},
+                        "final_level_db": original_level,
+                    })
             job["confirmation_gate"] = confirmation_gate
             logger.info("AUTOSUB_CONF_GATE job=%s %s", job_id, json.dumps(confirmation_gate, sort_keys=True))
         stored_fine_accepted = bool(acceptance["fine_accepted"] and auto_apply)

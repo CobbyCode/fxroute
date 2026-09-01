@@ -88,6 +88,31 @@ class AutoSubConfirmationSweepTests(unittest.TestCase):
             "2.2 Stereo confirmation must not be gated on the per-side step-1 verdict",
         )
 
+    def test_21_confirmation_gate_syncs_gain_diagnostics(self):
+        """The gain diagnostics must reflect the state the gate committed.
+
+        Post-mortem of run b3bdd634dbfe read ``final_level_db: 6.13,
+        applied: true`` from the persisted snapshot while the confirmation
+        gate had restored the original state (0.0 dB). Both gate-failure
+        branches must refresh ``job["auto_gain"]`` like the 2.2 runners do.
+        """
+        source = inspect.getsource(autosub._run_auto_sub_optimize)
+        self.assertIn(
+            '"final_level_db": balanced_level',
+            source,
+            "gate-kept balance must refresh the gain diagnostics final level",
+        )
+        self.assertIn(
+            '"final_level_db": original_level',
+            source,
+            "gate revert must refresh the gain diagnostics final level",
+        )
+        self.assertIn(
+            '"final_deltas_db": {"left": 0.0, "right": 0.0}',
+            source,
+            "gate revert must zero the gain diagnostics deltas",
+        )
+
     def test_result_payload_keeps_baseline_and_confirmation(self):
         for runner in (
             autosub._run_auto_sub_optimize,
