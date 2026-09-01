@@ -403,6 +403,8 @@ async function handleAutoSubResult(job) {
             'reverted_to_original_state': 'final check failed, original restored',
             'not_applied_close_margin_below_2pp': 'advantage too small',
             'not_applied_close_gain_below_3pp': 'advantage too small',
+            'not_applied_uncertain_confidence': 'uncertain confidence',
+            'applied_fine_scan_winner': 'fine-scan winner',
         }[applyDecision] || '')
         : '';
 
