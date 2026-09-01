@@ -182,7 +182,11 @@ SOURCE_ARCHIVE="$WORK_DIR/source.tar"
 WORK_TOKEN="${WORK_DIR##*.}"
 cleanup() {
   if [[ "$KEEP_WORK" -eq 0 ]]; then
-    rm -rf -- "$WORK_DIR"
+    # A Docker build may leave root-owned files in the work directory that
+    # an unprivileged cleanup cannot remove; that must not fail the build.
+    if ! rm -rf -- "$WORK_DIR"; then
+      printf '[armbian][warn] could not remove build work directory (root-owned leftovers may remain): %s\n' "$WORK_DIR" >&2
+    fi
   else
     printf '[armbian] keeping work directory: %s\n' "$WORK_DIR"
   fi

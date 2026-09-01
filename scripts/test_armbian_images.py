@@ -268,6 +268,47 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn('-drive "if=pflash,format=raw,readonly=on,file=$UEFI_CODE"', virt_section)
         self.assertIn('-drive "if=pflash,format=raw,file=$UEFI_VARS"', virt_section)
 
+    def test_cleanup_trap_is_non_fatal_when_work_dir_removal_fails(self):
+        """A successful build stays exit 0 when leftover root-owned files
+        from the Docker build prevent removal of the work directory."""
+        lines = self.build.splitlines()
+        start = next(
+            i for i, line in enumerate(lines) if line == "cleanup() {"
+        )
+        end = next(i for i in range(start, len(lines)) if lines[i] == "}")
+        cleanup_fn = "\n".join(lines[start:end + 1])
+
+        def run_cleanup(extra_lines):
+            script = "\n".join(
+                [
+                    "set -Eeuo pipefail",
+                    'WORK_DIR="$(mktemp -d)"',
+                    'mkdir -p "$WORK_DIR/rootish"',
+                    ': > "$WORK_DIR/rootish/file"',
+                    *extra_lines,
+                    cleanup_fn,
+                    "KEEP_WORK=0",
+                    "trap cleanup EXIT",
+                    'echo "build ok"',
+                ]
+            )
+            return subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+            )
+
+        # The unremovable entry simulates root-owned leftovers: rm fails, the
+        # trap warns instead of aborting, and the build status stays 0.
+        guard = run_cleanup(['chmod 555 "$WORK_DIR/rootish"'])
+        self.assertEqual(guard.returncode, 0, guard.stderr)
+        self.assertIn("[armbian][warn]", guard.stderr)
+
+        # A removable work directory is still cleaned up without a warning.
+        clean = run_cleanup([])
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        self.assertNotIn("[armbian][warn]", clean.stderr)
+
     def test_scripts_are_shell_parseable(self):
         for path in (BUILD_SH, CUSTOMIZE_SH, FIRST_BOOT_SH, QEMU_SH):
             result = subprocess.run(
