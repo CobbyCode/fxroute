@@ -1,0 +1,36 @@
+{
+  "source": "Persisted AutoSub job snapshots from the 2026-09-01 2.1 confirmation investigation. The 2.2-stereo case is the existing confirmed right-channel regression control.",
+  "tolerance_db": 2.5,
+  "cases": [
+    {
+      "job_id": "auto-sub-b3bdd634dbfe",
+      "mode": "subwoofer-2.1",
+      "before_local_dip_db": {"left": 7.25, "right": 6.25},
+      "final_local_dip_db": {"left": 8.09, "right": 9.37},
+      "recheck_local_dip_db": {"left": 7.20, "right": 12.89},
+      "expected_failed_sides": ["right"],
+      "expected_confirmed_failed_sides": [],
+      "expected_outcome": "final_kept"
+    },
+    {
+      "job_id": "auto-sub-fa67b715b5c6",
+      "mode": "subwoofer-2.1",
+      "before_local_dip_db": {"left": 6.95, "right": 4.54},
+      "final_local_dip_db": {"left": 10.76, "right": 8.06},
+      "recheck_local_dip_db": {"left": 9.78, "right": 6.28},
+      "expected_failed_sides": ["left", "right"],
+      "expected_confirmed_failed_sides": [],
+      "expected_outcome": "final_kept"
+    },
+    {
+      "job_id": "auto-sub-fc8eb23e2926",
+      "mode": "subwoofer-2.2-stereo",
+      "before_local_dip_db": {"left": 11.51, "right": 7.91},
+      "final_local_dip_db": {"left": 8.26, "right": 12.51},
+      "recheck_local_dip_db": {"left": 10.21, "right": 8.32},
+      "expected_failed_sides": ["right"],
+      "expected_confirmed_failed_sides": ["right"],
+      "expected_outcome": "incumbent_kept"
+    }
+  ]
+}

@@ -1073,6 +1073,45 @@ def _auto_sub_local_dip_gate_sides(
         and final_dips[side] > before_dips[side] + tolerance_db
     ]
 
+def _auto_sub_local_dip_recheck_decision(
+    before_dips: dict[str, float | None],
+    final_dips: dict[str, float | None],
+    recheck_dips: dict[str, float | None],
+    tolerance_db: float,
+) -> dict[str, Any]:
+    """Confirm a triggered regression against the freshly measured incumbent."""
+    failed_sides = _auto_sub_local_dip_gate_sides(before_dips, final_dips, tolerance_db)
+    evidence_available = all(recheck_dips.get(side) is not None for side in failed_sides)
+    confirmed_failed_sides = [
+        side for side in failed_sides
+        if recheck_dips.get(side) is not None
+        and final_dips[side] > recheck_dips[side] + tolerance_db
+    ]
+    incumbent_evidence_available = all(
+        before_dips.get(side) is not None and recheck_dips.get(side) is not None
+        for side in ("left", "right")
+    )
+    incumbent_passed = incumbent_evidence_available and all(
+        recheck_dips[side] <= before_dips[side] + tolerance_db
+        for side in ("left", "right")
+    )
+    if not evidence_available:
+        outcome = "original_restored"
+    elif not confirmed_failed_sides:
+        outcome = "final_kept"
+    elif incumbent_passed:
+        outcome = "incumbent_kept"
+    else:
+        outcome = "original_restored"
+    return {
+        "failed_sides": failed_sides,
+        "confirmed_failed_sides": confirmed_failed_sides,
+        "evidence_available": evidence_available,
+        "incumbent_evidence_available": incumbent_evidence_available,
+        "incumbent_passed": incumbent_passed,
+        "outcome": outcome,
+    }
+
 def _auto_sub_gain_verdict(before: dict[str, Any], after: dict[str, Any], mode: str) -> dict[str, Any]:
     """Accept one Gain attempt unless its residual Target error grows notably.
 

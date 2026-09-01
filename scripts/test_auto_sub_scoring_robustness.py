@@ -23,6 +23,7 @@ from measurement.autosub.measurement import (
     _auto_sub_local_dip_db,
     _auto_sub_local_dip_gate_sides,
 )
+from measurement.autosub import measurement as auto_sub_measurement
 from measurement.autosub.scoring import (
     _auto_sub_anchor_shifted_points,
     _auto_sub_display_anchor_reference_db,
@@ -252,6 +253,62 @@ class LocalDipGateTests(unittest.TestCase):
         self.assertGreater(10.08, 6.91 + _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB)
         # Real accepted 2.2-mono outcome: Before 17.01 -> After 9.77.
         self.assertLess(9.77, 17.01 + _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB)
+
+    def test_confirmation_recheck_replays_require_paired_regression_evidence(self):
+        fixture_path = ROOT / "scripts" / "fixtures" / "autosub-21-confirmation-replay.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        decision_fn = getattr(auto_sub_measurement, "_auto_sub_local_dip_recheck_decision", None)
+        self.assertIsNotNone(decision_fn, "the confirmation path needs a paired recheck decision")
+        self.assertEqual(fixture["tolerance_db"], _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB)
+
+        for case in fixture["cases"]:
+            with self.subTest(job_id=case["job_id"]):
+                decision = decision_fn(
+                    case["before_local_dip_db"],
+                    case["final_local_dip_db"],
+                    case["recheck_local_dip_db"],
+                    fixture["tolerance_db"],
+                )
+                self.assertEqual(decision["failed_sides"], case["expected_failed_sides"])
+                self.assertEqual(
+                    decision["confirmed_failed_sides"],
+                    case["expected_confirmed_failed_sides"],
+                )
+                self.assertEqual(decision["outcome"], case["expected_outcome"])
+
+    def test_confirmation_recheck_restores_original_when_both_fresh_states_are_bad(self):
+        decision_fn = getattr(auto_sub_measurement, "_auto_sub_local_dip_recheck_decision", None)
+        self.assertIsNotNone(decision_fn, "the confirmation path needs a paired recheck decision")
+        decision = decision_fn(
+            {"left": 6.0, "right": 6.0},
+            {"left": 6.0, "right": 13.0},
+            {"left": 6.0, "right": 10.0},
+            _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+        )
+        self.assertEqual(decision["confirmed_failed_sides"], ["right"])
+        self.assertEqual(decision["outcome"], "original_restored")
+
+    def test_confirmation_recheck_does_not_adopt_incumbent_with_other_side_regression(self):
+        decision = auto_sub_measurement._auto_sub_local_dip_recheck_decision(
+            {"left": 6.0, "right": 6.0},
+            {"left": 10.0, "right": 6.0},
+            {"left": 7.0, "right": 10.0},
+            _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+        )
+        self.assertEqual(decision["confirmed_failed_sides"], ["left"])
+        self.assertFalse(decision["incumbent_passed"])
+        self.assertEqual(decision["outcome"], "original_restored")
+
+    def test_confirmation_recheck_does_not_adopt_incumbent_with_missing_other_side(self):
+        decision = auto_sub_measurement._auto_sub_local_dip_recheck_decision(
+            {"left": 6.0, "right": 6.0},
+            {"left": 10.0, "right": 6.0},
+            {"left": 7.0, "right": None},
+            _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+        )
+        self.assertEqual(decision["confirmed_failed_sides"], ["left"])
+        self.assertFalse(decision["incumbent_passed"])
+        self.assertEqual(decision["outcome"], "original_restored")
 
 
 class JobSnapshotPersistenceTests(unittest.TestCase):

@@ -48,6 +48,7 @@ from ..measurement import (
     _auto_sub_gain_verdict,
     _auto_sub_local_dip_db,
     _auto_sub_local_dip_gate_sides,
+    _auto_sub_local_dip_recheck_decision,
     _auto_sub_target_residual_raw_db,
     _calculate_auto_sub_gain,
     _capture_auto_sub_main_references,
@@ -844,9 +845,9 @@ async def _run_auto_sub_optimize(
         # Final Before/After confirmation gate: the adopted state must not
         # introduce a clearly deeper local dip than the measured Before
         # state (see _auto_sub_local_dip_db for why a local metric is needed
-        # here and how the tolerance was derived). On failure the incumbent
-        # alignment under the balanced level is measured and adopted when it
-        # passes; otherwise the original state is restored.
+        # here and how the tolerance was derived). A trigger is confirmed
+        # against a fresh incumbent measurement before any fallback, so a
+        # stale Before dip cannot overrule the scored winner by itself.
         confirmation_gate = None
         if auto_apply:
             gate_band_low, gate_band_high = fc * 0.5, fc * 2.0
@@ -887,15 +888,56 @@ async def _run_auto_sub_optimize(
                     "left": _auto_sub_local_dip_db(recheck_sweep.get("points_left") or [], gate_band_low, gate_band_high),
                     "right": _auto_sub_local_dip_db(recheck_sweep.get("points_right") or [], gate_band_low, gate_band_high),
                 }
-                recheck_passed = all(
-                    recheck_dips[side] is None or gate_before_dips[side] is None
-                    or recheck_dips[side] <= gate_before_dips[side] + _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB
-                    for side in ("left", "right")
-                ) and (
-                    _auto_sub_has_points(recheck_sweep, "points_left") or _auto_sub_has_points(recheck_sweep, "points_right")
+                recheck_decision = _auto_sub_local_dip_recheck_decision(
+                    gate_before_dips, gate_final_dips, recheck_dips,
+                    _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
                 )
-                confirmation_gate.update({"recheck_local_dip_db": recheck_dips, "recheck_passed": recheck_passed})
-                if recheck_passed:
+                recheck_outcome = recheck_decision["outcome"]
+                confirmation_gate.update({
+                    "recheck_local_dip_db": recheck_dips,
+                    "recheck_passed": recheck_decision["incumbent_passed"],
+                    "recheck_evidence_available": recheck_decision["evidence_available"],
+                    "incumbent_evidence_available": recheck_decision["incumbent_evidence_available"],
+                    "confirmed_failed_sides": recheck_decision["confirmed_failed_sides"],
+                    "recheck_outcome": recheck_outcome,
+                })
+                if recheck_outcome == "final_kept":
+                    final_config = {
+                        "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
+                        "sub_level_db": final_gain_level, "sub_polarity": final_polarity,
+                        "main_highpass_enabled": original_highpass,
+                    }
+
+                    def _verify_final_config(overview: dict[str, Any]) -> bool:
+                        subwoofer = overview.get("subwoofer") if isinstance(overview.get("subwoofer"), dict) else {}
+                        try:
+                            return (
+                                overview.get("mode") == OUTPUT_MODE_SUBWOOFER_21
+                                and int(subwoofer.get("crossover_frequency_hz", -1)) == fc
+                                and subwoofer.get("main_highpass_enabled") is original_highpass
+                                and abs(float(subwoofer.get("sub_alignment_ms", -9999)) - applied_delay) <= 0.001
+                                and abs(round(float(subwoofer.get("sub_level_db", -9999)), 1) - round(final_gain_level, 1)) <= 0.05
+                                and str(subwoofer.get("sub_polarity") or "normal").lower() == final_polarity
+                            )
+                        except (TypeError, ValueError):
+                            return False
+
+                    recommit_ok = await _auto_sub_apply_candidate(
+                        output_mode=OUTPUT_MODE_SUBWOOFER_21,
+                        global_config=final_config,
+                        subwoofers_config=None,
+                        verify=_verify_final_config,
+                        load_overview=_load_audio_output_mode,
+                    )
+                    if not recommit_ok:
+                        confirmation_gate["action"] = "winner_recommit_failed"
+                        job["confirmation_gate"] = confirmation_gate
+                        job["status"] = "failed"
+                        job["message"] = "Final 2.1 winner recommit failed"
+                        job["error"] = {"detail": "Selected alignment, level or polarity did not match the final recommit"}
+                        await _restore_original_config()
+                        return
+                elif recheck_outcome == "incumbent_kept":
                     # Keep the balance fix, revert the alignment (and any
                     # polarity flip) to the incumbent state the balance was
                     # computed for.

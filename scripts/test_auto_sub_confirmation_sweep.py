@@ -113,6 +113,24 @@ class AutoSubConfirmationSweepTests(unittest.TestCase):
             "gate revert must zero the gain diagnostics deltas",
         )
 
+    def test_21_confirmation_recheck_uses_paired_decision(self):
+        source = inspect.getsource(autosub._run_auto_sub_optimize)
+        self.assertIn(
+            "_auto_sub_local_dip_recheck_decision(",
+            source,
+            "2.1 must compare the final and incumbent recheck before falling back",
+        )
+        self.assertIn(
+            'recheck_outcome == "final_kept"',
+            source,
+            "a non-reproduced dip regression must recommit the scored final state",
+        )
+        self.assertIn(
+            'overview.get("mode") == OUTPUT_MODE_SUBWOOFER_21',
+            source,
+            "the authoritative winner recommit must verify the complete 2.1 mode state",
+        )
+
     def test_result_payload_keeps_baseline_and_confirmation(self):
         for runner in (
             autosub._run_auto_sub_optimize,
