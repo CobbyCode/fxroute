@@ -729,6 +729,7 @@ from audio.samplerate import (
     normalize_sample_rate_policy,
     persist_audio_output_mode,
     prepare_audio_output_mode,
+    recover_saved_output_sink,
     set_audio_output_selection,
     set_audio_source_selection,
     set_bluetooth_receiver_enabled,
@@ -3115,6 +3116,15 @@ async def lifespan(app: FastAPI):
         await peak_monitor_coordinator.sync_qobuz_state(playback_state.latest_qobuz_state)
         logger.info("DSP output peak monitor initialized")
 
+        try:
+            recovery = await asyncio.to_thread(recover_saved_output_sink)
+            if recovery.get("attempted"):
+                logger.info(
+                    "Saved-output-sink recovery attempted: attempted=%s recovered=%s reason=%s",
+                    recovery.get("attempted"), recovery.get("recovered"), recovery.get("reason"),
+                )
+        except Exception as exc:
+            logger.warning("Saved-output-sink recovery failed: %s", exc)
         try:
             applied_output = apply_persisted_audio_output_selection()
             if applied_output and applied_output.get("selected_output"):

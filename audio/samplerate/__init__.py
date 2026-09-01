@@ -15,6 +15,7 @@ The implementation is split into focused modules:
 * ``bluetooth``    - bluetooth overview and actions
 * ``overview``     - status, overviews, and selection actions
 * ``alignment``    - sink suspend/resume and force-rate reconciliation
+* ``recovery``     - startup recovery for a degraded WirePlumber card probe
 
 The full public surface stays importable from ``audio.samplerate``.
 """
@@ -156,6 +157,12 @@ from audio.samplerate.alignment import (
     wait_for_samplerate_alignment,
 )
 
+from audio.samplerate.recovery import (
+    RECOVERY_POLL_SECONDS,
+    RECOVERY_WAIT_SECONDS,
+    recover_saved_output_sink,
+)
+
 __all__ = [
     "COMMAND_TIMEOUT_SECONDS",
     "FXROUTE_MAX_PROCESSING_RATE",
@@ -171,6 +178,8 @@ __all__ = [
     "PIPEWIRE_ALLOWED_RATES",
     "PIPEWIRE_DEFAULT_RATE_OPTIONS",
     "RATE_RENEGOTIATION_TRIGGER_WAIT_MS",
+    "RECOVERY_POLL_SECONDS",
+    "RECOVERY_WAIT_SECONDS",
     "SAMPLERATE_ALIGNMENT_POLL_INTERVAL_MS",
     "SAMPLERATE_ALIGNMENT_TIMEOUT_MS",
     "SAMPLE_RATE_CANDIDATES",
@@ -202,6 +211,7 @@ __all__ = [
     "prepare_audio_output_mode",
     "pulse_suspend_sink_for_samplerate",
     "rate_renegotiation_trigger_path",
+    "recover_saved_output_sink",
     "reconcile_transition_sink_rate",
     "set_audio_output_mode",
     "set_audio_output_selection",
