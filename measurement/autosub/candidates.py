@@ -253,6 +253,32 @@ def _auto_sub_22_verify_alignment(mode_state: dict[str, Any], sub1_alignment_ms:
     except (TypeError, ValueError):
         return False
 
+def _auto_sub_22_verify_subwoofers(
+    mode_state: dict[str, Any], expected_subwoofers: dict[str, Any], expected_output_mode: str,
+) -> bool:
+    """Verify the complete persisted 2.2 subwoofer state."""
+    actual_subwoofers = mode_state.get("subwoofers")
+    if expected_output_mode not in OUTPUT_MODE_SUBWOOFER_22_MODES:
+        return False
+    if mode_state.get("mode") != expected_output_mode:
+        return False
+    if not isinstance(actual_subwoofers, dict):
+        return False
+    if not all(isinstance(actual_subwoofers.get(key), dict) for key in ("sub1", "sub2")):
+        return False
+    if not all(isinstance(expected_subwoofers.get(key), dict) for key in ("sub1", "sub2")):
+        return False
+    for sub_key in ("sub1", "sub2"):
+        actual = _auto_sub_22_sub(mode_state, sub_key)
+        expected = _auto_sub_22_sub({"subwoofers": expected_subwoofers}, sub_key)
+        if abs(actual["alignment_ms"] - expected["alignment_ms"]) > 0.001:
+            return False
+        if abs(round(actual["level_db"], 1) - round(expected["level_db"], 1)) > 0.05:
+            return False
+        if actual["polarity"] != expected["polarity"]:
+            return False
+    return True
+
 def _auto_sub_opposite_polarity(polarity: str) -> str:
     return "normal" if str(polarity).lower() == "invert" else "invert"
 
@@ -397,4 +423,3 @@ def _auto_sub_score_value(result: dict[str, Any] | None) -> float:
         return float(result.get("final_score", result.get("score", 0.0)) or 0.0)
     except (TypeError, ValueError):
         return float("-inf")
-

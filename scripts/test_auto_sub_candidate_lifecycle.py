@@ -1,5 +1,6 @@
 """Characterization tests for the shared AutoSub candidate apply lifecycle."""
 
+import copy
 import sys
 import unittest
 from pathlib import Path
@@ -11,6 +12,43 @@ import measurement.autosub as autosub
 
 
 class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    def test_complete_22_subwoofer_verification_checks_alignment_level_and_polarity(self):
+        expected = {
+            "sub1": {"level_db": 3.111, "alignment_ms": -2.14, "polarity": "invert"},
+            "sub2": {"level_db": 0.412, "alignment_ms": -2.54, "polarity": "normal"},
+        }
+        persisted = {
+            "mode": "subwoofer-2.2-stereo",
+            "subwoofers": {
+                "sub1": {"level_db": 3.1, "alignment_ms": -2.14, "polarity": "invert"},
+                "sub2": {"level_db": 0.4, "alignment_ms": -2.54, "polarity": "normal"},
+            },
+        }
+        self.assertTrue(autosub._auto_sub_22_verify_subwoofers(
+            persisted, expected, "subwoofer-2.2-stereo",
+        ))
+
+        mismatches = (
+            ("sub1", "alignment_ms", 0.0),
+            ("sub2", "level_db", 0.8),
+            ("sub1", "polarity", "normal"),
+        )
+        for sub_key, field, value in mismatches:
+            with self.subTest(sub=sub_key, field=field):
+                changed = copy.deepcopy(persisted)
+                changed["subwoofers"][sub_key][field] = value
+                self.assertFalse(autosub._auto_sub_22_verify_subwoofers(
+                    changed, expected, "subwoofer-2.2-stereo",
+                ))
+
+        self.assertFalse(autosub._auto_sub_22_verify_subwoofers(
+            {"mode": "subwoofer-2.2-stereo"}, expected, "subwoofer-2.2-stereo",
+        ))
+        for wrong_mode in ("stereo", "subwoofer-2.2"):
+            self.assertFalse(autosub._auto_sub_22_verify_subwoofers(
+                {**persisted, "mode": wrong_mode}, expected, "subwoofer-2.2-stereo",
+            ))
+
     async def test_apply_sync_wait_verify_sequence_uses_persisted_overview(self):
         events = []
         persisted = {"mode": "subwoofer-2.2"}

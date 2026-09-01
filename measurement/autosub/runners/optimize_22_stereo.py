@@ -26,13 +26,13 @@ from ..candidates import (
     _auto_sub_22_stereo_name,
     _auto_sub_22_sub,
     _auto_sub_22_verify_alignment,
+    _auto_sub_22_verify_subwoofers,
     _auto_sub_apply_candidate,
     _auto_sub_clamped_delay,
     _auto_sub_coarse_winner_at_scan_edge,
     _auto_sub_fine_delay_candidates,
     _auto_sub_opposite_polarity,
     _auto_sub_polarity_decision,
-    _restore_auto_sub_original_config,
     _auto_sub_snapshot_copy,
     _auto_sub_step_ms,
     _auto_sub_sweep_profile,
@@ -123,8 +123,35 @@ async def _run_auto_sub_22_stereo_optimize(
         _auto_sub_lock.release()
         return
 
-    async def _restore_original_config() -> None:
-        await _restore_auto_sub_original_config(original_config_snapshot)
+    async def _restore_original_config() -> bool:
+        original_sub1 = _auto_sub_22_sub(original_config_snapshot, "sub1")
+        original_sub2 = _auto_sub_22_sub(original_config_snapshot, "sub2")
+        original_subwoofers = _auto_sub_22_candidate_subwoofers(
+            original_config_snapshot,
+            sub1_alignment_ms=original_sub1["alignment_ms"],
+            sub2_alignment_ms=original_sub2["alignment_ms"],
+            active_subs=("sub1", "sub2"),
+            sub1_polarity=original_sub1["polarity"],
+            sub2_polarity=original_sub2["polarity"],
+        )
+        restored = await _auto_sub_apply_candidate(
+            output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            global_config=_auto_sub_22_global_config(original_config_snapshot),
+            subwoofers_config=original_subwoofers,
+            verify=lambda overview: _auto_sub_22_verify_subwoofers(
+                overview, original_subwoofers, OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            ),
+            load_overview=_load_audio_output_mode,
+        )
+        if not restored:
+            prior_detail = str((job.get("error") or {}).get("detail") or "")
+            restore_detail = "original config restore verification failed"
+            job["status"] = "failed"
+            job["message"] = "Auto Sub Optimize failed to restore the original 2.2 Stereo config"
+            job["error"] = {
+                "detail": f"{prior_detail}; {restore_detail}" if prior_detail else restore_detail,
+            }
+        return restored
 
     original_left = _auto_sub_22_sub(original_config_snapshot, "sub1")
     original_right = _auto_sub_22_sub(original_config_snapshot, "sub2")
@@ -1393,8 +1420,9 @@ async def _run_auto_sub_22_stereo_optimize(
         # is immune to the legitimate broadband balance change, so only real
         # new notches trip it — mean-based shape metrics stayed "better" in
         # the rejected real run while a 7 dB notch appeared. On failure the
-        # incumbent alignment under the balanced levels is measured and
-        # adopted when it passes; otherwise the original state is restored.
+        # incumbent alignment under the balanced levels is measured as a
+        # diagnostic; when it passes, the balance Gain is kept but the scored
+        # alignment/polarity remains authoritative.
         gate_band_low, gate_band_high = fc * 0.5, fc * 2.0
         gate_before_dips = {
             "left": _auto_sub_local_dip_db(balance_left.get("points") or [], gate_band_low, gate_band_high),
@@ -1455,31 +1483,89 @@ async def _run_auto_sub_22_stereo_optimize(
             )
             confirmation_gate.update({"recheck_local_dip_db": recheck_dips, "recheck_passed": recheck_passed})
             if recheck_passed and _auto_sub_has_points(recheck_left, "points") and _auto_sub_has_points(recheck_right, "points"):
-                # Keep the balance fix, revert the alignment (and any polarity
-                # flip) to the incumbent state the balance was computed for.
-                final_gain_left, final_gain_right = recheck_left, recheck_right
+                # Keep the accepted balance gains without allowing the
+                # diagnostic incumbent recheck to replace the scored winner.
+                # The deep-bass sweeps match this gain/alignment/polarity state.
+                if not deep_bass_reverted:
+                    final_gain_left, final_gain_right = deep_bass_left, deep_bass_right
                 final_gain_snapshot = balanced_snapshot
-                best_left = original_left_alignment
-                best_right = original_right_alignment
-                selected_left_polarity = str(original_left.get("polarity", "normal"))
-                selected_right_polarity = str(original_right.get("polarity", "normal"))
-                for side, polarity_value in (("left", selected_left_polarity), ("right", selected_right_polarity)):
-                    polarity_entry = stereo_polarity.get(side) or {}
-                    polarity_entry["selected"] = polarity_value
-                    polarity_entry["confirmation_revert"] = True
-                await asyncio.to_thread(
-                    set_audio_output_mode,
-                    OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(final_gain_snapshot),
-                    _auto_sub_22_candidate_subwoofers(
-                        final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
-                        active_subs=("sub1", "sub2"),
-                    ),
+                final_subwoofers = _auto_sub_22_candidate_subwoofers(
+                    final_gain_snapshot,
+                    sub1_alignment_ms=best_left,
+                    sub2_alignment_ms=best_right,
+                    active_subs=("sub1", "sub2"),
+                    sub1_polarity=selected_left_polarity,
+                    sub2_polarity=selected_right_polarity,
                 )
-                if _dsp_runtime() is not None:
-                    await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
-                confirmation_gate["action"] = "alignment_reverted_balance_kept"
+                final_apply_ok = await _auto_sub_apply_candidate(
+                    output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                    global_config=_auto_sub_22_global_config(final_gain_snapshot),
+                    subwoofers_config=final_subwoofers,
+                    verify=lambda overview: _auto_sub_22_verify_subwoofers(
+                        overview, final_subwoofers, OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                    ),
+                    load_overview=_load_audio_output_mode,
+                )
+                if not final_apply_ok:
+                    job["status"] = "failed"
+                    job["message"] = "Final 2.2 Stereo winner commit failed"
+                    job["error"] = {"detail": "Selected alignment/polarity readback did not match the final commit"}
+                    await _restore_original_config()
+                    return
+                if deep_bass_reverted:
+                    final_gain_left = await _measure_auto_sub_candidate(
+                        delay_ms=best_left, job=job, candidate_index=1, total=2,
+                        stage="final_commit_confirmation", fc=fc, input_id=input_id, channel="left",
+                        mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
+                        calibration_ref=calibration_ref, calibration_filename=calibration_filename,
+                        calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
+                        auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+                        original_highpass=True, measure_channel="left",
+                        output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                        original_config_snapshot=final_gain_snapshot, sub1_alignment_ms=best_left,
+                        sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
+                        sub1_polarity=selected_left_polarity, sub2_polarity=selected_right_polarity,
+                    )
+                    final_gain_right = await _measure_auto_sub_candidate(
+                        delay_ms=best_right, job=job, candidate_index=2, total=2,
+                        stage="final_commit_confirmation", fc=fc, input_id=input_id, channel="right",
+                        mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
+                        calibration_ref=calibration_ref, calibration_filename=calibration_filename,
+                        calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
+                        auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+                        original_highpass=True, measure_channel="right",
+                        output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                        original_config_snapshot=final_gain_snapshot, sub1_alignment_ms=best_left,
+                        sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
+                        sub1_polarity=selected_left_polarity, sub2_polarity=selected_right_polarity,
+                    )
+                    final_confirmation_valid = bool(
+                        _auto_sub_has_points(final_gain_left, "points")
+                        and _auto_sub_has_points(final_gain_right, "points")
+                    )
+                    confirmation_gate["final_commit_confirmation"] = (
+                        "completed" if final_confirmation_valid else "unavailable"
+                    )
+                    if not final_confirmation_valid:
+                        final_gain_left, final_gain_right = {}, {}
+                job["auto_gain"].update({
+                    "applied": False,
+                    "reverted": bool(first_step_deltas),
+                    "final_deltas_db": {"left": 0.0, "right": 0.0},
+                    "final_levels_db": {
+                        "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
+                        "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
+                    },
+                    "stage_output_peaks": {
+                        "left": final_gain_left.get("stage_output_peaks"),
+                        "right": final_gain_right.get("stage_output_peaks"),
+                    },
+                    "confirmation_gain_fallback": "balanced_gain",
+                })
+                confirmation_gate["action"] = "winner_alignment_balance_kept"
             else:
-                await _restore_original_config()
+                if not await _restore_original_config():
+                    return
                 final_gain_left, final_gain_right = balance_left, balance_right
                 final_gain_snapshot = original_config_snapshot
                 best_left = original_left_alignment
@@ -1507,7 +1593,7 @@ async def _run_auto_sub_22_stereo_optimize(
         gate_action = (job.get("confirmation_gate") or {}).get("action", "final_kept")
         job["status"] = "completed"
         gate_suffix = {
-            "alignment_reverted_balance_kept": "; final state regressed locally - incumbent alignment kept, balance applied",
+            "winner_alignment_balance_kept": "; balance Gain kept, selected alignment/polarity committed",
             "reverted_to_original": "; final state regressed locally - original state restored",
         }.get(gate_action)
         job["message"] = (
@@ -1527,13 +1613,20 @@ async def _run_auto_sub_22_stereo_optimize(
         left_baseline = balance_left
         right_baseline = balance_right
         # Prefer the final measured per-side sweep (gain verification or
-        # polarity-refined winner) so the confirmation always reflects the
-        # applied pair; fall back to the scan sweep at the accepted delay.
+        # polarity-refined winner) so the confirmation reflects the applied
+        # pair. A failed exact-state capture after a polarity revert must not
+        # fall back to a single-sub scan and mislabel it as the final state.
         def _points_sweep(sweep: dict[str, Any] | None) -> dict[str, Any] | None:
             return sweep if sweep and _auto_sub_has_points(sweep, "points") else None
 
-        left_confirm = _points_sweep(final_gain_left) or _auto_sub_result_for_delay(all_left_sweeps, best_left)
-        right_confirm = _points_sweep(final_gain_right) or _auto_sub_result_for_delay(all_right_sweeps, best_right)
+        exact_confirmation_required = bool(
+            deep_bass_reverted and gate_action == "winner_alignment_balance_kept"
+        )
+        left_confirm = _points_sweep(final_gain_left)
+        right_confirm = _points_sweep(final_gain_right)
+        if not exact_confirmation_required:
+            left_confirm = left_confirm or _auto_sub_result_for_delay(all_left_sweeps, best_left)
+            right_confirm = right_confirm or _auto_sub_result_for_delay(all_right_sweeps, best_right)
 
         # Chain-anchor display correction: each trace is pulled back to the
         # run's median 200-600 Hz main-only level so an occasional chain gain
@@ -1637,7 +1730,7 @@ async def _run_auto_sub_22_stereo_optimize(
             "auto_applied": gate_action != "reverted_to_original",
             "apply_decision": {
                 "final_kept": "applied_22_stereo_separate_lr",
-                "alignment_reverted_balance_kept": "fallback_incumbent_alignment_balance_kept",
+                "winner_alignment_balance_kept": "applied_winner_alignment_with_balanced_gain",
                 "reverted_to_original": "reverted_to_original_state",
             }.get(gate_action, "applied_22_stereo_separate_lr"),
             "candidate_ledger": candidate_ledger,

@@ -45,6 +45,7 @@ from measurement.autosub.candidates import (
     _auto_sub_22_stereo_name,
     _auto_sub_22_sub,
     _auto_sub_22_verify_alignment,
+    _auto_sub_22_verify_subwoofers,
     _auto_sub_apply_candidate,
     _auto_sub_cancelled_candidate,
     _auto_sub_clamped_delay,

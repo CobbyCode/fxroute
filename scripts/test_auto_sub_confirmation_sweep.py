@@ -68,14 +68,19 @@ class AutoSubConfirmationSweepTests(unittest.TestCase):
     def test_22_stereo_confirmation_prefers_final_measured_sweeps(self):
         source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
         self.assertIn(
-            "_points_sweep(final_gain_left) or _auto_sub_result_for_delay(all_left_sweeps, best_left)",
+            "left_confirm = _points_sweep(final_gain_left)",
             source,
             "2.2 Stereo left confirmation must take the final measured sweep regardless of the step-1 verdict",
         )
         self.assertIn(
-            "_points_sweep(final_gain_right) or _auto_sub_result_for_delay(all_right_sweeps, best_right)",
+            "right_confirm = _points_sweep(final_gain_right)",
             source,
             "2.2 Stereo right confirmation must take the final measured sweep regardless of the step-1 verdict",
+        )
+        self.assertIn(
+            "if not exact_confirmation_required:",
+            source,
+            "2.2 Stereo may use scan fallbacks only when an exact final-state capture is not required",
         )
         self.assertNotIn(
             'final_gain_left if accepted_step1_sides["left"] else',

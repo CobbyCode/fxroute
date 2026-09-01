@@ -247,12 +247,12 @@ class BalanceTransferWiringTests(unittest.TestCase):
         )
 
     def test_confirmation_gate_stays_wired_after_transfer(self):
-        # The transfer changes the trim derivation, not the safety gates.
+        # The transfer changes the trim derivation, not the final diagnostic.
         source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
         self.assertIn(
             '"confirmation_recheck"',
             source,
-            "the final Before/After confirmation gate with incumbent-alignment revert must remain",
+            "the final Before/After confirmation recheck must remain",
         )
 
 
