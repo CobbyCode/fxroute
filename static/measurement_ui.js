@@ -729,6 +729,8 @@ function getMeasurementAutoSubSummary(measurement = {}) {
             const sign = rounded > 0 ? '+' : (rounded < 0 ? '\u2212' : '');
             return `${sign}${Math.abs(rounded).toFixed(decimals)} dB`;
         };
+        const sub = gainText(gains.sub);
+        if (sub) parts.push(`Sub ${sub}`);
         const sub1 = gainText(gains.sub1);
         if (sub1) parts.push(`Sub 1 ${sub1}`);
         const sub2 = gainText(gains.sub2);

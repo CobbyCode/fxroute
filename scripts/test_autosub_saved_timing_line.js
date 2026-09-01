@@ -148,4 +148,15 @@ function makeAutoSubMeta() {
     assert.ok(!info.line.includes('Sub 1'), 'missing sub gain must be omitted');
 }
 
-console.log('ok autosub saved-measurement timing line (target + sub gains, legacy-safe)');
+// ---------------------------------------------------------------------------
+// 11. 2.1 mode renders the stored single final sub gain
+// ---------------------------------------------------------------------------
+{
+    const info = MeasurementUI.getMeasurementTimingInfo(makeMeasurement({
+        autosub_meta: { target: TARGET_HARMAN, final_gains_db: { sub: -2.35 } },
+    }));
+    assert.match(info.line, /^Target: Harman-style · Sub −2\.3 dB$/);
+    assert.ok(!info.line.includes('Sub 1'), '2.1 gain must use the compact single-sub label');
+}
+
+console.log('ok autosub saved-measurement timing line (target + final sub gains, all modes)');
