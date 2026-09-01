@@ -470,6 +470,17 @@ async def _run_auto_sub_optimize(
         apply_decision = "not_applied_uncertain_confidence"
         if incumbent_winner is not None and round(float(best_delay), 2) == round(float(current_alignment), 2):
             apply_decision = "not_applied_incumbent_better"
+        elif acceptance["fine_accepted"]:
+            # The fine winner already beat both the coarse winner and the
+            # incumbent on the shared scoring basis (that is exactly what
+            # fine_accepted means), so the confidence/margin pre-gate must
+            # not run a second time: it blocked measurably better fine
+            # winners (e.g. fine 67.7% vs incumbent 59.2%) before they could
+            # reach the real confirmation gate, leaving the run at 0.00 ms.
+            # The confirmation gate below is the actual safety check for the
+            # adopted state and still applies to this path.
+            auto_apply = True
+            apply_decision = "applied_fine_scan_winner"
         elif confidence == "clear":
             auto_apply = True
             apply_decision = "applied_clear_confidence"

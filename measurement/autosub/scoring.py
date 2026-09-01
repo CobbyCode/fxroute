@@ -350,25 +350,18 @@ def _auto_sub_select_accepted_winner(
     elif _auto_sub_score_value(fine_winner) <= _auto_sub_score_value(protected_winner) + score_epsilon:
         reject_reason = "incumbent_better" if protected_winner is incumbent_winner else "fine_not_better"
     else:
-        fine_xo_loss = max(
-            0.0,
-            float(coarse_winner.get("xo_score", 0.0) or 0.0) - float(fine_winner.get("xo_score", 0.0) or 0.0),
-        )
-        fine_timing_loss = max(
-            0.0,
-            float(coarse_winner.get("timing_band_score", 0.0) or 0.0)
-            - float(fine_winner.get("timing_band_score", 0.0) or 0.0),
-        )
-        low_guard_gain_db = max(
-            0.0,
-            float(coarse_winner.get("low_guard_loss_db", 0.0) or 0.0)
-            - float(fine_winner.get("low_guard_loss_db", 0.0) or 0.0),
-        )
-        if low_guard_gain_db <= 1.0 and (fine_xo_loss >= 0.05 or fine_timing_loss >= 0.05):
-            reject_reason = "xo_loss_vs_coarse"
-        else:
-            accepted_winner = fine_winner
-            fine_accepted = True
+        # The fine winner already beats the protected winner on its own
+        # combined score (the same cross-candidate basis the coarse decision
+        # uses). No extra component-metric veto here: comparing the fine
+        # winner's xo/timing components against the coarse winner's is a
+        # cross-basis comparison (different scan sets feed the min-max
+        # normalization), and it vetoed measurably better fine winners
+        # before they could reach the real confirmation gate. The combined
+        # score comparison above is the single, consistent decision basis;
+        # the real confirmation gate downstream still guards the adopted
+        # state against actual regressions.
+        accepted_winner = fine_winner
+        fine_accepted = True
 
     return {
         "accepted_winner": accepted_winner,
