@@ -207,7 +207,7 @@ async function pollAutoSubJob(jobId) {
             }
             if (Date.now() - startedAt >= longRunningAfterMs
                     && (status === 'queued' || status === 'preparing' || status === 'running' || status === 'cancelling')) {
-                measurementState.statusText = `AutoSub läuft weiterhin … ${measurementState.statusText}`;
+                measurementState.statusText = `AutoSub still running… ${measurementState.statusText}`;
             }
 
             // Update inline status element
