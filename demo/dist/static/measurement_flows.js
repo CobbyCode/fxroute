@@ -388,13 +388,31 @@ async function handleAutoSubResult(job) {
     const originalText = original !== null ? original.toFixed(2) : '?';
     const appliedText = applied !== null ? applied.toFixed(2) : '?';
     const suggestedText = suggested !== null ? suggested.toFixed(2) : '?';
-    const isWeak = !wasApplied || (Number.isFinite(scorePct) && scorePct < 50);
+    // "Weak" is the scoring backend's confidence verdict (uncertain winner
+    // separation), not the apply decision: an incumbent win or a rejected
+    // suggestion can still be a clear, high-score outcome, and the
+    // comparative score alone never implies weak.
+    const isWeak = conf === 'uncertain';
+    const applyDecision = typeof result.apply_decision === 'string' ? result.apply_decision : null;
+    const incumbentKept = !wasApplied && (
+        applyDecision === 'not_applied_incumbent_better'
+        || (suggested !== null && original !== null && Math.abs(suggested - original) < 0.005)
+    );
+    const notAppliedReason = !wasApplied && !incumbentKept
+        ? ({
+            'reverted_to_original_state': 'final check failed, original restored',
+            'not_applied_close_margin_below_2pp': 'advantage too small',
+            'not_applied_close_gain_below_3pp': 'advantage too small',
+        }[applyDecision] || '')
+        : '';
 
     const mainParts = [];
     if (wasApplied) {
         mainParts.push(`AutoSub applied: ${appliedText} ms (was ${originalText} ms)`);
+    } else if (incumbentKept) {
+        mainParts.push(`AutoSub kept current alignment: ${originalText} ms`);
     } else {
-        mainParts.push(`AutoSub suggested: ${suggestedText} ms (was ${originalText} ms, not applied)`);
+        mainParts.push(`AutoSub suggested: ${suggestedText} ms (was ${originalText} ms, not applied${notAppliedReason ? ` · ${notAppliedReason}` : ''})`);
     }
     if (hasWinnerLRScores) {
         mainParts.push(`Score ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`);
@@ -431,17 +449,18 @@ async function handleAutoSubResult(job) {
     }
 
     let toastText;
+    const outcomeToastPart = wasApplied
+        ? `Applied: ${appliedText} ms (was ${originalText} ms)`
+        : incumbentKept
+            ? `Kept current alignment: ${originalText} ms`
+            : `Suggested: ${suggestedText} ms (was ${originalText} ms, not applied${notAppliedReason ? ` · ${notAppliedReason}` : ''})`;
     if (hasWinnerLRScores) {
-        toastText = wasApplied
-            ? `Applied: ${appliedText} ms (was ${originalText} ms) · Combined ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`
-            : `Suggested: ${suggestedText} ms (was ${originalText} ms, not applied) · Combined ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`;
+        toastText = `${outcomeToastPart} · Combined ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`;
     } else {
-        toastText = wasApplied
-            ? `Applied: ${appliedText} ms (was ${originalText} ms) · Score ${scorePctText} %`
-            : `Suggested: ${suggestedText} ms (was ${originalText} ms, not applied) · Score ${scorePctText} %`;
+        toastText = `${outcomeToastPart} · Score ${scorePctText} %`;
     }
-    if (isWeak) {
-        toastText += ` · ${conf}`;
+    if (conf !== 'unknown') {
+        toastText += ` · confidence ${conf}`;
     }
     syncSubwooferControlsDuringAutoSub();
     const toastType = isWeak ? 'error' : (wasApplied ? 'success' : 'warning');
