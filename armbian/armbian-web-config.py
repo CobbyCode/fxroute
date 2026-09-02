@@ -298,7 +298,7 @@ COUNTRY_OPTIONS = (
 COUNTRY_CODES = frozenset(code for _name, code in COUNTRY_OPTIONS)
 
 PREVIEW_WIFI_NETWORKS = [
-    {"ssid": "FXRoute Studio", "signal": -42, "secured": True},
+    {"ssid": "FXRoute Studio", "signal": -42, "secured": True, "country": "DE"},
     {"ssid": "Home network", "signal": -57, "secured": True},
     {"ssid": "Open guest", "signal": -71, "secured": False},
 ]
@@ -418,11 +418,14 @@ def parse_wifi_scan(iw_output: str) -> list[dict[str, object]]:
         signal = current.get("signal")
         if not isinstance(signal, int):
             signal = None
+        country = current.get("country")
         record = {
             "ssid": ssid,
             "signal": signal,
             "secured": bool(current.get("secured")),
         }
+        if country:
+            record["country"] = country
         previous = networks.get(ssid)
         if previous is None:
             networks[ssid] = record
@@ -433,6 +436,8 @@ def parse_wifi_scan(iw_output: str) -> list[dict[str, object]]:
             signal is not None and signal > previous_signal
         ):
             previous["signal"] = signal
+        if not previous.get("country") and record.get("country"):
+            previous["country"] = record["country"]
 
     for line in iw_output.splitlines():
         if re.match(
@@ -452,6 +457,10 @@ def parse_wifi_scan(iw_output: str) -> list[dict[str, object]]:
             match = re.search(r"(-?\d+(?:\.\d+)?)\s+dBm", field)
             if match:
                 current["signal"] = int(round(float(match.group(1))))
+        elif field.startswith("Country:"):
+            match = re.search(r"Country: ([A-Z]{2})", field)
+            if match:
+                current["country"] = match.group(1)
         elif field.startswith(("RSN:", "WPA:")):
             current["secured"] = True
         elif field.startswith("capability:") and "Privacy" in field:
@@ -1295,8 +1304,13 @@ input, select, textarea {{
   font: inherit;
   padding: 11px 12px;
   width: 100%;
-}}
-select {{
+}}    # Password/Country: two fields on one row on desktop. The password side
+    # takes the remaining space; the country selector stays narrow.
+    .field-grid.fields-password-country {{
+      grid-template-columns: minmax(0, 1fr) 150px;
+    }}
+
+    select {{
   background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
   background-position: calc(100% - 17px) 52%, calc(100% - 12px) 52%;
   background-repeat: no-repeat;
@@ -1359,6 +1373,7 @@ button:disabled {{ cursor: wait; opacity: .6; }}
 @media (max-width: 560px) {{
   .shell {{ padding-left: 14px; padding-right: 14px; }}
   .field-grid {{ grid-template-columns: 1fr; }}
+  .field-grid.fields-password-country {{ grid-template-columns: 1fr; }}
   .section-heading {{ align-items: start; flex-direction: column; }}
   .secondary {{ width: 100%; }}
   .network-option {{ gap: 8px; grid-template-columns: 1fr auto; }}
@@ -1420,17 +1435,16 @@ button:disabled {{ cursor: wait; opacity: .6; }}
           <input id="wifi_ssid" name="wifi_ssid" maxlength="32" autocomplete="off">
         </div>
       </div>
-      <p id="wifi-selection" class="selection">No network selected</p>
-      <div class="field-grid">
-        <div class="field">
-          <label for="wifi_password">Wi-Fi password <span id="wifi-password-note" class="optional">(if needed)</span></label>
-          <input id="wifi_password" name="wifi_password" type="password" autocomplete="off">
+      <p id="wifi-selection" class="selection">No network selected</p>        <div class="field-grid fields-password-country">
+          <div class="field">
+            <label for="wifi_password">Wi-Fi password <span id="wifi-password-note" class="optional">(if needed)</span></label>
+            <input id="wifi_password" name="wifi_password" type="password" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="wifi_country">Country / Region</label>
+            <select id="wifi_country" name="wifi_country">{country_options_markup()}</select>
+          </div>
         </div>
-        <div class="field">
-          <label for="wifi_country">Country / Region</label>
-          <select id="wifi_country" name="wifi_country">{country_options_markup()}</select>
-        </div>
-      </div>
     </section>
     <section class="card">
       <button class="primary" type="submit">Save settings</button>
@@ -1482,6 +1496,17 @@ button:disabled {{ cursor: wait; opacity: .6; }}
     }});
   }}
 
+  function applyNetworkCountry(network) {{
+    // Reuse the regulatory code reported by the Wi-Fi scan. Only preselect
+    // when the scan provides a usable code and the dropdown knows it;
+    // otherwise keep the current (possibly manually chosen) value. The
+    // country stays freely editable either way.
+    const code = typeof network.country === "string" ? network.country.toUpperCase() : "";
+    if (!/^[A-Z]{{2}}$/.test(code)) return;
+    if (!countrySelect.querySelector('option[value="' + code + '"]')) return;
+    countrySelect.value = code;
+  }}
+
   function clearMissingNetworkSelection() {{
     if (!ssidInput.readOnly || !ssidInput.value) return;
     ssidInput.value = "";
@@ -1490,6 +1515,8 @@ button:disabled {{ cursor: wait; opacity: .6; }}
     selectedNetworkSecured = null;
     lastSsid = "";
     selection.textContent = "No network selected";
+    // No network selected anymore: fall back to the form default.
+    countrySelect.value = countrySelect.options[0] ? countrySelect.options[0].value : "GB";
     syncNetworkFields();
   }}
 
@@ -1534,6 +1561,7 @@ button:disabled {{ cursor: wait; opacity: .6; }}
         ssidInput.readOnly = true;
         lastSsid = networkSsid;
         selectedNetworkSecured = Boolean(network.secured);
+        applyNetworkCountry(network);
         manualNetwork.hidden = true;
         manualToggle.setAttribute("aria-expanded", "false");
         manualToggle.textContent = "Enter network manually";
@@ -1585,6 +1613,9 @@ button:disabled {{ cursor: wait; opacity: .6; }}
       ssidInput.readOnly = false;
       selectedNetworkSecured = null;
       lastSsid = ssidInput.value;
+      // Manual entry is not tied to a scanned AP, so the country returns to
+      // the form default until the user picks one.
+      countrySelect.value = countrySelect.options[0] ? countrySelect.options[0].value : "GB";
       selection.textContent = ssidInput.value ? "Selected: " + ssidInput.value : "Enter a network name";
       clearNetworkSelection();
       ssidInput.focus();

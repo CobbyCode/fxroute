@@ -635,6 +635,89 @@ BSS Load:
             [{"ssid": "Studio", "signal": -42, "secured": True}],
         )
 
+    def test_wifi_scan_parser_exposes_the_bss_regulatory_country(self):
+        scan = """
+BSS 11:22:33:44:55:66(on wlan0)
+        signal: -42.00 dBm
+        SSID: Studio Wi-Fi
+        RSN:
+        Country: DE\tenvironment Indoor
+BSS aa:bb:cc:dd:ee:ff(on wlan0)
+        signal: -50.00 dBm
+        SSID: Open cafe
+        Country: AT\tenvironment Outdoors
+"""
+
+        self.assertEqual(
+            self.web.parse_wifi_scan(scan),
+            [
+                {
+                    "ssid": "Studio Wi-Fi",
+                    "signal": -42,
+                    "secured": True,
+                    "country": "DE",
+                },
+                {
+                    "ssid": "Open cafe",
+                    "signal": -50,
+                    "secured": False,
+                    "country": "AT",
+                },
+            ],
+        )
+
+    def test_wifi_scan_parser_omits_the_country_when_the_ap_reports_none(self):
+        scan = """
+BSS 11:22:33:44:55:66(on wlan0)
+        signal: -42.00 dBm
+        SSID: No country
+        RSN:
+        Country:\n"""
+
+        self.assertEqual(
+            self.web.parse_wifi_scan(scan),
+            [{"ssid": "No country", "signal": -42, "secured": True}],
+        )
+
+    def test_wifi_scan_parser_keeps_the_strongest_bss_country_for_duplicate_ssids(self):
+        scan = """
+BSS 11:22:33:44:55:66(on wlan0)
+        signal: -38.00 dBm
+        SSID: Studio Wi-Fi
+        RSN:
+        Country: DE\tenvironment Indoor
+BSS aa:bb:cc:dd:ee:ff(on wlan0)
+        signal: -48.00 dBm
+        SSID: Studio Wi-Fi
+        Country: GB\tenvironment Indoor
+"""
+
+        self.assertEqual(
+            self.web.parse_wifi_scan(scan),
+            [
+                {
+                    "ssid": "Studio Wi-Fi",
+                    "signal": -38,
+                    "secured": True,
+                    "country": "DE",
+                }
+            ],
+        )
+
+    def test_wifi_scan_parser_ignores_a_malformed_country_value(self):
+        scan = """
+BSS 11:22:33:44:55:66(on wlan0)
+        signal: -42.00 dBm
+        SSID: Studio
+        RSN:
+        Country: D1\tenvironment Indoor
+"""
+
+        self.assertEqual(
+            self.web.parse_wifi_scan(scan),
+            [{"ssid": "Studio", "signal": -42, "secured": True}],
+        )
+
     def test_preview_onboarding_simulates_networks_without_system_changes(self):
         onboarding = self.web.Onboarding("preview-wlan0", "preview", preview=True)
 
