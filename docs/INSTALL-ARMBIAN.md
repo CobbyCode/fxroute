@@ -106,10 +106,10 @@ reproducibility epoch, so an RTC-less Pi can establish HTTPS before NTP settles.
 The image is headless and completes its initial setup through the local web
 page:
 
-- The end user selects the FXRoute user name, sets its password, and supplies an SSH public key. The account is created with the required sudo, audio, and wheel access; the password is for local administration and SSH accepts the public key only.
+- The end user selects the FXRoute user name, sets its password, and may add an SSH public key under Advanced. The account is created with the required sudo, audio, and wheel access; SSH accepts key authentication only. Without a key, SSH key authentication is unavailable until one is added locally.
 - Root is locked and SSH password and keyboard-interactive authentication are disabled.
 - Armbian's noninteractive `armbian-firstrun.service` remains enabled for host-key regeneration and board setup.
-- Armbian's first-login marker is retained until provisioning completes. With no wired Ethernet carrier, the image starts a temporary open `hostname-armbiansetup` access point at `http://10.42.0.1`; enter the account, SSH key, and Wi-Fi credentials there. With a wired Ethernet carrier, the image waits briefly for DHCP, then serves `https://<dhcp-address>`; accept its self-signed setup certificate. HTTP GET redirects to HTTPS and HTTP POST is rejected before credentials are read; no access point is started while wired networking is usable.
+- Armbian's first-login marker is retained until provisioning completes. With no wired Ethernet carrier, the image starts a temporary open `hostname-armbiansetup` access point at `http://10.42.0.1`; enter the account, optional SSH key, and Wi-Fi credentials there. With a wired Ethernet carrier, the image waits briefly for DHCP, then serves `https://<dhcp-address>`; accept its self-signed setup certificate. HTTP GET redirects to HTTPS and HTTP POST is rejected before credentials are read; no access point is started while wired networking is usable.
 - The Wi-Fi credentials are saved as Armbian-style Netplan configuration for the existing `systemd-networkd` stack. Ethernet has route metric 100 and Wi-Fi has route metric 600. The setup service is not enabled again after successful onboarding.
 - The FXRoute first-boot service waits for the network and Armbian first-run work, extracts the source archive, and invokes the existing `install.sh` with `--user`, `--providers none`, and `--yes`.
 - The installer creates the persistent systemd user session, PipeWire graph, native DSP engine, and `fxroute.service` as the target user.
@@ -157,3 +157,18 @@ software emulation this takes roughly one to two hours, so pass an explicit
 generous timeout, for example `--timeout 7200`; the default of two hours
 matches that first-boot budget, while shorter values abort a healthy but
 slow install.
+
+## Local Browser Preview
+
+The production page is rendered by `armbian/armbian-web-config.py`, so it is
+not a standalone HTML file: Wi-Fi scanning and submission use the same service
+endpoints. Run its loopback-only preview directly from the checkout:
+
+```bash
+python3 armbian/armbian-web-config.py --preview --port 8765
+```
+
+Open `http://127.0.0.1:8765/` in the browser. Preview mode uses a small fixed
+nearby-network list, accepts valid form submissions for iteration, and does not
+create accounts or write network, SSH, or onboarding state on the host. Stop it
+with `Ctrl-C`.

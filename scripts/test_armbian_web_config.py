@@ -3,6 +3,7 @@
 
 import importlib.util
 import http.client
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -79,20 +80,22 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
         self.assertIn("route-metric: 600", config)
         self.assertIn("regulatory-domain: DE", config)
 
-    def test_setup_validation_rejects_unsafe_or_unusable_values(self):
+    def test_wifi_validation_rejects_unsafe_or_unusable_values(self):
         with self.assertRaises(ValueError):
             self.web.validate_setup("", "", "GB")
         with self.assertRaises(ValueError):
             self.web.validate_setup("network", "short", "GB")
         with self.assertRaises(ValueError):
             self.web.validate_setup("network", "long enough", "Germany")
+        with self.assertRaises(ValueError):
+            self.web.validate_setup("network", "long enough", "ZZ")
 
         self.assertEqual(
             self.web.validate_setup("network", "long enough", "de"),
             ("network", "long enough", "DE"),
         )
 
-    def test_account_validation_requires_a_real_user_password_and_ssh_key(self):
+    def test_account_validation_requires_a_real_user_and_short_password_only(self):
         with self.assertRaises(ValueError):
             self.web.validate_account(
                 "", "long enough password", "long enough password", "ssh-ed25519 AAAA"
@@ -102,18 +105,26 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
                 "root", "long enough password", "long enough password", "ssh-ed25519 AAAA"
             )
         with self.assertRaises(ValueError):
-            self.web.validate_account("operator", "short", "short", "ssh-ed25519 AAAA")
+            self.web.validate_account("operator", "123", "123", "")
+        with self.assertRaises(ValueError):
+            self.web.validate_account("operator", "😀", "😀", "")
         with self.assertRaises(ValueError):
             self.web.validate_account(
-                "operator", "long enough password", "different password", "ssh-ed25519 AAAA"
+                "operator", "long enough password", "different password", ""
             )
+
+        self.assertEqual(
+            self.web.validate_account("Operator", "four", "four", ""),
+            ("operator", "four", ""),
+        )
+        self.assertEqual(
+            self.web.validate_account("Operator", "four:", "four:", ""),
+            ("operator", "four:", ""),
+        )
+
         with self.assertRaises(ValueError):
             self.web.validate_account(
                 "operator", "long enough password", "long enough password", "not-a-key"
-            )
-        with self.assertRaises(ValueError):
-            self.web.validate_account(
-                "operator", "long enough password", "long enough password", "ssh-ed25519 AAAA"
             )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -162,6 +173,26 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
             self.assertIn(
                 (["chpasswd"], True, "operator:long enough password\n"), calls
             )
+
+    def test_account_creation_without_ssh_key_does_not_create_ssh_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "operator"
+            home.mkdir()
+            record = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(home))
+
+            def fake_command(args, check=True, input_text=None):
+                return self.web.subprocess.CompletedProcess(args, 0, "", "")
+
+            with (
+                mock.patch.object(self.web.pwd, "getpwnam", return_value=record),
+                mock.patch.object(self.web, "command", side_effect=fake_command),
+                mock.patch.object(self.web.os, "chown"),
+            ):
+                self.web.create_account(
+                    "operator", "four", "", allow_existing=True
+                )
+
+            self.assertFalse((home / ".ssh").exists())
 
     def test_new_account_claim_is_recorded_before_user_creation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -237,19 +268,72 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
         self.assertEqual(message, "Wired Ethernet is no longer available; provide Wi-Fi")
         mark_configured.assert_not_called()
 
-    def test_setup_page_matches_the_pinned_ssid_and_ap_address(self):
-        page = self.web.setup_page("rpi4b")
+    def test_setup_page_contains_the_clean_account_and_network_form(self):
+        page = self.web.setup_page("rpi4b", preview=True)
 
-        self.assertIn("rpi4b-armbiansetup", page)
-        self.assertIn("10.42.0.1", page)
-        self.assertIn("open temporary network", page)
-        self.assertNotIn("setup password", page.lower())
+        self.assertIn(
+            "Configure your FXRoute administrator account and network.", page
+        )
+        self.assertIn('minlength="4"', page)
+        self.assertNotIn('minlength="12"', page)
+        self.assertIn('<details class="advanced">', page)
+        self.assertIn("Advanced / SSH", page)
+        self.assertNotIn('name="ssh_key" required', page)
+        self.assertIn('id="wifi_country" name="wifi_country"', page)
+        self.assertIn("Germany (DE)", page)
+        self.assertIn('id="wifi-password-note"', page)
+        self.assertIn("wifiPassword.required = selectedNetworkSecured === true;", page)
+        self.assertIn('wifiPassword.value = "";', page)
+        self.assertIn("selectedNetworkSecured = null;", page)
+        self.assertIn("Rescan", page)
+        self.assertIn("Scan again", page)
+        self.assertIn("/api/wifi/scan", page)
+        self.assertIn('<meta name="description"', page)
+        self.assertIn("Enter network manually", page)
+        self.assertIn('role="listitem"', page)
+        self.assertIn('item.setAttribute("role", "listitem");', page)
+        self.assertIn("selectedNetworkFound", page)
+        self.assertIn("clearMissingNetworkSelection();", page)
+        self.assertIn(
+            "if (selectedSsid && !selectedNetworkFound) clearMissingNetworkSelection();\n    syncNetworkFields();",
+            page,
+        )
+        self.assertIn(
+            'manualToggle.textContent = opening ? "Hide manual entry" : "Enter network manually";',
+            page,
+        )
+        self.assertIn('aria-controls="manual-network"', page)
+        self.assertIn("if (ssidInput.readOnly) {", page)
+        self.assertIn('else if (!ssidInput.value) selection.textContent = "No network selected";', page)
+        self.assertIn(".field-grid > .field { margin-top: 0; }", page)
+        self.assertIn(
+            'networkList.appendChild(stateMessage("Scan unavailable. Try again or enter the name manually.", true));',
+            page,
+        )
+        self.assertIn(
+            'const previousNetworkItems = [...networkList.querySelectorAll(".network-item")];',
+            page,
+        )
+        self.assertIn("networkList.replaceChildren(...previousNetworkItems);", page)
+        self.assertRegex(page, r"\.advanced summary \{[^}]*min-height: 44px;")
+        self.assertIn(".advanced summary:focus-visible {", page)
+        self.assertIn('rel="icon"', page)
+        self.assertIn("min-height: 44px", page)
+        self.assertIn("font-family: inherit;", page)
+        self.assertNotIn("font: 700 .9rem/1.2 inherit", page)
+        self.assertIn("0 0 0 6px var(--teal)", page)
+        self.assertIn("textarea::placeholder { color: var(--muted); opacity: 1; }", page)
+        for technical_hint in (
+            "10.42.0.1",
+            "armbiansetup",
+            "temporary network",
+            "Ethernet is preferred",
+        ):
+            self.assertNotIn(technical_hint, page)
 
     def test_setup_ssid_uses_the_runtime_hostname(self):
-        page = self.web.setup_page("rpi5b")
-
-        self.assertIn("rpi5b-armbiansetup", page)
-        self.assertNotIn("rpi4b-armbiansetup", page)
+        self.assertEqual(self.web.onboarding_ssid("rpi5b"), "rpi5b-armbiansetup")
+        self.assertNotEqual(self.web.onboarding_ssid("rpi5b"), "rpi4b-armbiansetup")
 
     def test_access_point_is_open_and_uses_runtime_hostname(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -396,14 +480,200 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
         self.assertFalse(self.web.should_start_access_point(False, ""))
 
         page = self.web.setup_page("rpi4b", ethernet=True, ap_active=False)
-        self.assertIn("DHCP", page)
-        self.assertIn("HTTPS", page)
-        self.assertNotIn("setup password", page.lower())
+        self.assertIn('action="/setup"', page)
+        self.assertNotIn("Ethernet", page)
 
     def test_ap_setup_page_posts_account_credentials_over_tls(self):
         page = self.web.setup_page("rpi4b", ethernet=False, ap_active=True)
         self.assertIn('action="https://10.42.0.1/setup"', page)
+        self.assertIn('data-preview="false"', page)
+        self.assertNotIn('window.location.host + "/setup"', page)
         self.assertNotIn('name="setup_password"', page)
+
+    def test_country_dropdown_keeps_the_existing_default_and_has_a_german_label(self):
+        page = self.web.setup_page("rpi4b", preview=True)
+
+        self.assertIn(
+            '<option value="GB" selected>United Kingdom (GB)</option>', page
+        )
+        self.assertIn('<option value="DE">Germany (DE)</option>', page)
+        self.assertIn('<option value="KE">Kenya (KE)</option>', page)
+        self.assertIn('<option value="RU">Russia (RU)</option>', page)
+        self.assertGreaterEqual(page.count("<option value="), 200)
+
+    def test_wifi_networks_use_cached_results_when_ap_scanning_fails(self):
+        onboarding = self.web.Onboarding("wlan0", "rpi4b")
+        cached = [{"ssid": "Home", "signal": -50, "secured": True}]
+        onboarding.wifi_scan_cache = cached
+
+        with mock.patch.object(
+            self.web, "scan_wifi_networks", side_effect=RuntimeError("busy")
+        ):
+            self.assertEqual(onboarding.wifi_networks(), cached)
+
+    def test_prime_wifi_scan_brings_the_station_interface_up(self):
+        onboarding = self.web.Onboarding("wlan0", "rpi4b")
+        with (
+            mock.patch.object(self.web, "command") as command,
+            mock.patch.object(onboarding, "wifi_networks") as wifi_networks,
+        ):
+            onboarding.prime_wifi_scan()
+
+        command.assert_called_once_with(
+            ["ip", "link", "set", "dev", "wlan0", "up"], check=False
+        )
+        wifi_networks.assert_called_once_with()
+
+    def test_wifi_networks_keep_the_cache_when_an_active_ap_scan_returns_empty(self):
+        onboarding = self.web.Onboarding("wlan0", "rpi4b")
+        onboarding.ap_active = True
+        cached = [{"ssid": "Home", "signal": -50, "secured": True}]
+        onboarding.wifi_scan_cache = cached
+
+        with mock.patch.object(self.web, "scan_wifi_networks", return_value=[]):
+            self.assertEqual(onboarding.wifi_networks(), cached)
+
+    def test_wifi_scan_uses_a_timeout_for_unresponsive_drivers(self):
+        timeout = subprocess.TimeoutExpired(
+            ["iw", "dev", "wlan0", "scan"], self.web.WIFI_SCAN_TIMEOUT
+        )
+        with mock.patch.object(self.web, "command", side_effect=timeout) as command:
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                self.web.scan_wifi_networks("wlan0")
+
+        command.assert_called_once_with(
+            ["iw", "dev", "wlan0", "scan"],
+            check=False,
+            timeout=self.web.WIFI_SCAN_TIMEOUT,
+        )
+
+    def test_busy_wifi_scan_uses_existing_cache_without_starting_another_scan(self):
+        onboarding = self.web.Onboarding("wlan0", "rpi4b")
+        cached = [{"ssid": "Home", "signal": -50, "secured": True}]
+        onboarding.wifi_scan_cache = cached
+        onboarding.wifi_scan_lock.acquire()
+        try:
+            with mock.patch.object(self.web, "scan_wifi_networks") as scan:
+                self.assertEqual(onboarding.wifi_networks(), cached)
+            scan.assert_not_called()
+        finally:
+            onboarding.wifi_scan_lock.release()
+
+    def test_wifi_networks_hide_the_temporary_setup_access_point(self):
+        onboarding = self.web.Onboarding("wlan0", "rpi4b")
+        networks = [
+            {"ssid": "rpi4b-armbiansetup", "signal": -30, "secured": False},
+            {"ssid": "Home", "signal": -50, "secured": True},
+        ]
+
+        with mock.patch.object(self.web, "scan_wifi_networks", return_value=networks):
+            self.assertEqual(onboarding.wifi_networks(), [networks[1]])
+
+    def test_preview_submit_ignores_a_host_configured_marker(self):
+        onboarding = self.web.Onboarding("preview-wlan0", "preview", preview=True)
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "configured"
+            marker.touch()
+            with mock.patch.object(self.web, "CONFIGURED_MARKER", marker):
+                success, message = onboarding.submit(
+                    "operator", "four", "four", "", "", "", "DE"
+                )
+
+        self.assertTrue(success)
+        self.assertEqual(message, "Preview submission accepted")
+
+    def test_wifi_scan_parser_returns_visible_networks_sorted_by_signal(self):
+        scan = """
+BSS 11:22:33:44:55:66(on wlan0)
+        signal: -62.00 dBm
+        SSID: Open cafe
+BSS aa:bb:cc:dd:ee:ff(on wlan0)
+        SSID: Studio Wi-Fi
+        signal: -48.00 dBm
+        RSN:
+BSS 22:33:44:55:66:77(on wlan0)
+        SSID: Studio Wi-Fi
+        signal: -38.00 dBm
+        RSN:
+BSS 33:44:55:66:77:88(on wlan0)
+        SSID:
+        signal: -20.00 dBm
+"""
+
+        self.assertEqual(
+            self.web.parse_wifi_scan(scan),
+            [
+                {"ssid": "Studio Wi-Fi", "signal": -38, "secured": True},
+                {"ssid": "Open cafe", "signal": -62, "secured": False},
+            ],
+        )
+
+    def test_wifi_scan_parser_decodes_escaped_and_preserves_ssid_spaces(self):
+        scan = r"""
+BSS 11:22:33:44:55:66(on wlan0)
+        signal: -42.00 dBm
+        SSID: \x20Studio\x20
+"""
+
+        self.assertEqual(
+            self.web.parse_wifi_scan(scan),
+            [{"ssid": " Studio ", "signal": -42, "secured": False}],
+        )
+
+    def test_wifi_scan_parser_does_not_treat_bss_load_as_a_new_network(self):
+        scan = """
+BSS 11:22:33:44:55:66(on wlan0)
+        signal: -42.00 dBm
+        SSID: Studio
+BSS Load:
+                station count: 1
+        RSN:
+"""
+
+        self.assertEqual(
+            self.web.parse_wifi_scan(scan),
+            [{"ssid": "Studio", "signal": -42, "secured": True}],
+        )
+
+    def test_preview_onboarding_simulates_networks_without_system_changes(self):
+        onboarding = self.web.Onboarding("preview-wlan0", "preview", preview=True)
+
+        self.assertTrue(onboarding.preview)
+        self.assertTrue(onboarding.has_usable_ethernet())
+        self.assertEqual(onboarding.wifi_networks(), self.web.PREVIEW_WIFI_NETWORKS)
+        with (
+            mock.patch.object(self.web, "create_account") as create_account,
+            mock.patch.object(self.web, "configure_ssh_access") as configure_ssh,
+            mock.patch.object(self.web, "atomic_write") as atomic_write,
+        ):
+            success, message = onboarding.submit(
+                "operator", "four", "four", "", "", "", "DE"
+            )
+
+        self.assertTrue(success)
+        self.assertEqual(message, "Preview submission accepted")
+        create_account.assert_not_called()
+        configure_ssh.assert_not_called()
+        atomic_write.assert_not_called()
+
+    def test_wifi_scan_endpoint_returns_preview_networks(self):
+        onboarding = self.web.Onboarding("preview-wlan0", "preview", preview=True)
+        server = self.web.SetupServer(
+            ("127.0.0.1", 0), self.web.SetupHandler, onboarding
+        )
+        server_thread = threading.Thread(target=server.serve_forever)
+        server_thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+            connection.request("GET", "/api/wifi/scan")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read()), self.web.PREVIEW_WIFI_NETWORKS)
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(2)
 
     def test_existing_unselected_accounts_are_not_modified(self):
         with tempfile.TemporaryDirectory() as directory:
