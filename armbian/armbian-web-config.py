@@ -1466,6 +1466,7 @@ button:disabled {{ cursor: wait; opacity: .6; }}
   let selectedNetworkSecured = null;
   let lastSsid = "";
   let hasScanned = false;
+  let lastScanResults = [];
 
   function stateMessage(message, alert = false) {{
     const state = document.createElement("p");
@@ -1507,6 +1508,27 @@ button:disabled {{ cursor: wait; opacity: .6; }}
     countrySelect.value = code;
   }}
 
+  function matchScannedNetwork(ssid) {{
+    // Find a scanned AP for a manually typed SSID: exact match first, then a
+    // trimmed match so stray leading/trailing spaces do not hide the AP.
+    if (!ssid) return null;
+    return lastScanResults.find((network) => network.ssid === ssid)
+      || lastScanResults.find((network) =>
+        typeof network.ssid === "string" && network.ssid.trim() === ssid.trim()
+      )
+      || null;
+  }}
+
+  function prefillCountryForSsid(ssid) {{
+    // Preselect the matching AP's country unless the user already picked a
+    // country by hand (any deviation from the form default).
+    const network = matchScannedNetwork(ssid);
+    if (!network) return;
+    const defaultValue = countrySelect.options[0] ? countrySelect.options[0].value : "GB";
+    if (countrySelect.value !== defaultValue) return;
+    applyNetworkCountry(network);
+  }}
+
   function clearMissingNetworkSelection() {{
     if (!ssidInput.readOnly || !ssidInput.value) return;
     ssidInput.value = "";
@@ -1521,6 +1543,7 @@ button:disabled {{ cursor: wait; opacity: .6; }}
   }}
 
   function renderNetworks(networks) {{
+    lastScanResults = Array.isArray(networks) ? networks : [];
     const selectedSsid = ssidInput.readOnly ? ssidInput.value : "";
     let selectedNetworkFound = !selectedSsid;
     networkList.replaceChildren();
@@ -1627,6 +1650,7 @@ button:disabled {{ cursor: wait; opacity: .6; }}
     lastSsid = ssidInput.value;
     selectedNetworkSecured = null;
     selection.textContent = ssidInput.value ? "Selected: " + ssidInput.value : "No network selected";
+    prefillCountryForSsid(ssidInput.value);
     syncNetworkFields();
   }});
   wifiPassword.addEventListener("input", syncNetworkFields);
