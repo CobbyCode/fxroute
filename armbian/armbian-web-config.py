@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
-import html
+import base64
+from collections import deque
 import hashlib
+import html
 import logging
 import os
 from pathlib import Path
@@ -17,7 +19,6 @@ import subprocess
 import threading
 import tempfile
 import time
-import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -35,9 +36,12 @@ RUN_DIR = Path("/run/armbian-web-config")
 TLS_CERT_PATH = RUN_DIR / "setup.crt"
 TLS_KEY_PATH = RUN_DIR / "setup.key"
 AP_PASSWORD_VERIFIER_ENV = "ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64"
-AP_PSK_ENV = "ARMBIAN_WEB_CONFIG_AP_PSK"
-AP_SSID_ENV = "ARMBIAN_WEB_CONFIG_AP_SSID"
 AP_PASSWORD_ITERATIONS = 600000
+SETUP_PASSWORD_ATTEMPT_LIMIT = 10
+SETUP_PASSWORD_ATTEMPT_WINDOW = 60.0
+_setup_password_attempts: deque[float] = deque()
+_setup_password_attempt_lock = threading.Lock()
+_setup_password_check_lock = threading.Lock()
 
 USERNAME_PATTERN = re.compile(r"[a-z_][a-z0-9_.-]{0,31}")
 SSH_KEY_PATTERN = re.compile(
@@ -132,18 +136,9 @@ def hostname() -> str:
 
 
 def onboarding_ssid(hostname_value: str) -> str:
-    suffix = "-armbiansetup"
+    suffix = AP_SSID_SUFFIX
     prefix = re.sub(r"[^A-Za-z0-9-]", "-", hostname_value).strip("-")
     return f"{prefix[: 32 - len(suffix)] or 'armbian'}{suffix}"
-
-
-def setup_ap_ssid(hostname_value: str) -> str:
-    configured = os.environ.get(AP_SSID_ENV, "")
-    if configured:
-        if not re.fullmatch(r"[A-Za-z0-9-]{1,32}", configured):
-            raise RuntimeError("The setup AP SSID metadata is invalid")
-        return configured
-    return onboarding_ssid(hostname_value)
 
 
 def setup_password_verifier() -> tuple[int, bytes, bytes]:
@@ -166,22 +161,33 @@ def setup_password_verifier() -> tuple[int, bytes, bytes]:
     return iterations, salt, digest
 
 
-def setup_ap_psk() -> str:
-    psk = os.environ.get(AP_PSK_ENV, "")
-    if not re.fullmatch(r"[0-9a-f]{64}", psk):
-        raise RuntimeError("The setup AP key metadata is invalid")
-    return psk
+def reserve_setup_password_attempt() -> None:
+    now = time.monotonic()
+    with _setup_password_attempt_lock:
+        while _setup_password_attempts and (
+            now - _setup_password_attempts[0] >= SETUP_PASSWORD_ATTEMPT_WINDOW
+        ):
+            _setup_password_attempts.popleft()
+        if len(_setup_password_attempts) >= SETUP_PASSWORD_ATTEMPT_LIMIT:
+            raise ValueError("Too many setup password attempts; try again later")
+        _setup_password_attempts.append(now)
 
 
 def validate_setup_password(setup_password: str) -> None:
+    if not _setup_password_check_lock.acquire(blocking=False):
+        raise ValueError("Setup is busy; try again later")
     try:
-        password_bytes = setup_password.encode("ascii")
-        iterations, salt, expected = setup_password_verifier()
-    except (UnicodeEncodeError, RuntimeError) as error:
-        raise ValueError(str(error)) from None
-    actual = hashlib.pbkdf2_hmac("sha256", password_bytes, salt, iterations)
-    if not secrets.compare_digest(actual, expected):
-        raise ValueError("The temporary setup password is incorrect")
+        reserve_setup_password_attempt()
+        try:
+            password_bytes = setup_password.encode("ascii")
+            iterations, salt, expected = setup_password_verifier()
+        except (UnicodeEncodeError, RuntimeError) as error:
+            raise ValueError(str(error)) from None
+        actual = hashlib.pbkdf2_hmac("sha256", password_bytes, salt, iterations)
+        if not secrets.compare_digest(actual, expected):
+            raise ValueError("The temporary setup password is incorrect")
+    finally:
+        _setup_password_check_lock.release()
 
 
 def yaml_string(value: str) -> str:
@@ -545,8 +551,7 @@ class Onboarding:
 
     def start_access_point(self) -> None:
         RUN_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
-        ssid = setup_ap_ssid(self.hostname)
-        psk = setup_ap_psk()
+        ssid = onboarding_ssid(self.hostname)
         if len(ssid.encode("utf-8")) > 32:
             raise RuntimeError("Armbian setup SSID is longer than 32 bytes")
         atomic_write(
@@ -558,11 +563,7 @@ class Onboarding:
             + f"ssid={ssid}\n"
             + "hw_mode=g\n"
             + "channel=6\n"
-            + "auth_algs=1\n"
-            + "wpa=2\n"
-            + f"wpa_psk={psk}\n"
-            + "wpa_key_mgmt=WPA-PSK\n"
-            + "rsn_pairwise=CCMP\n",
+            + "auth_algs=1\n",
             0o600,
         )
         atomic_write(
@@ -827,19 +828,19 @@ def setup_page(
     escaped_error = ""
     if error:
         escaped_error = f'<p class="error">{html.escape(error)}</p>'
-    ssid = html.escape(setup_ap_ssid(hostname_value))
+    ssid = html.escape(onboarding_ssid(hostname_value))
     network_hint = (
         "Ethernet is connected. Open this device's DHCP address in a browser; "
         "the setup service remains available on the wired network over HTTPS."
         if ethernet
         else (
-            f"Connect to <strong>{ssid}</strong>, then open "
+            f"Connect to the open temporary network <strong>{ssid}</strong>, then open "
             f"<strong>http://{AP_ADDRESS}</strong>. The form is submitted over HTTPS."
         )
     )
     ap_hint = (
         '<p class="hint">Enter the temporary setup password printed during '
-        "the image build for the Wi-Fi connection and this form."
+        "the image build to authorize this form."
         "</p>"
     )
     wifi_required = "" if ethernet else " required"
@@ -874,10 +875,29 @@ button{{margin-top:1.5rem;padding:.7rem 1.2rem;font:inherit;font-weight:600}}.hi
 
 
 class SetupServer(ThreadingHTTPServer):
+    daemon_threads = True
+
     def __init__(self, address, handler, onboarding: Onboarding, secure: bool = False):
+        self.request_slots = threading.BoundedSemaphore(16)
         super().__init__(address, handler)
         self.onboarding = onboarding
         self.secure = secure
+
+    def process_request(self, request, client_address):
+        if not self.request_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.request_slots.release()
 
 
 class SetupHandler(BaseHTTPRequestHandler):

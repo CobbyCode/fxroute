@@ -35,7 +35,7 @@ Options:
   --release <release>          Armbian userspace release (default: $RELEASE)
   --branch <branch>            Armbian kernel branch (default: $BRANCH)
   --kernel-ref <ref>           Pin kernel ref, e.g. commit:<sha> or branch:<name>
-  --wifi-setup-password <pass> Password for the temporary setup AP and form
+  --wifi-setup-password <pass> Password authorizing the temporary setup form
   --output <path>              Write the primary image to this path
   --armbian-source <path>      Use an existing Armbian checkout at the pinned ref
   --cache-dir <path>           Cache the pinned Armbian checkout here
@@ -138,38 +138,24 @@ generate_wifi_setup_password() {
 }
 
 generate_setup_metadata() {
-  # Store only a salted verifier and a WPA PSK derived from the printed
-  # password. The image must not contain the password in recoverable form.
+  # Store only a salted verifier. The image must not contain the password or
+  # an equivalent network credential in recoverable form.
   # shellcheck disable=SC2016
   printf '%s' "$WIFI_SETUP_PASSWORD" |
-    ARMBIAN_SETUP_HOSTNAME="$build_board" python3 -c '
+    python3 -c '
 import base64
 import hashlib
-import os
-import re
 import secrets
 import sys
 
 password = sys.stdin.read()
-hostname = os.environ["ARMBIAN_SETUP_HOSTNAME"]
-suffix = "-armbiansetup"
-prefix = re.sub(r"[^A-Za-z0-9-]", "-", hostname).strip("-")
-prefix = prefix[: 32 - len(suffix)]
-if not prefix:
-    prefix = "armbian"
-ssid = prefix + suffix
 iterations = 600000
 salt = secrets.token_bytes(16)
 digest = hashlib.pbkdf2_hmac(
     "sha256", password.encode("ascii"), salt, iterations
 )
 verifier = f"pbkdf2-sha256${iterations}${salt.hex()}${digest.hex()}"
-wpa_psk = hashlib.pbkdf2_hmac(
-    "sha1", password.encode("ascii"), ssid.encode("utf-8"), 4096, dklen=32
-).hex()
-print(ssid)
 print(base64.b64encode(verifier.encode("ascii")).decode("ascii"))
-print(wpa_psk)
 '
 }
 
@@ -190,13 +176,8 @@ case "$requested_board" in
     ;;
 esac
 
-setup_metadata="$(generate_setup_metadata)"
-SETUP_AP_SSID="$(printf '%s\n' "$setup_metadata" | sed -n '1p')"
-AP_PASSWORD_VERIFIER_B64="$(printf '%s\n' "$setup_metadata" | sed -n '2p')"
-AP_PSK="$(printf '%s\n' "$setup_metadata" | sed -n '3p')"
-[[ "$SETUP_AP_SSID" =~ ^[A-Za-z0-9-]{1,32}$ ]] || die "Could not derive a valid setup AP SSID"
+AP_PASSWORD_VERIFIER_B64="$(generate_setup_metadata)"
 [[ "$AP_PASSWORD_VERIFIER_B64" =~ ^[A-Za-z0-9+/=]+$ ]] || die "Could not derive a setup password verifier"
-[[ "$AP_PSK" =~ ^[0-9a-f]{64}$ ]] || die "Could not derive a setup AP key"
 
 if [[ -z "$OUTPUT" ]]; then
   OUTPUT="$ROOT_DIR/dist/fxroute-armbian-${requested_board}-${RELEASE}-${BRANCH}.img"
@@ -472,10 +453,8 @@ EOF
     "$userpatches/overlay/armbian-web-config.py"
   cp -- "$ROOT_DIR/armbian/armbian-web-config.service" \
     "$userpatches/overlay/armbian-web-config.service"
-  printf 'ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64=%s\nARMBIAN_WEB_CONFIG_AP_PSK=%s\nARMBIAN_WEB_CONFIG_AP_SSID=%s\n' \
+  printf 'ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64=%s\n' \
     "$AP_PASSWORD_VERIFIER_B64" \
-    "$AP_PSK" \
-    "$SETUP_AP_SSID" \
     > "$userpatches/overlay/armbian-web-config.env"
   chmod 755 "$userpatches/overlay/first-boot-install.sh"
   chmod 755 "$userpatches/overlay/armbian-web-config.py"

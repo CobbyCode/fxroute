@@ -48,18 +48,14 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
                 "ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64": base64.b64encode(
                     verifier.encode("ascii")
                 ).decode("ascii"),
-                "ARMBIAN_WEB_CONFIG_AP_PSK": hashlib.pbkdf2_hmac(
-                    "sha1",
-                    b"setup-pass",
-                    b"rpi4b-armbiansetup",
-                    4096,
-                    dklen=32,
-                ).hex(),
-                "ARMBIAN_WEB_CONFIG_AP_SSID": "rpi4b-armbiansetup",
             },
         )
         cls.password_environment.start()
         cls.web = load_web_config()
+
+    def setUp(self):
+        with self.web._setup_password_attempt_lock:
+            self.web._setup_password_attempts.clear()
 
     @classmethod
     def tearDownClass(cls):
@@ -281,6 +277,46 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
         self.assertIn("10.42.0.1", page)
         self.assertIn("printed during the image build", page)
         self.assertNotIn("setup-pass", page)
+
+    def test_setup_ssid_uses_the_runtime_hostname(self):
+        page = self.web.setup_page("rpi5b")
+
+        self.assertIn("rpi5b-armbiansetup", page)
+        self.assertNotIn("rpi4b-armbiansetup", page)
+
+    def test_setup_password_attempts_are_rate_limited(self):
+        with mock.patch.object(self.web, "SETUP_PASSWORD_ATTEMPT_LIMIT", 1):
+            with self.assertRaises(ValueError):
+                self.web.validate_setup_password("wrong-setup-pass")
+            with self.assertRaisesRegex(ValueError, "Too many setup password attempts"):
+                self.web.validate_setup_password("wrong-setup-pass")
+
+    def test_access_point_is_open_and_uses_runtime_hostname(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            hostapd_path = run_dir / "hostapd.conf"
+            dnsmasq_path = run_dir / "dnsmasq.conf"
+            process = mock.Mock()
+            process.poll.return_value = None
+            onboarding = self.web.Onboarding("wlan0", "rpi5b")
+
+            with (
+                mock.patch.object(self.web, "RUN_DIR", run_dir),
+                mock.patch.object(self.web, "HOSTAPD_CONFIG", hostapd_path),
+                mock.patch.object(self.web, "DNSMASQ_CONFIG", dnsmasq_path),
+                mock.patch.object(
+                    self.web.subprocess, "Popen", side_effect=[process, process]
+                ),
+                mock.patch.object(self.web, "command"),
+                mock.patch.object(self.web.time, "sleep"),
+            ):
+                onboarding.start_access_point()
+                onboarding.stop_access_point()
+
+            hostapd = hostapd_path.read_text(encoding="ascii")
+            self.assertIn("ssid=rpi5b-armbiansetup", hostapd)
+            self.assertNotIn("wpa_psk", hostapd)
+            self.assertNotIn("wpa_passphrase", hostapd)
 
     def test_corrupt_tls_pair_is_regenerated(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -60,8 +60,6 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn("--wifi-setup-password", self.build)
         self.assertIn("generate_wifi_setup_password", self.build)
         self.assertIn("ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64", self.build)
-        self.assertIn("ARMBIAN_WEB_CONFIG_AP_PSK", self.build)
-        self.assertIn("ARMBIAN_WEB_CONFIG_AP_SSID", self.build)
         self.assertIn("armbian-web-config.env", self.build)
         self.assertIn("armbian-web-config.env", self.customize)
         self.assertIn("EnvironmentFile=/etc/default/armbian-web-config", self.web_config_service)
@@ -217,7 +215,7 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn("hostapd", self.build)
         self.assertIn("dnsmasq-base", self.build)
         self.assertIn("openssl", self.build)
-        self.assertIn("wpa_psk", self.web_config)
+        self.assertNotIn("wpa_psk", self.web_config)
         self.assertNotIn("wpa_passphrase", self.web_config)
 
     def test_web_config_service_is_ordered_before_fxroute_provisioning(self):
