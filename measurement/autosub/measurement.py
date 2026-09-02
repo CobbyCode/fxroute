@@ -104,6 +104,7 @@ async def _measure_auto_sub_candidate(
     sub1_polarity: str | None = None,
     sub2_polarity: str | None = None,
     exact_sub_mute: bool = False,
+    _pending_remeasure_allowed: bool = True,
 ) -> dict[str, Any]:
     """Measure one AutoSub delay candidate with the standard safety checks."""
     measurement_store = _measurement_store()
@@ -408,14 +409,59 @@ async def _measure_auto_sub_candidate(
                 job, analysis.get("alignment_samples"), analysis.get("sample_rate"),
             )
             if chain_health:
-                logger.error(
-                    "AUTOSUB_CHAIN_HEALTH job=%s channel=%s delay=%.2f %s",
+                if chain_health.get("confirmed") or not _pending_remeasure_allowed:
+                    logger.error(
+                        "AUTOSUB_CHAIN_HEALTH job=%s channel=%s delay=%.2f %s",
+                        job.get("id") or "", channel, delay_ms, json.dumps(chain_health, sort_keys=True),
+                    )
+                    raise AutoSubChainHealthError(
+                        "AutoSub stopped: the capture chain arrival shifted by "
+                        f"{chain_health['arrival_shift_ms']:.1f} ms against the run baseline "
+                        "(audio device state degraded) — reset the audio stack (or reboot) and retry",
+                    )
+                # Unconfirmed one-off displacement: the shifted capture must
+                # not enter scoring as a candidate measurement, so this
+                # candidate is repeated once; a still-shifted repeat is the
+                # confirmed persistent displacement and aborts.
+                logger.warning(
+                    "AUTOSUB_CHAIN_HEALTH_REMEASURE job=%s channel=%s delay=%.2f %s",
                     job.get("id") or "", channel, delay_ms, json.dumps(chain_health, sort_keys=True),
                 )
-                raise AutoSubChainHealthError(
-                    "AutoSub stopped: the capture chain arrival shifted by "
-                    f"{chain_health['arrival_shift_samples'] / 1000:.1f} ms against the run baseline "
-                    "(audio device state degraded) — reset the audio stack (or reboot) and retry",
+                # Book the discarded outlier capture before the repeat so the
+                # repeat's timing stays the last entry for this candidate.
+                _return_candidate({"status": "remeasured_outlier"})
+                return await _measure_auto_sub_candidate(
+                    delay_ms=delay_ms,
+                    job=job,
+                    candidate_index=candidate_index,
+                    total=total,
+                    stage=stage,
+                    fc=fc,
+                    input_id=input_id,
+                    channel=channel,
+                    mic_input_channel=mic_input_channel,
+                    reference_input_channel=reference_input_channel,
+                    calibration_ref=calibration_ref,
+                    calibration_filename=calibration_filename,
+                    calibration_bytes=calibration_bytes,
+                    auto_sub_sweep_profile=auto_sub_sweep_profile,
+                    auto_sub_rate=auto_sub_rate,
+                    original_level=original_level,
+                    original_polarity=original_polarity,
+                    original_highpass=original_highpass,
+                    measurement_label=measurement_label,
+                    candidate_current=candidate_current,
+                    candidate_total=candidate_total,
+                    measure_channel=measure_channel,
+                    output_mode=output_mode,
+                    original_config_snapshot=original_config_snapshot,
+                    sub1_alignment_ms=sub1_alignment_ms,
+                    sub2_alignment_ms=sub2_alignment_ms,
+                    active_subs=active_subs,
+                    sub1_polarity=sub1_polarity,
+                    sub2_polarity=sub2_polarity,
+                    exact_sub_mute=exact_sub_mute,
+                    _pending_remeasure_allowed=False,
                 )
             return _return_candidate({
                 "delay_ms": delay_ms,
@@ -923,10 +969,11 @@ def _auto_sub_chain_health_check(
     played sample, so a single sweep can land several quanta off baseline
     without any change in audio device state. A degraded chain instead
     leaves a displacement that persists across captures — 25600 samples
-    in the 799f3bd5d1ab run — so the first out-of-bound arrival is only
-    logged as pending and the run aborts once the displacement is
-    confirmed on the next capture. Returns the evidence dict when
-    degraded, else None.
+    in the 799f3bd5d1ab run — so the first out-of-bound arrival is
+    reported as unconfirmed evidence (confirmed=False, the caller repeats
+    the candidate) and the run aborts once the displacement is confirmed
+    on the next capture. Returns the evidence dict for an out-of-bound
+    arrival, else None.
     """
     if not isinstance(alignment_samples, (int, float)) or not math.isfinite(float(alignment_samples)):
         return None
@@ -936,24 +983,28 @@ def _auto_sub_chain_health_check(
         return None
     window = history[-8:]
     baseline = statistics.median(window)
-    bound = max(4096.0, float(sample_rate or 48000) / 12.0)
+    rate = float(sample_rate or 48000)
+    bound = max(4096.0, rate / 12.0)
     shift = float(alignment_samples) - baseline
     if abs(shift) <= bound:
         return None
     evidence = {
         "arrival_shift_samples": round(shift, 1),
+        "arrival_shift_ms": round(shift / rate * 1000.0, 1),
         "arrival_bound_samples": round(bound, 1),
         "baseline_samples": round(baseline, 1),
         "current_samples": round(float(alignment_samples), 1),
     }
     if len(history) >= 2 and abs(history[-2] - baseline) > bound:
+        evidence["confirmed"] = True
         return evidence
+    evidence["confirmed"] = False
     logger.warning(
         "AUTOSUB_CHAIN_HEALTH_PENDING job=%s unconfirmed arrival displacement, "
         "awaiting next capture %s",
         job.get("id") or "", json.dumps(evidence, sort_keys=True),
     )
-    return None
+    return evidence
 
 
 def _auto_sub_balance_transfer_deltas(
