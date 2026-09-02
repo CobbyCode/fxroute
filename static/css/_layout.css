@@ -13,7 +13,7 @@
 .brand-lockup {
     display: flex;
     align-items: center;
-    gap: 0.64rem;
+    gap: 0.39rem;
     min-width: 0;
 }
 .brand-lockup-button {

@@ -356,7 +356,7 @@ body {
 .brand-lockup {
     display: flex;
     align-items: center;
-    gap: 0.64rem;
+    gap: 0.39rem;
     min-width: 0;
 }
 .brand-lockup-button {
@@ -761,17 +761,13 @@ body {
 
 .tab-glyph {
     width: 1.05rem;
-    height: 1.05rem;
     display: inline-grid;
     place-items: center;
     color: rgba(110,231,183,0.75);
     font-size: .9rem;
 }
-.tab-glyph svg {
-    width: 16px;
-    height: 16px;
-    display: block;
-}
+.tab-btn[data-tab="spotify"] .tab-glyph { color: #4ed68b; }
+.tab-btn[data-tab="radio"] .tab-glyph { color: #7fe2b7; }
 .tab-btn.active .tab-glyph { color: var(--accent); }
 .manage-overlay {
     position: fixed;
@@ -8328,7 +8324,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 @media (min-width: 761px) {
     /* from _playback.css */
-    .brand-lockup { gap: 0.56rem; }
+    .brand-lockup { gap: 0.39rem; }
         .brand-mark {
             width: 37px;
             height: 37px;
