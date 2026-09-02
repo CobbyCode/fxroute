@@ -41,6 +41,7 @@ from ..measurement import (
     _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
     _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
     _auto_sub_balance_transfer_deltas,
+    _auto_sub_dip_guard_should_veto,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
     _auto_sub_gain_log_score,
@@ -870,9 +871,10 @@ async def _run_auto_sub_optimize(
                 "left": _auto_sub_local_dip_db((final_gain_sweep or {}).get("points_left") or [], gate_band_low, gate_band_high),
                 "right": _auto_sub_local_dip_db((final_gain_sweep or {}).get("points_right") or [], gate_band_low, gate_band_high),
             }
-            gate_failed_sides = _auto_sub_local_dip_gate_sides(
-                gate_before_dips, gate_final_dips, _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+            _gate_should_veto, _gate_veto_diag = _auto_sub_dip_guard_should_veto(
+                gate_before_dips, gate_final_dips,
             )
+            gate_failed_sides = list(_gate_veto_diag.get("failed_sides") or [])
             confirmation_gate = {
                 "band_hz": [gate_band_low, gate_band_high],
                 "tolerance_db": _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
@@ -880,8 +882,9 @@ async def _run_auto_sub_optimize(
                 "final_local_dip_db": gate_final_dips,
                 "failed_sides": gate_failed_sides,
                 "action": "final_kept",
+                "dip_guard": _gate_veto_diag,
             }
-            if gate_failed_sides:
+            if _gate_should_veto:
                 job["stage"] = "confirmation_recheck"
                 job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent alignment at balanced level"
                 recheck_sweep = await _measure_auto_sub_combined_candidate(
@@ -987,13 +990,25 @@ async def _run_auto_sub_optimize(
                     })
             job["confirmation_gate"] = confirmation_gate
             logger.info("AUTOSUB_CONF_GATE job=%s %s", job_id, json.dumps(confirmation_gate, sort_keys=True))
-        stored_fine_accepted = bool(acceptance["fine_accepted"] and auto_apply)
+        gate_reverted_to_incumbent = (
+            isinstance(job.get("confirmation_gate"), dict)
+            and job["confirmation_gate"].get("action") == "alignment_reverted_balance_kept"
+            and round(float(best_delay), 2) != round(float(current_alignment), 2)
+        )
+        effective_winner = _auto_sub_result_for_delay(final_scoring["results"], current_alignment) if gate_reverted_to_incumbent else winner
+        if gate_reverted_to_incumbent and effective_winner is not None:
+            stored_winner = effective_winner
+        stored_fine_accepted = bool(acceptance["fine_accepted"] and auto_apply and not gate_reverted_to_incumbent)
         stored_reject_reason = acceptance["reject_reason"]
-        if not auto_apply and stored_winner is incumbent_winner and round(float(best_delay), 2) != round(float(current_alignment), 2):
+        if gate_reverted_to_incumbent:
+            stored_reject_reason = "final_state_regressed_incumbent_alignment_kept"
+        elif not auto_apply and stored_winner is incumbent_winner and round(float(best_delay), 2) != round(float(current_alignment), 2):
             stored_reject_reason = apply_decision
         fine_scan["accepted_winner"] = stored_winner
         fine_scan["fine_accepted"] = stored_fine_accepted
         fine_scan["reject_reason"] = stored_reject_reason
+        if gate_reverted_to_incumbent:
+            acceptance["fine_accepted"] = False
         candidate_ledger = (
             _auto_sub_candidate_ledger(
                 sweep_results, final_scoring, mode="2.1", phase="coarse",
@@ -1110,6 +1125,12 @@ async def _run_auto_sub_optimize(
                 _measurement["measurement_kind"] = "auto_sub"
                 _measurement["autosub_meta"] = _autosub_meta
 
+        if gate_reverted_to_incumbent:
+            winner = stored_winner
+            winner_margin_pct = 0.0
+            score_gain_pct = 0.0
+            original_score_pct = float(stored_winner.get("score_pct", 0.0) or 0.0) if stored_winner else None
+            confidence = "gate_reverted"
         job["result"] = {
             "original_alignment_ms": current_alignment,
             "suggested_alignment_ms": best_delay,

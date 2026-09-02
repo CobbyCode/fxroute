@@ -166,7 +166,7 @@ class AutoSub21ConfirmationRecommitTests(unittest.IsolatedAsyncioTestCase):
                     "accepted": True, "reason": "accepted", "channels": {},
                 }))
                 stack.enter_context(patch.object(runner, "_auto_sub_local_dip_db", side_effect=[
-                    7.25, 6.25, 8.09, 9.37, 7.20, 12.89,
+                    7.25, 6.25, 10.40, 10.20, 10.30, 10.10,
                 ]))
                 stack.enter_context(patch.object(runner, "_auto_sub_apply_candidate", side_effect=apply_candidate))
                 stack.enter_context(patch.object(runner, "_finish_auto_sub_worker", side_effect=finish_worker))

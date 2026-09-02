@@ -46,6 +46,7 @@ from ..measurement import (
     _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
     _auto_sub_22_snapshot_with_gain,
     _auto_sub_balance_transfer_deltas,
+    _auto_sub_dip_guard_should_veto,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
     _auto_sub_gain_log_score,
@@ -757,9 +758,10 @@ async def _run_auto_sub_22_optimize(
             "left": _auto_sub_local_dip_db((final_gain_sweep or {}).get("points_left") or [], gate_band_low, gate_band_high),
             "right": _auto_sub_local_dip_db((final_gain_sweep or {}).get("points_right") or [], gate_band_low, gate_band_high),
         }
-        gate_failed_sides = _auto_sub_local_dip_gate_sides(
-            gate_before_dips, gate_final_dips, _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+        _mono_should_veto, _mono_veto_diag = _auto_sub_dip_guard_should_veto(
+            gate_before_dips, gate_final_dips,
         )
+        gate_failed_sides = list(_mono_veto_diag.get("failed_sides") or [])
         confirmation_gate = {
             "band_hz": [gate_band_low, gate_band_high],
             "tolerance_db": _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
@@ -767,8 +769,9 @@ async def _run_auto_sub_22_optimize(
             "final_local_dip_db": gate_final_dips,
             "failed_sides": gate_failed_sides,
             "action": "final_kept",
+            "dip_guard": _mono_veto_diag,
         }
-        if gate_failed_sides:
+        if _mono_should_veto:
             job["stage"] = "confirmation_recheck"
             job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent pair at balanced levels"
             recheck_sweep = await _measure_auto_sub_combined_candidate(

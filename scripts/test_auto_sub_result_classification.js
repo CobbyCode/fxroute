@@ -168,5 +168,45 @@ function base21Result(overrides = {}) {
         assert.doesNotMatch(toasts[0].text, /confidence/);
     }
 
+    // 8. Gate reverted to incumbent (the 2026-09-02 05:34 2.1 real run):
+    //    fine -3.71 ms scored 65.2% (L 70.3/R 63.9) but the confirmation
+    //    gate reverted the alignment to 0.00 ms on a right local-dip
+    //    regression (4.86 -> 8.25). The stored winner must describe the
+    //    committed alignment (0.00 ms, 26.8%), not the uncommitted fine
+    //    candidate, so Score and delay never diverge.
+    //    UI: the gate revert is rendered as applied 0.00 ms with the
+    //    suggested -3.71 ms context, never as 'kept current' or 'weak'.
+    {
+        const { state, toasts } = await classify(base21Result({
+            original_alignment_ms: 0.0,
+            applied_alignment_ms: 0.0,
+            suggested_alignment_ms: -3.71,
+            applied: true,
+            apply_decision: 'fallback_incumbent_alignment_balance_kept',
+            confidence: 'gate_reverted',
+            winner: { delay_ms: 0.0, score_pct: 26.8, score_L_pct: 20.7, score_R_pct: 51.1 },
+            fine_winner: { delay_ms: -3.71, score_pct: 65.2, score_L_pct: 70.3, score_R_pct: 63.9 },
+            coarse_winner: { delay_ms: -3.12, score_pct: 57.6 },
+            fine_scan: { triggered: true, status: 'completed' },
+            confirmation_gate: {
+                action: 'alignment_reverted_balance_kept',
+                before_local_dip_db: { left: 15.05, right: 4.86 },
+                final_local_dip_db: { left: 7.4, right: 8.25 },
+                failed_sides: ['right'],
+            },
+        }));
+        assert.match(state.measurement.statusText, /AutoSub applied: 0\.00 ms \(was 0\.00 ms\)/);
+        assert.match(state.measurement.statusText, /suggested -3\.71 ms/);
+        assert.match(state.measurement.statusText, /65\.2/);
+        assert.doesNotMatch(state.measurement.statusText, /kept current/);
+        assert.doesNotMatch(state.measurement.statusText, /weak/i);
+        assert.doesNotMatch(state.measurement.statusText, /Score 26\.8/);
+        assert.equal(toasts[0].type, 'success');
+        assert.match(toasts[0].text, /0\.00 ms/);
+        assert.match(toasts[0].text, /suggested -3\.71 ms/);
+        assert.doesNotMatch(toasts[0].text, /kept current/);
+        assert.doesNotMatch(toasts[0].text, /weak/i);
+    }
+
     console.log('ok auto-sub result classification (weak only via confidence; kept/rejected honest)');
 })();

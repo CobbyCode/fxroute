@@ -1102,7 +1102,16 @@ _AUTO_SUB_GAIN_VERDICT_TOLERANCE_DB: float = 1.0
 # Before, while the rejected real 2.2-stereo run showed +3.17 dB at the new
 # 74 Hz notch. 2.5 dB sits ~5x above the noise floor and clearly below the
 # observed failure signature.
+#
+# The per-side OR gate below was too local for job 42eb6a557d9f: overall
+# scoring improved by +38 pp (65.2 vs 26.8) with L improving -7.65 dB on
+# the dip metric, while R worsened only +3.39. The isolated R dip still
+# vetoed the winner even though the combined response is a net win. The
+# veto is therefore gated on a combined improvement check (see helpers
+# below) instead of on any single side alone. The per-side values stay
+# in diagnostics for traceability.
 _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB: float = 2.5
+_AUTO_SUB_DIP_GUARD_COMBINED_TOLERANCE_DB: float = 2.5
 
 def _auto_sub_local_dip_db(points: list, low_hz: float, high_hz: float) -> float | None:
     """Depth of the deepest local dip versus the 1/1-octave median surround.
@@ -1134,6 +1143,67 @@ def _auto_sub_local_dip_gate_sides(
         if final_dips.get(side) is not None and before_dips.get(side) is not None
         and final_dips[side] > before_dips[side] + tolerance_db
     ]
+
+
+def _auto_sub_dip_guard_combined_db(dips: dict[str, float | None]) -> float | None:
+    """Combined dip with the same 0.6*min+0.4*mean weighting as combined scoring.
+
+    Uses raw dip depths (positive dB). Returns None when either side is missing
+    so a single-sided measurement never invents a combined value.
+    """
+    left = dips.get("left")
+    right = dips.get("right")
+    if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+        return None
+    if not math.isfinite(float(left)) or not math.isfinite(float(right)):
+        return None
+    left_f = float(left)
+    right_f = float(right)
+    return 0.6 * min(left_f, right_f) + 0.4 * ((left_f + right_f) / 2.0)
+
+
+def _auto_sub_dip_guard_should_veto(
+    before_dips: dict[str, float | None],
+    final_dips: dict[str, float | None],
+    per_side_tolerance_db: float = _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+    combined_tolerance_db: float = _AUTO_SUB_DIP_GUARD_COMBINED_TOLERANCE_DB,
+) -> tuple[bool, dict[str, Any]]:
+    """Decide whether the dip guard should actually veto the winner.
+
+    Per-side OR was too local: a +3 dB single-side notch still vetoed even
+    when the other side improved by -7 dB and overall scoring improved by
+    +38 pp. The veto therefore requires a combined deterioration in addition
+    to a per-side trigger.  The per-side values stay in diagnostics for
+    traceability.
+    """
+    failed_sides = _auto_sub_local_dip_gate_sides(before_dips, final_dips, per_side_tolerance_db)
+    before_combined = _auto_sub_dip_guard_combined_db(before_dips)
+    final_combined = _auto_sub_dip_guard_combined_db(final_dips)
+    combined_delta: float | None = None
+    if before_combined is not None and final_combined is not None:
+        combined_delta = round(final_combined - before_combined, 2)
+    should_veto = False
+    reason = "no_per_side_trigger"
+    if failed_sides:
+        if before_combined is None or final_combined is None:
+            should_veto = True
+            reason = "per_side_trigger_no_combined_baseline"
+        elif final_combined > before_combined + combined_tolerance_db:
+            should_veto = True
+            reason = "combined_deterioration"
+        else:
+            reason = "single_side_only_no_combined_deterioration"
+    diagnostics: dict[str, Any] = {
+        "failed_sides": failed_sides,
+        "before_combined_dip_db": round(before_combined, 2) if before_combined is not None else None,
+        "final_combined_dip_db": round(final_combined, 2) if final_combined is not None else None,
+        "combined_delta_db": combined_delta,
+        "combined_tolerance_db": combined_tolerance_db,
+        "per_side_tolerance_db": per_side_tolerance_db,
+        "should_veto": should_veto,
+        "reason": reason,
+    }
+    return should_veto, diagnostics
 
 def _auto_sub_local_dip_recheck_decision(
     before_dips: dict[str, float | None],
