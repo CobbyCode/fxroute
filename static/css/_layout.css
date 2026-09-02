@@ -7,6 +7,11 @@
     justify-content: space-between;
     gap: 0.9rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+    /* Paint above the tab bar: the backdrop-filter below creates a stacking
+       context, and the tooltips and power menu hanging out of the header
+       would otherwise be trapped behind the opaque tab bar. */
+    position: relative;
+    z-index: var(--z-header);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
 }

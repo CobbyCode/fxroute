@@ -64,6 +64,7 @@
     --z-base:            1;      /* badges, hero gradient overlays, seat in the room view */
     --z-raised:          2;      /* interactive controls on tiles/covers, room mic, cover */
     --z-tabs:            4;      /* tab bar (header) */
+    --z-header:          5;      /* header bar: keeps its popups (tooltips, power menu) above the tab bar */
     --z-header-menu:     80;     /* open power menu */
     --z-playback-bar:    100;    /* fixed playback footer */
     --z-banner:          1002;   /* offline/disconnect banner */
