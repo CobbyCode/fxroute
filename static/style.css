@@ -64,12 +64,13 @@
     --z-base:            1;      /* badges, hero gradient overlays, seat in the room view */
     --z-raised:          2;      /* interactive controls on tiles/covers, room mic, cover */
     --z-tabs:            4;      /* tab bar (header) */
-    --z-header:          5;      /* header bar: keeps its popups (tooltips, power menu) above the tab bar */
-    --z-header-menu:     80;     /* open power menu */
     --z-playback-bar:    100;    /* fixed playback footer */
     --z-banner:          1002;   /* offline/disconnect banner */
     --z-toast:           1005;   /* transient toasts */
-    --z-header-menu-open: 1006;  /* header stacking context raised while the menu is open */
+    --z-header-menu:     1007;   /* open power menu: the header creates no
+                                    stacking context, so this value competes
+                                    in the root context and must sit above
+                                    the tab bar and toasts */
     --z-cover-detail-backdrop: 1040;
     --z-cover-detail:    1041;   /* cover detail card */
     --z-overlay:         1100;   /* generic modal overlay (manage/settings) */
@@ -351,13 +352,12 @@ body {
     justify-content: space-between;
     gap: 0.9rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.055);
-    /* Paint above the tab bar: the backdrop-filter below creates a stacking
-       context, and the tooltips and power menu hanging out of the header
-       would otherwise be trapped behind the opaque tab bar. */
-    position: relative;
-    z-index: var(--z-header);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    /* No backdrop-filter here: it would create a stacking context that
+       traps the header tooltips and power menu behind the tab bar. The
+       header is a static bar (nothing ever scrolls underneath it) and its
+       background is nearly opaque, so the blur had no visible effect. With
+       no context on the header, the popups escape to the root stacking
+       context via their own z-index values (--z-tooltip, --z-header-menu). */
 }
 .brand-lockup {
     display: flex;
@@ -552,13 +552,9 @@ body {
     gap: 0.1rem;
     z-index: var(--z-header-menu);
 }
-/* Keep the open power menu above transient toasts: the header's
-   backdrop-filter creates a stacking context that would otherwise trap
-   the menu below the fixed toast layer. */
-.header:has(.power-menu:not(.hidden)) {
-    position: relative;
-    z-index: var(--z-header-menu-open);
-}
+/* The open menu's --z-header-menu value keeps it above the tab bar and
+   transient toasts in the root stacking context; the header itself must
+   never be raised (it would cover the tab bar). */
 .power-menu-item {
     display: flex;
     align-items: center;
