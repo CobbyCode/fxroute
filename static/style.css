@@ -761,13 +761,17 @@ body {
 
 .tab-glyph {
     width: 1.05rem;
+    height: 1.05rem;
     display: inline-grid;
     place-items: center;
     color: rgba(110,231,183,0.75);
     font-size: .9rem;
 }
-.tab-btn[data-tab="spotify"] .tab-glyph { color: #4ed68b; }
-.tab-btn[data-tab="radio"] .tab-glyph { color: #7fe2b7; }
+.tab-glyph svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+}
 .tab-btn.active .tab-glyph { color: var(--accent); }
 .manage-overlay {
     position: fixed;
