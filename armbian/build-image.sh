@@ -25,6 +25,10 @@ export E2FSPROGS_FAKE_TIME
 KEEP_WORK=0
 
 usage() {
+  local default_branch="$BRANCH"
+  if [[ "$REQUESTED_BOARD" == "$OOWOW_BOARD" && "$BRANCH_EXPLICIT" -eq 0 ]]; then
+    default_branch="legacy"
+  fi
   cat <<EOF
 Usage: $0 [options]
 
@@ -35,7 +39,7 @@ configuration, which is also the official target for Pi 5 at this revision.
 Options:
   --board <board>              Raspberry alias (rpi4/rpi5) or Armbian board name
   --release <release>          Armbian userspace release (default: $RELEASE)
-  --branch <branch>            Armbian kernel branch (default: $BRANCH)
+  --branch <branch>            Armbian kernel branch (default: $default_branch)
   --kernel-ref <ref>           Pin kernel ref, e.g. commit:<sha> or branch:<name>
   --output <path>              Write the primary image to this path
   --armbian-source <path>      Use an existing Armbian checkout at the pinned ref

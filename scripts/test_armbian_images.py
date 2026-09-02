@@ -177,6 +177,16 @@ class ArmbianImageTests(unittest.TestCase):
     def test_vim1s_rejects_a_non_oowow_output_name(self):
         self.assertIn('OOWOW output must end in .oowow.img.xz', self.build)
 
+    def test_vim1s_help_reports_legacy_default_branch(self):
+        result = subprocess.run(
+            [str(BUILD_SH), "--board", "khadas-vim1s", "--help"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("--branch <branch>            Armbian kernel branch (default: legacy)", result.stdout)
+
     def test_customize_script_installs_only_the_first_boot_handoff(self):
         self.assertIn('BUILD_DESKTOP="${4:-}"', self.customize)
         self.assertIn('ARCH="${5:-}"', self.customize)
