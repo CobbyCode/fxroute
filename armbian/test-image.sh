@@ -8,6 +8,7 @@ export PATH
 MACHINE="raspi4b"
 FXROUTE_USER="fxroute"
 SSH_KEY_FILE="${FXROUTE_ARMBIAN_SSH_KEY:-}"
+SETUP_PASSWORD="${FXROUTE_ARMBIAN_SETUP_PASSWORD:-${FXROUTE_WIFI_SETUP_PASSWORD:-}}"
 TIMEOUT_SECONDS="${FXROUTE_ARMBIAN_TEST_TIMEOUT:-7200}"
 KEEP_WORK=0
 IMAGE=""
@@ -20,8 +21,9 @@ Boot an Armbian image under QEMU and verify the common ARM64 FXRoute path.
 
 Options:
   --machine <name>       raspi4b (default) or virt
-  --user <name>          Provisioned FXRoute user (default: $FXROUTE_USER)
-  --ssh-key-file <path>  Private key matching the image's public key
+  --user <name>          End-user account to create in the QEMU check (default: $FXROUTE_USER)
+  --ssh-key-file <path>  Private key to use for the automated onboarding
+  --setup-password <pass> Temporary image setup password for the automated onboarding
   --timeout <seconds>    Guest readiness timeout (default: $TIMEOUT_SECONDS)
   --keep-work            Keep serial and QEMU logs
   -h, --help             Show this help
@@ -57,6 +59,11 @@ while [[ $# -gt 0 ]]; do
     --ssh-key-file)
       [[ $# -ge 2 ]] || die "--ssh-key-file requires a path"
       SSH_KEY_FILE="$2"
+      shift 2
+      ;;
+    --setup-password)
+      [[ $# -ge 2 ]] || die "--setup-password requires a value"
+      SETUP_PASSWORD="$2"
       shift 2
       ;;
     --timeout)
@@ -98,8 +105,6 @@ done
 [[ "$FXROUTE_USER" =~ ^[a-z_][a-z0-9_.-]{0,31}$ && "$FXROUTE_USER" != root ]] \
   || die "Invalid FXRoute user: $FXROUTE_USER"
 [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "Timeout must be a positive integer"
-[[ -n "$SSH_KEY_FILE" && -f "$SSH_KEY_FILE" ]] \
-  || die "Provide --ssh-key-file or FXROUTE_ARMBIAN_SSH_KEY"
 command -v qemu-system-aarch64 >/dev/null 2>&1 || die "qemu-system-aarch64 is required"
 command -v qemu-img >/dev/null 2>&1 || die "qemu-img is required"
 if [[ "$MACHINE" == "raspi4b" ]]; then
@@ -108,6 +113,9 @@ else
   command -v curl >/dev/null 2>&1 || die "curl is required for virt"
   command -v ssh >/dev/null 2>&1 || die "ssh is required for virt"
   command -v python3 >/dev/null 2>&1 || die "python3 is required for virt"
+  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required for virt"
+  command -v head >/dev/null 2>&1 || die "head is required for virt"
+  command -v tr >/dev/null 2>&1 || die "tr is required for virt"
 fi
 
 UEFI_CODE="${FXROUTE_ARMBIAN_UEFI_CODE:-/usr/share/qemu/aavmf-aarch64-code.bin}"
@@ -129,6 +137,7 @@ DTB_IMAGE="$WORK_DIR/bcm2711-rpi-4-b.dtb"
 INITRD_IMAGE="$WORK_DIR/initrd.img"
 CMDLINE_FILE="$WORK_DIR/cmdline.txt"
 UEFI_VARS="$WORK_DIR/aavmf-vars.bin"
+SETUP_PAGE="$WORK_DIR/setup.html"
 qemu_pid=""
 
 cleanup() {
@@ -180,7 +189,7 @@ if [[ "$MACHINE" == "raspi4b" ]]; then
   KERNEL_CMDLINE="${KERNEL_CMDLINE// console=tty1/}"
   KERNEL_CMDLINE="earlycon=pl011,mmio32,0xfe201000 $KERNEL_CMDLINE"
   machine_args=(
-    -M raspi4b,usb=on
+    -M "raspi4b,usb=on"
     -kernel "$KERNEL_IMAGE"
     -dtb "$DTB_IMAGE"
     -initrd "$INITRD_IMAGE"
@@ -189,9 +198,10 @@ if [[ "$MACHINE" == "raspi4b" ]]; then
   )
 else
   ssh_port="$(find_free_port 22000)"
+  setup_port="$(find_free_port 27000)"
   http_port="$(find_free_port 28000)"
   netdev_args=(
-    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${ssh_port}-:22,hostfwd=tcp:127.0.0.1:${http_port}-:8000"
+    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${ssh_port}-:22,hostfwd=tcp:127.0.0.1:${setup_port}-:443,hostfwd=tcp:127.0.0.1:${http_port}-:8000"
   )
   cp -- "$UEFI_VARS_TEMPLATE" "$UEFI_VARS"
   machine_args=(
@@ -200,10 +210,27 @@ else
     -drive "if=pflash,format=raw,file=$UEFI_VARS"
     -drive "file=$DISK_IMAGE,format=qcow2,if=none,id=virtio-disk"
     -device "virtio-blk-pci,drive=virtio-disk"
-    -device virtio-net-device,netdev=net0
+    -device "virtio-net-device,netdev=net0"
     -device virtio-rng-device
   )
   printf '%s\n' "[armbian-qemu] virt is a generic ARM64 probe; board boot is validated with raspi4b"
+fi
+
+if [[ "$MACHINE" == "virt" ]]; then
+  if [[ -z "$SSH_KEY_FILE" ]]; then
+    SSH_KEY_FILE="$WORK_DIR/test-ssh-key"
+    ssh-keygen -q -t ed25519 -N "" -C "fxroute-qemu-test" -f "$SSH_KEY_FILE"
+  else
+    [[ -f "$SSH_KEY_FILE" ]] || die "SSH key file does not exist: $SSH_KEY_FILE"
+  fi
+  [[ "$SETUP_PASSWORD" =~ ^[A-Za-z0-9._-]{8,63}$ ]] \
+    || die "virt requires --setup-password or FXROUTE_ARMBIAN_SETUP_PASSWORD"
+  ssh_public_key="$(ssh-keygen -y -f "$SSH_KEY_FILE")"
+  account_password=""
+  while [[ ${#account_password} -lt 16 ]]; do
+    account_password="$(head -c 64 /dev/urandom | tr -dc 'A-Za-z0-9')"
+  done
+  account_password="${account_password:0:16}"
 fi
 
 qemu=(
@@ -247,6 +274,36 @@ if [[ "$MACHINE" == "raspi4b" ]]; then
   printf '%s\n' "[armbian-qemu] Pi kernel and rootfs reached basic.target; network/API checks require hardware or generic virt"
   exit 0
 fi
+
+setup_deadline=$((SECONDS + TIMEOUT_SECONDS))
+setup_ready=0
+while (( SECONDS < setup_deadline )); do
+  if curl --fail --silent --show-error --insecure --connect-timeout 2 --max-time 5 \
+      "https://127.0.0.1:$setup_port/" > "$SETUP_PAGE"; then
+    setup_ready=1
+    break
+  fi
+  if ! kill -0 "$qemu_pid" >/dev/null 2>&1; then
+    printf '%s\n' "QEMU exited before the first-boot setup page became ready" >&2
+    tail -80 "$SERIAL_LOG" "$QEMU_LOG" >&2 2>/dev/null || true
+    exit 1
+  fi
+  sleep 2
+done
+[[ "$setup_ready" -eq 1 ]] || {
+  printf '%s\n' "Timed out waiting for the first-boot setup page" >&2
+  tail -80 "$SERIAL_LOG" "$QEMU_LOG" >&2 2>/dev/null || true
+  exit 1
+}
+
+curl --fail --silent --show-error --insecure --max-time 30 \
+  --data-urlencode "username=$FXROUTE_USER" \
+  --data-urlencode "account_password=$account_password" \
+  --data-urlencode "account_password_confirm=$account_password" \
+  --data-urlencode "ssh_key=$ssh_public_key" \
+  --data-urlencode "setup_password=$SETUP_PASSWORD" \
+  --data-urlencode "wifi_country=GB" \
+  "https://127.0.0.1:$setup_port/setup" >/dev/null
 
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do

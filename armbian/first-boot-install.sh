@@ -8,15 +8,15 @@ export PATH
 BASE_DIR="/opt/fxroute-armbian"
 SOURCE_ARCHIVE="$BASE_DIR/source.tar"
 SOURCE_DIR="$BASE_DIR/source"
-PROVISION_FILE="$BASE_DIR/provision.env"
+ACCOUNT_FILE="/var/lib/armbian-web-config/account"
+CONFIGURED_MARKER="/var/lib/armbian-web-config/configured"
 STATE_DIR="/var/lib/fxroute-armbian"
 COMPLETE_MARKER="$STATE_DIR/install-complete"
 FAILED_MARKER="$STATE_DIR/install-failed"
 IN_PROGRESS_MARKER="$STATE_DIR/install-in-progress"
+CLEANUP_PENDING_MARKER="$STATE_DIR/install-cleanup-pending"
 SERVICE_NAME="fxroute-armbian-first-boot.service"
 FXROUTE_USER=""
-FXROUTE_PASSWORD_HASH=""
-FXROUTE_SSH_PUBLIC_KEY=""
 staging_dir=""
 retry_attempt=0
 completed=0
@@ -26,112 +26,104 @@ completed=0
   exit 1
 }
 
+write_durable_marker() {
+  local path="$1"
+  local content="$2"
+  local temporary="${path}.tmp"
+
+  printf '%s\n' "$content" > "$temporary" || return 1
+  chmod 600 "$temporary" || return 1
+  sync -f "$temporary" || return 1
+  mv -f -- "$temporary" "$path" || return 1
+  sync -f "$path" || return 1
+}
+
+finish_success_cleanup() {
+  local timestamp=""
+
+  # Remove the login gate before the onboarding state so a power loss cannot
+  # restart the interactive Armbian helper while cleanup is pending.
+  rm -f -- /root/.not_logged_in_yet \
+    /etc/profile.d/armbian-check-first-login.sh || return 1
+  rm -f -- "$IN_PROGRESS_MARKER" "$FAILED_MARKER" || return 1
+  rm -rf -- /var/lib/armbian-web-config || return 1
+  rm -f -- /etc/default/armbian-web-config || return 1
+  rm -rf -- /opt/fxroute-armbian || return 1
+
+  sync -f "$STATE_DIR" || return 1
+  timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  write_durable_marker "$COMPLETE_MARKER" "$timestamp" || return 1
+  rm -f -- "$CLEANUP_PENDING_MARKER" || true
+
+  # Disable future starts only after the completion marker is durable.
+  systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl disable armbian-web-config.service >/dev/null 2>&1 || true
+}
+
 mkdir -p "$STATE_DIR"
 if [[ -f "$COMPLETE_MARKER" ]]; then
+  rm -f -- "$CLEANUP_PENDING_MARKER"
   exit 0
 fi
+if [[ -f "$CLEANUP_PENDING_MARKER" ]]; then
+  finish_success_cleanup
+  exit 0
+fi
+[[ -f "$CONFIGURED_MARKER" && ! -L "$CONFIGURED_MARKER" ]] || {
+  printf 'End-user onboarding has not completed: %s\n' "$CONFIGURED_MARKER" >&2
+  exit 1
+}
 if [[ -f "$FAILED_MARKER" || -f "$IN_PROGRESS_MARKER" ]]; then
   retry_attempt=1
 fi
 rm -f -- "$FAILED_MARKER"
-touch "$IN_PROGRESS_MARKER"
-chmod 600 "$IN_PROGRESS_MARKER"
+write_durable_marker "$IN_PROGRESS_MARKER" "first-boot setup is in progress"
 
 cleanup() {
   local status=$?
-  local complete_marker_tmp="${COMPLETE_MARKER}.tmp"
+  local timestamp=""
 
   [[ -z "$staging_dir" ]] || rm -rf -- "$staging_dir"
   if [[ "$status" -eq 0 && "$completed" -eq 1 ]]; then
-    rm -f -- "$IN_PROGRESS_MARKER" "$FAILED_MARKER"
-    systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
-    rm -rf -- /opt/fxroute-armbian
-    date -u +%Y-%m-%dT%H:%M:%SZ > "$complete_marker_tmp"
-    chmod 600 "$complete_marker_tmp"
-    mv -f -- "$complete_marker_tmp" "$COMPLETE_MARKER"
-  elif [[ "$status" -ne 0 ]]; then
-    rm -f -- "$complete_marker_tmp"
-    printf 'first-boot setup failed with status %s\n' "$status" > "$FAILED_MARKER"
+    if ! {
+      timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" &&
+      write_durable_marker "$CLEANUP_PENDING_MARKER" "$timestamp" &&
+      finish_success_cleanup
+    }; then
+      status=1
+    fi
+  fi
+  if [[ "$status" -ne 0 ]]; then
+    write_durable_marker "$FAILED_MARKER" "first-boot setup failed with status $status" || true
   fi
   exit "$status"
 }
 trap cleanup EXIT
 
-read_provision_value() {
-  local wanted="$1"
-  local encoded=""
-  encoded="$(awk -F= -v wanted="$wanted" '$1 == wanted { sub(/^[^=]*=/, "", $0); print; exit }' \
-    "$PROVISION_FILE")"
-  [[ "$encoded" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || {
-    printf 'Invalid base64 provisioning value: %s\n' "$wanted" >&2
-    return 1
-  }
-  printf '%s' "$encoded" | base64 --decode
-}
-
 [[ -f "$SOURCE_ARCHIVE" && ! -L "$SOURCE_ARCHIVE" ]] || {
   printf 'Missing FXRoute source archive: %s\n' "$SOURCE_ARCHIVE" >&2
   exit 1
 }
-[[ -f "$PROVISION_FILE" && ! -L "$PROVISION_FILE" ]] || {
-  printf 'Missing FXRoute provisioning metadata: %s\n' "$PROVISION_FILE" >&2
-  exit 1
-}
-
-FXROUTE_USER="$(read_provision_value FXROUTE_USER_B64)"
-FXROUTE_PASSWORD_HASH="$(read_provision_value FXROUTE_PASSWORD_HASH_B64)"
-FXROUTE_SSH_PUBLIC_KEY="$(read_provision_value FXROUTE_SSH_PUBLIC_KEY_B64)"
-[[ "$FXROUTE_USER" =~ ^[a-z_][a-z0-9_.-]{0,31}$ && "$FXROUTE_USER" != root ]] \
-  || { printf 'Invalid FXRoute provisioning user: %s\n' "$FXROUTE_USER" >&2; exit 1; }
-[[ "$FXROUTE_PASSWORD_HASH" =~ ^\$6\$[A-Za-z0-9./]+\$[A-Za-z0-9./]+$ ]] \
-  || { printf '%s\n' "The FXRoute provisioning password is not a SHA-512 crypt hash" >&2; exit 1; }
-[[ "$FXROUTE_SSH_PUBLIC_KEY" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521))[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$ ]] \
-  || { printf '%s\n' "The FXRoute provisioning key is not a supported OpenSSH public key" >&2; exit 1; }
-
-provision_user() {
-  local user_home=""
-  local user_group=""
-  local ssh_dir=""
-  local authorized_keys=""
-  local group=""
-
-  if ! getent passwd "$FXROUTE_USER" >/dev/null 2>&1; then
-    useradd --create-home --shell /bin/bash "$FXROUTE_USER"
-  fi
-  user_home="$(getent passwd "$FXROUTE_USER" | cut -d: -f6)"
-  [[ "$user_home" == /home/* && -d "$user_home" ]] \
-    || { printf 'FXRoute user has no usable home directory: %s\n' "$FXROUTE_USER" >&2; exit 1; }
-  user_group="$(id -gn "$FXROUTE_USER")"
-
-  usermod --password "$FXROUTE_PASSWORD_HASH" "$FXROUTE_USER"
-  for group in sudo wheel audio; do
-    if getent group "$group" >/dev/null 2>&1; then
-      usermod -aG "$group" "$FXROUTE_USER"
-    fi
-  done
-
-  ssh_dir="$user_home/.ssh"
-  authorized_keys="$ssh_dir/authorized_keys"
-  [[ ! -L "$ssh_dir" && ! -L "$authorized_keys" ]] || {
-    printf '%s\n' "Refusing symlinked SSH configuration for the FXRoute user" >&2
-    exit 1
+read_account_user() {
+  [[ -f "$ACCOUNT_FILE" && ! -L "$ACCOUNT_FILE" ]] || {
+    printf 'Missing end-user account metadata: %s\n' "$ACCOUNT_FILE" >&2
+    return 1
   }
-  install -d -o "$FXROUTE_USER" -g "$user_group" -m 700 "$ssh_dir"
-  if [[ ! -e "$authorized_keys" ]]; then
-    install -o "$FXROUTE_USER" -g "$user_group" -m 600 /dev/null "$authorized_keys"
-  fi
-  grep -Fqx -- "$FXROUTE_SSH_PUBLIC_KEY" "$authorized_keys" \
-    || printf '%s\n' "$FXROUTE_SSH_PUBLIC_KEY" >> "$authorized_keys"
-  chown "$FXROUTE_USER:$user_group" "$authorized_keys"
-  chmod 600 "$authorized_keys"
+  FXROUTE_USER="$(<"$ACCOUNT_FILE")"
+  [[ "$FXROUTE_USER" =~ ^[a-z_][a-z0-9_.-]{0,31}$ && "$FXROUTE_USER" != root ]] \
+    || { printf 'Invalid end-user account name\n' >&2; return 1; }
+  getent passwd "$FXROUTE_USER" >/dev/null 2>&1 \
+    || { printf 'End-user account does not exist: %s\n' "$FXROUTE_USER" >&2; return 1; }
 }
 
 reset_incomplete_install() {
   local user_home="$1"
-  local root_state_dir="/var/lib/fxroute/state/$(id -u "$FXROUTE_USER")"
-  local root_state_file="$root_state_dir/install-state.json"
+  local root_state_dir=""
+  local root_state_file=""
   local target="$user_home/fxroute"
 
+  root_state_dir="/var/lib/fxroute/state/$(id -u "$FXROUTE_USER")"
+  root_state_file="$root_state_dir/install-state.json"
   [[ "$retry_attempt" -eq 1 ]] || return 0
   if [[ -s "$root_state_file" ]] && python3 - "$root_state_file" "$target" <<'PY'
 import json
@@ -155,12 +147,30 @@ PY
   rm -rf -- "$root_state_dir"
 }
 
+wait_for_valid_clock() {
+  local deadline=$((SECONDS + 300))
+  local epoch=""
+
+  while (( SECONDS < deadline )); do
+    epoch="$(date -u +%s)"
+    if [[ "$epoch" =~ ^[0-9]+$ ]] && (( epoch >= 1577836800 )); then
+      return 0
+    fi
+    sleep 2
+  done
+  printf '%s\n' "System clock did not synchronize before FXRoute installation" >&2
+  return 1
+}
+
 while [[ "$(systemctl show --property=SubState --value armbian-firstrun.service 2>/dev/null || true)" == "running" ]]; do
   sleep 1
 done
 
-provision_user
+wait_for_valid_clock
+read_account_user
 fxroute_home="$(getent passwd "$FXROUTE_USER" | cut -d: -f6)"
+[[ "$fxroute_home" == /home/* && -d "$fxroute_home" ]] \
+  || { printf 'FXRoute user has no usable home directory: %s\n' "$FXROUTE_USER" >&2; exit 1; }
 reset_incomplete_install "$fxroute_home"
 
 staging_dir="$(mktemp -d "$BASE_DIR/source.XXXXXX")"

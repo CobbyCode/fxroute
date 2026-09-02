@@ -23,17 +23,19 @@ replace a physical board check.
 
 ## Build
 
-The image requires a deployment-specific SHA-512 password hash and SSH public
-key. The wrapper refuses to use a missing or unhashed password and does not
-write credentials into the FXRoute source archive.
-
 ```bash
-export FXROUTE_PASSWORD_HASH="$(openssl passwd -6)"
 ./armbian/build-image.sh \
-  --board rpi4 \
-  --password-hash "$FXROUTE_PASSWORD_HASH" \
-  --ssh-public-key-file "$HOME/.ssh/id_ed25519.pub"
+  --board rpi4
 ```
+
+The wrapper generates a unique temporary setup password and prints it once
+during the build. To choose it explicitly for a private test image, set
+`FXROUTE_WIFI_SETUP_PASSWORD` or pass `--wifi-setup-password`. This password
+protects the temporary setup AP and authorizes the first-boot form on Ethernet;
+the image stores only a salted password verifier and a derived WPA key, never
+the setup password itself. End-user account credentials are never supplied to
+the builder or stored in the image. Keep the printed setup password private for
+an image that is reachable by untrusted clients.
 
 The resulting raw image and checksum are written to `dist/` by default. The
 same command with `--board rpi5` builds the current official Armbian target
@@ -41,9 +43,7 @@ for Pi 5:
 
 ```bash
 ./armbian/build-image.sh \
-  --board rpi5 \
-  --password-hash "$FXROUTE_PASSWORD_HASH" \
-  --ssh-public-key-file "$HOME/.ssh/id_ed25519.pub"
+  --board rpi5
 ```
 
 At the pinned Armbian revision, `rpi4`, `rpi4b`, `rpi5`, and `rpi5b` are
@@ -69,8 +69,6 @@ source configured by Armbian, then build it as a raw image:
 ./armbian/build-image.sh \
   --board uefi-arm64 \
   --kernel-ref commit:<pinned-linux-stable-commit> \
-  --password-hash "$FXROUTE_PASSWORD_HASH" \
-  --ssh-public-key-file "$HOME/.ssh/id_ed25519.pub" \
   --output dist/fxroute-armbian-uefi-arm64-trixie-current.img
 ```
 
@@ -88,17 +86,22 @@ FXRoute source archive. Byte-identical complete images also require pinned
 Armbian package repositories, firmware, Docker build image, and all other
 external inputs; the wrapper records the Armbian and Pi kernel source pins and
 does not pretend that a moving distribution mirror is a lockfile.
+The runtime fake-clock seed intentionally uses current UTC instead of this
+reproducibility epoch, so an RTC-less Pi can establish HTTPS before NTP settles.
 
 ## First Boot
 
-The image is headless and noninteractive:
+The image is headless and completes its initial setup through the local web
+page:
 
-- The named FXRoute user is created with the supplied password hash and SSH key.
+- The end user selects the FXRoute user name, sets its password, and supplies an SSH public key. The account is created with the required sudo, audio, and wheel access; the password is for local administration and SSH accepts the public key only.
 - Root is locked and SSH password and keyboard-interactive authentication are disabled.
 - Armbian's noninteractive `armbian-firstrun.service` remains enabled for host-key regeneration and board setup.
+- Armbian's first-login marker is retained until provisioning completes. With no wired Ethernet carrier, the image starts a temporary `hostname-armbiansetup` access point using the password printed during the build at `http://10.42.0.1`; enter that setup password plus the account, SSH key, and Wi-Fi credentials there. With a wired Ethernet carrier, the image waits briefly for DHCP, then serves `https://<dhcp-address>`; accept its self-signed setup certificate and enter the printed setup password. HTTP GET redirects to HTTPS and HTTP POST is rejected before credentials are read; no access point is started while wired networking is usable.
+- The Wi-Fi credentials are saved as Armbian-style Netplan configuration for the existing `systemd-networkd` stack. Ethernet has route metric 100 and Wi-Fi has route metric 600. The setup service is not enabled again after successful onboarding.
 - The FXRoute first-boot service waits for the network and Armbian first-run work, extracts the source archive, and invokes the existing `install.sh` with `--user`, `--providers none`, and `--yes`.
 - The installer creates the persistent systemd user session, PipeWire graph, native DSP engine, and `fxroute.service` as the target user.
-- Source and provisioning metadata are removed only after the installer completes successfully. Failure leaves markers and retries on a later boot.
+- Source and onboarding metadata are removed only after the installer completes successfully. Failure leaves markers and retries on a later boot.
 
 Spotify Desktop is never included. On ARM, install `spotifyd` later through
 the existing installer path if required:
@@ -113,13 +116,11 @@ path are unchanged.
 ## QEMU Check
 
 QEMU 11 provides a `raspi4b` machine but no Raspberry Pi 5 machine. After
-building an image, run the shared ARM64/user-session check with the private
-key that matches the image's public key:
+building an image, run the shared ARM64 boot check:
 
 ```bash
 ./armbian/test-image.sh \
   --machine raspi4b \
-  --ssh-key-file "$HOME/.ssh/id_ed25519" \
   dist/fxroute-armbian-rpi4-trixie-current.img
 ```
 
@@ -129,12 +130,15 @@ image through the host's AAVMF firmware rather than borrowing Pi boot files:
 ```bash
 ./armbian/test-image.sh \
   --machine virt \
-  --ssh-key-file "$HOME/.ssh/id_ed25519" \
+  --setup-password '<the-password-used-to-build-the-image>' \
   dist/fxroute-armbian-uefi-arm64-trixie-current.img
 ```
 
-The runner waits for `/api/status`, then checks the AArch64 userspace, the
-target-user systemd services and runtime sockets, and the
+The generic `virt` runner completes the first-boot form with an ephemeral test
+account and key. Pass the same value used with `--wifi-setup-password` (or
+`FXROUTE_WIFI_SETUP_PASSWORD`) when building the image. The runner then waits
+for `/api/status`. It checks the AArch64
+userspace, target-user systemd services and runtime sockets, and the
 `fxroute_dsp_sink`. QEMU does not provide physical ALSA output, and a Pi 5
 must still be tested on Pi 5 hardware for boot firmware, storage, Ethernet,
 USB, thermal, GPU, and audio behavior.

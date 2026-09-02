@@ -1,8 +1,7 @@
 [Unit]
 Description=FXRoute Armbian first-boot installation
-Wants=network-online.target armbian-firstrun.service
-After=network-online.target armbian-firstrun.service ssh.service
-ConditionPathExists=/opt/fxroute-armbian/source.tar
+Wants=network-online.target armbian-firstrun.service armbian-web-config.service
+After=network-online.target armbian-firstrun.service ssh.service armbian-web-config.service
 
 [Service]
 Type=oneshot

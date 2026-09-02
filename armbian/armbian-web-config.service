@@ -1,0 +1,19 @@
+[Unit]
+Description=Armbian headless first-boot setup
+ConditionPathExists=/root/.not_logged_in_yet
+ConditionPathExists=!/var/lib/armbian-web-config/configured
+After=network.target armbian-firstrun.service
+Wants=armbian-firstrun.service
+Before=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/default/armbian-web-config
+ExecStart=/usr/local/libexec/armbian-web-config.py
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

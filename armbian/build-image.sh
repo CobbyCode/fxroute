@@ -11,10 +11,7 @@ ARMBIAN_BUILD_REF="4a50e16e09222e00d3f57884b4dfbf8fdb4ce5dc"
 REQUESTED_BOARD="rpi4"
 RELEASE="trixie"
 BRANCH="current"
-FXROUTE_USER="fxroute"
-PASSWORD_HASH="${FXROUTE_PASSWORD_HASH:-}"
-SSH_PUBLIC_KEY="${FXROUTE_SSH_PUBLIC_KEY:-}"
-SSH_PUBLIC_KEY_FILE=""
+WIFI_SETUP_PASSWORD="${FXROUTE_WIFI_SETUP_PASSWORD:-}"
 ARMBIAN_SOURCE_DIR="${FXROUTE_ARMBIAN_SOURCE:-}"
 ARMBIAN_CACHE_DIR="${FXROUTE_ARMBIAN_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/fxroute/armbian}"
 OUTPUT="${FXROUTE_ARMBIAN_OUTPUT:-}"
@@ -38,19 +35,18 @@ Options:
   --release <release>          Armbian userspace release (default: $RELEASE)
   --branch <branch>            Armbian kernel branch (default: $BRANCH)
   --kernel-ref <ref>           Pin kernel ref, e.g. commit:<sha> or branch:<name>
-  --user <name>                First-boot FXRoute user (default: $FXROUTE_USER)
-  --password-hash <hash>       SHA-512 crypt hash for the first-boot user
-  --ssh-public-key-file <path> Install this public key for the first-boot user
+  --wifi-setup-password <pass> Password for the temporary setup AP and form
   --output <path>              Write the primary image to this path
   --armbian-source <path>      Use an existing Armbian checkout at the pinned ref
   --cache-dir <path>           Cache the pinned Armbian checkout here
   --keep-work                  Keep the temporary Armbian build checkout
   -h, --help                   Show this help
 
-The same credentials and source values can be supplied through
-FXROUTE_PASSWORD_HASH, FXROUTE_SSH_PUBLIC_KEY, and FXROUTE_ARMBIAN_SOURCE.
-The password hash and public key are written only into the image provisioning
-metadata; they are never added to the FXRoute source archive.
+The source and optional temporary setup password can be supplied through
+FXROUTE_ARMBIAN_SOURCE and FXROUTE_WIFI_SETUP_PASSWORD. If no Wi-Fi setup
+password is supplied, a random one is generated and printed once during the
+build. The end user creates the FXRoute account and SSH key during first boot;
+no builder credentials are written into the image.
 For qemu-uboot-arm64, the qcow2 image and U-Boot companion are written beside
 the requested output path.
 EOF
@@ -83,19 +79,9 @@ while [[ $# -gt 0 ]]; do
       KERNEL_REF="$2"
       shift 2
       ;;
-    --user)
-      [[ $# -ge 2 ]] || die "--user requires a Unix username"
-      FXROUTE_USER="$2"
-      shift 2
-      ;;
-    --password-hash)
-      [[ $# -ge 2 ]] || die "--password-hash requires a value"
-      PASSWORD_HASH="$2"
-      shift 2
-      ;;
-    --ssh-public-key-file)
-      [[ $# -ge 2 ]] || die "--ssh-public-key-file requires a path"
-      SSH_PUBLIC_KEY_FILE="$2"
+    --wifi-setup-password)
+      [[ $# -ge 2 ]] || die "--wifi-setup-password requires a value"
+      WIFI_SETUP_PASSWORD="$2"
       shift 2
       ;;
     --output)
@@ -127,34 +113,72 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -n "$SSH_PUBLIC_KEY_FILE" ]]; then
-  [[ -f "$SSH_PUBLIC_KEY_FILE" ]] || die "SSH public key file does not exist: $SSH_PUBLIC_KEY_FILE"
-  SSH_PUBLIC_KEY="$(<"$SSH_PUBLIC_KEY_FILE")"
-  SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY%$'\n'}"
-  SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY%$'\r'}"
-fi
-
 [[ "$REQUESTED_BOARD" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
   || die "Invalid Armbian board name: $REQUESTED_BOARD"
 [[ "$RELEASE" =~ ^[a-z0-9][a-z0-9._-]*$ ]] \
   || die "Invalid Armbian release: $RELEASE"
 [[ "$BRANCH" =~ ^[a-z0-9][a-z0-9._-]*$ ]] \
   || die "Invalid Armbian branch: $BRANCH"
-[[ "$FXROUTE_USER" =~ ^[a-z_][a-z0-9_.-]{0,31}$ && "$FXROUTE_USER" != root ]] \
-  || die "Invalid FXRoute image user: $FXROUTE_USER"
 [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] \
   || die "SOURCE_DATE_EPOCH must be a non-negative integer"
-[[ "$PASSWORD_HASH" =~ ^\$6\$[A-Za-z0-9./]+\$[A-Za-z0-9./]+$ ]] \
-  || die "Provide a SHA-512 crypt password hash with --password-hash or FXROUTE_PASSWORD_HASH"
-[[ "$SSH_PUBLIC_KEY" != *$'\n'* ]] \
-  || die "The SSH public key must be one line"
-[[ "$SSH_PUBLIC_KEY" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521))[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$ ]] \
-  || die "Provide a supported OpenSSH public key with --ssh-public-key-file or FXROUTE_SSH_PUBLIC_KEY"
 
 command -v git >/dev/null 2>&1 || die "git is required"
 command -v tar >/dev/null 2>&1 || die "tar is required"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
-command -v base64 >/dev/null 2>&1 || die "base64 is required"
+command -v head >/dev/null 2>&1 || die "head is required"
+command -v tr >/dev/null 2>&1 || die "tr is required"
+command -v python3 >/dev/null 2>&1 || die "python3 is required"
+
+generate_wifi_setup_password() {
+  local value=""
+  while [[ ${#value} -lt 16 ]]; do
+    value="$(head -c 32 /dev/urandom | tr -dc 'A-Za-z0-9')"
+  done
+  printf '%s' "${value:0:16}"
+}
+
+generate_setup_metadata() {
+  # Store only a salted verifier and a WPA PSK derived from the printed
+  # password. The image must not contain the password in recoverable form.
+  # shellcheck disable=SC2016
+  printf '%s' "$WIFI_SETUP_PASSWORD" |
+    ARMBIAN_SETUP_HOSTNAME="$build_board" python3 -c '
+import base64
+import hashlib
+import os
+import re
+import secrets
+import sys
+
+password = sys.stdin.read()
+hostname = os.environ["ARMBIAN_SETUP_HOSTNAME"]
+suffix = "-armbiansetup"
+prefix = re.sub(r"[^A-Za-z0-9-]", "-", hostname).strip("-")
+prefix = prefix[: 32 - len(suffix)]
+if not prefix:
+    prefix = "armbian"
+ssid = prefix + suffix
+iterations = 600000
+salt = secrets.token_bytes(16)
+digest = hashlib.pbkdf2_hmac(
+    "sha256", password.encode("ascii"), salt, iterations
+)
+verifier = f"pbkdf2-sha256${iterations}${salt.hex()}${digest.hex()}"
+wpa_psk = hashlib.pbkdf2_hmac(
+    "sha1", password.encode("ascii"), ssid.encode("utf-8"), 4096, dklen=32
+).hex()
+print(ssid)
+print(base64.b64encode(verifier.encode("ascii")).decode("ascii"))
+print(wpa_psk)
+'
+}
+
+if [[ -z "$WIFI_SETUP_PASSWORD" ]]; then
+  WIFI_SETUP_PASSWORD="$(generate_wifi_setup_password)"
+fi
+[[ "$WIFI_SETUP_PASSWORD" =~ ^[A-Za-z0-9._-]{8,63}$ ]] \
+  || die "The Wi-Fi setup password must be 8-63 letters, numbers, dots, underscores, or hyphens"
+printf '[armbian] temporary Wi-Fi setup password: %s\n' "$WIFI_SETUP_PASSWORD"
 
 board="$REQUESTED_BOARD"
 requested_board="$board"
@@ -165,6 +189,14 @@ case "$requested_board" in
     build_board="rpi4b"
     ;;
 esac
+
+setup_metadata="$(generate_setup_metadata)"
+SETUP_AP_SSID="$(printf '%s\n' "$setup_metadata" | sed -n '1p')"
+AP_PASSWORD_VERIFIER_B64="$(printf '%s\n' "$setup_metadata" | sed -n '2p')"
+AP_PSK="$(printf '%s\n' "$setup_metadata" | sed -n '3p')"
+[[ "$SETUP_AP_SSID" =~ ^[A-Za-z0-9-]{1,32}$ ]] || die "Could not derive a valid setup AP SSID"
+[[ "$AP_PASSWORD_VERIFIER_B64" =~ ^[A-Za-z0-9+/=]+$ ]] || die "Could not derive a setup password verifier"
+[[ "$AP_PSK" =~ ^[0-9a-f]{64}$ ]] || die "Could not derive a setup AP key"
 
 if [[ -z "$OUTPUT" ]]; then
   OUTPUT="$ROOT_DIR/dist/fxroute-armbian-${requested_board}-${RELEASE}-${BRANCH}.img"
@@ -276,10 +308,6 @@ create_source_archive() {
     || die "Could not read generated FXRoute source archive"
 }
 
-encode_provision_value() {
-  printf '%s' "$1" | base64 --wrap=0
-}
-
 board_config_path() {
   local candidate=""
   local board_type=""
@@ -320,9 +348,10 @@ kernel_ref_for_rpi() {
 
 write_build_configuration() {
   local userpatches="$armbian_dir/userpatches"
-  local config_path="$(board_config_path || true)"
+  local config_path=""
   local family=""
 
+  config_path="$(board_config_path || true)"
   [[ -n "$config_path" ]] || die "No Armbian board config found for $build_board"
   mkdir -p "$userpatches/overlay"
 
@@ -343,7 +372,7 @@ BETA=no
 ROOTPWD="!"
 BOOT_LOGO=no
 COMPRESS_OUTPUTIMAGE=none
-add_packages_to_image ca-certificates curl dbus-user-session openssh-server sudo tar
+add_packages_to_image ca-certificates curl dbus-user-session dnsmasq-base hostapd iw openssl openssh-server python3 sudo tar wpasupplicant
 
 function prepare_root_device__fxroute_reproducible_rootfs() {
   [[ "${ROOTFS_TYPE}" == "ext4" ]] || return 0
@@ -411,8 +440,9 @@ MKFS_FAT_WRAPPER
   fi
 
   mkdir -p "${SDCARD}/etc"
-  date -u -d "@${SOURCE_DATE_EPOCH:-0}" '+%Y-%m-%d %H:%M:%S' \
-    > "${SDCARD}/etc/fake-hwclock.data"
+  # A Pi without an RTC needs a valid initial clock for HTTPS package
+  # downloads; keep runtime clock data separate from reproducible file times.
+  date -u '+%Y-%m-%d %H:%M:%S' > "${SDCARD}/etc/fake-hwclock.data"
 }
 EOF
 
@@ -438,14 +468,20 @@ EOF
   cp -- "$ROOT_DIR/armbian/first-boot-install.sh" "$userpatches/overlay/first-boot-install.sh"
   cp -- "$ROOT_DIR/armbian/fxroute-armbian-first-boot.service" \
     "$userpatches/overlay/fxroute-armbian-first-boot.service"
+  cp -- "$ROOT_DIR/armbian/armbian-web-config.py" \
+    "$userpatches/overlay/armbian-web-config.py"
+  cp -- "$ROOT_DIR/armbian/armbian-web-config.service" \
+    "$userpatches/overlay/armbian-web-config.service"
+  printf 'ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64=%s\nARMBIAN_WEB_CONFIG_AP_PSK=%s\nARMBIAN_WEB_CONFIG_AP_SSID=%s\n' \
+    "$AP_PASSWORD_VERIFIER_B64" \
+    "$AP_PSK" \
+    "$SETUP_AP_SSID" \
+    > "$userpatches/overlay/armbian-web-config.env"
   chmod 755 "$userpatches/overlay/first-boot-install.sh"
+  chmod 755 "$userpatches/overlay/armbian-web-config.py"
   chmod 644 "$userpatches/overlay/fxroute-armbian-first-boot.service"
-  printf 'FXROUTE_USER_B64=%s\nFXROUTE_PASSWORD_HASH_B64=%s\nFXROUTE_SSH_PUBLIC_KEY_B64=%s\n' \
-    "$(encode_provision_value "$FXROUTE_USER")" \
-    "$(encode_provision_value "$PASSWORD_HASH")" \
-    "$(encode_provision_value "$SSH_PUBLIC_KEY")" \
-    > "$userpatches/overlay/provision.env"
-  chmod 600 "$userpatches/overlay/provision.env"
+  chmod 644 "$userpatches/overlay/armbian-web-config.service"
+  chmod 600 "$userpatches/overlay/armbian-web-config.env"
 }
 
 copy_image_output() {

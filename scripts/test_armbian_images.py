@@ -14,6 +14,8 @@ BUILD_SH = ARMBIAN_DIR / "build-image.sh"
 CUSTOMIZE_SH = ARMBIAN_DIR / "customize-image.sh"
 FIRST_BOOT_SH = ARMBIAN_DIR / "first-boot-install.sh"
 SERVICE = ARMBIAN_DIR / "fxroute-armbian-first-boot.service"
+WEB_CONFIG_SH = ARMBIAN_DIR / "armbian-web-config.py"
+WEB_CONFIG_SERVICE = ARMBIAN_DIR / "armbian-web-config.service"
 QEMU_SH = ARMBIAN_DIR / "test-image.sh"
 
 
@@ -24,6 +26,10 @@ class ArmbianImageTests(unittest.TestCase):
         cls.customize = CUSTOMIZE_SH.read_text()
         cls.first_boot = FIRST_BOOT_SH.read_text()
         cls.service = SERVICE.read_text()
+        cls.web_config = WEB_CONFIG_SH.read_text() if WEB_CONFIG_SH.exists() else ""
+        cls.web_config_service = (
+            WEB_CONFIG_SERVICE.read_text() if WEB_CONFIG_SERVICE.exists() else ""
+        )
         cls.qemu = QEMU_SH.read_text()
 
     def test_build_wrapper_uses_pinned_official_armbian_source(self):
@@ -37,17 +43,29 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn('git -C "$repository" checkout --detach "$ARMBIAN_BUILD_REF"', self.build)
         self.assertIn('"$armbian_dir/compile.sh"', self.build)
 
-    def test_build_wrapper_stages_reproducible_source_and_credentials(self):
+    def test_build_wrapper_stages_reproducible_source_without_builder_credentials(self):
         self.assertIn("SOURCE_DATE_EPOCH", self.build)
         self.assertIn("ls-files -z", self.build)
         self.assertIn("--sort=name", self.build)
         self.assertIn("userpatches/overlay", self.build)
         self.assertIn("customize-image.sh", self.build)
         self.assertIn("source.tar", self.build)
-        self.assertIn("password-hash", self.build)
-        self.assertIn("ssh-public-key-file", self.build)
-        self.assertIn("FXROUTE_PASSWORD_HASH", self.build)
-        self.assertIn("FXROUTE_SSH_PUBLIC_KEY", self.build)
+        self.assertNotIn("password-hash", self.build)
+        self.assertNotIn("ssh-public-key-file", self.build)
+        self.assertNotIn("FXROUTE_PASSWORD_HASH", self.build)
+        self.assertNotIn("FXROUTE_SSH_PUBLIC_KEY", self.build)
+        self.assertNotIn("provision.env", self.build)
+
+    def test_build_wrapper_stages_a_private_per_image_wifi_setup_password(self):
+        self.assertIn("--wifi-setup-password", self.build)
+        self.assertIn("generate_wifi_setup_password", self.build)
+        self.assertIn("ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64", self.build)
+        self.assertIn("ARMBIAN_WEB_CONFIG_AP_PSK", self.build)
+        self.assertIn("ARMBIAN_WEB_CONFIG_AP_SSID", self.build)
+        self.assertIn("armbian-web-config.env", self.build)
+        self.assertIn("armbian-web-config.env", self.customize)
+        self.assertIn("EnvironmentFile=/etc/default/armbian-web-config", self.web_config_service)
+        self.assertNotIn('AP_PASSWORD = "armbian1234"', self.web_config)
 
     def test_build_wrapper_exports_epoch_before_generating_hooks(self):
         self.assertRegex(
@@ -55,15 +73,15 @@ class ArmbianImageTests(unittest.TestCase):
             r'SOURCE_DATE_EPOCH="\$\{SOURCE_DATE_EPOCH:-0\}"\nexport SOURCE_DATE_EPOCH',
         )
 
-    def test_provisioning_metadata_is_encoded_and_decoded_without_sourcing(self):
-        self.assertIn("encode_provision_value", self.build)
-        self.assertIn("base64 --wrap=0", self.build)
-        self.assertIn("FXROUTE_USER_B64", self.build)
-        self.assertIn("base64 --decode", self.first_boot)
-        self.assertNotIn("base64 --decode --strict", self.first_boot)
-        self.assertIn("FXROUTE_SSH_PUBLIC_KEY_B64", self.first_boot)
-        self.assertNotIn('source "$PROVISION_FILE"', self.first_boot)
-        self.assertNotIn('. "$PROVISION_FILE"', self.first_boot)
+    def test_first_boot_reads_only_the_user_created_by_end_user_onboarding(self):
+        self.assertIn("/var/lib/armbian-web-config/account", self.first_boot)
+        self.assertIn('CONFIGURED_MARKER="/var/lib/armbian-web-config/configured"', self.first_boot)
+        self.assertIn("read_account_user", self.first_boot)
+        self.assertNotIn("PROVISION_FILE", self.first_boot)
+        self.assertNotIn("FXROUTE_PASSWORD_HASH", self.first_boot)
+        self.assertNotIn("FXROUTE_SSH_PUBLIC_KEY", self.first_boot)
+        self.assertNotIn("read_provision_value", self.first_boot)
+        self.assertIn("/var/lib/armbian-web-config/account", self.web_config)
 
     def test_build_wrapper_has_raspberry_aliases_and_generic_board_support(self):
         self.assertIn('rpi4|rpi4b|rpi5|rpi5b)', self.build)
@@ -130,6 +148,7 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn("--invariant", self.build)
         self.assertIn("hash_seed=", self.build)
         self.assertIn("fake-hwclock.data", self.build)
+        self.assertIn("date -u '+%Y-%m-%d %H:%M:%S'", self.build)
         self.assertIn("BOOTSCRIPT_TEMPLATE__CREATE_DATE", self.build)
 
     def test_build_wrapper_preserves_qemu_companion_artifacts(self):
@@ -150,20 +169,75 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn('ARCH="${5:-}"', self.customize)
         self.assertIn('OVERLAY_DIR="/tmp/overlay"', self.customize)
         self.assertIn('"$OVERLAY_DIR/source.tar"', self.customize)
-        self.assertIn('"$OVERLAY_DIR/provision.env"', self.customize)
+        self.assertNotIn('"$OVERLAY_DIR/provision.env"', self.customize)
         self.assertIn("/opt/fxroute-armbian", self.customize)
         self.assertIn("fxroute-armbian-first-boot.service", self.customize)
         self.assertIn("multi-user.target.wants", self.customize)
         self.assertIn("passwd -l root", self.customize)
-        self.assertIn("armbian-check-first-login", self.customize)
+        self.assertNotIn("rm -f -- /root/.not_logged_in_yet", self.customize)
+        self.assertIn("/etc/profile.d/armbian-check-first-login.sh", self.customize)
         self.assertIn("install -d -m 755 /usr/local/libexec", self.customize)
         self.assertNotIn("systemctl --user", self.customize)
+        self.assertIn("armbian-firstrun.service.d", self.customize)
+        self.assertIn("Type=oneshot", self.customize)
+        self.assertIn("rm -f /etc/ssh/ssh_host_*", self.customize)
+        self.assertIn("systemctl is-active --quiet armbian-web-config.service", self.customize)
+
+    def test_headless_onboarding_retains_armbian_first_login_marker(self):
+        """The web service needs Armbian's marker, including on Ethernet boots."""
+        self.assertNotIn("/root/.not_logged_in_yet /etc/profile.d", self.customize)
+        self.assertIn("ConditionPathExists=/root/.not_logged_in_yet", self.web_config_service)
+        self.assertIn(
+            "ConditionPathExists=!/var/lib/armbian-web-config/configured",
+            self.web_config_service,
+        )
+
+    def test_headless_onboarding_uses_the_pinned_armbian_ssid_contract(self):
+        self.assertIn("AP_SSID_SUFFIX = \"-armbiansetup\"", self.web_config)
+        self.assertIn("10.42.0.1", self.web_config)
+        self.assertNotIn("armbiansetup-{hostname}", self.web_config)
+
+    def test_headless_onboarding_prefers_ethernet_before_starting_the_ap(self):
+        self.assertIn("has_ethernet_carrier", self.web_config)
+        self.assertIn("wait_for_ethernet", self.web_config)
+        self.assertIn("start_access_point", self.web_config)
+        self.assertLess(
+            self.web_config.index("has_ethernet_carrier"),
+            self.web_config.index("start_access_point"),
+        )
+        self.assertIn("route-metric: 100", self.customize)
+        self.assertIn("route-metric: 600", self.web_config)
+
+    def test_wifi_only_onboarding_writes_native_networkd_netplan(self):
+        self.assertIn("30-wifis-dhcp.yaml", self.web_config)
+        self.assertIn("renderer: networkd", self.web_config)
+        self.assertIn('["netplan", "apply"]', self.web_config)
+        self.assertNotIn('["netplan", "apply", "--timeout", "0"]', self.web_config)
+        self.assertIn("wpasupplicant", self.build)
+        self.assertIn("hostapd", self.build)
+        self.assertIn("dnsmasq-base", self.build)
+        self.assertIn("openssl", self.build)
+        self.assertIn("wpa_psk", self.web_config)
+        self.assertNotIn("wpa_passphrase", self.web_config)
+
+    def test_web_config_service_is_ordered_before_fxroute_provisioning(self):
+        self.assertIn("Before=network-online.target", self.web_config_service)
+        self.assertIn("After=network.target armbian-firstrun.service", self.web_config_service)
+        self.assertIn("Type=oneshot", self.web_config_service)
+        self.assertIn("RemainAfterExit=yes", self.web_config_service)
+        self.assertIn("armbian-web-config.service", self.service)
+        self.assertIn("Wants=network-online.target armbian-firstrun.service armbian-web-config.service", self.service)
+        self.assertNotIn("Requires=armbian-web-config.service", self.service)
+        self.assertIn("After=network-online.target armbian-firstrun.service ssh.service armbian-web-config.service", self.service)
+        self.assertIn("Wants=network-online.target armbian-firstrun.service", self.service)
+        self.assertNotIn("ConditionPathExists=/opt/fxroute-armbian/source.tar", self.service)
+        self.assertIn("/root/.not_logged_in_yet", self.first_boot)
+        self.assertIn("systemctl disable armbian-web-config.service", self.first_boot)
+        self.assertNotIn("disable --now armbian-web-config.service", self.first_boot)
 
     def test_first_boot_provisions_user_and_calls_existing_installer(self):
         self.assertIn("getent passwd", self.first_boot)
-        self.assertIn("useradd", self.first_boot)
-        self.assertIn("authorized_keys", self.first_boot)
-        self.assertIn("usermod -aG", self.first_boot)
+        self.assertNotIn("provision_user", self.first_boot)
         self.assertIn('"$SOURCE_DIR/install.sh"', self.first_boot)
         self.assertIn("--source", self.first_boot)
         self.assertIn("--target", self.first_boot)
@@ -173,21 +247,32 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn("install-complete", self.first_boot)
         self.assertIn("install-failed", self.first_boot)
         self.assertIn("install-in-progress", self.first_boot)
+        self.assertIn("wait_for_valid_clock", self.first_boot)
+        self.assertIn("System clock did not synchronize", self.first_boot)
         self.assertIn("network-online.target", self.service)
         self.assertIn("systemctl disable", self.first_boot)
         self.assertIn("rm -rf -- /opt/fxroute-armbian", self.first_boot)
+        self.assertIn("install-cleanup-pending", self.first_boot)
+        self.assertIn("armbian-check-first-login.sh", self.first_boot)
         self.assertIn("systemctl reload-or-restart", self.first_boot)
-        self.assertIn('COMPLETE_MARKER}.tmp', self.first_boot)
-        self.assertIn('mv -f -- "$complete_marker_tmp" "$COMPLETE_MARKER"', self.first_boot)
+        self.assertIn("write_durable_marker", self.first_boot)
+        self.assertIn('temporary="${path}.tmp"', self.first_boot)
         self.assertNotIn("spotify-desktop", self.first_boot)
         self.assertNotIn("--spotifyd", self.first_boot)
 
-    def test_first_boot_validates_provisioned_values_without_sourcing_them(self):
-        self.assertIn("read_provision_value", self.first_boot)
-        self.assertIn("^\\$6\\$", self.first_boot)
-        self.assertIn("ssh-ed25519", self.first_boot)
-        self.assertNotIn("source \"$PROVISION_FILE\"", self.first_boot)
-        self.assertNotIn(". \"$PROVISION_FILE\"", self.first_boot)
+    def test_web_onboarding_creates_the_account_and_ssh_access(self):
+        self.assertIn("validate_account", self.web_config)
+        self.assertIn("useradd", self.web_config)
+        self.assertIn("chpasswd", self.web_config)
+        self.assertIn("authorized_keys", self.web_config)
+        self.assertIn("sshd", self.web_config)
+        self.assertIn("ssh-keygen", self.web_config)
+        self.assertIn("validate_setup_password", self.web_config)
+        self.assertIn("pbkdf2-sha256", self.web_config)
+        self.assertIn('name="setup_password"', self.web_config)
+        self.assertIn('"36500"', self.web_config)
+        self.assertIn("begin_setup_response", self.web_config)
+        self.assertIn("send_response(202)", self.web_config)
 
     def test_first_boot_service_is_retryable_and_headless(self):
         self.assertIn("After=network-online.target armbian-firstrun.service", self.service)
@@ -209,7 +294,7 @@ class ArmbianImageTests(unittest.TestCase):
         )
         self.assertLess(
             self.first_boot.index("armbian-firstrun.service"),
-            self.first_boot.index("provision_user\n"),
+            self.first_boot.index("read_account_user\n"),
         )
 
     def test_qemu_runner_only_claims_pi4_emulation(self):
@@ -222,6 +307,15 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn("fxroute_dsp_sink", self.qemu)
         self.assertIn("systemctl --user", self.qemu)
         self.assertIn("-snapshot", self.qemu)
+
+    def test_qemu_virt_runner_completes_end_user_onboarding(self):
+        self.assertIn("ssh-keygen", self.qemu)
+        self.assertIn("hostfwd=tcp:127.0.0.1:${setup_port}-:443", self.qemu)
+        self.assertIn('https://127.0.0.1:$setup_port/', self.qemu)
+        self.assertIn('"username=$FXROUTE_USER"', self.qemu)
+        self.assertIn('"account_password=$account_password"', self.qemu)
+        self.assertIn('"ssh_key=$ssh_public_key"', self.qemu)
+        self.assertIn('"setup_password=$SETUP_PASSWORD"', self.qemu)
 
     def test_qemu_runner_limits_pi4_to_serial_boot_validation(self):
         self.assertIn("Reached target .*basic\\.target", self.qemu)
@@ -317,6 +411,13 @@ class ArmbianImageTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.returncode, 0, f"{path}: {result.stderr}")
+
+        result = subprocess.run(
+            ["python3", "-m", "py_compile", str(WEB_CONFIG_SH)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, f"{WEB_CONFIG_SH}: {result.stderr}")
 
 
 if __name__ == "__main__":
