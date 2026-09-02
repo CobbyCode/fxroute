@@ -503,6 +503,20 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("fxroute_dsp_sink", runner)
         self.assertIn("/api/status", runner)
 
+    def test_grub_screendump_uses_the_configured_temp_directory(self):
+        runner = self.read("iso/test-leap-16-iso.sh")
+
+        self.assertIn(
+            'tempfile.mkstemp(\n    prefix="fxroute-iso-grub-", suffix=".ppm"\n)',
+            runner,
+        )
+        self.assertIn("def hmp_quote_path(path):", runner)
+        self.assertIn(
+            'monitor_command(f"screendump {hmp_quote_path(screen_path)}")',
+            runner,
+        )
+        self.assertNotIn('dir="/tmp"', runner)
+
     def test_desktop_verifier_waits_for_delayed_chrome_autostart(self):
         runner = self.read("iso/test-leap-16-iso.sh")
 

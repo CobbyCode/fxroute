@@ -143,7 +143,7 @@ import time
 
 monitor, down_count = sys.argv[1:]
 screen_fd, screen_name = tempfile.mkstemp(
-    dir="/tmp", prefix="fxroute-iso-grub-", suffix=".ppm"
+    prefix="fxroute-iso-grub-", suffix=".ppm"
 )
 os.close(screen_fd)
 screen_path = Path(screen_name)
@@ -167,6 +167,11 @@ def monitor_command(command):
     sock.sendall((command + "\n").encode())
     time.sleep(0.05)
     drain_monitor_output()
+
+
+def hmp_quote_path(path):
+    value = str(path).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{value}"'
 
 
 def grub_menu_ready(path):
@@ -220,7 +225,7 @@ try:
             screen_path.unlink()
         except FileNotFoundError:
             pass
-        monitor_command(f"screendump {screen_path}")
+        monitor_command(f"screendump {hmp_quote_path(screen_path)}")
         for _ in range(10):
             if grub_menu_ready(screen_path):
                 monitor_command("sendkey home")
