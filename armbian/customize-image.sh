@@ -19,7 +19,7 @@ IMAGE_DIR="/opt/fxroute-armbian"
 [[ -n "$RELEASE" && -n "$LINUXFAMILY" && -n "$BOARD" ]] \
   || { printf '%s\n' "Armbian customization arguments are incomplete" >&2; exit 1; }
 
-for required in source.tar first-boot-install.sh fxroute-armbian-first-boot.service armbian-web-config.py armbian-web-config.service armbian-web-config.env; do
+for required in source.tar first-boot-install.sh fxroute-armbian-first-boot.service armbian-web-config.py armbian-web-config.service; do
   [[ -f "$OVERLAY_DIR/$required" && ! -L "$OVERLAY_DIR/$required" ]] \
     || { printf 'Missing Armbian overlay file: %s\n' "$OVERLAY_DIR/$required" >&2; exit 1; }
 done
@@ -35,9 +35,6 @@ install -m 755 "$OVERLAY_DIR/armbian-web-config.py" \
   /usr/local/libexec/armbian-web-config.py
 install -m 644 "$OVERLAY_DIR/armbian-web-config.service" \
   /etc/systemd/system/armbian-web-config.service
-install -d -m 755 /etc/default
-install -m 600 "$OVERLAY_DIR/armbian-web-config.env" \
-  /etc/default/armbian-web-config
 
 # Keep Armbian's first-login marker and profile hook. The marker gates the
 # temporary web setup service and is removed after FXRoute provisioning.

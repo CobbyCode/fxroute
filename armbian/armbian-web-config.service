@@ -9,7 +9,6 @@ Before=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-EnvironmentFile=/etc/default/armbian-web-config
 ExecStart=/usr/local/libexec/armbian-web-config.py
 Restart=on-failure
 RestartSec=5s

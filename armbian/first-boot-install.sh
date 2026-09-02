@@ -47,7 +47,6 @@ finish_success_cleanup() {
     /etc/profile.d/armbian-check-first-login.sh || return 1
   rm -f -- "$IN_PROGRESS_MARKER" "$FAILED_MARKER" || return 1
   rm -rf -- /var/lib/armbian-web-config || return 1
-  rm -f -- /etc/default/armbian-web-config || return 1
   rm -rf -- /opt/fxroute-armbian || return 1
 
   sync -f "$STATE_DIR" || return 1

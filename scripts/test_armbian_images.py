@@ -56,14 +56,16 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertNotIn("FXROUTE_SSH_PUBLIC_KEY", self.build)
         self.assertNotIn("provision.env", self.build)
 
-    def test_build_wrapper_stages_a_private_per_image_wifi_setup_password(self):
-        self.assertIn("--wifi-setup-password", self.build)
-        self.assertIn("generate_wifi_setup_password", self.build)
-        self.assertIn("ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64", self.build)
-        self.assertIn("armbian-web-config.env", self.build)
-        self.assertIn("armbian-web-config.env", self.customize)
-        self.assertIn("EnvironmentFile=/etc/default/armbian-web-config", self.web_config_service)
+    def test_build_wrapper_stages_no_setup_credentials(self):
+        self.assertNotIn("--wifi-setup-password", self.build)
+        self.assertNotIn("FXROUTE_WIFI_SETUP_PASSWORD", self.build)
+        self.assertNotIn("ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64", self.build)
+        self.assertNotIn("armbian-web-config.env", self.build)
+        self.assertNotIn("armbian-web-config.env", self.customize)
+        self.assertNotIn("EnvironmentFile=", self.web_config_service)
         self.assertNotIn('AP_PASSWORD = "armbian1234"', self.web_config)
+        self.assertNotIn("setup_password", self.web_config)
+        self.assertNotIn("validate_setup_password", self.web_config)
 
     def test_build_wrapper_exports_epoch_before_generating_hooks(self):
         self.assertRegex(
@@ -255,6 +257,7 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn("systemctl reload-or-restart", self.first_boot)
         self.assertIn("write_durable_marker", self.first_boot)
         self.assertIn('temporary="${path}.tmp"', self.first_boot)
+        self.assertNotIn("/etc/default/armbian-web-config", self.first_boot)
         self.assertNotIn("spotify-desktop", self.first_boot)
         self.assertNotIn("--spotifyd", self.first_boot)
 
@@ -265,9 +268,9 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn("authorized_keys", self.web_config)
         self.assertIn("sshd", self.web_config)
         self.assertIn("ssh-keygen", self.web_config)
-        self.assertIn("validate_setup_password", self.web_config)
-        self.assertIn("pbkdf2-sha256", self.web_config)
-        self.assertIn('name="setup_password"', self.web_config)
+        self.assertNotIn("validate_setup_password", self.web_config)
+        self.assertNotIn("pbkdf2-sha256", self.web_config)
+        self.assertNotIn('name="setup_password"', self.web_config)
         self.assertIn('"36500"', self.web_config)
         self.assertIn("begin_setup_response", self.web_config)
         self.assertIn("send_response(202)", self.web_config)
@@ -313,7 +316,8 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn('"username=$FXROUTE_USER"', self.qemu)
         self.assertIn('"account_password=$account_password"', self.qemu)
         self.assertIn('"ssh_key=$ssh_public_key"', self.qemu)
-        self.assertIn('"setup_password=$SETUP_PASSWORD"', self.qemu)
+        self.assertNotIn("SETUP_PASSWORD", self.qemu)
+        self.assertNotIn('"setup_password=', self.qemu)
 
     def test_qemu_runner_limits_pi4_to_serial_boot_validation(self):
         self.assertIn("Reached target .*basic\\.target", self.qemu)

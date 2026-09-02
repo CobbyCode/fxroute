@@ -11,7 +11,6 @@ ARMBIAN_BUILD_REF="4a50e16e09222e00d3f57884b4dfbf8fdb4ce5dc"
 REQUESTED_BOARD="rpi4"
 RELEASE="trixie"
 BRANCH="current"
-WIFI_SETUP_PASSWORD="${FXROUTE_WIFI_SETUP_PASSWORD:-}"
 ARMBIAN_SOURCE_DIR="${FXROUTE_ARMBIAN_SOURCE:-}"
 ARMBIAN_CACHE_DIR="${FXROUTE_ARMBIAN_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/fxroute/armbian}"
 OUTPUT="${FXROUTE_ARMBIAN_OUTPUT:-}"
@@ -35,18 +34,15 @@ Options:
   --release <release>          Armbian userspace release (default: $RELEASE)
   --branch <branch>            Armbian kernel branch (default: $BRANCH)
   --kernel-ref <ref>           Pin kernel ref, e.g. commit:<sha> or branch:<name>
-  --wifi-setup-password <pass> Password authorizing the temporary setup form
   --output <path>              Write the primary image to this path
   --armbian-source <path>      Use an existing Armbian checkout at the pinned ref
   --cache-dir <path>           Cache the pinned Armbian checkout here
   --keep-work                  Keep the temporary Armbian build checkout
   -h, --help                   Show this help
 
-The source and optional temporary setup password can be supplied through
-FXROUTE_ARMBIAN_SOURCE and FXROUTE_WIFI_SETUP_PASSWORD. If no Wi-Fi setup
-password is supplied, a random one is generated and printed once during the
-build. The end user creates the FXRoute account and SSH key during first boot;
-no builder credentials are written into the image.
+The source can be supplied through FXROUTE_ARMBIAN_SOURCE. The end user creates
+the FXRoute account and SSH key during first boot; no builder credentials or
+setup token are written into the image.
 For qemu-uboot-arm64, the qcow2 image and U-Boot companion are written beside
 the requested output path.
 EOF
@@ -77,11 +73,6 @@ while [[ $# -gt 0 ]]; do
     --kernel-ref)
       [[ $# -ge 2 ]] || die "--kernel-ref requires a value"
       KERNEL_REF="$2"
-      shift 2
-      ;;
-    --wifi-setup-password)
-      [[ $# -ge 2 ]] || die "--wifi-setup-password requires a value"
-      WIFI_SETUP_PASSWORD="$2"
       shift 2
       ;;
     --output)
@@ -125,47 +116,6 @@ done
 command -v git >/dev/null 2>&1 || die "git is required"
 command -v tar >/dev/null 2>&1 || die "tar is required"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
-command -v head >/dev/null 2>&1 || die "head is required"
-command -v tr >/dev/null 2>&1 || die "tr is required"
-command -v python3 >/dev/null 2>&1 || die "python3 is required"
-
-generate_wifi_setup_password() {
-  local value=""
-  while [[ ${#value} -lt 16 ]]; do
-    value="$(head -c 32 /dev/urandom | tr -dc 'A-Za-z0-9')"
-  done
-  printf '%s' "${value:0:16}"
-}
-
-generate_setup_metadata() {
-  # Store only a salted verifier. The image must not contain the password or
-  # an equivalent network credential in recoverable form.
-  # shellcheck disable=SC2016
-  printf '%s' "$WIFI_SETUP_PASSWORD" |
-    python3 -c '
-import base64
-import hashlib
-import secrets
-import sys
-
-password = sys.stdin.read()
-iterations = 600000
-salt = secrets.token_bytes(16)
-digest = hashlib.pbkdf2_hmac(
-    "sha256", password.encode("ascii"), salt, iterations
-)
-verifier = f"pbkdf2-sha256${iterations}${salt.hex()}${digest.hex()}"
-print(base64.b64encode(verifier.encode("ascii")).decode("ascii"))
-'
-}
-
-if [[ -z "$WIFI_SETUP_PASSWORD" ]]; then
-  WIFI_SETUP_PASSWORD="$(generate_wifi_setup_password)"
-fi
-[[ "$WIFI_SETUP_PASSWORD" =~ ^[A-Za-z0-9._-]{8,63}$ ]] \
-  || die "The Wi-Fi setup password must be 8-63 letters, numbers, dots, underscores, or hyphens"
-printf '[armbian] temporary Wi-Fi setup password: %s\n' "$WIFI_SETUP_PASSWORD"
-
 board="$REQUESTED_BOARD"
 requested_board="$board"
 build_board="$requested_board"
@@ -175,9 +125,6 @@ case "$requested_board" in
     build_board="rpi4b"
     ;;
 esac
-
-AP_PASSWORD_VERIFIER_B64="$(generate_setup_metadata)"
-[[ "$AP_PASSWORD_VERIFIER_B64" =~ ^[A-Za-z0-9+/=]+$ ]] || die "Could not derive a setup password verifier"
 
 if [[ -z "$OUTPUT" ]]; then
   OUTPUT="$ROOT_DIR/dist/fxroute-armbian-${requested_board}-${RELEASE}-${BRANCH}.img"
@@ -453,14 +400,10 @@ EOF
     "$userpatches/overlay/armbian-web-config.py"
   cp -- "$ROOT_DIR/armbian/armbian-web-config.service" \
     "$userpatches/overlay/armbian-web-config.service"
-  printf 'ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64=%s\n' \
-    "$AP_PASSWORD_VERIFIER_B64" \
-    > "$userpatches/overlay/armbian-web-config.env"
   chmod 755 "$userpatches/overlay/first-boot-install.sh"
   chmod 755 "$userpatches/overlay/armbian-web-config.py"
   chmod 644 "$userpatches/overlay/fxroute-armbian-first-boot.service"
   chmod 644 "$userpatches/overlay/armbian-web-config.service"
-  chmod 600 "$userpatches/overlay/armbian-web-config.env"
 }
 
 copy_image_output() {

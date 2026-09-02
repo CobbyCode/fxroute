@@ -3,16 +3,12 @@
 
 from __future__ import annotations
 
-import base64
-from collections import deque
-import hashlib
 import html
 import logging
 import os
 from pathlib import Path
 import pwd
 import re
-import secrets
 import signal
 import ssl
 import subprocess
@@ -35,13 +31,6 @@ SSH_CONFIG_PATH = Path("/etc/ssh/sshd_config.d/90-fxroute-armbian.conf")
 RUN_DIR = Path("/run/armbian-web-config")
 TLS_CERT_PATH = RUN_DIR / "setup.crt"
 TLS_KEY_PATH = RUN_DIR / "setup.key"
-AP_PASSWORD_VERIFIER_ENV = "ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64"
-AP_PASSWORD_ITERATIONS = 600000
-SETUP_PASSWORD_ATTEMPT_LIMIT = 10
-SETUP_PASSWORD_ATTEMPT_WINDOW = 60.0
-_setup_password_attempts: deque[float] = deque()
-_setup_password_attempt_lock = threading.Lock()
-_setup_password_check_lock = threading.Lock()
 
 USERNAME_PATTERN = re.compile(r"[a-z_][a-z0-9_.-]{0,31}")
 SSH_KEY_PATTERN = re.compile(
@@ -139,55 +128,6 @@ def onboarding_ssid(hostname_value: str) -> str:
     suffix = AP_SSID_SUFFIX
     prefix = re.sub(r"[^A-Za-z0-9-]", "-", hostname_value).strip("-")
     return f"{prefix[: 32 - len(suffix)] or 'armbian'}{suffix}"
-
-
-def setup_password_verifier() -> tuple[int, bytes, bytes]:
-    encoded = os.environ.get(AP_PASSWORD_VERIFIER_ENV, "")
-    try:
-        verifier = base64.b64decode(encoded, validate=True).decode("ascii")
-        algorithm, iterations_text, salt_text, digest_text = verifier.split("$")
-        iterations = int(iterations_text)
-        salt = bytes.fromhex(salt_text)
-        digest = bytes.fromhex(digest_text)
-    except (ValueError, UnicodeDecodeError):
-        raise RuntimeError("The Wi-Fi setup password verifier is invalid") from None
-    if (
-        algorithm != "pbkdf2-sha256"
-        or iterations != AP_PASSWORD_ITERATIONS
-        or len(salt) != 16
-        or len(digest) != 32
-    ):
-        raise RuntimeError("The Wi-Fi setup password verifier is invalid")
-    return iterations, salt, digest
-
-
-def reserve_setup_password_attempt() -> None:
-    now = time.monotonic()
-    with _setup_password_attempt_lock:
-        while _setup_password_attempts and (
-            now - _setup_password_attempts[0] >= SETUP_PASSWORD_ATTEMPT_WINDOW
-        ):
-            _setup_password_attempts.popleft()
-        if len(_setup_password_attempts) >= SETUP_PASSWORD_ATTEMPT_LIMIT:
-            raise ValueError("Too many setup password attempts; try again later")
-        _setup_password_attempts.append(now)
-
-
-def validate_setup_password(setup_password: str) -> None:
-    if not _setup_password_check_lock.acquire(blocking=False):
-        raise ValueError("Setup is busy; try again later")
-    try:
-        reserve_setup_password_attempt()
-        try:
-            password_bytes = setup_password.encode("ascii")
-            iterations, salt, expected = setup_password_verifier()
-        except (UnicodeEncodeError, RuntimeError) as error:
-            raise ValueError(str(error)) from None
-        actual = hashlib.pbkdf2_hmac("sha256", password_bytes, salt, iterations)
-        if not secrets.compare_digest(actual, expected):
-            raise ValueError("The temporary setup password is incorrect")
-    finally:
-        _setup_password_check_lock.release()
 
 
 def yaml_string(value: str) -> str:
@@ -683,13 +623,11 @@ class Onboarding:
         wifi_ssid: str,
         wifi_password: str,
         country: str,
-        setup_password: str,
     ) -> tuple[bool, str]:
         with self.configure_lock:
             if CONFIGURED_MARKER.exists():
                 return False, "Setup has already been completed"
             try:
-                validate_setup_password(setup_password)
                 username, account_password, ssh_key = validate_account(
                     username,
                     account_password,
@@ -784,7 +722,6 @@ class Onboarding:
             ethernet = self.wait_for_ethernet()
         if self.recover_interrupted_setup():
             return 0
-        setup_password_verifier()
         if not should_start_access_point(ethernet, self.interface):
             if not ethernet:
                 raise RuntimeError("No Wi-Fi interface is available for headless setup")
@@ -839,8 +776,8 @@ def setup_page(
         )
     )
     ap_hint = (
-        '<p class="hint">Enter the temporary setup password printed during '
-        "the image build to authorize this form."
+        '<p class="hint">This temporary setup network is open. Only use it on '
+        "a trusted local connection; the form is protected by HTTPS."
         "</p>"
     )
     wifi_required = "" if ethernet else " required"
@@ -864,7 +801,6 @@ button{{margin-top:1.5rem;padding:.7rem 1.2rem;font:inherit;font-weight:600}}.hi
 <label for="account_password">Account password</label><input id="account_password" name="account_password" type="password" minlength="12" autocomplete="new-password" required>
 <label for="account_password_confirm">Repeat account password</label><input id="account_password_confirm" name="account_password_confirm" type="password" minlength="12" autocomplete="new-password" required>
 <label for="ssh_key">SSH public key</label><textarea id="ssh_key" name="ssh_key" rows="3" placeholder="ssh-ed25519 AAAA..." required></textarea>
-<label for="setup_password">Temporary setup password</label><input id="setup_password" name="setup_password" type="password" autocomplete="off" required>
 <h2>Wi-Fi</h2>
 <p class="hint">Wi-Fi is required when no Ethernet cable is connected and optional otherwise.</p>
 <label for="wifi_ssid">Wi-Fi network name</label><input id="wifi_ssid" name="wifi_ssid" maxlength="32"{wifi_required}>
@@ -970,8 +906,6 @@ class SetupHandler(BaseHTTPRequestHandler):
             wifi_ssid = values.get("wifi_ssid", [""])[0]
             wifi_password = values.get("wifi_password", [""])[0]
             country = values.get("wifi_country", [""])[0]
-            setup_password = values.get("setup_password", [""])[0]
-            validate_setup_password(setup_password)
             validate_account(username, account_password, account_password_confirm, ssh_key)
             if wifi_ssid or wifi_password:
                 validate_setup(wifi_ssid, wifi_password, country)
@@ -999,7 +933,6 @@ class SetupHandler(BaseHTTPRequestHandler):
                 wifi_ssid,
                 wifi_password,
                 country,
-                setup_password,
             )
         except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
             success, message = False, str(error)

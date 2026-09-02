@@ -8,7 +8,6 @@ export PATH
 MACHINE="raspi4b"
 FXROUTE_USER="fxroute"
 SSH_KEY_FILE="${FXROUTE_ARMBIAN_SSH_KEY:-}"
-SETUP_PASSWORD="${FXROUTE_ARMBIAN_SETUP_PASSWORD:-${FXROUTE_WIFI_SETUP_PASSWORD:-}}"
 TIMEOUT_SECONDS="${FXROUTE_ARMBIAN_TEST_TIMEOUT:-7200}"
 KEEP_WORK=0
 IMAGE=""
@@ -23,7 +22,6 @@ Options:
   --machine <name>       raspi4b (default) or virt
   --user <name>          End-user account to create in the QEMU check (default: $FXROUTE_USER)
   --ssh-key-file <path>  Private key to use for the automated onboarding
-  --setup-password <pass> Temporary image setup password for the automated onboarding
   --timeout <seconds>    Guest readiness timeout (default: $TIMEOUT_SECONDS)
   --keep-work            Keep serial and QEMU logs
   -h, --help             Show this help
@@ -59,11 +57,6 @@ while [[ $# -gt 0 ]]; do
     --ssh-key-file)
       [[ $# -ge 2 ]] || die "--ssh-key-file requires a path"
       SSH_KEY_FILE="$2"
-      shift 2
-      ;;
-    --setup-password)
-      [[ $# -ge 2 ]] || die "--setup-password requires a value"
-      SETUP_PASSWORD="$2"
       shift 2
       ;;
     --timeout)
@@ -223,8 +216,6 @@ if [[ "$MACHINE" == "virt" ]]; then
   else
     [[ -f "$SSH_KEY_FILE" ]] || die "SSH key file does not exist: $SSH_KEY_FILE"
   fi
-  [[ "$SETUP_PASSWORD" =~ ^[A-Za-z0-9._-]{8,63}$ ]] \
-    || die "virt requires --setup-password or FXROUTE_ARMBIAN_SETUP_PASSWORD"
   ssh_public_key="$(ssh-keygen -y -f "$SSH_KEY_FILE")"
   account_password=""
   while [[ ${#account_password} -lt 16 ]]; do
@@ -301,7 +292,6 @@ curl --fail --silent --show-error --insecure --max-time 30 \
   --data-urlencode "account_password=$account_password" \
   --data-urlencode "account_password_confirm=$account_password" \
   --data-urlencode "ssh_key=$ssh_public_key" \
-  --data-urlencode "setup_password=$SETUP_PASSWORD" \
   --data-urlencode "wifi_country=GB" \
   "https://127.0.0.1:$setup_port/setup" >/dev/null
 

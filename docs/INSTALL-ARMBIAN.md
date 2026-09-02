@@ -28,14 +28,11 @@ replace a physical board check.
   --board rpi4
 ```
 
-The wrapper generates a unique temporary setup password and prints it once
-during the build. To choose it explicitly for a private test image, set
-`FXROUTE_WIFI_SETUP_PASSWORD` or pass `--wifi-setup-password`. This password
-authorizes the HTTPS first-boot form on Ethernet or from the temporary open
-setup AP; the image stores only a salted password verifier and no equivalent
-network credential. End-user account credentials are never supplied to the
-builder or stored in the image. Keep the printed setup password private for an
-image that is reachable by untrusted clients.
+The wrapper neither requests nor generates a builder password. No builder
+credential, setup token, or setup environment file is embedded in the image.
+End-user account credentials are entered only during first boot.
+Because the temporary setup AP is open, perform onboarding only on a trusted
+local connection.
 
 The resulting raw image and checksum are written to `dist/` by default. The
 same command with `--board rpi5` builds the current official Armbian target
@@ -97,7 +94,7 @@ page:
 - The end user selects the FXRoute user name, sets its password, and supplies an SSH public key. The account is created with the required sudo, audio, and wheel access; the password is for local administration and SSH accepts the public key only.
 - Root is locked and SSH password and keyboard-interactive authentication are disabled.
 - Armbian's noninteractive `armbian-firstrun.service` remains enabled for host-key regeneration and board setup.
-- Armbian's first-login marker is retained until provisioning completes. With no wired Ethernet carrier, the image starts a temporary open `hostname-armbiansetup` access point at `http://10.42.0.1`; enter the setup password printed during the build plus the account, SSH key, and Wi-Fi credentials there. With a wired Ethernet carrier, the image waits briefly for DHCP, then serves `https://<dhcp-address>`; accept its self-signed setup certificate and enter the printed setup password. HTTP GET redirects to HTTPS and HTTP POST is rejected before credentials are read; no access point is started while wired networking is usable.
+- Armbian's first-login marker is retained until provisioning completes. With no wired Ethernet carrier, the image starts a temporary open `hostname-armbiansetup` access point at `http://10.42.0.1`; enter the account, SSH key, and Wi-Fi credentials there. With a wired Ethernet carrier, the image waits briefly for DHCP, then serves `https://<dhcp-address>`; accept its self-signed setup certificate. HTTP GET redirects to HTTPS and HTTP POST is rejected before credentials are read; no access point is started while wired networking is usable.
 - The Wi-Fi credentials are saved as Armbian-style Netplan configuration for the existing `systemd-networkd` stack. Ethernet has route metric 100 and Wi-Fi has route metric 600. The setup service is not enabled again after successful onboarding.
 - The FXRoute first-boot service waits for the network and Armbian first-run work, extracts the source archive, and invokes the existing `install.sh` with `--user`, `--providers none`, and `--yes`.
 - The installer creates the persistent systemd user session, PipeWire graph, native DSP engine, and `fxroute.service` as the target user.
@@ -130,14 +127,11 @@ image through the host's AAVMF firmware rather than borrowing Pi boot files:
 ```bash
 ./armbian/test-image.sh \
   --machine virt \
-  --setup-password '<the-password-used-to-build-the-image>' \
   dist/fxroute-armbian-uefi-arm64-trixie-current.img
 ```
 
 The generic `virt` runner completes the first-boot form with an ephemeral test
-account and key. Pass the same value used with `--wifi-setup-password` (or
-`FXROUTE_WIFI_SETUP_PASSWORD`) when building the image. The runner then waits
-for `/api/status`. It checks the AArch64
+account and key. The runner then waits for `/api/status`. It checks the AArch64
 userspace, target-user systemd services and runtime sockets, and the
 `fxroute_dsp_sink`. QEMU does not provide physical ALSA output, and a Pi 5
 must still be tested on Pi 5 hardware for boot firmware, storage, Ethernet,

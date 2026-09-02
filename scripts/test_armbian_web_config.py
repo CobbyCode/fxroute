@@ -2,8 +2,6 @@
 """Behavior tests for the headless Armbian Wi-Fi setup service."""
 
 import importlib.util
-import base64
-import hashlib
 import http.client
 from pathlib import Path
 import subprocess
@@ -33,33 +31,7 @@ def load_web_config():
 class ArmbianWebConfigBehaviorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        salt = b"test-setup-salt!"
-        iterations = 600000
-        verifier = "pbkdf2-sha256${}${}${}".format(
-            iterations,
-            salt.hex(),
-            hashlib.pbkdf2_hmac(
-                "sha256", b"setup-pass", salt, iterations
-            ).hex(),
-        )
-        cls.password_environment = mock.patch.dict(
-            "os.environ",
-            {
-                "ARMBIAN_WEB_CONFIG_AP_PASSWORD_VERIFIER_B64": base64.b64encode(
-                    verifier.encode("ascii")
-                ).decode("ascii"),
-            },
-        )
-        cls.password_environment.start()
         cls.web = load_web_config()
-
-    def setUp(self):
-        with self.web._setup_password_attempt_lock:
-            self.web._setup_password_attempts.clear()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.password_environment.stop()
 
     def test_wired_carrier_suppresses_onboarding_even_with_wifi_present(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -119,9 +91,6 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
             self.web.validate_setup("network", "long enough", "de"),
             ("network", "long enough", "DE"),
         )
-
-        with self.assertRaises(ValueError):
-            self.web.validate_setup_password("wrong-setup-pass")
 
     def test_account_validation_requires_a_real_user_password_and_ssh_key(self):
         with self.assertRaises(ValueError):
@@ -238,7 +207,6 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
                     "",
                     "",
                     "GB",
-                    "setup-pass",
                 )
 
             self.assertTrue(success)
@@ -263,7 +231,6 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
                 "",
                 "",
                 "GB",
-                "setup-pass",
             )
 
         self.assertFalse(success)
@@ -275,21 +242,14 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
 
         self.assertIn("rpi4b-armbiansetup", page)
         self.assertIn("10.42.0.1", page)
-        self.assertIn("printed during the image build", page)
-        self.assertNotIn("setup-pass", page)
+        self.assertIn("open temporary network", page)
+        self.assertNotIn("setup password", page.lower())
 
     def test_setup_ssid_uses_the_runtime_hostname(self):
         page = self.web.setup_page("rpi5b")
 
         self.assertIn("rpi5b-armbiansetup", page)
         self.assertNotIn("rpi4b-armbiansetup", page)
-
-    def test_setup_password_attempts_are_rate_limited(self):
-        with mock.patch.object(self.web, "SETUP_PASSWORD_ATTEMPT_LIMIT", 1):
-            with self.assertRaises(ValueError):
-                self.web.validate_setup_password("wrong-setup-pass")
-            with self.assertRaisesRegex(ValueError, "Too many setup password attempts"):
-                self.web.validate_setup_password("wrong-setup-pass")
 
     def test_access_point_is_open_and_uses_runtime_hostname(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -437,12 +397,13 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
 
         page = self.web.setup_page("rpi4b", ethernet=True, ap_active=False)
         self.assertIn("DHCP", page)
-        self.assertIn("Temporary setup password", page)
-        self.assertNotIn("setup-pass", page)
+        self.assertIn("HTTPS", page)
+        self.assertNotIn("setup password", page.lower())
 
     def test_ap_setup_page_posts_account_credentials_over_tls(self):
         page = self.web.setup_page("rpi4b", ethernet=False, ap_active=True)
         self.assertIn('action="https://10.42.0.1/setup"', page)
+        self.assertNotIn('name="setup_password"', page)
 
     def test_existing_unselected_accounts_are_not_modified(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -552,7 +513,6 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
                     "",
                     "",
                     "GB",
-                    "setup-pass",
                 )
 
             self.assertFalse(success)
@@ -596,7 +556,6 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
                 _wifi_ssid,
                 _wifi_password,
                 _country,
-                _setup_password,
             ):
                 configure_started.set()
                 release_configuration.wait(2)
@@ -624,7 +583,6 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
                         b"username=operator&account_password=long%20enough%20password"
                         b"&account_password_confirm=long%20enough%20password"
                         b"&ssh_key=ssh-ed25519%20AAAAC3NzaC1lZDI1NTE5AAAAICxEedFc5%2FSXgmFnMOYyGoi1DN2at6LTbBysqqSOOgN7%20test"
-                        b"&setup_password=setup-pass"
                         b"&wifi_ssid=network&wifi_password=long%20enough&wifi_country=GB"
                     ),
                 )
@@ -663,7 +621,6 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
                 _wifi_ssid,
                 _wifi_password,
                 _country,
-                _setup_password,
             ):
                 return False, "Wi-Fi failed"
 
@@ -682,7 +639,6 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
                         b"username=operator&account_password=long%20enough%20password"
                         b"&account_password_confirm=long%20enough%20password"
                         b"&ssh_key=ssh-ed25519%20AAAAC3NzaC1lZDI1NTE5AAAAICxEedFc5%2FSXgmFnMOYyGoi1DN2at6LTbBysqqSOOgN7%20test"
-                        b"&setup_password=setup-pass"
                         b"&wifi_ssid=network&wifi_password=long%20enough&wifi_country=GB"
                     ),
                 )
