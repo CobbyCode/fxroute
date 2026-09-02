@@ -310,10 +310,25 @@ class ChainHealthTests(unittest.TestCase):
         job = {}
         for align in (78268, 78268, 78268):
             self.assertIsNone(_auto_sub_chain_health_check(job, align, 48000))
+        # The first out-of-bound capture is only logged as pending: a single
+        # sweep can land several quanta off baseline from pre-playback setup
+        # jitter without any chain change.
+        self.assertIsNone(_auto_sub_chain_health_check(job, 52668, 48000))
         health = _auto_sub_chain_health_check(job, 52668, 48000)
         self.assertIsNotNone(health)
         self.assertLess(health["arrival_shift_samples"], -10000)
         self.assertGreater(health["arrival_bound_samples"], 0)
+
+    def test_single_arrival_outlier_recovers_without_abort(self):
+        job = {}
+        for align in (77244, 78268, 77244):
+            self.assertIsNone(_auto_sub_chain_health_check(job, align, 48000))
+        # Production failure signature: one capture lands +5 capture quanta
+        # off the run baseline (pre-sweep setup jitter) and the next capture
+        # is back on baseline; the run must continue.
+        self.assertIsNone(_auto_sub_chain_health_check(job, 82364, 48000))
+        self.assertIsNone(_auto_sub_chain_health_check(job, 77244, 48000))
+        self.assertEqual(job["chain_alignment_samples"][-2:], [82364.0, 77244.0])
 
     def test_missing_alignment_is_ignored(self):
         job = {"chain_alignment_samples": [78268.0, 78268.0]}

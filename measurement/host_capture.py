@@ -90,6 +90,51 @@ class HostCaptureRunner:
             playback_gain=playback_gain,
         )
 
+        playback_route_diagnostics = store._routing._new_measurement_playback_route_diagnostics(playback_route)
+        detailed_diagnostics_enabled = _detailed_measurement_diagnostics_enabled()
+        routing_snapshots: list[dict[str, Any]] = []
+        link_diagnostics: dict[str, Any] = {}
+        helper_process_snapshots: list[dict[str, Any]] = []
+        if detailed_diagnostics_enabled:
+            routing_snapshots.append(
+                store._routing._build_measurement_routing_snapshot(
+                    label="before-record-link",
+                    playback_target=playback_target,
+                    mic_source_node_name=mic_source_node_name,
+                    reference_capture=reference_capture,
+                    record_node_name=record_node_name,
+                    play_node_name=play_node_name,
+                )
+            )
+
+        # The state-check subprocess batch is wall-clock variable and must run
+        # before the recording starts: anything between record start and the
+        # first played sample lands as a whole-quantum shift in the measured
+        # sweep arrival.
+        helper_process_snapshots.append(store._snapshot_fxroute_21_helper_processes("before-capture-start"))
+        logger.info(
+            "Measurement 2.1 helper pgrep before capture start: job_id=%s sample_rate=%s helper_processes=%s",
+            job_id,
+            sample_rate,
+            helper_process_snapshots[-1].get("processes"),
+        )
+
+        pre_sweep_state = store._routing._build_pre_sweep_state_snapshot(
+            job_id=job_id,
+            sample_rate=sample_rate,
+            playback_route=playback_route,
+        )
+        logger.warning(
+            "MEASUREMENT-STATE-CHECK pre-sweep state: %s",
+            json.dumps(pre_sweep_state, sort_keys=True, default=str),
+        )
+        pre_sweep_failure = pre_sweep_state.get("validation_failure")
+        if pre_sweep_failure:
+            raise RuntimeError(
+                f"Measurement pre-sweep state check failed: {pre_sweep_failure}. "
+                "Helper/config not in consistent state - sweep refused."
+            )
+
         record_process = store._start_job_process(owner_job_id, record_command)
         monitored_channel_index = store._recorded_mic_channel_index(
             mic_input_channel_index,
@@ -108,22 +153,6 @@ class HostCaptureRunner:
         play_timed_out = False
         record_stdout = ""
         record_stderr = ""
-        helper_process_snapshots: list[dict[str, Any]] = []
-        detailed_diagnostics_enabled = _detailed_measurement_diagnostics_enabled()
-        routing_snapshots: list[dict[str, Any]] = []
-        link_diagnostics: dict[str, Any] = {}
-        playback_route_diagnostics = store._routing._new_measurement_playback_route_diagnostics(playback_route)
-        if detailed_diagnostics_enabled:
-            routing_snapshots.append(
-                store._routing._build_measurement_routing_snapshot(
-                    label="before-record-link",
-                    playback_target=playback_target,
-                    mic_source_node_name=mic_source_node_name,
-                    reference_capture=reference_capture,
-                    record_node_name=record_node_name,
-                    play_node_name=play_node_name,
-                )
-            )
         try:
             store._routing._cleanup_fxroute_links(
                 source_node_name=mic_source_node_name,
@@ -156,30 +185,6 @@ class HostCaptureRunner:
                     )
                 )
             time.sleep(record_preroll_seconds)
-
-            helper_process_snapshots.append(store._snapshot_fxroute_21_helper_processes("before-capture-start"))
-            logger.info(
-                "Measurement 2.1 helper pgrep before capture start: job_id=%s sample_rate=%s helper_processes=%s",
-                job_id,
-                sample_rate,
-                helper_process_snapshots[-1].get("processes"),
-            )
-
-            pre_sweep_state = store._routing._build_pre_sweep_state_snapshot(
-                job_id=job_id,
-                sample_rate=sample_rate,
-                playback_route=playback_route,
-            )
-            logger.warning(
-                "MEASUREMENT-STATE-CHECK pre-sweep state: %s",
-                json.dumps(pre_sweep_state, sort_keys=True, default=str),
-            )
-            pre_sweep_failure = pre_sweep_state.get("validation_failure")
-            if pre_sweep_failure:
-                raise RuntimeError(
-                    f"Measurement pre-sweep state check failed: {pre_sweep_failure}. "
-                    "Helper/config not in consistent state - sweep refused."
-                )
 
             play_process = store._start_job_process(owner_job_id, play_command)
             if playback_route["route"] == "direct-sink":

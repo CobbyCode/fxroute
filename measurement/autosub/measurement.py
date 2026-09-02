@@ -917,13 +917,16 @@ def _auto_sub_chain_health_check(
     """Detect a persistent reference-vs-mic arrival displacement mid-run.
 
     The analyzer locks each capture's arrival independently, so healthy
-    sweeps jitter only by capture-quantum steps (1024 samples at 48 kHz)
-    around a constant baseline. A constant displacement far beyond that —
-    25600 samples in the 799f3bd5d1ab run, left by the output device's
-    resync pre-filling its buffer — corrupts every subsequent capture until
-    the audio stack is reset, so the run must abort instead of grinding
-    through disturbed sweeps. Returns the evidence dict when degraded, else
-    None.
+    sweeps jitter by capture-quantum steps (1024 samples at 48 kHz) around
+    a constant baseline. The measured arrival also absorbs the wall-clock
+    variance of the pre-playback setup between record start and the first
+    played sample, so a single sweep can land several quanta off baseline
+    without any change in audio device state. A degraded chain instead
+    leaves a displacement that persists across captures — 25600 samples
+    in the 799f3bd5d1ab run — so the first out-of-bound arrival is only
+    logged as pending and the run aborts once the displacement is
+    confirmed on the next capture. Returns the evidence dict when
+    degraded, else None.
     """
     if not isinstance(alignment_samples, (int, float)) or not math.isfinite(float(alignment_samples)):
         return None
@@ -933,16 +936,24 @@ def _auto_sub_chain_health_check(
         return None
     window = history[-8:]
     baseline = statistics.median(window)
-    shift = float(alignment_samples) - baseline
     bound = max(4096.0, float(sample_rate or 48000) / 12.0)
+    shift = float(alignment_samples) - baseline
     if abs(shift) <= bound:
         return None
-    return {
+    evidence = {
         "arrival_shift_samples": round(shift, 1),
         "arrival_bound_samples": round(bound, 1),
         "baseline_samples": round(baseline, 1),
         "current_samples": round(float(alignment_samples), 1),
     }
+    if len(history) >= 2 and abs(history[-2] - baseline) > bound:
+        return evidence
+    logger.warning(
+        "AUTOSUB_CHAIN_HEALTH_PENDING job=%s unconfirmed arrival displacement, "
+        "awaiting next capture %s",
+        job.get("id") or "", json.dumps(evidence, sort_keys=True),
+    )
+    return None
 
 
 def _auto_sub_balance_transfer_deltas(
