@@ -10,6 +10,13 @@ Any stacking-context property on `.header` (backdrop-filter, a z-index
 raise, an :has() escalation, ...) either traps the popups behind the tab
 bar or covers the navigation entirely. This test pins the popup-only
 stacking model: popups stack, the header never does.
+
+Note for visual checks: the header has two layouts. Below 1180px the tab
+bar is a separate row under the header; at >=1180px the tabs are pulled
+into the header line itself (`@media (min-width: 1180px) .tabs {
+margin: -72px auto 0 }`), so the tab bar and the header share one row and
+raising the header hides the tabs entirely. Popup-over-tabbar checks must
+therefore run below the 1180px threshold.
 """
 
 from pathlib import Path
