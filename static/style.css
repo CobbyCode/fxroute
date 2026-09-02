@@ -8341,7 +8341,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 }
 
-@media (min-width: 940px) {
+@media (min-width: 1180px) {
     /* from _playback.css */
     .tabs {
             width: max-content;
