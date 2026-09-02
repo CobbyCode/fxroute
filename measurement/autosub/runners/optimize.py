@@ -1112,6 +1112,7 @@ async def _run_auto_sub_optimize(
             )
 
         _final_level = final_gain_level if auto_apply else balanced_level
+        _final_delay = float(applied_delay if auto_apply else current_alignment)
         # Run's scored anchor offset (calibrated coords); the frontend combines
         # it with each trace's display_offset_db to place the target exactly.
         _target_anchor = job.get("main_target_anchor") if isinstance(job.get("main_target_anchor"), dict) else None
@@ -1119,6 +1120,8 @@ async def _run_auto_sub_optimize(
         _autosub_meta = _auto_sub_result_meta(
             job, OUTPUT_MODE_SUBWOOFER_21, {"sub": _final_level},
             target_vertical_offset_db=float(_tvo) if isinstance(_tvo, (int, float)) else None,
+            final_delays_ms={"sub": _final_delay},
+            final_polarities={"sub": final_polarity},
         )
         for _measurement in (baseline_measurement, confirmation_measurement):
             if _measurement is not None:

@@ -938,6 +938,11 @@ async def _run_auto_sub_22_optimize(
         _autosub_meta = _auto_sub_result_meta(
             job, OUTPUT_MODE_SUBWOOFER_22, _final_levels,
             target_vertical_offset_db=float(_tvo) if isinstance(_tvo, (int, float)) else None,
+            final_delays_ms={"sub1": float(best_sub1), "sub2": float(best_sub2)},
+            final_polarities={
+                "sub1": str(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("polarity", "normal")),
+                "sub2": str(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("polarity", "normal")),
+            },
         )
         for _measurement in (baseline_measurement, confirmation_measurement):
             if _measurement is not None:

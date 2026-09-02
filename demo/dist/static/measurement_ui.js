@@ -721,18 +721,81 @@ function getMeasurementAutoSubSummary(measurement = {}) {
     const targetLabel = String(meta?.target?.label || '').trim();
     if (targetLabel) parts.push(`Target: ${targetLabel}`);
     const gains = meta?.final_gains_db || null;
+    const delays = meta?.final_delays_ms || null;
+    const pols = meta?.final_polarities || null;
+    const gainText = (value, decimals = 1) => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return '';
+        const rounded = Math.round(numeric * 10) / 10;
+        const sign = rounded > 0 ? '+' : (rounded < 0 ? '\u2212' : '');
+        return `${sign}${Math.abs(rounded).toFixed(decimals)} dB`;
+    };
+    const delayMsText = (value) => {
+        if (value === undefined || value === null || String(value).trim() === '') return '';
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return '';
+        const rounded = Math.round(numeric * 10) / 10;
+        const sign = rounded > 0 ? '+' : (rounded < 0 ? '\u2212' : '');
+        if (Math.abs(rounded) < 0.05) return '0.0 ms';
+        return `${sign}${Math.abs(rounded).toFixed(1)} ms`;
+    };
+    const polTextStrict = (value) => {
+        if (value === undefined || value === null || String(value).trim() === '') return '';
+        const text = String(value).trim().toLowerCase();
+        if (text === 'invert' || text === 'inverted' || text === 'i' || text === '180') return 'I';
+        if (text === 'normal' || text === 'n') return 'N';
+        return '';
+    };
+    const compactSubText = (gainVal, delayVal, polVal) => {
+        const g = gainText(gainVal);
+        if (!g) return '';
+        const d = delayMsText(delayVal);
+        const p = polTextStrict(polVal);
+        let tail = '';
+        if (d && p) tail = ` · ${d} · ${p}`;
+        else if (d) tail = ` · ${d}`;
+        else if (p) tail = ` · ${p}`;
+        return `${g}${tail}`;
+    };
+    const hasDelayKey = (obj, key) => obj && typeof obj === 'object' && Number.isFinite(Number(obj[key]));
+    const hasPolKey = (obj, key) => obj && typeof obj === 'object' && String(obj[key] || '').trim() !== '';
     if (gains && typeof gains === 'object') {
-        const gainText = (value, decimals = 1) => {
-            const numeric = Number(value);
-            if (!Number.isFinite(numeric)) return '';
-            const rounded = Math.round(numeric * 10) / 10;
-            const sign = rounded > 0 ? '+' : (rounded < 0 ? '\u2212' : '');
-            return `${sign}${Math.abs(rounded).toFixed(decimals)} dB`;
-        };
-        const sub1 = gainText(gains.sub1);
-        if (sub1) parts.push(`Sub 1 ${sub1}`);
-        const sub2 = gainText(gains.sub2);
-        if (sub2) parts.push(`Sub 2 ${sub2}`);
+        if (Number.isFinite(Number(gains.sub)) || Number.isFinite(Number(gains.sub1)) || Number.isFinite(Number(gains.sub2))) {
+            const singleGain = gains.sub;
+            if (singleGain !== undefined && singleGain !== null && String(singleGain) !== '') {
+                const dv = hasDelayKey(delays, 'sub') ? delays.sub : null;
+                const pv = hasPolKey(pols, 'sub') ? pols.sub : null;
+                const text = compactSubText(singleGain, dv, pv);
+                if (text) parts.push(`Sub ${text}`);
+            }
+            const sub1Gain = gains.sub1;
+            if (sub1Gain !== undefined && sub1Gain !== null && String(sub1Gain) !== '') {
+                const dv = hasDelayKey(delays, 'sub1') ? delays.sub1 : null;
+                const pv = hasPolKey(pols, 'sub1') ? pols.sub1 : null;
+                const text = compactSubText(sub1Gain, dv, pv);
+                if (text) parts.push(`Sub 1 ${text}`);
+            }
+            const sub2Gain = gains.sub2;
+            if (sub2Gain !== undefined && sub2Gain !== null && String(sub2Gain) !== '') {
+                const dv = hasDelayKey(delays, 'sub2') ? delays.sub2 : null;
+                const pv = hasPolKey(pols, 'sub2') ? pols.sub2 : null;
+                const text = compactSubText(sub2Gain, dv, pv);
+                if (text) parts.push(`Sub 2 ${text}`);
+            }
+        }
+    }
+    if (!parts.length) {
+        if (delays && typeof delays === 'object' && (hasDelayKey(delays, 'sub') || hasDelayKey(delays, 'sub1') || hasDelayKey(delays, 'sub2'))) {
+            const fmt = (key, label) => {
+                const d = delayMsText(delays[key]);
+                if (!d) return;
+                const p = polTextStrict(pols ? pols[key] : null);
+                parts.push(p ? `${label} ${d} · ${p}` : `${label} ${d}`);
+            };
+            if (hasDelayKey(delays, 'sub')) fmt('sub', 'Sub');
+            if (hasDelayKey(delays, 'sub1')) fmt('sub1', 'Sub 1');
+            if (hasDelayKey(delays, 'sub2')) fmt('sub2', 'Sub 2');
+        }
     }
     if (!parts.length) return null;
     const line = parts.join(' · ');

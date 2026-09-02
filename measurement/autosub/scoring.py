@@ -213,6 +213,8 @@ def _auto_sub_anchor_shifted_points(points: list, reference_db: float | None) ->
 def _auto_sub_result_meta(
     job: dict[str, Any], mode: str, final_levels_db: dict[str, float],
     *, target_vertical_offset_db: float | None = None,
+    final_delays_ms: dict[str, float] | None = None,
+    final_polarities: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the AutoSub result metadata embedded into saved measurements.
 
@@ -224,6 +226,8 @@ def _auto_sub_result_meta(
     *target_vertical_offset_db* records the run's scored anchor offset. The
     calibrated Main points let the frontend recompute that same robust anchor
     for whichever Target Curve is currently selected in the graph.
+    *final_delays_ms* and *final_polarities* record the compact sub delay and
+    N/I state shown alongside the gain.
     """
     target_curve = job.get("target_curve") if isinstance(job.get("target_curve"), dict) else None
     meta: dict[str, Any] = {
@@ -255,6 +259,25 @@ def _auto_sub_result_meta(
         gains = {key: round(float(final_levels_db[key]), 2) for key in ("sub1", "sub2") if key in final_levels_db}
         if gains:
             meta["final_gains_db"] = gains
+    if final_delays_ms:
+        if mode == OUTPUT_MODE_SUBWOOFER_21:
+            if "sub" in final_delays_ms and isinstance(final_delays_ms["sub"], (int, float)) and math.isfinite(float(final_delays_ms["sub"])):
+                meta["final_delays_ms"] = {"sub": round(float(final_delays_ms["sub"]), 2)}
+        else:
+            delays = {key: round(float(final_delays_ms[key]), 2) for key in ("sub1", "sub2") if key in final_delays_ms and isinstance(final_delays_ms[key], (int, float)) and math.isfinite(float(final_delays_ms[key]))}
+            if delays:
+                meta["final_delays_ms"] = delays
+    if final_polarities:
+        def _norm_pol(value: str) -> str:
+            text = str(value or "").strip().lower()
+            return "invert" if text in {"invert", "inverted", "i", "180"} else "normal"
+        if mode == OUTPUT_MODE_SUBWOOFER_21:
+            if "sub" in final_polarities:
+                meta["final_polarities"] = {"sub": _norm_pol(final_polarities["sub"])}
+        else:
+            pols = {key: _norm_pol(final_polarities[key]) for key in ("sub1", "sub2") if key in final_polarities}
+            if pols:
+                meta["final_polarities"] = pols
     return meta
 
 def _auto_sub_measurement_from_sweep(

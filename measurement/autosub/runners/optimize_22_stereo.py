@@ -1715,6 +1715,8 @@ async def _run_auto_sub_22_stereo_optimize(
                 "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
             },
             target_vertical_offset_db=float(_tvo) if isinstance(_tvo, (int, float)) else None,
+            final_delays_ms={"sub1": float(best_left), "sub2": float(best_right)},
+            final_polarities={"sub1": selected_left_polarity, "sub2": selected_right_polarity},
         )
         for _measurement in (baseline_measurement, confirmation_measurement):
             if _measurement is not None:

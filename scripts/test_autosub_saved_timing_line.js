@@ -42,7 +42,7 @@ function makeAutoSubMeta() {
     const measurement = makeMeasurement({ autosub_meta: makeAutoSubMeta() });
     const info = MeasurementUI.getMeasurementTimingInfo(measurement);
     assert.equal(info.status, 'autosub');
-    assert.match(info.line, /^Target: Harman-style · Sub 1 \+1\.1 dB · Sub 2 −0\.6 dB$/);
+    assert.match(info.line, /^Target: Harman-style · Sub 1 \+1\.1 dB(?: · [^·]+ ms(?: · [NI])?)? · Sub 2 −0\.6 dB(?: · [^·]+ ms(?: · [NI])?)?$/);
     assert.match(info.detail, /AutoSub result metadata/);
     assert.ok(!/timing/i.test(info.line), 'no timing wording for autosub');
 }
@@ -56,6 +56,7 @@ function makeAutoSubMeta() {
     });
     const info = MeasurementUI.getMeasurementTimingInfo(measurement);
     assert.match(info.line, /^Target: My Studio Curve · Sub 1 −0\.9 dB · Sub 2 −4\.0 dB$/);
+    assert.ok(!info.line.includes('ms'), 'no ms for old meta without delays');
 }
 
 // ---------------------------------------------------------------------------
