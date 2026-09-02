@@ -164,6 +164,19 @@ class ArmbianImageTests(unittest.TestCase):
             self.build,
         )
 
+    def test_vim1s_uses_official_legacy_oowow_output_path(self):
+        self.assertIn('OOWOW_BOARD="khadas-vim1s"', self.build)
+        self.assertIn('OOWOW_EXTENSION="image-output-oowow"', self.build)
+        self.assertIn('BRANCH_EXPLICIT=0', self.build)
+        self.assertIn('BRANCH="legacy"', self.build)
+        self.assertIn('EXT=image-output-oowow', self.build)
+        self.assertIn('*.oowow.img.xz', self.build)
+        self.assertIn('.oowow.img.xz', self.build)
+        self.assertNotIn('mv -- "$image"', self.build)
+
+    def test_vim1s_rejects_a_non_oowow_output_name(self):
+        self.assertIn('OOWOW output must end in .oowow.img.xz', self.build)
+
     def test_customize_script_installs_only_the_first_boot_handoff(self):
         self.assertIn('BUILD_DESKTOP="${4:-}"', self.customize)
         self.assertIn('ARCH="${5:-}"', self.customize)

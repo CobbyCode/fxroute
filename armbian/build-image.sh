@@ -8,9 +8,12 @@ export PATH
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ARMBIAN_REPOSITORY="https://github.com/armbian/build.git"
 ARMBIAN_BUILD_REF="4a50e16e09222e00d3f57884b4dfbf8fdb4ce5dc"
+OOWOW_BOARD="khadas-vim1s"
+OOWOW_EXTENSION="image-output-oowow"
 REQUESTED_BOARD="rpi4"
 RELEASE="trixie"
 BRANCH="current"
+BRANCH_EXPLICIT=0
 ARMBIAN_SOURCE_DIR="${FXROUTE_ARMBIAN_SOURCE:-}"
 ARMBIAN_CACHE_DIR="${FXROUTE_ARMBIAN_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/fxroute/armbian}"
 OUTPUT="${FXROUTE_ARMBIAN_OUTPUT:-}"
@@ -68,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --branch)
       [[ $# -ge 2 ]] || die "--branch requires a value"
       BRANCH="$2"
+      BRANCH_EXPLICIT=1
       shift 2
       ;;
     --kernel-ref)
@@ -104,6 +108,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$REQUESTED_BOARD" == "$OOWOW_BOARD" && "$BRANCH_EXPLICIT" -eq 0 ]]; then
+  # Armbian's official VIM1S OOWOW target is the legacy branch.
+  BRANCH="legacy"
+fi
+
 [[ "$REQUESTED_BOARD" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
   || die "Invalid Armbian board name: $REQUESTED_BOARD"
 [[ "$RELEASE" =~ ^[a-z0-9][a-z0-9._-]*$ ]] \
@@ -127,9 +136,16 @@ case "$requested_board" in
 esac
 
 if [[ -z "$OUTPUT" ]]; then
-  OUTPUT="$ROOT_DIR/dist/fxroute-armbian-${requested_board}-${RELEASE}-${BRANCH}.img"
+  if [[ "$requested_board" == "$OOWOW_BOARD" ]]; then
+    OUTPUT="$ROOT_DIR/dist/fxroute-armbian-${requested_board}-${RELEASE}-${BRANCH}.oowow.img.xz"
+  else
+    OUTPUT="$ROOT_DIR/dist/fxroute-armbian-${requested_board}-${RELEASE}-${BRANCH}.img"
+  fi
 fi
 OUTPUT="$(realpath -m "$OUTPUT")"
+if [[ "$requested_board" == "$OOWOW_BOARD" && "$OUTPUT" != *.oowow.img.xz ]]; then
+  die "OOWOW output must end in .oowow.img.xz"
+fi
 mkdir -p "$(dirname "$OUTPUT")"
 ARMBIAN_CACHE_DIR="$(realpath -m "$ARMBIAN_CACHE_DIR")"
 mkdir -p "$ARMBIAN_CACHE_DIR"
@@ -414,14 +430,23 @@ copy_image_output() {
   local uboot=""
   local images=()
 
-  while IFS= read -r -d '' image; do
-    images+=("$image")
-  done < <(find "$image_dir" -maxdepth 1 -type f \( -name '*.img' -o -name '*.img.xz' -o -name '*.img.qcow2' \) -print0 2>/dev/null | sort -z)
+  if [[ "$requested_board" == "$OOWOW_BOARD" ]]; then
+    # image-output-oowow removes the intermediate .img and leaves this exact
+    # Armbian output alongside its embedded OOWOW metadata.
+    while IFS= read -r -d '' image; do
+      images+=("$image")
+    done < <(find "$image_dir" -maxdepth 1 -type f -name '*.oowow.img.xz' -print0 2>/dev/null | sort -z)
+  else
+    while IFS= read -r -d '' image; do
+      images+=("$image")
+    done < <(find "$image_dir" -maxdepth 1 -type f \( -name '*.img' -o -name '*.img.xz' -o -name '*.img.qcow2' \) -print0 2>/dev/null | sort -z)
+  fi
   [[ ${#images[@]} -eq 1 ]] \
     || die "Expected exactly one Armbian disk image in $image_dir, found ${#images[@]}"
   image="${images[0]}"
 
   case "$image" in
+    *.oowow.img.xz) cp -- "$image" "$disk_output" ;;
     *.img) cp -- "$image" "$disk_output" ;;
     *.img.xz) xz --decompress --stdout "$image" > "$disk_output" ;;
     *.img.qcow2)
@@ -435,6 +460,7 @@ copy_image_output() {
     *) die "Unsupported Armbian image output: $image" ;;
   esac
   case "$disk_output" in
+    *.oowow.img.xz) artifact_stem="${disk_output%.oowow.img.xz}" ;;
     *.img.qcow2) artifact_stem="${disk_output%.img.qcow2}" ;;
     *.img.xz) artifact_stem="${disk_output%.img.xz}" ;;
     *.img) artifact_stem="${disk_output%.img}" ;;
@@ -454,17 +480,25 @@ write_build_configuration
 
 printf '[armbian] building requested board %s as %s (%s/%s)\n' \
   "$requested_board" "$build_board" "$RELEASE" "$BRANCH"
+compile_args=(
+  fxroute
+  build
+  "BOARD=$build_board"
+  "BRANCH=$BRANCH"
+  "RELEASE=$RELEASE"
+  "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+  "E2FSPROGS_FAKE_TIME=$E2FSPROGS_FAKE_TIME"
+)
+if [[ "$requested_board" == "$OOWOW_BOARD" ]]; then
+  # Official Armbian path: EXT=image-output-oowow.
+  compile_args+=("EXT=$OOWOW_EXTENSION")
+fi
 (
   cd "$armbian_dir"
   export SOURCE_DATE_EPOCH
   export TERM="${TERM:-xterm-256color}"
   export ARMBIAN_BUILD_UUID="fxroute-${requested_board}-${RELEASE}-${BRANCH}-${WORK_TOKEN}"
-  "$armbian_dir/compile.sh" fxroute \
-    "BOARD=$build_board" \
-    "BRANCH=$BRANCH" \
-    "RELEASE=$RELEASE" \
-    "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
-    "E2FSPROGS_FAKE_TIME=$E2FSPROGS_FAKE_TIME"
+  "$armbian_dir/compile.sh" "${compile_args[@]}"
 )
 
 copy_image_output
