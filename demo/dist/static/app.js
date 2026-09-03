@@ -2447,6 +2447,9 @@ function providerAdminButtonHtml(provider) {
             if (provider.authenticated) {
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
             }
+            // Restart makes qbzd re-read a (restored) credential file without SSH;
+            // on an inactive unit it also acts as Start.
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-service="restart" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Restart</button>`);
         } else if (provider.id !== 'spotify') {
             const label = provider.available ? 'Restart' : 'Start';
             buttons.push(`<button type="button" class="btn-secondary" data-provider-service="start" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>${label}</button>`);
