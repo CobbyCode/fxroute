@@ -28,7 +28,7 @@ def _points(value_db=0.0):
 
 
 class AutoSub21FinalPathTests(unittest.IsolatedAsyncioTestCase):
-    async def _run_path(self, *, gate_veto):
+    async def _run_path(self, *, gate_veto, recheck_outcome="incumbent_kept", fail_restore=False):
         job_id = "auto-sub-21-path"
         original = {
             "mode": runner.OUTPUT_MODE_SUBWOOFER_21,
@@ -128,6 +128,16 @@ class AutoSub21FinalPathTests(unittest.IsolatedAsyncioTestCase):
         async def finish_worker(_job, _job_id):
             return None
 
+        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
+            # The verified restore helper lives in candidates; route it
+            # through the same fake persist/overview so the restore state
+            # stays test-local. fail_restore simulates two unverified
+            # applies, like the production retry loop.
+            if fail_restore:
+                return False
+            persist(output_mode, global_config, subwoofers_config)
+            return bool(verify(overview()))
+
         try:
             with ExitStack() as stack:
                 stack.enter_context(patch.object(runner, "_measurement_session", return_value=None))
@@ -157,10 +167,11 @@ class AutoSub21FinalPathTests(unittest.IsolatedAsyncioTestCase):
                     return_value=(gate_veto, {"failed_sides": ["left"] if gate_veto else [],
                                               "reason": "combined_deterioration" if gate_veto else "no_per_side_trigger"})))
                 stack.enter_context(patch.object(runner, "_auto_sub_local_dip_recheck_decision",
-                    return_value={"outcome": "incumbent_kept", "incumbent_passed": True,
+                    return_value={"outcome": recheck_outcome, "incumbent_passed": recheck_outcome == "incumbent_kept",
                                   "evidence_available": True, "incumbent_evidence_available": True,
-                                  "confirmed_failed_sides": ["left"]}))
+                                  "confirmed_failed_sides": ["left"] if gate_veto else []}))
                 stack.enter_context(patch.object(runner, "_auto_sub_apply_candidate", side_effect=apply_candidate))
+                stack.enter_context(patch("measurement.autosub.candidates._auto_sub_apply_candidate", side_effect=restore_apply_candidate))
                 stack.enter_context(patch.object(runner, "_finish_auto_sub_worker", side_effect=finish_worker))
                 stack.enter_context(patch.object(runner, "get_audio_output_overview", side_effect=overview))
                 stack.enter_context(patch.object(samplerate, "set_audio_output_mode", side_effect=persist))
@@ -196,6 +207,25 @@ class AutoSub21FinalPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["suggested_alignment_ms"], -3.12)
         self.assertEqual(state["subwoofer"]["sub_alignment_ms"], 0.0)
         self.assertEqual(result["confidence"], "gate_reverted")
+
+    async def test_reverted_to_original_restores_and_completes(self):
+        job, state = await self._run_path(gate_veto=True, recheck_outcome="original_restored")
+        self.assertEqual(job["status"], "completed", job.get("error"))
+        self.assertEqual(job["confirmation_gate"]["action"], "reverted_to_original")
+        self.assertEqual(job["result"]["applied_alignment_ms"], 0.0)
+        self.assertEqual(state["subwoofer"]["sub_alignment_ms"], 0.0)
+
+    async def test_reverted_to_original_restore_failure_aborts_before_completed(self):
+        # Parity with the 2.2-stereo gate: an unverified restore must fail
+        # the job instead of reporting "original state restored" as
+        # completed with a still-divergent topology active.
+        job, _state = await self._run_path(
+            gate_veto=True, recheck_outcome="original_restored", fail_restore=True,
+        )
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("failed to restore the original config", job["message"])
+        self.assertIn("restore verification failed", str(job.get("error") or {}))
+        self.assertNotEqual(job["status"], "completed")
 
 
 if __name__ == "__main__":

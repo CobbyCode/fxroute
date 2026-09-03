@@ -33,6 +33,7 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
     async def _run_path(
         self, *, gate_veto, verdict_accepted,
         balance_deltas_db=None, fail_winner_apply=False, fail_restore=False,
+        recheck_dips_override=None,
     ):
         job_id = "auto-sub-22-mono-path"
         original = {
@@ -222,7 +223,8 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                     "accepted": verdict_accepted, "reason": "test", "channels": {},
                 }))
                 stack.enter_context(patch.object(runner, "_auto_sub_local_dip_db", side_effect=(
-                    [8.02, 5.61, 14.81, 8.61, 9.33, 8.07] if gate_veto else [8.02, 5.61, 8.0, 5.5]
+                    recheck_dips_override if recheck_dips_override is not None
+                    else [8.02, 5.61, 14.81, 8.61, 9.33, 8.07] if gate_veto else [8.02, 5.61, 8.0, 5.5]
                 )))
                 stack.enter_context(patch.object(runner, "_auto_sub_dip_guard_should_veto",
                     return_value=(gate_veto, {"failed_sides": ["left", "right"] if gate_veto else [],
@@ -307,6 +309,34 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["status"], "failed")
         self.assertIn("failed to restore the original config", job["message"])
         self.assertIn("restore verification failed", str(job.get("error") or {}))
+
+    async def test_reverted_to_original_restores_and_completes(self):
+        # Gate veto with a failing incumbent recheck restores the original
+        # state and reports it as completed.
+        job, state, _seen, _stages = await self._run_path(
+            gate_veto=True, verdict_accepted=False,
+            recheck_dips_override=[8.02, 5.61, 14.81, 8.61, 20.0, 20.0],
+        )
+        self.assertEqual(job["status"], "completed", job.get("error"))
+        self.assertEqual(job["confirmation_gate"]["action"], "reverted_to_original")
+        self.assertEqual(job["result"]["applied_sub1_alignment_ms"], 0.0)
+        self.assertEqual(job["result"]["applied_sub2_alignment_ms"], 0.0)
+        self.assertEqual(state["subwoofers"]["sub1"]["alignment_ms"], 0.0)
+        self.assertEqual(state["subwoofers"]["sub2"]["alignment_ms"], 0.0)
+
+    async def test_reverted_to_original_restore_failure_aborts_before_completed(self):
+        # Parity with the 2.2-stereo gate: an unverified restore must fail
+        # the job instead of reporting "original state restored" as
+        # completed with a still-divergent topology active.
+        job, _state, _seen, _stages = await self._run_path(
+            gate_veto=True, verdict_accepted=False,
+            recheck_dips_override=[8.02, 5.61, 14.81, 8.61, 20.0, 20.0],
+            fail_restore=True,
+        )
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("failed to restore the original config", job["message"])
+        self.assertIn("restore verification failed", str(job.get("error") or {}))
+        self.assertNotEqual(job["status"], "completed")
 
     async def test_result_sweep_count_counts_executed_sweeps_from_ledger(self):
         # The 2.2 results previously reported a static matrix-based plan that

@@ -856,7 +856,8 @@ async def _run_auto_sub_22_optimize(
                     await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
                 confirmation_gate["action"] = "alignment_reverted_balance_kept"
             else:
-                await _restore_original_config()
+                if not await _restore_original_config():
+                    return
                 final_gain_snapshot = original_config_snapshot
                 final_gain_sweep = balance_sweep
                 best_sub1 = original_sub1_alignment

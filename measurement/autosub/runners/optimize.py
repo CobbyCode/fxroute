@@ -992,7 +992,8 @@ async def _run_auto_sub_optimize(
                         "final_level_db": balanced_level,
                     })
                 else:
-                    await _restore_original_config()
+                    if not await _restore_original_config():
+                        return
                     final_gain_sweep = balance_sweep
                     final_gain_level = original_level
                     applied_delay = current_alignment

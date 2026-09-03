@@ -193,7 +193,7 @@ class DspOrchestrator:
                         "falling back to the caller overview reason=%s error=%s",
                         reason, exc,
                     )
-                    current_overview = audio_overview or {}
+                    current_overview = audio_overview or overview or {}
             current_overview = samplerate.audio_output_overview_with_effective_rate(
                 current_overview, authoritative_rate,
             )

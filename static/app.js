@@ -13493,7 +13493,7 @@ async function _doSaveEffectsExtras(phase) {
         if (!resp.ok) throw new Error(data.detail || 'Failed to save output extras');
         state.dsp = state.dsp || {};
         state.dsp.global_extras = data.extras || {
-            limiter: { enabled: !!extras.limiterEnabled, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 50.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
+            limiter: { enabled: !!extras.limiterEnabled, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
             headroom: { enabled: !!extras.headroomEnabled, params: { gainDb: extras.headroomGainDb } },
             autogain: { enabled: !!extras.autogainEnabled, params: { targetDb: extras.autogainTargetDb } },
             loudness: {
