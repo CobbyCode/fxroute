@@ -74,7 +74,12 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
     def test_engine_text_emits_every_enabled_stage_in_exact_order(self):
         ir = self.manager.irs_dir / "room.irs"
-        ir.write_bytes(b"ir")
+        import wave as _wave
+        with _wave.open(str(ir), "wb") as _handle:
+            _handle.setnchannels(1)
+            _handle.setsampwidth(2)
+            _handle.setframerate(48000)
+            _handle.writeframes(b"\x00\x00\x00\x00")
         chain = [
             {"id": "delay#0", "type": "delay", "enabled": True,
              "params": {"leftMs": 1, "rightMs": 2}},

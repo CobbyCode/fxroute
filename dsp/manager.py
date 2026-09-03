@@ -53,7 +53,30 @@ def parse_wav_frames(path: Path) -> Dict[str, Any]:
         raise ValueError(f"IR WAV data is truncated: {path.name}")
     params["samples"] = len(data) // (params["bits"] // 8)
     params["data"] = data
+    channels = params["channels"]
+    rate = params["rate"]
+    if not 1 <= channels <= 32:
+        raise ValueError(f"IR WAV file has an unsupported channel count: {channels}")
+    if rate <= 0:
+        raise ValueError(f"IR WAV file has an invalid sample rate: {rate}")
+    frame_size = (params["bits"] // 8) * channels
+    if len(data) % frame_size:
+        raise ValueError(f"IR WAV data is truncated: {path.name}")
+    params["frames"] = len(data) // frame_size
+    if params["frames"] <= 0:
+        raise ValueError(f"IR WAV file contains no audio frames: {path.name}")
     return params
+
+
+def ensure_kernel_supported_ir(params: Dict[str, Any], name: str) -> None:
+    """Reject IR encodings the native convolver cannot load."""
+    fmt = params.get("format")
+    bits = params.get("bits")
+    if not ((fmt == 1 and bits in (16, 24, 32)) or (fmt == 3 and bits == 32)):
+        raise ValueError(
+            f"IR WAV encoding is not kernel-supported: format {fmt} "
+            f"with {bits} bits (need PCM 16/24/32 bit or IEEE float 32 bit): {name}"
+        )
 
 
 def build_wav_bytes(channels: int, rate: int, bits: int, format_tag: int, data: bytes) -> bytes:
@@ -89,6 +112,9 @@ class DSPManager:
         "equalizer", "convolver", "delay", "limiter", "headroom",
         "bass_enhancer", "autogain", "loudness", "crystalizer", "maximizer",
     }
+    # Output crossover PEQ types accepted by native_dsp/dsp.c design().
+    OUTPUT_FILTER_TYPES = {"bell", "notch", "lowpass", "highpass", "lowshelf", "highshelf"}
+    OUTPUT_FILTER_MAX_BIQUADS = 32
     # The engine clamps at/rt/lk to the LSP sc_limiter port bounds
     # (0.25..20 / 0.25..20 / 0.1..20 ms, verified against the installed
     # sc_limiter_stereo metadata).  Params are normalized into this same range
@@ -531,6 +557,75 @@ class DSPManager:
         for plugin in chain:
             if plugin.get("type") not in self.SUPPORTED_PLUGINS:
                 raise UnsupportedPluginError(f"Unsupported DSP plugin: {plugin.get('type')}")
+            if plugin.get("type") == "equalizer":
+                self._validate_equalizer_plugin(plugin)
+
+    def _validate_equalizer_plugin(self, plugin: dict) -> None:
+        """Reject dual PEQ chains the engine cannot represent."""
+        params = plugin.get("params", {})
+        if not isinstance(params, dict) or params.get("channelMode") != "dual":
+            return
+        def trim(bands: Any) -> float:
+            total = 0.0
+            if isinstance(bands, list):
+                for band in bands:
+                    if isinstance(band, dict) and band.get("filterType") == "gain" \
+                            and band.get("enabled", True):
+                        total += float(band.get("gainDb", 0.0))
+            return total
+        left = trim(params.get("leftBands"))
+        right = trim(params.get("rightBands"))
+        if abs(left - right) > 1e-9:
+            raise ValueError("Gain filter supports only shared stereo trim in dual mode")
+
+    def _validate_output_filters(self, filters: Any, output_index: int,
+                                 sample_rate_hz: int) -> List[dict]:
+        if filters is None:
+            return []
+        if not isinstance(filters, list):
+            raise ValueError(f"output_layout[{output_index}].filters must be an array")
+        validated: List[dict] = []
+        total_stages = 0
+        for filter_index, raw in enumerate(filters):
+            prefix = f"output_layout[{output_index}].filters[{filter_index}]"
+            if not isinstance(raw, dict):
+                raise ValueError(f"{prefix} must be an object")
+            kind = raw.get("type")
+            if not isinstance(kind, str) or kind not in self.OUTPUT_FILTER_TYPES:
+                raise ValueError(
+                    f"{prefix}.type must be one of: "
+                    f"{', '.join(sorted(self.OUTPUT_FILTER_TYPES))}")
+            try:
+                frequency = float(raw["frequency_hz"])
+                q = float(raw.get("q", 0.70710678))
+                gain_db = float(raw.get("gain_db", 0.0))
+                stages_raw = raw.get("stages", 1)
+            except KeyError as exc:
+                raise ValueError(f"{prefix}.{exc.args[0]} is required") from None
+            except (TypeError, ValueError):
+                raise ValueError(f"{prefix} has non-numeric parameters") from None
+            if not math.isfinite(frequency) or not 20 <= frequency <= 20000:
+                raise ValueError(f"{prefix}.frequency_hz must be between 20 and 20000")
+            if not frequency < sample_rate_hz / 2:
+                raise ValueError(f"{prefix}.frequency_hz must be below Nyquist")
+            if not math.isfinite(q) or not 0.1 <= q <= 20:
+                raise ValueError(f"{prefix}.q must be between 0.1 and 20")
+            if not math.isfinite(gain_db) or not -24 <= gain_db <= 24:
+                raise ValueError(f"{prefix}.gain_db must be between -24 and 24")
+            stages_float = float(stages_raw)
+            if not stages_float.is_integer() or not 1 <= int(stages_float) <= self.OUTPUT_FILTER_MAX_BIQUADS:
+                raise ValueError(
+                    f"{prefix}.stages must be a whole number between 1 and "
+                    f"{self.OUTPUT_FILTER_MAX_BIQUADS}")
+            stages = int(stages_float)
+            total_stages += stages
+            validated.append({"type": kind, "frequency_hz": frequency, "q": q,
+                              "gain_db": gain_db, "stages": stages})
+        if total_stages > self.OUTPUT_FILTER_MAX_BIQUADS:
+            raise ValueError(
+                f"output_layout[{output_index}].filters exceed "
+                f"{self.OUTPUT_FILTER_MAX_BIQUADS} biquad stages")
+        return validated
 
     def compile_engine_config(self, output_layout: List[Dict[str, Any]], *,
                                preset_name: Optional[str] = None,
@@ -563,11 +658,21 @@ class DSPManager:
                 if not math.isfinite(gain):
                     raise ValueError(f"output_layout[{index}].routes[{route_index}].gain must be finite")
                 normalized_routes.append({"input": source, "gain": gain})
+            try:
+                gain_db = float(channel.get("gain_db", 0.0))
+                delay_ms = float(channel.get("delay_ms", 0.0))
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"output_layout[{index}].gain_db/delay_ms must be numeric") from None
+            if not math.isfinite(gain_db) or not -80 <= gain_db <= 24:
+                raise ValueError(f"output_layout[{index}].gain_db must be between -80 and 24")
+            if not math.isfinite(delay_ms) or not 0 <= delay_ms <= 500:
+                raise ValueError(f"output_layout[{index}].delay_ms must be between 0 and 500")
             outputs.append({"name": channel["name"], "routes": normalized_routes,
-                             "gain_db": float(channel.get("gain_db", 0.0)),
-                             "delay_ms": float(channel.get("delay_ms", 0.0)),
+                             "gain_db": gain_db, "delay_ms": delay_ms,
                              "invert": bool(channel.get("invert", False)),
-                             "filters": copy.deepcopy(channel.get("filters", []))})
+                             "filters": self._validate_output_filters(
+                                 channel.get("filters", []), index, sample_rate_hz)})
         active = clean_name(preset_name or self.get_active_preset())
         payload = self.preset_store.read(active)
         chain = copy.deepcopy(payload["chain"])
@@ -594,10 +699,10 @@ class DSPManager:
             for route in output["routes"]:
                 lines.append(f"matrix {output_index} {route['input']} {route['gain']:.9g}")
             for filter_def in output.get("filters", []):
-                for _ in range(int(filter_def.get("stages", 1))):
+                for _ in range(int(filter_def["stages"])):
                     lines.append("peq %d %s %.9g %.9g %.9g" % (
                         output_index, filter_def["type"], float(filter_def["frequency_hz"]),
-                        float(filter_def.get("q", 0.70710678)), float(filter_def.get("gain_db", 0.0))))
+                        float(filter_def["q"]), float(filter_def["gain_db"])))
 
         def number(value: Any) -> str:
             return format(float(value), ".9g")
@@ -649,14 +754,8 @@ class DSPManager:
                 left, left_gain, left_delay = split_special_bands(left_source)
                 right, right_gain, right_delay = split_special_bands(right_source)
                 if dual and abs(left_gain - right_gain) > 1e-9:
-                    if abs(left_gain) <= 1e-9:
-                        peq_gain_db = right_gain
-                    elif abs(right_gain) <= 1e-9:
-                        peq_gain_db = left_gain
-                    else:
-                        raise ValueError("Gain filter supports only shared stereo trim in dual mode")
-                else:
-                    peq_gain_db = left_gain
+                    raise ValueError("Gain filter supports only shared stereo trim in dual mode")
+                peq_gain_db = left_gain
                 params = copy.deepcopy(params)
                 if dual:
                     params["leftBands"], params["rightBands"] = left, right
@@ -692,16 +791,17 @@ class DSPManager:
                         control(f"g{side}_{index}", 10.0 ** (float(band.get("gainDb", 0.0)) / 20.0))
                         control(f"q{side}_{index}", band.get("q", 1.0))
             elif plugin_type == "convolver":
-                paths = self.preset_store.find_ir_paths(str(params.get("kernel", "")))
-                if not paths:
-                    raise FileNotFoundError(f"IR file not found: {params.get('kernel', '')}")
+                resolved = self._resolve_kernel_path(str(params.get("kernel", "")))
+                # Never emit a corrupt kernel path: an invalid IR must fail
+                # here, not inside the native engine process.
+                self._validate_ir_file(resolved)
                 # The pre-native-DSP engine needed hidden per-rate output-gain
                 # compensation (44100 +1 dB ... 768000 -24 dB).  The native
                 # convolver resamples the IR and convolves at the stream rate
                 # and is level-stable across rates (verified by
                 # test_native_dsp_convolver_sr_level.py at 44.1/48/96/192 kHz),
                 # so no compensation is applied.
-                lines.append(f"param path {json.dumps(str(paths[0]))}")
+                lines.append(f"param path {json.dumps(str(resolved))}")
                 for name, default in (("wet_db", 0.0), ("dry_db", -100.0),
                                       ("input_gain_db", 0.0), ("output_gain_db", 0.0)):
                     lines.append(f"param {name} {number(params.get(name, default))}")
@@ -857,6 +957,15 @@ class DSPManager:
         if mode == "dual":
             params["leftBands"] = bands(params.get("leftBands", []), "peq.params.leftBands")
             params["rightBands"] = bands(params.get("rightBands", []), "peq.params.rightBands")
+            left_trim = sum(float(band["gainDb"]) for band in params["leftBands"]
+                            if band["filterType"] == "gain" and band["enabled"])
+            right_trim = sum(float(band["gainDb"]) for band in params["rightBands"]
+                             if band["filterType"] == "gain" and band["enabled"])
+            # The engine applies a single shared stereo trim (g_in). Different
+            # L/R trims are legitimate requests but cannot be represented, so
+            # reject them here instead of mis-applying one side to both.
+            if abs(left_trim - right_trim) > 1e-9:
+                raise ValueError("Gain filter supports only shared stereo trim in dual mode")
         else:
             params["bands"] = bands(params.get("bands", []), "peq.params.bands")
         params["channelMode"] = mode
@@ -868,15 +977,33 @@ class DSPManager:
         if not isinstance(text, str) or not text.strip():
             raise ValueError("REW PEQ text is empty")
         bands = []
+        unsupported: List[str] = []
         pattern = re.compile(
-            r"^\s*\d+\s+(?:true|false|on|off)\s+(?:auto\s+)?(?:PK|PEQ)\s+"
+            r"^\s*\d+\s+(true|false|on|off)\s+(?:auto\s+)?([A-Za-z]+)\s+"
             r"([0-9.]+)\s+([-+0-9.]+)\s+([0-9.]+)", re.IGNORECASE)
-        for line in text.splitlines():
+        for line_number, line in enumerate(text.splitlines(), start=1):
             match = pattern.match(line)
-            if match:
-                bands.append({"filterType": "bell", "frequencyHz": float(match.group(1)),
-                              "gainDb": float(match.group(2)), "q": float(match.group(3)),
-                              "enabled": True})
+            if not match:
+                continue
+            enabled_token = match.group(1).lower()
+            kind_token = match.group(2).upper()
+            enabled = enabled_token in ("true", "on")
+            if kind_token not in ("PK", "PEQ"):
+                unsupported.append(f"line {line_number}: filter type {match.group(2)}")
+                continue
+            try:
+                frequency = float(match.group(3))
+                gain = float(match.group(4))
+                q = float(match.group(5))
+            except ValueError:
+                raise ValueError(f"REW PEQ line {line_number} has invalid numbers") from None
+            bands.append({"filterType": "bell", "frequencyHz": frequency,
+                          "gainDb": gain, "q": q,
+                          "enabled": enabled})
+        if unsupported:
+            raise ValueError(
+                "Unsupported REW PEQ filter type(s): " + "; ".join(unsupported)
+                + " (supported: PK/PEQ)")
         if not bands:
             raise ValueError("No supported REW PEQ filters found")
         return {"source": "REW", "peq": {"enabled": True, "params": {
@@ -894,9 +1021,13 @@ class DSPManager:
                   "params": copy.deepcopy(normalized["params"]),
                   "mix": copy.deepcopy(normalized["mix"])}
         path = self.preset_store.write(name, self._native_preset([plugin]))
-        bands = normalized["params"].get("bands", [])
+        if normalized["params"].get("channelMode") == "dual":
+            band_count = (len(normalized["params"].get("leftBands", []))
+                          + len(normalized["params"].get("rightBands", [])))
+        else:
+            band_count = len(normalized["params"].get("bands", []))
         return {"name": name, "filename": path.name, "path": str(path),
-                "band_count": len(bands), "channel_mode": normalized["params"]["channelMode"]}
+                "band_count": band_count, "channel_mode": normalized["params"]["channelMode"]}
 
     def create_convolver_preset(self, preset_name: str, ir_filename: str,
                                 extras: Optional[Dict[str, Any]] = None) -> dict:
@@ -904,9 +1035,16 @@ class DSPManager:
         name = self._ensure_overwritable_name(preset_name)
         if not name:
             raise ValueError("Invalid preset name")
-        if Path(ir_filename).name not in {item["name"] for item in self.list_irs()}:
+        requested = Path(ir_filename).name
+        if requested not in {item["name"] for item in self.list_irs()}:
             raise FileNotFoundError(f"IR file not found: {ir_filename}")
-        kernel = Path(ir_filename).stem
+        kernel = Path(requested).stem
+        resolved = self._resolve_kernel_path(kernel)
+        if resolved.name != requested:
+            raise ValueError(
+                f"Ambiguous IR kernel {kernel!r}: requested {requested!r} "
+                f"but {resolved.name!r} would be used; remove the duplicates")
+        self._validate_ir_file(resolved)
         plugin = {"id": "convolver#0", "type": "convolver", "enabled": True,
                   "params": {"kernel": kernel, "wet_db": 0.0, "dry_db": -100.0,
                              "input_gain_db": 0.0, "output_gain_db": 0.0}}
@@ -1089,6 +1227,33 @@ class DSPManager:
     def _find_ir_paths_for_kernel_name(self, kernel_name: str) -> List[Path]:
         return self.preset_store.find_ir_paths(kernel_name)
 
+    def _resolve_kernel_path(self, kernel: Any) -> Path:
+        """Resolve a convolver kernel stem to exactly one IR file."""
+        stem = Path(str(kernel or "")).stem
+        if not stem:
+            raise ValueError("Convolver kernel name is required")
+        paths = self.preset_store.find_ir_paths(stem)
+        if not paths:
+            raise FileNotFoundError(f"IR file not found: {kernel}")
+        if len(paths) > 1:
+            names = ", ".join(sorted(path.name for path in paths))
+            raise ValueError(
+                f"Ambiguous IR kernel {stem!r}: multiple files match ({names}); "
+                "remove the duplicates")
+        return paths[0]
+
+    @staticmethod
+    def _validate_ir_file(path: Path) -> None:
+        """Ensure an IR file is a non-empty kernel-supported WAV."""
+        try:
+            params = parse_wav_frames(path)
+        except ValueError as exc:
+            raise ValueError(f"Invalid IR file {path.name}: {exc}") from exc
+        try:
+            ensure_kernel_supported_ir(params, path.name)
+        except ValueError as exc:
+            raise ValueError(f"Invalid IR file {path.name}: {exc}") from exc
+
     def upload_ir(self, source_path: Path, filename: str,
                   stored_name: Optional[str] = None) -> dict:
         source = Path(source_path)
@@ -1097,8 +1262,16 @@ class DSPManager:
         name = Path(stored_name or filename).name
         if not name.lower().endswith((".irs", ".wav")):
             raise ValueError("IR file must be .irs or .wav")
+        # Validate before storing so invalid content never lands in irs_dir
+        # and can never reach the native convolver.
+        self._validate_ir_file(source)
         destination = self.irs_dir / name
         shutil.copyfile(source, destination)
+        try:
+            self._validate_ir_file(destination)
+        except ValueError:
+            destination.unlink(missing_ok=True)
+            raise
         return {"name": destination.name, "basename": destination.stem,
                 "path": str(destination), "size": destination.stat().st_size}
 

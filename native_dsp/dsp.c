@@ -146,6 +146,7 @@ static int load_wav(const char *path, unsigned wanted_channel, float **samples, 
     }
     if (!data_offset || !channels || !rate || !wanted_rate || wanted_channel >= channels || !((format == 1 && (bits == 16 || bits == 24 || bits == 32)) || (format == 3 && bits == 32))) goto bad;
     size_t bytes = bits / 8, frames = data_size / (bytes * channels);
+    if (!data_size || !frames) goto bad;
     float *result = calloc(frames, sizeof *result);
     unsigned char raw[4];
     if (!result || fseek(file, data_offset, SEEK_SET)) { free(result); goto bad; }
@@ -220,6 +221,7 @@ static void fft(const fxdsp *d, complex_value *values, int inverse) {
 
 static int prepare_convolution(fxdsp *d, convolution *c, float *taps, size_t count) {
     const size_t fft_size = CONV_BLOCK * 2;
+    if (!taps || !count) return -1;
     c->tap_count = count; c->head_count = count < CONV_BLOCK ? count : CONV_BLOCK;
     c->partition_count = count > CONV_BLOCK ? (count - CONV_BLOCK + CONV_BLOCK - 1) / CONV_BLOCK : 0;
     c->head = calloc(c->head_count, sizeof *c->head); c->head_history = calloc(c->head_count, sizeof *c->head_history);
@@ -248,6 +250,7 @@ static int prepare_convolution(fxdsp *d, convolution *c, float *taps, size_t cou
 
 static float convolve(fxdsp *d, convolution *c, float input) {
     const size_t h = c->head_count;
+    if (!h || !c->win || !c->head_fwd) return 0.0f;
     /* Two-copy linear window: the newest sample is stored at head_pos and
      * head_pos + h, so after the index wrap the last h inputs are
      * win[head_pos .. head_pos + h - 1] in ascending order.  The window sum

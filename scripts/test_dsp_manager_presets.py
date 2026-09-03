@@ -190,7 +190,11 @@ class DSPManagerPresetTests(unittest.TestCase):
 
     def test_convolver_combine_export_and_delete_orphan_ir(self):
         ir = self.manager.irs_dir / "room.irs"
-        ir.write_bytes(b"ir")
+        with wave.open(str(ir), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(48000)
+            handle.writeframes(b"\x00\x00\x00\x00")
         self.manager.create_convolver_preset("Conv", ir.name)
         self.manager.create_peq_preset("EQ", {"params": {"bands": [
             {"filterType": "bell", "frequencyHz": 100, "gainDb": 2, "q": 1}
