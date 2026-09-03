@@ -2075,6 +2075,32 @@ def _auto_sub_anchor_reference_db(anchors: list[float | None]) -> float | None:
     return valid[mid] if len(valid) % 2 == 1 else (valid[mid - 1] + valid[mid]) / 2.0
 
 
+def _auto_sub_alignment_confidence(winner_score: float, runner_up_score: float | None) -> str:
+    """Confidence label from the top-two scores of one normalized set.
+
+    A zero winner is never "clear": a score of 0 means every candidate hit
+    the penalties/clamps, i.e. the set carries no positive evidence, so the
+    relative margin against a zero runner-up is meaningless (it previously
+    defaulted to a 100 % margin and mislabelled the run as ``clear``, which
+    the 2.1 runner treats as an auto-apply signal).
+    """
+    try:
+        winner_score = float(winner_score)
+        runner_up_score = float(runner_up_score) if runner_up_score is not None else None
+    except (TypeError, ValueError):
+        return "uncertain"
+    if not math.isfinite(winner_score) or winner_score <= 0.0:
+        return "uncertain"
+    if runner_up_score is None or not math.isfinite(runner_up_score):
+        return "uncertain"
+    margin = (winner_score - runner_up_score) / winner_score
+    if margin > 0.15:
+        return "clear"
+    if margin > 0.05:
+        return "close"
+    return "uncertain"
+
+
 def _auto_sub_deep_notch_penalty_db(dip_severity_db: float) -> float:
     """Linear deep-notch penalty: 0 at <=7 dB, 0.5 at >=15 dB.
 
@@ -2370,17 +2396,7 @@ def score_sub_alignment_candidates(
     runner_up = results[1] if len(results) > 1 else None
 
     # Confidence
-    if runner_up and winner["score"] > 0:
-        margin = (winner["score"] - runner_up["score"]) / winner["score"]
-    else:
-        margin = 1.0
-
-    if margin > 0.15:
-        confidence = "clear"
-    elif margin > 0.05:
-        confidence = "close"
-    else:
-        confidence = "uncertain"
+    confidence = _auto_sub_alignment_confidence(winner["score"], runner_up["score"] if runner_up else None)
 
     return {
         "winner": winner,

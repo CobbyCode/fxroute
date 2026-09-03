@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import math
@@ -50,6 +51,48 @@ _AUTO_SUB_STAGE_PEAK_MISMATCH_DB = 1.0
 
 # Persisted autosub-job-<id>.json snapshots kept in the measurements jobs dir.
 _AUTO_SUB_SNAPSHOT_KEEP = 40
+
+# Single-slot peak-prediction cache. The prediction is expensive (pure-Python
+# cascaded biquads over the full sweep) and runs once per sweep; consecutive
+# sweeps of a scan share the DSP config, sample rate and sink volume, so the
+# last result is reused when every input that affects the DAC-level peaks is
+# unchanged. Any change of those inputs (alignment, level, polarity, sweep
+# profile, rate, channel, source/sink gain) produces a new key and recomputes.
+# Stored and returned values are deep copies: callers mutate the returned
+# dict (exact-sub-mute peak zeroing) without poisoning the cached entry.
+_AUTO_SUB_PEAK_PREDICTION_CACHE_KEY: tuple | None = None
+_AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT: dict[str, Any] | None = None
+
+
+def _auto_sub_peak_prediction_cache_key(
+    *,
+    sweep_profile: dict[str, Any],
+    sample_rate: int,
+    channel: str,
+    config: BassManagementConfig,
+    playback_gain: float,
+    sink_gain: float,
+) -> tuple:
+    """Immutable key over every input the prediction reads."""
+    return (
+        round(float(sweep_profile["sweep_start_hz"]), 6),
+        round(float(sweep_profile["sweep_end_hz"]), 6),
+        round(float(sweep_profile["sweep_seconds"]), 6),
+        int(sample_rate),
+        str(channel),
+        int(config.crossover_frequency_hz),
+        bool(config.main_highpass_enabled),
+        round(float(config.derived_main_delay_ms), 4),
+        str(config.bass_routing),
+        round(float(config.derived_sub1_delay_ms), 4),
+        round(float(config.derived_sub2_delay_ms), 4),
+        round(float(config.sub_level_db), 4),
+        round(float(config.sub2_level_db), 4),
+        str(config.sub_polarity),
+        str(config.sub2_polarity),
+        round(float(playback_gain), 8),
+        round(float(sink_gain), 8),
+    )
 
 
 def _capture_auto_sub_playback_gain() -> dict[str, Any]:
@@ -172,6 +215,27 @@ def _auto_sub_stage_peak_prediction(
     """
     rate = int(sample_rate)
     duration = float(sweep_profile["sweep_seconds"])
+    try:
+        source_gain = float(playback_gain)
+        sink_linear = float(sink_gain)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("playback_gain and sink_gain must be finite non-negative numbers") from exc
+    if not math.isfinite(source_gain) or source_gain < 0.0:
+        raise ValueError("playback_gain must be a finite non-negative number")
+    if not math.isfinite(sink_linear) or sink_linear < 0.0:
+        raise ValueError("sink_gain must be a finite non-negative number")
+    global _AUTO_SUB_PEAK_PREDICTION_CACHE_KEY, _AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT
+    cache_key = _auto_sub_peak_prediction_cache_key(
+        sweep_profile=sweep_profile,
+        sample_rate=sample_rate,
+        channel=channel,
+        config=config,
+        playback_gain=source_gain,
+        sink_gain=sink_linear,
+    )
+    if _AUTO_SUB_PEAK_PREDICTION_CACHE_KEY == cache_key and _AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT is not None:
+        return copy.deepcopy(_AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT)
+    # Only a cache miss pays for synthesizing the sweep PCM and filtering it.
     count = max(2048, int(round(rate * duration)))
     t = np.arange(count, dtype=np.float64) / rate
     start_hz = float(sweep_profile["sweep_start_hz"])
@@ -184,15 +248,6 @@ def _auto_sub_stage_peak_prediction(
         sweep[:fade_len] *= np.linspace(0.0, 1.0, fade_len)
         sweep[-fade_len:] *= np.linspace(1.0, 0.0, fade_len)
     sweep *= 0.8 / max(float(np.max(np.abs(sweep))), 1e-12)
-    try:
-        source_gain = float(playback_gain)
-        sink_linear = float(sink_gain)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("playback_gain and sink_gain must be finite non-negative numbers") from exc
-    if not math.isfinite(source_gain) or source_gain < 0.0:
-        raise ValueError("playback_gain must be a finite non-negative number")
-    if not math.isfinite(sink_linear) or sink_linear < 0.0:
-        raise ValueError("sink_gain must be a finite non-negative number")
     sweep *= source_gain * sink_linear
     zeros = np.zeros_like(sweep)
     left = sweep if channel in ("left", "stereo") else zeros
@@ -248,7 +303,7 @@ def _auto_sub_stage_peak_prediction(
         for index, signal in enumerate((main_l, main_r, sub1, sub2))
     }
     peak_dbfs = {key: round(20.0 * math.log10(max(value, 1e-12)), 3) for key, value in peaks.items()}
-    return {
+    result = {
         "linear": peaks,
         "dbfs": peak_dbfs,
         "maximum_dbfs": max(peak_dbfs.values()),
@@ -257,6 +312,37 @@ def _auto_sub_stage_peak_prediction(
         "playback_gain": source_gain,
         "sink_gain": sink_linear,
     }
+    _AUTO_SUB_PEAK_PREDICTION_CACHE_KEY = cache_key
+    _AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT = copy.deepcopy(result)
+    return result
+
+async def _predict_auto_sub_stage_peaks(
+    *,
+    sweep_profile: dict[str, Any],
+    sample_rate: int,
+    channel: str,
+    config: BassManagementConfig,
+    playback_gain: float = 1.0,
+    sink_gain: float = 1.0,
+) -> dict[str, Any]:
+    """Run the peak prediction off the event loop.
+
+    The prediction filters the full sweep PCM through four cascaded Python
+    biquads (seconds of CPU per call); on the event loop it would freeze every
+    HTTP handler (job poll, cancel, heartbeat) and the background measurement
+    jobs for the duration. It runs in the default executor instead; the
+    single-slot cache inside the sync function still skips repeated sweeps
+    whose DSP state, sample rate and sink volume are unchanged.
+    """
+    return await asyncio.to_thread(
+        _auto_sub_stage_peak_prediction,
+        sweep_profile=sweep_profile,
+        sample_rate=sample_rate,
+        channel=channel,
+        config=config,
+        playback_gain=playback_gain,
+        sink_gain=sink_gain,
+    )
 
 def _auto_sub_stage_peak_comparison(
     predicted: dict[str, Any], measured_linear: dict[str, float],

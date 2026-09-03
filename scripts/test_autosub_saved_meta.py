@@ -146,6 +146,31 @@ class AutoSubMeasurementEmbedTests(unittest.TestCase):
         calibrated_db = 10.0 + 12.0
         self.assertEqual(calibrated_db - trace["display_offset_db"], trace["points"][0][1])
 
+    def test_measurement_from_sweep_right_only_does_not_crash(self) -> None:
+        # A left capture failure yields a legal right-only candidate that the
+        # single-channel fallback can still score. Building the display
+        # measurement for it must not index a non-existent second trace
+        # (former ``right_trace_index = 1 if traces else 0`` raised
+        # IndexError and failed the whole run after the winner was applied).
+        measurement = _auto_sub_measurement_from_sweep(
+            {
+                "points_left": [],
+                "points_right": [[20, -10.0], [100, -8.0], [20000, -6.0]],
+                "normalized_by_db_left": 20.0,
+                "normalized_by_db_right": 20.0,
+                "display_anchor_shift_db_right": -1.5,
+            },
+            "After",
+            "AutoSub After (0.8 ms)",
+            offset_db=-7.5,
+        )
+        traces = measurement["traces"]
+        self.assertEqual(len(traces), 1)
+        self.assertEqual(traces[0]["role"], "right")
+        self.assertEqual(traces[0]["points"][0][1], -2.5)
+        # display_offset_db = normalized_by_db - anchor_shift + shared offset
+        self.assertEqual(traces[0]["display_offset_db"], 20.0 - (-1.5) + (-7.5))
+
 
 class AutoSubMeasurementPersistenceTests(unittest.TestCase):
     def test_save_reload_preserves_exact_target_display_metadata(self) -> None:

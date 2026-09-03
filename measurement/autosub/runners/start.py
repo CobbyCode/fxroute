@@ -135,6 +135,23 @@ async def start_auto_sub_optimize(
         original_config_snapshot = _auto_sub_snapshot_copy(mode_state)
         target_curve, target_curve_error = _validate_auto_sub_target_curve_snapshot(target_curve_snapshot)
 
+        # Read and validate the calibration upload before the job is
+        # registered in _AUTO_SUB_JOBS: a rejection here must not leave an
+        # orphaned "preparing" job behind (no worker is started and the
+        # 600 s cleanup only ever runs from the worker finalizer).
+        calibration_bytes = None
+        calibration_filename = None
+        if calibration_file is not None:
+            calibration_filename = calibration_file.filename or "calibration.txt"
+            content_type = str(calibration_file.content_type or "").lower()
+            if "text" not in content_type and "plain" not in content_type and content_type not in ("", "application/octet-stream"):
+                raise HTTPException(status_code=400, detail="Calibration file must be a text file")
+            try:
+                raw_bytes = await read_upload(calibration_file, _AUTO_SUB_MAX_CALIBRATION_BYTES)
+            except UploadTooLargeError:
+                raise HTTPException(status_code=400, detail=f"Calibration file too large (max {_AUTO_SUB_MAX_CALIBRATION_BYTES // (1024*1024)} MiB)")
+            calibration_bytes = raw_bytes
+
         job_id = f"auto-sub-{uuid4().hex[:12]}"
         job: dict[str, Any] = {
             "id": job_id,
@@ -175,19 +192,6 @@ async def start_auto_sub_optimize(
             json.dumps(job["auto_gain"], sort_keys=True, separators=(",", ":")),
             json.dumps(auto_sub_playback_gain, sort_keys=True, separators=(",", ":")),
         )
-
-        calibration_bytes = None
-        calibration_filename = None
-        if calibration_file is not None:
-            calibration_filename = calibration_file.filename or "calibration.txt"
-            content_type = str(calibration_file.content_type or "").lower()
-            if "text" not in content_type and "plain" not in content_type and content_type not in ("", "application/octet-stream"):
-                raise HTTPException(status_code=400, detail="Calibration file must be a text file")
-            try:
-                raw_bytes = await read_upload(calibration_file, _AUTO_SUB_MAX_CALIBRATION_BYTES)
-            except UploadTooLargeError:
-                raise HTTPException(status_code=400, detail=f"Calibration file too large (max {_AUTO_SUB_MAX_CALIBRATION_BYTES // (1024*1024)} MiB)")
-            calibration_bytes = raw_bytes
 
         if output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO:
             fine_step_ms = step_ms / 4.0

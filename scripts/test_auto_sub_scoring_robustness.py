@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from measurement.store import (
+    _auto_sub_alignment_confidence,
     _auto_sub_band_mean_power_db,
     _auto_sub_deep_notch_penalty_db,
     auto_sub_chain_anchor_db,
@@ -409,6 +410,44 @@ class NonFinitePointTests(unittest.TestCase):
             _auto_sub_band_mean_power_db(poisoned, 200.0, 640.0),
             _auto_sub_band_mean_power_db(clean, 200.0, 640.0),
         )
+
+
+class ScorerConfidenceTests(unittest.TestCase):
+    """Zero-score winners must never be labelled "clear".
+
+    The old margin code defaulted to a 100 % margin when the winner scored 0,
+    which reads as "clear" even though every candidate hit the penalties and
+    the set carries no positive evidence; the 2.1 runner treats "clear" as an
+    auto-apply signal.
+    """
+
+    def test_zero_winner_is_uncertain(self) -> None:
+        self.assertEqual(_auto_sub_alignment_confidence(0.0, 0.0), "uncertain")
+        self.assertEqual(_auto_sub_alignment_confidence(0.0, None), "uncertain")
+
+    def test_positive_margins_are_unchanged(self) -> None:
+        self.assertEqual(_auto_sub_alignment_confidence(1.0, 0.80), "clear")
+        self.assertEqual(_auto_sub_alignment_confidence(1.0, 0.90), "close")
+        self.assertEqual(_auto_sub_alignment_confidence(1.0, 0.97), "uncertain")
+
+    def test_non_finite_inputs_are_uncertain(self) -> None:
+        self.assertEqual(_auto_sub_alignment_confidence(float("nan"), 0.5), "uncertain")
+        self.assertEqual(_auto_sub_alignment_confidence(float("inf"), 0.5), "uncertain")
+
+    def test_scorer_identical_shapes_tie_as_uncertain(self) -> None:
+        candidates = [
+            {"delay_ms": 0.0, "points": flat_points(50.0)},
+            {"delay_ms": 0.78, "points": flat_points(50.0)},
+        ]
+        scoring = score_sub_alignment_candidates(candidates, crossover_hz=FC)
+        self.assertEqual(scoring["confidence"], "uncertain")
+
+    def test_scorer_clear_winner_keeps_clear_confidence(self) -> None:
+        clean = {"delay_ms": 0.0, "points": flat_points(50.0)}
+        notched = {"delay_ms": 0.78, "points": notch_points(50.0, 80.0, 30.0)}
+        scoring = score_sub_alignment_candidates([clean, notched], crossover_hz=FC)
+        self.assertEqual(round(float(scoring["winner"]["delay_ms"]), 2), 0.0)
+        self.assertEqual(scoring["confidence"], "clear")
 
 
 if __name__ == "__main__":

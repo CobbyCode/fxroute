@@ -45,7 +45,7 @@ from .jobs import (
     _append_auto_sub_sweep_timing,
     _auto_sub_job_playback_gain,
     _auto_sub_stage_peak_comparison,
-    _auto_sub_stage_peak_prediction,
+    _predict_auto_sub_stage_peaks,
     auto_sub_sink_gain_from_master_percent,
     AutoSubPeakSafetyError,
     AutoSubChainHealthError,
@@ -427,13 +427,14 @@ async def _measure_auto_sub_candidate(
     # clamp_upper=False keeps an externally raised >100% master from being
     # under-estimated by the safety check.
     sink_gain = auto_sub_sink_gain_from_master_percent(master_percent, clamp_upper=False)
-    stage_peak_prediction = _auto_sub_stage_peak_prediction(
+    peak_config = BassManagementConfig.from_overview(
+        await asyncio.to_thread(get_audio_output_overview),
+    )
+    stage_peak_prediction = await _predict_auto_sub_stage_peaks(
         sweep_profile=auto_sub_sweep_profile,
         sample_rate=auto_sub_rate,
         channel=channel,
-        config=BassManagementConfig.from_overview(
-            await asyncio.to_thread(get_audio_output_overview),
-        ),
+        config=peak_config,
         playback_gain=playback_gain,
         sink_gain=sink_gain,
     )

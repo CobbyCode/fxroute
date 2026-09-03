@@ -338,17 +338,29 @@ def _auto_sub_measurement_from_sweep(
     # display_offset_db = normalized_by_db - anchor_shift + shared_offset_db.
     # Scoring places the target at (target + tvo) in calibrated coordinates,
     # so the frontend draws it at target + tvo - display_offset_db.
+    def _trace_index(role: str) -> int | None:
+        for index, trace in enumerate(traces):
+            if trace.get("role") == role:
+                return index
+        return None
+
     left_nb = sweep_result.get("normalized_by_db_left")
     right_nb = sweep_result.get("normalized_by_db_right")
     left_shift = sweep_result.get("display_anchor_shift_db_left") or 0.0
     right_shift = sweep_result.get("display_anchor_shift_db_right") or 0.0
     if isinstance(left_nb, (int, float)) and len(left_points) >= 3:
-        traces[0]["display_offset_db"] = _auto_sub_display_offset_db(left_nb, left_shift, offset_db)
+        index = _trace_index("left")
+        if index is not None:
+            traces[index]["display_offset_db"] = _auto_sub_display_offset_db(left_nb, left_shift, offset_db)
     if isinstance(right_nb, (int, float)) and len(right_points) >= 3:
-        right_trace_index = 1 if traces else 0
-        traces[right_trace_index]["display_offset_db"] = _auto_sub_display_offset_db(
-            right_nb, right_shift, offset_db,
-        )
+        # Locate the right trace by role: a right-only sweep (left capture
+        # failed) holds a single trace at index 0, and the former positional
+        # ``1 if traces else 0`` guess raised IndexError there.
+        index = _trace_index("right")
+        if index is not None:
+            traces[index]["display_offset_db"] = _auto_sub_display_offset_db(
+                right_nb, right_shift, offset_db,
+            )
     return result
 
 def _auto_sub_select_accepted_winner(
