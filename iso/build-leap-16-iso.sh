@@ -9,9 +9,6 @@ BASE_URL="https://download.opensuse.org/distribution/leap/16.0/offline/Leap-16.0
 BASE_SHA512="94411793a1878b3558211c8bbe4f3823c3c5212cc2dd9f9e4532a18be7eddd3be14db5a3bb47a2f36dd957e190ea706cd45af16bce218dfc00f71e64a8469971"
 BASE_ISO="${FXROUTE_BASE_ISO:-${XDG_CACHE_HOME:-$HOME/.cache}/fxroute/Leap-16.0-offline-installer-x86_64.install.iso}"
 OUTPUT="${FXROUTE_ISO_OUTPUT:-$ROOT_DIR/dist/fxroute-leap-16-x86_64.iso}"
-PASSWORD_HASH="${FXROUTE_PASSWORD_HASH:-}"
-SSH_PUBLIC_KEY="${FXROUTE_SSH_PUBLIC_KEY:-}"
-SSH_PUBLIC_KEY_FILE=""
 KEEP_WORK=0
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
 
@@ -21,17 +18,15 @@ Usage: $0 [options]
 
 Build a bootable openSUSE Leap 16 x86_64 ISO with the FXRoute profiles.
 
+The profiles contain no user passwords or SSH keys. The account, the
+network/WLAN setup, the target disk, and locale/keyboard/timezone are
+chosen interactively in Agama; the ISO itself ships no credentials.
+
 Options:
   --base-iso PATH          Use PATH instead of the cached/downloaded Leap ISO
   --output PATH            Write the resulting ISO to PATH
-  --password-hash HASH     SHA-512 crypt hash for the fxroute user
-  --ssh-public-key-file P  Install P as the root SSH public key
   --keep-work              Keep the temporary media staging directory
   -h, --help               Show this help
-
-The same values can be supplied with FXROUTE_PASSWORD_HASH and
-FXROUTE_SSH_PUBLIC_KEY. The password hash and public key are rendered only
-into the generated ISO and are never written to the repository.
 EOF
 }
 
@@ -52,16 +47,6 @@ while [[ $# -gt 0 ]]; do
       OUTPUT="$2"
       shift 2
       ;;
-    --password-hash)
-      [[ $# -ge 2 ]] || die "--password-hash requires a value"
-      PASSWORD_HASH="$2"
-      shift 2
-      ;;
-    --ssh-public-key-file)
-      [[ $# -ge 2 ]] || die "--ssh-public-key-file requires a path"
-      SSH_PUBLIC_KEY_FILE="$2"
-      shift 2
-      ;;
     --keep-work)
       KEEP_WORK=1
       shift
@@ -75,20 +60,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-if [[ -n "$SSH_PUBLIC_KEY_FILE" ]]; then
-  [[ -f "$SSH_PUBLIC_KEY_FILE" ]] || die "SSH public key file does not exist: $SSH_PUBLIC_KEY_FILE"
-  SSH_PUBLIC_KEY="$(<"$SSH_PUBLIC_KEY_FILE")"
-  SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY%$'\n'}"
-  SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY%$'\r'}"
-fi
-
-[[ "$PASSWORD_HASH" =~ ^\$6\$[A-Za-z0-9./]+\$[A-Za-z0-9./]+$ ]] \
-  || die "Provide FXROUTE_PASSWORD_HASH as a SHA-512 crypt value (for example from openssl passwd -6)"
-[[ "$SSH_PUBLIC_KEY" != *$'\n'* ]] \
-  || die "The SSH public key must be one line"
-[[ "$SSH_PUBLIC_KEY" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521))[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$ ]] \
-  || die "Provide a supported OpenSSH public key in FXROUTE_SSH_PUBLIC_KEY"
 
 command -v git >/dev/null 2>&1 || die "git is required to create the source archive"
 command -v tar >/dev/null 2>&1 || die "tar is required to create the source archive"
@@ -232,25 +203,25 @@ git -C "$ROOT_DIR" rev-parse HEAD > "$STAGE_DIR/fxroute/build-commit"
 cp -- "$ROOT_DIR/iso/scripts/first-boot-install.sh" "$STAGE_DIR/fxroute/scripts/first-boot-install.sh"
 chmod 755 "$STAGE_DIR/fxroute/scripts/first-boot-install.sh"
 
-render_profile() {
+stage_profile() {
   local template="$1"
   local output="$2"
-  python3 - "$template" "$output" "$PASSWORD_HASH" "$SSH_PUBLIC_KEY" <<'PY'
+  python3 - "$template" "$output" <<'PY'
 import json
 import pathlib
 import sys
 
-template, output, password_hash, ssh_public_key = sys.argv[1:]
+template, output = sys.argv[1:]
 text = pathlib.Path(template).read_text()
-text = text.replace("__FXROUTE_PASSWORD_HASH__", json.dumps(password_hash)[1:-1])
-text = text.replace("__FXROUTE_SSH_PUBLIC_KEY__", json.dumps(ssh_public_key)[1:-1])
+if "__FXROUTE_PASSWORD_HASH__" in text or "__FXROUTE_SSH_PUBLIC_KEY__" in text:
+    raise SystemExit("profile must not contain credential placeholders")
 json.loads(text)
 pathlib.Path(output).write_text(text)
 PY
 }
 
-render_profile "$ROOT_DIR/iso/profiles/headless.jsonnet" "$STAGE_DIR/fxroute/profiles/headless.jsonnet"
-render_profile "$ROOT_DIR/iso/profiles/desktop.jsonnet" "$STAGE_DIR/fxroute/profiles/desktop.jsonnet"
+stage_profile "$ROOT_DIR/iso/profiles/headless.jsonnet" "$STAGE_DIR/fxroute/profiles/headless.jsonnet"
+stage_profile "$ROOT_DIR/iso/profiles/desktop.jsonnet" "$STAGE_DIR/fxroute/profiles/desktop.jsonnet"
 
 HEADLESS_ISO="$WORK_DIR/headless.iso"
 FINAL_ISO="$WORK_DIR/fxroute-leap-16-x86_64.iso"
@@ -268,7 +239,7 @@ printf '[iso] adding FXRoute Headless boot entry\n'
   "${mkmedia_args[@]}" \
   --create "$HEADLESS_ISO" \
   --add-entry "FXRoute Headless" \
-  --boot "inst.auto=device:/fxroute/profiles/headless.jsonnet inst.install=1 inst.finish=reboot" \
+  --boot "inst.auto=device:/fxroute/profiles/headless.jsonnet inst.install=0 inst.finish=reboot" \
   "$BASE_ISO" "$STAGE_DIR"
 
 printf '[iso] adding FXRoute Desktop boot entry\n'
@@ -276,7 +247,7 @@ printf '[iso] adding FXRoute Desktop boot entry\n'
   "${mkmedia_args[@]}" \
   --create "$FINAL_ISO" \
   --add-entry "FXRoute Desktop" \
-  --boot "inst.auto=device:/fxroute/profiles/desktop.jsonnet inst.install=1 inst.finish=reboot" \
+  --boot "inst.auto=device:/fxroute/profiles/desktop.jsonnet inst.install=0 inst.finish=reboot" \
   "$HEADLESS_ISO" "$STAGE_DIR"
 
 isoinfo -i "$FINAL_ISO" -R -x /boot/grub2/grub.cfg > "$WORK_DIR/final-grub.cfg"

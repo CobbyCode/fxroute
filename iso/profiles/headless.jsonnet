@@ -5,32 +5,6 @@
   "hostname": {
     "static": "fxroute"
   },
-  "localization": {
-    "language": "en_US.UTF-8",
-    "keyboard": "us",
-    "timezone": "Europe/Berlin"
-  },
-  "user": {
-    "fullName": "FXRoute",
-    "userName": "fxroute",
-    "password": "__FXROUTE_PASSWORD_HASH__",
-    "hashedPassword": true
-  },
-  "root": {
-    "sshPublicKey": "__FXROUTE_SSH_PUBLIC_KEY__"
-  },
-  "network": {
-    "connections": [
-      {
-        "id": "FXRoute Ethernet",
-        "method4": "auto",
-        "method6": "auto",
-        "status": "up",
-        "autoconnect": true,
-        "persistent": true
-      }
-    ]
-  },
   "storage": {
     "drives": [
       {
@@ -62,14 +36,9 @@
     "timeout": 3
   },
   "questions": {
-    "policy": "auto"
+    "policy": "user"
   },
   "files": [
-    {
-      "content": "PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin prohibit-password\n",
-      "destination": "/etc/ssh/sshd_config.d/90-fxroute-iso.conf",
-      "permissions": "0644"
-    },
     {
       "url": "device:/fxroute/source.tar",
       "destination": "/opt/fxroute-iso-source.tar",

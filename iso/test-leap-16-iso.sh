@@ -12,19 +12,47 @@ SSH_KEY="${FXROUTE_SSH_KEY:-$HOME/.ssh/id_ed25519_vm}"
 VM_RAM="${FXROUTE_VM_RAM:-4096}"
 VM_CPUS="${FXROUTE_VM_CPUS:-4}"
 VM_DISK_GB="${FXROUTE_VM_DISK_GB:-40}"
+VM_EXTRA_DISK_GB="${FXROUTE_VM_EXTRA_DISK_GB:-5}"
 TIMEOUT_SECONDS="${FXROUTE_ISO_TEST_TIMEOUT:-5400}"
 KEEP_TEST_ROOT="${FXROUTE_KEEP_ISO_TEST:-0}"
+AGAMA_USER="${FXROUTE_ISO_USER:-fxroute}"
+AGAMA_USER_PASSWORD="${FXROUTE_ISO_USER_PASSWORD:-}"
+AGAMA_LIVE_PASSWORD="${FXROUTE_ISO_LIVE_PASSWORD:-}"
+AGAMA_LOCALE="${FXROUTE_ISO_LOCALE:-en_US.UTF-8}"
+AGAMA_KEYMAP="${FXROUTE_ISO_KEYMAP:-us}"
+AGAMA_TIMEZONE="${FXROUTE_ISO_TIMEZONE:-Europe/Berlin}"
 
 usage() {
   cat <<EOF
 Usage: $0 [all|headless|desktop] [ISO]
 
-Boot a fresh QEMU/KVM guest for each selected profile and verify the
-installed FXRoute service, DSP setup, and desktop selection.
+Boot a fresh QEMU/KVM guest for each selected profile, drive the
+interactive Agama decisions through the Agama API (account/password and
+SSH key, locale/keyboard/timezone, explicit target-disk selection,
+install start), and verify the installed FXRoute service, DSP setup, and
+desktop selection.
 
-The guest root account must have the public key used to build the ISO. Set
-FXROUTE_SSH_KEY to the matching private key. Test disks and logs are stored
-under FXROUTE_ISO_TEST_DIR (default: dist/iso-test).
+The installer live password must be known for API access: append
+live.password=... to the boot entry for automated runs, or read the
+generated password from the installer console for manual runs, and pass
+it as FXROUTE_ISO_LIVE_PASSWORD. The account password created in Agama
+comes from FXROUTE_ISO_USER_PASSWORD. The Agama web ports are forwarded
+to the host so the same decisions can also be made manually in a browser
+via https://agama.local or the forwarded ports.
+
+Environment:
+  FXROUTE_SSH_KEY            Private key whose public counterpart is
+                             registered for the Agama account (SSH access
+                             to the installed system as that user)
+  FXROUTE_ISO_USER           Account name created in Agama (default: fxroute)
+  FXROUTE_ISO_USER_PASSWORD  Account password created in Agama (required)
+  FXROUTE_ISO_LIVE_PASSWORD  Installer live password for the Agama API (required)
+  FXROUTE_ISO_LOCALE         Locale selected in Agama (default: en_US.UTF-8)
+  FXROUTE_ISO_KEYMAP         Keymap selected in Agama (default: us)
+  FXROUTE_ISO_TIMEZONE       Timezone selected in Agama (default: Europe/Berlin)
+
+Test disks and logs are stored under FXROUTE_ISO_TEST_DIR
+(default: dist/iso-test).
 EOF
 }
 
@@ -46,7 +74,13 @@ command -v qemu-system-x86_64 >/dev/null 2>&1 || die "qemu-system-x86_64 is requ
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v ssh >/dev/null 2>&1 || die "ssh is required"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
+command -v agama >/dev/null 2>&1 || die "agama is required for the interactive setup phase"
 [[ -f "$SSH_KEY" ]] || die "SSH private key not found: $SSH_KEY"
+[[ -n "$AGAMA_USER_PASSWORD" ]] || die "FXROUTE_ISO_USER_PASSWORD is required (account password created in Agama)"
+[[ -n "$AGAMA_LIVE_PASSWORD" ]] || die "FXROUTE_ISO_LIVE_PASSWORD is required (installer live password for the Agama API)"
+[[ "$AGAMA_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "FXROUTE_ISO_USER must be a valid Unix username"
+SSH_PUBLIC_KEY="$(ssh-keygen -y -f "$SSH_KEY")"
+[[ "$SSH_PUBLIC_KEY" != *$'\n'* ]] || die "Could not derive a single-line public key from $SSH_KEY"
 
 if [[ -e "$TEST_ROOT" ]]; then
   die "Test root already exists; remove it before rerunning: $TEST_ROOT"
@@ -114,6 +148,20 @@ ssh_port_for_profile() {
   esac
 }
 
+agama_https_port_for_profile() {
+  case "$1" in
+    headless) printf '%s\n' "${FXROUTE_ISO_TEST_HEADLESS_AGAMA_HTTPS_PORT:-$(find_free_port)}" ;;
+    desktop) printf '%s\n' "${FXROUTE_ISO_TEST_DESKTOP_AGAMA_HTTPS_PORT:-$(find_free_port)}" ;;
+  esac
+}
+
+agama_http_port_for_profile() {
+  case "$1" in
+    headless) printf '%s\n' "${FXROUTE_ISO_TEST_HEADLESS_AGAMA_HTTP_PORT:-$(find_free_port)}" ;;
+    desktop) printf '%s\n' "${FXROUTE_ISO_TEST_DESKTOP_AGAMA_HTTP_PORT:-$(find_free_port)}" ;;
+  esac
+}
+
 select_boot_entry() {
   local profile="$1"
   local monitor="$2"
@@ -133,6 +181,8 @@ select_boot_entry() {
     sleep 1
   done
   [[ -S "$monitor" ]] || die "QEMU monitor did not start for $profile"
+  FXROUTE_ISO_KERNEL_EXTRA="${FXROUTE_ISO_KERNEL_EXTRA:-}" \
+  FXROUTE_ISO_GRUB_LINUX_DOWNS="${FXROUTE_ISO_GRUB_LINUX_DOWNS:-2}" \
   python3 - "$monitor" "$down_count" <<'PY'
 import os
 from pathlib import Path
@@ -142,6 +192,8 @@ import tempfile
 import time
 
 monitor, down_count = sys.argv[1:]
+kernel_extra = os.environ.get("FXROUTE_ISO_KERNEL_EXTRA", "")
+linux_downs = int(os.environ.get("FXROUTE_ISO_GRUB_LINUX_DOWNS", "2"))
 screen_fd, screen_name = tempfile.mkstemp(
     prefix="fxroute-iso-grub-", suffix=".ppm"
 )
@@ -172,6 +224,34 @@ def monitor_command(command):
 def hmp_quote_path(path):
     value = str(path).replace("\\", "\\\\").replace('"', '\\"')
     return f'"{value}"'
+
+
+KEY_NAMES = {
+    " ": "spc",
+    "-": "minus",
+    "=": "equal",
+    ".": "dot",
+    "/": "slash",
+    ",": "comma",
+}
+
+
+def sendkey(key):
+    monitor_command(f"sendkey {key}")
+
+
+def type_text(value):
+    for char in value:
+        if char.isascii() and char.isalnum():
+            if char.isupper():
+                monitor_command(f"sendkey shift-{char.lower()}")
+            else:
+                sendkey(char.lower())
+        elif char in KEY_NAMES:
+            sendkey(KEY_NAMES[char])
+        else:
+            raise SystemExit(f"unsupported kernel-extra character: {char!r}")
+        time.sleep(0.02)
 
 
 def grub_menu_ready(path):
@@ -231,7 +311,22 @@ try:
                 monitor_command("sendkey home")
                 for _ in range(int(down_count)):
                     monitor_command("sendkey down")
-                monitor_command("sendkey ret")
+                if kernel_extra:
+                    # Edit the entry to append test-only kernel options
+                    # (for example live.password=... for Agama API access).
+                    sendkey("e")
+                    time.sleep(1.0)
+                    for _ in range(linux_downs):
+                        sendkey("down")
+                        time.sleep(0.1)
+                    sendkey("end")
+                    time.sleep(0.1)
+                    sendkey("spc")
+                    type_text(kernel_extra)
+                    time.sleep(0.2)
+                    monitor_command("sendkey ctrl-x")
+                else:
+                    monitor_command("sendkey ret")
                 raise SystemExit(0)
             time.sleep(0.05)
         time.sleep(0.2)
@@ -245,6 +340,104 @@ finally:
 PY
 }
 
+agama_cli() {
+  local agama_port="$1"
+  shift
+  agama --host "https://127.0.0.1:$agama_port" --insecure "$@"
+}
+
+setup_agama_interactive() {
+  local profile="$1"
+  local agama_port="$2"
+  local pid="$3"
+  local started=$SECONDS
+  local setup_file="$TEST_ROOT/$profile-agama-setup.json"
+  local storage_file="$TEST_ROOT/$profile-agama-storage.json"
+
+  printf '[iso-test] waiting for the %s Agama API\n' "$profile"
+  while (( SECONDS - started < 900 )); do
+    kill -0 "$pid" 2>/dev/null || {
+      printf '[iso-test] QEMU exited while waiting for the %s Agama API\n' "$profile" >&2
+      return 1
+    }
+    if curl --insecure --fail --silent --connect-timeout 3 --max-time 10 \
+        "https://127.0.0.1:$agama_port/" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 5
+  done
+  (( SECONDS - started < 900 )) || {
+    printf '[iso-test] timeout waiting for the %s Agama API\n' "$profile" >&2
+    return 1
+  }
+
+  printf '[iso-test] logging in to the %s Agama API\n' "$profile"
+  printf '%s' "$AGAMA_LIVE_PASSWORD" | agama_cli "$agama_port" auth login >/dev/null
+
+  # Account/password and locale/keyboard/timezone are the interactive
+  # decisions; the release image ships no credentials of its own.
+  AGAMA_USER="$AGAMA_USER" AGAMA_USER_PASSWORD="$AGAMA_USER_PASSWORD" \
+    SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" AGAMA_LOCALE="$AGAMA_LOCALE" \
+    AGAMA_KEYMAP="$AGAMA_KEYMAP" AGAMA_TIMEZONE="$AGAMA_TIMEZONE" \
+    python3 - "$setup_file" <<'PY'
+import json
+import os
+import sys
+
+config = {
+    "user": {
+        "fullName": "FXRoute",
+        "userName": os.environ["AGAMA_USER"],
+        "password": os.environ["AGAMA_USER_PASSWORD"],
+        "sshPublicKey": os.environ["SSH_PUBLIC_KEY"],
+    },
+    "l10n": {
+        "locale": os.environ["AGAMA_LOCALE"],
+        "keymap": os.environ["AGAMA_KEYMAP"],
+        "timezone": os.environ["AGAMA_TIMEZONE"],
+    },
+}
+with open(sys.argv[1], "w") as handle:
+    json.dump(config, handle)
+PY
+  agama_cli "$agama_port" config load "$setup_file"
+
+  # Explicit target-disk selection: a small decoy disk is attached besides
+  # the main disk, so the proposal must name the large disk. Never wipe a
+  # disk without this explicit selection.
+  python3 - <<PY
+import json
+
+storage = {
+    "storage": {
+        "drives": [
+            {
+                "search": {
+                    "condition": {"size": {"greater": "30 GiB"}},
+                    "max": 1,
+                },
+                "partitions": [{"generate": "default"}],
+            }
+        ]
+    }
+}
+with open("$storage_file", "w") as handle:
+    json.dump(storage, handle)
+PY
+  agama_cli "$agama_port" config load "$storage_file"
+  agama_cli "$agama_port" config show > "$TEST_ROOT/$profile-agama-proposal.json"
+  python3 - "$TEST_ROOT/$profile-agama-proposal.json" <<'PY'
+import json
+import sys
+
+proposal = json.load(open(sys.argv[1]))
+text = json.dumps(proposal)
+assert "boot" in text, "storage proposal is missing the boot drive"
+PY
+  printf '[iso-test] starting the %s installation (explicit confirmation)\n' "$profile"
+  agama_cli "$agama_port" install
+}
+
 ssh_guest() {
   local ssh_port="$1"
   shift
@@ -255,7 +448,13 @@ ssh_guest() {
     -o ServerAliveCountMax=1 \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-    -p "$ssh_port" root@127.0.0.1 "$@"
+    -p "$ssh_port" "$AGAMA_USER@127.0.0.1" "$@"
+}
+
+sudo_guest() {
+  local ssh_port="$1"
+  shift
+  printf '%s' "$AGAMA_USER_PASSWORD" | ssh_guest "$ssh_port" sudo -S -- "$@"
 }
 
 stop_guest() {
@@ -263,7 +462,7 @@ stop_guest() {
   local pid="$2"
   local ssh_port="$3"
 
-  ssh_guest "$ssh_port" systemctl poweroff >/dev/null 2>&1 || true
+  sudo_guest "$ssh_port" systemctl poweroff >/dev/null 2>&1 || true
   for _ in $(seq 1 30); do
     kill -0 "$pid" 2>/dev/null || return 0
     sleep 1
@@ -289,8 +488,8 @@ wait_for_guest() {
     fi
     if ssh_guest "$ssh_port" test -f /var/lib/fxroute-iso/install-failed >/dev/null 2>&1; then
       printf '[iso-test] %s first-boot setup failed\n' "$profile" >&2
-      ssh_guest "$ssh_port" cat /var/lib/fxroute-iso/install-failed >&2 || true
-      ssh_guest "$ssh_port" systemctl status fxroute-first-boot.service --no-pager -l >&2 || true
+      sudo_guest "$ssh_port" cat /var/lib/fxroute-iso/install-failed >&2 || true
+      sudo_guest "$ssh_port" systemctl status fxroute-first-boot.service --no-pager -l >&2 || true
       return 1
     fi
     if ssh_guest "$ssh_port" test -f /var/lib/fxroute-iso/install-complete >/dev/null 2>&1; then
@@ -308,18 +507,17 @@ wait_for_guest() {
   return 1
 }
 
-verify_ssh_hardening() {
+verify_ssh_defaults() {
   local ssh_port="$1"
-  ssh_guest "$ssh_port" bash -s <<'EOF'
+  sudo_guest "$ssh_port" bash -s <<'EOF'
 set -Eeuo pipefail
-sshd_config=/etc/ssh/sshd_config.d/90-fxroute-iso.conf
-test -f "$sshd_config"
-grep -Fxq 'PasswordAuthentication no' "$sshd_config"
-grep -Fxq 'KbdInteractiveAuthentication no' "$sshd_config"
-grep -Fxq 'PermitRootLogin prohibit-password' "$sshd_config"
-sshd -T | grep -Fx 'passwordauthentication no' >/dev/null
-sshd -T | grep -Fx 'kbdinteractiveauthentication no' >/dev/null
-sshd -T | grep -E '^permitrootlogin (prohibit-password|without-password)$' >/dev/null
+test ! -f /etc/ssh/sshd_config.d/90-fxroute-iso.conf
+! sshd -T | grep -Fx 'passwordauthentication no' >/dev/null
+! sshd -T | grep -Fx 'kbdinteractiveauthentication no' >/dev/null
+EOF
+  sudo_guest "$ssh_port" bash -s -- "$AGAMA_USER" <<'EOF'
+set -Eeuo pipefail
+account="$1"
 root_password_hash="$(getent shadow root | cut -d: -f2)"
 case "$root_password_hash" in
   ""|\!*|\**)
@@ -329,6 +527,45 @@ case "$root_password_hash" in
     exit 1
     ;;
 esac
+user_password_hash="$(getent shadow "$account" | cut -d: -f2)"
+case "$user_password_hash" in
+  ""|\!*|\**)
+    printf 'the Agama account password is missing\n' >&2
+    exit 1
+    ;;
+esac
+EOF
+  if ssh -i "$SSH_KEY" \
+      -o BatchMode=yes \
+      -o ConnectTimeout=5 \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -p "$ssh_port" root@127.0.0.1 true >/dev/null 2>&1; then
+    printf '[iso-test] root SSH unexpectedly succeeded\n' >&2
+    return 1
+  fi
+}
+
+verify_account_region_network_storage() {
+  local ssh_port="$1"
+  ssh_guest "$ssh_port" bash -s -- "$AGAMA_USER" "$AGAMA_TIMEZONE" "$AGAMA_LOCALE" "$AGAMA_KEYMAP" <<'EOF'
+set -Eeuo pipefail
+account="$1"
+timezone="$2"
+locale="$3"
+keymap="$4"
+test "$(id -un)" = "$account"
+[[ -d "$HOME" ]]
+test "$(timedatectl show -p Timezone --value)" = "$timezone"
+localectl status | grep -Fq "System Locale: LANG=$locale"
+localectl status | grep -Fq "VC Keymap: $keymap"
+nmcli -t -f NAME connection show | grep -q .
+ip -4 route show default | grep -q .
+root_source="$(findmnt -n -o SOURCE /)"
+root_disk="$(lsblk -n -o PKNAME "$root_source" | head -1)"
+[[ -n "$root_disk" ]]
+root_disk_size_bytes="$(lsblk -n -b -o SIZE "/dev/$root_disk" | head -1)"
+[[ "$root_disk_size_bytes" -gt 30000000000 ]]
 EOF
 }
 
@@ -341,7 +578,7 @@ reboot_guest() {
 
   printf '[iso-test] rebooting %s guest to verify its configured boot target\n' "$profile"
   old_boot_id="$(ssh_guest "$ssh_port" cat /proc/sys/kernel/random/boot_id)"
-  ssh_guest "$ssh_port" systemctl reboot >/dev/null 2>&1 || true
+  sudo_guest "$ssh_port" systemctl reboot >/dev/null 2>&1 || true
   for _ in $(seq 1 90); do
     kill -0 "$pid" 2>/dev/null || {
       printf '[iso-test] QEMU exited while rebooting %s\n' "$profile" >&2
@@ -359,8 +596,9 @@ reboot_guest() {
 
 verify_headless() {
   local ssh_port="$1"
-  ssh_guest "$ssh_port" bash -s <<'EOF'
+  ssh_guest "$ssh_port" bash -s -- "$AGAMA_USER" <<'EOF'
 set -Eeuo pipefail
+account="$1"
 test -f /var/lib/fxroute-iso/install-complete
 test -x /usr/local/libexec/fxroute-first-boot-install.sh
 systemctl is-enabled fxroute-first-boot.service
@@ -368,22 +606,24 @@ systemctl is-active fxroute-first-boot.service
 test "$(systemctl get-default)" = multi-user.target
 ! rpm -q plasma6-session >/dev/null 2>&1
 rpm -q openssh-server >/dev/null
-test -d /home/fxroute/fxroute/.git
-test "$(runuser -u fxroute -- git -C /home/fxroute/fxroute remote get-url origin)" = 'https://github.com/CobbyCode/fxroute.git'
-runuser -u fxroute -- env HOME=/home/fxroute bash -lc 'cd /home/fxroute/fxroute && scripts/update_fxroute.sh --check >/tmp/fxroute-update-check.log 2>&1'
+test -d "$HOME/fxroute/.git"
+test "$(git -C "$HOME/fxroute" remote get-url origin)" = 'https://github.com/CobbyCode/fxroute.git'
+bash -lc 'cd ~/fxroute && scripts/update_fxroute.sh --check >/tmp/fxroute-update-check.log 2>&1'
 grep -Eqi 'already up to date|update available|reconciliation is incomplete' /tmp/fxroute-update-check.log
-test -x /home/fxroute/fxroute/native_dsp/build/fxroute-dsp
-systemctl --user --machine=fxroute@ is-enabled fxroute.service
-systemctl --user --machine=fxroute@ is-active fxroute.service
-runuser -u fxroute -- env XDG_RUNTIME_DIR=/run/user/$(id -u fxroute) pactl list sinks short | awk '{print $2}' | grep -Fx 'fxroute_dsp_sink' >/dev/null
+test -x "$HOME/fxroute/native_dsp/build/fxroute-dsp"
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+systemctl --user is-enabled fxroute.service
+systemctl --user is-active fxroute.service
+pactl list sinks short | awk '{print $2}' | grep -Fx 'fxroute_dsp_sink' >/dev/null
 curl --fail --silent http://127.0.0.1:8000/api/status >/dev/null
 EOF
 }
 
 verify_desktop() {
   local ssh_port="$1"
-  ssh_guest "$ssh_port" bash -s <<'EOF'
+  ssh_guest "$ssh_port" bash -s -- "$AGAMA_USER" <<'EOF'
 set -Eeuo pipefail
+account="$1"
 test -f /var/lib/fxroute-iso/install-complete
 test -x /usr/local/libexec/fxroute-first-boot-install.sh
 systemctl is-enabled fxroute-first-boot.service
@@ -392,7 +632,7 @@ test "$(systemctl get-default)" = graphical.target
 rpm -q plasma6-session sddm-qt6 google-chrome-stable >/dev/null
 grep -Fxq 'gpgkey=https://dl.google.com/linux/linux_signing_key.pub' /etc/zypp/repos.d/google-chrome.repo
 test -f /etc/sddm.conf.d/10-fxroute-autologin.conf
-grep -Fxq 'User=fxroute' /etc/sddm.conf.d/10-fxroute-autologin.conf
+grep -Fxq "User=$account" /etc/sddm.conf.d/10-fxroute-autologin.conf
 grep -Fxq 'Session=plasmawayland' /etc/sddm.conf.d/10-fxroute-autologin.conf
 systemctl is-enabled display-manager.service
 systemctl is-enabled sddm.service
@@ -406,7 +646,7 @@ for _ in $(seq 1 90); do
         session_id="$candidate"
         break
       fi
-    done < <(loginctl list-sessions --no-legend | awk '$3 == "fxroute" {print $1}')
+    done < <(loginctl list-sessions --no-legend | awk -v user="$account" '$3 == user {print $1}')
     if [[ -n "$session_id" ]]; then
       break
     fi
@@ -421,27 +661,28 @@ while read -r candidate; do
     session_id="$candidate"
     break
   fi
-done < <(loginctl list-sessions --no-legend | awk '$3 == "fxroute" {print $1}')
+done < <(loginctl list-sessions --no-legend | awk -v user="$account" '$3 == user {print $1}')
 test -n "$session_id"
 test "$(loginctl show-session "$session_id" -p Type --value)" = wayland
 test -x /usr/local/bin/fxroute-desktop-launcher
-test -f /home/fxroute/.config/autostart/fxroute.desktop
-! grep -Fq -- '--kiosk' /usr/local/bin/fxroute-desktop-launcher /home/fxroute/.config/autostart/fxroute.desktop
+test -f "$HOME/.config/autostart/fxroute.desktop"
+! grep -Fq -- '--kiosk' /usr/local/bin/fxroute-desktop-launcher "$HOME/.config/autostart/fxroute.desktop"
 for _ in $(seq 1 60); do
-  if pgrep -u fxroute -f '(^|/)chrome( |$)' >/dev/null &&
-     pgrep -u fxroute -f '127\.0\.0\.1:8000' >/dev/null; then
+  if pgrep -u "$account" -f '(^|/)chrome( |$)' >/dev/null &&
+     pgrep -u "$account" -f '127\.0\.0\.1:8000' >/dev/null; then
     break
   fi
   sleep 2
 done
-pgrep -u fxroute -f '(^|/)chrome( |$)' >/dev/null
-pgrep -u fxroute -f '127\.0\.0\.1:8000' >/dev/null
-systemctl --user --machine=fxroute@ is-active fxroute.service
-runuser -u fxroute -- env XDG_RUNTIME_DIR=/run/user/$(id -u fxroute) pactl list sinks short | awk '{print $2}' | grep -Fx 'fxroute_dsp_sink' >/dev/null
+pgrep -u "$account" -f '(^|/)chrome( |$)' >/dev/null
+pgrep -u "$account" -f '127\.0\.0\.1:8000' >/dev/null
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+systemctl --user is-active fxroute.service
+pactl list sinks short | awk '{print $2}' | grep -Fx 'fxroute_dsp_sink' >/dev/null
 curl --fail --silent http://127.0.0.1:8000/api/status >/dev/null
-test -d /home/fxroute/fxroute/.git
-test "$(runuser -u fxroute -- git -C /home/fxroute/fxroute remote get-url origin)" = 'https://github.com/CobbyCode/fxroute.git'
-runuser -u fxroute -- env HOME=/home/fxroute bash -lc 'cd /home/fxroute/fxroute && scripts/update_fxroute.sh --check >/tmp/fxroute-update-check.log 2>&1'
+test -d "$HOME/fxroute/.git"
+test "$(git -C "$HOME/fxroute" remote get-url origin)" = 'https://github.com/CobbyCode/fxroute.git'
+bash -lc 'cd ~/fxroute && scripts/update_fxroute.sh --check >/tmp/fxroute-update-check.log 2>&1'
 grep -Eqi 'already up to date|update available|reconciliation is incomplete' /tmp/fxroute-update-check.log
 EOF
 }
@@ -452,14 +693,24 @@ for profile in "${PROFILES[@]}"; do
   while [[ "$ssh_port" == "$http_port" ]]; do
     ssh_port="$(ssh_port_for_profile "$profile")"
   done
+  agama_https_port="$(agama_https_port_for_profile "$profile")"
+  while [[ "$agama_https_port" == "$http_port" || "$agama_https_port" == "$ssh_port" ]]; do
+    agama_https_port="$(agama_https_port_for_profile "$profile")"
+  done
+  agama_http_port="$(agama_http_port_for_profile "$profile")"
+  while [[ "$agama_http_port" == "$http_port" || "$agama_http_port" == "$ssh_port" || "$agama_http_port" == "$agama_https_port" ]]; do
+    agama_http_port="$(agama_http_port_for_profile "$profile")"
+  done
   disk="$TEST_ROOT/$profile.qcow2"
+  extra_disk="$TEST_ROOT/$profile-extra.qcow2"
   serial_log="$TEST_ROOT/$profile-serial.log"
   qemu_log="$TEST_ROOT/$profile-qemu.log"
   pid_file="$TEST_ROOT/$profile.pid"
   monitor="$TEST_ROOT/$profile-monitor.sock"
 
-  printf '[iso-test] creating fresh %s disk\n' "$profile"
+  printf '[iso-test] creating fresh %s disks\n' "$profile"
   qemu-img create -f qcow2 "$disk" "${VM_DISK_GB}G" >/dev/null
+  qemu-img create -f qcow2 "$extra_disk" "${VM_EXTRA_DISK_GB}G" >/dev/null
   qemu-system-x86_64 \
     -name "fxroute-iso-$profile" \
     -accel kvm \
@@ -467,9 +718,10 @@ for profile in "${PROFILES[@]}"; do
     -smp "$VM_CPUS" \
     -m "${VM_RAM}M" \
     -drive "file=$disk,format=qcow2,if=virtio" \
+    -drive "file=$extra_disk,format=qcow2,if=virtio" \
     -cdrom "$ISO_PATH" \
     -boot once=d,menu=off \
-    -nic "user,model=virtio-net-pci,hostfwd=tcp::$http_port-:8000,hostfwd=tcp::$ssh_port-:22" \
+    -nic "user,model=virtio-net-pci,hostfwd=tcp::$http_port-:8000,hostfwd=tcp::$ssh_port-:22,hostfwd=tcp::$agama_https_port-:443,hostfwd=tcp::$agama_http_port-:80" \
     -monitor "unix:$monitor,server=on,wait=off" \
     -device virtio-rng-pci \
     -audiodev driver=none,id=fxroute-audio \
@@ -485,8 +737,10 @@ for profile in "${PROFILES[@]}"; do
   PIDS+=("$pid")
   select_boot_entry "$profile" "$monitor"
 
+  setup_agama_interactive "$profile" "$agama_https_port" "$pid"
   wait_for_guest "$profile" "$pid" "$http_port" "$ssh_port"
-  verify_ssh_hardening "$ssh_port"
+  verify_ssh_defaults "$ssh_port"
+  verify_account_region_network_storage "$ssh_port"
   case "$profile" in
     headless) verify_headless "$ssh_port" ;;
     desktop)

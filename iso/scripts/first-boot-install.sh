@@ -11,7 +11,7 @@ STATE_DIR="/var/lib/fxroute-iso"
 COMPLETE_MARKER="$STATE_DIR/install-complete"
 FAILED_MARKER="$STATE_DIR/install-failed"
 IN_PROGRESS_MARKER="$STATE_DIR/install-in-progress"
-FXROUTE_USER="fxroute"
+FXROUTE_USER=""
 staging_dir=""
 chrome_key_file=""
 retry_attempt=0
@@ -74,13 +74,31 @@ case "$profile" in
     ;;
 esac
 
-install -d -m 755 /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/90-fxroute-iso.conf <<'EOF'
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-PermitRootLogin prohibit-password
-EOF
-chmod 644 /etc/ssh/sshd_config.d/90-fxroute-iso.conf
+# The installer no longer ships credentials: the end-user account is created
+# interactively in Agama. Prefer the documented appliance account name and
+# otherwise use the single regular user Agama created.
+discover_fxroute_user() {
+  local candidate=""
+  local candidates=()
+
+  if id -u fxroute >/dev/null 2>&1; then
+    FXROUTE_USER="fxroute"
+    return 0
+  fi
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    candidates+=("$candidate")
+  done < <(getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 && $6 ~ /^\// && $7 !~ /(nologin|false)$/ {print $1}')
+  if [[ ${#candidates[@]} -eq 1 ]]; then
+    FXROUTE_USER="${candidates[0]}"
+    return 0
+  fi
+  printf 'Cannot determine the FXRoute user (found: %s)\n' "${candidates[*]:-none}" >&2
+  printf 'Create exactly one regular user in Agama (for example fxroute).\n' >&2
+  exit 1
+}
+
+discover_fxroute_user
 install -d -m 755 /run/sshd
 ssh-keygen -A
 sshd -t
@@ -101,7 +119,7 @@ staging_dir=""
 chmod 755 "$SOURCE_DIR/install.sh"
 fxroute_home="$(getent passwd "$FXROUTE_USER" | cut -d: -f6)"
 [[ "$fxroute_home" == /* && -d "$fxroute_home" ]] || {
-  printf '%s\n' "Agama did not create the FXRoute user home" >&2
+  printf 'Agama did not create the home directory for user %s\n' "$FXROUTE_USER" >&2
   exit 1
 }
 

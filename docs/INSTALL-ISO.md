@@ -7,17 +7,37 @@ normal Agama boot menu:
 - `FXRoute Headless`: no graphical packages; FXRoute and its native DSP run as
   a lingering user service.
 - `FXRoute Desktop`: a small KDE Plasma 6 / Wayland base with SDDM, automatic
-  login as `fxroute`, and a normal Chrome window opening the FXRoute UI.
+  login as the account created during installation, and a normal Chrome
+  window opening the FXRoute UI.
 
 The desktop is not a kiosk. The Plasma desktop, shell, and keyboard shortcuts
 remain available.
 
-The automatic storage profile leaves target selection to Agama's normal
-bootable-device selection instead of choosing a disk by size. The selected
-target is repartitioned, so verify the target before starting an unattended
-installation and disconnect disks that must not be touched. Profile and
-source files use Agama's device-wide lookup, so the ISO can be written to
-optical media or USB media without assuming `/dev/sr0`.
+## Installation flow
+
+Each entry preloads its profile with `inst.auto` and then stops for review
+(`inst.install=0`), so Agama shows its normal interactive overview. Only the
+machine-specific decisions that cannot be sensibly preseeded are asked there:
+
+- Network/WLAN: select and configure the connection in Agama. Agama copies
+  the installer network setup to the installed system.
+- Target disk: explicitly select the target disk in Agama's storage section
+  and confirm the destructive installation. The preloaded proposal only
+  describes the default partition layout; it never silently wipes the first
+  SSD. Verify the target before starting the installation and disconnect
+  disks that must not be touched.
+- Locale, keyboard, and timezone: choose them through Agama's normal
+  mechanism. The profiles carry no fixed locale and no `Europe/Berlin`
+  default.
+- Account/password: create the end-user account and its password in Agama
+  (for example the account `fxroute`). The release image ships no user
+  passwords and requires no SSH keys.
+
+After these decisions, press Install in Agama; the installation then runs
+through largely automatically and reboots (`inst.finish=reboot`).
+
+Profile and source files use Agama's device-wide lookup, so the ISO can be
+written to optical media or USB media without assuming `/dev/sr0`.
 
 ## Build
 
@@ -31,20 +51,17 @@ The base media is downloaded and verified against its pinned SHA-512 digest:
 
 `https://download.opensuse.org/distribution/leap/16.0/offline/Leap-16.0-offline-installer-x86_64.install.iso`
 
-The build requires a SHA-512 password hash for the `fxroute` user and an SSH
-public key for root. They are rendered into the generated profiles only:
+No credentials are needed to build. The profiles intentionally contain no
+user passwords and no SSH public keys:
 
 ```bash
-export FXROUTE_PASSWORD_HASH="$(openssl passwd -6 'change-this-password')"
-export FXROUTE_SSH_PUBLIC_KEY="$(< ~/.ssh/id_ed25519.pub)"
 export SOURCE_DATE_EPOCH=0
 ./iso/build-leap-16-iso.sh
 ```
 
-Use `--base-iso`, `--output`, `--password-hash`, or
-`--ssh-public-key-file` to override individual values. The source archive is
-created from `git ls-files`, with normalized tar metadata, and is copied to
-the installed system by Agama before the first boot.
+Use `--base-iso` or `--output` to override individual values. The source
+archive is created from `git ls-files`, with normalized tar metadata, and is
+copied to the installed system by Agama before the first boot.
 `SOURCE_DATE_EPOCH` defaults to `0`; the builder uses reproducible `mkisofs` and
 `isohybrid` shims, normalizes Rock Ridge change times and EFI volume serials,
 and preserves normalized staging timestamps so repeated builds with the same
@@ -59,8 +76,9 @@ agama config validate --local /path/to/work/stage/fxroute/profiles/headless.json
 agama config validate --local /path/to/work/stage/fxroute/profiles/desktop.jsonnet
 ```
 
-Do not publish an ISO built with test credentials. Generate a unique password
-hash and use a deployment-specific SSH key for every real installation.
+A profile without credentials still validates: Agama only reports the missing
+authentication as an installation issue in its overview until the account is
+created interactively.
 
 ## First Boot
 
@@ -72,17 +90,19 @@ archive and invokes the existing `install.sh`; it does not reimplement FXRoute
 installation. Both profiles pass `--providers none`, so Spotify Desktop and
 `spotifyd` remain independent installer selections. They can be installed
 later with the existing `install.sh --spotify-desktop` or `install.sh
---spotifyd` options.
+--spotifyd` options. Provider credentials are never asked in the x86
+installer; they are managed later in the FXRoute Settings.
 
-Both profiles install `/etc/ssh/sshd_config.d/90-fxroute-iso.conf` before the
-first boot; the first-boot service reapplies and validates it before enabling
-`sshd` for remote administration. It contains `PasswordAuthentication no` and
-`KbdInteractiveAuthentication no`. Password and keyboard-interactive
-authentication are disabled, and Root SSH access is restricted to the public
-key supplied at build time (`PermitRootLogin prohibit-password`). The ISO still
-sets the requested local `fxroute` password hash; the root password remains
-unset. Use a unique hash and deployment-specific key, and disable `sshd` after
-installation if remote administration is not required.
+The first-boot service uses the account created in Agama: it prefers the
+`fxroute` account and otherwise uses the single regular user on the system.
+It then installs FXRoute with `--with-lan-name` and `--with-caddy` under an
+automatically derived unique device name (`fxroute-<machine-id>`), so Caddy
+and HTTPS are set up while plain HTTP stays reachable.
+
+`sshd` is enabled with the distribution default configuration, so the account
+password created in Agama also works for remote administration. The image
+carries no key-only SSH hardening and no preinstalled keys; disable `sshd`
+after installation if remote administration is not required.
 
 The Desktop profile installs Chrome from Google's official RPM repository:
 `https://dl.google.com/linux/chrome/rpm/stable/x86_64`. It does not use a
@@ -126,19 +146,33 @@ gitignored).
 
 ## QEMU Verification
 
-The runner creates a new 40 GiB disk for each profile, boots the ISO, waits for
-`/api/status`, and verifies the installed packages, user service, DSP binary,
-default target, SDDM autologin configuration, and Chrome setup:
+The runner creates fresh disks for each profile, boots the ISO, drives the
+interactive Agama decisions through the Agama API (account/password and SSH
+key, locale/keyboard/timezone, explicit target-disk selection, install
+start), waits for `/api/status`, and verifies the installed packages, user
+service, DSP binary, default target, SDDM autologin configuration, and
+Chrome setup:
 
 ```bash
 FXROUTE_SSH_KEY="$HOME/.ssh/id_ed25519_vm" \
+  FXROUTE_ISO_LIVE_PASSWORD="..." \
+  FXROUTE_ISO_USER_PASSWORD="..." \
   ./iso/test-leap-16-iso.sh all dist/fxroute-leap-16-x86_64.iso
 ```
 
+`FXROUTE_ISO_LIVE_PASSWORD` is the installer live password (append
+`live.password=...` to the boot entry for automated runs, or read the
+generated password from the installer console for manual runs).
+`FXROUTE_ISO_USER_PASSWORD` becomes the password of the account created in
+Agama. The runner additionally forwards the Agama web ports so the same
+decisions can be made manually in a browser via `https://agama.local` or
+the forwarded ports.
+
 Set `FXROUTE_KEEP_ISO_TEST=1` to retain serial logs and guest disks after a
 test. The desktop check reboots the guest before validating SDDM, Wayland, and
-Chrome. QEMU emulates Ethernet networking only; real WLAN hardware must be
-checked separately.
+Chrome. QEMU emulates Ethernet networking only; the WLAN selection itself is
+covered by the Agama contract checks (no fixed network profile, interactive
+network section), while real WLAN hardware must be checked separately.
 
 The runner uses the host's default BIOS firmware. For a separate UEFI firmware
 sanity check, use PFLASH code and a disposable writable variable store (do not

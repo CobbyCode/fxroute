@@ -218,16 +218,21 @@ class InstallIsoContractTests(unittest.TestCase):
             self.assertEqual(result[39:43], b"\x78\x56\x34\x12")
             self.assertEqual(result[2048 + 39 : 2048 + 43], b"\x78\x56\x34\x12")
 
-    def test_build_script_renders_credentials_without_committing_them(self):
+    def test_build_script_ships_no_credentials(self):
         build = self.read("iso/build-leap-16-iso.sh")
 
-        self.assertIn("FXROUTE_PASSWORD_HASH", build)
-        self.assertIn("FXROUTE_SSH_PUBLIC_KEY", build)
-        self.assertIn("SSH_PUBLIC_KEY=\"${SSH_PUBLIC_KEY%$'\\n'}\"", build)
-        self.assertIn("__FXROUTE_PASSWORD_HASH__", self.read("iso/profiles/headless.jsonnet"))
-        self.assertIn("__FXROUTE_SSH_PUBLIC_KEY__", self.read("iso/profiles/desktop.jsonnet"))
+        self.assertNotIn("FXROUTE_PASSWORD_HASH:-", build)
+        self.assertNotIn("FXROUTE_SSH_PUBLIC_KEY:-", build)
+        self.assertNotIn("SSH_PUBLIC_KEY_FILE", build)
+        self.assertNotIn("--password-hash", build)
+        self.assertNotIn("--ssh-public-key-file", build)
+        for profile_name in ("headless", "desktop"):
+            profile_text = (PROFILE_DIR / f"{profile_name}.jsonnet").read_text()
+            self.assertNotIn("__FXROUTE_PASSWORD_HASH__", profile_text)
+            self.assertNotIn("__FXROUTE_SSH_PUBLIC_KEY__", profile_text)
+            self.assertNotIn("hashedPassword", profile_text)
 
-    def test_builder_accepts_newline_terminated_ssh_key_file(self):
+    def test_builder_rejects_the_removed_credential_flags(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             key_file = Path(temporary_directory) / "id_ed25519.pub"
             key_file.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== test\n")
@@ -238,8 +243,6 @@ class InstallIsoContractTests(unittest.TestCase):
                     str(ROOT / "iso/build-leap-16-iso.sh"),
                     "--password-hash",
                     "$6$salt$hash",
-                    "--ssh-public-key-file",
-                    str(key_file),
                 ],
                 env=environment,
                 capture_output=True,
@@ -247,8 +250,7 @@ class InstallIsoContractTests(unittest.TestCase):
             )
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertNotIn("must be one line", result.stderr)
-            self.assertIn("mkmedia is required", result.stderr)
+            self.assertIn("Unknown argument", result.stderr)
 
     def test_profiles_use_leap_product_and_default_single_disk_layout(self):
         for profile_name in ("headless", "desktop"):
@@ -260,11 +262,26 @@ class InstallIsoContractTests(unittest.TestCase):
                 [{"generate": "default"}],
             )
             self.assertNotIn("search", profile["storage"]["drives"][0])
-            self.assertEqual(profile["user"]["userName"], "fxroute")
-            self.assertTrue(profile["root"]["sshPublicKey"].startswith("__FXROUTE_"))
-            self.assertNotIn("password", profile["root"])
-            self.assertNotIn("hashedPassword", profile["root"])
-            self.assertEqual(profile["questions"]["policy"], "auto")
+            self.assertEqual(profile["questions"]["policy"], "user")
+
+    def test_profiles_leave_machine_specific_decisions_to_agama(self):
+        for profile_name in ("headless", "desktop"):
+            profile_text = (PROFILE_DIR / f"{profile_name}.jsonnet").read_text()
+            profile = json.loads(profile_text)
+            # Network/WLAN selection stays interactive and is carried over.
+            self.assertNotIn("network", profile)
+            # Locale, keyboard, and timezone use Agama's normal mechanism;
+            # no fixed Europe/Berlin default is shipped.
+            self.assertNotIn("localization", profile)
+            self.assertNotIn("l10n", profile)
+            self.assertNotIn("Europe/Berlin", profile_text)
+            # The end-user account/password is created in the install flow;
+            # the release image contains no user passwords or SSH keys.
+            self.assertNotIn("user", profile)
+            self.assertNotIn("root", profile)
+            self.assertNotIn("sshPublicKey", profile_text)
+            self.assertNotIn("password", profile)
+            self.assertNotIn("hashedPassword", profile_text)
 
     def test_profiles_offer_only_the_two_fxroute_boot_entries(self):
         build = self.read("iso/build-leap-16-iso.sh")
@@ -274,7 +291,11 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("inst.auto=device:/fxroute/profiles/headless.jsonnet", build)
         self.assertIn("inst.auto=device:/fxroute/profiles/desktop.jsonnet", build)
         self.assertNotIn("devices=/dev/sr0", build)
-        self.assertIn("inst.install=1", build)
+        # The profiles preload and stop for review: Agama shows the
+        # machine-specific decisions before the user starts the install.
+        self.assertIn("inst.install=0", build)
+        self.assertNotIn("inst.install=1", build)
+        self.assertIn("inst.finish=reboot", build)
         self.assertNotIn("Ubuntu", build)
         self.assertNotIn("subiquity", build)
 
@@ -313,11 +334,11 @@ class InstallIsoContractTests(unittest.TestCase):
                 files["/opt/fxroute-iso-source.tar"]["url"],
                 "device:/fxroute/source.tar",
             )
-            ssh_config = files["/etc/ssh/sshd_config.d/90-fxroute-iso.conf"]
-            self.assertIn("PasswordAuthentication no", ssh_config["content"])
-            self.assertIn("KbdInteractiveAuthentication no", ssh_config["content"])
-            self.assertIn("PermitRootLogin prohibit-password", ssh_config["content"])
-            self.assertEqual(ssh_config["permissions"], "0644")
+            # No key-only SSH hardening is shipped; the installed sshd
+            # keeps the distribution defaults for the Agama account.
+            self.assertNotIn("/etc/ssh/sshd_config.d/90-fxroute-iso.conf", files)
+            self.assertNotIn("PasswordAuthentication no", json.dumps(profile))
+            self.assertNotIn("PermitRootLogin", json.dumps(profile))
             self.assertEqual(files["/etc/fxroute-iso-profile"]["content"], f"{profile_name}\n")
             init_script = files["/usr/local/libexec/fxroute-first-boot-install.sh"]
             self.assertEqual(
@@ -378,7 +399,8 @@ class InstallIsoContractTests(unittest.TestCase):
     def test_verifier_checks_the_git_update_path(self):
         runner = self.read("iso/test-leap-16-iso.sh")
 
-        self.assertIn("test -d /home/fxroute/fxroute/.git", runner)
+        self.assertIn('test -d "$HOME/fxroute/.git"', runner)
+        self.assertIn('git -C "$HOME/fxroute" remote get-url origin', runner)
         self.assertIn("update_fxroute.sh --check", runner)
         self.assertIn("reconciliation is incomplete", runner)
 
@@ -403,26 +425,30 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn('export HOME="$fxroute_home"', script)
         self.assertIn("--source", script)
         self.assertIn("--providers none", script)
+        self.assertIn("--with-lan-name", script)
+        self.assertIn("--with-caddy", script)
         self.assertIn('COMPLETE_MARKER="$STATE_DIR/install-complete"', script)
         self.assertIn("network-online.target", script)
         self.assertIn("sddm.conf.d/10-fxroute-autologin.conf", script)
         self.assertIn("plasmawayland", script)
+        self.assertIn("derive_fxroute_device_name", script)
+        self.assertIn('--device-name "$(derive_fxroute_device_name)"', script)
+        # The Agama account is discovered: prefer the documented appliance
+        # account, otherwise use the single regular user Agama created.
+        self.assertIn("discover_fxroute_user", script)
+        self.assertIn('if id -u fxroute >/dev/null 2>&1; then', script)
+        self.assertIn('--user "$FXROUTE_USER"', script)
 
-    def test_first_boot_restricts_sshd_to_key_authentication(self):
+    def test_first_boot_keeps_distribution_sshd_defaults(self):
         script = self.read("iso/scripts/first-boot-install.sh")
 
-        self.assertIn("/etc/ssh/sshd_config.d/90-fxroute-iso.conf", script)
-        self.assertIn("PasswordAuthentication no", script)
-        self.assertIn("KbdInteractiveAuthentication no", script)
-        self.assertIn("PermitRootLogin prohibit-password", script)
+        self.assertIn("systemctl enable --now sshd.service", script)
         self.assertIn("install -d -m 755 /run/sshd", script)
         self.assertIn("ssh-keygen -A", script)
-        self.assertLess(
-            script.index("PasswordAuthentication no"),
-            script.index("systemctl enable --now sshd.service"),
-        )
-        self.assertLess(script.index("install -d -m 755 /run/sshd"), script.index("sshd -t"))
-        self.assertLess(script.index("ssh-keygen -A"), script.index("sshd -t"))
+        self.assertNotIn("90-fxroute-iso.conf", script)
+        self.assertNotIn("PasswordAuthentication no", script)
+        self.assertNotIn("KbdInteractiveAuthentication no", script)
+        self.assertNotIn("PermitRootLogin prohibit-password", script)
 
     def test_desktop_first_boot_uses_official_chrome_repository_and_not_kiosk(self):
         script = self.read("iso/scripts/first-boot-install.sh")
@@ -493,15 +519,47 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn('loginctl show-session "$candidate" -p Type --value', runner)
         self.assertIn('= wayland', runner)
         self.assertIn("gpgkey=https://dl.google.com/linux/linux_signing_key.pub", runner)
-        self.assertIn("90-fxroute-iso.conf", runner)
-        self.assertIn("PasswordAuthentication no", runner)
-        self.assertIn("PermitRootLogin prohibit-password", runner)
-        self.assertIn("sshd -T", runner)
-        self.assertIn("getent shadow root", runner)
         self.assertIn("loginctl", runner)
         self.assertIn("127.0.0.1:8000", runner)
         self.assertIn("fxroute_dsp_sink", runner)
         self.assertIn("/api/status", runner)
+
+    def test_qemu_runner_drives_the_interactive_agama_decisions(self):
+        runner = self.read("iso/test-leap-16-iso.sh")
+
+        # Agama web ports are forwarded so the decisions can be made
+        # through the API or manually in a browser.
+        self.assertIn("agama_https_port", runner)
+        self.assertIn("hostfwd=tcp::$agama_https_port-:443", runner)
+        self.assertIn("hostfwd=tcp::$agama_http_port-:80", runner)
+        self.assertIn("setup_agama_interactive", runner)
+        self.assertIn("auth login", runner)
+        self.assertIn("config load", runner)
+        self.assertIn("config show", runner)
+        self.assertIn("agama_cli", runner)
+        # Account/password plus locale/keyboard/timezone via Agama.
+        self.assertIn("FXROUTE_ISO_USER_PASSWORD", runner)
+        self.assertIn("FXROUTE_ISO_LIVE_PASSWORD", runner)
+        self.assertIn('"l10n"', runner)
+        self.assertIn("sshPublicKey", runner)
+        # A decoy disk forces an explicit target-disk selection; the
+        # installed root filesystem must live on the large disk.
+        self.assertIn("VM_EXTRA_DISK_GB", runner)
+        self.assertIn("extra_disk", runner)
+        self.assertIn('"greater": "30 GiB"', runner)
+        self.assertIn("PKNAME", runner)
+        # Region/network/account checks on the installed system.
+        self.assertIn("timedatectl show -p Timezone --value", runner)
+        self.assertIn("localectl status", runner)
+        self.assertIn("nmcli", runner)
+        self.assertIn("getent shadow", runner)
+        # SSH reaches the installed system as the Agama account; the
+        # image ships no key-only hardening and no root access.
+        self.assertIn("90-fxroute-iso.conf", runner)
+        self.assertIn("passwordauthentication no", runner)
+        self.assertNotIn("PermitRootLogin prohibit-password", runner)
+        self.assertIn("sshd -T", runner)
+        self.assertIn("root@127.0.0.1", runner)
 
     def test_grub_screendump_uses_the_configured_temp_directory(self):
         runner = self.read("iso/test-leap-16-iso.sh")
@@ -522,11 +580,11 @@ class InstallIsoContractTests(unittest.TestCase):
 
         self.assertIn("for _ in $(seq 1 60); do", runner)
         self.assertIn(
-            "if pgrep -u fxroute -f '(^|/)chrome( |$)' >/dev/null &&",
+            "if pgrep -u \"$account\" -f '(^|/)chrome( |$)' >/dev/null &&",
             runner,
         )
         self.assertIn(
-            "pgrep -u fxroute -f '127\\.0\\.0\\.1:8000' >/dev/null",
+            "pgrep -u \"$account\" -f '127\\.0\\.0\\.1:8000' >/dev/null",
             runner,
         )
 
@@ -534,15 +592,11 @@ class InstallIsoContractTests(unittest.TestCase):
         runner = self.read("iso/test-leap-16-iso.sh")
 
         self.assertIn(
-            "sshd -T | grep -Fx 'passwordauthentication no' >/dev/null",
+            "! sshd -T | grep -Fx 'passwordauthentication no' >/dev/null",
             runner,
         )
         self.assertIn(
-            "sshd -T | grep -Fx 'kbdinteractiveauthentication no' >/dev/null",
-            runner,
-        )
-        self.assertIn(
-            "sshd -T | grep -E '^permitrootlogin (prohibit-password|without-password)$' >/dev/null",
+            "! sshd -T | grep -Fx 'kbdinteractiveauthentication no' >/dev/null",
             runner,
         )
         self.assertNotIn("sshd -T | grep -Fxq", runner)
@@ -552,13 +606,20 @@ class InstallIsoContractTests(unittest.TestCase):
             runner,
         )
 
-    def test_iso_documentation_describes_build_credentials_and_wlan_limit(self):
+    def test_iso_documentation_describes_the_interactive_appliance_flow(self):
         docs = self.read("docs/INSTALL-ISO.md")
 
         self.assertIn("Leap-16.0-offline-installer-x86_64.install.iso", docs)
-        self.assertIn("FXROUTE_PASSWORD_HASH", docs)
-        self.assertIn("FXROUTE_SSH_PUBLIC_KEY", docs)
+        self.assertNotIn("FXROUTE_PASSWORD_HASH", docs)
+        self.assertNotIn("FXROUTE_SSH_PUBLIC_KEY", docs)
+        self.assertNotIn("Do not publish an ISO built with test credentials", docs)
+        self.assertIn("inst.install=0", docs)
+        self.assertIn("inst.finish=reboot", docs)
         self.assertIn("WLAN", docs)
+        self.assertIn("Target disk", docs)
+        self.assertIn("Locale", docs)
+        self.assertIn("Account/password", docs)
+        self.assertIn("ships no user", docs)
         self.assertIn("Spotify Desktop", docs)
         self.assertIn("spotifyd", docs)
         self.assertIn("SOURCE_DATE_EPOCH", docs)
@@ -566,9 +627,10 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("agama config validate --local", docs)
         self.assertIn("if=pflash", docs)
         self.assertIn("ovmf-x86_64-4m-code.bin", docs)
-        self.assertIn("Do not publish an ISO built with test credentials", docs)
-        self.assertIn("PasswordAuthentication no", docs)
-        self.assertIn("PermitRootLogin prohibit-password", docs)
+        self.assertIn("FXROUTE_ISO_USER_PASSWORD", docs)
+        self.assertIn("FXROUTE_ISO_LIVE_PASSWORD", docs)
+        self.assertIn("--providers none", docs)
+        self.assertIn("Settings", docs)
 
 
 if __name__ == "__main__":
