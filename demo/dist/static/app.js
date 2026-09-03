@@ -2350,14 +2350,103 @@ async function runProviderServiceAction(providerId, action) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Qobuz/qbzd account login (browser OAuth handoff owned by qbzd)
+// ---------------------------------------------------------------------------
+
+async function beginQobuzLogin() {
+    try {
+        const resp = await fetch('/api/streaming/qobuz/auth/login', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Could not start the Qobuz login');
+        if (data.started === false && data.reason === 'already-in-progress' && data.login_url) {
+            showQobuzLoginDialog(data.login_url);
+            return;
+        }
+        showQobuzLoginDialog(data.login_url);
+    } catch (error) {
+        showToast(error.message || 'Could not start the Qobuz login', 'error');
+    }
+}
+
+async function cancelQobuzLogin() {
+    try {
+        await fetch('/api/streaming/qobuz/auth/login/cancel', { method: 'POST' });
+    } catch (_error) {
+        // Best-effort cleanup; the next Connect click restarts the flow.
+    }
+}
+
+function showQobuzLoginDialog(loginUrl) {
+    const message = [
+        'Qobuz sign-in (via qbzd):',
+        '',
+        '1. Open the Qobuz sign-in page on any device in your network.',
+        '2. Sign in — the browser lands on a page that fails to load. That is expected.',
+        '3. Copy the full address from the browser bar and paste it here.',
+    ].join('\n');
+    const pasted = window.prompt(message + '\n\nSign-in URL (open manually):', loginUrl);
+    if (pasted === null) {
+        void cancelQobuzLogin();
+        return; // canceled
+    }
+    const url = String(pasted || '').trim();
+    if (!url || url === loginUrl) {
+        void cancelQobuzLogin();
+        showToast('Login canceled — click Connect to try again.', 'info');
+        return;
+    }
+    void finishQobuzLogin(url);
+}
+
+async function finishQobuzLogin(pasted) {
+    try {
+        const resp = await fetch('/api/streaming/qobuz/auth/login/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ redirect_url: pasted }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Qobuz login failed');
+        if (data.ok === false) {
+            throw new Error(data.output || 'qbzd rejected the pasted URL');
+        }
+        showToast(data.authenticated ? 'Qobuz account connected.' : 'Login finished — verifying…', 'success');
+    } catch (error) {
+        showToast(error.message || 'Qobuz login failed', 'error');
+    } finally {
+        void fetchProviderAdmin();
+    }
+}
+
+async function qobuzLogout() {
+    if (!confirm('Disconnect the Qobuz account? Playback stops until you sign in again. Your Qobuz library and favorites stay on your Qobuz account.')) return;
+    try {
+        const resp = await fetch('/api/streaming/qobuz/auth/logout', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Disconnect failed');
+        showToast('Qobuz account disconnected.', 'success');
+    } catch (error) {
+        showToast(error.message || 'Disconnect failed', 'error');
+    } finally {
+        void fetchProviderAdmin();
+    }
+}
+
 function providerAdminButtonHtml(provider) {
     const busy = state.settings.providers.pendingOperation === provider.id;
     const buttons = [];
     if (provider.installed) {
-        // Connect/reconnect: the provider tab's own connect flow (TIDAL) or
-        // the service start that makes Connect discovery work (spotifyd/qbzd).
+        // Connect/reconnect rides each provider's own auth mechanism: TIDAL's
+        // PKCE tab flow and qbzd's browser OAuth handoff. spotifyd has no
+        // account login (Spotify Connect pairs from the Spotify app).
         if (provider.id === 'tidal') {
             buttons.push(`<button type="button" class="btn-secondary" data-provider-auth="${provider.id}"${busy ? ' disabled' : ''}>${provider.authenticated ? 'Reconnect' : 'Connect'}</button>`);
+        } else if (provider.id === 'qobuz') {
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-login="1"${busy ? ' disabled' : ''}>${provider.authenticated ? 'Reconnect' : 'Connect'}</button>`);
+            if (provider.authenticated) {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
+            }
         } else if (provider.id !== 'spotify') {
             const label = provider.available ? 'Restart' : 'Start';
             buttons.push(`<button type="button" class="btn-secondary" data-provider-service="start" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>${label}</button>`);
@@ -2412,6 +2501,12 @@ function renderProviderSettings() {
     });
     elements.settingsProvidersList.querySelectorAll('[data-provider-service]').forEach((button) => {
         button.addEventListener('click', () => runProviderServiceAction(button.getAttribute('data-provider-id'), button.getAttribute('data-provider-service')));
+    });
+    elements.settingsProvidersList.querySelectorAll('[data-provider-qobuz-login]').forEach((button) => {
+        button.addEventListener('click', () => void beginQobuzLogin());
+    });
+    elements.settingsProvidersList.querySelectorAll('[data-provider-qobuz-logout]').forEach((button) => {
+        button.addEventListener('click', () => void qobuzLogout());
     });
     elements.settingsProvidersList.querySelectorAll('[data-provider-auth]').forEach((button) => {
         button.addEventListener('click', () => {
