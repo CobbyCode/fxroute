@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.172">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.173">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -1395,6 +1395,55 @@
         </section>
     </div>
 
+    <!-- Qobuz/qbzd browser login (persistent in-app modal; survives tab switches) -->
+    <div id="qobuz-login-panel" class="manage-overlay qobuz-login-overlay hidden">
+        <div class="manage-overlay-backdrop"></div>
+        <section class="manage-dialog" role="dialog" aria-modal="true" aria-labelledby="qobuz-login-title">
+            <div class="manage-dialog-header dialog-header-corner-close">
+                <div>
+                    <h2 id="qobuz-login-title" class="section-title">Connect Qobuz</h2>
+                    <p class="section-subtitle">Sign in via qbzd — this window stays open while you switch tabs.</p>
+                </div>
+                <button id="qobuz-login-close" class="btn-ghost btn-close-manage" type="button" aria-label="Cancel Qobuz login">
+                    <span class="btn-ghost-icon">✕</span>
+                    <span class="dialog-close-label">Close</span>
+                </button>
+            </div>
+
+            <div class="effects-stack">
+                <section class="radio-manage-section">
+                    <div class="radio-manage-section-header">
+                        <h3>1. Open the Qobuz sign-in page</h3>
+                        <p>Open the link, sign in, then come back here. The running login keeps waiting.</p>
+                    </div>
+                    <div class="field-group">
+                        <label for="qobuz-login-url">Sign-in URL</label>
+                        <input type="text" id="qobuz-login-url" class="url-input" readonly autocomplete="off" spellcheck="false" />
+                    </div>
+                    <div class="radio-manage-submit-row radio-manage-submit-row-station-manage">
+                        <a id="qobuz-login-open" class="btn-primary" href="#" target="_blank" rel="noopener noreferrer">Open Qobuz login</a>
+                        <button id="qobuz-login-copy" class="btn-secondary" type="button">Copy link</button>
+                    </div>
+                </section>
+                <section class="radio-manage-section">
+                    <div class="radio-manage-section-header">
+                        <h3>2. Paste the redirect back here</h3>
+                        <p>After sign-in the browser lands on a page that fails to load. That is expected — copy the full address from the browser bar, paste it below, then finish.</p>
+                    </div>
+                    <div class="field-group">
+                        <label for="qobuz-login-redirect">Redirect URL</label>
+                        <input type="text" id="qobuz-login-redirect" class="url-input" placeholder="http://127.0.0.1:…?code=…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="url" />
+                    </div>
+                    <p id="qobuz-login-status" class="settings-inline-note" aria-live="polite">Waiting for sign-in…</p>
+                    <div class="radio-manage-submit-row radio-manage-submit-row-station-manage">
+                        <button id="qobuz-login-finish" class="btn-primary" type="button">Connect</button>
+                        <button id="qobuz-login-cancel" class="btn-secondary" type="button">Cancel</button>
+                    </div>
+                </section>
+            </div>
+        </section>
+    </div>
+
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
@@ -1405,7 +1454,7 @@
     <script src="/static/measurement_graph.js?v=0.9.15"></script>
     <script src="/static/measurement_flows.js?v=0.9.19"></script>
     <script src="/static/radio.js?v=0.9.15"></script>
-    <script src="/static/app.js?v=0.9.101"></script>
+    <script src="/static/app.js?v=0.9.102"></script>
     <script src="/static/streaming.js?v=0.9.57"></script>
 </body>
 </html>

@@ -472,6 +472,15 @@ const elements = {
     settingsHardwareAutoOnBtn: document.getElementById('settings-hardware-auto-on'),
     settingsHardwareAutoOffBtn: document.getElementById('settings-hardware-auto-off'),
     settingsCertificateLink: document.getElementById('settings-certificate-link'),
+    qobuzLoginPanel: document.getElementById('qobuz-login-panel'),
+    qobuzLoginUrl: document.getElementById('qobuz-login-url'),
+    qobuzLoginOpen: document.getElementById('qobuz-login-open'),
+    qobuzLoginCopy: document.getElementById('qobuz-login-copy'),
+    qobuzLoginRedirect: document.getElementById('qobuz-login-redirect'),
+    qobuzLoginStatus: document.getElementById('qobuz-login-status'),
+    qobuzLoginFinishBtn: document.getElementById('qobuz-login-finish'),
+    qobuzLoginCancelBtn: document.getElementById('qobuz-login-cancel'),
+    qobuzLoginCloseBtn: document.getElementById('qobuz-login-close'),
     settingsMaintenanceStatus: document.getElementById('settings-maintenance-status'),
     settingsMaintenanceCurrent: document.getElementById('settings-maintenance-current'),
     settingsMaintenanceLatestRow: document.getElementById('settings-maintenance-latest-row'),
@@ -1459,6 +1468,7 @@ function setupSettingsActions() {
     });
     const backdrop = elements.settingsPanel.querySelector('.manage-overlay-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => toggleSettingsPanel(false));
+    setupQobuzLoginModal();
     renderSettingsPanel();
 }
 
@@ -2359,47 +2369,93 @@ async function beginQobuzLogin() {
         const resp = await fetch('/api/streaming/qobuz/auth/login', { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Could not start the Qobuz login');
-        if (data.started === false && data.reason === 'already-in-progress' && data.login_url) {
-            showQobuzLoginDialog(data.login_url);
-            return;
-        }
-        showQobuzLoginDialog(data.login_url);
+        if (!data.login_url) throw new Error('Qobuz login did not return a sign-in URL');
+        openQobuzLoginModal(data.login_url);
     } catch (error) {
         showToast(error.message || 'Could not start the Qobuz login', 'error');
     }
 }
 
+const qobuzLoginState = { loginUrl: '', finishing: false, wired: false };
+
+function setQobuzLoginStatus(message, mode = '') {
+    if (!elements.qobuzLoginStatus) return;
+    elements.qobuzLoginStatus.textContent = message || '';
+    elements.qobuzLoginStatus.classList.toggle('switching', mode === 'busy');
+}
+
+function setQobuzLoginBusy(busy) {
+    qobuzLoginState.finishing = !!busy;
+    if (elements.qobuzLoginFinishBtn) elements.qobuzLoginFinishBtn.disabled = !!busy;
+    if (elements.qobuzLoginCancelBtn) elements.qobuzLoginCancelBtn.disabled = !!busy;
+    if (elements.qobuzLoginCloseBtn) elements.qobuzLoginCloseBtn.disabled = !!busy;
+    if (elements.qobuzLoginRedirect) elements.qobuzLoginRedirect.disabled = !!busy;
+}
+
+function openQobuzLoginModal(loginUrl) {
+    if (!elements.qobuzLoginPanel) return;
+    qobuzLoginState.loginUrl = String(loginUrl || '');
+    if (elements.qobuzLoginUrl) elements.qobuzLoginUrl.value = qobuzLoginState.loginUrl;
+    if (elements.qobuzLoginOpen) elements.qobuzLoginOpen.href = qobuzLoginState.loginUrl || '#';
+    if (elements.qobuzLoginRedirect && document.activeElement !== elements.qobuzLoginRedirect) {
+        elements.qobuzLoginRedirect.value = '';
+    }
+    setQobuzLoginBusy(false);
+    setQobuzLoginStatus('Waiting for sign-in…');
+    elements.qobuzLoginPanel.classList.remove('hidden');
+    // Stacked above the settings dialog: the qbzd listener keeps running
+    // while the operator switches tabs; only explicit Cancel ends it.
+    window.FXRouteModal?.open(elements.qobuzLoginPanel, {
+        initialFocus: elements.qobuzLoginOpen,
+        onEscape: () => void cancelQobuzLogin(),
+    });
+}
+
+function closeQobuzLoginModal() {
+    if (!elements.qobuzLoginPanel) return;
+    elements.qobuzLoginPanel.classList.add('hidden');
+    window.FXRouteModal?.close(elements.qobuzLoginPanel);
+}
+
 async function cancelQobuzLogin() {
+    // Explicit cancel only: never fired by blur, tab switch, or backdrop.
     try {
         await fetch('/api/streaming/qobuz/auth/login/cancel', { method: 'POST' });
     } catch (_error) {
         // Best-effort cleanup; the next Connect click restarts the flow.
+    } finally {
+        setQobuzLoginBusy(false);
+        closeQobuzLoginModal();
     }
 }
 
-function showQobuzLoginDialog(loginUrl) {
-    const message = [
-        'Qobuz sign-in (via qbzd):',
-        '',
-        '1. Open the Qobuz sign-in page on any device in your network.',
-        '2. Sign in — the browser lands on a page that fails to load. That is expected.',
-        '3. Copy the full address from the browser bar and paste it here.',
-    ].join('\n');
-    const pasted = window.prompt(message + '\n\nSign-in URL (open manually):', loginUrl);
-    if (pasted === null) {
-        void cancelQobuzLogin();
-        return; // canceled
+async function copyQobuzLoginUrl() {
+    const url = qobuzLoginState.loginUrl || elements.qobuzLoginUrl?.value || '';
+    if (!url) return;
+    try {
+        await navigator.clipboard.writeText(url);
+        showToast('Sign-in link copied.', 'success');
+    } catch (_error) {
+        try {
+            elements.qobuzLoginUrl?.focus();
+            elements.qobuzLoginUrl?.select();
+        } catch (_selectError) { /* input unavailable */ }
+        const ok = document.execCommand ? document.execCommand('copy') : false;
+        showToast(ok ? 'Sign-in link copied.' : 'Copy the sign-in URL manually.', ok ? 'success' : 'info');
     }
-    const url = String(pasted || '').trim();
-    if (!url || url === loginUrl) {
-        void cancelQobuzLogin();
-        showToast('Login canceled — click Connect to try again.', 'info');
+}
+
+async function finishQobuzLoginFromModal() {
+    if (qobuzLoginState.finishing) return;
+    const pasted = String(elements.qobuzLoginRedirect?.value || '').trim();
+    if (!pasted || pasted === qobuzLoginState.loginUrl) {
+        setQobuzLoginStatus('Paste the redirect URL from the Qobuz sign-in tab, then press Connect.');
+        showToast('Paste the redirect URL first — the login is still waiting.', 'info');
+        elements.qobuzLoginRedirect?.focus();
         return;
     }
-    void finishQobuzLogin(url);
-}
-
-async function finishQobuzLogin(pasted) {
+    setQobuzLoginBusy(true);
+    setQobuzLoginStatus('Completing the Qobuz login…', 'busy');
     try {
         const resp = await fetch('/api/streaming/qobuz/auth/login/finish', {
             method: 'POST',
@@ -2411,12 +2467,32 @@ async function finishQobuzLogin(pasted) {
         if (data.ok === false) {
             throw new Error(data.output || 'qbzd rejected the pasted URL');
         }
+        closeQobuzLoginModal();
         showToast(data.authenticated ? 'Qobuz account connected.' : 'Login finished — verifying…', 'success');
     } catch (error) {
+        setQobuzLoginStatus(error.message || 'Qobuz login failed — check the pasted URL and try again.');
         showToast(error.message || 'Qobuz login failed', 'error');
     } finally {
+        setQobuzLoginBusy(false);
         void fetchProviderAdmin();
     }
+}
+
+function setupQobuzLoginModal() {
+    if (qobuzLoginState.wired || !elements.qobuzLoginPanel) return;
+    qobuzLoginState.wired = true;
+    elements.qobuzLoginCopy?.addEventListener('click', () => void copyQobuzLoginUrl());
+    elements.qobuzLoginFinishBtn?.addEventListener('click', () => void finishQobuzLoginFromModal());
+    elements.qobuzLoginCancelBtn?.addEventListener('click', () => void cancelQobuzLogin());
+    elements.qobuzLoginCloseBtn?.addEventListener('click', () => void cancelQobuzLogin());
+    elements.qobuzLoginRedirect?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            void finishQobuzLoginFromModal();
+        }
+    });
+    // Backdrop clicks must not cancel: the operator leaves this modal open
+    // while completing the sign-in in another tab.
 }
 
 async function qobuzLogout() {

@@ -1090,6 +1090,19 @@ body {
     line-height: 1;
 }
 
+/* Qobuz/qbzd login stacks above the settings dialog it is launched from. */
+.qobuz-login-overlay {
+    z-index: calc(var(--z-overlay) + 10);
+}
+.qobuz-login-overlay .url-input {
+    width: 100%;
+}
+.qobuz-login-overlay a.btn-primary {
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+}
+
 /* ============================================================
    Toasts
    ============================================================ */
