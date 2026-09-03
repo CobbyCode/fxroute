@@ -52,11 +52,48 @@ class HostCaptureRunner:
         calibration_curve: tuple[np.ndarray, np.ndarray] | None,
         mic_input_channel_index: int,
         electrical_reference_channel_index: int | None = None,
+        skip_pre_sweep_diagnostics: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         store = self._store
         record_node_name = f"fxroute-measure-record-{job_id}"
         play_node_name = f"fxroute-measure-play-{job_id}"
         sample_count = int(round(sample_rate * record_duration_seconds))
+        # Temporary phase instrumentation (no logic impact): monotonic marks
+        # around each spawn/link/wait/teardown/analysis step to locate the
+        # remaining per-sweep overhead. Emitted as one HOSTCAP-PHASES line.
+        phase: dict[str, float] = {"enter": time.monotonic()}
+
+        def _emit_hostcap_phases(outcome: str) -> None:
+            try:
+                marks = dict(phase)
+                marks.setdefault("emit", time.monotonic())
+                order = (
+                    "enter", "pre_state", "record_spawned", "record_linked",
+                    "preroll_done", "play_spawned", "play_linked",
+                    "play_done", "record_done", "monitor_joined",
+                    "torn_down", "analysed", "diagnosed", "emit",
+                )
+                durations_ms: dict[str, float] = {}
+                prev = marks.get("enter", 0.0)
+                for key in order[1:]:
+                    if key in marks:
+                        durations_ms[key] = round((marks[key] - prev) * 1000.0, 1)
+                        prev = marks[key]
+                logger.info(
+                    "HOSTCAP-PHASES job=%s owner=%s outcome=%s sample_count_path=%s "
+                    "play_timed_out=%s play_rc=%s record_rc=%s skip_diag=%s phases_ms=%s",
+                    job_id,
+                    owner_job_id,
+                    outcome,
+                    bool(store._pw_record_supports_option("--sample-count")),
+                    bool(play_timed_out),
+                    play_process.returncode if play_process is not None else None,
+                    record_process.returncode if record_process.poll() is not None else None,
+                    bool(skip_pre_sweep_diagnostics),
+                    json.dumps(durations_ms, sort_keys=True),
+                )
+            except Exception:
+                pass
         record_command = [
             "pw-record",
             "-P",
@@ -123,6 +160,7 @@ class HostCaptureRunner:
             job_id=job_id,
             sample_rate=sample_rate,
             playback_route=playback_route,
+            include_diagnostics=not skip_pre_sweep_diagnostics,
         )
         logger.warning(
             "MEASUREMENT-STATE-CHECK pre-sweep state: %s",
@@ -134,6 +172,7 @@ class HostCaptureRunner:
                 f"Measurement pre-sweep state check failed: {pre_sweep_failure}. "
                 "Helper/config not in consistent state - sweep refused."
             )
+        phase["pre_state"] = time.monotonic()
 
         record_process = store._start_job_process(owner_job_id, record_command)
         monitored_channel_index = store._recorded_mic_channel_index(
@@ -147,6 +186,7 @@ class HostCaptureRunner:
             daemon=True,
         )
         level_monitor_thread.start()
+        phase["record_spawned"] = time.monotonic()
         play_process: subprocess.Popen[str] | None = None
         play_stdout = ""
         play_stderr = ""
@@ -173,6 +213,7 @@ class HostCaptureRunner:
                     mic_input_channel_index=mic_input_channel_index,
                     record_process=record_process,
                 )
+            phase["record_linked"] = time.monotonic()
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
                     store._routing._build_measurement_routing_snapshot(
@@ -185,8 +226,10 @@ class HostCaptureRunner:
                     )
                 )
             time.sleep(record_preroll_seconds)
+            phase["preroll_done"] = time.monotonic()
 
             play_process = store._start_job_process(owner_job_id, play_command)
+            phase["play_spawned"] = time.monotonic()
             if playback_route["route"] == "direct-sink":
                 playback_route_diagnostics = store._routing._link_measurement_playback_to_direct_sink(
                     play_node_name=play_node_name,
@@ -194,6 +237,7 @@ class HostCaptureRunner:
                     playback_route=playback_route,
                 )
             time.sleep(0.2)
+            phase["play_linked"] = time.monotonic()
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
                     store._routing._build_measurement_routing_snapshot(
@@ -217,6 +261,7 @@ class HostCaptureRunner:
                     if play_process.poll() is None:
                         play_process.kill()
                     play_stdout, play_stderr = play_process.communicate(timeout=2)
+            phase["play_done"] = time.monotonic()
 
             if store._pw_record_supports_option("--sample-count"):
                 record_stdout, record_stderr = record_process.communicate(timeout=record_duration_seconds + 8)
@@ -229,7 +274,9 @@ class HostCaptureRunner:
                 except subprocess.TimeoutExpired:
                     record_process.kill()
                     record_stdout, record_stderr = record_process.communicate(timeout=2)
+            phase["record_done"] = time.monotonic()
         except Exception:
+            _emit_hostcap_phases("error")
             if play_process is not None and play_process.poll() is None:
                 play_process.kill()
                 try:
@@ -247,6 +294,7 @@ class HostCaptureRunner:
             level_monitor_stop.set()
             if level_monitor_thread.is_alive():
                 level_monitor_thread.join(timeout=1.0)
+            phase["monitor_joined"] = time.monotonic()
             store._routing._cleanup_measurement_playback_links(
                 play_node_name=play_node_name,
                 temporary_links=playback_route_diagnostics.get("temporary_playback_links", []),
@@ -255,6 +303,7 @@ class HostCaptureRunner:
                 source_node_name=mic_source_node_name,
                 record_node_name=record_node_name,
             )
+            phase["torn_down"] = time.monotonic()
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
                     store._routing._build_measurement_routing_snapshot(
@@ -319,6 +368,7 @@ class HostCaptureRunner:
             if electrical_reference_channel_index is not None
             else "inverse log-sweep deconvolution with host-reference dual-channel capture"
         )
+        phase["analysed"] = time.monotonic()
         analysis_clock = analysis.get("clock") if isinstance(analysis.get("clock"), dict) else {}
         analysis_clock.update({
             "timing_channel": reference_channel_label,
@@ -376,6 +426,7 @@ class HostCaptureRunner:
         playback_node = store._routing._lookup_pipewire_audio_node(playback_target["target_name"])
         capture_node = store._routing._lookup_pipewire_audio_node(mic_source_node_name)
         reference_node = store._routing._lookup_pipewire_audio_node(str(reference_capture.get("source_node_name") or ""))
+        phase["diagnosed"] = time.monotonic()
         uses_monitor_source = str(reference_capture.get("source_node_name") or "").endswith(".monitor")
         routing_diagnostics = {
             "schema": "fxroute.measurement-routing-diagnostics.v1",
@@ -451,6 +502,7 @@ class HostCaptureRunner:
             "debug" if detailed_diagnostics_enabled else "off",
         )
         logger.debug("Measurement routing diagnostics: %s", json.dumps(routing_diagnostics, sort_keys=True))
+        _emit_hostcap_phases("ok")
         return (
             analysis,
             {

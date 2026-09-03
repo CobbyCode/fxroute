@@ -70,6 +70,9 @@ CAPTURE_CLIP_FAIL_DBFS = -0.2
 # Job lifecycle and retention policy shared by the store and persistence.
 TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
 JOB_RECORD_RETENTION_DAYS = 30
+# Minimum gap between full retention scans: the scan runs after a job
+# finalizes, but back-to-back sweeps must not each re-scan the records dir.
+JOB_RECORD_RETENTION_MIN_INTERVAL_SECONDS = 3600.0
 IR_DEBUG_SEGMENT_RETENTION_SEGMENTS = 10
 
 # Analyzer trusted-band and response-outlier thresholds.

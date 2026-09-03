@@ -512,6 +512,7 @@ class MeasurementRouting:
         job_id: str,
         sample_rate: int,
         playback_route: dict,
+        include_diagnostics: bool = True,
     ):
         """Capture comprehensive helper/config state before sweep.
 
@@ -519,6 +520,11 @@ class MeasurementRouting:
         inconsistent and the sweep must be refused.
 
         Mode-aware: stereo/direct-sink routes do not require a 2.x helper.
+
+        The fail-closed validation (runtime active/rate/mode/layout) always
+        runs in-process. The diagnostic subprocess batch (journalctl,
+        pw-metadata, pactl) is informational only and can be skipped for
+        back-to-back sweeps with an already verified identical DSP state.
         """
         route_name = str(playback_route.get("route") or "")
         output_mode = str(playback_route.get("output_mode") or "unknown")
@@ -568,6 +574,17 @@ class MeasurementRouting:
             failures.append("native DSP effects are not bypassed for raw-helper measurement")
         if failures:
             snapshot["validation_failure"] = "; ".join(failures)
+
+        if not include_diagnostics:
+            snapshot["diagnostics"] = "skipped"
+            snapshot["recent_suspend_count"] = None
+            snapshot["last_suspend_line"] = None
+            snapshot["pipewire_force_rate"] = "skipped"
+            snapshot["pactl_sink_name"] = None
+            snapshot["pactl_sink_sample_rate"] = None
+            snapshot["pactl_master_volume"] = None
+            snapshot["pactl_master_mute"] = None
+            return snapshot
 
         # Sink suspend/resume history
         try:

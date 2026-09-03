@@ -38,6 +38,7 @@ from measurement.constants import (
     CAPTURE_CLIP_FAIL_DBFS,
     IR_DEBUG_SEGMENT_RETENTION_SEGMENTS,
     JOB_RECORD_RETENTION_DAYS,
+    JOB_RECORD_RETENTION_MIN_INTERVAL_SECONDS,
     MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     MEASUREMENT_SCOPE_NOTE,
     MEASUREMENT_SCOPE_RAW_HELPER,
@@ -164,6 +165,11 @@ class MeasurementStore:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._shutdown = False
         self._last_successful_lag: int | None = None
+        # Short-lived input inventory: discovery shells out to wpctl/pactl
+        # per source, so back-to-back sweeps reuse a fresh listing instead of
+        # re-running ~10 subprocesses. Any resolve miss falls back to a fresh
+        # discovery, so device changes surface as proper errors, not stale data.
+        self._capture_inputs_cache: dict[str, Any] = {}
         self.audio_adapter = MeasurementAudioAdapter()
         self._persistence = MeasurementPersistence(self)
         self._job_runner = MeasurementJobRunner(
@@ -243,7 +249,8 @@ class MeasurementStore:
         self._persistence.delete_measurement(measurement_id)
 
     def list_inputs(self) -> dict[str, Any]:
-        inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
+        self.invalidate_capture_inputs_cache()
+        inputs = self._measurement_inputs_with_sample_rate(self._cached_capture_inputs())
         settings = self._read_settings()
         measure_settings = settings.get("measure") if isinstance(settings.get("measure"), dict) else {}
         selection = resolve_measurement_input_selection(inputs, measure_settings)
@@ -325,9 +332,19 @@ class MeasurementStore:
             )
 
         inputs = self._measurement_inputs_with_sample_rate(
-            await asyncio.to_thread(self._discover_capture_inputs)
+            await asyncio.to_thread(self._cached_capture_inputs)
         )
-        selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
+        try:
+            selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
+        except ValueError:
+            self.invalidate_capture_inputs_cache()
+            fresh_raw = await asyncio.to_thread(self._discover_capture_inputs)
+            try:
+                self._capture_inputs_cache = {"at": time.monotonic(), "inputs": deepcopy(fresh_raw)}
+            except Exception:
+                pass
+            fresh_inputs = self._measurement_inputs_with_sample_rate(fresh_raw)
+            selected_input = self._resolve_capture_input(fresh_inputs, input_id=input_id, input_key=input_key)
         if not selected_input.get("available"):
             raise ValueError("Selected capture input is not available")
 
@@ -421,6 +438,7 @@ class MeasurementStore:
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
         playback_gain: float | None = None,
         measurement_role: str = "",
+        skip_pre_sweep_diagnostics: bool = False,
     ) -> dict[str, Any]:
         setup = await self._prepare_measurement_job_setup(
             input_id=input_id,
@@ -453,6 +471,7 @@ class MeasurementStore:
             "playback_gain": normalized_playback_gain,
             "measurement_role": normalized_role,
             "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
+            "_skip_pre_sweep_diagnostics": bool(skip_pre_sweep_diagnostics),
         })
         return self._register_measurement_job(job, self._execute_capture_job)
 
@@ -515,8 +534,11 @@ class MeasurementStore:
         return selected
 
     def resolve_capture_input_id(self, *, input_id: str, input_key: str = "") -> str:
-        inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
-        selected = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
+        inputs = self._measurement_inputs_with_sample_rate(self._cached_capture_inputs())
+        try:
+            selected = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
+        except ValueError:
+            selected = self._resolve_capture_input_fresh(input_id=input_id, input_key=input_key)
         if not selected.get("available"):
             raise ValueError("Selected capture input is not available")
         return str(selected["id"])
@@ -675,6 +697,7 @@ class MeasurementStore:
 
     def _execute_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
         job_id = str(job["id"])
+        cj: dict[str, float] = {"enter": time.monotonic()}
         owner_job_id = str(job.get("_owner_job_id") or job_id)
         selected_input = job.get("input") or {}
         input_channels = job.get("input_channels") if isinstance(job.get("input_channels"), dict) else {}
@@ -762,6 +785,7 @@ class MeasurementStore:
             start_hz=sweep_start_hz,
             end_hz=sweep_end_hz,
         )
+        cj["sweepfile"] = time.monotonic()
 
         calibration_curve = None
         calibration_applied = False
@@ -776,6 +800,7 @@ class MeasurementStore:
 
         reference_warning = str(input_channels.get("reference_disabled_reason") or "").strip()
         mic_target = str(selected_input.get("node_serial") or source_node_name).strip()
+        cj["targets"] = time.monotonic()
         policy_result = self._capture_policy.run(
             job_id=job_id,
             owner_job_id=owner_job_id,
@@ -811,12 +836,14 @@ class MeasurementStore:
                 "record_duration_seconds": record_duration_seconds,
                 "calibration_curve": calibration_curve,
                 "mic_input_channel_index": mic_input_channel_index,
+                "skip_pre_sweep_diagnostics": bool(job.get("_skip_pre_sweep_diagnostics", False)),
             },
         )
         analysis = policy_result.analysis
         capture_info = policy_result.capture_info
         playback_info = policy_result.playback_info
         attempts_used = policy_result.attempts_used
+        cj["policy_end"] = time.monotonic()
         final_capture_level_low = policy_result.final_capture_level_low
         mic_auto_boosted = policy_result.mic_auto_boosted
         reference_warning = policy_result.reference_warning
@@ -840,6 +867,21 @@ class MeasurementStore:
             },
             measurement_role=str(job.get("measurement_role") or ""),
         )
+        cj["measured"] = time.monotonic()
+        try:
+            _order = ("enter", "targets", "sweepfile", "policy_end", "measured")
+            _prev = cj.get("enter", 0.0)
+            _durs = {}
+            for _key in _order[1:]:
+                if _key in cj:
+                    _durs[_key] = round((cj[_key] - _prev) * 1000.0, 1)
+                    _prev = cj[_key]
+            logger.info(
+                "CAPJOB-PHASES job=%s attempts=%s phases_ms=%s",
+                job_id, attempts_used, json.dumps(_durs, sort_keys=True),
+            )
+        except Exception:
+            pass
         if mic_auto_boosted and isinstance(capture_info, dict):
             capture_info["mic_auto_boosted"] = True
             capture_info["mic_auto_boost_target_percent"] = HOST_SWEEP_AUTO_GAIN_TARGET_PERCENT
@@ -1685,6 +1727,40 @@ class MeasurementStore:
         inputs.extend(self._discover_capture_inputs_from_pactl(seen_ids, seen_node_names))
         inputs.sort(key=lambda item: (0 if item.get("is_default") else 1, item.get("label") or item.get("node_name") or item["id"]))
         return inputs
+
+    _CAPTURE_INPUTS_CACHE_TTL_SECONDS = 45.0
+
+    def invalidate_capture_inputs_cache(self) -> None:
+        """Drop the cached input inventory so the next sweep rediscovers."""
+        self._capture_inputs_cache = {}
+
+    def _cached_capture_inputs(self) -> list[dict[str, Any]]:
+        """Input inventory, reusing a fresh listing for back-to-back sweeps."""
+        try:
+            cached = self._capture_inputs_cache or {}
+            inputs = cached.get("inputs")
+            at = float(cached.get("at") or 0.0)
+            if isinstance(inputs, list) and (time.monotonic() - at) < self._CAPTURE_INPUTS_CACHE_TTL_SECONDS:
+                return deepcopy(inputs)
+        except Exception:
+            pass
+        inputs = self._discover_capture_inputs()
+        try:
+            self._capture_inputs_cache = {"at": time.monotonic(), "inputs": deepcopy(inputs)}
+        except Exception:
+            pass
+        return inputs
+
+    def _resolve_capture_input_fresh(
+        self,
+        *,
+        input_id: str,
+        input_key: str = "",
+    ) -> dict[str, Any]:
+        """Resolve against a fresh discovery (slow path after a cache miss)."""
+        self.invalidate_capture_inputs_cache()
+        inputs = self._measurement_inputs_with_sample_rate(self._cached_capture_inputs())
+        return self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
 
     def _discover_capture_inputs_from_wpctl(self, seen_ids: set[str], seen_node_names: set[str]) -> list[dict[str, Any]]:
         try:

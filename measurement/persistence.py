@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import re
+import time
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from measurement.constants import (
     DISPLAY_DEFAULTS,
     IR_DEBUG_SEGMENT_RETENTION_SEGMENTS,
     JOB_RECORD_RETENTION_DAYS,
+    JOB_RECORD_RETENTION_MIN_INTERVAL_SECONDS,
     MEASUREMENT_SCOPE_NOTE,
     TERMINAL_JOB_STATUSES,
     TRACE_COLORS,
@@ -32,6 +34,7 @@ class MeasurementPersistence:
 
     def __init__(self, store):
         self._store = store
+        self._last_retention_run_monotonic = 0.0
 
     def list_measurements(self) -> dict[str, Any]:
         measurements = []
@@ -612,9 +615,23 @@ class MeasurementPersistence:
         Symlinks are never followed, and malformed records/timestamps are
         skipped conservatively.  A failure here is logged and must never
         break job finalization or a measurement start.
+
+        Throttled to at most one full scan per
+        JOB_RECORD_RETENTION_MIN_INTERVAL_SECONDS: per-sweep retention
+        would otherwise re-parse the whole records dir (hundreds of MB)
+        inside the event loop once per sweep.  Disk candidates are
+        pre-filtered by file mtime so only plausibly stale records are
+        read; a record whose mtime is still fresh cannot have an older
+        updated_at, so the filter can only delay a deletion, never cause
+        a wrong one.
         """
         try:
+            now_monotonic = time.monotonic()
+            if now_monotonic - self._last_retention_run_monotonic < JOB_RECORD_RETENTION_MIN_INTERVAL_SECONDS:
+                return
+            self._last_retention_run_monotonic = now_monotonic
             cutoff = datetime.now(timezone.utc) - timedelta(days=JOB_RECORD_RETENTION_DAYS)
+            cutoff_timestamp = cutoff.timestamp()
             with self._store._job_process_lock:
                 stale_ids: set[str] = set()
                 for job_id, job in list(self._store._jobs.items()):
@@ -631,6 +648,11 @@ class MeasurementPersistence:
                     if job_id in self._store._jobs:
                         continue
                     if path.is_symlink():
+                        continue
+                    try:
+                        if path.stat().st_mtime >= cutoff_timestamp:
+                            continue
+                    except OSError:
                         continue
                     try:
                         record = json.loads(path.read_text(encoding="utf-8"))

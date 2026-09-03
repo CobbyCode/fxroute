@@ -18,6 +18,7 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
     get_audio_output_overview,
+    get_samplerate_status,
     set_audio_output_mode,
 )
 from audio.system_volume import get_output_volume_unclamped
@@ -51,6 +52,121 @@ from .jobs import (
 )
 
 logger = logging.getLogger(__name__)
+
+_AUTO_SUB_CONFIG_FP_KEY = "_auto_sub_last_config_fp"
+_AUTO_SUB_CONFIG_OK_KEY = "_auto_sub_last_config_ok"
+_AUTO_SUB_PREARM_FP_KEY = "_auto_sub_last_prearm_fp"
+_AUTO_SUB_PREARM_OK_KEY = "_auto_sub_last_prearm_ok"
+
+
+def _auto_sub_candidate_config_fingerprint(
+    *,
+    output_mode: str,
+    fc: int,
+    delay_ms: float,
+    sub1_alignment_ms: float | None,
+    sub2_alignment_ms: float | None,
+    active_subs: tuple[str, ...],
+    sub1_polarity: str | None,
+    sub2_polarity: str | None,
+    original_level: float,
+    original_polarity: str,
+    original_highpass: bool,
+    original_config_snapshot: dict[str, Any] | None,
+) -> str:
+    """Stable fingerprint of the DSP state a candidate sweep requires.
+
+    L and R of one combined candidate share it; different delays, mutes,
+    polarities or snapshots do not. Lets the R sweep reuse L's verified
+    config/pre-arm instead of persisting and syncing the same state twice.
+    """
+    try:
+        if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
+            snapshot = original_config_snapshot or {}
+            sub1_delay = _auto_sub_clamped_delay(
+                sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms
+            )
+            sub2_delay = _auto_sub_clamped_delay(
+                sub2_alignment_ms
+                if sub2_alignment_ms is not None
+                else _auto_sub_22_sub(snapshot, "sub2").get("alignment_ms", 0.0)
+            )
+            sub1_snap = _auto_sub_22_sub(snapshot, "sub1")
+            sub2_snap = _auto_sub_22_sub(snapshot, "sub2")
+            payload = {
+                "mode": output_mode,
+                "fc": fc,
+                "s1": sub1_delay,
+                "s2": sub2_delay,
+                "active": sorted(active_subs),
+                "p1": sub1_polarity,
+                "p2": sub2_polarity,
+                "g": _auto_sub_22_global_config(snapshot),
+                "l1": float(sub1_snap.get("level_db", 0.0) or 0.0),
+                "l2": float(sub2_snap.get("level_db", 0.0) or 0.0),
+                "sp1": str(sub1_snap.get("polarity", "normal")),
+                "sp2": str(sub2_snap.get("polarity", "normal")),
+            }
+        else:
+            payload = {
+                "mode": output_mode,
+                "fc": fc,
+                "d": _auto_sub_clamped_delay(delay_ms),
+                "lvl": float(original_level),
+                "pol": str(original_polarity),
+                "hp": bool(original_highpass),
+            }
+        return json.dumps(payload, sort_keys=True)
+    except Exception:
+        return f"fallback:{output_mode}:{delay_ms}:{sub1_alignment_ms}:{sub2_alignment_ms}"
+
+
+def _auto_sub_verify_candidate_alignment(
+    verify: dict[str, Any],
+    *,
+    output_mode: str,
+    delay_ms: float,
+    sub1_alignment_ms: float | None,
+    sub2_alignment_ms: float | None,
+    original_config_snapshot: dict[str, Any] | None,
+) -> bool:
+    """Cheap single-read check that the persisted mode matches the candidate."""
+    try:
+        if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
+            snapshot = original_config_snapshot or {}
+            sub1_delay = _auto_sub_clamped_delay(
+                sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms
+            )
+            sub2_delay = _auto_sub_clamped_delay(
+                sub2_alignment_ms
+                if sub2_alignment_ms is not None
+                else _auto_sub_22_sub(snapshot, "sub2").get("alignment_ms", 0.0)
+            )
+            return bool(_auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay))
+        return float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
+    except Exception:
+        return False
+
+
+async def _auto_sub_prearm_reusable(auto_sub_rate: int) -> bool:
+    """True when the DSP helper is still settled at the sweep rate.
+
+    Single samplerate read plus local helper snapshot; no sync, no
+    pulse-suspend, no rate wait. Any mismatch returns False so the caller
+    falls back to the full pre-arm.
+    """
+    try:
+        if _dsp_runtime() is None:
+            return True
+        samplerate_status = await asyncio.to_thread(get_samplerate_status)
+        if samplerate_status.get("active_rate") != auto_sub_rate:
+            return False
+        snapshot = _dsp_runtime().snapshot()
+        if not snapshot.get("active"):
+            return False
+        return (snapshot.get("config") or {}).get("sample_rate") == auto_sub_rate
+    except Exception:
+        return False
 
 
 async def _auto_sub_fresh_master_percent() -> int:
@@ -152,50 +268,81 @@ async def _measure_auto_sub_candidate(
         job["progress"]["channel"] = measure_channel
 
     config_success = False
+    config_fingerprint = _auto_sub_candidate_config_fingerprint(
+        output_mode=output_mode,
+        fc=fc,
+        delay_ms=delay_ms,
+        sub1_alignment_ms=sub1_alignment_ms,
+        sub2_alignment_ms=sub2_alignment_ms,
+        active_subs=active_subs,
+        sub1_polarity=sub1_polarity,
+        sub2_polarity=sub2_polarity,
+        original_level=original_level,
+        original_polarity=original_polarity,
+        original_highpass=original_highpass,
+        original_config_snapshot=original_config_snapshot,
+    )
+    config_reused = (
+        job.get(_AUTO_SUB_CONFIG_OK_KEY) is True
+        and job.get(_AUTO_SUB_CONFIG_FP_KEY) == config_fingerprint
+    )
     try:
-        if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-            snapshot = original_config_snapshot or {}
-            sub1_delay = _auto_sub_clamped_delay(sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms)
-            sub2_delay = _auto_sub_clamped_delay(sub2_alignment_ms if sub2_alignment_ms is not None else _auto_sub_22_sub(snapshot, "sub2").get("alignment_ms", 0.0))
-            sub_config = _auto_sub_22_global_config(snapshot)
-            subwoofers_config = _auto_sub_22_candidate_subwoofers(
-                snapshot,
-                sub1_alignment_ms=sub1_delay,
-                sub2_alignment_ms=sub2_delay,
-                active_subs=active_subs,
-                sub1_polarity=sub1_polarity,
-                sub2_polarity=sub2_polarity,
-            )
-            persisted_overview = await asyncio.to_thread(
-                set_audio_output_mode, output_mode, sub_config, subwoofers_config,
-            )
-        else:
-            sub_config = {
-                "crossover_frequency_hz": fc,
-                "sub_alignment_ms": delay_ms,
-                "sub_level_db": original_level,
-                "sub_polarity": original_polarity,
-                "main_highpass_enabled": original_highpass,
-            }
-            persisted_overview = await asyncio.to_thread(
-                set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, sub_config,
-            )
-        if _dsp_runtime() is not None:
-            await _auto_sub_sync_dsp_runtime(
+        if config_reused:
+            verify = _load_audio_output_mode()
+            config_success = _auto_sub_verify_candidate_alignment(
+                verify,
                 output_mode=output_mode,
-                persisted_overview=persisted_overview,
+                delay_ms=delay_ms,
+                sub1_alignment_ms=sub1_alignment_ms,
+                sub2_alignment_ms=sub2_alignment_ms,
+                original_config_snapshot=original_config_snapshot,
             )
-        _marks["config_set"] = time.monotonic()
-        await asyncio.sleep(0.5)
-        if _auto_sub_cancel_requested(job):
-            return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-        verify = _load_audio_output_mode()
-        if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-            config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
-        else:
-            config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
-        if not config_success:
-            await asyncio.sleep(0.15)
+            if config_success:
+                now = time.monotonic()
+                _marks["config_set"] = now
+                _marks["config_verify"] = now
+                logger.debug(
+                    "Auto-sub: reusing verified DSP config for delay %.2f ms channel=%s",
+                    delay_ms, measure_channel or channel,
+                )
+            else:
+                job[_AUTO_SUB_CONFIG_OK_KEY] = False
+                config_reused = False
+        if not config_reused:
+            if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
+                snapshot = original_config_snapshot or {}
+                sub1_delay = _auto_sub_clamped_delay(sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms)
+                sub2_delay = _auto_sub_clamped_delay(sub2_alignment_ms if sub2_alignment_ms is not None else _auto_sub_22_sub(snapshot, "sub2").get("alignment_ms", 0.0))
+                sub_config = _auto_sub_22_global_config(snapshot)
+                subwoofers_config = _auto_sub_22_candidate_subwoofers(
+                    snapshot,
+                    sub1_alignment_ms=sub1_delay,
+                    sub2_alignment_ms=sub2_delay,
+                    active_subs=active_subs,
+                    sub1_polarity=sub1_polarity,
+                    sub2_polarity=sub2_polarity,
+                )
+                persisted_overview = await asyncio.to_thread(
+                    set_audio_output_mode, output_mode, sub_config, subwoofers_config,
+                )
+            else:
+                sub_config = {
+                    "crossover_frequency_hz": fc,
+                    "sub_alignment_ms": delay_ms,
+                    "sub_level_db": original_level,
+                    "sub_polarity": original_polarity,
+                    "main_highpass_enabled": original_highpass,
+                }
+                persisted_overview = await asyncio.to_thread(
+                    set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, sub_config,
+                )
+            if _dsp_runtime() is not None:
+                await _auto_sub_sync_dsp_runtime(
+                    output_mode=output_mode,
+                    persisted_overview=persisted_overview,
+                )
+            _marks["config_set"] = time.monotonic()
+            await asyncio.sleep(0.5)
             if _auto_sub_cancel_requested(job):
                 return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
             verify = _load_audio_output_mode()
@@ -204,7 +351,7 @@ async def _measure_auto_sub_candidate(
             else:
                 config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
             if not config_success:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.15)
                 if _auto_sub_cancel_requested(job):
                     return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
                 verify = _load_audio_output_mode()
@@ -212,12 +359,25 @@ async def _measure_auto_sub_candidate(
                     config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
                 else:
                     config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
-        _marks["config_verify"] = time.monotonic()
+                if not config_success:
+                    await asyncio.sleep(0.5)
+                    if _auto_sub_cancel_requested(job):
+                        return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
+                    verify = _load_audio_output_mode()
+                    if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
+                        config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
+                    else:
+                        config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
+            _marks["config_verify"] = time.monotonic()
+            job[_AUTO_SUB_CONFIG_FP_KEY] = config_fingerprint
+            job[_AUTO_SUB_CONFIG_OK_KEY] = bool(config_success)
     except Exception as exc:
         logger.warning("Auto-sub: failed to configure delay %.2f ms: %s", delay_ms, exc)
+        job[_AUTO_SUB_CONFIG_OK_KEY] = False
 
     if not config_success:
         logger.warning("Auto-sub: skipping candidate %.2f ms — config sync failed", delay_ms)
+        job[_AUTO_SUB_CONFIG_OK_KEY] = False
         return _return_candidate({
             "delay_ms": delay_ms,
             "name": str(delay_ms),
@@ -228,13 +388,28 @@ async def _measure_auto_sub_candidate(
             "scan": stage,
         })
 
+    prearm_fingerprint = f"{auto_sub_rate}|{config_fingerprint}"
+    prearm_reused = (
+        job.get(_AUTO_SUB_PREARM_OK_KEY) is True
+        and job.get(_AUTO_SUB_PREARM_FP_KEY) == prearm_fingerprint
+    )
     try:
-        await _sync_dsp_runtime_for_measurement_sweep(auto_sub_rate)
-        _marks["pre_arm"] = time.monotonic()
+        if prearm_reused and await _auto_sub_prearm_reusable(auto_sub_rate):
+            _marks["pre_arm"] = time.monotonic()
+            logger.debug(
+                "Auto-sub: reusing settled DSP pre-arm at %s Hz for delay %.2f ms channel=%s",
+                auto_sub_rate, delay_ms, measure_channel or channel,
+            )
+        else:
+            await _sync_dsp_runtime_for_measurement_sweep(auto_sub_rate)
+            _marks["pre_arm"] = time.monotonic()
+            job[_AUTO_SUB_PREARM_FP_KEY] = prearm_fingerprint
+            job[_AUTO_SUB_PREARM_OK_KEY] = True
         if _auto_sub_cancel_requested(job):
             return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
     except Exception as exc:
         logger.exception("Auto-sub: pre-arm failed for delay %.2f ms", delay_ms)
+        job[_AUTO_SUB_PREARM_OK_KEY] = False
         return _return_candidate({
             "delay_ms": delay_ms,
             "name": str(delay_ms),
@@ -307,6 +482,7 @@ async def _measure_auto_sub_candidate(
             sweep_profile=auto_sub_sweep_profile,
             measurement_scope="raw_helper",
             playback_gain=playback_gain,
+            skip_pre_sweep_diagnostics=config_reused,
         )
         sweep_id = sweep_job["id"]
         job["current_sweep_id"] = sweep_id
@@ -321,7 +497,10 @@ async def _measure_auto_sub_candidate(
             return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
 
         sweep_ok = False
-        for _poll in range(120):
+        poll_iters = 0
+        poll_late_total = 0.0
+        poll_late_max = 0.0
+        for _poll in range(300):
             if _auto_sub_cancel_requested(job):
                 try:
                     measurement_store.cancel_job(sweep_id)
@@ -330,7 +509,13 @@ async def _measure_auto_sub_candidate(
                 if job.get("current_sweep_id") == sweep_id:
                     job["current_sweep_id"] = ""
                 return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-            await asyncio.sleep(0.5)
+            _wake_at = time.monotonic() + 0.2
+            await asyncio.sleep(0.2)
+            _late = time.monotonic() - _wake_at
+            poll_late_total += _late
+            if _late > poll_late_max:
+                poll_late_max = _late
+            poll_iters += 1
             try:
                 current = measurement_store.get_job(sweep_id)
             except KeyError:
@@ -349,6 +534,10 @@ async def _measure_auto_sub_candidate(
             await asyncio.sleep(0.5)
 
         _marks["sweep_poll_done"] = time.monotonic()
+        logger.info(
+            "AUTOSUB-POLL job=%s sweep=%s poll_iters=%d poll_late_total=%.2fs poll_late_max=%.2fs",
+            job.get("id") or "", sweep_id, poll_iters, poll_late_total, poll_late_max,
+        )
         measured_stage_peaks = await _dsp_runtime().read_output_peaks()
         stage_peak_comparison = _auto_sub_stage_peak_comparison(
             stage_peak_prediction, measured_stage_peaks, sink_gain=sink_gain,

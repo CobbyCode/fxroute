@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from measurement.store import (
     IR_DEBUG_SEGMENT_RETENTION_SEGMENTS,
     JOB_RECORD_RETENTION_DAYS,
+    JOB_RECORD_RETENTION_MIN_INTERVAL_SECONDS,
     MeasurementStore,
 )
 
@@ -136,7 +137,8 @@ class MeasurementRetentionTests(unittest.TestCase):
         ):
             store = self._store(tempdir)
             old_id = "measurement-job-disk-only"
-            (store.job_records_dir / f"{old_id}.json").write_text(json.dumps({
+            old_target = store.job_records_dir / f"{old_id}.json"
+            old_target.write_text(json.dumps({
                 "id": old_id,
                 "status": "failed",
                 "created_at": _old_timestamp(JOB_RECORD_RETENTION_DAYS + 2),
@@ -145,6 +147,10 @@ class MeasurementRetentionTests(unittest.TestCase):
                 "result": None,
                 "error": {"detail": "boom"},
             }))
+            # A genuinely aged record also has an aged file mtime; the
+            # mtime prefilter must let it through to the content check.
+            old_mtime = time.time() - (JOB_RECORD_RETENTION_DAYS + 2) * 86400
+            os.utime(old_target, (old_mtime, old_mtime))
 
             store._persistence._retain_job_history()
 
@@ -366,6 +372,89 @@ class MeasurementRetentionTests(unittest.TestCase):
             self.assertEqual(len(list(output_dir.glob("*.csv"))), IR_DEBUG_SEGMENT_RETENTION_SEGMENTS)
             self.assertFalse((output_dir / "seg-00.json").exists())
             self.assertFalse((output_dir / "seg-00.csv").exists())
+
+
+    def test_retention_scan_is_throttled_between_jobs(self):
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            old_id = "measurement-job-throttle"
+            record = {
+                "id": old_id,
+                "status": "completed",
+                "created_at": _old_timestamp(JOB_RECORD_RETENTION_DAYS + 1),
+                "updated_at": _old_timestamp(JOB_RECORD_RETENTION_DAYS + 1),
+                "message": "old",
+                "result": None,
+                "error": None,
+            }
+            target = store.job_records_dir / f"{old_id}.json"
+            target.write_text(json.dumps(record))
+            old_mtime = time.time() - (JOB_RECORD_RETENTION_DAYS + 1) * 86400
+            os.utime(target, (old_mtime, old_mtime))
+
+            # First scan deletes the stale record.
+            store._persistence._retain_job_history()
+            self.assertFalse(target.exists())
+
+            # Recreate the identical stale record: an immediate second scan
+            # must be throttled away, so the file survives.
+            target.write_text(json.dumps(record))
+            os.utime(target, (old_mtime, old_mtime))
+            store._persistence._retain_job_history()
+            self.assertTrue(target.exists())
+
+            # After the interval elapsed, the scan runs again and deletes it.
+            store._persistence._last_retention_run_monotonic = (
+                time.monotonic() - JOB_RECORD_RETENTION_MIN_INTERVAL_SECONDS - 1.0
+            )
+            store._persistence._retain_job_history()
+            self.assertFalse(target.exists())
+
+    def test_retention_mtime_prefilter_skips_fresh_files_without_reading(self):
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            for index in range(5):
+                fresh_id = f"measurement-job-fresh-{index}"
+                (store.job_records_dir / f"{fresh_id}.json").write_text(json.dumps({
+                    "id": fresh_id,
+                    "status": "completed",
+                    "created_at": store._utc_now(),
+                    "updated_at": store._utc_now(),
+                    "message": "fresh",
+                    "result": None,
+                    "error": None,
+                }))
+            old_id = "measurement-job-prefilter-old"
+            old_target = store.job_records_dir / f"{old_id}.json"
+            old_target.write_text(json.dumps({
+                "id": old_id,
+                "status": "failed",
+                "created_at": _old_timestamp(JOB_RECORD_RETENTION_DAYS + 2),
+                "updated_at": _old_timestamp(JOB_RECORD_RETENTION_DAYS + 2),
+                "message": "old",
+                "result": None,
+                "error": {"detail": "boom"},
+            }))
+            old_mtime = time.time() - (JOB_RECORD_RETENTION_DAYS + 2) * 86400
+            os.utime(old_target, (old_mtime, old_mtime))
+
+            read_paths = []
+            original_read_text = Path.read_text
+
+            def _tracking_read_text(path_self, *args, **kwargs):
+                read_paths.append(str(path_self))
+                return original_read_text(path_self, *args, **kwargs)
+
+            with patch.object(Path, "read_text", _tracking_read_text):
+                store._persistence._retain_job_history()
+
+            self.assertFalse(old_target.exists())
+            job_reads = [p for p in read_paths if str(store.job_records_dir) in p]
+            self.assertEqual(job_reads, [str(old_target)])
 
 
 if __name__ == "__main__":

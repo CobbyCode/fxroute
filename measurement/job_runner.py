@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import subprocess
 import threading
+import time
 from copy import deepcopy
 from typing import Any, Callable
 
@@ -56,6 +58,8 @@ class MeasurementJobRunner:
         return task
 
     async def run(self, job_id: str, job: dict[str, Any], executor: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+        # Temporary phase instrumentation (no logic impact).
+        _rm: dict[str, float] = {"run_start": time.monotonic()}
         with self.process_lock:
             was_cancelling_before = job_id in self.cancelled_jobs
             if not was_cancelling_before:
@@ -81,7 +85,9 @@ class MeasurementJobRunner:
                 previous_effect_bypass = await self._active_scope_enter()
                 scope_owned = True
 
+            _rm["scope_done"] = time.monotonic()
             worker_task = asyncio.create_task(asyncio.to_thread(executor, deepcopy(job)))
+            _rm["submitted"] = time.monotonic()
             try:
                 result = await asyncio.shield(worker_task)
             except asyncio.CancelledError:
@@ -100,6 +106,7 @@ class MeasurementJobRunner:
                         pass
                 raise
 
+            _rm["worker_back"] = time.monotonic()
             with self.process_lock:
                 if not self._is_terminal(job.get("status")):
                     if job_id in self.cancelled_jobs:
@@ -112,6 +119,7 @@ class MeasurementJobRunner:
                         if isinstance(result.get("calibration"), dict):
                             job["calibration"] = deepcopy(result["calibration"])
                         job["error"] = None
+            _rm["terminal"] = time.monotonic()
         except asyncio.CancelledError:
             with self.process_lock:
                 self.cancelled_jobs.add(job_id)
@@ -138,6 +146,17 @@ class MeasurementJobRunner:
                     await exit_scope(bool(previous_effect_bypass))
                 except Exception:
                     logger.exception("Failed to restore native DSP effect bypass after measurement")
+            try:
+                _order = ("run_start", "scope_done", "submitted", "worker_back", "terminal")
+                _prev = _rm.get("run_start", 0.0)
+                _durs: dict[str, float] = {}
+                for _key in _order[1:]:
+                    if _key in _rm:
+                        _durs[_key] = round((_rm[_key] - _prev) * 1000.0, 1)
+                        _prev = _rm[_key]
+                logger.info("CAPRUN-PHASES job=%s phases_ms=%s", job_id, json.dumps(_durs, sort_keys=True))
+            except Exception:
+                pass
             with self.process_lock:
                 self.processes.pop(job_id, None)
             try:
