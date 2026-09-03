@@ -369,8 +369,8 @@
     display: flex;
     align-items: center;
     gap: 0.8rem;
-    min-width: min(320px, calc(100vw - 2rem));
-    max-width: min(420px, calc(100vw - 2rem));
+    min-width: min(320px, calc(100% - 2rem));
+    max-width: min(420px, calc(100% - 2rem));
     padding: 0.65rem 0.85rem;
 }
 .now-playing-cover {

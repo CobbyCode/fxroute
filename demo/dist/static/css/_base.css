@@ -54,6 +54,7 @@ body {
         linear-gradient(180deg, #0b0b0e 0%, #0d0d10 55%, #0b0b0e 100%);
     color: var(--text-primary);
     min-height: 100vh;
+    min-height: 100dvh;
     padding-bottom: var(--playback-footer-space);
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;

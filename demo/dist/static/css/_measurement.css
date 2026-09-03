@@ -8,7 +8,9 @@
     position: relative;
     width: min(1240px, 100%);
     min-height: min(820px, calc(100vh - 2rem));
+    min-height: min(820px, calc(100dvh - 2rem));
     max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - 2rem);
     overflow: auto;
 }
 
@@ -544,7 +546,7 @@
     height: auto;
     aspect-ratio: 16 / 7;
     min-height: 320px;
-    touch-action: none;
+    touch-action: pan-y;
 }
 
 .measurement-empty {

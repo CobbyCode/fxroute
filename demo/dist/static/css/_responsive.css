@@ -74,7 +74,7 @@
             minmax(220px, 300px);
         row-gap: clamp(.9rem, 1.35vw, 1.35rem);
         column-gap: clamp(.75rem, 1.2vw, 1.25rem);
-        bottom: 5px;
+        bottom: max(5px, env(safe-area-inset-bottom));
         min-height: 98px;
         padding-block: .55rem;
     }
@@ -177,8 +177,8 @@
 
 @media (min-width: 701px) and (max-width: 1180px) {
     .playback-bar {
-        bottom: 5px;
-        width: calc(100vw - 16px);
+        bottom: max(5px, env(safe-area-inset-bottom));
+        width: calc(100% - 16px);
         min-height: 116px;
         grid-template-columns:
             minmax(220px, .96fr)
@@ -329,7 +329,7 @@
 @media (max-width: 700px) {
     .playback-bar {
         bottom: max(3px, env(safe-area-inset-bottom));
-        width: calc(100vw - 12px);
+        width: calc(100% - 12px);
         min-height: 0;
         grid-template-columns: minmax(0, 1fr) 84px;
         grid-template-rows: auto auto auto;
@@ -584,6 +584,41 @@
             opacity: 1;
         }
 
+    /* Touch hit-area expansion: visuals stay compact while the tap target
+       reaches ~44px via an invisible overlay. No layout shift on desktop. */
+    .control-btn-mode,
+    .control-btn-clear,
+    .track-favorite-btn,
+    .album-card-fav,
+    .streaming-fav,
+    .track-row-favorite,
+    .track-fav,
+    .stepper-btn,
+    .measurement-chip,
+    .measurement-slot-chip,
+    .measurement-peq-chip {
+        position: relative;
+    }
+    .control-btn-mode::after,
+    .control-btn-clear::after,
+    .track-favorite-btn::after,
+    .album-card-fav::after,
+    .streaming-fav::after,
+    .track-row-favorite::after,
+    .track-fav::after,
+    .stepper-btn::after,
+    .measurement-chip::after,
+    .measurement-slot-chip::after,
+    .measurement-peq-chip::after {
+        content: '';
+        position: absolute;
+        inset: -8px;
+    }
+    .control-btn-mode::after,
+    .control-btn-clear::after {
+        inset: -10px;
+    }
+
 }
 
 @media (max-width: 540px) {
@@ -612,9 +647,11 @@
         padding: 0.5rem;
     }
     .measurement-dialog {
-        width: min(1040px, calc(100vw - 1rem));
+        width: min(1040px, 100%);
         min-height: min(960px, calc(100vh - 1rem));
+        min-height: min(960px, calc(100dvh - 1rem));
         max-height: calc(100vh - 1rem);
+        max-height: calc(100dvh - 1rem);
         padding: 1rem;
     }
     .measurement-actions-top {
@@ -659,9 +696,11 @@
         align-items: stretch;
     }
     .measurement-dialog {
-        width: min(1040px, calc(100vw - 1rem));
+        width: min(1040px, 100%);
         min-height: min(960px, calc(100vh - 1rem));
+        min-height: min(960px, calc(100dvh - 1rem));
         max-height: calc(100vh - 1rem);
+        max-height: calc(100dvh - 1rem);
         padding: 1rem;
         border-radius: var(--radius-xl);
     }
@@ -712,7 +751,7 @@
         }
 
         .measurement-dialog {
-            width: min(100%, calc(100vw - 1rem));
+            width: 100%;
             min-height: auto;
             max-height: calc(100dvh - 1rem);
             padding: 0.85rem;
@@ -888,14 +927,14 @@
         }
 
         .spl-calibration-dialog {
-            width: min(100%, calc(100vw - 1rem));
+            width: 100%;
             max-height: calc(100dvh - 1rem);
             padding: 0.85rem;
             border-radius: var(--radius-lg);
         }
 
         .hybrid-measurement-dialog {
-            width: min(100%, calc(100vw - 1rem));
+            width: 100%;
             max-height: calc(100dvh - 1rem);
             padding: 0.85rem;
             border-radius: var(--radius-lg);
@@ -1148,7 +1187,7 @@
             flex-basis: 100%;
             width: 100%;
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 104px;
+            grid-template-columns: minmax(0, 1fr);
             gap: var(--action-gap-mobile, 8px);
             align-items: stretch;
         }
@@ -1160,10 +1199,13 @@
         .library-selection-toolbar {
             width: 100%;
             min-width: 0;
+            display: flex;
+            gap: var(--action-gap-mobile, 8px);
+            flex-wrap: wrap;
         }
         .library-selection-toolbar .btn-secondary {
-            flex: 0 0 auto;
-            width: 100%;
+            flex: 1 1 0;
+            width: auto;
             min-width: 0;
             height: 44px;
             min-height: 44px;
@@ -1178,20 +1220,22 @@
         .playlist-save-controls {
             width: 100%;
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 104px;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
             gap: var(--action-gap-mobile, 8px);
             align-items: stretch;
             flex: 1 1 auto;
             min-width: 0;
         }
         .playlist-save-row .url-input {
+            grid-column: 1 / -1;
             flex: initial;
             width: 100%;
             min-width: 0;
-            font-size: 0.84rem;
+            font-size: 16px;
             padding: 0.28rem 0.5rem;
         }
-        #save-playlist {
+        #save-playlist,
+        #cancel-playlist-selection {
             width: 100%;
             min-width: 0;
             height: 44px;
@@ -1241,8 +1285,10 @@
 
     /* from _playback.css */
     .cover-detail-card {
-            bottom: calc(102px + 8px + 14px);
-            width: min(400px, calc(100vw - 1.2rem));
+            bottom: var(--playback-footer-space, calc(102px + 8px + 14px));
+            width: min(400px, calc(100% - 1.2rem));
+            max-height: calc(100vh - var(--playback-footer-space, calc(102px + 8px + 14px)) - 1rem);
+            max-height: calc(100dvh - var(--playback-footer-space, calc(102px + 8px + 14px)) - 1rem);
             grid-template-columns: 1fr;
             grid-template-areas:
                 "cover"
@@ -1268,6 +1314,22 @@
     .brand-mark { width: 35px; height: 35px; border-radius: 10px; font-size: 0.84rem; }
         .brand-title { font-size: 0.98rem; }
 
+    /* Touch targets that can grow without moving surrounding layout. */
+    .catalog-station-action { min-height: 44px; }
+    .dialog-header-corner-close .btn-close-manage { width: 44px; height: 44px; min-height: 44px; }
+    .measurement-chip { min-height: 44px; }
+    .measurement-view-toggle .measurement-chip { min-height: 44px; }
+    .measurement-slot-chip,
+    .measurement-peq-chip { min-height: 44px; }
+
+    /* iOS auto-zoom guard: text inputs stay at 16px on phones. */
+    .station-search-input,
+    .library-search-input,
+    .streaming-search-input,
+    .playlist-save-row .url-input {
+        font-size: 16px;
+    }
+
 }
 
 @media (max-width: 760px) {
@@ -1275,6 +1337,21 @@
     #tab-effects .url-input,
         #tab-effects select,
         #tab-effects textarea {
+            font-size: 16px;
+        }
+    /* iOS auto-zoom guard for the remaining form controls (library, radio,
+       streaming, settings, measurement). Desktop keeps the compact sizes. */
+    .station-search-input,
+        .library-search-input,
+        .streaming-search-input,
+        .url-input,
+        select.url-input,
+        .manage-dialog input,
+        .manage-dialog select,
+        .manage-dialog textarea,
+        .measurement-dialog input,
+        .measurement-dialog select,
+        .measurement-dialog textarea {
             font-size: 16px;
         }
 
@@ -1551,7 +1628,7 @@
         }
 
         .measurement-dialog {
-            width: min(100%, calc(100vw - 1rem));
+            width: 100%;
             min-height: auto;
             max-height: calc(100dvh - 1rem);
             padding: 0.85rem;
