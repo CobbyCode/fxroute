@@ -2150,7 +2150,18 @@ def score_sub_alignment_candidates(
     fc = float(crossover_hz)
 
     def _band_metrics(points, fmin, fmax):
-        band = [(f, db) for f, db in points if fmin <= f < fmax]
+        # Only well-formed finite points count, like the sibling helpers
+        # auto_sub_chain_anchor_db / _auto_sub_band_mean_power_db: a single
+        # NaN must never poison min/max normalization (comparisons against
+        # NaN are always false, so the outcome depends on candidate order).
+        band = []
+        for point in points:
+            try:
+                frequency_hz, db = float(point[0]), float(point[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if math.isfinite(frequency_hz) and math.isfinite(db) and fmin <= frequency_hz < fmax:
+                band.append([frequency_hz, db])
         if not band:
             return {"mean": 0.0, "min": 0.0, "max": 0.0, "swing": 0.0, "roughness": 0.0, "p20": 0.0}
         dbs = [p[1] for p in band]

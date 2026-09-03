@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from measurement.store import (
+    _auto_sub_band_mean_power_db,
     _auto_sub_deep_notch_penalty_db,
     auto_sub_chain_anchor_db,
     score_sub_alignment_candidates,
@@ -347,6 +348,67 @@ class JobSnapshotPersistenceTests(unittest.TestCase):
                 self.assertLessEqual(len(remaining), _AUTO_SUB_SNAPSHOT_KEEP)
             finally:
                 autosub_deps._autosub_deps = None
+
+
+class NonFinitePointTests(unittest.TestCase):
+    """Non-finite measurement points must never distort candidate scoring.
+
+    A single NaN inside one candidate's band previously flipped the winner
+    depending on the candidate order: min()/max() comparisons against NaN
+    are always false, so the normalization extrema changed with list order
+    and the poisoned candidate could even win with confidence "clear".
+    _band_metrics must skip non-finite points like the sibling helpers
+    auto_sub_chain_anchor_db and _auto_sub_band_mean_power_db already do.
+    """
+
+    @staticmethod
+    def _poison(points: list[list[float]], index: int) -> list[list[float]]:
+        poisoned = [list(point) for point in points]
+        poisoned[index] = [poisoned[index][0], float("nan")]
+        return poisoned
+
+    def test_nan_point_never_changes_the_winner_in_any_order(self):
+        clean_a = {"delay_ms": 0.0, "points": notch_points(60.0, 80.0, 6.0)}
+        clean_b = {"delay_ms": 3.12, "points": notch_points(59.0, 100.0, 5.0)}
+        poisoned_b = {
+            "delay_ms": 3.12,
+            "points": self._poison(clean_b["points"], index=FREQS.index(100.0)),
+        }
+
+        reference = score_sub_alignment_candidates([clean_a, clean_b], crossover_hz=FC)
+        first = score_sub_alignment_candidates([clean_a, poisoned_b], crossover_hz=FC)
+        second = score_sub_alignment_candidates([poisoned_b, clean_a], crossover_hz=FC)
+
+        for run in (first, second):
+            self.assertEqual(
+                run["winner"]["delay_ms"], reference["winner"]["delay_ms"]
+            )
+            self.assertEqual(run["confidence"], reference["confidence"])
+            by_delay = {
+                round(float(row["delay_ms"]), 2): row["score"]
+                for row in run["results"]
+            }
+            ref_by_delay = {
+                round(float(row["delay_ms"]), 2): row["score"]
+                for row in reference["results"]
+            }
+            self.assertEqual(by_delay, ref_by_delay)
+        for row in first["results"]:
+            self.assertTrue(math.isfinite(float(row["score"])))
+
+    def test_sibling_helpers_skip_nan_points(self):
+        clean = flat_points(50.0)
+        poisoned = self._poison(clean, index=FREQS.index(400.0))
+        # 400 Hz sits inside the 200-600 Hz chain anchor band and inside the
+        # 200-640 Hz power band, so the NaN point would matter if it leaked.
+        self.assertEqual(
+            auto_sub_chain_anchor_db(poisoned),
+            auto_sub_chain_anchor_db(clean),
+        )
+        self.assertEqual(
+            _auto_sub_band_mean_power_db(poisoned, 200.0, 640.0),
+            _auto_sub_band_mean_power_db(clean, 200.0, 640.0),
+        )
 
 
 if __name__ == "__main__":
