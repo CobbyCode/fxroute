@@ -1304,13 +1304,14 @@ input, select, textarea {{
   font: inherit;
   padding: 11px 12px;
   width: 100%;
-}}    # Password/Country: two fields on one row on desktop. The password side
-    # takes the remaining space; the country selector stays narrow.
-    .field-grid.fields-password-country {{
-      grid-template-columns: minmax(0, 1fr) 150px;
-    }}
+}}
+/* Password/Country: two fields on one row on desktop. The password side
+   takes the remaining space; the country selector stays narrow. */
+.field-grid.fields-password-country {{
+  grid-template-columns: minmax(0, 1fr) 150px;
+}}
 
-    select {{
+select {{
   background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
   background-position: calc(100% - 17px) 52%, calc(100% - 12px) 52%;
   background-repeat: no-repeat;
@@ -1435,16 +1436,17 @@ button:disabled {{ cursor: wait; opacity: .6; }}
           <input id="wifi_ssid" name="wifi_ssid" maxlength="32" autocomplete="off">
         </div>
       </div>
-      <p id="wifi-selection" class="selection">No network selected</p>        <div class="field-grid fields-password-country">
-          <div class="field">
-            <label for="wifi_password">Wi-Fi password <span id="wifi-password-note" class="optional">(if needed)</span></label>
-            <input id="wifi_password" name="wifi_password" type="password" autocomplete="off">
-          </div>
-          <div class="field">
-            <label for="wifi_country">Country / Region</label>
-            <select id="wifi_country" name="wifi_country">{country_options_markup()}</select>
-          </div>
+      <p id="wifi-selection" class="selection">No network selected</p>
+      <div class="field-grid fields-password-country">
+        <div class="field">
+          <label for="wifi_password">Wi-Fi password <span id="wifi-password-note" class="optional">(if needed)</span></label>
+          <input id="wifi_password" name="wifi_password" type="password" autocomplete="off">
         </div>
+        <div class="field">
+          <label for="wifi_country">Country / Region</label>
+          <select id="wifi_country" name="wifi_country">{country_options_markup()}</select>
+        </div>
+      </div>
     </section>
     <section class="card">
       <button class="primary" type="submit">Save settings</button>

@@ -4,6 +4,7 @@
 import importlib.util
 import http.client
 import json
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -489,6 +490,71 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
         self.assertIn('data-preview="false"', page)
         self.assertNotIn('window.location.host + "/setup"', page)
         self.assertNotIn('name="setup_password"', page)
+
+    def test_setup_page_renders_a_clean_desktop_password_country_layout(self):
+        # Rendered-output contract: the embedded <style> must be valid CSS and
+        # the form markup balanced, so the desktop password/country split
+        # actually applies. A stray "#" comment inside the CSS template once
+        # corrupted the selector prelude and silently dropped the whole rule
+        # (CSS error recovery discards it); the f-string braces must also
+        # never leak into the rendered page.
+        page = self.web.setup_page("rpi4b", preview=True)
+
+        self.assertNotIn("{{", page)
+        self.assertNotIn("}}", page)
+
+        # The two-field grid container exists exactly once and directly
+        # follows the (closed) selection hint paragraph.
+        self.assertEqual(
+            page.count('<div class="field-grid fields-password-country">'), 1
+        )
+        self.assertRegex(
+            page,
+            r'<p id="wifi-selection" class="selection">No network selected</p>'
+            r'\s*<div class="field-grid fields-password-country">',
+        )
+        self.assertEqual(
+            len(re.findall(r"<div\b", page)), len(re.findall(r"</div>", page))
+        )
+
+        style = page[page.index("<style>") + len("<style>") : page.index("</style>")]
+
+        def css_preludes(declaration_regex):
+            # Selector preludes of rules containing the declaration, with
+            # comments stripped and whitespace collapsed. This mirrors how a
+            # browser tokenizes the stylesheet before selector matching.
+            preludes = []
+            for match in re.finditer(
+                r"([^{}]+)\{\s*" + declaration_regex + r"\s*;", style
+            ):
+                text = re.sub(r"/\*.*?\*/", "", match.group(1), flags=re.S)
+                preludes.append(re.sub(r"\s+", " ", text).strip())
+            return preludes
+
+        self.assertIn(
+            ".field-grid.fields-password-country",
+            css_preludes(r"grid-template-columns:\s*minmax\(0,\s*1fr\)\s*150px"),
+        )
+        # The explicit narrow-screen override keeps the fields stacked.
+        self.assertIn(
+            ".field-grid.fields-password-country",
+            css_preludes(r"grid-template-columns:\s*1fr"),
+        )
+
+        # Class defect: no rule may carry a corrupted selector prelude
+        # (newlines or non-CSS "#" comments). Browsers drop the entire rule
+        # in that case, silently undoing a layout.
+        for match in re.finditer(r"([^{}]+)\{", style):
+            prelude = re.sub(r"/\*.*?\*/", "", match.group(1), flags=re.S)
+            prelude = re.sub(r"\s+", " ", prelude).strip()
+            if not prelude:
+                continue
+            self.assertNotIn("\n", prelude, f"corrupted CSS prelude: {prelude!r}")
+            self.assertIsNone(
+                re.search(r"#(\s|$)", prelude),
+                f"non-CSS comment marker in CSS prelude: {prelude!r}",
+            )
+            self.assertRegex(prelude, r"^[@.:*&a-zA-Z0-9\[]")
 
     def test_country_dropdown_keeps_the_existing_default_and_has_a_german_label(self):
         page = self.web.setup_page("rpi4b", preview=True)
