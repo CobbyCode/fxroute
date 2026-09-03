@@ -18,6 +18,7 @@ import playback.source_policy as source_policy
 
 from .models import (
     OutputGateState,
+    PlaybackTransitionFailure,
     RecoveryExecutor,
     RecoveryValidator,
     TransitionRequest,

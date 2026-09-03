@@ -330,6 +330,38 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("mute:True", runtime.events)
         self.assertFalse(coordinator.gate.closed)
 
+    async def test_measurement_reconcile_failure_raises_structured_failure(self):
+        # A failure inside the measurement-session reconcile transaction must
+        # surface as PlaybackTransitionFailure with the failing stage, not as a
+        # NameError from an unimported symbol in the error handler.
+        class FailingReadRuntime(MeasurementSessionRuntime):
+            def __init__(self):
+                super().__init__([_measurement_graph(signature="missing-dsp-helper")])
+                self.read_count = 0
+
+            async def read_measurement_session_graph(self, _target_rate):
+                self.read_count += 1
+                if self.read_count >= 2:
+                    raise RuntimeError("gated readback exploded")
+                return dict(self.graphs[0])
+
+        runtime = FailingReadRuntime()
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        with self.assertRaises(PlaybackTransitionFailure) as raised:
+            await coordinator.reconcile_measurement_session(
+                target_rate=48_000,
+                initial_graph=_measurement_graph(signature="missing-dsp-helper"),
+            )
+
+        self.assertEqual(raised.exception.stage, "measurement-session-readonly-under-gate")
+        self.assertIn("gated readback exploded", str(raised.exception))
+        self.assertTrue(runtime.reconcile_calls == 0)
+        self.assertTrue(coordinator.gate.failure_latched)
+        self.assertTrue(coordinator.gate.closed)
+        status = coordinator.status()
+        self.assertEqual(status["last_error"]["stage"], "measurement-session-readonly-under-gate")
+
     async def test_cancellation_latches_gate_and_pauses_source(self):
         runtime = FakeRuntime(muted=False)
         entered_rate = asyncio.Event()
