@@ -93,6 +93,9 @@
         const mlpPoints = tracePoints(mlp);
         const leftPoints = tracePoints(left);
         const rightPoints = tracePoints(right);
+        if (!mlpPoints.length || !leftPoints.length || !rightPoints.length) {
+            throw new Error(`Missing ${channel} listening-area measurement data`);
+        }
         const points = [];
         const constraints = [];
         mlpPoints.forEach(([frequency, mlpDb]) => {
@@ -121,7 +124,9 @@
     }
 
     function getDirectModelWeight(frequency, gatedDirectLowerLimitHz, directConfidence, disagreementDb, spatialSpreadDb) {
-        if (frequency < gatedDirectLowerLimitHz) return 0;
+        const limitHz = Number(gatedDirectLowerLimitHz);
+        if (!Number.isFinite(limitHz)) return 0;
+        if (frequency < limitHz) return 0;
         const confidence = Math.min(1, Math.max(0, Number(directConfidence) || 0));
         const agreement = Math.exp(-Math.abs(Number(disagreementDb) || 0) / CONFIG.spatialConsistencyDb);
         const spatialConsistency = Math.exp(-Math.max(0, Number(spatialSpreadDb) || 0) / CONFIG.spatialConsistencyDb);
@@ -136,7 +141,9 @@
             throw new Error(`${channel} direct response has no usable reflection-free window`);
         }
         const room = buildListeningModel(captures, channel);
-        const gatedDirectLowerLimitHz = Number(directResponse.gated_direct_lower_limit_hz);
+        const gatedDirectLowerLimitHz = directResponse.gated_direct_lower_limit_hz == null
+            ? NaN
+            : Number(directResponse.gated_direct_lower_limit_hz);
         const directConfidence = Number(directResponse.direct_confidence) || 0;
         const overlapOffsets = room.points
             .filter(([frequency]) => frequency >= gatedDirectLowerLimitHz)
@@ -235,7 +242,7 @@
             method: 'paired-direct-relative-timing',
             reason: plausible
                 ? 'L/R direct timing is consistent with comparable microphone distances.'
-                : `The microphone appears to be too far from the ${channel} speaker. Move it approximately 1 m in front of that speaker and repeat the measurement.`,
+                : 'The L/R direct timing is inconsistent. Place the microphone about 1 m in front of each speaker on its listening axis and repeat the measurement.',
         };
     }
 
@@ -260,8 +267,10 @@
             const magnitude = Math.hypot(sum.real, sum.imag);
             predicted.push([frequency, sum.real, sum.imag]);
             if (actual.length) {
+                const actualPoint = actual[index];
+                if (!actualPoint || !Number.isFinite(Number(actualPoint[0]))) continue;
                 const measured = complexAt(actual, index);
-                if (Math.abs(frequency - Number(actual[index]?.[0])) > Math.max(0.1, frequency * 0.001)) continue;
+                if (Math.abs(frequency - Number(actualPoint[0])) > Math.max(0.1, frequency * 0.001)) continue;
                 const deltaDb = 20 * Math.log10(Math.max(1e-12, Math.hypot(measured.real, measured.imag)) / Math.max(1e-12, magnitude));
                 const predictedPhase = Math.atan2(sum.imag, sum.real);
                 const measuredPhase = Math.atan2(measured.imag, measured.real);

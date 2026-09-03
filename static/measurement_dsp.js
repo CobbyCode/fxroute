@@ -98,7 +98,8 @@
         const maxBoostDb = Number(settings.maxBoostDb ?? 6);
         const maxCutDb = Number(settings.maxCutDb ?? -9);
         const dipGuard = String(settings.dipGuard || 'off');
-        const safetyMarginDb = Math.max(0, Number(settings.safetyMarginDb) || 1);
+        const parsedSafetyMargin = settings.safetyMarginDb == null ? NaN : Number(settings.safetyMarginDb);
+        const safetyMarginDb = Math.max(0, Number.isFinite(parsedSafetyMargin) ? parsedSafetyMargin : 1);
         const autoGainEnabled = settings.autoGainEnabled !== false;
         const confidencePoints = Array.isArray(settings.correctionConfidence) ? settings.correctionConfidence : [];
         const requestedCorrections = points.map(([frequency, measuredDb]) => {
@@ -121,7 +122,7 @@
             };
         });
         const maxPositive = Math.max(0, ...corrections.map((item) => item.correctionDb));
-        const minCorrection = Math.min(...corrections.map((item) => item.correctionDb));
+        const minCorrection = corrections.length ? Math.min(...corrections.map((item) => item.correctionDb)) : 0;
         const autoGainDb = autoGainEnabled ? Math.round((-(maxPositive + safetyMarginDb)) * 2) / 2 : 0;
         const lowBassBoost = corrections.some((item) => item.frequency < 40 && item.correctionDb > 0.25);
         return { corrections, maxPositive, minCorrection, autoGainDb, lowBassBoost, dipGuardReductionMaxDb: Math.round(dipGuardReductionMaxDb * 10) / 10 };
@@ -174,15 +175,14 @@
 
     function buildMeasurementConvolverLinearImpulseFromMagnitudes(magnitudes, length) {
         const half = Math.floor(length / 2);
+        const real = new Float64Array(length);
+        const imag = new Float64Array(length);
+        for (let bin = 0; bin <= half; bin += 1) real[bin] = magnitudes[bin] || 0;
+        for (let bin = half + 1; bin < length; bin += 1) real[bin] = real[length - bin];
+        fftMeasurementConvolverComplex(real, imag, true);
         const impulse = new Float32Array(length);
         const shift = half;
-        for (let n = 0; n < length; n += 1) {
-            let sum = magnitudes[0] + (magnitudes[half] * Math.cos(Math.PI * n));
-            for (let bin = 1; bin < half; bin += 1) {
-                sum += 2 * magnitudes[bin] * Math.cos((2 * Math.PI * bin * n) / length);
-            }
-            impulse[(n + shift) % length] = sum / length;
-        }
+        for (let index = 0; index < length; index += 1) impulse[(index + shift) % length] = real[index];
         return impulse;
     }
 

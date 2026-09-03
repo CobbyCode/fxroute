@@ -115,7 +115,7 @@ const wrongRightPosition = Hybrid.validateDirectMicrophonePosition(
 );
 assert(wrongRightPosition.available);
 assert(!wrongRightPosition.plausible, 'large paired timing difference must reject the wrong direct microphone position');
-assert(wrongRightPosition.reason.includes('too far from the right speaker'));
+assert(wrongRightPosition.reason.includes('L/R direct timing is inconsistent'));
 const correctRightPosition = Hybrid.validateDirectMicrophonePosition(
     directTimingMeasurement('right', 84.8),
     [leftDirectCapture],

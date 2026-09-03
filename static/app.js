@@ -1880,7 +1880,7 @@ function toggleSettingsPanel(forceOpen = null) {
     if (shouldOpen) {
         settingsOutputScanOnFocusDone = false;
         renderSettingsPanel();
-        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), fetchHardwareStatus(), fetchMusicLibraries(), checkFxrouteUpdate({ silent: true })]);
+        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), fetchHardwareStatus(), fetchMusicLibraries(), fetchProviderAdmin(), checkFxrouteUpdate({ silent: true })]);
         startSettingsStatusPolling();
         window.FXRouteModal?.open(elements.settingsPanel, {
             initialFocus: elements.settingsCloseBtn,
@@ -2266,6 +2266,7 @@ const PROVIDER_UNINSTALL_CONFIRM = {
     qobuz: 'Remove the Qobuz renderer (qbzd) from this machine? FXRoute itself stays installed. You can reinstall it later.',
     tidal: 'Remove the TIDAL backend from FXRoute? Your TIDAL session stays on disk. You can reinstall it later.',
 };
+const providerVisibilityRequestIds = new Map();
 
 async function fetchProviderAdmin() {
     try {
@@ -2287,18 +2288,31 @@ async function fetchProviderAdmin() {
     }
 }
 
-function setProviderEnabled(providerId, enabled) {
+async function setProviderEnabled(providerId, enabled) {
+    const requestId = (providerVisibilityRequestIds.get(providerId) || 0) + 1;
+    providerVisibilityRequestIds.set(providerId, requestId);
     const provider = state.settings.providers.list.find((p) => p.id === providerId);
+    const previous = provider ? provider.enabled : undefined;
+    const previousApplied = provider ? provider.enabled !== false : enabled !== false;
     if (provider) provider.enabled = enabled;
     window.FXRouteStreaming?.applyProviderEnabled(providerId, enabled);
     renderProviderSettings();
-    fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/enabled`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-    }).catch(() => {
-        showToast('Could not save provider visibility', 'error');
-    });
+    try {
+        const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/enabled`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Could not save provider visibility');
+    } catch (error) {
+        if (providerVisibilityRequestIds.get(providerId) !== requestId) return;
+        const currentProvider = state.settings.providers.list.find((p) => p.id === providerId);
+        if (currentProvider) currentProvider.enabled = previous;
+        window.FXRouteStreaming?.applyProviderEnabled(providerId, previousApplied);
+        renderProviderSettings();
+        showToast(error?.message || 'Could not save provider visibility', 'error');
+    }
 }
 
 function renderProviderOperation(providerId, detail, log) {
@@ -2327,6 +2341,8 @@ async function runProviderInstall(providerId) {
     } finally {
         state.settings.providers.pendingOperation = null;
         renderProviderSettings();
+        void fetchProviderAdmin();
+        void window.FXRouteStreaming?.refreshEnabledFlags?.();
     }
 }
 
@@ -2340,24 +2356,34 @@ async function runProviderUninstall(providerId) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Uninstall failed');
         renderProviderOperation(providerId, 'Provider removed.', data.log || '');
-        setProviderEnabled(providerId, false);
+        await setProviderEnabled(providerId, false);
     } catch (error) {
         renderProviderOperation(providerId, '', error.message || 'Uninstall failed');
         showToast(error.message || 'Uninstall failed', 'error');
     } finally {
         state.settings.providers.pendingOperation = null;
         renderProviderSettings();
+        void fetchProviderAdmin();
+        void window.FXRouteStreaming?.refreshEnabledFlags?.();
     }
 }
 
 async function runProviderServiceAction(providerId, action) {
+    if (state.settings.providers.pendingOperation) return;
+    state.settings.providers.pendingOperation = providerId;
+    renderProviderSettings();
     try {
         const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/service/${action}`, { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || `Service ${action} failed`);
-        showToast(action === 'stop' ? 'Service stopped.' : 'Service started.', 'success');
+        showToast(action === 'stop' ? 'Service stopped.' : (action === 'restart' ? 'Service restarted.' : 'Service started.'), 'success');
     } catch (error) {
         showToast(error.message || `Service ${action} failed`, 'error');
+    } finally {
+        state.settings.providers.pendingOperation = null;
+        renderProviderSettings();
+        void fetchProviderAdmin();
+        void window.FXRouteStreaming?.refreshEnabledFlags?.();
     }
 }
 
@@ -2408,7 +2434,7 @@ function openQobuzLoginModal(loginUrl) {
     // while the operator switches tabs; only explicit Cancel ends it.
     window.FXRouteModal?.open(elements.qobuzLoginPanel, {
         initialFocus: elements.qobuzLoginOpen,
-        onEscape: () => void cancelQobuzLogin(),
+        onEscape: () => { if (!qobuzLoginState.finishing) void cancelQobuzLogin(); },
     });
 }
 
@@ -2619,9 +2645,11 @@ function renderProviderSettings() {
     });
     elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-login]').forEach((button) => {
         button.addEventListener('click', () => {
+            const provider = state.settings.providers.list.find((p) => p.id === 'tidal');
+            if (provider && provider.enabled === false) setProviderEnabled('tidal', true);
             toggleSettingsPanel(false);
             switchTab('tidal');
-            window.FXRouteStreaming?.startTidalLogin?.();
+            window.FXRouteStreaming?.startTidalLogin?.(provider?.installed === true);
         });
     });
     elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-logout]').forEach((button) => {
@@ -2631,7 +2659,10 @@ function renderProviderSettings() {
 
 async function applyDeviceName(value) {
     const name = String(value || '').trim().toLowerCase();
-    if (!name) return;
+    if (!name) {
+        showToast('Enter a device name first', 'info');
+        return;
+    }
     if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name) || name === 'localhost') {
         showToast('Use only lowercase letters, digits and hyphens (no leading/trailing hyphen)', 'error');
         return;
@@ -2647,6 +2678,7 @@ async function applyDeviceName(value) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Could not change the device name');
         state.settings.deviceName.value = data.hostname || name;
+        if (elements.settingsDeviceNameInput) elements.settingsDeviceNameInput.value = state.settings.deviceName.value;
         showToast(data.changed === false ? 'Device name unchanged.' : `Device name set to ${state.settings.deviceName.value}.local`, 'success');
     } catch (error) {
         showToast(error.message || 'Could not change the device name', 'error');
@@ -6969,7 +7001,8 @@ function extractDroppedUrl(dataTransfer) {
     const plain = dataTransfer.getData('text/plain') || '';
     const raw = uriList || plain;
     const match = raw.match(/https?:\/\/\S+/i);
-    return match ? match[0].trim() : '';
+    if (!match) return '';
+    return match[0].trim().replace(/[),.;:"'!\]]+$/, '');
 }
 
 function setupDownloadUrlDropArea() {

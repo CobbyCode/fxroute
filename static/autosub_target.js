@@ -61,7 +61,8 @@
             const ratio = Math.log(frequencyHz / lowHz) / Math.log(highHz / lowHz);
             return lowDb + (highDb - lowDb) * ratio;
         }
-        return Number(points[points.length - 1][1]);
+        const tailDb = Number(points[points.length - 1][1]);
+        return Number.isFinite(tailDb) ? tailDb : null;
     }
 
     function targetVerticalOffsetDb(meta, targetPoints) {

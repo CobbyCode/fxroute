@@ -139,7 +139,7 @@ async function startAutoSubOptimize() {
         measurementState.statusText = job.message || 'Auto Sub Optimize: queued';
         deps.renderMeasurementPanel();
         if (measurementState.autoSubCancelRequested) await cancelAutoSubOptimize();
-        if (!measurementState.autoSubJobId) return;
+        if (!measurementState.autoSubJobId) throw new Error('Auto Sub Optimize did not return a job id');
         await pollAutoSubJob(measurementState.autoSubJobId);
     } catch (error) {
         console.error('startAutoSubOptimize failed', error);
@@ -190,12 +190,28 @@ async function pollAutoSubJob(jobId) {
     const statusEl = deps.getElements().measurementAutoSubStatus;
     const startedAt = Date.now();
     const longRunningAfterMs = 10 * 60 * 1000;
+    const maxRunningMs = 30 * 60 * 1000;
+    let consecutiveErrors = 0;
+    const maxConsecutiveErrors = 40;
     while (true) {
         await deps.sleep(500);
+        if (Date.now() - startedAt >= maxRunningMs) {
+            measurementState.statusText = 'Auto Sub Optimize timed out while waiting for the job';
+            deps.showToast(measurementState.statusText, 'error');
+            return;
+        }
         try {
             const resp = await api.pollAutoSubJob(jobId);
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to poll Auto Sub job'));
+            if (!resp.ok) {
+                if (resp.status === 404 || resp.status === 410) {
+                    measurementState.statusText = 'Auto Sub Optimize job is no longer available';
+                    deps.showToast(measurementState.statusText, 'error');
+                    return;
+                }
+                throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to poll Auto Sub job'));
+            }
+            consecutiveErrors = 0;
             const job = data.job || {};
             const status = job.status || 'unknown';
             const fineScan = job.fine_scan || {};
@@ -203,7 +219,11 @@ async function pollAutoSubJob(jobId) {
 
             measurementState.statusText = job.message || 'Auto Sub Optimize: running';
             if (job.progress) {
-                measurementState.statusText += ` (${job.progress.current}/${job.progress.total})`;
+                const cur = job.progress.current;
+                const tot = job.progress.total;
+                if (Number.isFinite(cur) && Number.isFinite(tot)) {
+                    measurementState.statusText += ` (${cur}/${tot})`;
+                }
             }
             if (Date.now() - startedAt >= longRunningAfterMs
                     && (status === 'queued' || status === 'preparing' || status === 'running' || status === 'cancelling')) {
@@ -223,14 +243,15 @@ async function pollAutoSubJob(jobId) {
                         right_sub: 'Optimizing Sub 2',
                         combined_matrix: 'Combined Matrix',
                     };
-                    const stageLabel = stageLabels[progress.stage] || 'Coarse';
+                    const stageLabel = stageLabels[progress.stage] || String(progress.stage || 'Coarse');
                     const candidateCur = progress.candidate_current;
                     const candidateTot = progress.candidate_total;
                     const sweepCur = progress.sweep_current ?? progress.current;
                     const sweepTot = progress.sweep_total ?? progress.total;
                     if (Number.isFinite(candidateCur) && Number.isFinite(candidateTot)) {
-                        statusEl.textContent = `${stageLabel}: ${candidateCur}/${candidateTot} candidates (${sweepCur}/${sweepTot} sweeps)${targetLabel ? ` · Target: ${targetLabel}` : ''}`;
-                    } else {
+                        const sweepText = (Number.isFinite(sweepCur) && Number.isFinite(sweepTot)) ? ` (${sweepCur}/${sweepTot} sweeps)` : '';
+                        statusEl.textContent = `${stageLabel}: ${candidateCur}/${candidateTot} candidates${sweepText}${targetLabel ? ` · Target: ${targetLabel}` : ''}`;
+                    } else if (Number.isFinite(sweepCur) && Number.isFinite(sweepTot)) {
                         statusEl.textContent = `${sweepCur}/${sweepTot} sweeps${targetLabel ? ` · Target: ${targetLabel}` : ''}`;
                     }
                 }
@@ -254,7 +275,13 @@ async function pollAutoSubJob(jobId) {
                 return;
             }
         } catch (error) {
+            consecutiveErrors += 1;
             console.warn('pollAutoSubJob error', error);
+            if (consecutiveErrors >= maxConsecutiveErrors) {
+                measurementState.statusText = error?.message || 'Auto Sub Optimize polling failed';
+                deps.showToast(measurementState.statusText, 'error');
+                return;
+            }
         }
         deps.renderMeasurementPanel();
     }
@@ -501,7 +528,7 @@ function getHybridWizardState() {
 
 
 function getCurrentOutputModeName() {
-    return deps.normalizeOutputModeName(deps.getState().settings.audioOutputs.output_mode?.mode || 'stereo');
+    return deps.normalizeOutputModeName(deps.getState().settings?.audioOutputs?.output_mode?.mode || 'stereo');
 }
 
 
@@ -641,7 +668,9 @@ function renderHybridMeasurementWizard() {
 function buildHybridMeasurementForm(step) {
     deps.normalizeMeasurementInputChannelSelections();
     const formData = new FormData();
-    formData.append('input_id', deps.getState().measurement.selectedInputId);
+    const selectedInputId = deps.getState().measurement.selectedInputId;
+    if (!selectedInputId) throw new Error('Select a measurement input first');
+    formData.append('input_id', selectedInputId);
     formData.append('input_key', deps.getState().measurement.selectedInputKey || '');
     formData.append('channel', step.channel);
     formData.append('measurement_role', step.role);
@@ -664,6 +693,7 @@ async function runHybridWizardStep(step) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to start advanced measurement'));
     const jobId = String(data.job?.id || '');
+    if (!jobId) throw new Error('Advanced measurement did not return a job id');
     wizard.jobId = jobId;
     deps.getState().measurement.activeJobId = jobId;
     deps.getState().measurement.activeMeasurementKind = 'hybrid';
@@ -672,9 +702,28 @@ async function runHybridWizardStep(step) {
     }
 
     for (let attempt = 0; attempt < 360; attempt += 1) {
-        const poll = await api.pollMeasurementJob(jobId);
-        const payload = await poll.json().catch(() => ({}));
-        if (!poll.ok) throw new Error(deps.formatTransitionErrorDetail(payload.detail, 'Failed to fetch advanced measurement'));
+        let poll;
+        let payload = {};
+        try {
+            poll = await api.pollMeasurementJob(jobId);
+            payload = await poll.json().catch(() => ({}));
+        } catch (_pollError) {
+            poll = { ok: false, status: 0 };
+        }
+        if (!poll.ok) {
+            if (poll.status === 404 || poll.status === 410) {
+                throw new Error(deps.formatTransitionErrorDetail(payload.detail, 'Failed to fetch advanced measurement'));
+            }
+            // Transient network/JSON blip: retry a few polls before failing
+            // the step (a completed server-side measurement must survive).
+            wizard.pollErrors = (wizard.pollErrors || 0) + 1;
+            if (wizard.pollErrors >= 5) {
+                throw new Error(deps.formatTransitionErrorDetail(payload.detail, 'Failed to fetch advanced measurement'));
+            }
+            await deps.sleep(800);
+            continue;
+        }
+        wizard.pollErrors = 0;
         const job = payload.job || {};
         const status = deps.getMeasurementJobStatus(job);
         const processing = String(job.message || '').toLowerCase().startsWith('processing');
