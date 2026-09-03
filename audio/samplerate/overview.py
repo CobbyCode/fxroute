@@ -32,6 +32,7 @@ from .parsing import (
     _humanize_source_name,
     _infer_bluetooth_codec,
     _is_bluetooth_sink_name,
+    _parse_active_rate,
     _parse_default_rate,
     _parse_default_sink,
     _parse_enum_format_supported_rates,

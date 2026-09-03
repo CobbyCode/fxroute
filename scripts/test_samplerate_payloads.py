@@ -370,6 +370,57 @@ class MainWrapperParityTests(unittest.TestCase):
             self.assertEqual(main._coordinator_target_rate("local", track), 44100)
 
 
+class SamplerateStatusFallbackRateTests(unittest.TestCase):
+    """The pw-cli enum-params fallback must recover the live sink rate.
+
+    When the pactl short listing carries no sample rate (idle/nonstandard
+    sink), get_samplerate_status falls back to pw-cli enum-params and parses
+    the active rate.  The parser was used without being imported into the
+    overview module, so the fallback always raised NameError and the status
+    silently reported no active rate.
+    """
+
+    def _status(self) -> dict:
+        pw_metadata = "key:'clock.rate' value:'44100'\nkey:'clock.force-rate' value:'0'\n"
+        wpctl = (
+            "id 73, name:alsa_output.test\n"
+            "\t* node.name = \"alsa_output.test\"\n"
+            "\t* node.description = \"Test Sink\"\n"
+        )
+        # No Hz in the sample spec: forces the enum-params fallback branch.
+        pactl = "73\talsa_output.test\tPipeWire\ts32le 4ch\tRUNNING\n"
+        pw_cli = "default.clock.rate = 44100\n"
+        enum_format = (
+            "    Prop: key Spa:Pod:Object:Param:Format:Audio:rate (65539), flags 00000000\n"
+            "      Int 44100\n"
+        )
+
+        def fake_run_command(args):
+            if args[:2] == ["pw-metadata", "-n"]:
+                return pw_metadata
+            if args[:2] == ["wpctl", "inspect"]:
+                return wpctl
+            if args[:2] == ["pactl", "list"]:
+                return pactl
+            if args[:2] == ["pw-cli", "info"]:
+                return pw_cli
+            if args[:2] == ["pw-cli", "enum-params"]:
+                return enum_format
+            raise AssertionError(f"unexpected command in status fallback test: {args}")
+
+        with patch.object(samplerate.overview, "_run_command", side_effect=fake_run_command), \
+             patch.object(samplerate.overview, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
+            return samplerate.get_samplerate_status()
+
+    def test_enum_params_fallback_recovers_active_rate(self):
+        status = self._status()
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["active_rate"], 44100)
+        joined_notes = "\n".join(status["notes"] or [])
+        self.assertNotIn("_parse_active_rate", joined_notes)
+        self.assertNotIn("not defined", joined_notes)
+
+
 class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
     async def _capture_request(self, *, active_rate, target_rate, source="local"):
         captured = []
