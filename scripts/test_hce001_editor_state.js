@@ -104,5 +104,5 @@ assert.match(source, /activeEditor: 'none'/);
 assert.match(source, /if \(getMeasurementActiveEditor\(\) !== 'peq'\) return;/, 'PEQ overlay is isolated');
 assert.match(source, /if \(getMeasurementActiveEditor\(\) === 'houseCurve'\) return;/, 'House Curve blocks PEQ graph interaction');
 assert.match(source, /getMeasurementTargetCurvePreview/);
-assert.match(source, /getMeasurementConvolverCurveDbFromPoints\(displayPoints, frequency\)/, 'logarithmic target interpolation remains in use');
+assert.match(source, /MeasurementDsp\.getMeasurementConvolverCurveDbFromPoints\(points, frequency/, 'logarithmic target interpolation remains in use');
 console.log('ok HCE-001 state sequence: none/peq/houseCurve, sentinel action, isolated live target preview');

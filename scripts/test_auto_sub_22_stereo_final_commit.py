@@ -67,7 +67,7 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
             nonlocal apply_count
             apply_count += 1
             persist(output_mode, global_config, subwoofers_config)
-            if fail_final_commit and apply_count == 2:
+            if fail_final_commit and apply_count == 1:
                 return False
             return bool(verify((load_overview or (lambda: state))()))
 
@@ -210,22 +210,28 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
         The alignment, dip and gain values mirror job auto-sub-fc8eb23e2926.
         The left polarity is flipped in this fixture so the same regression
         also catches a final commit that restores the snapshot polarity.
+
+        Since the combined dip-guard change the fixture dips (R +4.6 with L
+        improved -3.25, combined +0.48) no longer veto: the gate keeps the
+        winner (final_kept) and the final state carries the transferred
+        balance trim on top of the balanced levels.
         """
         job, state, _original = await self._run_reference_case()
 
         self.assertEqual(job["status"], "completed", job.get("error"))
+        self.assertEqual(job["result"]["confirmation_gate"]["action"], "final_kept")
         self.assertEqual(state["subwoofers"]["sub1"], {
-            "level_db": 3.111, "alignment_ms": -2.14, "polarity": "invert",
+            "level_db": 3.3360000000000003, "alignment_ms": -2.14, "polarity": "invert",
         })
         self.assertEqual(state["subwoofers"]["sub2"], {
-            "level_db": 0.412, "alignment_ms": -2.54, "polarity": "normal",
+            "level_db": 1.0275, "alignment_ms": -2.54, "polarity": "normal",
         })
         self.assertEqual(job["result"]["applied_sub1_alignment_ms"], -2.14)
         self.assertEqual(job["result"]["applied_sub2_alignment_ms"], -2.54)
         self.assertEqual(job["polarity_check"]["left"]["selected"], "invert")
         self.assertEqual(job["result"]["confirmation_gate"]["failed_sides"], ["right"])
-        self.assertEqual(job["auto_gain"]["final_levels_db"], {"sub1": 3.111, "sub2": 0.412})
-        self.assertEqual(job["auto_gain"]["final_deltas_db"], {"left": 0.0, "right": 0.0})
+        self.assertEqual(job["auto_gain"]["final_levels_db"], {"sub1": 3.3360000000000003, "sub2": 1.0275})
+        self.assertEqual(job["auto_gain"]["final_deltas_db"], {"left": 0.225, "right": 0.6155})
 
     async def test_failed_final_commit_restores_and_verifies_original_state(self):
         job, state, original = await self._run_reference_case(fail_final_commit=True)
@@ -234,7 +240,7 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state, original)
         self.assertEqual(
             job["error"]["detail"],
-            "Selected alignment/polarity readback did not match the final commit",
+            "Winner apply failed - original config restored",
         )
 
     async def test_polarity_revert_captures_final_evidence_at_balanced_gain(self):
@@ -242,12 +248,12 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(job["status"], "completed", job.get("error"))
         self.assertEqual(state["subwoofers"]["sub1"], {
-            "level_db": 3.111, "alignment_ms": -2.14, "polarity": "normal",
+            "level_db": 3.3360000000000003, "alignment_ms": -2.14, "polarity": "normal",
         })
         self.assertTrue(job["deep_bass_check"]["reverted_polarity"])
-        self.assertEqual(job["confirmation_gate"]["final_commit_confirmation"], "completed")
+        self.assertEqual(job["result"]["confirmation_gate"]["action"], "final_kept")
         self.assertEqual(job["auto_gain"]["stage_output_peaks"]["left"], {
-            "stage": "final_commit_confirmation",
+            "stage": "gain_after",
         })
 
     async def test_missing_exact_confirmation_does_not_publish_single_sub_scan(self):
@@ -256,8 +262,13 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(job["status"], "completed", job.get("error"))
-        self.assertEqual(job["confirmation_gate"]["final_commit_confirmation"], "unavailable")
-        self.assertIsNone(job["result"]["confirmation_measurement"])
+        self.assertTrue(job["deep_bass_check"]["reverted_polarity"])
+        self.assertEqual(job["result"]["confirmation_gate"]["action"], "final_kept")
+        confirmation = job["result"]["confirmation_measurement"]
+        self.assertIsNotNone(confirmation)
+        for trace in confirmation.get("traces", []):
+            self.assertTrue(trace.get("label", "").startswith("After"))
+            self.assertGreaterEqual(len(trace.get("points", [])), 3)
 
 
 if __name__ == "__main__":
