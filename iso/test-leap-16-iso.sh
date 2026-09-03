@@ -467,6 +467,34 @@ with open(sys.argv[1], "w") as handle:
 PY
   installer_config_load "$ssh_port" "$setup_file" /tmp/fxroute-agama-setup.json
 
+  # Loads apply asynchronously ("Configure software" re-solve); wait until
+  # the account is visible before sending the next change, otherwise a
+  # slow apply can overwrite it.
+  printf '[iso-test] waiting for the %s account to apply\n' "$profile"
+  started=$SECONDS
+  while (( SECONDS - started < 600 )); do
+    if ssh_installer "$ssh_port" 'agama config show' 2>/dev/null | python3 -c "
+import json
+import sys
+
+try:
+    config = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+raise SystemExit(0 if config.get('user', {}).get('userName') == '$AGAMA_USER' else 1)
+"; then
+      break
+    fi
+    sleep 5
+  done
+  ssh_installer "$ssh_port" 'agama config show' 2>/dev/null | python3 -c "
+import json
+import sys
+
+config = json.load(sys.stdin)
+raise SystemExit(0 if config.get('user', {}).get('userName') == '$AGAMA_USER' else 1)
+" || { printf '[iso-test] the %s account did not apply\n' "$profile" >&2; return 1; }
+
   # Explicit target-disk selection: a small decoy disk is attached besides
   # the main disk, so the proposal must name the large disk. Never wipe a
   # disk without this explicit selection. The alias keeps the bootloader
@@ -492,6 +520,23 @@ with open("$storage_file", "w") as handle:
     json.dump(storage, handle)
 PY
   installer_config_load "$ssh_port" "$storage_file" /tmp/fxroute-agama-storage.json
+  printf '[iso-test] waiting for the %s target-disk selection to apply\n' "$profile"
+  started=$SECONDS
+  while (( SECONDS - started < 600 )); do
+    if ssh_installer "$ssh_port" 'agama config show' 2>/dev/null | python3 -c "
+import json
+import sys
+
+try:
+    config = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+raise SystemExit(0 if '\"greater\": \"30 GiB\"' in json.dumps(config.get('storage', {})) else 1)
+"; then
+      break
+    fi
+    sleep 5
+  done
   ssh_installer "$ssh_port" 'agama config show' > "$TEST_ROOT/$profile-agama-proposal.json"
   python3 - "$TEST_ROOT/$profile-agama-proposal.json" <<'PY'
 import json
@@ -513,11 +558,13 @@ start_agama_install() {
   # agama install refuses while preconditions are unmet (for example while
   # the initial probing is still running) without changing anything, so
   # retry until the installation actually starts. The SSH call is the
-  # explicit confirmation of the destructive step.
+  # explicit confirmation of the destructive step. The CLI leaves the
+  # installer in the live environment after the install phase; finish it
+  # explicitly so the requested reboot is performed.
   while (( attempt <= 8 )); do
     printf '[iso-test] starting the %s installation, attempt %d (explicit confirmation)\n' "$profile" "$attempt"
     ssh_installer "$ssh_port" \
-      'rm -f /tmp/fxroute-agama-install.log; nohup agama install > /tmp/fxroute-agama-install.log 2>&1 < /dev/null & echo $!' \
+      "rm -f /tmp/fxroute-agama-install.log; nohup bash -c 'agama install > /tmp/fxroute-agama-install.log 2>&1 && agama finish reboot >> /tmp/fxroute-agama-install.log 2>&1' < /dev/null > /dev/null 2>&1 & echo \$!" \
       > "$TEST_ROOT/$profile-install-pid" 2>/dev/null || true
     sleep 45
     ssh_installer "$ssh_port" 'cat /tmp/fxroute-agama-install.log' \
@@ -551,13 +598,22 @@ ssh_guest() {
     -o ServerAliveCountMax=1 \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-    -p "$ssh_port" "$AGAMA_USER@127.0.0.1" "$@" < /dev/null
+    -p "$ssh_port" "$AGAMA_USER@127.0.0.1" "$@"
 }
 
 sudo_guest() {
   local ssh_port="$1"
   shift
-  printf '%s' "$AGAMA_USER_PASSWORD" | ssh_guest "$ssh_port" sudo -S -- "$@"
+  printf '%s\n' "$AGAMA_USER_PASSWORD" | ssh_guest "$ssh_port" sudo -S -- "$@"
+}
+
+sudo_guest_script() {
+  local ssh_port="$1"
+  shift
+  {
+    printf '%s\n' "$AGAMA_USER_PASSWORD"
+    cat
+  } | ssh_guest "$ssh_port" sudo -S -- "$@"
 }
 
 stop_guest() {
@@ -612,13 +668,13 @@ wait_for_guest() {
 
 verify_ssh_defaults() {
   local ssh_port="$1"
-  sudo_guest "$ssh_port" bash -s <<'EOF'
+  sudo_guest_script "$ssh_port" bash -s <<'EOF'
 set -Eeuo pipefail
 test ! -f /etc/ssh/sshd_config.d/90-fxroute-iso.conf
 ! sshd -T | grep -Fx 'passwordauthentication no' >/dev/null
 ! sshd -T | grep -Fx 'kbdinteractiveauthentication no' >/dev/null
 EOF
-  sudo_guest "$ssh_port" bash -s -- "$AGAMA_USER" <<'EOF'
+  sudo_guest_script "$ssh_port" bash -s -- "$AGAMA_USER" <<'EOF'
 set -Eeuo pipefail
 account="$1"
 root_password_hash="$(getent shadow root | cut -d: -f2)"
@@ -670,7 +726,8 @@ localectl status | grep -Fq "VC Keymap: $keymap"
 nmcli -t -f NAME connection show | grep -q .
 ip -4 route show default | grep -q .
 root_source="$(findmnt -n -o SOURCE /)"
-root_disk="$(lsblk -n -o PKNAME "$root_source" | head -1)"
+root_block_device="${root_source%%[*}"
+root_disk="$(lsblk -n -o PKNAME "$root_block_device" | head -1)"
 [[ -n "$root_disk" ]]
 root_disk_size_bytes="$(lsblk -n -b -o SIZE "/dev/$root_disk" | head -1)"
 [[ "$root_disk_size_bytes" -gt 30000000000 ]]

@@ -551,15 +551,24 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn('"localization"', runner)
         self.assertNotIn("sshPublicKey", runner)
         self.assertNotIn("FXROUTE_SSH_KEY", runner)
-        # A decoy disk forces an explicit target-disk selection; the
-        # installed root filesystem must live on the large disk.
+        # Loads apply asynchronously; the runner waits for each change to
+        # become visible so a slow apply cannot overwrite the next one.
+        self.assertIn("waiting for the ", runner)
+        self.assertIn("account to apply", runner)
+        self.assertIn("target-disk selection to apply", runner)
+        self.assertIn("did not apply", runner)
         self.assertIn("VM_EXTRA_DISK_GB", runner)
         self.assertIn("extra_disk", runner)
         self.assertIn('"greater": "30 GiB"', runner)
         self.assertIn('"alias": "boot"', runner)
         self.assertIn("explicit target-disk selection is missing", runner)
         self.assertIn("start_agama_install", runner)
-        self.assertIn("nohup agama install", runner)
+        self.assertIn("nohup bash -c", runner)
+        self.assertIn(
+            "agama install > /tmp/fxroute-agama-install.log 2>&1 && "
+            "agama finish reboot",
+            runner,
+        )
         self.assertIn("installation started", runner)
         self.assertIn("PKNAME", runner)
         # Region/network/account checks on the installed system.
@@ -575,6 +584,12 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertNotIn("PermitRootLogin prohibit-password", runner)
         self.assertIn("sshd -T", runner)
         self.assertIn("root@127.0.0.1", runner)
+        self.assertIn('root_block_device="${root_source%%[*}"', runner)
+        self.assertNotIn(
+            '-p "$ssh_port" "$AGAMA_USER@127.0.0.1" "$@" < /dev/null',
+            runner,
+        )
+        self.assertIn("sudo_guest_script", runner)
 
     def test_qemu_runner_uses_the_askpass_helper_for_password_ssh(self):
         helper = self.read("iso/agama-askpass.sh")
