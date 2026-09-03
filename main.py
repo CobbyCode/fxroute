@@ -3531,7 +3531,14 @@ def _effective_request_port(request: Request) -> Optional[int]:
     raw = (request.headers.get("x-forwarded-port") or "").split(",", 1)[0].strip()
     if raw.isdigit():
         return int(raw)
-    return request.url.port
+    try:
+        return request.url.port
+    except ValueError:
+        # Malformed Host port: return a sentinel that can never equal a
+        # parsed header port (those are 0-65535 or None) and never passes
+        # the default-port rules, so the origin comparison fails closed
+        # instead of raising.
+        return -1
 
 
 def _request_origin_is_trusted(request: Request) -> bool:
@@ -3570,9 +3577,15 @@ def _request_origin_is_trusted(request: Request) -> bool:
             return False
         if parsed.hostname.lower() != trusted_host:
             return False
-        if parsed.port is None and trusted_port in (None, 80, 443):
+        try:
+            header_port = parsed.port
+        except ValueError:
+            # Malformed header port (out of range / non-numeric): refuse the
+            # request instead of letting the comparison raise a 500.
+            return False
+        if header_port is None and trusted_port in (None, 80, 443):
             return True
-        if parsed.port is None:
+        if header_port is None:
             # Header did not include a port; fall back to comparing
             # against the request's effective default.
             if (trusted_scheme == "https" and trusted_port == 443) or (
@@ -3580,7 +3593,7 @@ def _request_origin_is_trusted(request: Request) -> bool:
             ):
                 return True
             return False
-        return parsed.port == trusted_port
+        return header_port == trusted_port
 
     origin = (request.headers.get("origin") or "").strip().lower()
     if origin:
@@ -4557,19 +4570,35 @@ async def system_update_status():
     }
 
 
-@app.post("/api/system/update")
-async def system_update():
+async def _system_update_or_restore(request: Request, *script_args: str) -> dict:
+    """Shared body of the privileged update/restore POSTs.
+
+    Applies the same trusted-origin defence as the provider admin, Qobuz
+    auth, power and device-name endpoints: a foreign or "null"
+    Origin/Referer is rejected with 403 before any update-script or
+    restart side effect; headerless CLI/systemd calls stay allowed.
+    ``script_args`` are forwarded to update_fxroute.sh (update:
+    ``--defer-restart``, restore: ``--restore --defer-restart``).
+    """
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
+    restore = "--restore" in script_args
     service_name = _configured_service_name()
-    result = await _run_update_operation(_UPDATE_APPLY_TIMEOUT_SECONDS, "--defer-restart")
+    result = await _run_update_operation(_UPDATE_APPLY_TIMEOUT_SECONDS, *script_args)
     ok = result["returncode"] == 0
     stdout = result.get("stdout", "")
-    update_applied = ok and any(
-        marker in stdout
-        for marker in (
-            "Pulling updates with fast-forward only.",
-            "Checkout is current, but the deployment was not completed; retrying reconciliation.",
+    if restore:
+        # The restore script always reconciles the checkout; a successful
+        # run therefore always needs the deferred service restart.
+        update_applied = ok
+    else:
+        update_applied = ok and any(
+            marker in stdout
+            for marker in (
+                "Pulling updates with fast-forward only.",
+                "Checkout is current, but the deployment was not completed; retrying reconciliation.",
+            )
         )
-    )
     if update_applied:
         asyncio.create_task(_restart_fxroute_service_after_response(service_name))
     return {
@@ -4581,8 +4610,14 @@ async def system_update():
     }
 
 
+@app.post("/api/system/update")
+async def system_update(request: Request):
+    """Apply the update; guarded like the other privileged POSTs."""
+    return await _system_update_or_restore(request, "--defer-restart")
+
+
 @app.post("/api/system/restore")
-async def system_restore():
+async def system_restore(request: Request):
     """Restore the checkout to origin/main and return to a clean public release.
 
     This is an explicit repair action, not a normal update. It saves local
@@ -4591,18 +4626,7 @@ async def system_restore():
 
     User data, music, config, and runtime cache files are not affected.
     """
-    service_name = _configured_service_name()
-    result = await _run_update_operation(_UPDATE_APPLY_TIMEOUT_SECONDS, "--restore", "--defer-restart")
-    ok = result["returncode"] == 0
-    if ok:
-        asyncio.create_task(_restart_fxroute_service_after_response(service_name))
-    return {
-        "ok": ok,
-        "installed_version": _read_version_file(),
-        "restart_scheduled": ok,
-        "service_name": service_name,
-        **result,
-    }
+    return await _system_update_or_restore(request, "--restore", "--defer-restart")
 
 
 

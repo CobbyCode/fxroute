@@ -17,6 +17,9 @@ scripts/update_fxroute.sh) against controlled shell -> python child trees:
 
 Timeouts and grace periods are patched small; production values stay
 90 s (check), 900 s (update/restore) and 5 s (grace).
+
+Direct endpoint calls pass a headerless request scope: that is the
+legitimate CLI/systemd caller the shared trusted-origin guard allows.
 """
 
 from __future__ import annotations
@@ -40,6 +43,23 @@ from fastapi import HTTPException
 
 
 _REAL_EXEC = asyncio.create_subprocess_exec
+
+
+def _headerless_request(path: str = "/api/system/update"):
+    """Minimal request scope emulating a headerless CLI/systemd caller."""
+    from starlette.requests import Request
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "headers": [(b"host", b"testserver")],
+            "query_string": b"",
+        }
+    )
 
 
 def _write_tree(root: Path, *, child_sleep: float, grand_sleep: float = 60.0,
@@ -170,7 +190,7 @@ class UpdateProcessLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("shell done", data["stdout"])
             self.assertIn("shell stderr line", data["stderr"])
 
-            data2 = await main.system_update()
+            data2 = await main.system_update(_headerless_request())
             self.assertTrue(data2["ok"])
             self.assertEqual(data2["returncode"], 0)
             self.assertFalse(data2["restart_scheduled"])
@@ -289,10 +309,13 @@ class UpdateProcessLifecycleTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(main, "_UPDATE_TERMINATE_GRACE_SECONDS", 0.2):
                 op = asyncio.create_task(main._run_update_operation(30.0, "--defer-restart"))
                 await self._wait_ready(slow)
-                for caller in (main.system_update_status, main.system_update,
-                               main.system_restore):
+                for caller, args in (
+                    (main.system_update_status, ()),
+                    (main.system_update, (_headerless_request(),)),
+                    (main.system_restore, (_headerless_request(),)),
+                ):
                     with self.assertRaises(HTTPException) as ctx:
-                        await caller()
+                        await caller(*args)
                     self.assertEqual(ctx.exception.status_code, 409)
                     self.assertIn("already in progress", ctx.exception.detail)
                 self.assertEqual(len(spawns), 1, "no second update subprocess may start")
@@ -362,10 +385,10 @@ class UpdateProcessLifecycleTests(unittest.IsolatedAsyncioTestCase):
             check = asyncio.create_task(main.system_update_status())
             await self._wait_ready(slow)
             with self.assertRaises(HTTPException) as ctx:
-                await main.system_update()
+                await main.system_update(_headerless_request())
             self.assertEqual(ctx.exception.status_code, 409)
             with self.assertRaises(HTTPException) as ctx:
-                await main.system_restore()
+                await main.system_restore(_headerless_request())
             self.assertEqual(ctx.exception.status_code, 409)
             check.cancel()
             with self.assertRaises(asyncio.CancelledError):

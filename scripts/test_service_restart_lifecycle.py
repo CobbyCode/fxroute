@@ -21,6 +21,9 @@ Covered against controlled stand-in children (never the real systemctl):
 
 Timeouts and grace periods are patched small; production values remain
 15 s (client timeout) and 3 s (grace).
+
+Direct endpoint calls pass a headerless request scope: that is the
+legitimate CLI/systemd caller the shared trusted-origin guard allows.
 """
 
 from __future__ import annotations
@@ -42,6 +45,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 
 _REAL_EXEC = asyncio.create_subprocess_exec
+
+
+def _headerless_request(path: str = "/api/system/update"):
+    """Minimal request scope emulating a headerless CLI/systemd caller."""
+    from starlette.requests import Request
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "headers": [(b"host", b"testserver")],
+            "query_string": b"",
+        }
+    )
+
 
 _HANG = "import time; time.sleep(3600)"
 _FAST = "import sys; sys.exit(0)"
@@ -295,7 +316,7 @@ class ServiceRestartLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main, "_SERVICE_RESTART_TERMINATE_GRACE_SECONDS", 0.3), \
                 self.assertLogs("main", level="WARNING") as logs:
             t0 = time.monotonic()
-            resp = await main.system_update()
+            resp = await main.system_update(_headerless_request())
             elapsed = time.monotonic() - t0
             await asyncio.sleep(1.6)
             background = [
@@ -334,7 +355,7 @@ class ServiceRestartLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main, "_SERVICE_RESTART_TERMINATE_GRACE_SECONDS", 0.3), \
                 self.assertLogs("main", level="WARNING") as logs:
             t0 = time.monotonic()
-            resp = await main.system_restore()
+            resp = await main.system_restore(_headerless_request())
             elapsed = time.monotonic() - t0
             await asyncio.sleep(1.6)
             background = [
@@ -369,7 +390,7 @@ class ServiceRestartLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "_run_update_operation", new=fake_update), \
                 patch.object(main, "_read_version_file", return_value="9.9.9"), \
                 patch.object(main, "_configured_service_name", return_value="fxroute"):
-            resp = await main.system_update()
+            resp = await main.system_update(_headerless_request())
         self.assertEqual(resp, {
             "ok": False,
             "installed_version": "9.9.9",
