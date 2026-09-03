@@ -332,6 +332,18 @@ let state = {
             libraries: [],
             pending: false,
         },
+        providers: {
+            loaded: false,
+            list: [],
+            pendingOperation: null,
+            operationLog: '',
+        },
+        deviceName: {
+            loaded: false,
+            value: '',
+            canChange: false,
+            pending: false,
+        },
         hardware: {
             available: true,
             connected: false,
@@ -445,6 +457,13 @@ const elements = {
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
     settingsMusicLibrarySelect: document.getElementById('settings-music-library-select'),
+    settingsProvidersList: document.getElementById('settings-providers-list'),
+    settingsProvidersSummary: document.getElementById('settings-providers-summary'),
+    settingsProviderOperation: document.getElementById('settings-provider-operation'),
+    settingsProviderOperationLog: document.getElementById('settings-provider-operation-log'),
+    settingsDeviceNameInput: document.getElementById('settings-device-name-input'),
+    settingsDeviceNameApply: document.getElementById('settings-device-name-apply'),
+    settingsDeviceNameHint: document.getElementById('settings-device-name-hint'),
     settingsHardwareSummary: document.getElementById('settings-hardware-summary'),
     settingsHardwareDetail: document.getElementById('settings-hardware-detail'),
     settingsHardwareRcaBtn: document.getElementById('settings-hardware-rca'),
@@ -1395,6 +1414,19 @@ function setupSettingsActions() {
             }
         });
     }
+    if (elements.settingsDeviceNameApply) {
+        elements.settingsDeviceNameApply.addEventListener('click', () => {
+            void applyDeviceName(elements.settingsDeviceNameInput?.value || '');
+        });
+    }
+    if (elements.settingsDeviceNameInput) {
+        elements.settingsDeviceNameInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                void applyDeviceName(elements.settingsDeviceNameInput.value || '');
+            }
+        });
+    }
     if (elements.settingsMusicLibrarySelect) {
         elements.settingsMusicLibrarySelect.addEventListener('change', (event) => {
             const libraryId = event.target.value;
@@ -2215,6 +2247,227 @@ async function restoreFxrouteToPublic() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Settings -> Providers
+// ---------------------------------------------------------------------------
+
+const PROVIDER_UNINSTALL_CONFIRM = {
+    spotify: 'Remove Spotify Connect (spotifyd and desktop integration) from this machine? FXRoute itself stays installed. You can reinstall it later.',
+    qobuz: 'Remove the Qobuz renderer (qbzd) from this machine? FXRoute itself stays installed. You can reinstall it later.',
+    tidal: 'Remove the TIDAL backend from FXRoute? Your TIDAL session stays on disk. You can reinstall it later.',
+};
+
+async function fetchProviderAdmin() {
+    try {
+        const resp = await fetch('/api/streaming/providers/admin');
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to load providers');
+        state.settings.providers.list = data.providers || [];
+        state.settings.providers.loaded = true;
+        // Device name rides the same payload so one fetch fills both rows.
+        if (typeof data.device_name === 'string' && data.device_name) {
+            state.settings.deviceName.value = data.device_name;
+            state.settings.deviceName.loaded = true;
+        }
+        renderProviderSettings();
+        renderDeviceNameSettings();
+    } catch (error) {
+        console.debug('Failed to load provider admin state', error);
+    }
+}
+
+function setProviderEnabled(providerId, enabled) {
+    const provider = state.settings.providers.list.find((p) => p.id === providerId);
+    if (provider) provider.enabled = enabled;
+    window.FXRouteStreaming?.applyProviderEnabled(providerId, enabled);
+    renderProviderSettings();
+    fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/enabled`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+    }).catch(() => {
+        showToast('Could not save provider visibility', 'error');
+    });
+}
+
+function renderProviderOperation(providerId, detail, log) {
+    state.settings.providers.pendingOperation = providerId;
+    state.settings.providers.operationLog = log || '';
+    if (elements.settingsProviderOperation) {
+        elements.settingsProviderOperation.classList.toggle('hidden', !log);
+        if (elements.settingsProviderOperationLog) elements.settingsProviderOperationLog.textContent = log || '';
+    }
+    if (detail) showToast(detail, 'success');
+    renderProviderSettings();
+}
+
+async function runProviderInstall(providerId) {
+    if (state.settings.providers.pendingOperation) return;
+    state.settings.providers.pendingOperation = providerId;
+    renderProviderOperation(providerId, '', '');
+    try {
+        const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/install`, { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Installation failed');
+        renderProviderOperation(providerId, data.installed ? 'Provider installed.' : 'Install finished.', data.log || '');
+    } catch (error) {
+        renderProviderOperation(providerId, '', error.message || 'Installation failed');
+        showToast(error.message || 'Installation failed', 'error');
+    } finally {
+        state.settings.providers.pendingOperation = null;
+        renderProviderSettings();
+    }
+}
+
+async function runProviderUninstall(providerId) {
+    if (state.settings.providers.pendingOperation) return;
+    if (!confirm(PROVIDER_UNINSTALL_CONFIRM[providerId] || 'Remove this provider?')) return;
+    state.settings.providers.pendingOperation = providerId;
+    renderProviderOperation(providerId, '', '');
+    try {
+        const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/uninstall`, { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Uninstall failed');
+        renderProviderOperation(providerId, 'Provider removed.', data.log || '');
+        setProviderEnabled(providerId, false);
+    } catch (error) {
+        renderProviderOperation(providerId, '', error.message || 'Uninstall failed');
+        showToast(error.message || 'Uninstall failed', 'error');
+    } finally {
+        state.settings.providers.pendingOperation = null;
+        renderProviderSettings();
+    }
+}
+
+async function runProviderServiceAction(providerId, action) {
+    try {
+        const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/service/${action}`, { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || `Service ${action} failed`);
+        showToast(action === 'stop' ? 'Service stopped.' : 'Service started.', 'success');
+    } catch (error) {
+        showToast(error.message || `Service ${action} failed`, 'error');
+    }
+}
+
+function providerAdminButtonHtml(provider) {
+    const busy = state.settings.providers.pendingOperation === provider.id;
+    const buttons = [];
+    if (provider.installed) {
+        // Connect/reconnect: the provider tab's own connect flow (TIDAL) or
+        // the service start that makes Connect discovery work (spotifyd/qbzd).
+        if (provider.id === 'tidal') {
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-auth="${provider.id}"${busy ? ' disabled' : ''}>${provider.authenticated ? 'Reconnect' : 'Connect'}</button>`);
+        } else if (provider.id !== 'spotify') {
+            const label = provider.available ? 'Restart' : 'Start';
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-service="start" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>${label}</button>`);
+            if (provider.available) {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-service="stop" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Stop</button>`);
+            }
+        }
+        buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
+    } else if (provider.implemented !== false) {
+        buttons.push(`<button type="button" class="btn-primary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Installing…' : 'Install…'}</button>`);
+    }
+    return buttons.join('');
+}
+
+function renderProviderSettings() {
+    if (!elements.settingsProvidersList) return;
+    const providers = state.settings.providers.list;
+    if (!providers.length) {
+        elements.settingsProvidersList.innerHTML = '<p class="settings-inline-note">Provider state unavailable.</p>';
+        return;
+    }
+    elements.settingsProvidersList.innerHTML = providers.map((provider) => {
+        const installed = provider.installed === true;
+        const statusText = !installed
+            ? 'Not installed'
+            : (provider.authenticated === false && provider.id !== 'spotify'
+                ? 'Installed · not connected'
+                : (provider.available ? 'Installed · ready' : 'Installed'));
+        const checked = provider.enabled !== false;
+        return `
+            <div class="settings-provider-row" data-provider-row="${escapeHtml(provider.id)}">
+                <div class="settings-provider-info">
+                    <label class="settings-provider-toggle">
+                        <input type="checkbox" data-provider-enabled="${escapeHtml(provider.id)}"${checked ? ' checked' : ''} />
+                        <span>${escapeHtml(provider.name)}</span>
+                    </label>
+                    <span class="settings-provider-status">${escapeHtml(statusText)}</span>
+                </div>
+                <div class="settings-provider-actions">${providerAdminButtonHtml(provider)}</div>
+            </div>`;
+    }).join('');
+    elements.settingsProvidersList.querySelectorAll('[data-provider-enabled]').forEach((input) => {
+        input.addEventListener('change', (event) => {
+            setProviderEnabled(event.target.getAttribute('data-provider-enabled'), event.target.checked);
+        });
+    });
+    elements.settingsProvidersList.querySelectorAll('[data-provider-install]').forEach((button) => {
+        button.addEventListener('click', () => runProviderInstall(button.getAttribute('data-provider-install')));
+    });
+    elements.settingsProvidersList.querySelectorAll('[data-provider-uninstall]').forEach((button) => {
+        button.addEventListener('click', () => runProviderUninstall(button.getAttribute('data-provider-uninstall')));
+    });
+    elements.settingsProvidersList.querySelectorAll('[data-provider-service]').forEach((button) => {
+        button.addEventListener('click', () => runProviderServiceAction(button.getAttribute('data-provider-id'), button.getAttribute('data-provider-service')));
+    });
+    elements.settingsProvidersList.querySelectorAll('[data-provider-auth]').forEach((button) => {
+        button.addEventListener('click', () => {
+            toggleSettingsPanel(false);
+            switchTab('tidal');
+        });
+    });
+}
+
+async function applyDeviceName(value) {
+    const name = String(value || '').trim().toLowerCase();
+    if (!name) return;
+    if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name) || name === 'localhost') {
+        showToast('Use only lowercase letters, digits and hyphens (no leading/trailing hyphen)', 'error');
+        return;
+    }
+    state.settings.deviceName.pending = true;
+    renderDeviceNameSettings();
+    try {
+        const resp = await fetch('/api/system/device-name', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hostname: name }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Could not change the device name');
+        state.settings.deviceName.value = data.hostname || name;
+        showToast(data.changed === false ? 'Device name unchanged.' : `Device name set to ${state.settings.deviceName.value}.local`, 'success');
+    } catch (error) {
+        showToast(error.message || 'Could not change the device name', 'error');
+    } finally {
+        state.settings.deviceName.pending = false;
+        renderDeviceNameSettings();
+    }
+}
+
+function renderDeviceNameSettings() {
+    if (!elements.settingsDeviceNameInput) return;
+    if (!state.settings.deviceName.loaded) {
+        elements.settingsDeviceNameInput.placeholder = 'Loading…';
+        return;
+    }
+    if (document.activeElement !== elements.settingsDeviceNameInput) {
+        elements.settingsDeviceNameInput.value = state.settings.deviceName.value || '';
+        elements.settingsDeviceNameInput.placeholder = state.settings.deviceName.value || 'fxroute';
+    }
+    if (elements.settingsDeviceNameApply) {
+        elements.settingsDeviceNameApply.disabled = state.settings.deviceName.pending || state.settings.deviceName.canChange === false;
+    }
+    if (elements.settingsDeviceNameHint) {
+        elements.settingsDeviceNameHint.textContent = state.settings.deviceName.canChange === false
+            ? 'This system does not support changing the device name here.'
+            : `Reach this FXRoute as http://${state.settings.deviceName.value || 'fxroute'}.local:8000. A change takes effect after a moment.`;
+    }
+}
+
 function renderSettingsPanel() {
     if (elements.settingsCertificateLink) {
         const certUrl = settingsCertificateUrl();
@@ -2349,6 +2602,8 @@ function renderSettingsPanel() {
         elements.settingsMusicLibrarySelect.value = musicLibrary.active_id || 'local';
         elements.settingsMusicLibrarySelect.disabled = !!musicLibrary.pending;
     }
+    renderProviderSettings();
+    renderDeviceNameSettings();
     renderHardwareController();
     renderMaintenancePanel();
     renderSubwooferPanel();
@@ -4419,6 +4674,7 @@ function highlightActiveTrack() {
 // Library
 async function fetchInitialData() {
     startSampleratePolling();
+    void fetchProviderAdmin();
     await Promise.all([radioModule.fetchStations(), fetchTracks(), fetchEffects(), fetchMeasurements(), fetchPlaybackStatus(), fetchSamplerateStatus(), fetchDownloadStatus(), fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
     requestSubwooferPreviewRedrawFromState();
     await fetchPlaylists();

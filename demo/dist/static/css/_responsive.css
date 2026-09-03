@@ -1649,7 +1649,7 @@
 
 @media (min-width: 761px) {
     /* from _playback.css */
-    .brand-lockup { gap: 0.56rem; }
+    .brand-lockup { gap: 0.39rem; }
         .brand-mark {
             width: 37px;
             height: 37px;
@@ -1662,7 +1662,7 @@
 
 }
 
-@media (min-width: 940px) {
+@media (min-width: 1180px) {
     /* from _playback.css */
     .tabs {
             width: max-content;

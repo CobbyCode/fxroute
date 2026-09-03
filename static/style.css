@@ -908,6 +908,69 @@ body {
     margin: 0.1rem 0 0;
     text-align: right;
 }
+/* Settings -> Providers: one calm row per provider. */
+.settings-providers-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+.settings-provider-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+.settings-provider-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+    min-width: 0;
+}
+.settings-provider-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.settings-provider-toggle input {
+    accent-color: var(--accent);
+}
+.settings-provider-status {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+.settings-provider-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+}
+.settings-provider-operation {
+    margin-top: 0.45rem;
+}
+.settings-provider-operation pre {
+    margin: 0;
+    max-height: 9rem;
+    overflow: auto;
+    padding: 0.5rem 0.65rem;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
+    font-size: 0.72rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.settings-device-name-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.settings-device-name-row .url-input {
+    flex: 1;
+    min-width: 0;
+}
 .settings-certificate-note a {
     color: var(--text-secondary);
     text-decoration: underline;

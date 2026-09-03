@@ -64,6 +64,7 @@
         providers: {},          // id -> { descriptor, root, els, tabBtn, tabPanel }
         lastData: {},           // id -> last normalized status payload
         polls: {},              // id -> interval timer
+        enabled: {},            // id -> boolean (Settings -> Providers choice)
         lastPlaybackSource: null,
         lastPlaybackAt: 0,
         tidal: {
@@ -294,19 +295,50 @@
     // Tab visibility
     // -----------------------------------------------------------------------
     function applyTabVisibility(providerId, entry, data) {
+        const enabled = state.enabled[providerId] !== false;
         const available = data.installed === true;
         const nonApp = typeof nonAppSourceModeActive === 'function' && nonAppSourceModeActive();
-        const visible = available && !nonApp;
+        const visible = available && enabled && !nonApp;
+        const show = available && enabled;
         if (entry.tabBtn) {
-            entry.tabBtn.hidden = !available;
-            entry.tabBtn.style.display = available ? '' : 'none';
+            entry.tabBtn.hidden = !show;
+            entry.tabBtn.style.display = show ? '' : 'none';
             entry.tabBtn.classList.toggle('hidden', !visible);
         }
         if (entry.tabPanel) {
-            entry.tabPanel.hidden = !available;
+            entry.tabPanel.hidden = !show;
             entry.tabPanel.classList.toggle('hidden', !visible);
         }
+        if (!show && state.polls[providerId]) stopPoll(providerId);
         if (typeof updateTabsScrollAffordance === 'function') updateTabsScrollAffordance();
+    }
+
+    // Settings -> Providers: apply a new enabled flag immediately without
+    // waiting for the next discovery poll.
+    function applyProviderEnabled(providerId, enabled) {
+        state.enabled[providerId] = enabled === true;
+        const entry = state.providers[providerId];
+        const data = state.lastData[providerId] || {};
+        if (entry) applyTabVisibility(providerId, entry, { installed: data.installed, available: data.available });
+    }
+
+    // Poll /api/streaming/providers/discovery periodically so an install or
+    // uninstall started elsewhere (or in Settings) flips tab visibility.
+    async function refreshEnabledFlags() {
+        try {
+            const resp = await fetch('/api/streaming/providers/discovery');
+            if (!resp.ok) return;
+            const payload = await resp.json();
+            for (const descriptor of payload.providers || []) {
+                const prev = state.enabled[descriptor.id];
+                state.enabled[descriptor.id] = descriptor.enabled !== false;
+                if (prev !== undefined && prev !== state.enabled[descriptor.id]) {
+                    applyProviderEnabled(descriptor.id, state.enabled[descriptor.id]);
+                }
+            }
+        } catch (err) {
+            // transient; retried by the interval
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -706,12 +738,20 @@
                 if (!entry) continue;
                 entry.descriptor = descriptor;
                 entry.providerLabel = () => descriptor.name || descriptor.id;
-                // Show the tab only for implemented, installed providers.
+                state.enabled[descriptor.id] = descriptor.enabled !== false;
+                // Show the tab only for enabled, implemented, installed providers.
                 const pseudo = { installed: descriptor.installed, available: descriptor.available, capabilities: descriptor.capabilities };
                 applyTabVisibility(descriptor.id, entry, pseudo);
-                if (descriptor.installed) {
+                if (descriptor.installed && state.enabled[descriptor.id]) {
                     void refreshProvider(descriptor.id);
                 }
+            }
+            // Re-check enabled/installed flags periodically; cheap discovery
+            // (no runtime probes) keeps the Settings surface authoritative.
+            if (!state._enabledPoll) {
+                state._enabledPoll = setInterval(() => {
+                    if (!document.hidden) void refreshEnabledFlags();
+                }, 10000);
             }
         } catch (err) {
             // ignore; tabs remain hidden until the next reconnect/resync
@@ -2585,6 +2625,8 @@
         renderProvider,
         notifyPlayback,
         onTabVisible,
+        applyProviderEnabled,
+        refreshEnabledFlags,
         refreshActiveTab: () => { if (window.__visibleTab === 'qobuz' || window.__visibleTab === 'tidal') void refreshProvider(window.__visibleTab); },
         // Footer / global favorite hooks: the shared footer heart favorites the
         // current TIDAL track through the same canonical state and API the

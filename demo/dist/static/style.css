@@ -64,11 +64,13 @@
     --z-base:            1;      /* badges, hero gradient overlays, seat in the room view */
     --z-raised:          2;      /* interactive controls on tiles/covers, room mic, cover */
     --z-tabs:            4;      /* tab bar (header) */
-    --z-header-menu:     80;     /* open power menu */
     --z-playback-bar:    100;    /* fixed playback footer */
     --z-banner:          1002;   /* offline/disconnect banner */
     --z-toast:           1005;   /* transient toasts */
-    --z-header-menu-open: 1006;  /* header stacking context raised while the menu is open */
+    --z-header-menu:     1007;   /* open power menu: the header creates no
+                                    stacking context, so this value competes
+                                    in the root context and must sit above
+                                    the tab bar and toasts */
     --z-cover-detail-backdrop: 1040;
     --z-cover-detail:    1041;   /* cover detail card */
     --z-overlay:         1100;   /* generic modal overlay (manage/settings) */
@@ -350,13 +352,17 @@ body {
     justify-content: space-between;
     gap: 0.9rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.055);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    /* No backdrop-filter here: it would create a stacking context that
+       traps the header tooltips and power menu behind the tab bar. The
+       header is a static bar (nothing ever scrolls underneath it) and its
+       background is nearly opaque, so the blur had no visible effect. With
+       no context on the header, the popups escape to the root stacking
+       context via their own z-index values (--z-tooltip, --z-header-menu). */
 }
 .brand-lockup {
     display: flex;
     align-items: center;
-    gap: 0.64rem;
+    gap: 0.39rem;
     min-width: 0;
 }
 .brand-lockup-button {
@@ -546,13 +552,9 @@ body {
     gap: 0.1rem;
     z-index: var(--z-header-menu);
 }
-/* Keep the open power menu above transient toasts: the header's
-   backdrop-filter creates a stacking context that would otherwise trap
-   the menu below the fixed toast layer. */
-.header:has(.power-menu:not(.hidden)) {
-    position: relative;
-    z-index: var(--z-header-menu-open);
-}
+/* The open menu's --z-header-menu value keeps it above the tab bar and
+   transient toasts in the root stacking context; the header itself must
+   never be raised (it would cover the tab bar). */
 .power-menu-item {
     display: flex;
     align-items: center;
@@ -905,6 +907,69 @@ body {
 .settings-certificate-note {
     margin: 0.1rem 0 0;
     text-align: right;
+}
+/* Settings -> Providers: one calm row per provider. */
+.settings-providers-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+.settings-provider-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+.settings-provider-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+    min-width: 0;
+}
+.settings-provider-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.settings-provider-toggle input {
+    accent-color: var(--accent);
+}
+.settings-provider-status {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+.settings-provider-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+}
+.settings-provider-operation {
+    margin-top: 0.45rem;
+}
+.settings-provider-operation pre {
+    margin: 0;
+    max-height: 9rem;
+    overflow: auto;
+    padding: 0.5rem 0.65rem;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
+    font-size: 0.72rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.settings-device-name-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.settings-device-name-row .url-input {
+    flex: 1;
+    min-width: 0;
 }
 .settings-certificate-note a {
     color: var(--text-secondary);
@@ -8324,7 +8389,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 @media (min-width: 761px) {
     /* from _playback.css */
-    .brand-lockup { gap: 0.56rem; }
+    .brand-lockup { gap: 0.39rem; }
         .brand-mark {
             width: 37px;
             height: 37px;
@@ -8337,7 +8402,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 }
 
-@media (min-width: 940px) {
+@media (min-width: 1180px) {
     /* from _playback.css */
     .tabs {
             width: max-content;

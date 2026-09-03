@@ -16,6 +16,7 @@ FXROUTE_TARGET_UID="$(id -u)"
 FXROUTE_RUNTIME_DIR="/run/user/$FXROUTE_TARGET_UID"
 REMOVE_PROJECT_DIR=0
 ASSUME_YES=0
+PROVIDER_ONLY_ARG=""
 INSTALL_ROOT_LOCAL_PROJECT=0
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
 INSTALL_CONFIG_FILE="$HOME/.config/fxroute/install-config.env"
@@ -61,6 +62,7 @@ Usage: ./uninstall.sh [options]
 Options:
   --target <dir>                Uninstall from this directory (default: $INSTALL_ROOT_DEFAULT)
   --user <name>                 Select the FXRoute user when invoked as root
+  --provider <id>               Remove only one provider (spotify, qobuz, tidal); FXRoute itself stays installed
   --remove-project-dir          Remove the project directory after uninstall
   -y, --yes                     Assume yes for optional removals
   -h, --help                    Show this help
@@ -124,6 +126,14 @@ while [[ $# -gt 0 ]]; do
     --remove-project-dir)
       REMOVE_PROJECT_DIR=1
       shift
+      ;;
+    --provider)
+      [[ $# -ge 2 ]] || { echo "--provider requires an id (spotify, qobuz, tidal)" >&2; exit 1; }
+      case "$2" in
+        spotify|qobuz|tidal) PROVIDER_ONLY_ARG="$2" ;;
+        *) echo "Unknown provider '$2'. Expected spotify, qobuz, or tidal." >&2; exit 1 ;;
+      esac
+      shift 2
       ;;
     -y|--yes)
       ASSUME_YES=1
@@ -3227,6 +3237,60 @@ remove_project_dir_if_requested() {
   log "Removed $INSTALL_ROOT"
 }
 
+clear_provider_ownership_state() {
+  # Rewrite install-state.json without the removed provider's ownership
+  # records so a later full uninstall cannot try to remove it twice.
+  local provider="$1"
+  local state_file="$INSTALL_STATE_FILE"
+  [[ -f "$state_file" && ! -L "$state_file" ]] || return 0
+  python3 - "$state_file" "$provider" <<'PY'
+import json, sys, tempfile, os
+from pathlib import Path
+
+path = Path(sys.argv[1])
+provider = sys.argv[2]
+try:
+    payload = json.loads(path.read_text())
+except (OSError, ValueError):
+    raise SystemExit(0)
+providers = payload.get("providers")
+if isinstance(providers, dict):
+    providers.pop(provider, None)
+    payload["providers"] = providers
+fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".install-state.")
+with os.fdopen(fd, "w") as handle:
+    json.dump(payload, handle, indent=2)
+    handle.write("\n")
+os.replace(tmp, path)
+PY
+}
+
+remove_single_provider() {
+  # Scoped removal for Settings -> Providers: remove exactly one owned
+  # provider component; the FXRoute service, helpers and records stay.
+  local provider="$1"
+  log "Removing FXRoute-owned $provider components only"
+  case "$provider" in
+    qobuz)
+      if restore_qbzd_volume_mode_if_owned; then
+        remove_owned_qbzd
+      else
+        warn "Skipping qbzd removal until its FXRoute volume-mode change can be restored"
+        PRESERVE_INSTALL_STATE=1
+      fi
+      ;;
+    spotify)
+      remove_owned_spotify_desktop
+      remove_owned_spotifyd
+      ;;
+    tidal)
+      remove_owned_tidal_dependency
+      ;;
+  esac
+  clear_provider_ownership_state "$provider"
+  log "Provider-only removal finished; FXRoute stays installed"
+}
+
 remove_install_records() {
   local sudo_cmd=()
   if [[ $PRESERVE_INSTALL_STATE -eq 0 ]]; then
@@ -3258,6 +3322,10 @@ remove_install_records() {
 
 main() {
   local firewall_rule=""
+  if [[ -n "$PROVIDER_ONLY_ARG" ]]; then
+    remove_single_provider "$PROVIDER_ONLY_ARG"
+    exit 0
+  fi
   if [[ $ROOT_STATE_REQUIRED -eq 1 && $ROOT_STATE_TRUSTED -ne 1 ]]; then
     warn "No trusted root-owned FXRoute install state is available; privileged ownership cleanup and project removal are disabled"
     PRESERVE_INSTALL_STATE=1

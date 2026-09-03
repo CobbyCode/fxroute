@@ -16,6 +16,10 @@ LOCAL_PROJECT_MODE=0
 ASSUME_YES=0
 PROVIDER_LIST=""
 PROVIDER_SELECTION_EXPLICIT=0
+PROVIDERS_ONLY_MODE=0
+AUTO_LAN_NAME=0
+AUTO_CADDY=0
+AUTO_DEVICE_NAME=""
 TARGET_USER_ARG=""
 SELECT_SPOTIFY_DESKTOP=0
 SELECT_SPOTIFYD=0
@@ -33,7 +37,7 @@ SPOTIFYD_ZEROCONF_PORT="4444"
 CIFS_HELPER_SHA256="a878afbf1927bdd14ed3049df39a41929a54cd18a1ab89a377ba1ed4c4b453d8"
 CIFS_HELPER_LEGACY_SHA256="e69249dca5ef58f3b18081c9bfce1b7ccab8f400fb117f3ee6c7a58daa3ac4b9"
 SYSTEM_UPDATE_HELPER_SHA256="b9e67b2f396e814930d1ebfeba8f6d9d483b601a3fbd27cc7dd8c32b7d3506eb"
-POWER_POLKIT_TEMPLATE_SHA256="1ddad6ccf831866dfbc945dba2d4c6d3e316283d0b589c682b580eb836dfe219"
+POWER_POLKIT_TEMPLATE_SHA256="dee1002d33abf60b390f6471572478daac95a2aba43301a339aabff39fd27b8a"
 QOBUZ_VOLUME_MODE_KEY="qconnect.volume_mode"
 QOBUZ_REQUIRED_VOLUME_MODE="locked"
 TIDAL_REQUIREMENTS_FILE="requirements-tidal.txt"
@@ -181,6 +185,10 @@ Options:
   --user <name>         Run FXRoute and its audio graph as this Unix user
   --local-project       Install in-place from the current project directory
   --source <dir>        Use a different local project source directory
+  --providers-only      Install only the selected providers into an existing FXRoute checkout (Settings -> Providers backend; no service/env changes)
+  --with-lan-name       Image mode: enable the .local LAN name non-interactively
+  --with-caddy          Image mode: enable the HTTPS reverse proxy non-interactively
+  --device-name <name>  Image mode: set the .local device name (with --with-lan-name)
   --providers <list>    Select comma-separated providers: spotify-desktop, spotifyd, qobuz, tidal, none
   --spotify-desktop     Select Spotify Desktop installation
   --spotifyd            Select spotifyd installation
@@ -298,6 +306,27 @@ while [[ $# -gt 0 ]]; do
     --local-project)
       LOCAL_PROJECT_MODE=1
       shift
+      ;;
+    --providers-only)
+      # Settings -> Providers backend: install only the selected providers in
+      # an existing FXRoute checkout (no venv/service/env/validator churn).
+      PROVIDERS_ONLY_MODE=1
+      shift
+      ;;
+    --with-lan-name)
+      # Image first-boot: enable Avahi + .local name non-interactively.
+      AUTO_LAN_NAME=1
+      shift
+      ;;
+    --with-caddy)
+      # Image first-boot: enable the HTTPS reverse proxy non-interactively.
+      AUTO_CADDY=1
+      shift
+      ;;
+    --device-name)
+      [[ $# -ge 2 ]] || die "--device-name requires a hostname"
+      AUTO_DEVICE_NAME="$2"
+      shift 2
       ;;
     -y|--yes)
       ASSUME_YES=1
@@ -627,6 +656,14 @@ PY
 
 SOURCE_DIR="$(expand_path "$SOURCE_DIR")"
 INSTALL_ROOT="$(expand_path "$INSTALL_ROOT")"
+
+if [[ $PROVIDERS_ONLY_MODE -eq 1 && $INSTALL_ROOT_EXPLICIT -eq 0 && -f "$INSTALL_CONFIG_FILE" ]]; then
+  # Provider-only runs service an existing install wherever it lives.
+  recorded_providers_root="$(sed -n 's/^FXROUTE_INSTALL_ROOT=//p' "$INSTALL_CONFIG_FILE" | tail -n 1)"
+  if [[ -n "$recorded_providers_root" && -d "$(expand_path "$recorded_providers_root")" ]]; then
+    INSTALL_ROOT="$(expand_path "$recorded_providers_root")"
+  fi
+fi
 
 [[ -f "$SOURCE_DIR/main.py" && -f "$SOURCE_DIR/requirements.txt" && -f "$SOURCE_DIR/.env.example" ]] || die "Source directory does not look like the FXRoute project: $SOURCE_DIR"
 
@@ -4826,6 +4863,68 @@ offer_optional_local_lan_name() {
     MDNS_HOSTNAME="$current_host"
   fi
 
+  if [[ $AUTO_LAN_NAME -eq 1 ]]; then
+    # Image first-boot: skip every prompt and keep a valid current name, or
+    # apply the requested/generated one. Never interactive.
+    if [[ -n "$AUTO_DEVICE_NAME" ]]; then
+      desired_host="${AUTO_DEVICE_NAME,,}"
+      valid_local_hostname "$desired_host" || {
+        warn "Ignoring invalid --device-name '$AUTO_DEVICE_NAME'"
+        return 0
+      }
+    else
+      desired_host="$(valid_local_hostname "$current_host" && printf '%s' "$current_host" || printf 'fxroute')"
+    fi
+    if [[ "$desired_host" == "$current_host" ]] && systemctl is-active avahi-daemon >/dev/null 2>&1; then
+      MDNS_HOSTNAME="$desired_host"
+      pass "optional .local LAN name already active (${MDNS_HOSTNAME}.local:${port})"
+      return 0
+    fi
+    case "$PACKAGE_MANAGER" in
+      apt) avahi_pkg="avahi-daemon" ;;
+      dnf|zypper|pacman) avahi_pkg="avahi" ;;
+      *)
+        warn "Skipping automatic .local setup on unsupported distro package manager: $PACKAGE_MANAGER"
+        return 0
+        ;;
+    esac
+    if ! pkg_install "$avahi_pkg"; then
+      warn "Automatic .local setup failed while installing Avahi"
+      return 0
+    fi
+    if [[ $AVAHI_WAS_PRESENT_BEFORE -eq 0 ]] && avahi_is_present; then
+      AVAHI_INSTALLED_BY_FXROUTE=1
+    fi
+    configure_avahi_ipv4_mdns_for_fxroute
+    if [[ "$desired_host" != "$current_host" ]]; then
+      log "hostnamectl set-hostname $desired_host"
+      if ! "${SUDO_CMD[@]}" hostnamectl set-hostname "$desired_host"; then
+        warn "Automatic .local setup failed while setting hostname"
+        return 0
+      fi
+      if [[ "$LAN_HOSTNAME_BEFORE" != "$desired_host" ]]; then
+        LAN_HOSTNAME_CHANGED_BY_FXROUTE=1
+        LAN_HOSTNAME_AFTER="$desired_host"
+      fi
+    fi
+    log "systemctl enable --now avahi-daemon"
+    if ! "${SUDO_CMD[@]}" systemctl enable --now avahi-daemon; then
+      warn "Automatic .local setup could not start avahi-daemon"
+      return 0
+    fi
+    if [[ $AVAHI_WAS_ACTIVE_BEFORE -eq 0 || $AVAHI_WAS_ENABLED_BEFORE -eq 0 ]]; then
+      AVAHI_ENABLED_BY_FXROUTE=1
+    fi
+    if [[ "$LAN_HOSTNAME_BEFORE" != "$desired_host" ]]; then
+      log "systemctl restart avahi-daemon"
+      "${SUDO_CMD[@]}" systemctl restart avahi-daemon >/dev/null 2>&1 || true
+    fi
+    ensure_lan_firewall_service_open mdns ".local LAN access"
+    MDNS_HOSTNAME="$desired_host"
+    pass "optional .local LAN name configured (${MDNS_HOSTNAME}.local:${port})"
+    return 0
+  fi
+
   [[ -t 0 && -t 1 ]] || return 0
 
   echo
@@ -5649,8 +5748,6 @@ offer_optional_caddy_proxy() {
   local fxroute_caddy_active=0
   local caddy_path=""
 
-  [[ -t 0 && -t 1 ]] || return 0
-
   [[ -f "$env_file" ]] && port="$(grep '^PORT=' "$env_file" | cut -d= -f2- | tr -d '[:space:]')"
   if ! [[ "$port" =~ ^[0-9]+$ ]] || [[ ${#port} -gt 5 ]] || (( 10#$port < 1 || 10#$port > 65535 )); then
     warn "Optional Caddy setup skipped because PORT is not a valid TCP port"
@@ -5662,6 +5759,14 @@ offer_optional_caddy_proxy() {
     return 0
   }
 
+  if [[ $AUTO_CADDY -eq 1 ]]; then
+    # Image first-boot: enable HTTPS non-interactively (HTTP on :8000 stays
+    # reachable; the proxy adds :80/:443 on top).
+    :
+  else
+    [[ -t 0 && -t 1 ]] || return 0
+  fi
+
   echo
   if systemctl is-active "$service_name" >/dev/null 2>&1; then
     fxroute_caddy_active=1
@@ -5669,6 +5774,8 @@ offer_optional_caddy_proxy() {
     if [[ -n "$MDNS_HOSTNAME" ]]; then
       echo "Optional .local HTTPS also active: https://${MDNS_HOSTNAME}.local"
     fi
+  elif [[ $AUTO_CADDY -eq 1 ]]; then
+    log "--with-caddy: enabling the FXRoute HTTPS reverse proxy automatically"
   else
     echo "Optional LAN HTTPS setup:"
     echo "Enable Caddy so FXRoute can be reached as https://${lan_ip} with an installer-managed local certificate?"
@@ -5900,6 +6007,34 @@ EOF
   fi
 }
 
+main_providers_only() {
+  # Settings -> Providers backend path: only provider installation in an
+  # existing FXRoute checkout. Reuses the exact provider install flows so UI
+  # installs match installer installs byte for byte, and refreshes the
+  # ownership state afterwards so uninstall stays safe.
+  require_cmd python3
+  require_cmd getent
+  require_cmd ps
+  if [[ "$(id -u)" -eq 0 && "$FXROUTE_TARGET_USER" != "root" ]]; then
+    require_cmd runuser
+  fi
+  choose_sudo
+  confirm_supported_distro
+  load_provider_ownership_state
+  select_optional_providers
+  STATE_CHECKPOINT_ENABLED=1
+  trap 'checkpoint_install_state_on_exit' EXIT
+  configure_optional_streaming
+  ensure_target_user_ownership
+  write_install_state
+  echo
+  echo "Provider setup finished:"
+  echo " - Spotify Desktop: ${SPOTIFY_DESKTOP_PROVIDER_STATUS}"
+  echo " - spotifyd: ${SPOTIFYD_PROVIDER_STATUS}"
+  echo " - Qobuz/qbzd: ${QOBUZ_PROVIDER_STATUS}"
+  echo " - TIDAL: ${TIDAL_PROVIDER_STATUS}"
+}
+
 main() {
   require_cmd python3
   require_cmd systemctl
@@ -5912,6 +6047,10 @@ main() {
   confirm_supported_distro
   load_provider_ownership_state
   select_optional_providers
+  if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    main_providers_only
+    return 0
+  fi
   capture_lan_comfort_baseline
   ensure_native_packages
   ensure_dbus_send_binary

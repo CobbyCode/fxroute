@@ -64,11 +64,13 @@
     --z-base:            1;      /* badges, hero gradient overlays, seat in the room view */
     --z-raised:          2;      /* interactive controls on tiles/covers, room mic, cover */
     --z-tabs:            4;      /* tab bar (header) */
-    --z-header-menu:     80;     /* open power menu */
     --z-playback-bar:    100;    /* fixed playback footer */
     --z-banner:          1002;   /* offline/disconnect banner */
     --z-toast:           1005;   /* transient toasts */
-    --z-header-menu-open: 1006;  /* header stacking context raised while the menu is open */
+    --z-header-menu:     1007;   /* open power menu: the header creates no
+                                    stacking context, so this value competes
+                                    in the root context and must sit above
+                                    the tab bar and toasts */
     --z-cover-detail-backdrop: 1040;
     --z-cover-detail:    1041;   /* cover detail card */
     --z-overlay:         1100;   /* generic modal overlay (manage/settings) */

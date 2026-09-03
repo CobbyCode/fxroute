@@ -12,6 +12,7 @@ boundary; those dicts (not dataclass models) are the wire contract that
 crosses to the API/UI.
 """
 
+from streaming import activation
 from streaming.base.capabilities import CAPABILITY_NAMES, Capabilities
 from streaming.base.provider import (
     DeclaredStreamingProvider,
@@ -37,11 +38,21 @@ def get_provider(provider_id: str) -> StreamingProvider | None:
 
 
 async def describe_providers() -> list[dict]:
-    return await registry.describe_all()
+    """Describe all providers, annotated with the persisted enabled flag."""
+    described = await registry.describe_all()
+    enabled = activation.enabled_map([entry.get("id", "") for entry in described])
+    for entry in described:
+        entry["enabled"] = enabled.get(str(entry.get("id") or ""), True)
+    return described
 
 
 async def discover_providers() -> list[dict]:
-    return await registry.discover_all()
+    """Discover installed providers without runtime or remote probes."""
+    described = await registry.discover_all()
+    enabled = activation.enabled_map([entry.get("id", "") for entry in described])
+    for entry in described:
+        entry["enabled"] = enabled.get(str(entry.get("id") or ""), True)
+    return described
 
 
 __all__ = [
@@ -53,6 +64,7 @@ __all__ = [
     "SPOTIFY_PREARM_SAMPLE_RATE_HZ",
     "SpotifyProvider",
     "StreamingProvider",
+    "activation",
     "describe_providers",
     "discover_providers",
     "get_provider",

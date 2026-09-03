@@ -6,11 +6,13 @@
  *   /etc/polkit-1/rules.d/50-fxroute-power.rules
  *
  * Its only purpose is to let the user running the FXRoute systemd --user
- * service (and only that user) trigger the two systemd-logind actions that
- * the FXRoute web UI exposes through /api/system/power/*:
+ * service (and only that user) trigger the systemd-logind/systemd-hostnamed
+ * actions that the FXRoute web UI exposes through /api/system/power/* and
+ * /api/system/device-name:
  *
  *   - org.freedesktop.login1.suspend
  *   - org.freedesktop.login1.power-off
+ *   - org.freedesktop.hostname1.set-static-hostname
  *
  * Important: this rule does NOT grant any other privilege.  All other
  * polkit actions (systemd unit control, rebooting, hibernate, package
@@ -26,7 +28,8 @@ polkit.addRule(function(action, subject) {
         return;
     }
     if (action.id === "org.freedesktop.login1.suspend" ||
-        action.id === "org.freedesktop.login1.power-off") {
+        action.id === "org.freedesktop.login1.power-off" ||
+        action.id === "org.freedesktop.hostname1.set-static-hostname") {
         return polkit.Result.YES;
     }
 });

@@ -133,6 +133,20 @@ PY
   rm -rf -- "$root_state_dir"
 }
 
+derive_fxroute_device_name() {
+  # Unique, stable .local name for image installs: fxroute-<6 machine-id
+  # chars>. Derived from /etc/machine-id so it survives reboots/re-installs
+  # of the same machine while staying unique across a fleet of images.
+  local machine_id=""
+  machine_id="$(cat /etc/machine-id 2>/dev/null || true)"
+  machine_id="${machine_id//[!a-z0-9]/}"
+  if [[ ${#machine_id} -ge 6 ]]; then
+    printf 'fxroute-%s\n' "${machine_id:0:6}"
+  else
+    printf 'fxroute\n'
+  fi
+}
+
 reset_incomplete_install
 export HOME="$fxroute_home"
 
@@ -141,6 +155,9 @@ export HOME="$fxroute_home"
   --target "$fxroute_home/fxroute" \
   --user "$FXROUTE_USER" \
   --providers none \
+  --with-lan-name \
+  --with-caddy \
+  --device-name "$(derive_fxroute_device_name)" \
   --yes
 
 # Re-create a git checkout inside the installed tree so the standard

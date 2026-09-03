@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.171">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.172">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -82,6 +82,30 @@
                 </div>
 
                 <div class="effects-stack settings-stack">
+                    <section class="radio-manage-section settings-section" id="settings-providers-section">
+                        <div class="radio-manage-section-header">
+                            <h3>Providers</h3>
+                            <p id="settings-providers-summary">Installed providers can be connected, hidden, or removed.</p>
+                        </div>
+                        <div id="settings-providers-list" class="settings-providers-list"></div>
+                        <div id="settings-provider-operation" class="settings-provider-operation hidden">
+                            <pre id="settings-provider-operation-log" aria-live="polite"></pre>
+                        </div>
+                    </section>
+
+                    <section class="radio-manage-section settings-section">
+                        <div class="radio-manage-section-header">
+                            <h3>Device Name</h3>
+                            <p id="settings-device-name-hint">Address of this FXRoute box on the LAN.</p>
+                        </div>
+                        <div class="field-group settings-field-group settings-device-name-row">
+                            <input id="settings-device-name-input" class="url-input" type="text"
+                                   autocomplete="off" spellcheck="false" maxlength="63"
+                                   aria-label="Device name" placeholder="fxroute" />
+                            <button id="settings-device-name-apply" class="btn-secondary" type="button">Apply</button>
+                        </div>
+                    </section>
+
                     <section class="radio-manage-section settings-section">
                         <div class="radio-manage-section-header">
                             <h3>Audio Output</h3>
@@ -1381,7 +1405,7 @@
     <script src="/static/measurement_graph.js?v=0.9.15"></script>
     <script src="/static/measurement_flows.js?v=0.9.19"></script>
     <script src="/static/radio.js?v=0.9.15"></script>
-    <script src="/static/app.js?v=0.9.98"></script>
-    <script src="/static/streaming.js?v=0.9.56"></script>
+    <script src="/static/app.js?v=0.9.99"></script>
+    <script src="/static/streaming.js?v=0.9.57"></script>
 </body>
 </html>

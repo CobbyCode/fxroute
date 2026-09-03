@@ -67,13 +67,17 @@ class PolkitTemplateStaticTests(unittest.TestCase):
         self.assertIn("polkit.addRule", self.text)
 
     def test_template_lists_only_the_two_required_actions(self):
-        allowed = {"org.freedesktop.login1.suspend", "org.freedesktop.login1.power-off"}
+        allowed = {
+            "org.freedesktop.login1.suspend",
+            "org.freedesktop.login1.power-off",
+            "org.freedesktop.hostname1.set-static-hostname",
+        }
         # Use a non-greedy scan to grab every polkit action id inside
         # string literals -- with or without surrounding quotes.  Anything
         # outside the expected set is an upgrade of privilege and must
         # fail.
         mentioned = set(re.findall(r"\"?(org\.freedesktop\.[a-z0-9_.-]+)\"?", self.text))
-        self.assertEqual(mentioned & {"org.freedesktop.login1.suspend", "org.freedesktop.login1.power-off"}, allowed)
+        self.assertEqual(mentioned & allowed, allowed)
         # And no other org.freedesktop.* action is referenced at all.
         self.assertEqual(mentioned - allowed, set())
 

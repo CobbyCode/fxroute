@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import time
 import weakref
 import asyncio
@@ -41,6 +42,16 @@ STATIC_DIR = BASE_DIR / "static"
 COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "covers"
 TOP40_COVER_IMAGE = STATIC_DIR / "Top40.png"
 UPDATE_SCRIPT = BASE_DIR / "scripts" / "update_fxroute.sh"
+PROVIDER_INSTALL_SCRIPT = BASE_DIR / "install.sh"
+PROVIDER_UNINSTALL_SCRIPT = BASE_DIR / "uninstall.sh"
+# Provider install/uninstall via the existing installer can download release
+# binaries and pip-install dependencies; give it the same bounded budget as
+# the FXRoute update path.
+_PROVIDER_OP_TIMEOUT_SECONDS = 15 * 60
+_PROVIDER_OP_OUTPUT_TAIL_CHARS = 4000
+# Same rule as install.sh valid_local_hostname().
+_LOCAL_HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+_LOCAL_HOSTNAME_RESERVED = {"localhost"}
 
 # Cooldown to prevent rapid mpv IPC flooding (ms)
 PLAY_COMMAND_COOLDOWN_MS = 400
@@ -5511,6 +5522,221 @@ async def api_tidal_logout():
     provider = _streaming_provider("tidal")
     await provider.logout()
     return {"authenticated": False}
+
+
+# ---------------------------------------------------------------------------
+# Provider administration (Settings -> Providers)
+# ---------------------------------------------------------------------------
+
+def _provider_op_log_tail(result: dict) -> str:
+    """Return the combined operator-facing output tail of an installer run."""
+    combined = f"{result.get('stdout') or ''}\n{result.get('stderr') or ''}".strip()
+    if len(combined) > _PROVIDER_OP_OUTPUT_TAIL_CHARS:
+        combined = combined[-_PROVIDER_OP_OUTPUT_TAIL_CHARS:]
+    return combined
+
+
+async def _run_provider_installer_op(script: Path, label: str, *args: str) -> dict:
+    """Run the existing installer/uninstaller for one provider operation.
+
+    The subprocess lives in its own session so a timeout/cancel can signal the
+    whole child tree, mirroring the bounded update-script execution path.
+    """
+    if not script.exists():
+        raise HTTPException(status_code=500, detail=f"Installer script missing: {script}")
+    if os.geteuid() == 0 or shutil.which("sudo") is not None:
+        proc = await asyncio.create_subprocess_exec(
+            str(script), *args,
+            cwd=str(BASE_DIR),
+            start_new_session=True,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    else:
+        raise HTTPException(status_code=503, detail=f"{label} requires sudo; run it once from a shell to cache credentials")
+    communicate_task = asyncio.create_task(proc.communicate())
+    try:
+        stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate_task), timeout=_PROVIDER_OP_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        if await pw_link.stop_process_group_cancellation_safe(proc, communicate_task, grace_seconds=5):
+            raise asyncio.CancelledError
+        try:
+            stdout, stderr = communicate_task.result()
+        except Exception:
+            stdout, stderr = b"", b""
+        raise HTTPException(status_code=504, detail=f"{label} timed out") from None
+    except asyncio.CancelledError:
+        await pw_link.stop_process_group_child_cancellation_safe(proc, 5)
+        raise
+    result = {
+        "returncode": proc.returncode,
+        "stdout": stdout.decode(errors="replace"),
+        "stderr": stderr.decode(errors="replace"),
+    }
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"{label} failed: {_provider_op_log_tail(result) or f'exit code {proc.returncode}'}")
+    return result
+
+
+@app.get("/api/streaming/providers/admin")
+async def api_streaming_providers_admin():
+    """Operator-facing provider administration state for Settings -> Providers."""
+    described = await streaming.describe_providers()
+    providers = []
+    for entry in described:
+        provider_id = str(entry.get("id") or "")
+        providers.append({
+            "id": provider_id,
+            "name": entry.get("name") or provider_id,
+            "installed": bool(entry.get("installed")),
+            "available": bool(entry.get("available")),
+            "authenticated": entry.get("authenticated"),
+            "enabled": bool(entry.get("enabled", True)),
+            "implemented": bool(entry.get("implemented", True)),
+        })
+    return {"providers": providers, "device_name": _mdns_device_name()}
+
+
+@app.post("/api/streaming/providers/{provider_id}/enabled")
+async def api_streaming_provider_set_enabled(provider_id: str, request: Request):
+    """Enable or disable a provider (visibility only; never installs/uninstalls)."""
+    if streaming.get_provider(provider_id) is None:
+        raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body.get("enabled"), bool):
+        raise HTTPException(status_code=400, detail="enabled (boolean) is required")
+    streaming.activation.set_enabled(provider_id, body["enabled"])
+    return {"id": provider_id, "enabled": body["enabled"]}
+
+
+@app.post("/api/streaming/providers/{provider_id}/install")
+async def api_streaming_provider_install(provider_id: str):
+    """Install a provider's backend via the existing installer path."""
+    if streaming.get_provider(provider_id) is None:
+        raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
+    flag = {
+        "spotify": "--spotifyd",
+        "qobuz": "--qobuz",
+        "tidal": "--tidal",
+    }.get(provider_id)
+    if flag is None:
+        raise HTTPException(status_code=400, detail=f"provider {provider_id} cannot be installed from the UI")
+    result = await _run_provider_installer_op(PROVIDER_INSTALL_SCRIPT, f"{provider_id} install", "--providers-only", flag, "--yes")
+    return {
+        "ok": True,
+        "provider_id": provider_id,
+        "log": _provider_op_log_tail(result),
+        "installed": streaming.get_provider(provider_id).is_installed(),
+    }
+
+
+@app.post("/api/streaming/providers/{provider_id}/uninstall")
+async def api_streaming_provider_uninstall(provider_id: str):
+    """Uninstall a provider's backend via the existing uninstaller (explicit action)."""
+    if streaming.get_provider(provider_id) is None:
+        raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
+    if provider_id not in {"spotify", "qobuz", "tidal"}:
+        raise HTTPException(status_code=400, detail=f"provider {provider_id} cannot be uninstalled from the UI")
+    result = await _run_provider_installer_op(PROVIDER_UNINSTALL_SCRIPT, f"{provider_id} uninstall", "--provider", provider_id, "--yes")
+    return {
+        "ok": True,
+        "provider_id": provider_id,
+        "log": _provider_op_log_tail(result),
+        "installed": streaming.get_provider(provider_id).is_installed(),
+    }
+
+
+@app.post("/api/streaming/providers/{provider_id}/service/{action}")
+async def api_streaming_provider_service_action(provider_id: str, action: str):
+    """Start/stop/restart a provider's user service (Connect readiness)."""
+    unit = {"spotify": "spotifyd.service", "qobuz": "qbzd.service"}.get(provider_id)
+    if unit is None:
+        raise HTTPException(status_code=400, detail=f"provider {provider_id} has no service to control")
+    if action not in {"start", "stop", "restart"}:
+        raise HTTPException(status_code=404, detail=f"unknown service action: {action}")
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl", "--user", action, unit,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise HTTPException(status_code=504, detail="systemctl timed out") from None
+    if proc.returncode != 0:
+        detail = stderr.decode(errors="replace").strip() or f"systemctl {action} {unit} failed"
+        raise HTTPException(status_code=500, detail=detail)
+    provider = streaming.get_provider(provider_id)
+    return {
+        "ok": True,
+        "provider_id": provider_id,
+        "unit": unit,
+        "action": action,
+        "installed": bool(provider.is_installed()) if provider else False,
+        "available": bool(await provider.is_available()) if provider else False,
+    }
+
+
+def _mdns_device_name() -> str:
+    """Return the current .local device name (system hostname)."""
+    return socket.gethostname().strip().strip(".").lower()
+
+
+@app.get("/api/system/device-name")
+async def api_get_device_name():
+    """Current LAN device name (*.local) with change capability info."""
+    return {
+        "hostname": _mdns_device_name(),
+        "can_change": shutil.which("hostnamectl") is not None,
+    }
+
+
+@app.post("/api/system/device-name")
+async def api_set_device_name(request: Request):
+    """Change the LAN device name via the existing hostnamectl mechanism.
+
+    Reuses the exact hostname rule the installer applies: lowercase, digits and
+    hyphens, no leading/trailing hyphen, plus the reserved ``localhost``.
+    Avahi is restarted (when present) so the new name is advertised immediately.
+    """
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if shutil.which("hostnamectl") is None:
+        raise HTTPException(status_code=503, detail="hostnamectl is not available on this system")
+    value = str(body.get("hostname") or "").strip().strip(".")
+    if not _LOCAL_HOSTNAME_PATTERN.fullmatch(value) or value in _LOCAL_HOSTNAME_RESERVED:
+        raise HTTPException(status_code=400, detail="Use only lowercase letters, digits and hyphens (no leading/trailing hyphen)")
+    current = _mdns_device_name()
+    if value == current:
+        return {"hostname": current, "changed": False}
+    proc = await asyncio.create_subprocess_exec(
+        "hostnamectl", "set-hostname", value,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise HTTPException(status_code=504, detail="hostnamectl timed out") from None
+    if proc.returncode != 0:
+        detail = stderr.decode(errors="replace").strip() or "hostnamectl set-hostname failed"
+        raise HTTPException(status_code=500, detail=detail)
+    avahi = await asyncio.create_subprocess_exec(
+        "systemctl", "restart", "avahi-daemon.service",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(avahi.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        avahi.kill()
+    return {"hostname": value, "changed": True}
 
 
 # ---------------------------------------------------------------------------

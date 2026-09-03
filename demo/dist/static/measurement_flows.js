@@ -376,6 +376,10 @@ async function handleAutoSubResult(job) {
     const original = Number.isFinite(result.original_alignment_ms) ? result.original_alignment_ms : null;
     const applied = Number.isFinite(result.applied_alignment_ms) ? result.applied_alignment_ms : null;
     const suggested = Number.isFinite(result.suggested_alignment_ms) ? result.suggested_alignment_ms : applied;
+    const confirmationGate = result.confirmation_gate || null;
+    const gateReverted = confirmationGate && confirmationGate.action === 'alignment_reverted_balance_kept';
+    const gateIncumbentKept = gateReverted && Number.isFinite(original) && Number.isFinite(applied)
+        && Math.abs(applied - original) < 0.005 && Number.isFinite(suggested) && Math.abs(suggested - original) >= 0.005;
     const wasApplied = result.applied !== false;
     const scorePct = Number.isFinite(winner.score_pct) ? winner.score_pct : '?';
     const scorePctText = Number.isFinite(scorePct) ? scorePct.toFixed(1) : '?';
@@ -388,38 +392,47 @@ async function handleAutoSubResult(job) {
     const originalText = original !== null ? original.toFixed(2) : '?';
     const appliedText = applied !== null ? applied.toFixed(2) : '?';
     const suggestedText = suggested !== null ? suggested.toFixed(2) : '?';
-    // "Weak" is the scoring backend's confidence verdict (uncertain winner
-    // separation), not the apply decision: an incumbent win or a rejected
-    // suggestion can still be a clear, high-score outcome, and the
-    // comparative score alone never implies weak.
     const isWeak = conf === 'uncertain';
     const applyDecision = typeof result.apply_decision === 'string' ? result.apply_decision : null;
     const incumbentKept = !wasApplied && (
         applyDecision === 'not_applied_incumbent_better'
         || (suggested !== null && original !== null && Math.abs(suggested - original) < 0.005)
-    );
-    const notAppliedReason = !wasApplied && !incumbentKept
+    ) && !gateIncumbentKept;
+    const notAppliedReason = !wasApplied && !incumbentKept && !gateIncumbentKept
         ? ({
             'reverted_to_original_state': 'final check failed, original restored',
             'not_applied_close_margin_below_2pp': 'advantage too small',
             'not_applied_close_gain_below_3pp': 'advantage too small',
+            'not_applied_uncertain_confidence': 'uncertain confidence',
+            'applied_fine_scan_winner': 'fine-scan winner',
         }[applyDecision] || '')
         : '';
 
     const mainParts = [];
-    if (wasApplied) {
+    if (gateIncumbentKept) {
+        mainParts.push(`AutoSub applied: ${appliedText} ms (was ${originalText} ms)`);
+    } else if (wasApplied) {
         mainParts.push(`AutoSub applied: ${appliedText} ms (was ${originalText} ms)`);
     } else if (incumbentKept) {
         mainParts.push(`AutoSub kept current alignment: ${originalText} ms`);
     } else {
         mainParts.push(`AutoSub suggested: ${suggestedText} ms (was ${originalText} ms, not applied${notAppliedReason ? ` · ${notAppliedReason}` : ''})`);
     }
-    if (hasWinnerLRScores) {
+    const displayWinner = gateIncumbentKept && fineW && Number.isFinite(fineW.score_pct) ? fineW : winner;
+    const displayScorePct = Number.isFinite(displayWinner.score_pct) ? displayWinner.score_pct : scorePct;
+    const displayScorePctText = Number.isFinite(displayScorePct) ? displayScorePct.toFixed(1) : '?';
+    const displayHasLR = Number.isFinite(displayWinner.score_L_pct) && Number.isFinite(displayWinner.score_R_pct);
+    if (gateIncumbentKept) {
+        mainParts.push(`Score ${displayScorePctText} %${displayHasLR ? ` · L ${displayWinner.score_L_pct.toFixed(1)} % / R ${displayWinner.score_R_pct.toFixed(1)} %` : ''}`);
+        mainParts.push(`suggested ${suggestedText} ms (${Number.isFinite(displayWinner.score_pct) ? displayWinner.score_pct.toFixed(1) : '?'} %) kept after local-dip check`);
+    } else if (hasWinnerLRScores) {
         mainParts.push(`Score ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`);
     } else {
         mainParts.push(`Score ${scorePctText} %`);
     }
-    if (isWeak) {
+    if (gateIncumbentKept) {
+        measurementState.statusText = mainParts.join(' · ');
+    } else if (isWeak) {
         measurementState.statusText = `AutoSub result weak. Check with a normal 2.1 measurement. (${mainParts[0]}, Score ${scorePctText} %)`;
     } else {
         measurementState.statusText = mainParts.join(' · ');
@@ -449,15 +462,22 @@ async function handleAutoSubResult(job) {
     }
 
     let toastText;
-    const outcomeToastPart = wasApplied
-        ? `Applied: ${appliedText} ms (was ${originalText} ms)`
-        : incumbentKept
-            ? `Kept current alignment: ${originalText} ms`
-            : `Suggested: ${suggestedText} ms (was ${originalText} ms, not applied${notAppliedReason ? ` · ${notAppliedReason}` : ''})`;
-    if (hasWinnerLRScores) {
-        toastText = `${outcomeToastPart} · Combined ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`;
+    if (gateIncumbentKept) {
+        const gScore = Number.isFinite(displayWinner.score_pct) ? displayWinner.score_pct.toFixed(1) : '?';
+        const gLR = Number.isFinite(displayWinner.score_L_pct) && Number.isFinite(displayWinner.score_R_pct)
+            ? ` · L ${displayWinner.score_L_pct.toFixed(1)} % / R ${displayWinner.score_R_pct.toFixed(1)} %` : '';
+        toastText = `Applied: ${appliedText} ms (was ${originalText} ms) · Score ${gScore} %${gLR} · suggested ${suggestedText} ms kept after local-dip check`;
     } else {
-        toastText = `${outcomeToastPart} · Score ${scorePctText} %`;
+        const outcomeToastPart = wasApplied
+            ? `Applied: ${appliedText} ms (was ${originalText} ms)`
+            : incumbentKept
+                ? `Kept current alignment: ${originalText} ms`
+                : `Suggested: ${suggestedText} ms (was ${originalText} ms, not applied${notAppliedReason ? ` · ${notAppliedReason}` : ''})`;
+        if (hasWinnerLRScores) {
+            toastText = `${outcomeToastPart} · Combined ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`;
+        } else {
+            toastText = `${outcomeToastPart} · Score ${scorePctText} %`;
+        }
     }
     if (conf !== 'unknown') {
         toastText += ` · confidence ${conf}`;
