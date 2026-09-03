@@ -1025,16 +1025,18 @@ qobuz_player_watch = QobuzPlayerWatch(QobuzWatchDependencies(
 ))
 qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
     is_active=lambda: _resolve_playback_owner() == "qobuz" and connect_state.is_device_active() is not False,
-    apply_volume_delta=lambda delta: _apply_remote_volume_delta(
-        delta,
+    apply_volume_value=lambda value: _apply_remote_volume_value(
+        value,
         owner="qobuz",
         source_active=lambda: connect_state.is_device_active() is not False,
     ),
+    current_master=lambda: get_output_volume_safe(),
     on_device_active=lambda value: connect_state.set_device_active(value),
 ))
 spotifyd_volume_watch = SpotifydVolumeWatch(SpotifydVolumeWatchDependencies(
     is_active=lambda: _resolve_playback_owner() == "spotify",
-    apply_volume_delta=lambda delta: _apply_remote_volume_delta(delta, owner="spotify"),
+    apply_volume_value=lambda value: _apply_remote_volume_value(value, owner="spotify"),
+    current_master=lambda: get_output_volume_safe(),
 ))
 radio_metadata_service = RadioMetadataService()
 # queue_advancing is a reentrancy/dispatch guard for
@@ -2189,22 +2191,19 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
         return {"volume": int(verified)}
 
 
-async def _apply_remote_volume_delta(
-    delta_percent: int,
+async def _apply_remote_volume_value(
+    volume_percent: int,
     *,
     owner: str | None = None,
     source_active: Callable[[], bool] | None = None,
 ) -> None:
-    """Apply a remote Connect volume step to the canonical master.
+    """Apply an absolute remote Connect volume to the canonical master.
 
-    Remote controllers deliver relative intent on their own scale; the delta
-    lands on the current master so a desynced controller anchor can never
-    teleport it. Loudness volumeDb stays untouched (canonical writer contract).
-
-    The owner check is repeated while holding the canonical write lock. If an
-    owner transition happens during the non-cancellable worker call, restore
-    the pre-write master before releasing that lock instead of leaving the old
-    source's delta on the new owner's output.
+    Called by the Connect bridges only after pickup (the gesture crossed the
+    current master level), so the write adopts the controller value without
+    any jump larger than the gesture step. The owner check is repeated while
+    holding the canonical write lock, and an owner transition during the
+    non-cancellable worker call restores the pre-write master.
     """
     owner_is_current = lambda: (
         (owner is None or _resolve_playback_owner() == owner)
@@ -2216,7 +2215,7 @@ async def _apply_remote_volume_delta(
         if not owner_is_current():
             return
         current = get_output_volume_safe()
-        requested = max(0, min(100, int(round(float(current + delta_percent)))))
+        requested = max(0, min(100, int(round(float(volume_percent)))))
         try:
             await _drain_worker(set_output_volume, requested)
         finally:
