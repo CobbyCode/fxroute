@@ -40,10 +40,11 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertIn('grid-template-areas: "track transport meter volume"', playback_bar)
         self.assertIn("min-height: 112px", playback_bar)
         self.assertNotRegex(playback_bar, r"(?m)^\s*height\s*:")
-        # Window-based centering: vw keeps the outer gaps equal even when a
-        # classic scrollbar narrows the fixed-position containing block.
-        self.assertIn("left: 50vw", playback_bar)
-        self.assertIn("width: min(1560px, calc(100vw - 20px))", playback_bar)
+        # Window-based centering: percent keeps the outer gaps equal even when
+        # a classic scrollbar narrows the fixed-position containing block
+        # (100vw would include the scrollbar and overflow by its width).
+        self.assertIn("left: 50%", playback_bar)
+        self.assertIn("width: min(1560px, calc(100% - 20px))", playback_bar)
 
     def test_desktop_track_info_has_a_hard_boundary_before_transport(self):
         desktop_blocks = re.findall(
@@ -77,9 +78,10 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
             r"@media \(min-width: (?:901|701)px\)(?: and \(max-width: 1180px\))?[\s\S]*?min-height: 116px",
         )
         # Bottom insets sit a couple px closer to the viewport edge; the phone
-        # inset respects the home-indicator safe area while keeping a 3px min.
-        self.assertIn("bottom: 5px", CSS)
-        self.assertIn("bottom: 6px", CSS)
+        # inset respects the home-indicator safe area while keeping a 3px min,
+        # and desktop/tablet now honor it too via max().
+        self.assertIn("bottom: max(6px, env(safe-area-inset-bottom))", CSS)
+        self.assertIn("bottom: max(5px, env(safe-area-inset-bottom))", CSS)
         self.assertRegex(CSS, r"bottom: max\(3px, env\(safe-area-inset-bottom\)\)")
         self.assertRegex(CSS, r"\.control-btn\s*\{\s*width:\s*46px")
 

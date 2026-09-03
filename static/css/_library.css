@@ -1320,10 +1320,11 @@
     position: fixed;
     left: 50%;
     transform: translateX(-50%);
-    bottom: calc(102px + 8px + 14px);
+    bottom: var(--playback-footer-space, calc(102px + 8px + 14px));
     z-index: var(--z-cover-detail);
-    width: min(720px, calc(100vw - 2rem));
-    max-height: calc(100vh - 102px - 8px - 14px - 1rem);
+    width: min(720px, calc(100% - 2rem));
+    max-height: calc(100vh - var(--playback-footer-space, calc(102px + 8px + 14px)) - 1rem);
+    max-height: calc(100dvh - var(--playback-footer-space, calc(102px + 8px + 14px)) - 1rem);
     overflow-y: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--bg-hover) transparent;
