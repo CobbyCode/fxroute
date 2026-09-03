@@ -484,7 +484,20 @@ async def _run_auto_sub_22_optimize(
         )
         incumbent_residual_common: float | None = None
         if alignment_changed:
-            incumbent_candidate = _auto_sub_result_for_delay(list(coarse1_results), original_sub1_alignment) or {}
+            # The transfer compares the accepted pair against the incumbent
+            # pair. Both must come from the Both-subs matrix (same active
+            # configuration, same balanced level): the coarse single-sub
+            # rows measure one sub in isolation, so their residual carries
+            # the single->both summation difference as an error term.
+            incumbent_candidate = next(
+                (row for row in matrix_results
+                 if _same_pair(
+                     (float(row.get("sub1_alignment_ms", 0.0) or 0.0),
+                      float(row.get("sub2_alignment_ms", 0.0) or 0.0)),
+                     original_sub1_alignment, original_sub2_alignment,
+                 )),
+                {},
+            )
             try:
                 residual_left, _mad_l, _u_l = _auto_sub_target_residual_raw_db(
                     incumbent_candidate.get("calibrated_points_left") or [], job.get("target_curve"),
@@ -750,6 +763,11 @@ async def _run_auto_sub_22_optimize(
         # deeper local dip than the measured Before state. On failure the
         # incumbent pair under the balanced levels is measured and adopted
         # when it passes; otherwise the original state is restored.
+        # scored_* preserves the accepted optimum: the gate below resets
+        # best_* to the incumbent pair on revert, while suggested_* must
+        # keep describing the rejected winner.
+        scored_sub1 = best_sub1
+        scored_sub2 = best_sub2
         gate_band_low, gate_band_high = fc * 0.5, fc * 2.0
         gate_before_dips = {
             "left": _auto_sub_local_dip_db(balance_sweep.get("points_left") or [], gate_band_low, gate_band_high),
@@ -928,6 +946,23 @@ async def _run_auto_sub_22_optimize(
 
         job["status"] = "completed"
         gate_action = (job.get("confirmation_gate") or {}).get("action", "final_kept")
+        gate_reverted_to_incumbent = (
+            gate_action == "alignment_reverted_balance_kept"
+            and (
+                round(float(scored_sub1), 2) != round(float(original_sub1_alignment), 2)
+                or round(float(scored_sub2), 2) != round(float(original_sub2_alignment), 2)
+            )
+        )
+        # After a gate revert the stored delays describe the incumbent pair
+        # that is actually applied; the scored (rejected) winner stays
+        # visible as suggested_* plus the unchanged matrix winner fields.
+        stored_sub1 = original_sub1_alignment if gate_reverted_to_incumbent else best_sub1
+        stored_sub2 = original_sub2_alignment if gate_reverted_to_incumbent else best_sub2
+        stored_confidence = "gate_reverted" if gate_reverted_to_incumbent else matrix_scoring.get("confidence", "uncertain")
+        stored_reject_reason = (
+            "final_state_regressed_incumbent_pair_kept"
+            if gate_reverted_to_incumbent else matrix_scoring.get("reject_reason")
+        )
         _final_levels = {
             "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
             "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
@@ -939,7 +974,7 @@ async def _run_auto_sub_22_optimize(
         _autosub_meta = _auto_sub_result_meta(
             job, OUTPUT_MODE_SUBWOOFER_22, _final_levels,
             target_vertical_offset_db=float(_tvo) if isinstance(_tvo, (int, float)) else None,
-            final_delays_ms={"sub1": float(best_sub1), "sub2": float(best_sub2)},
+            final_delays_ms={"sub1": float(stored_sub1), "sub2": float(stored_sub2)},
             final_polarities={
                 "sub1": str(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("polarity", "normal")),
                 "sub2": str(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("polarity", "normal")),
@@ -955,17 +990,17 @@ async def _run_auto_sub_22_optimize(
         }.get(gate_action)
         decision_label = "Kept 2.2 incumbent" if matrix_scoring.get("incumbent_accepted") else "Applied 2.2"
         job["message"] = (
-            f"{decision_label}: Sub 1 {best_sub1:.2f} ms / Sub 2 {best_sub2:.2f} ms "
-            f"(score {winner['score_pct']:.0f} %, {matrix_scoring.get('reject_reason')})"
+            f"{decision_label}: Sub 1 {stored_sub1:.2f} ms / Sub 2 {stored_sub2:.2f} ms "
+            f"(score {winner['score_pct']:.0f} %, {stored_reject_reason})"
         ) + (gate_suffix or "")
         job["result"] = {
             "mode": OUTPUT_MODE_SUBWOOFER_22,
             "original_sub1_alignment_ms": original_sub1_alignment,
             "original_sub2_alignment_ms": original_sub2_alignment,
-            "suggested_sub1_alignment_ms": best_sub1,
-            "suggested_sub2_alignment_ms": best_sub2,
-            "applied_sub1_alignment_ms": best_sub1,
-            "applied_sub2_alignment_ms": best_sub2,
+            "suggested_sub1_alignment_ms": scored_sub1,
+            "suggested_sub2_alignment_ms": scored_sub2,
+            "applied_sub1_alignment_ms": stored_sub1,
+            "applied_sub2_alignment_ms": stored_sub2,
             "applied": gate_action != "reverted_to_original",
             "auto_applied": gate_action != "reverted_to_original",
             "apply_decision": (
@@ -978,14 +1013,14 @@ async def _run_auto_sub_22_optimize(
             "balance_check": job.get("balance_check"),
             "confirmation_gate": job.get("confirmation_gate"),
             "crossover_hz": fc,
-            "confidence": matrix_scoring.get("confidence", "uncertain"),
+            "confidence": stored_confidence,
             "winner": winner,
             "matrix_winner": matrix_scoring.get("matrix_winner"),
             "incumbent_winner": matrix_scoring.get("incumbent_winner"),
             "incumbent_score": matrix_scoring.get("incumbent_score"),
             "accepted_winner": matrix_scoring.get("accepted_winner"),
             "incumbent_accepted": matrix_scoring.get("incumbent_accepted"),
-            "reject_reason": matrix_scoring.get("reject_reason"),
+            "reject_reason": stored_reject_reason,
             "sub1_coarse_winner": sub1_winner,
             "sub2_coarse_winner": sub2_winner,
             "runner_up": matrix_scoring.get("runner_up"),
@@ -1009,13 +1044,13 @@ async def _run_auto_sub_22_optimize(
             "combined_score=%.0f%% score_L=%.1f%% score_R=%.1f%% confidence=%s",
             fc,
             original_sub1_alignment,
-            best_sub1,
+            stored_sub1,
             original_sub2_alignment,
-            best_sub2,
+            stored_sub2,
             winner.get("score_pct", 0),
             winner.get("score_L_pct", 0) or 0,
             winner.get("score_R_pct", 0) or 0,
-            matrix_scoring.get("confidence", "uncertain"),
+            stored_confidence,
         )
 
     except Exception as exc:
