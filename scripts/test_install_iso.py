@@ -556,6 +556,11 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("VM_EXTRA_DISK_GB", runner)
         self.assertIn("extra_disk", runner)
         self.assertIn('"greater": "30 GiB"', runner)
+        self.assertIn('"alias": "boot"', runner)
+        self.assertIn("explicit target-disk selection is missing", runner)
+        self.assertIn("start_agama_install", runner)
+        self.assertIn("nohup agama install", runner)
+        self.assertIn("installation started", runner)
         self.assertIn("PKNAME", runner)
         # Region/network/account checks on the installed system.
         self.assertIn("timedatectl show -p Timezone --value", runner)

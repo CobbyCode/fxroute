@@ -469,7 +469,8 @@ PY
 
   # Explicit target-disk selection: a small decoy disk is attached besides
   # the main disk, so the proposal must name the large disk. Never wipe a
-  # disk without this explicit selection.
+  # disk without this explicit selection. The alias keeps the bootloader
+  # reference (boot.device) intact.
   python3 - <<PY
 import json
 
@@ -477,6 +478,7 @@ storage = {
     "storage": {
         "drives": [
             {
+                "alias": "boot",
                 "search": {
                     "condition": {"size": {"greater": "30 GiB"}},
                     "max": 1,
@@ -497,10 +499,41 @@ import sys
 
 proposal = json.load(open(sys.argv[1]))
 text = json.dumps(proposal)
-assert "boot" in text, "storage proposal is missing the boot drive"
+assert '"greater": "30 GiB"' in text, "explicit target-disk selection is missing"
+assert '"alias": "boot"' in text, "boot drive alias is missing"
 PY
-  printf '[iso-test] starting the %s installation (explicit confirmation)\n' "$profile"
-  ssh_installer "$ssh_port" 'agama install'
+  start_agama_install "$ssh_port" "$profile"
+}
+
+start_agama_install() {
+  local ssh_port="$1"
+  local profile="$2"
+  local attempt=1
+
+  # agama install refuses while preconditions are unmet (for example while
+  # the initial probing is still running) without changing anything, so
+  # retry until the installation actually starts. The SSH call is the
+  # explicit confirmation of the destructive step.
+  while (( attempt <= 8 )); do
+    printf '[iso-test] starting the %s installation, attempt %d (explicit confirmation)\n' "$profile" "$attempt"
+    ssh_installer "$ssh_port" \
+      'rm -f /tmp/fxroute-agama-install.log; nohup agama install > /tmp/fxroute-agama-install.log 2>&1 < /dev/null & echo $!' \
+      > "$TEST_ROOT/$profile-install-pid" 2>/dev/null || true
+    sleep 45
+    ssh_installer "$ssh_port" 'cat /tmp/fxroute-agama-install.log' \
+      > "$TEST_ROOT/$profile-install.log" 2>&1 || true
+    if grep -q '\[1/3\]\|\[2/3\]\|\[3/3\]' "$TEST_ROOT/$profile-install.log" 2>/dev/null; then
+      printf '[iso-test] the %s installation started\n' "$profile"
+      return 0
+    fi
+    printf '[iso-test] the %s installation did not start yet, retrying\n' "$profile" >&2
+    tail -5 "$TEST_ROOT/$profile-install.log" >&2 || true
+    sleep 45
+    attempt=$((attempt + 1))
+  done
+  printf '[iso-test] the %s installation failed to start\n' "$profile" >&2
+  cat "$TEST_ROOT/$profile-install.log" >&2 || true
+  return 1
 }
 
 ssh_guest() {
