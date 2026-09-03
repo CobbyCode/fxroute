@@ -2279,6 +2279,7 @@ async function fetchProviderAdmin() {
             state.settings.deviceName.value = data.device_name;
             state.settings.deviceName.loaded = true;
         }
+        state.settings.deviceName.canChange = data.device_name_can_change === true;
         renderProviderSettings();
         renderDeviceNameSettings();
     } catch (error) {
@@ -2509,31 +2510,60 @@ async function qobuzLogout() {
     }
 }
 
+async function tidalLogout() {
+    if (!confirm('Disconnect the TIDAL account? Playback stops until you sign in again. Your TIDAL library and favorites stay on your TIDAL account.')) return;
+    try {
+        const resp = await fetch('/api/streaming/tidal/auth/logout', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Disconnect failed');
+        showToast('TIDAL account disconnected.', 'success');
+    } catch (error) {
+        showToast(error.message || 'Disconnect failed', 'error');
+    } finally {
+        void fetchProviderAdmin();
+        window.FXRouteStreaming?.refreshActiveTab?.();
+    }
+}
+
 function providerAdminButtonHtml(provider) {
     const busy = state.settings.providers.pendingOperation === provider.id;
     const buttons = [];
+    const connected = provider.authenticated === true;
     if (provider.installed) {
-        // Connect/reconnect rides each provider's own auth mechanism: TIDAL's
-        // PKCE tab flow and qbzd's browser OAuth handoff. spotifyd has no
+        // Account providers (TIDAL, Qobuz) show exactly one auth action for
+        // their real state: Disconnect while connected, Connect otherwise.
+        // Uninstall is only offered while disconnected. spotifyd has no
         // account login (Spotify Connect pairs from the Spotify app).
         if (provider.id === 'tidal') {
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-auth="${provider.id}"${busy ? ' disabled' : ''}>${provider.authenticated ? 'Reconnect' : 'Connect'}</button>`);
-        } else if (provider.id === 'qobuz') {
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-login="1"${busy ? ' disabled' : ''}>${provider.authenticated ? 'Reconnect' : 'Connect'}</button>`);
-            if (provider.authenticated) {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
+            if (connected) {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
+            } else {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
             }
-            // Restart makes qbzd re-read a (restored) credential file without SSH;
-            // on an inactive unit it also acts as Start.
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-service="restart" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Restart</button>`);
+        } else if (provider.id === 'qobuz') {
+            if (connected) {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
+            } else {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
+            }
+            // Restart is recovery, not a primary action: it makes qbzd
+            // re-read a (restored) credential file without SSH and acts as
+            // Start on an inactive unit. Only show it while qbzd is down.
+            if (!provider.available) {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-service="restart" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Restart</button>`);
+            }
         } else if (provider.id !== 'spotify') {
             const label = provider.available ? 'Restart' : 'Start';
             buttons.push(`<button type="button" class="btn-secondary" data-provider-service="start" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>${label}</button>`);
             if (provider.available) {
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-service="stop" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Stop</button>`);
             }
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
+        } else {
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
         }
-        buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
     } else if (provider.implemented !== false) {
         buttons.push(`<button type="button" class="btn-primary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Installing…' : 'Install…'}</button>`);
     }
@@ -2587,11 +2617,15 @@ function renderProviderSettings() {
     elements.settingsProvidersList.querySelectorAll('[data-provider-qobuz-logout]').forEach((button) => {
         button.addEventListener('click', () => void qobuzLogout());
     });
-    elements.settingsProvidersList.querySelectorAll('[data-provider-auth]').forEach((button) => {
+    elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-login]').forEach((button) => {
         button.addEventListener('click', () => {
             toggleSettingsPanel(false);
             switchTab('tidal');
+            window.FXRouteStreaming?.startTidalLogin?.();
         });
+    });
+    elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-logout]').forEach((button) => {
+        button.addEventListener('click', () => void tidalLogout());
     });
 }
 
@@ -2632,8 +2666,10 @@ function renderDeviceNameSettings() {
         elements.settingsDeviceNameInput.value = state.settings.deviceName.value || '';
         elements.settingsDeviceNameInput.placeholder = state.settings.deviceName.value || 'fxroute';
     }
+    const changeBlocked = state.settings.deviceName.canChange === false;
+    elements.settingsDeviceNameInput.disabled = changeBlocked || state.settings.deviceName.pending;
     if (elements.settingsDeviceNameApply) {
-        elements.settingsDeviceNameApply.disabled = state.settings.deviceName.pending || state.settings.deviceName.canChange === false;
+        elements.settingsDeviceNameApply.disabled = state.settings.deviceName.pending || changeBlocked;
     }
     if (elements.settingsDeviceNameHint) {
         elements.settingsDeviceNameHint.textContent = state.settings.deviceName.canChange === false

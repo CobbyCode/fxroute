@@ -92,6 +92,17 @@ class ProviderAdminEndpointTests(_AdminClientBase):
         self.assertIsInstance(data["device_name"], str)
         self.assertTrue(data["device_name"])
 
+    def test_admin_payload_reports_device_name_capability(self):
+        data = self.client.get("/api/streaming/providers/admin").json()
+        self.assertIn("device_name_can_change", data)
+        self.assertIsInstance(data["device_name_can_change"], bool)
+        with mock.patch.object(self.main.shutil, "which", return_value=None):
+            data = self.client.get("/api/streaming/providers/admin").json()
+            self.assertFalse(data["device_name_can_change"])
+        with mock.patch.object(self.main.shutil, "which", return_value="/usr/bin/hostnamectl"):
+            data = self.client.get("/api/streaming/providers/admin").json()
+            self.assertTrue(data["device_name_can_change"])
+
     def test_enabled_toggle_round_trip(self):
         resp = self.client.post(
             "/api/streaming/providers/qobuz/enabled", json={"enabled": False}

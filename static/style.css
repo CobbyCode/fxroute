@@ -918,13 +918,15 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.8rem;
+    gap: 0.4rem 0.8rem;
+    flex-wrap: wrap;
 }
 .settings-provider-info {
     display: flex;
     flex-direction: column;
     gap: 0.12rem;
     min-width: 0;
+    flex: 1 1 12rem;
 }
 .settings-provider-toggle {
     display: flex;
@@ -944,8 +946,10 @@ body {
 .settings-provider-actions {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 0.4rem;
     flex-shrink: 0;
+    flex-wrap: wrap;
 }
 .settings-provider-operation {
     margin-top: 0.45rem;

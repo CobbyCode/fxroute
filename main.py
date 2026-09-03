@@ -5669,7 +5669,8 @@ async def api_streaming_providers_admin():
             "enabled": bool(entry.get("enabled", True)),
             "implemented": bool(entry.get("implemented", True)),
         })
-    return {"providers": providers, "device_name": _mdns_device_name()}
+    return {"providers": providers, "device_name": _mdns_device_name(),
+            "device_name_can_change": shutil.which("hostnamectl") is not None}
 
 
 @app.post("/api/streaming/providers/{provider_id}/enabled")
