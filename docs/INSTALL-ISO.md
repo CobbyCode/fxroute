@@ -147,16 +147,19 @@ gitignored).
 ## QEMU Verification
 
 The runner creates fresh disks for each profile, boots the ISO, drives the
-interactive Agama decisions through the Agama API (account/password and SSH
-key, locale/keyboard/timezone, explicit target-disk selection, install
-start), waits for `/api/status`, and verifies the installed packages, user
-service, DSP binary, default target, SDDM autologin configuration, and
-Chrome setup:
+interactive Agama decisions through the installer's own Agama CLI
+(account/password, locale/keyboard/timezone, explicit target-disk
+selection, install start), waits for `/api/status`, and verifies the
+installed packages, user service, DSP binary, default target, SDDM
+autologin configuration, and Chrome setup. SSH into the installed
+system uses the account password created in Agama:
 
 ```bash
-FXROUTE_SSH_KEY="$HOME/.ssh/id_ed25519_vm" \
-  FXROUTE_ISO_LIVE_PASSWORD="..." \
+FXROUTE_ISO_LIVE_PASSWORD="..." \
   FXROUTE_ISO_USER_PASSWORD="..." \
+  FXROUTE_ISO_LOCALE="de_DE.UTF-8" \
+  FXROUTE_ISO_KEYMAP="de" \
+  FXROUTE_ISO_TIMEZONE="Europe/Vienna" \
   ./iso/test-leap-16-iso.sh all dist/fxroute-leap-16-x86_64.iso
 ```
 

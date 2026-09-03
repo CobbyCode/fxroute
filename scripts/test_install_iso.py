@@ -528,20 +528,29 @@ class InstallIsoContractTests(unittest.TestCase):
         runner = self.read("iso/test-leap-16-iso.sh")
 
         # Agama web ports are forwarded so the decisions can be made
-        # through the API or manually in a browser.
+        # through the installer or manually in a browser.
         self.assertIn("agama_https_port", runner)
         self.assertIn("hostfwd=tcp::$agama_https_port-:443", runner)
         self.assertIn("hostfwd=tcp::$agama_http_port-:80", runner)
         self.assertIn("setup_agama_interactive", runner)
-        self.assertIn("auth login", runner)
-        self.assertIn("config load", runner)
-        self.assertIn("config show", runner)
-        self.assertIn("agama_cli", runner)
-        # Account/password plus locale/keyboard/timezone via Agama.
+        # The installer is driven through its own Agama CLI over a root
+        # SSH session; the host CLI may be newer than the installer API.
+        self.assertIn("ssh_installer", runner)
+        self.assertIn("installer_config_load", runner)
+        self.assertIn("agama config load", runner)
+        self.assertIn("agama config show", runner)
+        self.assertIn("agama install", runner)
+        self.assertIn("agama-askpass.sh", runner)
+        self.assertIn("setsid ssh", runner)
+        self.assertNotIn("agama_cli", runner)
+        # Account/password plus locale/keyboard/timezone via Agama; the
+        # installer Agama predates SSH-key and l10n profile keys.
         self.assertIn("FXROUTE_ISO_USER_PASSWORD", runner)
         self.assertIn("FXROUTE_ISO_LIVE_PASSWORD", runner)
         self.assertIn('"l10n"', runner)
-        self.assertIn("sshPublicKey", runner)
+        self.assertIn('"localization"', runner)
+        self.assertNotIn("sshPublicKey", runner)
+        self.assertNotIn("FXROUTE_SSH_KEY", runner)
         # A decoy disk forces an explicit target-disk selection; the
         # installed root filesystem must live on the large disk.
         self.assertIn("VM_EXTRA_DISK_GB", runner)
@@ -553,13 +562,23 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("localectl status", runner)
         self.assertIn("nmcli", runner)
         self.assertIn("getent shadow", runner)
-        # SSH reaches the installed system as the Agama account; the
-        # image ships no key-only hardening and no root access.
+        # SSH reaches the installed system as the Agama account via its
+        # password; the image ships no key-only hardening and no root access.
+        self.assertIn("PreferredAuthentications=password", runner)
         self.assertIn("90-fxroute-iso.conf", runner)
         self.assertIn("passwordauthentication no", runner)
         self.assertNotIn("PermitRootLogin prohibit-password", runner)
         self.assertIn("sshd -T", runner)
         self.assertIn("root@127.0.0.1", runner)
+
+    def test_qemu_runner_uses_the_askpass_helper_for_password_ssh(self):
+        helper = self.read("iso/agama-askpass.sh")
+
+        self.assertIn("FXROUTE_ASKPASS_PASSWORD", helper)
+        runner = self.read("iso/test-leap-16-iso.sh")
+        self.assertIn("SSH_ASKPASS=", runner)
+        self.assertIn("SSH_ASKPASS_REQUIRE=force", runner)
+        self.assertIn("FXROUTE_ASKPASS_PASSWORD=", runner)
 
     def test_grub_screendump_uses_the_configured_temp_directory(self):
         runner = self.read("iso/test-leap-16-iso.sh")

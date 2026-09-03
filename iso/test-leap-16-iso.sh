@@ -8,7 +8,6 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_SELECTION="${1:-all}"
 ISO_PATH="${2:-${FXROUTE_ISO:-$ROOT_DIR/dist/fxroute-leap-16-x86_64.iso}}"
 TEST_ROOT="${FXROUTE_ISO_TEST_DIR:-$ROOT_DIR/dist/iso-test}"
-SSH_KEY="${FXROUTE_SSH_KEY:-$HOME/.ssh/id_ed25519_vm}"
 VM_RAM="${FXROUTE_VM_RAM:-4096}"
 VM_CPUS="${FXROUTE_VM_CPUS:-4}"
 VM_DISK_GB="${FXROUTE_VM_DISK_GB:-40}"
@@ -27,26 +26,25 @@ usage() {
 Usage: $0 [all|headless|desktop] [ISO]
 
 Boot a fresh QEMU/KVM guest for each selected profile, drive the
-interactive Agama decisions through the Agama API (account/password and
-SSH key, locale/keyboard/timezone, explicit target-disk selection,
-install start), and verify the installed FXRoute service, DSP setup, and
-desktop selection.
+interactive Agama decisions through the installer's own Agama CLI
+(account/password, locale/keyboard/timezone, explicit target-disk
+selection, install start), and verify the installed FXRoute service,
+DSP setup, and desktop selection. SSH into the installed system uses
+the account password created in Agama.
 
-The installer live password must be known for API access: append
-live.password=... to the boot entry for automated runs, or read the
-generated password from the installer console for manual runs, and pass
-it as FXROUTE_ISO_LIVE_PASSWORD. The account password created in Agama
-comes from FXROUTE_ISO_USER_PASSWORD. The Agama web ports are forwarded
-to the host so the same decisions can also be made manually in a browser
-via https://agama.local or the forwarded ports.
+The installer live password must be known for the installer SSH access:
+append live.password=... to the boot entry for automated runs (the
+runner types FXROUTE_ISO_KERNEL_EXTRA into the GRUB editor), or read
+the generated password from the installer console for manual runs, and
+pass it as FXROUTE_ISO_LIVE_PASSWORD. The account password created in
+Agama comes from FXROUTE_ISO_USER_PASSWORD. The Agama web ports are
+forwarded to the host so the same decisions can also be made manually
+in a browser via https://agama.local or the forwarded ports.
 
 Environment:
-  FXROUTE_SSH_KEY            Private key whose public counterpart is
-                             registered for the Agama account (SSH access
-                             to the installed system as that user)
   FXROUTE_ISO_USER           Account name created in Agama (default: fxroute)
   FXROUTE_ISO_USER_PASSWORD  Account password created in Agama (required)
-  FXROUTE_ISO_LIVE_PASSWORD  Installer live password for the Agama API (required)
+  FXROUTE_ISO_LIVE_PASSWORD  Installer live password for the installer SSH (required)
   FXROUTE_ISO_LOCALE         Locale selected in Agama (default: en_US.UTF-8)
   FXROUTE_ISO_KEYMAP         Keymap selected in Agama (default: us)
   FXROUTE_ISO_TIMEZONE       Timezone selected in Agama (default: Europe/Berlin)
@@ -73,14 +71,12 @@ command -v qemu-img >/dev/null 2>&1 || die "qemu-img is required"
 command -v qemu-system-x86_64 >/dev/null 2>&1 || die "qemu-system-x86_64 is required"
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v ssh >/dev/null 2>&1 || die "ssh is required"
+command -v setsid >/dev/null 2>&1 || die "setsid is required for the installer password login"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
-command -v agama >/dev/null 2>&1 || die "agama is required for the interactive setup phase"
-[[ -f "$SSH_KEY" ]] || die "SSH private key not found: $SSH_KEY"
+command -v base64 >/dev/null 2>&1 || die "base64 is required for the interactive setup phase"
 [[ -n "$AGAMA_USER_PASSWORD" ]] || die "FXROUTE_ISO_USER_PASSWORD is required (account password created in Agama)"
-[[ -n "$AGAMA_LIVE_PASSWORD" ]] || die "FXROUTE_ISO_LIVE_PASSWORD is required (installer live password for the Agama API)"
+[[ -n "$AGAMA_LIVE_PASSWORD" ]] || die "FXROUTE_ISO_LIVE_PASSWORD is required (installer live password for the installer SSH)"
 [[ "$AGAMA_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "FXROUTE_ISO_USER must be a valid Unix username"
-SSH_PUBLIC_KEY="$(ssh-keygen -y -f "$SSH_KEY")"
-[[ "$SSH_PUBLIC_KEY" != *$'\n'* ]] || die "Could not derive a single-line public key from $SSH_KEY"
 
 if [[ -e "$TEST_ROOT" ]]; then
   die "Test root already exists; remove it before rerunning: $TEST_ROOT"
@@ -351,16 +347,40 @@ finally:
 PY
 }
 
-agama_cli() {
-  local agama_port="$1"
+ssh_installer() {
+  local ssh_port="$1"
   shift
-  agama --host "https://127.0.0.1:$agama_port" --insecure "$@"
+  SSH_ASKPASS="$ROOT_DIR/iso/agama-askpass.sh" \
+  SSH_ASKPASS_REQUIRE=force \
+  DISPLAY=:0 \
+  FXROUTE_ASKPASS_PASSWORD="$AGAMA_LIVE_PASSWORD" \
+  setsid ssh \
+    -o PreferredAuthentications=password \
+    -o PubkeyAuthentication=no \
+    -o ConnectTimeout=8 \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=2 \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -p "$ssh_port" root@127.0.0.1 "$@" < /dev/null
+}
+
+installer_config_load() {
+  local ssh_port="$1"
+  local payload_file="$2"
+  local remote_file="$3"
+  local payload=""
+
+  payload="$(base64 -w0 < "$payload_file")"
+  ssh_installer "$ssh_port" \
+    "echo '$payload' | base64 -d > '$remote_file' && agama config load '$remote_file'"
 }
 
 setup_agama_interactive() {
   local profile="$1"
   local agama_port="$2"
-  local pid="$3"
+  local ssh_port="$3"
+  local pid="$4"
   local started=$SECONDS
   local setup_file="$TEST_ROOT/$profile-agama-setup.json"
   local storage_file="$TEST_ROOT/$profile-agama-storage.json"
@@ -382,12 +402,28 @@ setup_agama_interactive() {
     return 1
   }
 
-  printf '[iso-test] logging in to the %s Agama API\n' "$profile"
-  printf '%s' "$AGAMA_LIVE_PASSWORD" | agama_cli "$agama_port" auth login >/dev/null
+  # The installer is driven through its own Agama CLI over a root SSH
+  # session authenticated with the live password; the host CLI may be
+  # newer than the installer's Agama API.
+  printf '[iso-test] waiting for the %s installer SSH\n' "$profile"
+  while (( SECONDS - started < 1200 )); do
+    kill -0 "$pid" 2>/dev/null || {
+      printf '[iso-test] QEMU exited while waiting for the %s installer SSH\n' "$profile" >&2
+      return 1
+    }
+    if ssh_installer "$ssh_port" true >/dev/null 2>&1; then
+      break
+    fi
+    sleep 5
+  done
+  (( SECONDS - started < 1200 )) || {
+    printf '[iso-test] timeout waiting for the %s installer SSH\n' "$profile" >&2
+    return 1
+  }
 
   # Account/password and locale/keyboard/timezone are the interactive
   # decisions; the release image ships no credentials of its own.
-  agama_cli "$agama_port" config show > "$TEST_ROOT/$profile-agama-current.json"
+  ssh_installer "$ssh_port" 'agama config show' > "$TEST_ROOT/$profile-agama-current.json"
   AGAMA_L10N_KEY="$(python3 - "$TEST_ROOT/$profile-agama-current.json" <<'PY'
 import json
 import sys
@@ -397,7 +433,7 @@ print("l10n" if "l10n" in current else "localization")
 PY
 )"
   AGAMA_USER="$AGAMA_USER" AGAMA_USER_PASSWORD="$AGAMA_USER_PASSWORD" \
-    SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" AGAMA_LOCALE="$AGAMA_LOCALE" \
+    AGAMA_LOCALE="$AGAMA_LOCALE" \
     AGAMA_KEYMAP="$AGAMA_KEYMAP" AGAMA_TIMEZONE="$AGAMA_TIMEZONE" \
     AGAMA_L10N_KEY="$AGAMA_L10N_KEY" \
     python3 - "$setup_file" <<'PY'
@@ -423,14 +459,13 @@ config = {
         "fullName": "FXRoute",
         "userName": os.environ["AGAMA_USER"],
         "password": os.environ["AGAMA_USER_PASSWORD"],
-        "sshPublicKey": os.environ["SSH_PUBLIC_KEY"],
     },
     l10n_key: locale_section,
 }
 with open(sys.argv[1], "w") as handle:
     json.dump(config, handle)
 PY
-  agama_cli "$agama_port" config load "$setup_file"
+  installer_config_load "$ssh_port" "$setup_file" /tmp/fxroute-agama-setup.json
 
   # Explicit target-disk selection: a small decoy disk is attached besides
   # the main disk, so the proposal must name the large disk. Never wipe a
@@ -454,8 +489,8 @@ storage = {
 with open("$storage_file", "w") as handle:
     json.dump(storage, handle)
 PY
-  agama_cli "$agama_port" config load "$storage_file"
-  agama_cli "$agama_port" config show > "$TEST_ROOT/$profile-agama-proposal.json"
+  installer_config_load "$ssh_port" "$storage_file" /tmp/fxroute-agama-storage.json
+  ssh_installer "$ssh_port" 'agama config show' > "$TEST_ROOT/$profile-agama-proposal.json"
   python3 - "$TEST_ROOT/$profile-agama-proposal.json" <<'PY'
 import json
 import sys
@@ -465,20 +500,25 @@ text = json.dumps(proposal)
 assert "boot" in text, "storage proposal is missing the boot drive"
 PY
   printf '[iso-test] starting the %s installation (explicit confirmation)\n' "$profile"
-  agama_cli "$agama_port" install
+  ssh_installer "$ssh_port" 'agama install'
 }
 
 ssh_guest() {
   local ssh_port="$1"
   shift
-  ssh -i "$SSH_KEY" \
-    -o BatchMode=yes \
+  SSH_ASKPASS="$ROOT_DIR/iso/agama-askpass.sh" \
+  SSH_ASKPASS_REQUIRE=force \
+  DISPLAY=:0 \
+  FXROUTE_ASKPASS_PASSWORD="$AGAMA_USER_PASSWORD" \
+  setsid ssh \
+    -o PreferredAuthentications=password \
+    -o PubkeyAuthentication=no \
     -o ConnectTimeout=5 \
     -o ServerAliveInterval=5 \
     -o ServerAliveCountMax=1 \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-    -p "$ssh_port" "$AGAMA_USER@127.0.0.1" "$@"
+    -p "$ssh_port" "$AGAMA_USER@127.0.0.1" "$@" < /dev/null
 }
 
 sudo_guest() {
@@ -565,12 +605,17 @@ case "$user_password_hash" in
     ;;
 esac
 EOF
-  if ssh -i "$SSH_KEY" \
-      -o BatchMode=yes \
-      -o ConnectTimeout=5 \
-      -o StrictHostKeyChecking=no \
-      -o UserKnownHostsFile=/dev/null \
-      -p "$ssh_port" root@127.0.0.1 true >/dev/null 2>&1; then
+  if SSH_ASKPASS="$ROOT_DIR/iso/agama-askpass.sh" \
+      SSH_ASKPASS_REQUIRE=force \
+      DISPLAY=:0 \
+      FXROUTE_ASKPASS_PASSWORD="$AGAMA_USER_PASSWORD" \
+      setsid ssh \
+        -o PreferredAuthentications=password \
+        -o PubkeyAuthentication=no \
+        -o ConnectTimeout=5 \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -p "$ssh_port" root@127.0.0.1 true < /dev/null >/dev/null 2>&1; then
     printf '[iso-test] root SSH unexpectedly succeeded\n' >&2
     return 1
   fi
@@ -767,7 +812,7 @@ for profile in "${PROFILES[@]}"; do
   PIDS+=("$pid")
   select_boot_entry "$profile" "$monitor"
 
-  setup_agama_interactive "$profile" "$agama_https_port" "$pid"
+  setup_agama_interactive "$profile" "$agama_https_port" "$ssh_port" "$pid"
   wait_for_guest "$profile" "$pid" "$http_port" "$ssh_port"
   verify_ssh_defaults "$ssh_port"
   verify_account_region_network_storage "$ssh_port"
