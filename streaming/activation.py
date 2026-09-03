@@ -27,8 +27,12 @@ STATE_FILENAME = "provider-activation.json"
 
 
 def _state_path() -> Path:
-    config_dir = Path(os.environ.get("FXROUTE_CONFIG_DIR", "")) if os.environ.get("FXROUTE_CONFIG_DIR") else Path.home() / ".config" / "fxroute"
-    return config_dir / STATE_FILENAME
+    # Same resolution as the rest of the app (main.py, tidal/auth.py, ...):
+    # the config home is XDG_CONFIG_HOME (or ~/.config) plus /fxroute, so a
+    # relocated config home carries the provider activation state along with
+    # every other FXRoute config file.
+    root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    return root / "fxroute" / STATE_FILENAME
 
 
 def _normalize_id(provider_id: Any) -> str:

@@ -38,10 +38,19 @@ class ActivationStoreTests(unittest.TestCase):
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self._env = mock.patch.dict("os.environ", {"FXROUTE_CONFIG_DIR": self._tmp.name})
+        self._env = mock.patch.dict("os.environ", {"XDG_CONFIG_HOME": self._tmp.name})
         self._env.start()
         self.addCleanup(self._env.stop)
         self.addCleanup(self._tmp.cleanup)
+
+    def test_state_lives_under_xdg_config_home(self):
+        # The provider activation state must follow the same config home as
+        # every other FXRoute config file (XDG_CONFIG_HOME/fxroute), not a
+        # divergent FXROUTE_CONFIG_DIR/home fallback.
+        expected = Path(self._tmp.name) / "fxroute" / activation.STATE_FILENAME
+        self.assertEqual(activation._state_path(), expected)
+        activation.set_enabled("qobuz", False)
+        self.assertTrue(expected.exists())
 
     def test_missing_state_means_enabled(self):
         self.assertTrue(activation.is_enabled("spotify"))
@@ -62,7 +71,8 @@ class ActivationStoreTests(unittest.TestCase):
         self.assertTrue(all(result.values()))
 
     def test_corrupt_state_file_falls_back_to_enabled(self):
-        path = Path(self._tmp.name) / "provider-activation.json"
+        path = Path(self._tmp.name) / "fxroute" / activation.STATE_FILENAME
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not json")
         self.assertTrue(activation.is_enabled("spotify"))
 
@@ -70,7 +80,7 @@ class ActivationStoreTests(unittest.TestCase):
 class _AdminClientBase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self._env = mock.patch.dict("os.environ", {"FXROUTE_CONFIG_DIR": self._tmp.name})
+        self._env = mock.patch.dict("os.environ", {"XDG_CONFIG_HOME": self._tmp.name})
         self._env.start()
         self.addCleanup(self._env.stop)
         self.addCleanup(self._tmp.cleanup)
