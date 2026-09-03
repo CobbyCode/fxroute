@@ -606,6 +606,17 @@ class InstallIsoContractTests(unittest.TestCase):
             runner,
         )
 
+    def test_qemu_runner_appends_kernel_extra_to_the_linux_line(self):
+        runner = self.read("iso/test-leap-16-iso.sh")
+
+        # The GRUB editor shows a leading setparams line plus blank
+        # separator rows; four downs from the top reach the linux line.
+        self.assertIn('FXROUTE_ISO_GRUB_LINUX_DOWNS:-4}', runner)
+        self.assertIn('sendkey("e")', runner)
+        self.assertIn("sendkey ctrl-x", runner)
+        self.assertIn("FXROUTE_ISO_GRUB_EDIT_SHOT", runner)
+        self.assertIn("live.password=", runner)
+
     def test_iso_documentation_describes_the_interactive_appliance_flow(self):
         docs = self.read("docs/INSTALL-ISO.md")
 

@@ -182,7 +182,8 @@ select_boot_entry() {
   done
   [[ -S "$monitor" ]] || die "QEMU monitor did not start for $profile"
   FXROUTE_ISO_KERNEL_EXTRA="${FXROUTE_ISO_KERNEL_EXTRA:-}" \
-  FXROUTE_ISO_GRUB_LINUX_DOWNS="${FXROUTE_ISO_GRUB_LINUX_DOWNS:-2}" \
+  FXROUTE_ISO_GRUB_LINUX_DOWNS="${FXROUTE_ISO_GRUB_LINUX_DOWNS:-4}" \
+  FXROUTE_ISO_GRUB_EDIT_SHOT="${FXROUTE_ISO_GRUB_EDIT_SHOT:-}" \
   python3 - "$monitor" "$down_count" <<'PY'
 import os
 from pathlib import Path
@@ -193,7 +194,8 @@ import time
 
 monitor, down_count = sys.argv[1:]
 kernel_extra = os.environ.get("FXROUTE_ISO_KERNEL_EXTRA", "")
-linux_downs = int(os.environ.get("FXROUTE_ISO_GRUB_LINUX_DOWNS", "2"))
+linux_downs = int(os.environ.get("FXROUTE_ISO_GRUB_LINUX_DOWNS", "4"))
+edit_shot = os.environ.get("FXROUTE_ISO_GRUB_EDIT_SHOT", "")
 screen_fd, screen_name = tempfile.mkstemp(
     prefix="fxroute-iso-grub-", suffix=".ppm"
 )
@@ -314,16 +316,25 @@ try:
                 if kernel_extra:
                     # Edit the entry to append test-only kernel options
                     # (for example live.password=... for Agama API access).
+                    # The editor shows a leading setparams line plus blank
+                    # separator rows; four downs from the top reach the
+                    # wrapped linux line (verified via screendump).
                     sendkey("e")
-                    time.sleep(1.0)
+                    time.sleep(2.0)
+                    for _ in range(6):
+                        sendkey("up")
+                        time.sleep(0.1)
                     for _ in range(linux_downs):
                         sendkey("down")
-                        time.sleep(0.1)
+                        time.sleep(0.15)
                     sendkey("end")
-                    time.sleep(0.1)
+                    time.sleep(0.15)
                     sendkey("spc")
                     type_text(kernel_extra)
-                    time.sleep(0.2)
+                    time.sleep(0.3)
+                    if edit_shot:
+                        monitor_command(f"screendump {hmp_quote_path(edit_shot)}")
+                        time.sleep(0.3)
                     monitor_command("sendkey ctrl-x")
                 else:
                     monitor_command("sendkey ret")
