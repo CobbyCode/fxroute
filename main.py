@@ -729,6 +729,7 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_MODES,
+    SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
     apply_persisted_audio_output_selection,
@@ -2186,8 +2187,8 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
     """
     async with _canonical_volume_write_lock():
         requested = max(0, min(100, int(round(float(volume)))))
-        await _drain_worker(set_output_volume, requested)
-        return {"volume": requested}
+        verified = await _drain_worker(set_output_volume, requested)
+        return {"volume": int(verified)}
 
 
 async def _apply_remote_volume_value(
@@ -3290,6 +3291,12 @@ async def _shutdown_lifespan_resources() -> None:
     if runtime.music_library.scanner is not None:
         runtime.music_library.scanner.cancel_refresh()
     refresh_tasks = [task for task in runtime.library_refresh_tasks if not task.done()]
+    for task in refresh_tasks:
+        task.cancel()
+    if runtime.library_scan_task is not None and not runtime.library_scan_task.done():
+        if runtime.library_scan_task not in refresh_tasks:
+            runtime.library_scan_task.cancel()
+            refresh_tasks.append(runtime.library_scan_task)
     if refresh_tasks:
         await cleanup(
             "library-refresh-tasks",
@@ -3307,6 +3314,20 @@ async def _shutdown_lifespan_resources() -> None:
         await cleanup("peak-monitor", runtime.peak_monitor.stop)
     if hardware_controller is not None:
         await cleanup("hardware-controller", lambda: asyncio.to_thread(hardware_controller.close))
+
+    async def _disconnect_all_websockets() -> None:
+        connections = list(manager.active_connections)
+        for connection in connections:
+            try:
+                await manager.disconnect(connection, reason="server-shutdown")
+            except Exception:
+                logger.exception("Failed to disconnect websocket client during shutdown")
+        pending = [task for task in set(manager._worker_tasks) if not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    if manager.active_connections or manager._worker_tasks:
+        await cleanup("websocket-clients", _disconnect_all_websockets)
 
     runtime.reset()
     settings = None
@@ -3662,9 +3683,16 @@ async def _resolve_tidal_track(track_id: str) -> dict:
     provider = _tidal_provider()
     try:
         meta = await provider.get_track(track_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"TIDAL track unavailable: {exc}") from exc
+    try:
         stream = await provider.resolve_stream(track_id)
     except HTTPException:
         raise
+    except (tidal_auth.TidalAuthError, tidal_playback.TidalStreamError) as exc:
+        raise _tidal_http_error(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"TIDAL track unavailable: {exc}") from exc
     return {
@@ -4781,6 +4809,10 @@ async def save_audio_output_mode_route(request: Request):
         ).strip()
         if target_mode == current_mode:
             previous_overview = get_audio_output_overview()
+            try:
+                previous_mode_raw = samplerate._audio_output_mode_path().read_bytes()
+            except OSError:
+                previous_mode_raw = None
             result = persist_audio_output_mode(target["config"])
             if runtime.dsp_runtime is None:
                 await dsp_orchestrator.sync_runtime(result, reason="output-mode-params", retry_on_stale=True)
@@ -4794,6 +4826,16 @@ async def save_audio_output_mode_route(request: Request):
                         settle_seconds=0.0,
                     )
                 except Exception:
+                    try:
+                        if previous_mode_raw is None:
+                            try:
+                                samplerate._audio_output_mode_path().unlink(missing_ok=True)
+                            except OSError:
+                                logger.exception("Failed to remove persisted output mode after same-mode transition failure")
+                        elif samplerate._audio_output_mode_path().read_bytes() != previous_mode_raw:
+                            samplerate._audio_output_mode_path().write_bytes(previous_mode_raw)
+                    except OSError:
+                        logger.exception("Failed to restore persisted output mode after same-mode transition failure")
                     try:
                         await runtime.dsp_runtime.sync(previous_overview)
                     except Exception:
@@ -4894,9 +4936,39 @@ async def save_audio_source_selection_route(request: Request):
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "inputKey": <string?>}')
 
     try:
+        try:
+            previous_source_selection = samplerate._audio_source_selection_path().read_bytes()
+        except OSError:
+            previous_source_selection = None
+        previous_source_state = samplerate._load_audio_source_selection()
         result = set_audio_source_selection(mode, input_key)
-        result = await external_input.sync(result)
-        result = await bluetooth_input.sync(result)
+        try:
+            result = await external_input.sync(result)
+            result = await bluetooth_input.sync(result)
+        except Exception:
+            try:
+                if previous_source_selection is None:
+                    try:
+                        samplerate._audio_source_selection_path().unlink(missing_ok=True)
+                    except OSError:
+                        logger.exception("Failed to remove persisted source mode after routing failure")
+                elif samplerate._audio_source_selection_path().read_bytes() != previous_source_selection:
+                    samplerate._audio_source_selection_path().write_bytes(previous_source_selection)
+            except OSError:
+                logger.exception("Failed to restore persisted source mode after routing failure")
+            try:
+                restored = set_audio_source_selection(
+                    str(previous_source_state.get("mode") or SOURCE_MODE_APP_PLAYBACK),
+                    previous_source_state.get("selected_input_key"),
+                )
+                try:
+                    restored = await external_input.sync(restored)
+                    restored = await bluetooth_input.sync(restored)
+                except Exception:
+                    logger.exception("Failed to re-sync routing after source-mode rollback")
+            except Exception:
+                logger.exception("Failed to restore previous source selection after routing failure")
+            raise
         if result.get("mode") in {SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
             await _pause_all_app_playback_for_external_input()
         await peak_monitor_coordinator.sync_source_mode_state(result)
@@ -5673,7 +5745,9 @@ async def _run_provider_installer_op(script: Path, label: str, *args: str) -> di
             stdout, stderr = b"", b""
         raise HTTPException(status_code=504, detail=f"{label} timed out") from None
     except asyncio.CancelledError:
-        await pw_link.stop_process_group_child_cancellation_safe(proc, 5)
+        await pw_link.stop_process_group_cancellation_safe(
+            proc, communicate_task, grace_seconds=5
+        )
         raise
     result = {
         "returncode": proc.returncode,
@@ -5777,11 +5851,24 @@ async def api_streaming_provider_service_action(provider_id: str, action: str, r
         "systemctl", "--user", action, unit,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
+    communicate_task = asyncio.create_task(proc.communicate())
     try:
-        _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+        _stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate_task), timeout=15)
     except asyncio.TimeoutError:
-        proc.kill()
+        if await pw_link.stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        ):
+            raise asyncio.CancelledError
+        try:
+            _stdout, stderr = communicate_task.result()
+        except Exception:
+            _stdout, stderr = b"", b""
         raise HTTPException(status_code=504, detail="systemctl timed out") from None
+    except asyncio.CancelledError:
+        await pw_link.stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        )
+        raise
     if proc.returncode != 0:
         detail = stderr.decode(errors="replace").strip() or f"systemctl {action} {unit} failed"
         raise HTTPException(status_code=500, detail=detail)
@@ -5836,11 +5923,24 @@ async def api_set_device_name(request: Request):
         "hostnamectl", "set-hostname", value,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
+    communicate_task = asyncio.create_task(proc.communicate())
     try:
-        _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+        _stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate_task), timeout=15)
     except asyncio.TimeoutError:
-        proc.kill()
+        if await pw_link.stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        ):
+            raise asyncio.CancelledError
+        try:
+            _stdout, stderr = communicate_task.result()
+        except Exception:
+            _stdout, stderr = b"", b""
         raise HTTPException(status_code=504, detail="hostnamectl timed out") from None
+    except asyncio.CancelledError:
+        await pw_link.stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        )
+        raise
     if proc.returncode != 0:
         detail = stderr.decode(errors="replace").strip() or "hostnamectl set-hostname failed"
         raise HTTPException(status_code=500, detail=detail)
@@ -5849,9 +5949,17 @@ async def api_set_device_name(request: Request):
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
     )
     try:
-        await asyncio.wait_for(avahi.wait(), timeout=10)
+        await asyncio.wait_for(asyncio.shield(avahi.wait()), timeout=10)
     except asyncio.TimeoutError:
-        avahi.kill()
+        if await pw_link.stop_command_child_cancellation_safe(
+            avahi, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        ):
+            raise asyncio.CancelledError
+    except asyncio.CancelledError:
+        await pw_link.stop_command_child_cancellation_safe(
+            avahi, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        )
+        raise
     return {"hostname": value, "changed": True}
 
 

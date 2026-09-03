@@ -853,8 +853,10 @@ class VolumeOwnershipDirectTests(unittest.IsolatedAsyncioTestCase):
         self.volume_writes = []
 
         def recording_set_volume(value):
-            self.volume_writes.append(int(round(float(value))))
-            self.live_master = int(round(float(value)))
+            recorded = int(round(float(value)))
+            self.volume_writes.append(recorded)
+            self.live_master = recorded
+            return recorded
 
         self.live_master = 100
         patcher = mock.patch.object(main, "set_output_volume", new=recording_set_volume)
