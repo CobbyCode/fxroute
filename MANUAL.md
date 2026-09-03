@@ -22,35 +22,44 @@ FXRoute runs in a Linux user session with an active PipeWire audio stack. That c
 
 ## 2. First-time installation
 
-Run the installer on the audio PC:
+Three supported ways to get FXRoute onto the audio machine.
+
+**Classic install on a Linux PC or board.** On the audio machine:
 
 ```bash
-chmod +x install.sh
-./install.sh
+git clone https://github.com/CobbyCode/fxroute.git && cd fxroute && ./install.sh
 ```
 
-The installer prepares the system packages, builds the native DSP engine, creates the Python virtual environment, and enables the `fxroute.service` systemd user service. It also installs the runtime tools for playback and metadata (mpv, ffmpeg, playerctl, PipeWire/BlueZ helpers) and sets up `.local` LAN naming on supported distributions.
+The installer prepares the system packages, builds the native DSP engine, creates the Python virtual environment, and enables the `fxroute.service` systemd user service. It also installs the runtime tools for playback and metadata (mpv, ffmpeg, playerctl, PipeWire/BlueZ helpers) and sets up `.local` LAN naming on supported distributions. From a root shell on a host with more than one normal user, pass the audio user explicitly: `./install.sh --user <name>`.
 
-Streaming providers are optional and selected independently. A non-interactive install selects none. Choose what you want to use, for example:
+**ARM64 Armbian image.** Write the image to storage, boot the board, and complete the local web onboarding (FXRoute user account, network). The first boot installs FXRoute and enables the `.local` device name and HTTPS. See [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md).
+
+**x86_64 installation ISO (openSUSE Leap 16).** Write the ISO to USB, boot, select `FXRoute Headless` or `FXRoute Desktop`, review the Agama overview (network, target disk, locale/keyboard/timezone, account/password), then install and reboot. See [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md).
+
+Both images start with no streaming providers. Add them afterwards in **Technical settings → Providers**.
+
+Streaming providers are optional and managed in **Technical settings → Providers**: **Install** adds the backend on the audio machine, the checkbox shows or hides its tab, **Connect**/**Disconnect** handles the account, and **Uninstall** removes the backend (FXRoute itself stays installed). The installer flags select the same backends for shell-driven installs, for example:
 
 ```bash
 ./install.sh --providers spotify-desktop,spotifyd,qobuz,tidal
 ```
 
-Supported package managers are apt, dnf, zypper, and pacman. See [docs/INSTALLER.md](docs/INSTALLER.md) for the full provider matrix, first-run authentication for each provider, and uninstall behavior.
+A non-interactive install without a selection installs none. Supported package managers are apt, dnf, zypper, and pacman. See [docs/INSTALLER.md](docs/INSTALLER.md) for the full provider matrix, first-run authentication for each provider, and uninstall behavior.
 
 ## 3. Opening FXRoute
 
 Open FXRoute from a browser on the same network:
 
-- `http://fxroute.local`
+- `http://<device-name>.local:8000` (default `http://fxroute.local:8000`)
 - `http://<host-ip>:8000`
 - `http://localhost:8000` on the audio PC itself
 
 If the optional local HTTPS proxy is enabled, use:
 
-- `https://fxroute.local`
+- `https://<device-name>.local`
 - `https://<host-ip>`
+
+The device name is shown and changed in **Technical settings → Device Name**. HTTP on port 8000 stays reachable when the HTTPS proxy is enabled.
 
 The top-left FXRoute logo opens **Technical settings**.
 
@@ -95,8 +104,10 @@ Radio is a quick way to check playback, output selection, and DSP routing.
 
 Use **Spotify** to control a Spotify player running in the same Linux user session as FXRoute. Two backends are supported:
 
-- **Spotify Desktop** — the official desktop client, controlled through MPRIS. Requires an X11/Wayland desktop session.
+- **Spotify Desktop** — the official desktop client, controlled through MPRIS. Requires an x86_64 desktop session with X11/Wayland.
 - **spotifyd** — a headless Spotify player that also works in a session without a desktop. It uses the PipeWire-Pulse backend and MPRIS.
+
+Install the backend in **Technical settings → Providers** (**Install** on the Spotify row) or with the installer provider flags; the checkbox on the same row shows or hides the Spotify tab. There is no account login inside FXRoute: open the Spotify app on a phone or computer and select the FXRoute device (`FXRoute` via spotifyd) in Spotify Connect, then start playback there.
 
 FXRoute detects the running backend and shows the player state in the Spotify tab. When the backend is running but idle (for example spotifyd waiting for a Spotify Connect session), the tab shows **Ready for Spotify Connect.** instead of an error. If Spotify is not running, it shows **Spotify is not running.** and explains how to start Spotify Connect. Both backends offer the same control surface:
 
@@ -109,9 +120,9 @@ FXRoute detects the running backend and shows the player state in the Spotify ta
 
 FXRoute refreshes Spotify metadata from local desktop events and lightweight polling, so automatic next-track changes should update title, artist, cover, duration, and position without needing a manual browser action.
 
-FXRoute does not replace Spotify Connect. It controls the local player through the session, so Spotify must be installed on, reachable from, and logged in on the audio PC. The spotifyd variant is configured with a fixed Zeroconf port so the phone can find the FXRoute player reliably.
+FXRoute does not replace Spotify Connect. It controls the local player through the session, so Spotify must be installed on, reachable from, and logged in on the audio PC. The spotifyd variant uses a fixed Zeroconf port so the phone can find the FXRoute player reliably.
 
-On aarch64 hosts where the pinned spotifyd v0.4.2 release binary needs unavailable OpenSSL 1.1 libraries (for example Debian 13/Trixie), the installer uses the versioned FXRoute ARM64 prebuilt, which is built against an OpenSSL 3/glibc 2.35 baseline and verified by SHA-256. If the artifact cannot be downloaded or verified, spotifyd remains unavailable rather than installing obsolete OpenSSL packages or building on the host.
+On ARM64 the installer uses a verified FXRoute spotifyd prebuilt; see [docs/INSTALLER.md](docs/INSTALLER.md).
 
 The regular Spotify desktop client also supports Spotify Lossless for eligible Premium accounts. Enable **Lossless** in a current Spotify desktop client (version 1.2.67 or newer) to stream available music at up to 24-bit/44.1 kHz FLAC while FXRoute continues to provide remote playback control. FXRoute controls the client; it does not provide the Spotify stream itself. Lossless is not available through spotifyd.
 
@@ -130,7 +141,11 @@ Spotify volume is the provider's own volume. The playback-bar slider remains the
 
 ## 7. Qobuz
 
-The Qobuz tab controls a **Qobuz Connect** player on the audio PC. Playback starts from the Qobuz app: run `"$HOME/.local/bin/qbzd" setup` once after installation, enable Qobuz Connect, then select the FXRoute device from the Qobuz app. The FXRoute tab then shows what is playing and offers the same transport controls as the other sources. While qbzd is running but no FXRoute device is active, the tab shows **Ready for Qobuz Connect.** instead of an error. When no track is active, it says **Nothing is playing. Start a track from the Qobuz app.** The controls are:
+The Qobuz tab controls a **Qobuz Connect** player on the audio PC. Install the qbzd backend in **Technical settings → Providers** if it is not installed yet.
+
+Connect the account from **Technical settings → Providers**: press **Connect** on the Qobuz row, open the shown Qobuz sign-in link, sign in, then paste the redirect URL back into FXRoute and press **Connect**. **Disconnect** on the same row signs the account out; playback stops until you sign in again.
+
+Playback starts from the Qobuz app: select the FXRoute device there. The FXRoute tab then shows what is playing and offers the same transport controls as the other sources. While qbzd is running but no FXRoute device is active, the tab shows **Ready for Qobuz Connect.** instead of an error. When no track is active, it says **Nothing is playing. Start a track from the Qobuz app.** The controls are:
 
 - play/pause
 - previous/next track
@@ -144,10 +159,12 @@ Stream quality follows your Qobuz account and the selected Qobuz app settings. T
 
 The TIDAL tab is a full catalog browser. After logging in you can browse, search, favorite, and play without leaving FXRoute. The connected state is shown as **Connected** in the browse toolbar; when no native track is active, the player says **Nothing is playing.**
 
-Log in from the TIDAL tab:
+Install the TIDAL backend in **Technical settings → Providers** if it is not installed yet. Connect from the Providers row (**Connect** opens the TIDAL tab login) or directly in the TIDAL tab:
 
 - **Browser login** (PKCE) — copy the login link, sign in on any device, and paste the redirect URL back into FXRoute. This is the only login that unlocks Lossless and Hi-Res playback.
 - **Device login** — enter the shown code at link.tidal.com. Faster, but limited to AAC 320 kbps.
+
+Disconnect from **Technical settings → Providers** (**Disconnect** on the TIDAL row); playback stops until you sign in again.
 
 The tab provides:
 
@@ -421,6 +438,8 @@ Click the FXRoute logo to open **Technical settings**.
 
 Useful settings:
 
+- install, show/hide, connect/disconnect, and remove streaming providers (Providers)
+- change the LAN device name (`<name>.local`) (Device Name)
 - choose the audio output device
 - choose Stereo, 2.1 Subwoofer, 2.2 Subwoofer, or 2.2 Stereo Bass output mode
 - follow the playback sample rate or use a fixed sample rate
@@ -476,7 +495,7 @@ rest:
 
 ## 14. Local HTTPS certificate
 
-When the optional local HTTPS proxy is enabled, FXRoute creates a local certificate authority for the audio PC.
+When the optional local HTTPS proxy is enabled, FXRoute creates a local certificate authority for the audio PC. Download the certificate from the **HTTPS certificate** link in **Technical settings**.
 
 Install the downloaded certificate only on devices you trust on your own LAN. Import it into the operating system or browser trust store as a trusted certificate authority. If the FXRoute Caddy certificate authority is regenerated, client devices may need the new certificate again.
 

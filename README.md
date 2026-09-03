@@ -73,8 +73,9 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
 - Bluetooth input visibility/control when the host audio stack supports it
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
 - selectable local and SMB music libraries, with SMB share discovery and manual `smb://` share entry
-- optional Spotify Desktop, spotifyd, Qobuz/qbzd, and TIDAL installer support; see [docs/INSTALLER.md](docs/INSTALLER.md)
-- reproducible headless ARM64 Armbian image builds for Raspberry Pi 4/5 and other Armbian boards; see [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md)
+- streaming providers (Spotify, Qobuz, TIDAL) managed in **Technical settings → Providers**: install/remove backends, show/hide tabs, in-app Connect/Disconnect for Qobuz and TIDAL; Spotify pairs from the Spotify app by selecting the FXRoute device. Installer flags cover the same backends for shell-driven installs; see [docs/INSTALLER.md](docs/INSTALLER.md)
+- ready-made ARM64 Armbian images with local web onboarding; see [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md)
+- x86_64 openSUSE Leap 16 installation ISO with headless and desktop profiles; see [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md)
 - installer support for the native DSP build, systemd user service, PipeWire/BlueZ dependencies, firewall comfort rules, and `.local` LAN naming
 - installer package-manager support for apt (Debian/Ubuntu), dnf (Fedora),
   zypper (openSUSE), and pacman (Arch/Manjaro); package-manager preparation
@@ -171,9 +172,10 @@ automation:
 
 ## Quick start
 
+Classic install:
+
 ```bash
-chmod +x install.sh
-./install.sh
+git clone https://github.com/CobbyCode/fxroute.git && cd fxroute && ./install.sh
 ```
 
 When installing from a root shell on a host with more than one normal user,
@@ -184,13 +186,18 @@ install targets must be dedicated directories named `fxroute` unless
 
 The installer creates `.env` automatically and preserves it on reruns. For manual setup, copy `.env.example` to `.env` and adjust at least `MUSIC_ROOT` when needed. Network libraries can be selected in **Technical settings**. FXRoute discovers accessible SMB shares and also accepts a manual `smb://server/share` entry.
 
-Optional streaming providers are never selected by default in a non-interactive install. Select them explicitly, for example:
+Streaming providers are managed in **Technical settings → Providers**: install or remove the backend, show or hide its tab, and connect or disconnect the account. Qobuz and TIDAL connect through the in-app browser flows; Spotify has no login inside FXRoute and pairs from the Spotify app by selecting the FXRoute device. The installer flags remain for shell-driven installs, for example:
 
 ```bash
 ./install.sh --providers spotify-desktop,spotifyd,qobuz,tidal
 ```
 
-Spotify Desktop and spotifyd are independent choices. Spotify Desktop is limited to x86_64 desktop sessions; spotifyd and Qobuz/qbzd also support headless user sessions where their architecture and runtime are available. On aarch64, where the upstream spotifyd v0.4.2 release links OpenSSL 1.1, the installer downloads the versioned FXRoute ARM64 prebuilt from its checksum-pinned release. The installer does not write provider credentials or session data. See [docs/INSTALLER.md](docs/INSTALLER.md) for the supported matrix, first-run authentication, and uninstall behavior.
+Spotify Desktop and spotifyd are independent choices. Spotify Desktop is limited to x86_64 desktop sessions; spotifyd and Qobuz/qbzd also support headless user sessions where their architecture and runtime are available. On ARM64 the installer uses a verified FXRoute spotifyd prebuilt. The installer does not write provider credentials or session data. See [docs/INSTALLER.md](docs/INSTALLER.md) for the supported matrix, first-run authentication, and uninstall behavior.
+
+Ready-made images (both start with `--providers none`; add providers later in **Technical settings → Providers**):
+
+- **ARM64 Armbian image** (for example Raspberry Pi 4/5): write the image, boot the board, and complete the local web onboarding (FXRoute user account, network). First boot installs FXRoute and enables the `.local` device name and HTTPS. See [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md).
+- **x86_64 installation ISO** (openSUSE Leap 16): write the ISO to USB, boot, select `FXRoute Headless` or `FXRoute Desktop`, review the Agama overview (network, target disk, locale/keyboard/timezone, account/password), then install and reboot. See [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md).
 
 Default user service:
 
@@ -200,8 +207,10 @@ Typical URLs:
 
 - `http://localhost:8000`
 - `http://<host-ip>:8000`
-- `http://fxroute.local` when mDNS is enabled
-- `https://<host-ip>` or `https://fxroute.local` when the optional local HTTPS proxy is enabled
+- `http://<device-name>.local:8000` (default `http://fxroute.local:8000`) when mDNS is enabled
+- `https://<host-ip>` or `https://<device-name>.local` when the optional local HTTPS proxy is enabled
+
+The device name is shown and changed in **Technical settings → Device Name**. HTTP on port 8000 stays reachable when the HTTPS proxy is enabled.
 
 ## Main sections
 
@@ -212,7 +221,7 @@ Typical URLs:
 - **Spotify** — control a local Spotify desktop client or spotifyd player
 - **Qobuz** — control a Qobuz Connect player on the audio PC
 - **TIDAL** — full catalog browser with login, search, favorites, and native playback
-- **Technical settings** — output selection, Stereo/2.1/2.2/2.2 Stereo Bass modes, Auto or fixed sample rate, music libraries, source state, Bluetooth status, Maintenance updates, and local certificate access
+- **Technical settings** — streaming providers (install, show/hide, Connect/Disconnect, remove), device name (`.local`), output selection, Stereo/2.1/2.2/2.2 Stereo Bass modes, Auto or fixed sample rate, music libraries, source state, Bluetooth status, Maintenance updates, and local certificate access
 
 ## Library metadata
 
