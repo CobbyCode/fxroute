@@ -1642,11 +1642,9 @@ class MeasurementAnalyzer:
                 if 0.0 < best_score_val and best_score_val >= selected_score and best_score_val > selected_score * 1.02:
                     promotion_gap = int(best_by_score["sample"]) - direct_arrival_index
                     if 0 < promotion_gap <= int(round(sample_rate * 0.012)):
-                        reference_peak_sample_backup = int(reference_peak_index)
                         direct_arrival_index = int(best_by_score["sample"])
                         selected_score = best_score_val
                         selection_rule = "promoted_to_best_score_in_window"
-                        relative_samples = int(direct_arrival_index - reference_peak_sample_backup)
         selected_support = next(
             (float(item["support_score"]) for item in candidates if int(item["sample"]) == int(direct_arrival_index)),
             selected_score,
