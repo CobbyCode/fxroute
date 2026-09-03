@@ -8,6 +8,7 @@ device-name endpoints and the installer flags they drive:
 * /api/streaming/providers/admin payload shape (enabled + device_name)
 * enabled toggle endpoint validation and persistence
 * device-name validation (installer hostname rule) and no-op path
+* cross-site origin guard on the provider/Qobuz POST endpoints
 * install.sh --providers-only / --with-lan-name / --with-caddy / --device-name
 * uninstall.sh --provider scoped removal
 """
@@ -137,6 +138,88 @@ class ProviderAdminEndpointTests(_AdminClientBase):
         flags = {p["id"]: p.get("enabled") for p in data["providers"]}
         self.assertFalse(flags["tidal"])
         self.assertTrue(flags["spotify"])
+
+
+class ProviderEndpointOriginGuardTests(_AdminClientBase):
+    """State-changing provider/Qobuz POSTs share the cross-site origin guard.
+
+    Same defence as the power and device-name endpoints: a POST carrying a
+    foreign (or "null") Origin must be rejected before any installer,
+    systemctl, or credential side effect runs. Headerless calls (CLI/systemd)
+    and same-origin browser calls stay allowed.
+    """
+
+    FOREIGN_ORIGIN = {"Origin": "https://evil.example.com"}
+    NULL_ORIGIN = {"Origin": "null"}
+
+    def test_cross_site_provider_actions_are_rejected(self):
+        for url in (
+            "/api/streaming/providers/qobuz/enabled",
+            "/api/streaming/providers/qobuz/install",
+            "/api/streaming/providers/qobuz/uninstall",
+            "/api/streaming/providers/qobuz/service/restart",
+        ):
+            resp = self.client.post(url, json={}, headers=self.FOREIGN_ORIGIN)
+            self.assertEqual(resp.status_code, 403, msg=url)
+
+    def test_cross_site_qobuz_auth_actions_are_rejected(self):
+        for url in (
+            "/api/streaming/qobuz/auth/login",
+            "/api/streaming/qobuz/auth/login/finish",
+            "/api/streaming/qobuz/auth/login/cancel",
+            "/api/streaming/qobuz/auth/logout",
+        ):
+            resp = self.client.post(url, json={}, headers=self.FOREIGN_ORIGIN)
+            self.assertEqual(resp.status_code, 403, msg=url)
+
+    def test_null_origin_is_rejected(self):
+        resp = self.client.post(
+            "/api/streaming/providers/qobuz/install",
+            json={},
+            headers=self.NULL_ORIGIN,
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_cross_site_install_never_spawns_the_installer(self):
+        with mock.patch.object(
+            self.main, "_run_provider_installer_op", new_callable=mock.AsyncMock
+        ) as op_mock:
+            resp = self.client.post(
+                "/api/streaming/providers/qobuz/install",
+                json={},
+                headers=self.FOREIGN_ORIGIN,
+            )
+        self.assertEqual(resp.status_code, 403)
+        op_mock.assert_not_called()
+
+    def test_cross_site_service_action_never_spawns_systemctl(self):
+        with mock.patch.object(self.main.asyncio, "create_subprocess_exec") as exec_mock:
+            resp = self.client.post(
+                "/api/streaming/providers/qobuz/service/restart",
+                json={},
+                headers=self.FOREIGN_ORIGIN,
+            )
+        self.assertEqual(resp.status_code, 403)
+        exec_mock.assert_not_called()
+
+    def test_cross_site_enabled_toggle_changes_nothing(self):
+        self.assertTrue(activation.is_enabled("qobuz"))
+        resp = self.client.post(
+            "/api/streaming/providers/qobuz/enabled",
+            json={"enabled": False},
+            headers=self.FOREIGN_ORIGIN,
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertTrue(activation.is_enabled("qobuz"))
+
+    def test_same_origin_post_is_allowed(self):
+        resp = self.client.post(
+            "/api/streaming/providers/qobuz/enabled",
+            json={"enabled": False},
+            headers={"Origin": "http://testserver"},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertFalse(activation.is_enabled("qobuz"))
 
 
 class DeviceNameEndpointTests(_AdminClientBase):

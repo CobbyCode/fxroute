@@ -5547,12 +5547,14 @@ async def api_qobuz_auth_state():
 
 
 @app.post("/api/streaming/qobuz/auth/login")
-async def api_qobuz_auth_login():
+async def api_qobuz_auth_login(request: Request):
     """Start (or re-enter) the qbzd browser OAuth flow.
 
     Works for both a first login and an account switch: qbzd's login replaces
     the stored credential on completion.
     """
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
     provider = _qobuz_provider_or_404()
     if not provider.is_installed():
         raise HTTPException(status_code=409, detail="qbzd is not installed; install the Qobuz provider first")
@@ -5565,6 +5567,8 @@ async def api_qobuz_auth_login():
 @app.post("/api/streaming/qobuz/auth/login/finish")
 async def api_qobuz_auth_login_finish(request: Request):
     """Complete the qbzd browser OAuth flow with the pasted redirect URL."""
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
     provider = _qobuz_provider_or_404()
     try:
         body = await request.json()
@@ -5580,8 +5584,10 @@ async def api_qobuz_auth_login_finish(request: Request):
 
 
 @app.post("/api/streaming/qobuz/auth/login/cancel")
-async def api_qobuz_auth_login_cancel():
+async def api_qobuz_auth_login_cancel(request: Request):
     """Abort an in-flight qbzd browser login (terminates the CLI listener)."""
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
     provider = _qobuz_provider_or_404()
     try:
         return await provider.cancel_login()
@@ -5590,8 +5596,10 @@ async def api_qobuz_auth_login_cancel():
 
 
 @app.post("/api/streaming/qobuz/auth/logout")
-async def api_qobuz_auth_logout():
+async def api_qobuz_auth_logout(request: Request):
     """Clear the qbzd credential (account disconnect / reset)."""
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
     provider = _qobuz_provider_or_404()
     try:
         return await provider.logout()
@@ -5676,6 +5684,8 @@ async def api_streaming_providers_admin():
 @app.post("/api/streaming/providers/{provider_id}/enabled")
 async def api_streaming_provider_set_enabled(provider_id: str, request: Request):
     """Enable or disable a provider (visibility only; never installs/uninstalls)."""
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
     if streaming.get_provider(provider_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
     try:
@@ -5689,8 +5699,10 @@ async def api_streaming_provider_set_enabled(provider_id: str, request: Request)
 
 
 @app.post("/api/streaming/providers/{provider_id}/install")
-async def api_streaming_provider_install(provider_id: str):
+async def api_streaming_provider_install(provider_id: str, request: Request):
     """Install a provider's backend via the existing installer path."""
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
     if streaming.get_provider(provider_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
     flag = {
@@ -5710,8 +5722,10 @@ async def api_streaming_provider_install(provider_id: str):
 
 
 @app.post("/api/streaming/providers/{provider_id}/uninstall")
-async def api_streaming_provider_uninstall(provider_id: str):
+async def api_streaming_provider_uninstall(provider_id: str, request: Request):
     """Uninstall a provider's backend via the existing uninstaller (explicit action)."""
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
     if streaming.get_provider(provider_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
     if provider_id not in {"spotify", "qobuz", "tidal"}:
@@ -5726,8 +5740,10 @@ async def api_streaming_provider_uninstall(provider_id: str):
 
 
 @app.post("/api/streaming/providers/{provider_id}/service/{action}")
-async def api_streaming_provider_service_action(provider_id: str, action: str):
+async def api_streaming_provider_service_action(provider_id: str, action: str, request: Request):
     """Start/stop/restart a provider's user service (Connect readiness)."""
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
     unit = {"spotify": "spotifyd.service", "qobuz": "qbzd.service"}.get(provider_id)
     if unit is None:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} has no service to control")
