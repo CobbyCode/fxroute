@@ -318,7 +318,7 @@
     function applyProviderEnabled(providerId, enabled) {
         state.enabled[providerId] = enabled === true;
         const entry = state.providers[providerId];
-        const data = state.lastData[providerId] || {};
+        const data = { ...(state.lastData[providerId] || {}), ...(entry?.descriptor || {}) };
         if (entry) applyTabVisibility(providerId, entry, { installed: data.installed, available: data.available });
     }
 
@@ -329,10 +329,17 @@
             const resp = await fetch('/api/streaming/providers/discovery');
             if (!resp.ok) return;
             const payload = await resp.json();
-            for (const descriptor of payload.providers || []) {
+            for (const descriptor of (Array.isArray(payload.providers) ? payload.providers : [])) {
+                const entry = state.providers[descriptor.id];
                 const prev = state.enabled[descriptor.id];
                 state.enabled[descriptor.id] = descriptor.enabled !== false;
-                if (prev !== undefined && prev !== state.enabled[descriptor.id]) {
+                if (entry) {
+                    entry.descriptor = descriptor;
+                    applyTabVisibility(descriptor.id, entry, {
+                        ...(state.lastData[descriptor.id] || {}),
+                        ...descriptor,
+                    });
+                } else if (prev !== undefined && prev !== state.enabled[descriptor.id]) {
                     applyProviderEnabled(descriptor.id, state.enabled[descriptor.id]);
                 }
             }
@@ -815,6 +822,7 @@
     // -- login -----------------------------------------------------------------
     function renderTidalLogin(entry) {
         const content = entry.els.content;
+        content.hidden = false;
         if (state.tidal.view === 'pkce') { renderTidalPkce(content); return; }
         if (state.tidal.view === 'device') { renderTidalDevice(content); return; }
         content.innerHTML =
@@ -862,9 +870,28 @@
             .then((d) => { urlEl.textContent = d.url || 'Could not generate a login link.'; })
             .catch(() => { urlEl.textContent = 'Could not generate a login link.'; });
 
-        content.querySelector('#tidal-pkce-copy').addEventListener('click', () => {
+        content.querySelector('#tidal-pkce-copy').addEventListener('click', async () => {
             const text = urlEl.textContent || '';
-            navigator.clipboard?.writeText(text).then(() => showToast('Login link copied', 'success'));
+            if (!text || text === 'Generating link…' || text === 'Could not generate a login link.') return;
+            try {
+                await navigator.clipboard.writeText(text);
+                showToast('Login link copied', 'success');
+            } catch (_clipboardError) {
+                try {
+                    const area = document.createElement('textarea');
+                    area.value = text;
+                    area.setAttribute('readonly', '');
+                    area.style.position = 'fixed';
+                    area.style.opacity = '0';
+                    document.body.appendChild(area);
+                    area.select();
+                    const ok = document.execCommand ? document.execCommand('copy') : false;
+                    document.body.removeChild(area);
+                    showToast(ok ? 'Login link copied' : 'Copy the login link manually', ok ? 'success' : 'info');
+                } catch (_fallbackError) {
+                    showToast('Copy the login link manually', 'info');
+                }
+            }
         });
         content.querySelector('#tidal-pkce-back').addEventListener('click', () => { state.tidal.view = null; renderTidalLogin(entryFor('tidal')); });
         content.querySelector('#tidal-pkce-complete').addEventListener('click', async () => {
@@ -929,9 +956,24 @@
         });
     }
 
-    function openTidalLogin() {
-        state.tidal.view = null;
+    function openTidalLogin(installed = false) {
         const entry = entryFor('tidal');
+        const last = state.lastData.tidal || {};
+        if (installed && entry) {
+            applyTabVisibility('tidal', entry, {
+                ...entry.descriptor,
+                ...last,
+                installed: true,
+                available: last.available !== false,
+            });
+        }
+        if (last.authenticated === true) {
+            // Already connected: never clobber the browse view with a login
+            // surface (Settings list may be stale). Let the status path render.
+            if (state.tidal.contentKey !== 'browse') void refreshTidalStatus();
+            return;
+        }
+        state.tidal.view = null;
         if (entry) renderTidalLogin(entry);
     }
 
@@ -2631,7 +2673,7 @@
         // Settings -> Providers entry point: render the TIDAL login surface
         // (same surface the tab's own Connect button opens), so Connect
         // actually starts the login instead of merely navigating.
-        startTidalLogin: () => openTidalLogin(),
+        startTidalLogin: (installed = false) => openTidalLogin(installed),
         // Footer / global favorite hooks: the shared footer heart favorites the
         // current TIDAL track through the same canonical state and API the
         // TIDAL tab and detail rows use — no second favorite source.

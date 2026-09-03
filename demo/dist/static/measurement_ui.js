@@ -47,42 +47,44 @@ const measurementConvolverTypeOptions = measurementConvolverPhaseModes.flatMap((
 })));
 
 function normalizeMeasurementTrace(trace = {}, index = 0) {
-    const points = Array.isArray(trace.points)
-        ? trace.points.filter(point => Array.isArray(point) && point.length === 2 && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1]))).map(point => [Number(point[0]), Number(point[1])])
+    const safeTrace = trace || {};
+    const points = Array.isArray(safeTrace.points)
+        ? safeTrace.points.filter(point => Array.isArray(point) && point.length === 2 && point[0] != null && point[1] != null && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1]))).map(point => [Number(point[0]), Number(point[1])])
         : [];
     return {
-        kind: String(trace.kind || 'measured'),
-        label: String(trace.label || `Trace ${index + 1}`),
-        color: String(trace.color || ['#6ee7b7', '#a78bfa', '#f59e0b', '#60a5fa'][index % 4]),
-        role: String(trace.role || ''),
+        kind: String(safeTrace.kind || 'measured'),
+        label: String(safeTrace.label || `Trace ${index + 1}`),
+        color: String(safeTrace.color || ['#6ee7b7', '#a78bfa', '#f59e0b', '#60a5fa'][index % 4]),
+        role: String(safeTrace.role || ''),
         points,
         // AutoSub calibrated-to-display correction. The graph uses it with
         // saved Main references to move AutoSub traces into its normal axis.
-        ...(Number.isFinite(Number(trace.display_offset_db))
-            ? { display_offset_db: Number(trace.display_offset_db) }
+        ...(Number.isFinite(Number(safeTrace.display_offset_db))
+            ? { display_offset_db: Number(safeTrace.display_offset_db) }
             : {}),
     };
 }
 
 function normalizeMeasurementEntry(measurement = {}, index = 0) {
-    const traces = Array.isArray(measurement.traces) ? measurement.traces.map((trace, traceIndex) => normalizeMeasurementTrace(trace, traceIndex)).filter(trace => trace.points.length) : [];
-    const reviewTraces = Array.isArray(measurement.review_traces) ? measurement.review_traces.map((trace, traceIndex) => normalizeMeasurementTrace(trace, traceIndex)).filter(trace => trace.points.length) : [];
+    const safeMeasurement = measurement || {};
+    const traces = Array.isArray(safeMeasurement.traces) ? safeMeasurement.traces.map((trace, traceIndex) => normalizeMeasurementTrace(trace, traceIndex)).filter(trace => trace.points.length) : [];
+    const reviewTraces = Array.isArray(safeMeasurement.review_traces) ? safeMeasurement.review_traces.map((trace, traceIndex) => normalizeMeasurementTrace(trace, traceIndex)).filter(trace => trace.points.length) : [];
     return {
-        id: String(measurement.id || `measurement-${index + 1}`),
-        name: String(measurement.name || `Measurement ${index + 1}`),
-        created_at: String(measurement.created_at || ''),
-        channel: String(measurement.channel || 'left'),
-        measurement_kind: String(measurement.measurement_kind || ''),
-        measurement_role: String(measurement.measurement_role || ''),
-        input_device: measurement.input_device || {},
-        input_channels: measurement.input_channels || {},
-        calibration: measurement.calibration || {},
-        autosub_meta: measurement.autosub_meta || null,
-        summary: measurement.summary || {},
-        review_summary: measurement.review_summary || {},
-        analysis: measurement.analysis || {},
-        audio_output_context: measurement.audio_output_context || {},
-        storage_path: measurement.storage_path || '',
+        id: String(safeMeasurement.id || `measurement-${index + 1}`),
+        name: String(safeMeasurement.name || `Measurement ${index + 1}`),
+        created_at: String(safeMeasurement.created_at || ''),
+        channel: String(safeMeasurement.channel || 'left'),
+        measurement_kind: String(safeMeasurement.measurement_kind || ''),
+        measurement_role: String(safeMeasurement.measurement_role || ''),
+        input_device: safeMeasurement.input_device || {},
+        input_channels: safeMeasurement.input_channels || {},
+        calibration: safeMeasurement.calibration || {},
+        autosub_meta: safeMeasurement.autosub_meta || null,
+        summary: safeMeasurement.summary || {},
+        review_summary: safeMeasurement.review_summary || {},
+        analysis: safeMeasurement.analysis || {},
+        audio_output_context: safeMeasurement.audio_output_context || {},
+        storage_path: safeMeasurement.storage_path || '',
         traces,
         review_traces: reviewTraces,
     };
@@ -207,7 +209,7 @@ function getMeasurementConvolverPreviewGain(mode = 'both', leftAnalysis = null, 
     const gains = mode === 'both'
         ? [left?.autoGainDb, right?.autoGainDb]
         : [mode === 'right' ? right?.autoGainDb : left?.autoGainDb];
-    const numericGains = gains.map(Number).filter(Number.isFinite);
+    const numericGains = gains.map(measurementFiniteOrNull).filter(value => value !== null);
     return numericGains.length ? Math.min(...numericGains) : 0;
 }
 
@@ -246,7 +248,7 @@ function getMeasurementConvolverTypeLabel(type = 'linear_4096') {
 }
 
 function getMeasurementConvolverTimingMs(timing = {}) {
-    const arrivalMs = Number(timing?.arrivalMs);
+    const arrivalMs = measurementNumberOrNaN(timing?.arrivalMs);
     return Number.isFinite(arrivalMs) ? arrivalMs : null;
 }
 
@@ -362,6 +364,16 @@ function getMeasurementAnalysisSampleRate(measurement = {}) {
     return sampleRate || null;
 }
 
+function measurementNumberOrNaN(value) {
+    if (value == null || (typeof value === 'string' && value.trim() === '')) return NaN;
+    return Number(value);
+}
+
+function measurementFiniteOrNull(value) {
+    const numeric = measurementNumberOrNaN(value);
+    return Number.isFinite(numeric) ? numeric : null;
+}
+
 function getMeasurementDirectArrivalTiming(measurement = {}) {
     const impulse = measurement?.analysis?.impulse_response || null;
     const timingInfo = getMeasurementTimingInfo(measurement);
@@ -373,11 +385,15 @@ function getMeasurementDirectArrivalTiming(measurement = {}) {
     if (!impulse || !sampleRate) {
         return { available: false, reason: 'missing-direct-arrival-timing' };
     }
-    const arrivalMs = Number.isFinite(Number(timingInfo.delayMs)) ? Number(timingInfo.delayMs) : Number(impulse?.arrival_ms);
-    const arrivalSamples = Number.isFinite(Number(timingInfo.arrivalSamples)) ? Number(timingInfo.arrivalSamples) : Number(impulse?.arrival_samples);
-    const directSample = Number(impulse?.direct_arrival_index);
-    const referencePeakSample = Number(impulse?.reference_peak_index);
-    const referenceAnchorSample = Number(measurement?.analysis?.alignment_samples);
+    const rawDelayMs = measurementNumberOrNaN(timingInfo.delayMs);
+    const rawArrivalSamples = measurementNumberOrNaN(timingInfo.arrivalSamples);
+    const fallbackArrivalMs = measurementNumberOrNaN(impulse?.arrival_ms);
+    const fallbackArrivalSamples = measurementNumberOrNaN(impulse?.arrival_samples);
+    const arrivalMs = Number.isFinite(rawDelayMs) ? rawDelayMs : fallbackArrivalMs;
+    const arrivalSamples = Number.isFinite(rawArrivalSamples) ? rawArrivalSamples : fallbackArrivalSamples;
+    const directSample = measurementNumberOrNaN(impulse?.direct_arrival_index);
+    const referencePeakSample = measurementNumberOrNaN(impulse?.reference_peak_index);
+    const referenceAnchorSample = measurementNumberOrNaN(measurement?.analysis?.alignment_samples);
     if (
         !Number.isFinite(arrivalMs)
         || !Number.isFinite(arrivalSamples)
@@ -386,19 +402,19 @@ function getMeasurementDirectArrivalTiming(measurement = {}) {
     ) {
         return { available: false, reason: 'missing-direct-arrival-timing' };
     }
-    const peakSample = Number(impulse?.peak_index);
+    const peakSample = measurementNumberOrNaN(impulse?.peak_index);
     const mapDirectCandidate = (candidate) => ({
-            sample: Number.isFinite(Number(candidate?.sample)) ? Number(candidate.sample) : null,
-            offsetFromPeakSamples: Number.isFinite(Number(candidate?.offset_from_peak_samples)) ? Number(candidate.offset_from_peak_samples) : null,
-            offsetFromPeakMs: Number.isFinite(Number(candidate?.offset_from_peak_ms)) ? Number(candidate.offset_from_peak_ms) : null,
-            score: Number.isFinite(Number(candidate?.score)) ? Number(candidate.score) : null,
-            peakScore: Number.isFinite(Number(candidate?.peak_score)) ? Number(candidate.peak_score) : null,
-            relativeDb: Number.isFinite(Number(candidate?.relative_db)) ? Number(candidate.relative_db) : null,
-            localEnergyRelative: Number.isFinite(Number(candidate?.local_energy_relative)) ? Number(candidate.local_energy_relative) : null,
-            prominenceRelative: Number.isFinite(Number(candidate?.prominence_relative)) ? Number(candidate.prominence_relative) : null,
-            prominenceRatio: Number.isFinite(Number(candidate?.prominence_ratio)) ? Number(candidate.prominence_ratio) : null,
-            supportScore: Number.isFinite(Number(candidate?.support_score)) ? Number(candidate.support_score) : null,
-            distanceFromFirstThresholdSamples: Number.isFinite(Number(candidate?.distance_from_first_threshold_samples)) ? Number(candidate.distance_from_first_threshold_samples) : null,
+            sample: measurementFiniteOrNull(candidate?.sample),
+            offsetFromPeakSamples: measurementFiniteOrNull(candidate?.offset_from_peak_samples),
+            offsetFromPeakMs: measurementFiniteOrNull(candidate?.offset_from_peak_ms),
+            score: measurementFiniteOrNull(candidate?.score),
+            peakScore: measurementFiniteOrNull(candidate?.peak_score),
+            relativeDb: measurementFiniteOrNull(candidate?.relative_db),
+            localEnergyRelative: measurementFiniteOrNull(candidate?.local_energy_relative),
+            prominenceRelative: measurementFiniteOrNull(candidate?.prominence_relative),
+            prominenceRatio: measurementFiniteOrNull(candidate?.prominence_ratio),
+            supportScore: measurementFiniteOrNull(candidate?.support_score),
+            distanceFromFirstThresholdSamples: measurementFiniteOrNull(candidate?.distance_from_first_threshold_samples),
             weakThresholdEdge: !!candidate?.weak_threshold_edge,
             strongerImpulseRegion: !!candidate?.stronger_impulse_region,
         });
@@ -419,13 +435,13 @@ function getMeasurementDirectArrivalTiming(measurement = {}) {
         directSample,
         referencePeakSample,
         referenceAnchorSample: Number.isFinite(referenceAnchorSample) ? referenceAnchorSample : null,
-        selectedScore: Number.isFinite(Number(impulse?.direct_selected_score)) ? Number(impulse.direct_selected_score) : null,
-        selectedSupportScore: Number.isFinite(Number(impulse?.direct_selected_support_score)) ? Number(impulse.direct_selected_support_score) : null,
-        confidence: Number.isFinite(Number(impulse?.direct_confidence)) ? Number(impulse.direct_confidence) : null,
+        selectedScore: measurementFiniteOrNull(impulse?.direct_selected_score),
+        selectedSupportScore: measurementFiniteOrNull(impulse?.direct_selected_support_score),
+        confidence: measurementFiniteOrNull(impulse?.direct_confidence),
         selectionRule: impulse?.direct_selection_rule || '',
-        firstThresholdSample: Number.isFinite(Number(impulse?.direct_first_threshold_index)) ? Number(impulse.direct_first_threshold_index) : null,
-        firstThresholdOffsetFromPeakSamples: Number.isFinite(Number(impulse?.direct_first_threshold_offset_from_peak_samples)) ? Number(impulse.direct_first_threshold_offset_from_peak_samples) : null,
-        candidateCount: Number.isFinite(Number(impulse?.direct_candidate_count)) ? Number(impulse.direct_candidate_count) : null,
+        firstThresholdSample: measurementFiniteOrNull(impulse?.direct_first_threshold_index),
+        firstThresholdOffsetFromPeakSamples: measurementFiniteOrNull(impulse?.direct_first_threshold_offset_from_peak_samples),
+        candidateCount: measurementFiniteOrNull(impulse?.direct_candidate_count),
         topCandidates,
         chronologicalCandidates,
         sampleRate,
@@ -443,11 +459,13 @@ function getMeasurementDirectArrivalTiming(measurement = {}) {
 }
 
 function getMeasurementGraphBounds(displayWidth, displayHeight) {
+    const safeWidth = Number(displayWidth) || 0;
+    const safeHeight = Number(displayHeight) || 0;
     return {
         left: 62,
         top: 22,
-        width: Math.max(120, displayWidth - 84),
-        height: Math.max(120, displayHeight - 58),
+        width: Math.max(120, safeWidth - 84),
+        height: Math.max(120, safeHeight - 58),
     };
 }
 
@@ -464,12 +482,12 @@ function getMeasurementIrPreviewPoints(measurement = {}) {
     const preview = measurement?.analysis?.impulse_response?.preview || {};
     if (Array.isArray(preview.points)) {
         return preview.points
-            .filter(point => Array.isArray(point) && point.length === 2 && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1])))
+            .filter(point => Array.isArray(point) && point.length === 2 && point[0] != null && point[1] != null && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1])))
             .map(point => [Number(point[0]), Number(point[1])]);
     }
     const times = Array.isArray(preview.times_ms) ? preview.times_ms : [];
     const amplitudes = Array.isArray(preview.amplitudes) ? preview.amplitudes : [];
-    return times.map((time, index) => [Number(time), Number(amplitudes[index])])
+    return times.map((time, index) => [time == null ? NaN : Number(time), amplitudes[index] == null ? NaN : Number(amplitudes[index])])
         .filter(([time, amplitude]) => Number.isFinite(time) && Number.isFinite(amplitude));
 }
 
@@ -669,13 +687,15 @@ function formatMeasurementQualityReason(item = {}) {
     if (/level\s+low/i.test(message)) return 'level low';
     if (/level\s+high/i.test(message)) return 'level high';
     if (/clock|drift/i.test(message)) return 'clock drift';
-    if (/start/i.test(message)) return 'soft start';
-    if (/end/i.test(message)) return 'soft end';
+    if (/\bstart\b/i.test(message)) return 'soft start';
+    if (/\bend\b/i.test(message)) return 'soft end';
     return 'qc warn';
 }
 
 function getMeasurementQualitySummary(measurement = {}) {
     const items = Array.isArray(measurement.analysis?.quality_checks?.items) ? measurement.analysis.quality_checks.items : [];
+    const errors = items.filter(item => item?.level === 'error');
+    if (errors.length) return formatMeasurementQualityReason(errors[0]);
     const warnings = items.filter(item => item?.level === 'warning');
     if (!warnings.length) return 'QC pass';
     return formatMeasurementQualityReason(warnings[0]);
@@ -693,16 +713,16 @@ function formatSignedMeasurementMs(valueMs, digits = 2) {
 }
 
 function getMeasurementLrRepeatGlobalDeltaMs(measurement = {}, repeat = {}) {
-    const pairedDelta = Number(repeat?.delta_center_ms);
-    if (Number.isFinite(pairedDelta)) return pairedDelta;
+    const pairedRaw = measurementNumberOrNaN(repeat?.delta_center_ms);
+    if (Number.isFinite(pairedRaw)) return pairedRaw;
 
-    const perSideDelta = Number(repeat?.delta_ms);
-    if (!Number.isFinite(perSideDelta)) return null;
+    const perSideRaw = measurementNumberOrNaN(repeat?.delta_ms);
+    if (!Number.isFinite(perSideRaw)) return null;
     if (repeat?.pre_averaged) {
         const channel = String(measurement?.channel || '').toLowerCase();
-        return channel === 'right' ? -perSideDelta : perSideDelta;
+        return channel === 'right' ? -perSideRaw : perSideRaw;
     }
-    return perSideDelta;
+    return perSideRaw;
 }
 
 function formatMeasurementLrRepeatDelta(measurement = {}, repeat = {}) {
@@ -757,7 +777,7 @@ function getMeasurementAutoSubSummary(measurement = {}) {
         else if (p) tail = ` · ${p}`;
         return `${g}${tail}`;
     };
-    const hasDelayKey = (obj, key) => obj && typeof obj === 'object' && Number.isFinite(Number(obj[key]));
+    const hasDelayKey = (obj, key) => obj && typeof obj === 'object' && measurementFiniteOrNull(obj[key]) !== null;
     const hasPolKey = (obj, key) => obj && typeof obj === 'object' && String(obj[key] || '').trim() !== '';
     if (gains && typeof gains === 'object') {
         if (Number.isFinite(Number(gains.sub)) || Number.isFinite(Number(gains.sub1)) || Number.isFinite(Number(gains.sub2))) {
@@ -824,15 +844,15 @@ function getMeasurementTimingInfo(measurement = {}) {
     if (referencePath?.electrical_reference_fallback) status = 'electrical-reference-fallback';
     if (referencePath?.electrical_reference_used || referencePath?.usable === true && referencePath?.capture_mode === 'electrical-input') status = 'electrical-reference';
 
-    const correctedMs = Number(referencePath?.acoustic_arrival_corrected_ms);
-    const impulseArrivalMs = Number(impulse?.arrival_ms);
+    const correctedMs = measurementNumberOrNaN(referencePath?.acoustic_arrival_corrected_ms);
+    const impulseArrivalMs = measurementNumberOrNaN(impulse?.arrival_ms);
     const delayMs = Number.isFinite(correctedMs) ? correctedMs : (Number.isFinite(impulseArrivalMs) ? impulseArrivalMs : null);
-    const correctedSamples = Number(referencePath?.acoustic_arrival_corrected_samples);
-    const impulseArrivalSamples = Number(impulse?.arrival_samples);
+    const correctedSamples = measurementNumberOrNaN(referencePath?.acoustic_arrival_corrected_samples);
+    const impulseArrivalSamples = measurementNumberOrNaN(impulse?.arrival_samples);
     const arrivalSamples = Number.isFinite(correctedSamples) ? correctedSamples : (Number.isFinite(impulseArrivalSamples) ? impulseArrivalSamples : null);
-    const referenceDelayMs = Number(referencePath?.electrical_reference_delay_ms);
-    const acousticDelayMs = Number(referencePath?.acoustic_arrival_delay_ms);
-    const confidence = Number(referencePath?.confidence ?? impulse?.direct_confidence);
+    const referenceDelayMs = measurementNumberOrNaN(referencePath?.electrical_reference_delay_ms);
+    const acousticDelayMs = measurementNumberOrNaN(referencePath?.acoustic_arrival_delay_ms);
+    const confidence = measurementNumberOrNaN(referencePath?.confidence ?? impulse?.direct_confidence);
     const stable = status === 'electrical-reference'
         ? String(referencePath?.stability || '').toLowerCase() === 'stable' || confidence >= 0.75
         : confidence >= 0.75;
@@ -880,7 +900,7 @@ function getMeasurementTimingInfo(measurement = {}) {
             status,
             label: 'Electrical reference active',
             line: `Electrical reference active · ${delayText} · ${stable ? 'timing stable' : 'timing active'}${promoText}`,
-            detail: `Electrical reference active · corrected ${delayText}${promoText}${Number.isFinite(referenceDelayMs) ? ` · reference ${referenceDelayMs.toFixed(2)} ms` : ''}${Number.isFinite(acousticDelayMs) ? ` · acoustic ${acousticDelayMs.toFixed(2)} ms` : ''}${!stable && confidence != null ? ` · confidence ${confidence.toFixed(2)}` : ''}`,
+            detail: `Electrical reference active · corrected ${delayText}${promoText}${Number.isFinite(referenceDelayMs) ? ` · reference ${referenceDelayMs.toFixed(2)} ms` : ''}${Number.isFinite(acousticDelayMs) ? ` · acoustic ${acousticDelayMs.toFixed(2)} ms` : ''}${!stable && Number.isFinite(confidence) ? ` · confidence ${confidence.toFixed(2)}` : ''}`,
             delayMs,
             arrivalSamples,
             source: 'electrical_reference_corrected',
@@ -929,7 +949,8 @@ function getMeasurementJobResultMeasurement(job = {}) {
 function formatMeasurementInputLevelText(inputLevel = {}) {
     if (!inputLevel || typeof inputLevel !== 'object') return '';
     if (inputLevel.clipped) return 'CLIP';
-    const peakDbfs = Number(inputLevel.peak_dbfs);
+    const peakDbfs = measurementNumberOrNaN(inputLevel.peak_dbfs);
+    if (peakDbfs === -Infinity) return 'Peak < -90 dBFS';
     if (!Number.isFinite(peakDbfs)) return '';
     if (peakDbfs <= -90) return 'Peak < -90 dBFS';
     return `Peak ${Math.round(peakDbfs)} dBFS`;

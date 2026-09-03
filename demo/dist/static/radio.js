@@ -73,7 +73,7 @@
     }
 
     function setStations(stations) {
-        state.stations = stations;
+        state.stations = Array.isArray(stations) ? stations : [];
         renderStations();
         renderStationDeleteOptions();
     }
@@ -87,7 +87,7 @@
     function selectedManagedStation() {
         const stationId = elements.stationDeleteSelect?.value || '';
         if (!stationId) return null;
-        return state.stations.find(item => item.id === stationId) || null;
+        return (Array.isArray(state.stations) ? state.stations : []).find(item => item.id === stationId) || null;
     }
     
     function populateManagedStationFields() {
@@ -113,14 +113,14 @@
     }
     
     function setupStationActions() {
-        elements.stationSaveBtn.addEventListener('click', () => saveStation());
+        if (elements.stationSaveBtn) elements.stationSaveBtn.addEventListener('click', () => saveStation());
         if (elements.stationUpdateBtn) {
             elements.stationUpdateBtn.addEventListener('click', saveManagedStationChanges);
         }
-        elements.stationDeleteBtn.addEventListener('click', deleteSelectedStation);
-        elements.toggleStationManageBtn.addEventListener('click', () => toggleStationManagePanel(true));
-        elements.closeStationManageBtn.addEventListener('click', () => toggleStationManagePanel(false));
-        elements.radioManagePanel.querySelector('.manage-overlay-backdrop').addEventListener('click', () => toggleStationManagePanel(false));
+        if (elements.stationDeleteBtn) elements.stationDeleteBtn.addEventListener('click', deleteSelectedStation);
+        if (elements.toggleStationManageBtn) elements.toggleStationManageBtn.addEventListener('click', () => toggleStationManagePanel(true));
+        if (elements.closeStationManageBtn) elements.closeStationManageBtn.addEventListener('click', () => toggleStationManagePanel(false));
+        elements.radioManagePanel?.querySelector('.manage-overlay-backdrop')?.addEventListener('click', () => toggleStationManagePanel(false));
         if (elements.stationUrl) {
             elements.stationUrl.addEventListener('input', () => {
                 clearStationFormStatus();
@@ -207,6 +207,7 @@
     }
 
     function toggleStationManagePanel(forceOpen = null) {
+        if (!elements.radioManagePanel) return;
         const shouldOpen = forceOpen === null
             ? elements.radioManagePanel.classList.contains('hidden')
             : !!forceOpen;
@@ -230,8 +231,11 @@
             ]);
             if (!stationsResp.ok) throw new Error('Failed to fetch stations');
             if (!catalogResp.ok) throw new Error('Failed to fetch station catalog');
-            state.stations = await stationsResp.json();
-            state.catalogStations = await catalogResp.json();
+            const stationsData = await stationsResp.json();
+            const catalogData = await catalogResp.json();
+            if (!Array.isArray(stationsData) || !Array.isArray(catalogData)) throw new Error('Failed to fetch stations');
+            state.stations = stationsData;
+            state.catalogStations = catalogData;
             syncOnlineSavedState();
             renderStations();
             renderStationDeleteOptions();
@@ -240,7 +244,7 @@
         }
     }
     function exportAllStations() {
-        if (!state.stations.length) {
+        if (!Array.isArray(state.stations) || !state.stations.length) {
             showToast('No stations to export', 'warning');
             return;
         }
@@ -261,12 +265,19 @@
         URL.revokeObjectURL(url);
     }
     async function importStationFile(data) {
-        const items = data.filter(item => item && (item.url || item.stream_url)).map(item => ({
-            name: (item.name || item.title || '').trim(),
-            url: (item.url || item.stream_url || '').trim(),
-            logo: (item.logo || item.image_url || item.custom_image_url || '').trim(),
-            genre: (item.genre || item.artist || '').trim(),
-        }));
+        let items = [];
+        try {
+            if (!Array.isArray(data)) throw new Error('Invalid format: expected a JSON array');
+            items = data.filter(item => item && (item.url || item.stream_url)).map(item => ({
+                name: String(item.name ?? item.title ?? '').trim(),
+                url: String(item.url ?? item.stream_url ?? '').trim(),
+                logo: String(item.logo ?? item.image_url ?? item.custom_image_url ?? '').trim(),
+                genre: String(item.genre ?? item.artist ?? '').trim(),
+            })).filter(item => item.url);
+        } catch (err) {
+            showToast(err?.message || 'Invalid station file', 'error');
+            return;
+        }
         if (!items.length) {
             showToast('No valid stations found in file', 'error');
             return;
@@ -294,8 +305,8 @@
         }
     }
     function stationArtFallbackSvg(station) {
-        const title = station.title || station.name || 'Radio';
-        const genre = station.artist || 'Radio';
+        const title = String(station.title || station.name || 'Radio');
+        const genre = String(station.artist || 'Radio');
         const seed = `${station.id || ''}-${title}`;
         let hash = 0;
         for (let i = 0; i < seed.length; i++) hash = ((hash << 5) - hash) + seed.charCodeAt(i);
@@ -310,8 +321,8 @@
         const [bg, fg, accent] = palettes[Math.abs(hash) % palettes.length];
         const words = title.split(/\s+/).filter(Boolean);
         const initials = (words[0]?.[0] || '') + (words[1]?.[0] || words[0]?.[1] || '');
-        const label = (initials || 'R').toUpperCase();
-        const chip = escapeHtml((genre || 'Radio').slice(0, 16));
+        const label = escapeHtml((initials || 'R').toUpperCase());
+        const chip = escapeHtml(genre.slice(0, 16));
         const svg = `
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
                 <defs>
@@ -537,15 +548,19 @@
     async function addCatalogStation(catalogId, button) {
         if (!catalogId || button?.disabled) return;
         if (button) button.disabled = true;
+        let stationAdded = false;
         try {
             const resp = await fetch(`/api/station-catalog/${encodeURIComponent(catalogId)}/selection`, { method: 'POST' });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error(data.detail || 'Failed to add catalog station');
-            await fetchStations();
+            stationAdded = true;
+            const catalogStation = state.catalogStations.find(station => station.id === catalogId);
+            if (catalogStation) catalogStation.is_saved = true;
             markCatalogStationSaved(button);
+            await fetchStations();
             showToast(`Added to My Stations: ${data.station?.title || 'Station'}`, 'success');
         } catch (e) {
-            if (button) button.disabled = false;
+            if (button && !stationAdded) button.disabled = false;
             showToast(e.message || 'Failed to add catalog station', 'error');
         }
     }
@@ -637,8 +652,9 @@
     }
 
     function stationsMatch(left, right) {
-        const leftUrls = [left.input_url, left.stream_url, left.url, left.url_resolved].filter(Boolean);
-        const rightUrls = new Set([right.input_url, right.stream_url, right.url, right.url_resolved].filter(Boolean));
+        const norm = (value) => String(value || '').trim();
+        const leftUrls = [left.input_url, left.stream_url, left.url, left.url_resolved].map(norm).filter(Boolean);
+        const rightUrls = new Set([right.input_url, right.stream_url, right.url, right.url_resolved].map(norm).filter(Boolean));
         return leftUrls.some(url => rightUrls.has(url));
     }
 
@@ -704,9 +720,13 @@
                             ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-catalog-id="${escapeHtml(station.id)}" disabled>Saved</button>`
                             : `<button class="catalog-station-action" type="button" data-catalog-id="${escapeHtml(station.id)}">Add to My Stations</button>`;
                     } else if (station.searchSource === 'online') {
-                        action = station.is_saved
-                            ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}" disabled>Saved</button>`
-                            : `<button class="catalog-station-action" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}">Add to My Stations</button>`;
+                        if (!station.stationuuid) {
+                            action = '';
+                        } else {
+                            action = station.is_saved
+                                ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}" disabled>Saved</button>`
+                                : `<button class="catalog-station-action" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}">Add to My Stations</button>`;
+                        }
                     }
                     const cardAttrs = station.searchSource === 'personal'
                         ? ` data-station-id="${escapeHtml(station.id)}" role="button" tabindex="0"`
@@ -737,7 +757,7 @@
     }
 
     async function addOnlineStation(stationUuid, button) {
-        if (!stationUuid || button?.disabled) return;
+        if (!stationUuid || stationUuid === 'undefined' || button?.disabled) return;
         if (button) button.disabled = true;
         try {
             const resp = await fetch(`/api/station-browser/${encodeURIComponent(stationUuid)}/selection`, { method: 'POST' });
@@ -748,20 +768,21 @@
                 onlineStation.is_saved = true;
                 onlineStation.saved_station_id = data.station?.id || null;
             }
-            await fetchStations();
             markCatalogStationSaved(button);
+            await fetchStations();
             showToast(`Added to My Stations: ${data.station?.title || 'Station'}`, 'success');
         } catch (e) {
             if (button) button.disabled = false;
             showToast(e.message || 'Failed to add online station', 'error');
         }
     }
+    let stationSaveInFlight = false;
     function updateStationActionButtons() {
         const value = (elements.stationUrl?.value || '').trim();
         const name = (elements.stationName?.value || '').trim();
         const isSoma = isSomaFmUrl(value);
         if (elements.stationSaveBtn) {
-            elements.stationSaveBtn.disabled = !value || (!isSoma && !name);
+            elements.stationSaveBtn.disabled = stationSaveInFlight || !value || (!isSoma && !name);
         }
         const hasManagedStation = !!selectedManagedStation();
         const managedUrl = (elements.stationExistingUrl?.value || '').trim();
@@ -801,7 +822,7 @@
         const hasUrl = !!value;
         const isSoma = isSomaFmUrl(value);
         const needsManualName = hasUrl && !isSoma;
-        if (!needsManualName && elements.stationImageUrl) {
+        if (isSoma && elements.stationImageUrl) {
             elements.stationImageUrl.value = '';
         }
         if (elements.stationNameGroup) {
@@ -837,13 +858,15 @@
     
     async function handleStationUrlReady(sourceLabel = '') {
         const value = (elements.stationUrl?.value || '').trim();
-        const match = value.match(/https?:\/\/\S+/i);
-        if (!match) {
+        const rawMatch = value.match(/https?:\/\/\S+/i);
+        if (!rawMatch) {
             return;
         }
-        setStationUrlValue(match[0], sourceLabel || 'Station URL');
-        if (isSomaFmUrl(match[0])) {
-            await saveStation(match[0]);
+        const match = rawMatch[0].replace(/[),.;:"'!\]]+$/, '');
+        if (!match) return;
+        setStationUrlValue(match, sourceLabel || 'Station URL');
+        if (isSomaFmUrl(match)) {
+            await saveStation(match);
             return;
         }
         if (elements.stationNameGroup) elements.stationNameGroup.classList.remove('hidden');
@@ -872,7 +895,7 @@
             e.preventDefault();
             area.classList.remove('drag-over');
             const file = e.dataTransfer?.files?.[0];
-            if (file && file.type === 'application/json') {
+            if (file && (file.type === 'application/json' || (file.name || '').toLowerCase().endsWith('.json'))) {
                 try {
                     const text = await file.text();
                     const data = JSON.parse(text);
@@ -897,9 +920,9 @@
     }
     
     function resetStationForm() {
-        elements.stationName.value = '';
+        if (elements.stationName) elements.stationName.value = '';
         if (elements.stationImageUrl) elements.stationImageUrl.value = '';
-        elements.stationUrl.value = '';
+        if (elements.stationUrl) elements.stationUrl.value = '';
         clearStationFormStatus();
         updateStationNameRequirement();
         if (elements.stationDeleteSelect) {
@@ -907,8 +930,9 @@
         }
     }
     async function saveStation(urlOverride = null) {
-        const name = elements.stationName.value.trim();
-        const streamUrl = (urlOverride || elements.stationUrl.value || '').trim();
+        if (stationSaveInFlight) return;
+        const name = (elements.stationName?.value || '').trim();
+        const streamUrl = (urlOverride || elements.stationUrl?.value || '').trim();
         const customImageUrl = (elements.stationImageUrl?.value || '').trim();
         const soma = isSomaFmUrl(streamUrl);
         if (!streamUrl) {
@@ -919,8 +943,9 @@
             showToast('Please enter a station name for non-SomaFM streams', 'error');
             return;
         }
-        elements.stationSaveBtn.disabled = true;
-        elements.stationFormStatus.textContent = soma ? 'Adding SomaFM station…' : 'Adding station…';
+        stationSaveInFlight = true;
+        updateStationActionButtons();
+        if (elements.stationFormStatus) elements.stationFormStatus.textContent = soma ? 'Adding SomaFM station…' : 'Adding station…';
         try {
             const resp = await fetch('/api/stations', {
                 method: 'POST',
@@ -933,10 +958,11 @@
             resetStationForm();
             showToast(`Added station: ${data.station?.title || name || 'Station'}`, 'success');
         } catch (e) {
-            elements.stationFormStatus.textContent = e.message || 'Failed to save station';
+            if (elements.stationFormStatus) elements.stationFormStatus.textContent = e.message || 'Failed to save station';
             showToast(e.message || 'Failed to save station', 'error');
         } finally {
-            elements.stationSaveBtn.disabled = false;
+            stationSaveInFlight = false;
+            updateStationActionButtons();
         }
     }
     async function saveManagedStationChanges() {
