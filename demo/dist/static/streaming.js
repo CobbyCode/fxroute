@@ -2628,6 +2628,10 @@
         applyProviderEnabled,
         refreshEnabledFlags,
         refreshActiveTab: () => { if (window.__visibleTab === 'qobuz' || window.__visibleTab === 'tidal') void refreshProvider(window.__visibleTab); },
+        // Settings -> Providers entry point: render the TIDAL login surface
+        // (same surface the tab's own Connect button opens), so Connect
+        // actually starts the login instead of merely navigating.
+        startTidalLogin: () => openTidalLogin(),
         // Footer / global favorite hooks: the shared footer heart favorites the
         // current TIDAL track through the same canonical state and API the
         // TIDAL tab and detail rows use — no second favorite source.

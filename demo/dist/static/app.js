@@ -472,6 +472,15 @@ const elements = {
     settingsHardwareAutoOnBtn: document.getElementById('settings-hardware-auto-on'),
     settingsHardwareAutoOffBtn: document.getElementById('settings-hardware-auto-off'),
     settingsCertificateLink: document.getElementById('settings-certificate-link'),
+    qobuzLoginPanel: document.getElementById('qobuz-login-panel'),
+    qobuzLoginUrl: document.getElementById('qobuz-login-url'),
+    qobuzLoginOpen: document.getElementById('qobuz-login-open'),
+    qobuzLoginCopy: document.getElementById('qobuz-login-copy'),
+    qobuzLoginRedirect: document.getElementById('qobuz-login-redirect'),
+    qobuzLoginStatus: document.getElementById('qobuz-login-status'),
+    qobuzLoginFinishBtn: document.getElementById('qobuz-login-finish'),
+    qobuzLoginCancelBtn: document.getElementById('qobuz-login-cancel'),
+    qobuzLoginCloseBtn: document.getElementById('qobuz-login-close'),
     settingsMaintenanceStatus: document.getElementById('settings-maintenance-status'),
     settingsMaintenanceCurrent: document.getElementById('settings-maintenance-current'),
     settingsMaintenanceLatestRow: document.getElementById('settings-maintenance-latest-row'),
@@ -1459,6 +1468,7 @@ function setupSettingsActions() {
     });
     const backdrop = elements.settingsPanel.querySelector('.manage-overlay-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => toggleSettingsPanel(false));
+    setupQobuzLoginModal();
     renderSettingsPanel();
 }
 
@@ -2269,6 +2279,7 @@ async function fetchProviderAdmin() {
             state.settings.deviceName.value = data.device_name;
             state.settings.deviceName.loaded = true;
         }
+        state.settings.deviceName.canChange = data.device_name_can_change === true;
         renderProviderSettings();
         renderDeviceNameSettings();
     } catch (error) {
@@ -2359,47 +2370,93 @@ async function beginQobuzLogin() {
         const resp = await fetch('/api/streaming/qobuz/auth/login', { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Could not start the Qobuz login');
-        if (data.started === false && data.reason === 'already-in-progress' && data.login_url) {
-            showQobuzLoginDialog(data.login_url);
-            return;
-        }
-        showQobuzLoginDialog(data.login_url);
+        if (!data.login_url) throw new Error('Qobuz login did not return a sign-in URL');
+        openQobuzLoginModal(data.login_url);
     } catch (error) {
         showToast(error.message || 'Could not start the Qobuz login', 'error');
     }
 }
 
+const qobuzLoginState = { loginUrl: '', finishing: false, wired: false };
+
+function setQobuzLoginStatus(message, mode = '') {
+    if (!elements.qobuzLoginStatus) return;
+    elements.qobuzLoginStatus.textContent = message || '';
+    elements.qobuzLoginStatus.classList.toggle('switching', mode === 'busy');
+}
+
+function setQobuzLoginBusy(busy) {
+    qobuzLoginState.finishing = !!busy;
+    if (elements.qobuzLoginFinishBtn) elements.qobuzLoginFinishBtn.disabled = !!busy;
+    if (elements.qobuzLoginCancelBtn) elements.qobuzLoginCancelBtn.disabled = !!busy;
+    if (elements.qobuzLoginCloseBtn) elements.qobuzLoginCloseBtn.disabled = !!busy;
+    if (elements.qobuzLoginRedirect) elements.qobuzLoginRedirect.disabled = !!busy;
+}
+
+function openQobuzLoginModal(loginUrl) {
+    if (!elements.qobuzLoginPanel) return;
+    qobuzLoginState.loginUrl = String(loginUrl || '');
+    if (elements.qobuzLoginUrl) elements.qobuzLoginUrl.value = qobuzLoginState.loginUrl;
+    if (elements.qobuzLoginOpen) elements.qobuzLoginOpen.href = qobuzLoginState.loginUrl || '#';
+    if (elements.qobuzLoginRedirect && document.activeElement !== elements.qobuzLoginRedirect) {
+        elements.qobuzLoginRedirect.value = '';
+    }
+    setQobuzLoginBusy(false);
+    setQobuzLoginStatus('Waiting for sign-in…');
+    elements.qobuzLoginPanel.classList.remove('hidden');
+    // Stacked above the settings dialog: the qbzd listener keeps running
+    // while the operator switches tabs; only explicit Cancel ends it.
+    window.FXRouteModal?.open(elements.qobuzLoginPanel, {
+        initialFocus: elements.qobuzLoginOpen,
+        onEscape: () => void cancelQobuzLogin(),
+    });
+}
+
+function closeQobuzLoginModal() {
+    if (!elements.qobuzLoginPanel) return;
+    elements.qobuzLoginPanel.classList.add('hidden');
+    window.FXRouteModal?.close(elements.qobuzLoginPanel);
+}
+
 async function cancelQobuzLogin() {
+    // Explicit cancel only: never fired by blur, tab switch, or backdrop.
     try {
         await fetch('/api/streaming/qobuz/auth/login/cancel', { method: 'POST' });
     } catch (_error) {
         // Best-effort cleanup; the next Connect click restarts the flow.
+    } finally {
+        setQobuzLoginBusy(false);
+        closeQobuzLoginModal();
     }
 }
 
-function showQobuzLoginDialog(loginUrl) {
-    const message = [
-        'Qobuz sign-in (via qbzd):',
-        '',
-        '1. Open the Qobuz sign-in page on any device in your network.',
-        '2. Sign in — the browser lands on a page that fails to load. That is expected.',
-        '3. Copy the full address from the browser bar and paste it here.',
-    ].join('\n');
-    const pasted = window.prompt(message + '\n\nSign-in URL (open manually):', loginUrl);
-    if (pasted === null) {
-        void cancelQobuzLogin();
-        return; // canceled
+async function copyQobuzLoginUrl() {
+    const url = qobuzLoginState.loginUrl || elements.qobuzLoginUrl?.value || '';
+    if (!url) return;
+    try {
+        await navigator.clipboard.writeText(url);
+        showToast('Sign-in link copied.', 'success');
+    } catch (_error) {
+        try {
+            elements.qobuzLoginUrl?.focus();
+            elements.qobuzLoginUrl?.select();
+        } catch (_selectError) { /* input unavailable */ }
+        const ok = document.execCommand ? document.execCommand('copy') : false;
+        showToast(ok ? 'Sign-in link copied.' : 'Copy the sign-in URL manually.', ok ? 'success' : 'info');
     }
-    const url = String(pasted || '').trim();
-    if (!url || url === loginUrl) {
-        void cancelQobuzLogin();
-        showToast('Login canceled — click Connect to try again.', 'info');
+}
+
+async function finishQobuzLoginFromModal() {
+    if (qobuzLoginState.finishing) return;
+    const pasted = String(elements.qobuzLoginRedirect?.value || '').trim();
+    if (!pasted || pasted === qobuzLoginState.loginUrl) {
+        setQobuzLoginStatus('Paste the redirect URL from the Qobuz sign-in tab, then press Connect.');
+        showToast('Paste the redirect URL first — the login is still waiting.', 'info');
+        elements.qobuzLoginRedirect?.focus();
         return;
     }
-    void finishQobuzLogin(url);
-}
-
-async function finishQobuzLogin(pasted) {
+    setQobuzLoginBusy(true);
+    setQobuzLoginStatus('Completing the Qobuz login…', 'busy');
     try {
         const resp = await fetch('/api/streaming/qobuz/auth/login/finish', {
             method: 'POST',
@@ -2411,12 +2468,32 @@ async function finishQobuzLogin(pasted) {
         if (data.ok === false) {
             throw new Error(data.output || 'qbzd rejected the pasted URL');
         }
+        closeQobuzLoginModal();
         showToast(data.authenticated ? 'Qobuz account connected.' : 'Login finished — verifying…', 'success');
     } catch (error) {
+        setQobuzLoginStatus(error.message || 'Qobuz login failed — check the pasted URL and try again.');
         showToast(error.message || 'Qobuz login failed', 'error');
     } finally {
+        setQobuzLoginBusy(false);
         void fetchProviderAdmin();
     }
+}
+
+function setupQobuzLoginModal() {
+    if (qobuzLoginState.wired || !elements.qobuzLoginPanel) return;
+    qobuzLoginState.wired = true;
+    elements.qobuzLoginCopy?.addEventListener('click', () => void copyQobuzLoginUrl());
+    elements.qobuzLoginFinishBtn?.addEventListener('click', () => void finishQobuzLoginFromModal());
+    elements.qobuzLoginCancelBtn?.addEventListener('click', () => void cancelQobuzLogin());
+    elements.qobuzLoginCloseBtn?.addEventListener('click', () => void cancelQobuzLogin());
+    elements.qobuzLoginRedirect?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            void finishQobuzLoginFromModal();
+        }
+    });
+    // Backdrop clicks must not cancel: the operator leaves this modal open
+    // while completing the sign-in in another tab.
 }
 
 async function qobuzLogout() {
@@ -2433,31 +2510,60 @@ async function qobuzLogout() {
     }
 }
 
+async function tidalLogout() {
+    if (!confirm('Disconnect the TIDAL account? Playback stops until you sign in again. Your TIDAL library and favorites stay on your TIDAL account.')) return;
+    try {
+        const resp = await fetch('/api/streaming/tidal/auth/logout', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Disconnect failed');
+        showToast('TIDAL account disconnected.', 'success');
+    } catch (error) {
+        showToast(error.message || 'Disconnect failed', 'error');
+    } finally {
+        void fetchProviderAdmin();
+        window.FXRouteStreaming?.refreshActiveTab?.();
+    }
+}
+
 function providerAdminButtonHtml(provider) {
     const busy = state.settings.providers.pendingOperation === provider.id;
     const buttons = [];
+    const connected = provider.authenticated === true;
     if (provider.installed) {
-        // Connect/reconnect rides each provider's own auth mechanism: TIDAL's
-        // PKCE tab flow and qbzd's browser OAuth handoff. spotifyd has no
+        // Account providers (TIDAL, Qobuz) show exactly one auth action for
+        // their real state: Disconnect while connected, Connect otherwise.
+        // Uninstall is only offered while disconnected. spotifyd has no
         // account login (Spotify Connect pairs from the Spotify app).
         if (provider.id === 'tidal') {
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-auth="${provider.id}"${busy ? ' disabled' : ''}>${provider.authenticated ? 'Reconnect' : 'Connect'}</button>`);
-        } else if (provider.id === 'qobuz') {
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-login="1"${busy ? ' disabled' : ''}>${provider.authenticated ? 'Reconnect' : 'Connect'}</button>`);
-            if (provider.authenticated) {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
+            if (connected) {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
+            } else {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
             }
-            // Restart makes qbzd re-read a (restored) credential file without SSH;
-            // on an inactive unit it also acts as Start.
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-service="restart" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Restart</button>`);
+        } else if (provider.id === 'qobuz') {
+            if (connected) {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
+            } else {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
+            }
+            // Restart is recovery, not a primary action: it makes qbzd
+            // re-read a (restored) credential file without SSH and acts as
+            // Start on an inactive unit. Only show it while qbzd is down.
+            if (!provider.available) {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-service="restart" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Restart</button>`);
+            }
         } else if (provider.id !== 'spotify') {
             const label = provider.available ? 'Restart' : 'Start';
             buttons.push(`<button type="button" class="btn-secondary" data-provider-service="start" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>${label}</button>`);
             if (provider.available) {
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-service="stop" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Stop</button>`);
             }
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
+        } else {
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
         }
-        buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
     } else if (provider.implemented !== false) {
         buttons.push(`<button type="button" class="btn-primary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Installing…' : 'Install…'}</button>`);
     }
@@ -2511,11 +2617,15 @@ function renderProviderSettings() {
     elements.settingsProvidersList.querySelectorAll('[data-provider-qobuz-logout]').forEach((button) => {
         button.addEventListener('click', () => void qobuzLogout());
     });
-    elements.settingsProvidersList.querySelectorAll('[data-provider-auth]').forEach((button) => {
+    elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-login]').forEach((button) => {
         button.addEventListener('click', () => {
             toggleSettingsPanel(false);
             switchTab('tidal');
+            window.FXRouteStreaming?.startTidalLogin?.();
         });
+    });
+    elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-logout]').forEach((button) => {
+        button.addEventListener('click', () => void tidalLogout());
     });
 }
 
@@ -2556,8 +2666,10 @@ function renderDeviceNameSettings() {
         elements.settingsDeviceNameInput.value = state.settings.deviceName.value || '';
         elements.settingsDeviceNameInput.placeholder = state.settings.deviceName.value || 'fxroute';
     }
+    const changeBlocked = state.settings.deviceName.canChange === false;
+    elements.settingsDeviceNameInput.disabled = changeBlocked || state.settings.deviceName.pending;
     if (elements.settingsDeviceNameApply) {
-        elements.settingsDeviceNameApply.disabled = state.settings.deviceName.pending || state.settings.deviceName.canChange === false;
+        elements.settingsDeviceNameApply.disabled = state.settings.deviceName.pending || changeBlocked;
     }
     if (elements.settingsDeviceNameHint) {
         elements.settingsDeviceNameHint.textContent = state.settings.deviceName.canChange === false

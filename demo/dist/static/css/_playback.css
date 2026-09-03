@@ -160,6 +160,10 @@
     gap: 0.35rem;
     flex-wrap: nowrap;
     min-height: 1.25rem;
+    /* The row must never paint past the track column into the gap before
+       the seek time: pills already shrink with ellipsis, this clips any
+       remainder at the row edge. */
+    overflow: hidden;
 }
 .playback-meta-row:not(:has(> :not(.hidden):not(:empty))) { display: none; }
 .samplerate-status,
@@ -181,13 +185,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); }
+.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); padding: .08rem .36rem; }
+/* The queue pill is text-only: no leading icon, so longer track numbers
+   cost less width and the gap to the seek time stays untouched. */
 .queue-status { background: rgba(110,231,183,.08); color: var(--accent); }
-.queue-status::before {
-    content: '≡\00a0';
-    opacity: 0.75;
-    font-size: 0.72rem;
-}
 
 .playback-center {
     grid-area: transport;
@@ -244,7 +245,9 @@
 
 .seek-row {
     display: grid;
-    grid-template-columns: 2.5rem minmax(100px, 1fr) 2.5rem;
+    /* Time cells grow past 2.5rem for long durations instead of overflowing
+       toward the slider or the queue pill; the slider yields the width. */
+    grid-template-columns: minmax(2.5rem, max-content) minmax(100px, 1fr) minmax(2.5rem, max-content);
     align-items: center;
     gap: .35rem;
     width: 100%;

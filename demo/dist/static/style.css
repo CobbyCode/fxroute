@@ -870,6 +870,18 @@ body {
     flex-wrap: wrap;
     margin-top: 0.85rem;
 }
+/* Qobuz/qbzd login stacks above the settings dialog it is launched from. */
+.qobuz-login-overlay {
+    z-index: calc(var(--z-overlay) + 10);
+}
+.qobuz-login-overlay .url-input {
+    width: 100%;
+}
+.qobuz-login-overlay a.btn-primary {
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+}
 
 .settings-dialog {
     width: min(560px, 100%);
@@ -918,13 +930,15 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.8rem;
+    gap: 0.4rem 0.8rem;
+    flex-wrap: wrap;
 }
 .settings-provider-info {
     display: flex;
     flex-direction: column;
     gap: 0.12rem;
     min-width: 0;
+    flex: 1 1 12rem;
 }
 .settings-provider-toggle {
     display: flex;
@@ -944,8 +958,10 @@ body {
 .settings-provider-actions {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 0.4rem;
     flex-shrink: 0;
+    flex-wrap: wrap;
 }
 .settings-provider-operation {
     margin-top: 0.45rem;
@@ -962,14 +978,19 @@ body {
     white-space: pre-wrap;
     word-break: break-word;
 }
-.settings-device-name-row {
+.field-group.settings-device-name-row {
     display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
 }
 .settings-device-name-row .url-input {
-    flex: 1;
+    flex: 1 1 18rem;
     min-width: 0;
+}
+.settings-device-name-row .btn-secondary {
+    flex: 0 0 auto;
 }
 .settings-certificate-note a {
     color: var(--text-secondary);
@@ -6369,6 +6390,10 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 0.35rem;
     flex-wrap: nowrap;
     min-height: 1.25rem;
+    /* The row must never paint past the track column into the gap before
+       the seek time: pills already shrink with ellipsis, this clips any
+       remainder at the row edge. */
+    overflow: hidden;
 }
 .playback-meta-row:not(:has(> :not(.hidden):not(:empty))) { display: none; }
 .samplerate-status,
@@ -6390,13 +6415,10 @@ input[type="number"]::-webkit-outer-spin-button {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); }
+.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); padding: .08rem .36rem; }
+/* The queue pill is text-only: no leading icon, so longer track numbers
+   cost less width and the gap to the seek time stays untouched. */
 .queue-status { background: rgba(110,231,183,.08); color: var(--accent); }
-.queue-status::before {
-    content: '≡\00a0';
-    opacity: 0.75;
-    font-size: 0.72rem;
-}
 
 .playback-center {
     grid-area: transport;
@@ -6453,7 +6475,9 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .seek-row {
     display: grid;
-    grid-template-columns: 2.5rem minmax(100px, 1fr) 2.5rem;
+    /* Time cells grow past 2.5rem for long durations instead of overflowing
+       toward the slider or the queue pill; the slider yields the width. */
+    grid-template-columns: minmax(2.5rem, max-content) minmax(100px, 1fr) minmax(2.5rem, max-content);
     align-items: center;
     gap: .35rem;
     width: 100%;
@@ -6990,7 +7014,7 @@ input[type="number"]::-webkit-outer-spin-button {
         font-size: .76rem;
     }
     .seek-row {
-        grid-template-columns: 2.65rem minmax(100px, 1fr) 2.65rem;
+        grid-template-columns: minmax(2.65rem, max-content) minmax(100px, 1fr) minmax(2.65rem, max-content);
         gap: .42rem;
         min-width: 0;
         margin-top: .02rem;
@@ -7127,6 +7151,7 @@ input[type="number"]::-webkit-outer-spin-button {
         padding: .06rem .38rem;
         font-size: .56rem;
     }
+    .samplerate-status { padding: .06rem .30rem; }
     .playback-center {
         width: 100%;
         gap: .72rem;
@@ -7156,7 +7181,7 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .seek-row {
         width: 100%;
-        grid-template-columns: 2.55rem minmax(0, 1fr) 2.55rem;
+        grid-template-columns: minmax(2.55rem, max-content) minmax(0, 1fr) minmax(2.55rem, max-content);
         row-gap: .38rem;
         column-gap: .4rem;
         margin: 0;
