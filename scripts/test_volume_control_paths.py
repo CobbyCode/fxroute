@@ -209,27 +209,27 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"volume": 60})
         sync.assert_not_awaited()
 
-    async def test_remote_value_rejects_non_owner_before_canonical_write(self):
+    async def test_remote_delta_rejects_non_owner_before_canonical_write(self):
         with mock.patch.object(main, "_resolve_playback_owner", return_value="spotify"), mock.patch.object(
             main, "set_output_volume"
         ) as set_volume:
-            await main._apply_remote_volume_value(45, owner="qobuz")
+            await main._apply_remote_volume_delta(5, owner="qobuz")
 
         set_volume.assert_not_called()
 
-    async def test_qobuz_remote_value_rejects_deselected_renderer(self):
+    async def test_qobuz_remote_delta_rejects_deselected_renderer(self):
         with mock.patch.object(main, "_resolve_playback_owner", return_value="qobuz"), mock.patch.object(
             main, "set_output_volume"
         ) as set_volume:
-            await main._apply_remote_volume_value(
-                45,
+            await main._apply_remote_volume_delta(
+                5,
                 owner="qobuz",
                 source_active=lambda: False,
             )
 
         set_volume.assert_not_called()
 
-    async def test_remote_value_restores_master_when_owner_changes_during_write(self):
+    async def test_remote_delta_restores_master_when_owner_changes_during_write(self):
         entered = threading.Event()
         release = threading.Event()
         source_active = True
@@ -249,8 +249,8 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             main, "get_output_volume_safe", return_value=40
         ), mock.patch.object(main, "set_output_volume", side_effect=fake_set_output_volume):
             write_task = asyncio.create_task(
-                main._apply_remote_volume_value(
-                    45,
+                main._apply_remote_volume_delta(
+                    5,
                     owner="qobuz",
                     source_active=lambda: source_active,
                 )

@@ -3,25 +3,20 @@
 """spotifyd remote volume-to-master coupling (poll-based bridge).
 
 Spotify Connect remote volume arrives at spotifyd as an absolute value on the
-controller's scale. With spotifyd's default ``volume_controller`` that value
-attenuates the stream *pre-DSP* (software volume), so the phone slider
+controller's own scale. With spotifyd's default ``volume_controller`` that
+value attenuates the stream *pre-DSP* (software volume), so the phone slider
 changed the loudness working point instead of the FXRoute master. The config
-therefore pins ``volume_controller = "none"``: the Connect session still
-tracks and reports the remote value, but no source gain is ever applied —
-the structural equivalent of qbzd's ``volume_mode=locked``.
+therefore pins ``volume_controller = "none"``: the Connect session still tracks
+and reports the remote value, but no source gain is ever applied — the
+structural equivalent of qbzd's ``volume_mode=locked``.
 
 This watch polls the reported value via playerctl while Spotify owns playback
-and routes it through the same pickup contract as the Qobuz bridge
-(:class:`playback.remote_volume.RemoteVolumePickupTranslator`): the session's
-first value only anchors the controller scale; a gesture takes over the
-master only when it crosses the current master level with a bounded
-overshoot; from the pickup on the master tracks the controller value
-absolutely. The bound matters here live-verified on .104 (2026-08-28): the
-Spotify app pushes the phone's media volume as mid-session absolute jumps
-(42% -> 100% and 53% -> 91% within one update), which the former delta
-bridge applied to the master verbatim. MPRIS ``Volume`` has no reliable
-PropertiesChanged signal in spotifyd 0.4.x, so polling is the observable;
-the poll only runs while Spotify owns playback.
+and translates it into master deltas through the shared
+:class:`playback.remote_volume.RemoteVolumeDeltaTranslator`: the first value
+observed for a session is the controller scale's anchor and never moves the
+master; every later change is a user gesture applied as a relative step.
+MPRIS ``Volume`` has no reliable PropertiesChanged signal in spotifyd 0.4.x,
+so polling is the observable; the poll only runs while Spotify owns playback.
 """
 
 from __future__ import annotations
@@ -31,7 +26,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from playback.remote_volume import RemoteVolumePickupTranslator
+from playback.remote_volume import RemoteVolumeDeltaTranslator
 from streaming.spotify import mpris
 
 logger = logging.getLogger(__name__)
@@ -71,16 +66,13 @@ class SpotifydVolumeWatchDependencies:
     """Live services the spotifyd volume watch needs."""
 
     is_active: Callable[[], bool]
-    apply_volume_value: Callable[[int], Awaitable[Any]]
-    # Non-blocking read of the canonical master percent; the pickup rule
-    # needs it to detect a gesture crossing the current master level.
-    current_master: Callable[[], int]
+    apply_volume_delta: Callable[[int], Awaitable[Any]]
     resolve_player: Callable[[], Awaitable[str | None]] = resolve_spotifyd_player
     read_source_volume: Callable[[str], Awaitable[int | None]] = read_source_volume
 
 
 class SpotifydVolumeWatch:
-    """Poll spotifyd's Connect volume and apply pickup semantics to the master."""
+    """Poll spotifyd's Connect volume and route deltas to the canonical master."""
 
     def __init__(
         self,
@@ -92,10 +84,9 @@ class SpotifydVolumeWatch:
         self._deps = deps
         self._poll_interval_seconds = poll_interval_seconds
         self._debounce_seconds = debounce_seconds
-        self._translator = RemoteVolumePickupTranslator(
+        self._translator = RemoteVolumeDeltaTranslator(
             is_active=deps.is_active,
-            apply_volume_value=deps.apply_volume_value,
-            current_master=deps.current_master,
+            apply_volume_delta=deps.apply_volume_delta,
         )
         self.watch_task: asyncio.Task | None = None
         self._drain_task: asyncio.Task | None = None
