@@ -63,27 +63,36 @@ _session: _LoginSession | None = None
 
 
 async def _read_until_url(proc: asyncio.subprocess.Process, timeout: float) -> tuple[str | None, list[str]]:
-    """Read login output until the authorization URL appears (or EOF/timeout)."""
+    """Read login output until the authorization URL appears (or EOF/timeout).
+
+    Returns as soon as the URL line was seen; ``timeout`` only bounds the
+    case where the process never reports one.  A ``qbzd login --paste``
+    keeps its stdout open while it waits for the pasted URL on stdin, so
+    waiting for EOF would stall the whole banner read.
+    """
     collected: list[str] = []
     url: str | None = None
-
-    async def _read() -> None:
-        nonlocal url
-        assert proc.stdout is not None
-        while True:
-            line_bytes = await proc.stdout.readline()
-            if not line_bytes:
-                return
-            line = line_bytes.decode(errors="replace")
-            collected.append(line)
-            match = _URL_PATTERN.search(line)
-            if match and url is None:
-                url = match.group(0).rstrip(".,;)")
-
-    try:
-        await asyncio.wait_for(_read(), timeout=timeout)
-    except asyncio.TimeoutError:
-        pass
+    assert proc.stdout is not None
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            line_bytes = await asyncio.wait_for(
+                proc.stdout.readline(), timeout=remaining
+            )
+        except asyncio.TimeoutError:
+            break
+        if not line_bytes:
+            break
+        line = line_bytes.decode(errors="replace")
+        collected.append(line)
+        match = _URL_PATTERN.search(line)
+        if match:
+            url = match.group(0).rstrip(".,;)")
+            break
     return url, collected
 
 
@@ -111,6 +120,13 @@ async def begin_login() -> dict[str, Any]:
     if binary is None:
         raise RuntimeError("qbzd is not installed")
     async with _login_lock:
+        session = _session
+        if session is not None and session.proc.returncode is not None:
+            # The previous login process already exited (expired session):
+            # clear it so a fresh login can start instead of answering
+            # already-in-progress forever with a dead listener.
+            await _terminate(session.proc)
+            _session = None
         if _session is not None:
             return {
                 "started": False,
