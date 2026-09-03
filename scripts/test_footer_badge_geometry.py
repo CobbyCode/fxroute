@@ -4,7 +4,7 @@
 The format badge (``#samplerate-status``) must have its left outer edge on
 the same axis as the track texts (Artist/Track title/Album title), with the
 badge text sitting cleanly inside the pill.  The queue badge keeps its own
-position to the right and stays visually untouched.
+position to the right as a text-only pill (no leading icon).
 
 Runs the real rendered page (static server + stubbed audio API) in headless
 Chromium.  Skips cleanly when playwright or a browser is not available.
