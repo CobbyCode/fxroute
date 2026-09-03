@@ -573,6 +573,21 @@ class LibraryScanner:
             if not album_artist:
                 album_artist = None
 
+            # The metadata cache key is the relative path (not the mtime/size
+            # fingerprint): a cache miss on an edited file means a previous
+            # row exists and may carry a persisted favorite.  Carry it over so
+            # a rescan of a changed file cannot silently unfavorite the track
+            # in the live listing (the store keeps the flag; only the rebuilt
+            # in-memory Track was losing it).  New files have no row and stay
+            # not-favorited.
+            favorite = False
+            try:
+                previous = self.metadata_store.get_last_known_track(rel_path.as_posix())
+                if previous:
+                    favorite = bool(previous.get("favorite"))
+            except Exception:
+                favorite = False
+
             return Track(
                 id=track_id,
                 title=title,
@@ -588,6 +603,7 @@ class LibraryScanner:
                 duration=duration,
                 path=filepath,
                 sample_rate_hz=int(sample_rate_hz) if sample_rate_hz else None,
+                favorite=favorite,
             )
 
         except Exception as e:

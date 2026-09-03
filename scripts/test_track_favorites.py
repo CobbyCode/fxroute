@@ -232,6 +232,72 @@ class ScannerTests(unittest.TestCase):
         self.assertTrue(self.scanner._track_cache[0].favorite)
         self.assertTrue(self.scanner._track_cache[0].to_dict()["favorite"])
 
+    def test_rescan_of_edited_file_preserves_favorite(self):
+        """A cache miss (edited file) must not drop a persisted favorite.
+
+        The store keeps the flag on upsert; the rebuilt in-memory Track used
+        to lose it, so the live listing silently showed the track as
+        unfavorited after any file change triggered a rescan.
+        """
+        import wave as _wave
+
+        rel = "album/fav.wav"
+        filepath = Path(os.environ["MUSIC_ROOT"]) / rel
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with _wave.open(str(filepath), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(44100)
+            w.writeframes(b"\x00\x00" * 4410)
+
+        track_id = f"local_{rel}"
+        # First scan already happened and the user favorited the track.
+        self._seed_track(track_id, favorite=True)
+        with self.store._connect() as conn:
+            conn.execute(
+                "UPDATE tracks SET rel_path = ? WHERE track_id = ?",
+                (rel, track_id),
+            )
+
+        # File edited (mtime/size change) -> full rescan hits the miss path.
+        with _wave.open(str(filepath), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(44100)
+            w.writeframes(b"\x00\x00" * 8820)
+
+        rebuilt = self.scanner._create_track_from_file(filepath)
+        self.assertIsNotNone(rebuilt)
+        self.assertEqual(rebuilt.id, track_id)
+        self.assertTrue(
+            rebuilt.favorite,
+            "rescan of an edited, favorited file must keep the favorite",
+        )
+
+        # The store row is still the old fingerprint (miss path re-upserts
+        # with the new one), so the favorite must survive that too.
+        self.store.upsert_track_metadata(self.scanner._track_cache_payload(
+            rebuilt, rel, filepath.stat()
+        ))
+        row = self.store.get_cached_track(rel, filepath.stat().st_mtime_ns, filepath.stat().st_size)
+        self.assertTrue(bool(row["favorite"]))
+
+    def test_new_file_without_history_stays_unfavorited(self):
+        import wave as _wave
+
+        rel = "album/fresh.wav"
+        filepath = Path(os.environ["MUSIC_ROOT"]) / rel
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with _wave.open(str(filepath), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(44100)
+            w.writeframes(b"\x00\x00" * 4410)
+
+        rebuilt = self.scanner._create_track_from_file(filepath)
+        self.assertIsNotNone(rebuilt)
+        self.assertFalse(rebuilt.favorite)
+
     def test_get_top_played_tracks_carries_favorite(self):
         self._seed_track("fav", play_count=1, last_played_at="2024-01-01T00:00:00+00:00", favorite=True)
         self._seed_track("plain", play_count=10, last_played_at="2024-01-02T00:00:00+00:00")

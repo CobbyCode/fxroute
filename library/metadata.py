@@ -457,6 +457,33 @@ class LibraryMetadataStore:
             return None
         return dict(row)
 
+    def get_last_known_track(self, rel_path: str) -> Optional[dict[str, Any]]:
+        """Return the most recent cache row for a relative path, if any.
+
+        Unlike :meth:`get_cached_track` this is not fingerprinted by
+        mtime/size: a changed file (cache miss) still matches its previous
+        row, so a rescan can carry persisted state (e.g. the favorite flag)
+        forward onto the rebuilt track instead of silently dropping it.
+        """
+        rel_path = str(rel_path or "").strip()
+        if not rel_path:
+            return None
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT * FROM tracks
+                    WHERE rel_path = ? AND missing_since IS NULL
+                    ORDER BY last_seen_at DESC
+                    LIMIT 1
+                    """,
+                    (rel_path,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            logger.warning("Last-known track read failed for %s: %s", rel_path, exc)
+            return None
+        return dict(row) if row else None
+
     def upsert_track_metadata(self, payload: dict[str, Any]) -> None:
         rel_path = str(payload.get("rel_path") or "").strip()
         track_id = str(payload.get("track_id") or "").strip()
