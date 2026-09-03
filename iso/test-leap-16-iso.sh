@@ -376,14 +376,37 @@ setup_agama_interactive() {
 
   # Account/password and locale/keyboard/timezone are the interactive
   # decisions; the release image ships no credentials of its own.
+  agama_cli "$agama_port" config show > "$TEST_ROOT/$profile-agama-current.json"
+  AGAMA_L10N_KEY="$(python3 - "$TEST_ROOT/$profile-agama-current.json" <<'PY'
+import json
+import sys
+
+current = json.load(open(sys.argv[1]))
+print("l10n" if "l10n" in current else "localization")
+PY
+)"
   AGAMA_USER="$AGAMA_USER" AGAMA_USER_PASSWORD="$AGAMA_USER_PASSWORD" \
     SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" AGAMA_LOCALE="$AGAMA_LOCALE" \
     AGAMA_KEYMAP="$AGAMA_KEYMAP" AGAMA_TIMEZONE="$AGAMA_TIMEZONE" \
+    AGAMA_L10N_KEY="$AGAMA_L10N_KEY" \
     python3 - "$setup_file" <<'PY'
 import json
 import os
 import sys
 
+l10n_key = os.environ["AGAMA_L10N_KEY"]
+if l10n_key == "l10n":
+    locale_section = {
+        "locale": os.environ["AGAMA_LOCALE"],
+        "keymap": os.environ["AGAMA_KEYMAP"],
+        "timezone": os.environ["AGAMA_TIMEZONE"],
+    }
+else:
+    locale_section = {
+        "language": os.environ["AGAMA_LOCALE"],
+        "keyboard": os.environ["AGAMA_KEYMAP"],
+        "timezone": os.environ["AGAMA_TIMEZONE"],
+    }
 config = {
     "user": {
         "fullName": "FXRoute",
@@ -391,11 +414,7 @@ config = {
         "password": os.environ["AGAMA_USER_PASSWORD"],
         "sshPublicKey": os.environ["SSH_PUBLIC_KEY"],
     },
-    "l10n": {
-        "locale": os.environ["AGAMA_LOCALE"],
-        "keymap": os.environ["AGAMA_KEYMAP"],
-        "timezone": os.environ["AGAMA_TIMEZONE"],
-    },
+    l10n_key: locale_section,
 }
 with open(sys.argv[1], "w") as handle:
     json.dump(config, handle)
