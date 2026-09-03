@@ -177,6 +177,63 @@ class DspSyncStaleRetryTests(unittest.IsolatedAsyncioTestCase):
         synced_overview = deps.runtime.sync_calls[0]
         self.assertEqual(synced_overview["output_mode"]["effective_output_rate"], 96_000)
 
+    async def test_same_rate_stale_overview_never_becomes_the_rebuilt_config(self) -> None:
+        """A caller overview is a stale-check token, not a rebuild source.
+
+        Same-rate staleness (output switched while the caller was delayed) is
+        invisible to the rate gates; the helper must be rebuilt from the live
+        overview read under the lock, never from the caller's old snapshot.
+        """
+        orchestrator, deps = _make_orchestrator(
+            {"force_rate": 96_000, "active_rate": 96_000},
+        )
+        stale_token = dict(deps.overview)
+        stale_token["selected_output"] = {"key": "alsa_output.old", "active_rate": 96_000}
+        stale_token["active_rate"] = 96_000
+        # The live state moved to another card at the same rate while the
+        # caller was waiting.
+        deps.overview = {
+            "selected_output": {"key": "alsa_output.new", "active_rate": 96_000},
+            "active_rate": 96_000,
+            "output_mode": {"mode": "stereo"},
+        }
+
+        await orchestrator.sync_runtime(stale_token, reason="output-selection")
+
+        self.assertEqual(len(deps.runtime.sync_calls), 1)
+        synced = deps.runtime.sync_calls[0]
+        self.assertEqual(synced["selected_output"]["key"], "alsa_output.new")
+        self.assertNotEqual(synced["selected_output"]["key"], "alsa_output.old")
+
+    async def test_explicit_target_overview_wins_over_the_live_state(self) -> None:
+        """Callers carrying an intended transition target keep it authoritative."""
+        orchestrator, deps = _make_orchestrator(
+            {"force_rate": 96_000, "active_rate": 96_000},
+        )
+        stale_token = {
+            "selected_output": {"key": "alsa_output.old", "active_rate": 96_000},
+            "active_rate": 96_000,
+            "output_mode": {"mode": "stereo"},
+        }
+        target = {
+            "selected_output": {"key": "alsa_output.target", "active_rate": 96_000},
+            "active_rate": 96_000,
+            "output_mode": {"mode": "subwoofer-2.2"},
+        }
+        deps.overview = {
+            "selected_output": {"key": "alsa_output.live", "active_rate": 96_000},
+            "active_rate": 96_000,
+            "output_mode": {"mode": "stereo"},
+        }
+
+        await orchestrator.sync_runtime(
+            stale_token, reason="coordinator-measurement-entry", target_overview=target,
+        )
+
+        self.assertEqual(len(deps.runtime.sync_calls), 1)
+        self.assertEqual(deps.runtime.sync_calls[0]["selected_output"]["key"], "alsa_output.target")
+        self.assertEqual(deps.runtime.sync_calls[0]["output_mode"]["mode"], "subwoofer-2.2")
+
     async def test_no_retry_scheduled_without_opt_in(self) -> None:
         """Callers that do not opt in keep the old suppress-only behavior."""
         orchestrator, deps = _make_orchestrator(

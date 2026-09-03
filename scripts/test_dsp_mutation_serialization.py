@@ -125,6 +125,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                 order.append("delete-entered")
                 return None
 
+            def get_active_preset(self):
+                return None
+
         class FakeDeleteRequest:
             async def json(self):
                 return {"preset_name": "Some Preset"}
@@ -304,6 +307,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             def delete_preset(self, preset_name):
                 order.append("delete-entered")
 
+            def get_active_preset(self):
+                return None
+
             def get_status(self):
                 return {"status": "ok"}
 
@@ -333,6 +339,159 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(upload_task.cancelled())
             self.assertEqual(order, ["upload-entered", "delete-entered"])
+
+    async def test_delete_of_active_preset_resyncs_the_neutral_fallback(self):
+        class FakeManager:
+            def __init__(self):
+                self.active = "Room"
+                self.deleted = []
+
+            def get_active_preset(self):
+                return self.active
+
+            def delete_preset(self, preset_name):
+                self.deleted.append(preset_name)
+                if self.active == "Room":
+                    # Mirror the real manager: deleting the active preset
+                    # moves the persisted active state to Neutral.
+                    self.active = "Neutral"
+
+            def get_status(self):
+                return {"status": "ok", "active_preset": self.active}
+
+        class FakeDeleteRequest:
+            async def json(self):
+                return {"preset_name": "Room"}
+
+        fake = FakeManager()
+        load_preset = mock.AsyncMock()
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "_load_dsp_preset", load_preset
+        ), mock.patch.object(main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
+            main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"
+        ):
+            result = await dsp_api.delete_dsp_preset(FakeDeleteRequest())
+
+        self.assertEqual(result, {"status": "ok", "deleted": "Room"})
+        self.assertEqual(fake.deleted, ["Room"])
+        # The running engine must be resynced to the Neutral fallback instead
+        # of keeping the deleted preset's graph alive.
+        load_preset.assert_awaited_once_with("Neutral")
+
+    async def test_delete_of_inactive_preset_does_not_touch_the_runtime(self):
+        class FakeManager:
+            def __init__(self):
+                self.deleted = []
+
+            def get_active_preset(self):
+                return "Other"
+
+            def delete_preset(self, preset_name):
+                self.deleted.append(preset_name)
+
+            def get_status(self):
+                return {"status": "ok", "active_preset": "Other"}
+
+        class FakeDeleteRequest:
+            async def json(self):
+                return {"preset_name": "Room"}
+
+        fake = FakeManager()
+        load_preset = mock.AsyncMock()
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "_load_dsp_preset", load_preset
+        ), mock.patch.object(main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
+            main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"
+        ):
+            await dsp_api.delete_dsp_preset(FakeDeleteRequest())
+
+        self.assertEqual(fake.deleted, ["Room"])
+        load_preset.assert_not_awaited()
+
+    async def _extras_fake_manager(self, order):
+        class FakeManager:
+            EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
+
+            def load_global_extras(self):
+                return {"loudness": {"enabled": False, "params": {}}}
+
+            def get_active_preset(self):
+                return "Neutral"
+
+            def apply_global_extras_to_all_presets(self, extras):
+                order.append("extras-entered")
+                return {"extras": extras, "updated": 1, "skipped": []}
+
+            def get_status(self):
+                return {"status": "ok"}
+
+        return FakeManager()
+
+    async def test_extras_fallback_reload_holds_the_mutation_lock_when_canonical_is_held(self):
+        main.runtime.dsp_mutation_lock = None
+        main.runtime.canonical_volume_write_lock = None
+        lock_probe = {}
+
+        async def fake_load_preset(preset_name, **_kwargs):
+            # Runs while the route holds the canonical volume write lock and
+            # must have re-acquired the DSP mutation lock before calling the
+            # loader under its documented "both locks held" contract.
+            lock_probe["canonical_locked"] = main._canonical_volume_write_lock().locked()
+            lock_probe["mutation_locked"] = main._dsp_mutation_lock().locked()
+            lock_probe["kwargs"] = dict(_kwargs)
+            lock_probe["args"] = (preset_name,)
+
+        class FakeExtrasRequest:
+            async def json(self):
+                return {"loudnessEnabled": True, "headroomGainDb": -6.0}
+
+        order = []
+        fake = await self._extras_fake_manager(order)
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "_load_dsp_preset", fake_load_preset
+        ), mock.patch.object(main, "_volume_state_for_manager", mock.AsyncMock()), mock.patch.object(
+            main.manager, "broadcast", mock.AsyncMock()
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
+            result = await dsp_api.save_dsp_extras(FakeExtrasRequest())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(lock_probe["args"], ("Neutral",))
+        self.assertEqual(lock_probe["kwargs"], {"_locks_held": True})
+        self.assertTrue(lock_probe["canonical_locked"])
+        self.assertTrue(lock_probe["mutation_locked"])
+        self.assertFalse(main._canonical_volume_write_lock().locked())
+        main.runtime.canonical_volume_write_lock = None
+
+    async def test_extras_fallback_reload_uses_full_loader_without_canonical(self):
+        main.runtime.dsp_mutation_lock = None
+        lock_probe = {}
+
+        async def fake_load_preset(preset_name, **_kwargs):
+            # Non-loudness extras update: no canonical lock is held, so the
+            # route must hand the reload to the loader without the "both locks
+            # held" shortcut (the loader acquires them itself).
+            lock_probe["canonical_locked"] = main._canonical_volume_write_lock().locked()
+            lock_probe["kwargs"] = dict(_kwargs)
+            lock_probe["args"] = (preset_name,)
+
+        class FakeExtrasRequest:
+            async def json(self):
+                return {"headroomGainDb": -6.0}
+
+        order = []
+        fake = await self._extras_fake_manager(order)
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "_load_dsp_preset", fake_load_preset
+        ), mock.patch.object(main, "_volume_state_for_manager", mock.AsyncMock()), mock.patch.object(
+            main.manager, "broadcast", mock.AsyncMock()
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
+            result = await dsp_api.save_dsp_extras(FakeExtrasRequest())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(lock_probe["args"], ("Neutral",))
+        self.assertEqual(lock_probe["kwargs"], {})
+        self.assertFalse(lock_probe["canonical_locked"])
+        main.runtime.canonical_volume_write_lock = None
 
     async def test_preset_load_waits_for_threaded_mutation(self):
         entered = threading.Event()

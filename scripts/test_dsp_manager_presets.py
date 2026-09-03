@@ -147,7 +147,9 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.assertEqual(chain[0]["params"]["kernel"], "room")
         self.assertEqual(chain[3]["params"]["inputGainDb"], -3)
         self.assertEqual(chain[3]["params"]["outputGainDb"], 2)
-        self.assertEqual(chain[3]["params"]["releaseMs"], 50)
+        # Imported limiter time params are clamped into the engine-effective
+        # plugin port range (50 ms release would silently apply as 20 ms).
+        self.assertEqual(chain[3]["params"]["releaseMs"], 20)
 
     def test_maximizer_compilation_emits_input_gain_control(self):
         chain = [{"id": "maximizer#0", "type": "maximizer", "enabled": True,
@@ -201,6 +203,48 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.assertTrue(ir.exists())
         self.manager.delete_preset("Both")
         self.assertFalse(ir.exists())
+
+    def _peq_definition(self):
+        return {"enabled": True, "params": {"channelMode": "stereo-linked", "bands": [
+            {"filterType": "bell", "frequencyHz": 100, "gainDb": 2, "q": 1}]}}
+
+    def test_protected_presets_cannot_be_overwritten_by_create_import_combine(self):
+        direct = (self.manager.output_dir / "Direct.json").read_text()
+        neutral = (self.manager.output_dir / "Neutral.json").read_text()
+        for name in ("Direct", "Neutral", "Direct.json", "Neutral.json"):
+            with self.assertRaisesRegex(ValueError, "built-in preset", msg=name):
+                self.manager.create_peq_preset(name, self._peq_definition())
+        native = json.dumps({"schema": "fxroute.dsp.preset", "version": 1,
+                             "metadata": {}, "chain": [
+                                 {"id": "equalizer#0", "type": "equalizer",
+                                  "params": {"channelMode": "stereo-linked", "bands": []}}]})
+        with self.assertRaisesRegex(ValueError, "built-in preset"):
+            self.manager.import_preset_json("Neutral.json", native)
+        with self.assertRaisesRegex(ValueError, "built-in preset"):
+            self.manager.import_preset_json("Direct.json", native)
+        self.manager.create_peq_preset("A", self._peq_definition())
+        self.manager.create_peq_preset("B", self._peq_definition())
+        with self.assertRaisesRegex(ValueError, "built-in preset"):
+            self.manager.combine_presets("Neutral", ["A", "B"])
+        # Nothing was written over the built-ins.
+        self.assertEqual((self.manager.output_dir / "Direct.json").read_text(), direct)
+        self.assertEqual((self.manager.output_dir / "Neutral.json").read_text(), neutral)
+
+    def test_protected_preset_upload_leaves_no_ir_behind(self):
+        ir = self.home / "room.wav"
+        with wave.open(str(ir), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(48000)
+            handle.writeframes(b"\x00\x00\x00\x00")
+        with self.assertRaisesRegex(ValueError, "built-in preset"):
+            self.manager.create_convolver_preset_with_upload(
+                "Neutral", ir, ir.name)
+        self.assertEqual([path.name for path in self.manager.irs_dir.iterdir()], [])
+        with self.assertRaisesRegex(ValueError, "built-in preset"):
+            self.manager.create_convolver_preset_with_dual_uploads(
+                "Direct", ir, ir.name, ir, ir.name)
+        self.assertEqual([path.name for path in self.manager.irs_dir.iterdir()], [])
 
     def test_dual_ir_upload_merges_mono_wav_channels(self):
         left = self.home / "left.wav"

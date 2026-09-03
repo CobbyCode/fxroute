@@ -79,24 +79,39 @@ class DSPValidationParityTests(unittest.TestCase):
         self.assertTrue(all(item["type"] not in {"crystalizer", "maximizer"} for item in chain))
 
     def test_limiter_contract_ranges_are_restored(self):
+        # threshold and stereo-link are passed through unclamped, so
+        # out-of-range values are still rejected at the API boundary.
         with self.assertRaises(ValueError):
             self.normalize("limiter", {"params": {"thresholdDb": -25.0}})
         with self.assertRaises(ValueError):
-            self.normalize("limiter", {"params": {"attackMs": 0.05}})
-        with self.assertRaises(ValueError):
-            self.normalize("limiter", {"params": {"attackMs": 150.0}})
-        with self.assertRaises(ValueError):
-            self.normalize("limiter", {"params": {"releaseMs": 0.5}})
-        with self.assertRaises(ValueError):
-            self.normalize("limiter", {"params": {"releaseMs": 2000.0}})
-        with self.assertRaises(ValueError):
-            self.normalize("limiter", {"params": {"lookaheadMs": 25.0}})
-        with self.assertRaises(ValueError):
             self.normalize("limiter", {"params": {"stereoLinkPercent": 120.0}})
+
+    def test_limiter_time_params_clamp_to_engine_port_bounds(self):
+        # at/rt/lk are clamped into the LSP sc_limiter port range (0.25..20 /
+        # 0.25..20 / 0.1..20 ms) so the stored value always equals what the
+        # engine applies.  Legacy stored values above the port maxima (the old
+        # 50 ms release default) must keep loading instead of raising.
+        clamped = self.normalize("limiter", {"params": {
+            "attackMs": 0.05, "releaseMs": 2000.0, "lookaheadMs": 25.0}})
+        self.assertEqual(clamped["params"]["attackMs"], 0.25)
+        self.assertEqual(clamped["params"]["releaseMs"], 20.0)
+        self.assertEqual(clamped["params"]["lookaheadMs"], 20.0)
+        clamped = self.normalize("limiter", {"params": {
+            "attackMs": 150.0, "releaseMs": 0.5, "lookaheadMs": 0.0}})
+        self.assertEqual(clamped["params"]["attackMs"], 20.0)
+        self.assertEqual(clamped["params"]["releaseMs"], 0.5)
+        self.assertEqual(clamped["params"]["lookaheadMs"], 0.1)
         normalized = self.normalize("limiter", {
             "params": {"thresholdDb": -6.0, "attackMs": 10.0, "releaseMs": 50.0,
                        "lookaheadMs": 5.0, "stereoLinkPercent": 80.0}})
-        self.assertEqual(normalized["params"]["releaseMs"], 50.0)
+        self.assertEqual(normalized["params"]["releaseMs"], 20.0)
+        self.assertEqual(normalized["params"]["attackMs"], 10.0)
+        self.assertEqual(normalized["params"]["lookaheadMs"], 5.0)
+        self.assertEqual(normalized["params"]["thresholdDb"], -6.0)
+
+    def test_limiter_default_release_is_the_engine_effective_cap(self):
+        normalized = self.normalize("limiter", {})
+        self.assertEqual(normalized["params"]["releaseMs"], 20.0)
 
     def test_delay_is_bounded_to_old_contract_of_500_ms(self):
         with self.assertRaisesRegex(ValueError, "between 0 and 500"):

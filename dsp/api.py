@@ -32,6 +32,7 @@ from dsp.effects_extras import (
     merge_effects_extras_from_json,
     parse_effects_extras_from_json,
 )
+from dsp.persistence import clean_name
 from library.core import path_within_root
 from library.api import _cleanup_temp_file
 from uploads import (
@@ -293,7 +294,18 @@ async def save_dsp_extras(request: Request):
         if (not result.get("runtime_applied") and active_preset
                 and active_preset not in dsp_mgr.EXCLUDED_GLOBAL_EXTRAS_PRESETS):
             try:
-                await _deps().load_dsp_preset(active_preset, _locks_held=True)
+                if canonical_lock is not None:
+                    # The canonical volume write lock is still held for the
+                    # loudness transition; only the DSP mutation lock is free
+                    # and must be re-acquired for the reload so the loader's
+                    # "both locks held" contract is actually satisfied.
+                    async with _deps().dsp_mutation_lock():
+                        await _deps().load_dsp_preset(active_preset, _locks_held=True)
+                else:
+                    # No locks are held here: reload through the loader, which
+                    # acquires the canonical volume write lock and then the
+                    # DSP mutation lock in the documented order.
+                    await _deps().load_dsp_preset(active_preset)
             except Exception as e:
                 logger.warning("Failed to reload active preset after extras update: %s", e)
     finally:
@@ -1099,10 +1111,17 @@ async def delete_dsp_preset(request: Request):
 
     try:
         async with _deps().dsp_mutation_lock():
+            deleted_active = dsp_mgr.get_active_preset() == clean_name(preset_name)
             dsp_mgr.delete_preset(preset_name)
+        if deleted_active:
+            # The manager already moved the persisted active state to the
+            # Neutral fallback; resync the running native engine through the
+            # normal locked loader so it never keeps processing the deleted
+            # preset's graph.
+            await _deps().load_dsp_preset(dsp_mgr.get_active_preset() or "Neutral")
         status = dsp_mgr.get_status()
         await _deps().broadcast({"type": "dsp", "data": status})
         _deps().schedule_peak_monitor_refresh("preset-delete")
         return {"status": "ok", "deleted": preset_name}
-    except (FileNotFoundError, ValueError) as e:
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)

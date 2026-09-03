@@ -601,9 +601,16 @@ class PlaybackOrchestrator:
                         # stale-check compare requested(96000) != authoritative
                         # (48000) and wrongly suppress the required helper
                         # rebuild, so the token carries the transition's own
-                        # target rate instead.
+                        # target rate instead.  The token is also passed as the
+                        # explicit ``target_overview``: its contents are the
+                        # intended post-transition config, not a stale snapshot
+                        # to be replaced by a live re-read.
+                        staged_overview = samplerate.audio_output_overview_with_effective_rate(
+                            overview, target_rate,
+                        )
                         kwargs.update(
-                            audio_overview=samplerate.audio_output_overview_with_effective_rate(overview, target_rate),
+                            audio_overview=staged_overview,
+                            target_overview=staged_overview,
                             _rate_lock_held=True,
                         )
                     await self._deps.sync_runtime(**kwargs); helper_rebuilt = True

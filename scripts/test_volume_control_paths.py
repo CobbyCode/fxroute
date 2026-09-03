@@ -618,7 +618,10 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             await dsp_api.save_dsp_extras(FakeRequest())
 
-        reload_preset.assert_awaited_once_with("Neutral", _locks_held=True)
+        # The autogain change is not a canonical Loudness transition, so no
+        # canonical volume write lock is held at reload time: the reload goes
+        # through the full loader, which acquires both locks itself.
+        reload_preset.assert_awaited_once_with("Neutral")
 
     async def test_loudness_disable_failure_restores_original_master(self):
         order = []

@@ -89,13 +89,19 @@ class DSPManager:
         "equalizer", "convolver", "delay", "limiter", "headroom",
         "bass_enhancer", "autogain", "loudness", "crystalizer", "maximizer",
     }
-    LIMITER_DEFAULTS = {"enabled": True, "params": {"thresholdDb": -1.0, "attackMs": 5.0, "releaseMs": 50.0, "lookaheadMs": 5.0, "stereoLinkPercent": 100.0}}
+    # The engine clamps at/rt/lk to the LSP sc_limiter port bounds
+    # (0.25..20 / 0.25..20 / 0.1..20 ms, verified against the installed
+    # sc_limiter_stereo metadata).  Params are normalized into this same range
+    # so the stored value always equals what the engine applies instead of
+    # being silently truncated at compile time.
+    LIMITER_DEFAULTS = {"enabled": True, "params": {"thresholdDb": -1.0, "attackMs": 5.0, "releaseMs": 20.0, "lookaheadMs": 5.0, "stereoLinkPercent": 100.0}}
     LIMITER_THRESHOLD_MIN_DB = -24.0
     LIMITER_THRESHOLD_MAX_DB = 0.0
-    LIMITER_ATTACK_MIN_MS = 0.1
-    LIMITER_ATTACK_MAX_MS = 100.0
-    LIMITER_RELEASE_MIN_MS = 1.0
-    LIMITER_RELEASE_MAX_MS = 1000.0
+    LIMITER_ATTACK_MIN_MS = 0.25
+    LIMITER_ATTACK_MAX_MS = 20.0
+    LIMITER_RELEASE_MIN_MS = 0.25
+    LIMITER_RELEASE_MAX_MS = 20.0
+    LIMITER_LOOKAHEAD_MIN_MS = 0.1
     LIMITER_LOOKAHEAD_MAX_MS = 20.0
     HEADROOM_DEFAULTS = {"enabled": False, "params": {"gainDb": -3.0}}
     DELAY_DEFAULTS = {"enabled": False, "params": {"leftMs": 0.0, "rightMs": 0.0}}
@@ -160,15 +166,17 @@ class DSPManager:
         threshold_db = float(limiter["thresholdDb"])
         if not self.LIMITER_THRESHOLD_MIN_DB <= threshold_db <= self.LIMITER_THRESHOLD_MAX_DB:
             raise ValueError("limiter.params.thresholdDb must be between -24 and 0")
-        attack_ms = float(limiter["attackMs"])
-        if not self.LIMITER_ATTACK_MIN_MS <= attack_ms <= self.LIMITER_ATTACK_MAX_MS:
-            raise ValueError("limiter.params.attackMs must be between 0.1 and 100")
-        release_ms = float(limiter["releaseMs"])
-        if not self.LIMITER_RELEASE_MIN_MS <= release_ms <= self.LIMITER_RELEASE_MAX_MS:
-            raise ValueError("limiter.params.releaseMs must be between 1 and 1000")
-        lookahead_ms = float(limiter["lookaheadMs"])
-        if not 0.0 <= lookahead_ms <= self.LIMITER_LOOKAHEAD_MAX_MS:
-            raise ValueError("limiter.params.lookaheadMs must be between 0 and 20")
+        # at/rt/lk are clamped into the engine-effective plugin port range
+        # instead of rejected: legacy stored values above the port maxima (the
+        # old 50 ms release default) must keep loading, and the normalized
+        # value is exactly what the engine applies, so a stored parameter can
+        # never silently differ from the effective one.
+        limiter["attackMs"] = self._clamp_limiter_time(
+            "attackMs", limiter["attackMs"], self.LIMITER_ATTACK_MIN_MS, self.LIMITER_ATTACK_MAX_MS)
+        limiter["releaseMs"] = self._clamp_limiter_time(
+            "releaseMs", limiter["releaseMs"], self.LIMITER_RELEASE_MIN_MS, self.LIMITER_RELEASE_MAX_MS)
+        limiter["lookaheadMs"] = self._clamp_limiter_time(
+            "lookaheadMs", limiter["lookaheadMs"], self.LIMITER_LOOKAHEAD_MIN_MS, self.LIMITER_LOOKAHEAD_MAX_MS)
         stereo_link = float(limiter["stereoLinkPercent"])
         if not 0.0 <= stereo_link <= 100.0:
             raise ValueError("limiter.params.stereoLinkPercent must be between 0 and 100")
@@ -236,6 +244,32 @@ class DSPManager:
         if not all(0 <= delay[channel] <= self.DELAY_MAX_MS for channel in ("leftMs", "rightMs")):
             raise ValueError("delay.params leftMs/rightMs must be between 0 and 500")
         return result
+
+    @staticmethod
+    def _clamp_limiter_time(name: str, value: Any, minimum: float, maximum: float) -> float:
+        """Clamp one limiter time param into the engine-effective range."""
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"limiter.params.{name} must be numeric") from None
+        return max(minimum, min(maximum, parsed))
+
+    @classmethod
+    def _clamp_chain_limiter_params(cls, chain: List[dict]) -> None:
+        """Clamp limiter time params of a preset chain in place."""
+        for plugin in chain:
+            if plugin.get("type") != "limiter":
+                continue
+            params = plugin.get("params")
+            if not isinstance(params, dict):
+                continue
+            for name, minimum, maximum in (
+                ("attackMs", cls.LIMITER_ATTACK_MIN_MS, cls.LIMITER_ATTACK_MAX_MS),
+                ("releaseMs", cls.LIMITER_RELEASE_MIN_MS, cls.LIMITER_RELEASE_MAX_MS),
+                ("lookaheadMs", cls.LIMITER_LOOKAHEAD_MIN_MS, cls.LIMITER_LOOKAHEAD_MAX_MS),
+            ):
+                if name in params:
+                    params[name] = cls._clamp_limiter_time(name, params[name], minimum, maximum)
 
     @staticmethod
     def _autogain_plugin_payload(definition: Dict[str, Any]) -> Dict[str, Any]:
@@ -716,9 +750,10 @@ class DSPManager:
                 # Control values verified against the installed lsp-plugins
                 # metadata (sc_limiter_stereo.ttl): mode 0=Herm Thin, boost 1
                 # = the gain-boost enabled default (plugin default is 1).  The
-                # plugin ports cap at/rt/lk (0.25..20 / 0.25..20 / 0.1..20 ms);
-                # the clamps below match those port bounds, so the 50 ms
-                # release is clamped to 20 ms exactly as the plugin itself did.
+                # plugin ports cap at/rt/lk (0.25..20 / 0.25..20 / 0.1..20 ms)
+                # and managed values are already normalized into that range;
+                # the clamps below stay as the last line of defense for
+                # hand-crafted preset files.
                 control("g_in", 10.0 ** (float(params.get("inputGainDb", 0.0)) / 20.0))
                 control("g_out", 10.0 ** (float(params.get("outputGainDb", 0.0)) / 20.0))
                 control("scp", 1)
@@ -850,36 +885,53 @@ class DSPManager:
     def create_peq_preset(self, preset_name: str, peq_definition: Dict[str, Any],
                           extras: Optional[Dict[str, Any]] = None) -> dict:
         del extras
+        name = self._ensure_overwritable_name(preset_name)
+        if not name:
+            raise ValueError("Invalid preset name")
         normalized = self.validate_peq_v1(peq_definition)
         plugin = {"id": "equalizer#0", "type": "equalizer",
                   "enabled": normalized["enabled"],
                   "params": copy.deepcopy(normalized["params"]),
                   "mix": copy.deepcopy(normalized["mix"])}
-        path = self.preset_store.write(preset_name, self._native_preset([plugin]))
+        path = self.preset_store.write(name, self._native_preset([plugin]))
         bands = normalized["params"].get("bands", [])
-        return {"name": clean_name(preset_name), "filename": path.name, "path": str(path),
+        return {"name": name, "filename": path.name, "path": str(path),
                 "band_count": len(bands), "channel_mode": normalized["params"]["channelMode"]}
 
     def create_convolver_preset(self, preset_name: str, ir_filename: str,
                                 extras: Optional[Dict[str, Any]] = None) -> dict:
         del extras
+        name = self._ensure_overwritable_name(preset_name)
+        if not name:
+            raise ValueError("Invalid preset name")
         if Path(ir_filename).name not in {item["name"] for item in self.list_irs()}:
             raise FileNotFoundError(f"IR file not found: {ir_filename}")
         kernel = Path(ir_filename).stem
         plugin = {"id": "convolver#0", "type": "convolver", "enabled": True,
                   "params": {"kernel": kernel, "wet_db": 0.0, "dry_db": -100.0,
                              "input_gain_db": 0.0, "output_gain_db": 0.0}}
-        path = self.preset_store.write(preset_name, self._native_preset([plugin]))
-        return {"name": clean_name(preset_name), "filename": path.name,
+        path = self.preset_store.write(name, self._native_preset([plugin]))
+        return {"name": name, "filename": path.name,
                 "path": str(path), "kernel_name": kernel}
+
+    @staticmethod
+    def _ensure_overwritable_name(name: Any) -> str:
+        """Return the cleaned preset name or reject a protected built-in."""
+        name = clean_name(name)
+        if name in DSPManager.PROTECTED_PRESETS:
+            raise ValueError(f'Preset "{name}" is a built-in preset and cannot be overwritten')
+        return name
 
     def combine_presets(self, preset_name: str, source_presets: List[str],
                         extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         del extras
-        sources = [clean_name(name) for name in source_presets] if isinstance(source_presets, list) else []
+        name = self._ensure_overwritable_name(preset_name)
+        if not name:
+            raise ValueError("Invalid preset name")
+        sources = [clean_name(item) for item in source_presets] if isinstance(source_presets, list) else []
         if len(sources) < 2 or len(set(sources)) != len(sources):
             raise ValueError("Select at least two different presets to combine")
-        if clean_name(preset_name) in sources:
+        if name in sources:
             raise ValueError("New preset name must differ from the source presets")
         chain = []
         counters: Dict[str, int] = {}
@@ -892,8 +944,9 @@ class DSPManager:
                 item["id"] = f"{base}#{number}"
                 chain.append(item)
         self._validate_supported_chain(chain)
-        path = self.preset_store.write(preset_name, self._native_preset(chain, sources))
-        return {"name": clean_name(preset_name), "filename": path.name, "path": str(path),
+        self._clamp_chain_limiter_params(chain)
+        path = self.preset_store.write(name, self._native_preset(chain, sources))
+        return {"name": name, "filename": path.name, "path": str(path),
                 "source_presets": sources, "plugin_count": len(chain)}
 
     def import_preset_json(self, preset_filename: str, preset_text: str) -> Dict[str, Any]:
@@ -904,9 +957,10 @@ class DSPManager:
         if isinstance(source, dict) and source.get("schema") == self.PRESET_SCHEMA:
             payload = self.preset_store.validate(source)
             self._validate_supported_chain(payload["chain"])
+            self._clamp_chain_limiter_params(payload["chain"])
         else:
             payload = self._translate_legacy_preset(source)
-        name = clean_name(preset_filename)
+        name = self._ensure_overwritable_name(preset_filename)
         path = self.preset_store.write(name, payload)
         return {"name": name, "filename": path.name, "path": str(path),
                 "source_presets": payload.get("metadata", {}).get("source_presets", [])}
@@ -974,8 +1028,17 @@ class DSPManager:
         if plugin_type == "limiter":
             translated["inputGainDb"] = float(raw.get("input-gain", 0.0))
             translated["outputGainDb"] = float(raw.get("output-gain", 0.0))
-            translated["lookaheadMs"] = max(0.1, min(20.0, float(translated.get("lookaheadMs", 5.0))))
-            translated["attackMs"] = max(0.25, min(20.0, float(translated.get("attackMs", 5.0))))
+            # Imported chains are clamped into the engine-effective plugin
+            # port range so the stored preset value equals the applied one.
+            translated["lookaheadMs"] = self._clamp_limiter_time(
+                "lookaheadMs", translated.get("lookaheadMs", 5.0),
+                self.LIMITER_LOOKAHEAD_MIN_MS, self.LIMITER_LOOKAHEAD_MAX_MS)
+            translated["attackMs"] = self._clamp_limiter_time(
+                "attackMs", translated.get("attackMs", 5.0),
+                self.LIMITER_ATTACK_MIN_MS, self.LIMITER_ATTACK_MAX_MS)
+            translated["releaseMs"] = self._clamp_limiter_time(
+                "releaseMs", translated.get("releaseMs", 5.0),
+                self.LIMITER_RELEASE_MIN_MS, self.LIMITER_RELEASE_MAX_MS)
         elif plugin_type == "maximizer":
             translated["inputGainDb"] = float(raw.get("input-gain", 0.0))
         return translated
@@ -1041,10 +1104,15 @@ class DSPManager:
 
     def create_convolver_preset_with_upload(self, preset_name: str, source_path: Path,
                                             filename: str, extras=None) -> dict:
+        # Guard before the IR is written so a protected or empty name can
+        # never leave an unreferenced IR file behind.
+        name = self._ensure_overwritable_name(preset_name)
+        if not name:
+            raise ValueError("Invalid preset name")
         uploaded = self.upload_ir(source_path, filename,
-                                  f"{clean_name(preset_name, 'convolver')}{Path(filename).suffix}")
+                                  f"{name}{Path(filename).suffix}")
         return {"ir": uploaded,
-                "preset": self.create_convolver_preset(preset_name, uploaded["name"], extras)}
+                "preset": self.create_convolver_preset(name, uploaded["name"], extras)}
 
     def upload_ir_pair(self, left_source_path: Path, left_filename: str,
                        right_source_path: Path, right_filename: str,
@@ -1085,11 +1153,16 @@ class DSPManager:
         self, preset_name: str, left_source_path: Path, left_filename: str,
         right_source_path: Path, right_filename: str, extras=None,
     ) -> dict:
-        merged_name = f"{clean_name(preset_name, 'dual-convolver')}.irs"
+        # Guard before the merged IR is written so a protected or empty name
+        # can never leave an unreferenced IR file behind.
+        name = self._ensure_overwritable_name(preset_name)
+        if not name:
+            raise ValueError("Invalid preset name")
+        merged_name = f"{name}.irs"
         uploaded = self.upload_ir_pair(left_source_path, left_filename,
                                        right_source_path, right_filename, merged_name)
         return {"ir": uploaded,
-                "preset": self.create_convolver_preset(preset_name, uploaded["name"], extras)}
+                "preset": self.create_convolver_preset(name, uploaded["name"], extras)}
 
     def create_peq_preset_from_rew_text(self, preset_name: str, rew_text: str,
                                         extras=None) -> Dict[str, Any]:

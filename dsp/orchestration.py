@@ -103,9 +103,13 @@ class DspOrchestrator:
     ) -> dict:
         """Synchronize the native helper from one live, lock-protected rate.
 
-        An overview passed by a transition/release caller is only a stale-check
-        token. The actual helper config is rebuilt after the final live PipeWire
-        read, so a delayed caller cannot restart a helper with its old target.
+        A caller-supplied ``audio_overview`` is only a stale-check token: it
+        contributes the requested rate the stale guard compares against the
+        live authoritative rate.  The helper config itself is rebuilt from an
+        explicit transition target (``target_overview``) or, otherwise, from
+        the live overview re-read under the lock after the rate gates, so a
+        delayed caller can never restart a helper with its old selection or
+        mode at the same rate.
 
         When ``retry_on_stale`` is set and the stale-check suppresses the
         restart because the caller's requested rate does not match the live
@@ -157,11 +161,6 @@ class DspOrchestrator:
                 )
                 return overview
 
-            current_overview = (
-                target_overview
-                or audio_overview
-                or await asyncio.to_thread(self._deps.get_audio_output_overview)
-            )
             if requested_rate is not None and requested_rate != authoritative_rate:
                 logger.info(
                     "Native DSP sync stale; restart suppressed: reason=%s requested_rate=%s authoritative_rate=%s",
@@ -176,6 +175,25 @@ class DspOrchestrator:
                         name=f"dsp-sync-retry:{reason}",
                     )
                 return overview
+            if target_overview is not None:
+                # The caller carries an explicit transition target (e.g. the
+                # measurement entry rebuilding the helper at the target rate
+                # before the hardware has moved there).
+                current_overview = target_overview
+            else:
+                # The caller overview is only a stale-check token: rebuild
+                # from the live state read now, after the rate gates passed.
+                try:
+                    current_overview = await asyncio.to_thread(
+                        self._deps.get_audio_output_overview
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Native DSP sync could not re-read the live overview; "
+                        "falling back to the caller overview reason=%s error=%s",
+                        reason, exc,
+                    )
+                    current_overview = audio_overview or {}
             current_overview = samplerate.audio_output_overview_with_effective_rate(
                 current_overview, authoritative_rate,
             )
