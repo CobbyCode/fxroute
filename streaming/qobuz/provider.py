@@ -14,7 +14,7 @@ from typing import Any, ClassVar
 
 from streaming.base.capabilities import Capabilities
 from streaming.base.provider import StreamingProvider
-from streaming.qobuz import backend, connect_state
+from streaming.qobuz import backend, connect_state, login
 
 QOBUZ_BACKEND = "qbzd"
 
@@ -323,3 +323,31 @@ class QobuzProvider(StreamingProvider):
         normalized = max(0.0, min(1.0, percent / 100.0))
         await backend.post_json(self._base_url, "/api/playback/volume", {"volume": normalized})
         return await self.status()
+
+    # -- account login / re-auth / logout (qbzd CLI orchestration) -----------
+
+    async def begin_login(self) -> dict:
+        """Start the qbzd browser OAuth flow and return its sign-in URL."""
+        return await login.begin_login()
+
+    async def finish_login(self, pasted: str) -> dict:
+        """Complete the qbzd browser OAuth flow with the pasted redirect."""
+        result = await login.finish_login(pasted)
+        result["authenticated"] = await self.is_authenticated()
+        return result
+
+    async def login_state(self) -> dict:
+        """Return whether a qbzd browser login is currently in flight."""
+        return await login.state()
+
+    async def cancel_login(self) -> dict:
+        """Terminate any in-flight qbzd browser login."""
+        result = await login.cancel()
+        result["authenticated"] = await self.is_authenticated()
+        return result
+
+    async def logout(self) -> dict:
+        """Clear the qbzd credential (credential reset via ``qbzd logout``)."""
+        result = await login.logout()
+        result["authenticated"] = await self.is_authenticated()
+        return result

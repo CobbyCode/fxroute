@@ -5525,6 +5525,81 @@ async def api_tidal_logout():
 
 
 # ---------------------------------------------------------------------------
+# Qobuz/qbzd account login (browser OAuth handoff owned by qbzd itself)
+# ---------------------------------------------------------------------------
+
+def _qobuz_provider_or_404():
+    provider = streaming.get_provider("qobuz")
+    if provider is None:
+        raise HTTPException(status_code=404, detail="qobuz provider is not registered")
+    return provider
+
+
+@app.get("/api/streaming/qobuz/auth/state")
+async def api_qobuz_auth_state():
+    """Qobuz account state: qbzd auth plus any in-flight browser login."""
+    provider = _qobuz_provider_or_404()
+    return {
+        "installed": provider.is_installed(),
+        "authenticated": await provider.is_authenticated(),
+        "login": await provider.login_state(),
+    }
+
+
+@app.post("/api/streaming/qobuz/auth/login")
+async def api_qobuz_auth_login():
+    """Start (or re-enter) the qbzd browser OAuth flow.
+
+    Works for both a first login and an account switch: qbzd's login replaces
+    the stored credential on completion.
+    """
+    provider = _qobuz_provider_or_404()
+    if not provider.is_installed():
+        raise HTTPException(status_code=409, detail="qbzd is not installed; install the Qobuz provider first")
+    try:
+        return await provider.begin_login()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/streaming/qobuz/auth/login/finish")
+async def api_qobuz_auth_login_finish(request: Request):
+    """Complete the qbzd browser OAuth flow with the pasted redirect URL."""
+    provider = _qobuz_provider_or_404()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    pasted = str(body.get("redirect_url") or body.get("url") or body.get("code") or "")
+    try:
+        return await provider.finish_login(pasted)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/streaming/qobuz/auth/login/cancel")
+async def api_qobuz_auth_login_cancel():
+    """Abort an in-flight qbzd browser login (terminates the CLI listener)."""
+    provider = _qobuz_provider_or_404()
+    try:
+        return await provider.cancel_login()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/streaming/qobuz/auth/logout")
+async def api_qobuz_auth_logout():
+    """Clear the qbzd credential (account disconnect / reset)."""
+    provider = _qobuz_provider_or_404()
+    try:
+        return await provider.logout()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # Provider administration (Settings -> Providers)
 # ---------------------------------------------------------------------------
 
