@@ -72,6 +72,12 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
             return bool(verify((load_overview or (lambda: state))()))
 
         async def measure_candidate(**kwargs):
+            # Each single-side candidate is one physical sweep in the ledger.
+            job.setdefault("_sweep_timings", []).append({
+                "channel": str(kwargs.get("measure_channel") or kwargs.get("channel") or "left"),
+                "stage": kwargs["stage"],
+                "durations": {"total_ms": 1.0},
+            })
             snapshot = kwargs["original_config_snapshot"]
             subwoofers = runner._auto_sub_22_candidate_subwoofers(
                 snapshot,
@@ -143,6 +149,13 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
         async def finish_worker(_job, _job_id):
             return None
 
+        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
+            # The verified restore helper lives in candidates and calls
+            # candidates._auto_sub_apply_candidate; route it through the same
+            # fake persist/overview so the restore state stays test-local.
+            persist(output_mode, global_config, subwoofers_config)
+            return bool(verify(copy.deepcopy(state)))
+
         polarity_gate = [
             {"accepted": True, "score_gain": 0.2, "min_score_gain": 0.03, "reason": "alternative_clearly_better"},
             {"accepted": False, "score_gain": -0.2, "min_score_gain": 0.03, "reason": "incumbent_protected_unclear_advantage"},
@@ -180,6 +193,7 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
                     11.51, 7.91, 8.26, 12.51, 10.21, 8.32,
                 ]))
                 stack.enter_context(patch.object(runner, "_auto_sub_apply_candidate", side_effect=apply_candidate))
+                stack.enter_context(patch("measurement.autosub.candidates._auto_sub_apply_candidate", side_effect=restore_apply_candidate))
                 stack.enter_context(patch.object(runner, "_finish_auto_sub_worker", side_effect=finish_worker))
                 stack.enter_context(patch.object(runner, "get_audio_output_overview", side_effect=overview))
                 stack.enter_context(patch.object(samplerate, "set_audio_output_mode", side_effect=persist))
@@ -227,6 +241,15 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
             "level_db": 1.0275, "alignment_ms": -2.54, "polarity": "normal",
         })
         self.assertEqual(job["result"]["applied_sub1_alignment_ms"], -2.14)
+
+    async def test_result_sweep_count_counts_executed_sweeps_from_ledger(self):
+        # The 2.2 results previously reported a static alignment-scan plan
+        # that missed the balance, deep-bass, polarity, gain and confirmation
+        # sweeps. The result must reflect the sweeps that actually ran.
+        job, _state, _original = await self._run_reference_case()
+        ledger = len(job.get("_sweep_timings") or [])
+        self.assertGreater(ledger, 6)  # balance (2) + left/right alignment (4)
+        self.assertEqual(job["result"]["sweep_count"], ledger)
         self.assertEqual(job["result"]["applied_sub2_alignment_ms"], -2.54)
         self.assertEqual(job["polarity_check"]["left"]["selected"], "invert")
         self.assertEqual(job["result"]["confirmation_gate"]["failed_sides"], ["right"])

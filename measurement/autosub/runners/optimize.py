@@ -107,9 +107,24 @@ async def _run_auto_sub_optimize(
         _auto_sub_lock.release()
         return
 
-    async def _restore_original_config():
-        """Restore subwoofer config from snapshot."""
-        await _restore_auto_sub_original_config(original_config_snapshot)
+    async def _restore_original_config() -> bool:
+        """Restore the start-of-run config and fail the job when it cannot be verified.
+
+        The verified restore re-applies the original state and reads it back
+        (the 2.2-stereo runner already behaved this way); a persisting
+        mismatch means the run would end with a different topology than it
+        began with, so the job is marked failed instead.
+        """
+        restored = await _restore_auto_sub_original_config(original_config_snapshot)
+        if not restored:
+            prior_detail = str((job.get("error") or {}).get("detail") or "")
+            restore_detail = "original config restore verification failed"
+            job["status"] = "failed"
+            job["message"] = "Auto Sub Optimize failed to restore the original config"
+            job["error"] = {
+                "detail": f"{prior_detail}; {restore_detail}" if prior_detail else restore_detail,
+            }
+        return restored
 
     try:
         if measurement_sr_session is not None:

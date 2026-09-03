@@ -38,6 +38,7 @@ from ..deps import (
     _measurement_session,
 )
 from ..jobs import (
+    _auto_sub_executed_sweep_count,
     _finish_auto_sub_worker,
     _log_auto_sub_timing_summary,
 )
@@ -105,8 +106,24 @@ async def _run_auto_sub_22_optimize(
         _auto_sub_lock.release()
         return
 
-    async def _restore_original_config() -> None:
-        await _restore_auto_sub_original_config(original_config_snapshot)
+    async def _restore_original_config() -> bool:
+        """Restore the start-of-run config and fail the job when it cannot be verified.
+
+        The verified restore re-applies the original state and reads it back
+        (the 2.2-stereo runner already behaved this way); a persisting
+        mismatch means the run would end with a different topology than it
+        began with, so the job is marked failed instead.
+        """
+        restored = await _restore_auto_sub_original_config(original_config_snapshot)
+        if not restored:
+            prior_detail = str((job.get("error") or {}).get("detail") or "")
+            restore_detail = "original config restore verification failed"
+            job["status"] = "failed"
+            job["message"] = "Auto Sub Optimize 2.2 failed to restore the original config"
+            job["error"] = {
+                "detail": f"{prior_detail}; {restore_detail}" if prior_detail else restore_detail,
+            }
+        return restored
 
     original_sub1 = _auto_sub_22_sub(original_config_snapshot, "sub1")
     original_sub2 = _auto_sub_22_sub(original_config_snapshot, "sub2")
@@ -512,7 +529,7 @@ async def _run_auto_sub_22_optimize(
                 incumbent_residual_common = None
         winner_residual_common = (job["auto_gain"].get("recommendation") or {}).get("raw_delta_db")
         balance_transfer = _auto_sub_balance_transfer_deltas(
-            balance_deltas_db={"left": balance_deltas.get("left", 0.0), "right": balance_deltas.get("left", 0.0)},
+            balance_deltas_db={"left": balance_deltas.get("left", 0.0), "right": balance_deltas.get("right", 0.0)},
             winner_residuals_db={"left": winner_residual_common, "right": winner_residual_common},
             incumbent_residuals_db={"left": incumbent_residual_common, "right": incumbent_residual_common},
             alignment_changed={"left": alignment_changed, "right": alignment_changed},
@@ -1027,7 +1044,10 @@ async def _run_auto_sub_22_optimize(
             "ranking": matrix_scoring["results"],
             "combined_matrix": job["combined_matrix"],
             "candidate_ledger": candidate_ledger,
-            "sweep_count": matrix_sweep_total + 2,
+            # Executed ledger count: balance, polarity, gain and confirmation
+            # sweeps all run after the matrix and are part of the job's sweep
+            # total; a static matrix-based plan would miss them.
+            "sweep_count": _auto_sub_executed_sweep_count(job),
             "candidate_count": len(sub1_scan_delays) + len(sub2_scan_delays) + len(matrix_pairs),
             "sub1_coarse_candidate_count": len(sub1_scan_delays),
             "sub2_coarse_candidate_count": len(sub2_scan_delays),

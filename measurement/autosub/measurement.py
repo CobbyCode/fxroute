@@ -1169,6 +1169,12 @@ def _auto_sub_chain_health_check(
         return None
     history = job.setdefault("chain_alignment_samples", [])
     history.append(float(alignment_samples))
+    # Only the trailing window (``history[-8:]`` below) and the last two
+    # entries feed the evidence decisions, so the ledger never needs to grow
+    # past the window: a long run would otherwise accumulate an entry per
+    # sweep forever inside the job dict.
+    if len(history) > 8:
+        del history[:-8]
     if len(history) < 3:
         return None
     window = history[-8:]

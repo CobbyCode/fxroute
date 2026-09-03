@@ -30,7 +30,10 @@ def _points(value_db=0.0):
 
 
 class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
-    async def _run_path(self, *, gate_veto, verdict_accepted):
+    async def _run_path(
+        self, *, gate_veto, verdict_accepted,
+        balance_deltas_db=None, fail_winner_apply=False, fail_restore=False,
+    ):
         job_id = "auto-sub-22-mono-path"
         original = {
             "mode": runner.OUTPUT_MODE_SUBWOOFER_22,
@@ -43,6 +46,7 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
         }
         state = copy.deepcopy(original)
         seen_transfer_incumbent = {}
+        measure_stages: list[str] = []
         job = {
             "id": job_id,
             "mode": runner.OUTPUT_MODE_SUBWOOFER_22,
@@ -73,9 +77,26 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
 
         async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
             persist(output_mode, global_config, subwoofers_config)
+            if fail_winner_apply:
+                return False
             return bool(verify((load_overview or (lambda: copy.deepcopy(state)))()))
 
+        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
+            # The shared verified restore lives in candidates and calls
+            # candidates._auto_sub_apply_candidate; keep its state test-local.
+            if fail_restore:
+                return False
+            persist(output_mode, global_config, subwoofers_config)
+            return bool(verify(copy.deepcopy(state)))
+
         async def measure_candidate(**kwargs):
+            measure_stages.append(str(kwargs["stage"]))
+            # A combined candidate measures L and R, so the production sweep
+            # ledger gains one timing entry per side.
+            job.setdefault("_sweep_timings", []).extend([
+                {"channel": "left", "stage": kwargs["stage"], "durations": {"total_ms": 1.0}},
+                {"channel": "right", "stage": kwargs["stage"], "durations": {"total_ms": 1.0}},
+            ])
             snapshot = kwargs["original_config_snapshot"]
             subwoofers = runner._auto_sub_22_candidate_subwoofers(
                 snapshot,
@@ -164,7 +185,9 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
             }
 
         def fake_transfer(**kwargs):
-            # Record which incumbent residual the runner looked up.
+            # Record which balance deltas and incumbent residual the runner
+            # looked up.
+            seen_transfer_incumbent["balance_deltas_db"] = copy.deepcopy(kwargs.get("balance_deltas_db") or {})
             seen_transfer_incumbent.update(copy.deepcopy(kwargs.get("incumbent_residuals_db") or {}))
             from measurement.autosub import measurement as m
             return m._auto_sub_balance_transfer_deltas(**kwargs)
@@ -187,7 +210,10 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                 stack.enter_context(patch.object(runner, "_calculate_auto_sub_gain", side_effect=[
                     gain_diagnostics(4.377), gain_diagnostics(-0.953), gain_diagnostics(0.1),
                 ]))
-                stack.enter_context(patch.object(runner, "_auto_sub_gain_deltas", return_value={"left": 4.377, "right": 4.377}))
+                stack.enter_context(patch.object(
+                    runner, "_auto_sub_gain_deltas",
+                    return_value=balance_deltas_db or {"left": 4.377, "right": 4.377},
+                ))
                 stack.enter_context(patch.object(runner, "_auto_sub_target_residual_raw_db", side_effect=[
                     (3.745, 0.0, []), (3.745, 0.0, []),
                 ]))
@@ -202,6 +228,7 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                     return_value=(gate_veto, {"failed_sides": ["left", "right"] if gate_veto else [],
                                               "reason": "combined_deterioration" if gate_veto else "no_per_side_trigger"})))
                 stack.enter_context(patch.object(runner, "_auto_sub_apply_candidate", side_effect=apply_candidate))
+                stack.enter_context(patch("measurement.autosub.candidates._auto_sub_apply_candidate", side_effect=restore_apply_candidate))
                 stack.enter_context(patch.object(runner, "_finish_auto_sub_worker", side_effect=finish_worker))
                 stack.enter_context(patch.object(runner, "get_audio_output_overview", side_effect=overview))
                 stack.enter_context(patch.object(samplerate, "set_audio_output_mode", side_effect=persist))
@@ -217,10 +244,10 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                 )
         finally:
             runner._AUTO_SUB_JOBS.pop(job_id, None)
-        return job, state, seen_transfer_incumbent
+        return job, state, seen_transfer_incumbent, measure_stages
 
     async def test_winner_path_applies_winner_pair_and_reports_derived(self):
-        job, state, _seen = await self._run_path(gate_veto=False, verdict_accepted=True)
+        job, state, _seen, _stages = await self._run_path(gate_veto=False, verdict_accepted=True)
         self.assertEqual(job["status"], "completed", job.get("error"))
         result = job["result"]
         # Candidate -> derived -> apply -> stored final state.
@@ -235,7 +262,7 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(result["derived_sub2_delay_ms"], 2.54, places=2)
 
     async def test_gate_revert_keeps_incumbent_applied_but_winner_suggested(self):
-        job, state, _seen = await self._run_path(gate_veto=True, verdict_accepted=False)
+        job, state, _seen, _stages = await self._run_path(gate_veto=True, verdict_accepted=False)
         self.assertEqual(job["status"], "completed", job.get("error"))
         result = job["result"]
         self.assertEqual(result["confirmation_gate"]["action"], "alignment_reverted_balance_kept")
@@ -250,13 +277,50 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reject_reason"], "final_state_regressed_incumbent_pair_kept")
 
     async def test_transfer_incumbent_comes_from_both_subs_matrix(self):
-        _job, _state, seen = await self._run_path(gate_veto=False, verdict_accepted=True)
+        _job, _state, seen, _stages = await self._run_path(gate_veto=False, verdict_accepted=True)
         # The runner's transfer lookup resolves the incumbent residual from
         # the Both-subs matrix row: the lookup must succeed (no fallback to
         # a missing/empty candidate which yields incumbent None -> transfer
         # unavailable or a stale single-sub residual).
         self.assertIn("left", seen)
         self.assertIn("right", seen)
+
+    async def test_balance_transfer_forwards_the_real_right_delta(self):
+        # Regression: the mono transfer used to mirror the left delta into
+        # ``right`` (balance_deltas.get("left", 0.0)), which only went
+        # unnoticed because mono sets both deltas equal. Distinct values must
+        # arrive untouched.
+        _job, _state, seen, _stages = await self._run_path(
+            gate_veto=False, verdict_accepted=True,
+            balance_deltas_db={"left": -2.0, "right": 1.5},
+        )
+        self.assertEqual(seen.get("balance_deltas_db"), {"left": -2.0, "right": 1.5})
+
+    async def test_restore_failure_fails_the_job_with_restore_detail(self):
+        # Finding: a restore that cannot be verified (even after the one
+        # re-apply) must fail the job instead of ending on a silently
+        # different topology.
+        job, _state, _seen, _stages = await self._run_path(
+            gate_veto=False, verdict_accepted=True,
+            fail_winner_apply=True, fail_restore=True,
+        )
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("failed to restore the original config", job["message"])
+        self.assertIn("restore verification failed", str(job.get("error") or {}))
+
+    async def test_result_sweep_count_counts_executed_sweeps_from_ledger(self):
+        # The 2.2 results previously reported a static matrix-based plan that
+        # missed the polarity, gain and confirmation sweeps. The result must
+        # reflect the sweeps that actually ran (two per combined candidate).
+        job, _state, _seen, stages = await self._run_path(gate_veto=False, verdict_accepted=True)
+        ledger = len(job.get("_sweep_timings") or [])
+        self.assertGreater(ledger, 0)
+        self.assertEqual(job["result"]["sweep_count"], ledger)
+        self.assertEqual(ledger, 2 * len(stages))
+        # The late stages really are part of the run and therefore of the
+        # reported count.
+        for late_stage in ("polarity_check", "gain_after"):
+            self.assertIn(late_stage, stages)
 
 
 if __name__ == "__main__":

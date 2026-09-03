@@ -16,7 +16,7 @@ from measurement.autosub.runners import optimize as runner
 
 
 class AutoSub21ConfirmationRecommitTests(unittest.IsolatedAsyncioTestCase):
-    async def _run_reference_case(self, *, fail_recommit=False):
+    async def _run_reference_case(self, *, fail_recommit=False, fail_restore=False):
         job_id = "auto-sub-21-confirmation-recommit"
         original = {
             "mode": runner.OUTPUT_MODE_SUBWOOFER_21,
@@ -139,6 +139,15 @@ class AutoSub21ConfirmationRecommitTests(unittest.IsolatedAsyncioTestCase):
         async def finish_worker(_job, _job_id):
             return None
 
+        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
+            # The verified restore helper lives in candidates and calls
+            # candidates._auto_sub_apply_candidate; route it through the same
+            # fake persist/overview so the restore state stays test-local.
+            if fail_restore:
+                return False
+            persist(output_mode, global_config, subwoofers_config)
+            return bool(verify(overview()))
+
         try:
             with ExitStack() as stack:
                 stack.enter_context(patch.object(runner, "_measurement_session", return_value=None))
@@ -169,6 +178,7 @@ class AutoSub21ConfirmationRecommitTests(unittest.IsolatedAsyncioTestCase):
                     7.25, 6.25, 10.40, 10.20, 10.30, 10.10,
                 ]))
                 stack.enter_context(patch.object(runner, "_auto_sub_apply_candidate", side_effect=apply_candidate))
+                stack.enter_context(patch("measurement.autosub.candidates._auto_sub_apply_candidate", side_effect=restore_apply_candidate))
                 stack.enter_context(patch.object(runner, "_finish_auto_sub_worker", side_effect=finish_worker))
                 stack.enter_context(patch.object(runner, "get_audio_output_overview", side_effect=overview))
                 stack.enter_context(patch.object(samplerate, "set_audio_output_mode", side_effect=persist))
@@ -223,6 +233,19 @@ class AutoSub21ConfirmationRecommitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["confirmation_gate"]["action"], "winner_recommit_failed")
         self.assertEqual(state, original)
+
+    async def test_restore_verification_failure_fails_the_job(self):
+        # A restore the live state cannot confirm (even after the one
+        # re-apply) must fail the job instead of ending on a silently
+        # different topology.
+        job, _state, _original, apply_count = await self._run_reference_case(
+            fail_recommit=True, fail_restore=True,
+        )
+
+        self.assertEqual(apply_count, 2)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("failed to restore the original config", job["message"])
+        self.assertIn("restore verification failed", str(job.get("error") or {}))
 
 
 if __name__ == "__main__":

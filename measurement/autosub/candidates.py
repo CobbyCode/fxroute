@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22_MODES,
+    _load_audio_output_mode,
     get_audio_output_overview,
     set_audio_output_mode,
 )
@@ -40,26 +41,79 @@ def _auto_sub_cancelled_candidate(delay_ms: float, stage: str) -> dict[str, Any]
         "scan": stage,
     }
 
-async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, Any]) -> None:
-    """Restore subwoofer config from snapshot."""
+def _auto_sub_21_verify_restored(mode_state: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+    """Verify a restored 2.1 subwoofer state matches the start snapshot."""
     try:
-        from audio.samplerate import set_audio_output_mode
-        mode = original_config_snapshot.get("mode", "stereo") or "stereo"
-        subwoofer_config = (
-            _auto_sub_22_global_config(original_config_snapshot)
-            if mode in OUTPUT_MODE_SUBWOOFER_22_MODES
-            else original_config_snapshot.get("subwoofer") or {}
-        )
-        await asyncio.to_thread(
-            set_audio_output_mode,
-            mode,
-            subwoofer_config,
-            original_config_snapshot.get("subwoofers") or {},
-        )
-        if _dsp_runtime() is not None:
-            await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+        if str(mode_state.get("mode") or "") != str(snapshot.get("mode") or ""):
+            return False
+        expected = snapshot.get("subwoofer") or {}
+        actual = mode_state.get("subwoofer") or {}
+        if not isinstance(actual, dict) or not isinstance(expected, dict):
+            return False
+        if abs(float(actual.get("sub_alignment_ms", -9999)) - _auto_sub_clamped_delay(float(expected.get("sub_alignment_ms", 0.0) or 0.0))) > 0.001:
+            return False
+        if abs(round(float(actual.get("sub_level_db", -9999)), 1) - round(float(expected.get("sub_level_db", 0.0) or 0.0), 1)) > 0.05:
+            return False
+        if str(actual.get("sub_polarity") or "normal") != str(expected.get("sub_polarity") or "normal"):
+            return False
+        if int(actual.get("crossover_frequency_hz", -9999)) != int(expected.get("crossover_frequency_hz", 80)):
+            return False
+        if bool(actual.get("main_highpass_enabled")) != bool(expected.get("main_highpass_enabled", True)):
+            return False
+        return True
+    except (TypeError, ValueError):
+        return False
+
+async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, Any]) -> bool:
+    """Restore the start-of-run config and verify the live state matches.
+
+    The restore runs through the same persist -> DSP sync -> settle ->
+    read-back -> verify path the candidate configurations use, instead of a
+    blind write: every AutoSub mode (2.1, 2.2 mono, 2.2 stereo) ends the run
+    with the exact topology it began with. When the first read-back does not
+    match, the restore is applied a second time and re-verified; only a
+    persisting mismatch returns False so the runner can fail the job instead
+    of leaving a silently different config active.
+    """
+    try:
+        mode = str(original_config_snapshot.get("mode", "stereo") or "stereo")
+        if mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
+            sub1 = _auto_sub_22_sub(original_config_snapshot, "sub1")
+            sub2 = _auto_sub_22_sub(original_config_snapshot, "sub2")
+            global_config = _auto_sub_22_global_config(original_config_snapshot)
+            subwoofers_config = _auto_sub_22_candidate_subwoofers(
+                original_config_snapshot,
+                sub1_alignment_ms=sub1["alignment_ms"],
+                sub2_alignment_ms=sub2["alignment_ms"],
+                active_subs=("sub1", "sub2"),
+                sub1_polarity=sub1["polarity"],
+                sub2_polarity=sub2["polarity"],
+            )
+            verify = lambda overview: _auto_sub_22_verify_subwoofers(  # noqa: E731
+                overview, subwoofers_config, mode,
+            )
+        else:
+            global_config = dict(original_config_snapshot.get("subwoofer") or {})
+            subwoofers_config = None
+            verify = lambda overview: _auto_sub_21_verify_restored(  # noqa: E731
+                overview, original_config_snapshot,
+            )
+        for attempt in (1, 2):
+            restored = await _auto_sub_apply_candidate(
+                output_mode=mode,
+                global_config=global_config,
+                subwoofers_config=subwoofers_config,
+                verify=verify,
+                load_overview=_load_audio_output_mode,
+            )
+            if restored:
+                return True
+            if attempt == 1:
+                logger.warning("Auto-sub: original config restore verification failed; re-applying once")
+        return False
     except Exception:
         logger.exception("Auto-sub: failed to restore original config from snapshot")
+        return False
 
 async def _auto_sub_sync_dsp_runtime(
     *,

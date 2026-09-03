@@ -37,6 +37,7 @@ from ..candidates import (
     _auto_sub_step_ms,
     _auto_sub_sweep_profile,
     _auto_sub_winner_delay_ms,
+    _restore_auto_sub_original_config,
 )
 from ..deps import (
     _AUTO_SUB_JOBS,
@@ -46,6 +47,7 @@ from ..deps import (
     _measurement_session,
 )
 from ..jobs import (
+    _auto_sub_executed_sweep_count,
     _finish_auto_sub_worker,
     _log_auto_sub_timing_summary,
 )
@@ -125,25 +127,10 @@ async def _run_auto_sub_22_stereo_optimize(
         return
 
     async def _restore_original_config() -> bool:
-        original_sub1 = _auto_sub_22_sub(original_config_snapshot, "sub1")
-        original_sub2 = _auto_sub_22_sub(original_config_snapshot, "sub2")
-        original_subwoofers = _auto_sub_22_candidate_subwoofers(
-            original_config_snapshot,
-            sub1_alignment_ms=original_sub1["alignment_ms"],
-            sub2_alignment_ms=original_sub2["alignment_ms"],
-            active_subs=("sub1", "sub2"),
-            sub1_polarity=original_sub1["polarity"],
-            sub2_polarity=original_sub2["polarity"],
-        )
-        restored = await _auto_sub_apply_candidate(
-            output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
-            global_config=_auto_sub_22_global_config(original_config_snapshot),
-            subwoofers_config=original_subwoofers,
-            verify=lambda overview: _auto_sub_22_verify_subwoofers(
-                overview, original_subwoofers, OUTPUT_MODE_SUBWOOFER_22_STEREO,
-            ),
-            load_overview=_load_audio_output_mode,
-        )
+        # Shared verified restore: re-apply the start-of-run state and read it
+        # back (with one re-apply on a transient mismatch). A persisting
+        # mismatch fails the job instead of ending on a different topology.
+        restored = await _restore_auto_sub_original_config(original_config_snapshot)
         if not restored:
             prior_detail = str((job.get("error") or {}).get("detail") or "")
             restore_detail = "original config restore verification failed"
@@ -1814,7 +1801,11 @@ async def _run_auto_sub_22_stereo_optimize(
             "left_ranking": left_scoring["results"],
             "right_ranking": right_scoring["results"],
             "fine_scan": job["fine_scan"],
-            "sweep_count": actual_sweep_total + 2,
+            # Executed ledger count: balance, deep-bass, polarity, gain and
+            # confirmation sweeps all run after the alignment scans and are
+            # part of the job's sweep total; an alignment-scan plan would
+            # miss them.
+            "sweep_count": _auto_sub_executed_sweep_count(job),
             "candidate_count": actual_sweep_total,
             "left_candidate_count": len(left_scan_delays) + len(left_fine_delays),
             "right_candidate_count": len(right_scan_delays) + len(right_fine_delays),

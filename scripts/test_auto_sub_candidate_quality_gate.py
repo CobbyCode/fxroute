@@ -346,6 +346,18 @@ class ChainHealthTests(unittest.TestCase):
         self.assertIsNone(_auto_sub_chain_health_check(job, 52668, 48000))
         self.assertIsNone(_auto_sub_chain_health_check(job, 52668, 48000))
 
+    def test_history_is_bounded_to_the_latest_eight_samples(self):
+        # Only the trailing window (median baseline, last-two confirmation)
+        # feeds the decisions, so a long run must not accumulate one entry
+        # per sweep forever inside the job dict.
+        pattern = (77244, 78268, 79292, 78268, 77244, 78268, 79292, 78268,
+                   77244, 78268, 79292, 78268)
+        job = {}
+        for align in pattern:
+            self.assertIsNone(_auto_sub_chain_health_check(job, align, 48000))
+        self.assertEqual(len(job["chain_alignment_samples"]), 8)
+        self.assertEqual(job["chain_alignment_samples"], [float(value) for value in pattern[-8:]])
+
 
 class UncertainTiebreakTests(unittest.IsolatedAsyncioTestCase):
     def scoring_with(self, results, confidence):

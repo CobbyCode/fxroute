@@ -39,6 +39,7 @@ from measurement.autosub.deps import (
 )
 
 from measurement.autosub.candidates import (
+    _auto_sub_21_verify_restored,
     _auto_sub_22_candidate_subwoofers,
     _auto_sub_22_global_config,
     _auto_sub_22_name,
@@ -87,6 +88,7 @@ from measurement.autosub.jobs import (
     _AUTO_SUB_STAGE_PEAK_MISMATCH_DB,
     _AUTO_SUB_TIMING_MARKS,
     _append_auto_sub_sweep_timing,
+    _auto_sub_executed_sweep_count,
     _auto_sub_job_playback_gain,
     _auto_sub_stage_peak_comparison,
     _auto_sub_stage_peak_prediction,

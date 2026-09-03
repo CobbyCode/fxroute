@@ -409,6 +409,17 @@ def _append_auto_sub_sweep_timing(
         "status": status,
     })
 
+def _auto_sub_executed_sweep_count(job: Mapping[str, Any]) -> int:
+    """Physical sweep measurements the job actually ran, per side.
+
+    Every measured candidate (each side of a combined candidate, main
+    references, polarity, gain and confirmation sweeps included) appends one
+    entry to the job's ``_sweep_timings`` ledger, so this count reflects the
+    sweeps that really happened instead of a static plan that misses the
+    late polarity/gain/confirmation stages or over-counts gated-out ones.
+    """
+    return len(job.get("_sweep_timings") or [])
+
 def _log_auto_sub_timing_summary(job: dict[str, Any]) -> None:
     timing_log = job.get("_sweep_timings", [])
     if not timing_log:
