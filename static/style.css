@@ -978,14 +978,19 @@ body {
     white-space: pre-wrap;
     word-break: break-word;
 }
-.settings-device-name-row {
+.field-group.settings-device-name-row {
     display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
 }
 .settings-device-name-row .url-input {
-    flex: 1;
+    flex: 1 1 18rem;
     min-width: 0;
+}
+.settings-device-name-row .btn-secondary {
+    flex: 0 0 auto;
 }
 .settings-certificate-note a {
     color: var(--text-secondary);

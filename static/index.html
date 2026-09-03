@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.175">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.176">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -95,19 +95,6 @@
 
                     <section class="radio-manage-section settings-section">
                         <div class="radio-manage-section-header">
-                            <h3>Device Name</h3>
-                            <p id="settings-device-name-hint">Address of this FXRoute box on the LAN.</p>
-                        </div>
-                        <div class="field-group settings-field-group settings-device-name-row">
-                            <input id="settings-device-name-input" class="url-input" type="text"
-                                   autocomplete="off" spellcheck="false" maxlength="63"
-                                   aria-label="Device name" placeholder="fxroute" />
-                            <button id="settings-device-name-apply" class="btn-secondary" type="button">Apply</button>
-                        </div>
-                    </section>
-
-                    <section class="radio-manage-section settings-section">
-                        <div class="radio-manage-section-header">
                             <h3>Audio Output</h3>
                             <p id="settings-output-summary">Loading outputs…</p>
                         </div>
@@ -158,6 +145,19 @@
                                 <option value="app-playback" selected>Loading…</option>
                             </select>
                             <p id="settings-bluetooth-status" class="settings-inline-note">Bluetooth: loading…</p>
+                        </div>
+                    </section>
+
+                    <section class="radio-manage-section settings-section">
+                        <div class="radio-manage-section-header">
+                            <h3>Device Name</h3>
+                            <p id="settings-device-name-hint">Address of this FXRoute box on the LAN.</p>
+                        </div>
+                        <div class="field-group settings-field-group settings-device-name-row">
+                            <input id="settings-device-name-input" class="url-input" type="text"
+                                   autocomplete="off" spellcheck="false" maxlength="63"
+                                   aria-label="Device name" placeholder="fxroute" />
+                            <button id="settings-device-name-apply" class="btn-secondary" type="button">Apply</button>
                         </div>
                     </section>
 
