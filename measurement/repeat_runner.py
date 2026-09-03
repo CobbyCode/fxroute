@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import wave
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -768,12 +769,27 @@ class MeasurementRepeatRunner:
         Cluster the deltas, accept pairs in the best cluster,
         then derive L and R timing from accepted pairs only.
 
+        ER pre-averaging collapses one side to a single effective capture
+        while the other side still holds per-sweep measurements.  In that
+        case every per-sweep capture pairs against the single effective one,
+        so the per-sweep side never loses runs to list-length mismatch.
+
         Returns (left_summary, right_summary) with shared paired-delta metadata.
         """
+        left_len = len(left_measurements)
+        right_len = len(right_measurements)
+        left_is_effective_single = left_len == 1 and right_len > 1
+        right_is_effective_single = right_len == 1 and left_len > 1
+        if left_is_effective_single or right_is_effective_single:
+            pair_count = min(max(left_len, right_len), repeat_count)
+        else:
+            pair_count = min(left_len, right_len, repeat_count)
         pair_deltas: list[tuple[int, float]] = []
-        for idx in range(min(len(left_measurements), len(right_measurements), repeat_count)):
-            l_timing = self._extract_measurement_timing_ms(left_measurements[idx])
-            r_timing = self._extract_measurement_timing_ms(right_measurements[idx])
+        for idx in range(pair_count):
+            l_item = left_measurements[0] if left_is_effective_single else left_measurements[idx]
+            r_item = right_measurements[0] if right_is_effective_single else right_measurements[idx]
+            l_timing = self._extract_measurement_timing_ms(l_item)
+            r_timing = self._extract_measurement_timing_ms(r_item)
             if l_timing is not None and r_timing is not None:
                 pair_deltas.append((idx, r_timing - l_timing))
 
@@ -806,26 +822,43 @@ class MeasurementRepeatRunner:
             # Fallback: accept all pairs, mark unstable
             accepted_pair_indices = [idx for idx, _ in pair_deltas]
 
-        # Derive L and R timings from accepted pairs only
-        if accepted_pair_indices is not None and len(accepted_pair_indices) > 0:
+        # Map the accepted pair indices onto each side's own measurements.
+        # A side collapsed to a single pre-averaged effective capture is the
+        # index-0 partner of every pair; a per-sweep side keeps its sweep
+        # indices directly.
+        if left_is_effective_single:
+            l_accepted_indices = [0] if accepted_pair_indices else []
+            r_accepted_indices = accepted_pair_indices
+        elif right_is_effective_single:
+            l_accepted_indices = accepted_pair_indices
+            r_accepted_indices = [0] if accepted_pair_indices else []
+        else:
+            l_accepted_indices = accepted_pair_indices
+            r_accepted_indices = accepted_pair_indices
+
+        # Derive L and R timings from the accepted measurements of each side
+        if l_accepted_indices:
             l_accepted_timings = []
-            r_accepted_timings = []
-            for idx in accepted_pair_indices:
-                lt = self._extract_measurement_timing_ms(left_measurements[idx])
-                rt = self._extract_measurement_timing_ms(right_measurements[idx])
+            for index in l_accepted_indices:
+                lt = self._extract_measurement_timing_ms(left_measurements[index])
                 if lt is not None:
                     l_accepted_timings.append(lt)
-                if rt is not None:
-                    r_accepted_timings.append(rt)
             l_final_ms = float(np.median(l_accepted_timings)) if l_accepted_timings else None
-            r_final_ms = float(np.median(r_accepted_timings)) if r_accepted_timings else None
         else:
             l_final_ms = None
+        if r_accepted_indices:
+            r_accepted_timings = []
+            for index in r_accepted_indices:
+                rt = self._extract_measurement_timing_ms(right_measurements[index])
+                if rt is not None:
+                    r_accepted_timings.append(rt)
+            r_final_ms = float(np.median(r_accepted_timings)) if r_accepted_timings else None
+        else:
             r_final_ms = None
 
         l_summary = self._build_repeat_side_summary(
             left_measurements,
-            accepted_pair_indices,
+            l_accepted_indices,
             base_name=base_name,
             channel="left",
             repeat_count=repeat_count,
@@ -838,7 +871,7 @@ class MeasurementRepeatRunner:
         )
         r_summary = self._build_repeat_side_summary(
             right_measurements,
-            accepted_pair_indices,
+            r_accepted_indices,
             base_name=base_name,
             channel="right",
             repeat_count=repeat_count,

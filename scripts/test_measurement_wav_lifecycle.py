@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -285,6 +286,63 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
                         inverse_sweep=np.zeros(1024, dtype=np.float32),
                     )
 
+            self.assertEqual(list(store.captures_dir.glob("preavg-*.wav")), [])
+
+    async def test_preaverage_writes_real_stereo_wav_before_qc(self):
+        # The ER pre-average path used wave.open without importing wave, so the
+        # averaged WAV write always raised NameError and pre-averaging silently
+        # fell back to per-sweep analysis. This test runs the real write and
+        # proves the averaged file exists as a readable stereo WAV at QC time.
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            sweep = np.zeros((int(48_000 * (SWEEP_V2_SECONDS + SWEEP_V2_TAIL_SECONDS)), 2), dtype=np.float32)
+
+            def _fake_load(_path):
+                return 48_000, sweep
+
+            seen = {}
+
+            def _fake_qc(path, **kwargs):
+                seen["path"] = Path(path)
+                with wave.open(str(path), "rb") as handle:
+                    seen["channels"] = handle.getnchannels()
+                    seen["sampwidth"] = handle.getsampwidth()
+                    seen["framerate"] = handle.getframerate()
+                return {"sample_rate": 48_000}
+
+            with patch.object(store, "_load_wav_array", _fake_load), \
+                    patch.object(store._analyzer, "_find_sweep_start", lambda *_a, **_k: 0), \
+                    patch.object(store._analyzer, "_estimate_sweep_timing", lambda *_a, **_k: {
+                        "aligned_start": 0,
+                        "observed_sweep_samples": sweep.shape[0],
+                        "start_score": 1.0,
+                        "end_score": 1.0,
+                        "estimated_ppm": 0.0,
+                        "drift_ppm": 0.0,
+                        "estimated_total_drift_samples": 0,
+                        "total_drift_samples": 0,
+                        "anchor_seconds": 0.0,
+                    }), \
+                    patch.object(store._analyzer, "_analyze_sweep_capture", _fake_qc):
+                analysis, debug = store._repeat_runner._pre_average_er_captures(
+                    capture_paths=["c1.wav", "c2.wav"],
+                    playback_path="p.wav",
+                    sample_rate=48_000,
+                    mic_input_channel_index=0,
+                    electrical_reference_channel_index=1,
+                    calibration_curve=None,
+                    reference_sweep=np.zeros(1024, dtype=np.float32),
+                    inverse_sweep=np.zeros(1024, dtype=np.float32),
+                )
+
+            self.assertTrue(debug["pre_average_applied"])
+            self.assertEqual(seen["channels"], 2)
+            self.assertEqual(seen["sampwidth"], 2)
+            self.assertEqual(seen["framerate"], 48_000)
+            # The temporary averaged WAV was removed after QC
+            self.assertFalse(seen["path"].exists())
             self.assertEqual(list(store.captures_dir.glob("preavg-*.wav")), [])
 
     async def test_preaverage_temp_wav_removed_when_write_fails(self):

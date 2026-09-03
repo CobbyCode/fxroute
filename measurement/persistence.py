@@ -239,8 +239,8 @@ class MeasurementPersistence:
 
     def delete_measurement(self, measurement_id: str) -> None:
         measurement_id = str(measurement_id or "").strip()
-        if not measurement_id:
-            raise ValueError("Measurement id is required")
+        if not measurement_id or Path(measurement_id).name != measurement_id:
+            raise ValueError("Invalid measurement id")
         path = self._store.measurements_dir / f"{measurement_id}.json"
         if not path.exists():
             raise KeyError(measurement_id)
