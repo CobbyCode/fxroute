@@ -519,6 +519,12 @@ class ZipAlbumExtractionTests(unittest.TestCase):
         self.assertEqual(list(target.iterdir()), [])
 
 
+class _FakeSettings:
+    def __init__(self, download_dir: Path):
+        self.download_dir = download_dir
+        self.MUSIC_ROOT = download_dir.parent / "music"
+
+
 class LibraryUploadZipTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -605,6 +611,39 @@ class LibraryUploadZipTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await library_api.upload_track(upload)
         self.assertEqual(list(self.download_dir.iterdir()), [])
+
+    async def test_refresh_failure_keeps_complete_upload(self):
+        """A failure after the file was fully written must not delete it.
+
+        The library refresh that follows a successful write can fail on its
+        own (scan error, cancellation); the upload itself succeeded and the
+        next scan picks the file up, so removing it would delete a complete
+        upload and leave the library cache pointing at a missing file.
+        """
+
+        class RefreshFailingScanner:
+            scanning = False
+
+            def prepare_scan_status(self):
+                pass
+
+            def status(self):
+                return {}
+
+            def refresh(self, *args, **kwargs):
+                raise RuntimeError("scan exploded")
+
+        library_api._library_runtime = lambda: (
+            RefreshFailingScanner(),
+            _FakeSettings(self.download_dir),
+        )
+        upload = FakeUpload(b"COMPLETE-UPLOAD" * 32, filename="track.flac")
+        with self.assertRaises(HTTPException) as ctx:
+            await library_api.upload_track(upload)
+        self.assertEqual(ctx.exception.status_code, 500)
+        target = self.download_dir / "track.flac"
+        self.assertTrue(target.exists(), "complete upload must survive a failed refresh")
+        self.assertEqual(target.read_bytes(), b"COMPLETE-UPLOAD" * 32)
 
     async def test_zip_upload_cancellation_removes_staged_files(self):
         upload = FakeUpload(

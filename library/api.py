@@ -636,6 +636,10 @@ async def upload_track(file: UploadFile = File(...)):
     target_path = None
     album_dir = None
     temp_zip_path = None
+    # Set once the audio write completed; the cleanup handlers only remove a
+    # target file they created themselves (a partial write), never a complete
+    # upload that failed at a later phase (e.g. the library refresh).
+    file_saved = False
 
     try:
         if suffix == ".zip":
@@ -711,9 +715,22 @@ async def upload_track(file: UploadFile = File(...)):
         if target_path.exists():
             raise HTTPException(status_code=409, detail="A file with that name already exists")
 
+        # The write and the library refresh are separate phases: an error
+        # during the write must remove the partial file, but an error after
+        # a complete write (the refresh scan) must not delete the uploaded
+        # file again.  `file_saved` flips once the write is done and the
+        # refresh (which can legitimately fail) runs outside the cleanup
+        # handlers below.
+        file_saved = False
         with target_path.open("wb") as buffer:
             await save_upload_to_file(file, buffer, LIBRARY_UPLOAD_MAX_BYTES)
-        tracks = await _run_blocking(library_scanner.refresh, True, wait_if_running=True)
+        file_saved = True
+        try:
+            tracks = await _run_blocking(library_scanner.refresh, True, wait_if_running=True)
+        except asyncio.CancelledError:
+            # Cancelling the refresh keeps the already-written file: the
+            # upload itself succeeded and a later scan picks it up.
+            raise
         return {
             "status": "uploaded",
             "kind": "audio",
@@ -725,9 +742,11 @@ async def upload_track(file: UploadFile = File(...)):
     except asyncio.CancelledError:
         # A cancelled request must not leave partial files created by this
         # request behind; the cancellation itself propagates unchanged.
+        # ``file_saved`` tracks whether the write already completed, so a
+        # complete upload is never removed on a later-phase failure.
         if temp_zip_path and temp_zip_path.exists():
             temp_zip_path.unlink(missing_ok=True)
-        if target_path and target_path.exists():
+        if not file_saved and target_path and target_path.exists():
             target_path.unlink(missing_ok=True)
         if album_dir and album_dir.exists():
             shutil.rmtree(album_dir, ignore_errors=True)
@@ -736,7 +755,7 @@ async def upload_track(file: UploadFile = File(...)):
         logger.warning("Upload rejected: %s", e)
         if temp_zip_path and temp_zip_path.exists():
             temp_zip_path.unlink(missing_ok=True)
-        if target_path and target_path.exists():
+        if not file_saved and target_path and target_path.exists():
             target_path.unlink(missing_ok=True)
         if album_dir and album_dir.exists():
             shutil.rmtree(album_dir, ignore_errors=True)
@@ -758,7 +777,7 @@ async def upload_track(file: UploadFile = File(...)):
         logger.error(f"Upload failed: {e}")
         if temp_zip_path and temp_zip_path.exists():
             temp_zip_path.unlink(missing_ok=True)
-        if target_path and target_path.exists():
+        if not file_saved and target_path and target_path.exists():
             target_path.unlink(missing_ok=True)
         if album_dir and album_dir.exists():
             shutil.rmtree(album_dir, ignore_errors=True)
