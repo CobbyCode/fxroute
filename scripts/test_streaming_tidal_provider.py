@@ -996,7 +996,7 @@ class RegistryTests(unittest.TestCase):
         self.assertIsInstance(tidal, TidalProvider)
         self.assertTrue(tidal.implemented)
         self.assertEqual(tidal.provider_id, "tidal")
-        self.assertEqual(tidal.display_name, "TIDAL")
+        self.assertEqual(tidal.display_name, "Tidal")
 
 
 class MainResolverTests(unittest.IsolatedAsyncioTestCase):

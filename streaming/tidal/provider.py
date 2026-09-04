@@ -33,7 +33,7 @@ class TidalProvider(StreamingProvider):
     """TIDAL catalog/state provider; playback rides the FXRoute owner."""
 
     provider_id: ClassVar[str] = "tidal"
-    display_name: ClassVar[str] = "TIDAL"
+    display_name: ClassVar[str] = "Tidal"
 
     def __init__(self, artist_enrichment: ArtistEnrichmentService | None = None) -> None:
         self._get_active_playback: Callable[[], dict] | None = None
