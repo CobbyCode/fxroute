@@ -3686,6 +3686,7 @@ body {
 
 .streaming-results { min-height: 2rem; }
 #tidal-fav-results,
+#tidal-playlists-results,
 #tidal-search-items { margin-top: 0.35rem; }
 .tidal-search-results-header { display: flex; flex-direction: column; gap: 0.6rem; }
 .streaming-results-title { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 700; }
@@ -3859,6 +3860,18 @@ body {
     list-style: none;
     padding: 0;
 }
+/* Browse results share one optical content start below the subbar divider:
+   the Tracks list (no tile margin) is the reference; the card grids drop
+   their library-inherited top margin so Albums/Artists/Playlists start at
+   the same height. Scoped to the browse containers so detail views keep
+   their own rhythm. */
+#tidal-fav-results > .tidal-tiles,
+#tidal-playlists-results > .tidal-tiles { margin-top: 0; }
+/* Search results share one optical gap below the result-type tabs: the card
+   grids stay the reference; the track list gains the same top margin so both
+   start at the same height. Scoped to search so the browse Tracks reference
+   stays untouched. */
+#tidal-search-items > .streaming-results-list { margin-top: 1.25rem; }
 .tidal-tiles .album-card .streaming-fav {
     position: absolute;
     top: 0.55rem;
