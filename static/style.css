@@ -3688,7 +3688,7 @@ body {
 #tidal-fav-results,
 #tidal-playlists-results,
 #tidal-search-items { margin-top: 0.35rem; }
-.tidal-search-results-header { display: flex; flex-direction: column; gap: 0.6rem; }
+.tidal-search-results-header { display: flex; flex-direction: column; gap: 0.5rem; }
 .streaming-results-title { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 700; }
 .streaming-results-heading {
     font-size: 0.78rem;
@@ -3871,7 +3871,8 @@ body {
    grids stay the reference; the track list gains the same top margin so both
    start at the same height. Scoped to search so the browse Tracks reference
    stays untouched. */
-#tidal-search-items > .streaming-results-list { margin-top: 1.25rem; }
+#tidal-search-items > .streaming-results-list,
+#tidal-search-items > .tidal-tiles { margin-top: 1.125rem; }
 .tidal-tiles .album-card .streaming-fav {
     position: absolute;
     top: 0.55rem;
