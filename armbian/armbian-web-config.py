@@ -696,6 +696,27 @@ def link_has_ipv4(interface: str) -> bool:
     return re.search(r"\binet\s+[0-9.]+/", result.stdout) is not None
 
 
+def interface_ipv4_addresses(interface: str | None = None) -> list[str]:
+    """Return global IPv4 addresses without the temporary setup AP address."""
+
+    if interface:
+        args = ["ip", "-4", "addr", "show", "dev", interface, "scope", "global"]
+    else:
+        args = ["ip", "-4", "addr", "show", "scope", "global"]
+    result = command(args, check=False)
+    if result.returncode != 0:
+        return []
+    addresses: list[str] = []
+    for match in re.finditer(
+        r"\binet\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/", result.stdout
+    ):
+        address = match.group(1)
+        if address == AP_ADDRESS or address in addresses:
+            continue
+        addresses.append(address)
+    return addresses
+
+
 def wifi_is_connected(interface: str) -> bool:
     result = command(["iw", "dev", interface, "link"], check=False)
     return "Connected to " in result.stdout
@@ -1710,7 +1731,9 @@ class SetupHandler(BaseHTTPRequestHandler):
         checker = getattr(self.server.onboarding, "has_usable_ethernet", None)
         return checker() if checker is not None else has_usable_ethernet()
 
-    def begin_setup_response(self) -> None:
+    def begin_setup_response(
+        self, wifi_ssid: str = "", ap_active: bool = False
+    ) -> None:
         self.close_connection = True
         self.send_response(202)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1718,10 +1741,35 @@ class SetupHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(
+            b'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            b'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            b"<title>Applying FXRoute setup</title></head><body>"
             b"<h1>Applying FXRoute setup</h1>"
-            b"<p>The account and network are being configured.</p>"
+            b"<p>The account and network are being configured. "
+            b"This can take a minute. Do not turn off the device.</p>"
         )
+        if ap_active:
+            self.wfile.write(
+                b"<p>The temporary setup network disappears during this step. "
+                b"Reconnect your computer to your normal network when it goes away.</p>"
+            )
+            if wifi_ssid:
+                self.wfile.write(
+                    f"<p>Joining Wi-Fi network: {html.escape(wifi_ssid)}.</p>".encode(
+                        "utf-8"
+                    )
+                )
+        else:
+            self.wfile.write(
+                b"<p>The device stays reachable on its wired network address.</p>"
+            )
         self.wfile.flush()
+
+    def setup_completion_addresses(self) -> list[str]:
+        try:
+            return interface_ipv4_addresses()
+        except (OSError, RuntimeError, subprocess.CalledProcessError):
+            return []
 
     def redirect_to_tls(self, path: str = "/") -> None:
         host = self.connection.getsockname()[0]
@@ -1735,7 +1783,11 @@ class SetupHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         preview = self.preview_mode()
-        if not self.server.secure and not preview and self.ethernet_available():
+        # Serve the form only over HTTPS so the browser certificate warning
+        # appears on the initial GET before any credentials are typed. Serving
+        # the AP page over plain HTTP and posting to HTTPS instead discards
+        # the POST body at the warning, forcing users to fill the form twice.
+        if not self.server.secure and not preview:
             self.redirect_to_tls()
             return
         path = urlsplit(self.path).path
@@ -1805,7 +1857,10 @@ class SetupHandler(BaseHTTPRequestHandler):
             )
             return
 
-        self.begin_setup_response()
+        self.begin_setup_response(
+            wifi_ssid=wifi_ssid,
+            ap_active=bool(getattr(self.server.onboarding, "ap_active", False)),
+        )
         try:
             success, message = self.server.onboarding.submit(
                 username,
@@ -1822,20 +1877,43 @@ class SetupHandler(BaseHTTPRequestHandler):
             if preview:
                 self.wfile.write(
                     b"<h2>Preview accepted</h2>"
-                    b"<p>No system changes were made.</p>"
+                    b"<p>No system changes were made.</p></body></html>"
                 )
             else:
                 # The Wi-Fi AP may already be gone, so stop both listeners before
                 # attempting the optional final response write.
                 self.server.onboarding.request_shutdown()
-                self.wfile.write(
-                    b"<p>Setup complete. You can connect over SSH when this page closes.</p>"
-                )
+                addresses = self.setup_completion_addresses()
+                if addresses:
+                    links = "".join(
+                        f'<li><a href="http://{html.escape(address)}:8000">'
+                        f"http://{html.escape(address)}:8000</a></li>"
+                        for address in addresses
+                    )
+                    self.wfile.write(
+                        f"<h2>Setup complete</h2>"
+                        f"<p>FXRoute is being installed. The web interface will be "
+                        f"available at:</p><ul>{links}</ul>"
+                        f"<p>SSH will be available as "
+                        f"{html.escape(username)}@&lt;address&gt; once the device "
+                        f"is reachable on your normal network. If the temporary "
+                        f"setup network disappeared, reconnect your computer first."
+                        f"</p></body></html>".encode("utf-8")
+                    )
+                else:
+                    self.wfile.write(
+                        b"<h2>Setup complete</h2>"
+                        b"<p>Reconnect your computer to your normal network. "
+                        b"Find the device address on your router; FXRoute will be "
+                        b"available at http://&lt;address&gt;:8000 once first-boot "
+                        b"installation finishes.</p></body></html>"
+                    )
             self.wfile.flush()
         else:
             LOG.warning("Wi-Fi setup was not completed: %s", message)
             self.wfile.write(
-                f"<h2>Setup failed</h2><p>{html.escape(message)}</p>".encode("utf-8")
+                f"<h2>Setup failed</h2><p>{html.escape(message)}</p>"
+                f"</body></html>".encode("utf-8")
             )
             self.wfile.flush()
 
