@@ -13,16 +13,6 @@
     const HYBRID_MIN_FULL_HZ = 180;
     const HYBRID_LINEAR_FULL_HZ = 550;
 
-    // Broadband energy trim bounds for the convolver correction.
-    // Mirrors the AutoSub principle: the trim re-centers the 1/1-smoothed
-    // band energy on the target via the median smoothed residual, so local
-    // valleys (deep narrow dips) never set the level basis.
-    const MEASUREMENT_CONVOLVER_ENERGY_TRIM_DEFAULT_MAX_DB = 3;
-    const MEASUREMENT_CONVOLVER_ENERGY_TRIM_MIN_POINTS = 8;
-    const MEASUREMENT_CONVOLVER_ENERGY_TRIM_REFERENCE_MIN_HZ = 120;
-    const MEASUREMENT_CONVOLVER_ENERGY_TRIM_REFERENCE_MAX_HZ = 8000;
-    const MEASUREMENT_CONVOLVER_ENERGY_TRIM_TARGET_SAMPLES = 200;
-
     function measurementSmoothingHalfWindowOctaves(mode = '1/6-oct') {
         switch (String(mode || '1/6-oct')) {
             case 'raw': return 0;
@@ -104,87 +94,6 @@
         };
     }
 
-    function getMeasurementConvolverEnergyTrim(measuredFullPoints = [], bandCorrections = [], curvePoints = [[20, 0], [20000, 0]], options = {}) {
-        const skipped = (reason, context) => ({
-            trimDb: 0,
-            clamped: false,
-            madDb: 0,
-            points: 0,
-            maxResidualDb: 0,
-            reason,
-            context,
-        });
-        const context = String(options.context || 'full');
-        const maxTrimDb = Math.max(0, Number(options.maxTrimDb ?? MEASUREMENT_CONVOLVER_ENERGY_TRIM_DEFAULT_MAX_DB) || 0);
-        const referenceMinHz = Number(options.referenceMinHz ?? MEASUREMENT_CONVOLVER_ENERGY_TRIM_REFERENCE_MIN_HZ) || MEASUREMENT_CONVOLVER_ENERGY_TRIM_REFERENCE_MIN_HZ;
-        const referenceMaxHz = Number(options.referenceMaxHz ?? MEASUREMENT_CONVOLVER_ENERGY_TRIM_REFERENCE_MAX_HZ) || MEASUREMENT_CONVOLVER_ENERGY_TRIM_REFERENCE_MAX_HZ;
-        const fullPoints = (Array.isArray(measuredFullPoints) ? measuredFullPoints : [])
-            .filter((point) => Array.isArray(point) && Number.isFinite(Number(point[0])) && Number(point[0]) > 0 && Number.isFinite(Number(point[1])))
-            .map((point) => [Number(point[0]), Number(point[1])]);
-        const bandList = (Array.isArray(bandCorrections) ? bandCorrections : [])
-            .filter((item) => item && Number.isFinite(Number(item.frequency)) && Number.isFinite(Number(item.correctionDb)))
-            .map((item) => ({ frequency: Number(item.frequency), correctionDb: Number(item.correctionDb) }));
-        if (!fullPoints.length || !bandList.length) return skipped('empty-input', context);
-        if (bandList.length < MEASUREMENT_CONVOLVER_ENERGY_TRIM_MIN_POINTS) return skipped('insufficient-band-points', context);
-        const correctionByFrequency = new Map(bandList.map((item) => [item.frequency, item.correctionDb]));
-        // Predicted display-domain curve: pointwise correction inside the band,
-        // uncorrected outside it (shares the display normalization of the input).
-        const predicted = fullPoints.map(([frequency, measuredDb]) => (
-            [frequency, measuredDb + (correctionByFrequency.has(frequency) ? correctionByFrequency.get(frequency) : 0)]
-        ));
-        const referenceValues = getSortedNumericValues(
-            predicted.filter(([frequency]) => frequency >= referenceMinHz && frequency <= referenceMaxHz).map(([, level]) => level),
-        );
-        if (referenceValues.length < MEASUREMENT_CONVOLVER_ENERGY_TRIM_MIN_POINTS) return skipped('insufficient-reference-support', context);
-        const referenceMedian = getValueQuantile(referenceValues, 0.5);
-        const normalizedPredicted = predicted.map(([frequency, level]) => [frequency, level - referenceMedian]);
-        const smoothedPredicted = new Map(
-            smoothMeasurementTracePoints(normalizedPredicted, '1/1-oct').map(([frequency, level]) => [frequency, level]),
-        );
-        // Dense target sampled like the displayed target line, then smoothed
-        // with the same 1/1-octave kernel as the evaluated trace.
-        const targetMinHz = Math.min(20000, Math.max(20, Number(curvePoints[0]?.[0]) || 20));
-        const targetMaxHz = Math.min(20000, Math.max(targetMinHz + 1, Number(curvePoints[curvePoints.length - 1]?.[0]) || 20000));
-        const denseTarget = [];
-        for (let index = 0; index < MEASUREMENT_CONVOLVER_ENERGY_TRIM_TARGET_SAMPLES; index += 1) {
-            const ratio = index / (MEASUREMENT_CONVOLVER_ENERGY_TRIM_TARGET_SAMPLES - 1);
-            const frequency = targetMinHz * ((targetMaxHz / targetMinHz) ** ratio);
-            denseTarget.push([frequency, getMeasurementConvolverCurveDbFromPoints(curvePoints, frequency)]);
-        }
-        const smoothedTarget = smoothMeasurementTracePoints(denseTarget, '1/1-oct');
-        const targetAt = (frequencyHz) => {
-            let nearest = smoothedTarget[0];
-            let distance = Math.abs(Math.log(frequencyHz) - Math.log(Math.max(1, nearest[0])));
-            for (let index = 1; index < smoothedTarget.length; index += 1) {
-                const candidateDistance = Math.abs(Math.log(frequencyHz) - Math.log(Math.max(1, smoothedTarget[index][0])));
-                if (candidateDistance < distance) {
-                    nearest = smoothedTarget[index];
-                    distance = candidateDistance;
-                }
-            }
-            return nearest[1];
-        };
-        const residuals = [];
-        bandList.forEach((item) => {
-            const smoothedLevel = smoothedPredicted.get(item.frequency);
-            if (!Number.isFinite(smoothedLevel)) return;
-            residuals.push(targetAt(item.frequency) - smoothedLevel);
-        });
-        if (residuals.length < MEASUREMENT_CONVOLVER_ENERGY_TRIM_MIN_POINTS) return skipped('insufficient-band-support', context);
-        const rawTrimDb = getValueQuantile(getSortedNumericValues(residuals), 0.5);
-        const madDb = getValueQuantile(getSortedNumericValues(residuals.map((value) => Math.abs(value - rawTrimDb))), 0.5);
-        const boundedTrimDb = Math.min(maxTrimDb, Math.max(-maxTrimDb, rawTrimDb));
-        return {
-            trimDb: Math.round(boundedTrimDb * 10) / 10,
-            clamped: boundedTrimDb !== rawTrimDb,
-            madDb: Math.round(madDb * 1000) / 1000,
-            points: residuals.length,
-            maxResidualDb: Math.round(Math.max(...residuals) * 1000) / 1000,
-            reason: null,
-            context,
-        };
-    }
-
     function analyzeMeasurementConvolverCorrections(points = [], curvePoints = [[20, 0], [20000, 0]], settings = {}) {
         const maxBoostDb = Number(settings.maxBoostDb ?? 6);
         const maxCutDb = Number(settings.maxCutDb ?? -9);
@@ -212,45 +121,11 @@
                 correctionDb: Math.min(maxBoostDb, Math.max(maxCutDb, constrainedDb)),
             };
         });
-        // Broadband energy trim (AutoSub principle): re-center the 1/1-smoothed
-        // band energy on the target via the median smoothed residual. The trim
-        // is uniform inside the band, so the pointwise shape is preserved and
-        // valleys never set the level basis. Headroom stays intact because
-        // autoGain below is recomputed from the trimmed maximum.
-        const trimContextPoints = Array.isArray(settings.trimContextPoints) && settings.trimContextPoints.length >= MEASUREMENT_CONVOLVER_ENERGY_TRIM_MIN_POINTS
-            ? settings.trimContextPoints
-            : points;
-        const trimContext = Array.isArray(settings.trimContextPoints) && settings.trimContextPoints.length >= MEASUREMENT_CONVOLVER_ENERGY_TRIM_MIN_POINTS
-            ? 'full'
-            : 'band-only-fallback';
-        const energyTrim = getMeasurementConvolverEnergyTrim(
-            trimContextPoints,
-            corrections.map((item) => ({ frequency: item.frequency, correctionDb: item.correctionDb })),
-            curvePoints,
-            { maxTrimDb: Number(settings.energyTrimMaxDb ?? MEASUREMENT_CONVOLVER_ENERGY_TRIM_DEFAULT_MAX_DB), context: trimContext },
-        );
-        const trimmedCorrections = corrections.map((item) => ({
-            ...item,
-            correctionDb: item.correctionDb + energyTrim.trimDb,
-        }));
-        const maxPositive = Math.max(0, ...trimmedCorrections.map((item) => item.correctionDb));
-        const minCorrection = trimmedCorrections.length ? Math.min(...trimmedCorrections.map((item) => item.correctionDb)) : 0;
+        const maxPositive = Math.max(0, ...corrections.map((item) => item.correctionDb));
+        const minCorrection = corrections.length ? Math.min(...corrections.map((item) => item.correctionDb)) : 0;
         const autoGainDb = autoGainEnabled ? Math.round((-(maxPositive + safetyMarginDb)) * 2) / 2 : 0;
-        const lowBassBoost = trimmedCorrections.some((item) => item.frequency < 40 && item.correctionDb > 0.25);
-        return {
-            corrections: trimmedCorrections,
-            maxPositive,
-            minCorrection,
-            autoGainDb,
-            lowBassBoost,
-            dipGuardReductionMaxDb: Math.round(dipGuardReductionMaxDb * 10) / 10,
-            energyTrimDb: energyTrim.trimDb,
-            energyTrimClamped: energyTrim.clamped,
-            energyTrimMadDb: energyTrim.madDb,
-            energyTrimPoints: energyTrim.points,
-            energyTrimMaxResidualDb: energyTrim.maxResidualDb,
-            energyTrimReason: energyTrim.reason,
-        };
+        const lowBassBoost = corrections.some((item) => item.frequency < 40 && item.correctionDb > 0.25);
+        return { corrections, maxPositive, minCorrection, autoGainDb, lowBassBoost, dipGuardReductionMaxDb: Math.round(dipGuardReductionMaxDb * 10) / 10 };
     }
 
     function getMeasurementCorrectionConfidence(points = [], frequencyHz = 20) {
@@ -672,7 +547,6 @@
         applyMeasurementConvolverDipGuard,
         getMeasurementCorrectionConfidence,
         analyzeMeasurementConvolverCorrections,
-        getMeasurementConvolverEnergyTrim,
         interpolateMeasurementConvolverCorrection,
         buildMeasurementConvolverMagnitudeBins,
         buildMeasurementConvolverLinearImpulseFromMagnitudes,

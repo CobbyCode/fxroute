@@ -8501,15 +8501,13 @@ function applyMeasurementConvolverDipGuard(requestedCorrections, index, mode = '
 
 function analyzeMeasurementConvolverSide(side = 'left') {
     const conv = ensureMeasurementConvolverState();
-    const fullPoints = getMeasurementConvolverTracePoints(side);
-    const points = fullPoints.filter(([frequency]) => frequency >= conv.rangeStartHz && frequency <= conv.rangeEndHz);
+    const points = getMeasurementConvolverTracePoints(side).filter(([frequency]) => frequency >= conv.rangeStartHz && frequency <= conv.rangeEndHz);
     if (!points.length) return null;
     const curve = getMeasurementConvolverCurve(conv.targetCurve);
     const measurement = getMeasurementConvolverMeasurementForSide(side);
     const analysisSettings = {
         ...conv,
         correctionConfidence: measurement?.analysis?.hybrid_constraints || [],
-        trimContextPoints: fullPoints,
     };
     return {
         side,
@@ -8837,7 +8835,6 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
                 dipGuard: conv.dipGuard,
                 safetyMarginDb: conv.safetyMarginDb,
                 autoGainDb: analysis.autoGainDb,
-                energyTrimDb: analysis.energyTrimDb ?? 0,
                 sampleRate: getMeasurementConvolverSampleRate(),
                 quality: conv.quality,
                 phaseMode: conv.phaseMode,
@@ -8952,7 +8949,7 @@ async function createMeasurementConvolverPresetFromDraft() {
                 irLength: generationOptions.irLength,
                 generatedIr: true,
             },
-            analyses: analyses.map((analysis) => ({ side: analysis.side, points: analysis.points, maxPositive: analysis.maxPositive, minCorrection: analysis.minCorrection, autoGainDb: analysis.autoGainDb, dipGuardReductionMaxDb: analysis.dipGuardReductionMaxDb, energyTrimDb: analysis.energyTrimDb ?? 0 })),
+            analyses: analyses.map((analysis) => ({ side: analysis.side, points: analysis.points, maxPositive: analysis.maxPositive, minCorrection: analysis.minCorrection, autoGainDb: analysis.autoGainDb, dipGuardReductionMaxDb: analysis.dipGuardReductionMaxDb })),
         };
         state.dsp = state.dsp || {};
         state.dsp.assistStack = state.dsp.assistStack || [];
@@ -11496,7 +11493,7 @@ function renderMeasurementPanelConvolverSection({ measurementState, current, mea
         }
         elements.measurementConvolverSummary.innerHTML = `
             <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · Max Boost +${conv.maxBoostDb} dB · Max Cut ${conv.maxCutDb} dB · Dip Guard ${escapeHtml(conv.dipGuard)}</div>
-            <div>Range data. L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)}, energy trim ${formatMeasurementConvolverGain(left.energyTrimDb ?? 0)}` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)}, energy trim ${formatMeasurementConvolverGain(right.energyTrimDb ?? 0)}` : 'none'}</div>
+            <div>Range data. L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)}` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)}` : 'none'}</div>
             <div>${escapeHtml(draftStatus)}</div>
             ${draftDetails.map((detail) => `<div>${escapeHtml(detail)}</div>`).join('')}
         `;
