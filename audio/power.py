@@ -7,8 +7,10 @@ FXRoute exposes only two system actions through this module:
 
 Both calls go through the D-Bus system bus to ``org.freedesktop.login1``.
 The polkit rule installed by ``install.sh`` (see ``assets/polkit/``)
-restricts authority to these two action IDs and to the install user, so
-nothing else can be triggered from this module.
+restricts authority to the two logind actions, the hostnamed static-hostname
+action used by ``/api/system/device-name``, and the tightly scoped
+``restart`` of ``avahi-daemon.service`` that advertises the new name --
+and to the install user, so nothing else can be triggered from this module.
 
 The implementation prefers the ``dbus-send`` binary (provided by the
 ``dbus`` package on every supported distro and shipped in the installer

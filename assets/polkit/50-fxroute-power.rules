@@ -8,14 +8,18 @@
  * Its only purpose is to let the user running the FXRoute systemd --user
  * service (and only that user) trigger the systemd-logind/systemd-hostnamed
  * actions that the FXRoute web UI exposes through /api/system/power/* and
- * /api/system/device-name:
+ * /api/system/device-name, plus the tightly scoped Avahi restart that
+ * /api/system/device-name needs to advertise the new name immediately:
  *
  *   - org.freedesktop.login1.suspend
  *   - org.freedesktop.login1.power-off
  *   - org.freedesktop.hostname1.set-static-hostname
+ *   - org.freedesktop.systemd1.manage-units, but ONLY verb "restart" on
+ *     unit "avahi-daemon.service" (every other unit/verb falls through
+ *     to the normal polkit policy)
  *
  * Important: this rule does NOT grant any other privilege.  All other
- * polkit actions (systemd unit control, rebooting, hibernate, package
+ * polkit actions (other systemd units, rebooting, hibernate, package
  * management, network configuration, ...) must still go through the
  * user's normal polkit policies (interactive auth or admin membership).
  *
@@ -30,6 +34,11 @@ polkit.addRule(function(action, subject) {
     if (action.id === "org.freedesktop.login1.suspend" ||
         action.id === "org.freedesktop.login1.power-off" ||
         action.id === "org.freedesktop.hostname1.set-static-hostname") {
+        return polkit.Result.YES;
+    }
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("verb") === "restart" &&
+        action.lookup("unit") === "avahi-daemon.service") {
         return polkit.Result.YES;
     }
 });

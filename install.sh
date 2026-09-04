@@ -37,7 +37,7 @@ SPOTIFYD_ZEROCONF_PORT="4444"
 CIFS_HELPER_SHA256="a878afbf1927bdd14ed3049df39a41929a54cd18a1ab89a377ba1ed4c4b453d8"
 CIFS_HELPER_LEGACY_SHA256="e69249dca5ef58f3b18081c9bfce1b7ccab8f400fb117f3ee6c7a58daa3ac4b9"
 SYSTEM_UPDATE_HELPER_SHA256="b9e67b2f396e814930d1ebfeba8f6d9d483b601a3fbd27cc7dd8c32b7d3506eb"
-POWER_POLKIT_TEMPLATE_SHA256="dee1002d33abf60b390f6471572478daac95a2aba43301a339aabff39fd27b8a"
+POWER_POLKIT_TEMPLATE_SHA256="67497733c846fda6eddd11f80eb626bdffa0d76530ad7bb5fe5a65ebf1669806"
 QOBUZ_VOLUME_MODE_KEY="qconnect.volume_mode"
 QOBUZ_REQUIRED_VOLUME_MODE="locked"
 TIDAL_REQUIREMENTS_FILE="requirements-tidal.txt"
@@ -5842,7 +5842,7 @@ configure_system_power_polkit_rule() {
     if "${SUDO_CMD[@]}" install -m 644 "$tmp_rule" "$rule_path"; then
       POWER_POLKIT_INSTALLED=1
       POWER_POLKIT_RULE_SHA256="$("${SUDO_CMD[@]}" sha256sum "$rule_path" | awk '{print $1}')"
-      pass "polkit power rule installed (closed: suspend + power-off only)"
+      pass "polkit power rule installed (closed: suspend + power-off + hostname + avahi-restart only)"
     else
       warn "FXRoute polkit power rule could not be written to $rule_path"
     fi

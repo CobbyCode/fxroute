@@ -5951,7 +5951,7 @@ async def api_set_device_name(request: Request):
     if value == current:
         return {"hostname": current, "changed": False}
     proc = await asyncio.create_subprocess_exec(
-        "hostnamectl", "set-hostname", value,
+        "hostnamectl", "--no-ask-password", "set-hostname", value,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     communicate_task = asyncio.create_task(proc.communicate())
@@ -5974,6 +5974,10 @@ async def api_set_device_name(request: Request):
         raise
     if proc.returncode != 0:
         detail = stderr.decode(errors="replace").strip() or "hostnamectl set-hostname failed"
+        if "interactive authentication" in detail:
+            detail += " (device-name polkit rule missing or outdated; rerun install.sh)"
+            logger.warning("hostnamectl refused without polkit auth: %s", detail)
+            raise HTTPException(status_code=403, detail=detail)
         raise HTTPException(status_code=500, detail=detail)
     avahi = await asyncio.create_subprocess_exec(
         "systemctl", "restart", "avahi-daemon.service",

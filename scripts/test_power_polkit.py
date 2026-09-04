@@ -3,11 +3,13 @@
 """Polkit rule and installer integration tests for FXRoute system power.
 
 These tests cover the security-critical surface of the suspend/shutdown
-feature:
+feature plus the device-name hostname/avahi path that shares the rule:
 
 * The polkit template ships the narrow allow-list expected by the
-  audit rules of the task: only the two logind actions, and only the
-  install user (no rule-less ``yes`` for any other identity).
+  audit rules of the task: only the two logind actions, the hostnamed
+  static-hostname action, and the tightly scoped avahi-daemon restart
+  (and only the install user -- no rule-less ``yes`` for any other
+  identity).
 * The template is syntactically valid JavaScript via ``node --check``
   (polkit parses the same .rules file through Mozilla Spidermonkey).
 * The installer substitutes the right install user into the template
@@ -71,6 +73,7 @@ class PolkitTemplateStaticTests(unittest.TestCase):
             "org.freedesktop.login1.suspend",
             "org.freedesktop.login1.power-off",
             "org.freedesktop.hostname1.set-static-hostname",
+            "org.freedesktop.systemd1.manage-units",
         }
         # Use a non-greedy scan to grab every polkit action id inside
         # string literals -- with or without surrounding quotes.  Anything
@@ -80,6 +83,11 @@ class PolkitTemplateStaticTests(unittest.TestCase):
         self.assertEqual(mentioned & allowed, allowed)
         # And no other org.freedesktop.* action is referenced at all.
         self.assertEqual(mentioned - allowed, set())
+
+    def test_template_scopes_manage_units_to_avahi_restart(self):
+        self.assertIn("org.freedesktop.systemd1.manage-units", self.text)
+        self.assertIn('action.lookup("verb") === "restart"', self.text)
+        self.assertIn('action.lookup("unit") === "avahi-daemon.service"', self.text)
 
     def test_template_does_not_grant_global_yes(self):
         # The rule must NOT return polkit.Result.YES unconditionally;
@@ -313,8 +321,9 @@ class CrossSiteWiringTests(unittest.TestCase):
 
 class PolkitRuleStrictnessTests(unittest.TestCase):
     """The installed polkit rule MUST stay exactly as agreed: the
-    install user gets ``Result.YES`` for ``suspend`` / ``power-off`` and
-    nothing else.  Polkit wildcards or wildcards like
+    install user gets ``Result.YES`` for ``suspend`` / ``power-off`` /
+    ``set-static-hostname`` plus the tightly scoped avahi-daemon
+    ``restart``, and nothing else.  Polkit wildcards or wildcards like
     ``*-multiple-sessions`` / ``*-ignore-inhibit`` would silently
     expand the privilege and let FXRoute bypass logind's inhibitor and
     per-user-session checks -- explicitly forbidden by the task."""
@@ -343,7 +352,9 @@ class PolkitRuleStrictnessTests(unittest.TestCase):
             )
 
     def test_rule_grants_exactly_two_action_ids(self):
-        # Only the two actions agreed on in the task description.
+        # Only the agreed actions: the two logind suspend/power-off IDs,
+        # the hostnamed static-hostname ID for device-name, plus the
+        # tightly scoped manage-units ID (restart of avahi-daemon only).
         # Strip surrounding quotes so the comparison stays robust whether
         # polkit rules use JS string literals or identifiers.
         raw = set(re.findall(r'"?org\.freedesktop\.login1\.[a-z0-9._-]+"?', self.polkit_text))
@@ -355,11 +366,15 @@ class PolkitRuleStrictnessTests(unittest.TestCase):
                 "org.freedesktop.login1.power-off",
             },
         )
+        self.assertIn("org.freedesktop.hostname1.set-static-hostname", self.polkit_text)
+        self.assertIn("org.freedesktop.systemd1.manage-units", self.polkit_text)
 
     def test_rule_returns_polkit_result_yes_only_for_install_user(self):
-        # Defensive: the ``Result.YES`` return value is reachable only
+        # Defensive: every ``Result.YES`` return value is reachable only
         # from inside the user guard + action-id guard.
         guard_idx = self.polkit_text.index('subject.user !==')
+        for match in re.finditer(r"polkit\.Result\.YES", self.polkit_text):
+            self.assertLess(guard_idx, match.start())
         result_idx = self.polkit_text.index("polkit.Result.YES")
         action_pattern = re.compile(
             r'\"org\.freedesktop\.login1\.(?:suspend|power-off)\"',
@@ -368,6 +383,8 @@ class PolkitRuleStrictnessTests(unittest.TestCase):
         first_action = action_pattern.search(self.polkit_text).start()
         self.assertLess(guard_idx, first_action)
         self.assertLess(first_action, result_idx)
+        self.assertIn('action.lookup("verb")', self.polkit_text)
+        self.assertIn('action.lookup("unit")', self.polkit_text)
 
     def test_rule_does_not_use_polkit_prompt_or_admin_keywords(self):
         # These keywords would broaden the privilege beyond ``YES``.
