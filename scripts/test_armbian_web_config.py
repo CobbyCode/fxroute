@@ -1251,5 +1251,123 @@ BSS 11:22:33:44:55:66(on wlan0)
         self.assertIn("https://192.168.178.23", announced[0])
 
 
+    def test_ssh_config_without_key_allows_password_but_denies_root(self):
+        config = self.web.build_ssh_config("")
+
+        self.assertIn("PasswordAuthentication yes", config)
+        self.assertIn("KbdInteractiveAuthentication yes", config)
+        self.assertIn("PermitRootLogin no", config)
+        self.assertIn("PubkeyAuthentication yes", config)
+        self.assertNotIn("PasswordAuthentication no", config)
+        self.assertNotIn("PermitRootLogin yes", config)
+
+    def test_ssh_config_with_key_is_key_only(self):
+        config = self.web.build_ssh_config(VALID_SSH_KEY)
+
+        self.assertIn("PasswordAuthentication no", config)
+        self.assertIn("KbdInteractiveAuthentication no", config)
+        self.assertIn("PermitRootLogin no", config)
+        self.assertIn("PubkeyAuthentication yes", config)
+        self.assertNotIn("PasswordAuthentication yes", config)
+        self.assertNotIn("PermitRootLogin yes", config)
+
+    def test_configure_ssh_access_writes_conditional_config_and_enables_sshd(self):
+        cases = [
+            ("", "PasswordAuthentication yes"),
+            ("   ", "PasswordAuthentication yes"),
+            (VALID_SSH_KEY, "PasswordAuthentication no"),
+        ]
+        for ssh_key, expected_line in cases:
+            with self.subTest(ssh_key=ssh_key[:20]):
+                written = {}
+
+                def fake_atomic_write(path, content, mode=0o600):
+                    written["path"] = path
+                    written["content"] = content
+                    written["mode"] = mode
+
+                calls = []
+
+                def fake_command(args, check=True, input_text=None, timeout=None):
+                    calls.append(args)
+                    return self.web.subprocess.CompletedProcess(args, 0, "", "")
+
+                with (
+                    mock.patch.object(
+                        self.web, "atomic_write", side_effect=fake_atomic_write
+                    ),
+                    mock.patch.object(self.web, "command", side_effect=fake_command),
+                ):
+                    self.web.configure_ssh_access(ssh_key)
+
+                self.assertEqual(written["path"], self.web.SSH_CONFIG_PATH)
+                self.assertIn(expected_line, written["content"])
+                self.assertIn("PermitRootLogin no", written["content"])
+                self.assertNotIn("PermitRootLogin yes", written["content"])
+                flat = [" ".join(args) for args in calls]
+                self.assertIn("ssh-keygen -A", flat)
+                self.assertIn("sshd -t", flat)
+                self.assertTrue(
+                    any("systemctl enable --now" in entry for entry in flat)
+                )
+                self.assertTrue(
+                    any("systemctl reload-or-restart" in entry for entry in flat)
+                )
+
+    def test_configure_account_forwards_ssh_key_to_ssh_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            account_file = Path(directory) / "account"
+            onboarding = self.web.Onboarding("", "rpi4b")
+            record = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir="/home/operator")
+            account_file.write_text("operator\n", encoding="ascii")
+
+            with (
+                mock.patch.object(self.web, "ACCOUNT_FILE", account_file),
+                mock.patch.object(self.web.pwd, "getpwnam", return_value=record),
+                mock.patch.object(
+                    self.web, "create_account", return_value=False
+                ) as create_account,
+                mock.patch.object(
+                    self.web, "configure_ssh_access"
+                ) as configure_ssh,
+            ):
+                success, _message = onboarding.configure_account(
+                    "operator", "another password", VALID_SSH_KEY
+                )
+
+            self.assertTrue(success)
+            create_account.assert_called_once_with(
+                "operator",
+                "another password",
+                VALID_SSH_KEY,
+                allow_existing=True,
+            )
+            configure_ssh.assert_called_once_with(VALID_SSH_KEY)
+
+    def test_configure_account_without_key_keeps_password_ssh_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            account_file = Path(directory) / "account"
+            onboarding = self.web.Onboarding("", "rpi4b")
+            record = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir="/home/operator")
+            account_file.write_text("operator\n", encoding="ascii")
+
+            with (
+                mock.patch.object(self.web, "ACCOUNT_FILE", account_file),
+                mock.patch.object(self.web.pwd, "getpwnam", return_value=record),
+                mock.patch.object(
+                    self.web, "create_account", return_value=False
+                ),
+                mock.patch.object(
+                    self.web, "configure_ssh_access"
+                ) as configure_ssh,
+            ):
+                success, _message = onboarding.configure_account(
+                    "operator", "another password", ""
+                )
+
+            self.assertTrue(success)
+            configure_ssh.assert_called_once_with("")
+
+
 if __name__ == "__main__":
     unittest.main()

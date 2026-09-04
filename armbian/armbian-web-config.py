@@ -982,13 +982,23 @@ def create_account(
     return created
 
 
-def configure_ssh_access() -> None:
+def build_ssh_config(ssh_key: str) -> str:
+    """Return the drop-in sshd config for the onboarding outcome."""
+    has_key = bool(ssh_key.strip())
+    password_value = "no" if has_key else "yes"
+    kbd_value = "no" if has_key else "yes"
+    return (
+        f"PasswordAuthentication {password_value}\n"
+        f"KbdInteractiveAuthentication {kbd_value}\n"
+        "PermitRootLogin no\n"
+        "PubkeyAuthentication yes\n"
+    )
+
+
+def configure_ssh_access(ssh_key: str) -> None:
     atomic_write(
         SSH_CONFIG_PATH,
-        "PasswordAuthentication no\n"
-        "KbdInteractiveAuthentication no\n"
-        "PermitRootLogin no\n"
-        "PubkeyAuthentication yes\n",
+        build_ssh_config(ssh_key),
         0o644,
     )
     command(["ssh-keygen", "-A"])
@@ -1118,7 +1128,7 @@ class Onboarding:
                         allow_existing=existing_record is not None,
                     )
                 )
-                configure_ssh_access()
+                configure_ssh_access(ssh_key)
             except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
                 if account_written and not previous:
                     ACCOUNT_FILE.unlink(missing_ok=True)

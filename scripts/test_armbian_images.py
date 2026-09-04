@@ -468,6 +468,50 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertEqual(clean.returncode, 0, clean.stderr)
         self.assertNotIn("[armbian][warn]", clean.stderr)
 
+    def test_first_boot_ssh_config_follows_authorized_keys(self):
+        self.assertIn(
+            'fxroute_authorized_keys="$fxroute_home/.ssh/authorized_keys"',
+            self.first_boot,
+        )
+        self.assertIn("has_ssh_key=0", self.first_boot)
+        self.assertIn("PasswordAuthentication yes", self.first_boot)
+        self.assertIn("PasswordAuthentication no", self.first_boot)
+        self.assertIn("KbdInteractiveAuthentication yes", self.first_boot)
+        self.assertIn("KbdInteractiveAuthentication no", self.first_boot)
+        self.assertIn("PermitRootLogin no", self.first_boot)
+        self.assertNotIn("PermitRootLogin yes", self.first_boot)
+        self.assertNotIn("PermitRootLogin prohibit-password", self.first_boot)
+
+    def test_web_onboarding_ssh_config_is_conditional(self):
+        self.assertIn("def build_ssh_config", self.web_config)
+        self.assertIn("def configure_ssh_access(ssh_key", self.web_config)
+        self.assertIn("configure_ssh_access(ssh_key)", self.web_config)
+        self.assertIn("PasswordAuthentication", self.web_config)
+        self.assertIn("KbdInteractiveAuthentication", self.web_config)
+        self.assertIn("PermitRootLogin no", self.web_config)
+        self.assertNotIn("PermitRootLogin yes", self.web_config)
+
+    def test_sshd_is_enabled_and_lan_ssh_stays_reachable(self):
+        for text in (self.web_config, self.first_boot):
+            self.assertIn("ssh-keygen", text)
+            self.assertIn("sshd", text)
+            self.assertIn("enable", text)
+            self.assertIn("--now", text)
+            self.assertIn("reload-or-restart", text)
+            self.assertIn("PermitRootLogin no", text)
+            self.assertNotIn("PermitRootLogin yes", text)
+            self.assertNotIn("ListenAddress 10.42", text)
+            self.assertNotIn("AllowUsers", text)
+            self.assertNotIn("DenyUsers", text)
+            self.assertNotIn("DenyGroups", text)
+        for text in (self.build, self.customize, self.first_boot):
+            lowered = text.lower()
+            self.assertNotIn("ufw deny", lowered)
+            self.assertNotIn("--remove-service=ssh", text)
+            self.assertNotIn("iptables ", text)
+            self.assertNotIn("nft ", text)
+        self.assertIn("passwd -l root", self.customize)
+
     def test_scripts_are_shell_parseable(self):
         for path in (BUILD_SH, CUSTOMIZE_SH, FIRST_BOOT_SH, QEMU_SH):
             result = subprocess.run(

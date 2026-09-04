@@ -184,12 +184,30 @@ staging_dir=""
 chmod 755 "$SOURCE_DIR/install.sh"
 
 install -d -m 755 /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/90-fxroute-armbian.conf <<'EOF'
+# The onboarding password already works locally. Keep password SSH open only
+# when no key was provided; a present key keeps this account key-only.
+fxroute_authorized_keys="$fxroute_home/.ssh/authorized_keys"
+has_ssh_key=0
+if [[ -f "$fxroute_authorized_keys" && ! -L "$fxroute_authorized_keys" ]] \
+  && [[ -s "$fxroute_authorized_keys" ]] \
+  && grep -Eq '[^[:space:]]' "$fxroute_authorized_keys" 2>/dev/null; then
+  has_ssh_key=1
+fi
+if [[ "$has_ssh_key" -eq 1 ]]; then
+  cat > /etc/ssh/sshd_config.d/90-fxroute-armbian.conf <<'EOF'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
 PubkeyAuthentication yes
 EOF
+else
+  cat > /etc/ssh/sshd_config.d/90-fxroute-armbian.conf <<'EOF'
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+PermitRootLogin no
+PubkeyAuthentication yes
+EOF
+fi
 chmod 644 /etc/ssh/sshd_config.d/90-fxroute-armbian.conf
 ssh-keygen -A
 sshd -t 2>/dev/null || {

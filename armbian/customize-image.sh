@@ -83,6 +83,9 @@ install -d -m 755 /etc/ssh/sshd_config.d
 # Never ship host keys shared by every copy of a public image. They are
 # generated on first boot before SSH is enabled for the configured account.
 rm -f /etc/ssh/ssh_host_*
+# Restrictive default before onboarding. The web setup and first-boot script
+# replace this file conditionally: password SSH stays open only when no SSH
+# key was provided, otherwise the account stays key-only. Root stays denied.
 cat > /etc/ssh/sshd_config.d/90-fxroute-armbian.conf <<'EOF'
 PasswordAuthentication no
 KbdInteractiveAuthentication no

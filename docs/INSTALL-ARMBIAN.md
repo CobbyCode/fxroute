@@ -106,8 +106,8 @@ reproducibility epoch, so an RTC-less Pi can establish HTTPS before NTP settles.
 The image is headless and completes its initial setup through the local web
 page:
 
-- The end user selects the FXRoute user name, sets its password, and may add an SSH public key under Advanced. The account is created with the required sudo, audio, and wheel access; SSH accepts key authentication only. Without a key, SSH key authentication is unavailable until one is added locally.
-- Root is locked and SSH password and keyboard-interactive authentication are disabled.
+- The end user selects the FXRoute user name, sets its password, and may add an SSH public key under Advanced. The account is created with the required sudo, audio, and wheel access. Without an SSH key, the same password also works over SSH on the normal network; with an SSH key, that account stays key-only over SSH.
+- Root stays locked and root login over SSH stays denied in both cases. No default credentials are shipped.
 - Armbian's noninteractive `armbian-firstrun.service` remains enabled for host-key regeneration and board setup.
 - Armbian's first-login marker is retained until provisioning completes. With no wired Ethernet carrier, the image starts a temporary open `hostname-armbiansetup` access point at `https://10.42.0.1` (`http://10.42.0.1` redirects there); enter the account, optional SSH key, and Wi-Fi credentials there. With a wired Ethernet carrier, the image waits briefly for DHCP, then serves `https://<dhcp-address>`; no access point is started while wired networking is usable. The temporary setup certificate is self-signed, so the browser shows a certificate warning on both paths; accept it once before filling the form. HTTP GET redirects to HTTPS and HTTP POST is rejected before credentials are read.
 - While the device waits for web onboarding over wired Ethernet, it prints the DHCP setup address (`https://<ip>`) to the attached monitor console, so the setup page can be opened from another computer. The Wi-Fi/setup-AP behavior is unchanged.
