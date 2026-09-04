@@ -224,6 +224,22 @@ derive_fxroute_device_name() {
   fi
 }
 
+console_note() {
+  # Best-effort status line for the attached monitor and the journal.
+  local line="${1:-}"
+  [[ -n "$line" ]] || return 0
+  printf '%s\n' "$line" || true
+  local console_path=""
+  for console_path in /dev/console /dev/tty1; do
+    { printf '%s\n' "$line" > "$console_path"; } 2>/dev/null || true
+  done
+}
+
+current_ipv4_addresses() {
+  # Best-effort current IPv4 addresses, one per line. Read-only reporting.
+  hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true
+}
+
 export HOME="$fxroute_home"
 "$SOURCE_DIR/install.sh" \
   --source "$SOURCE_DIR" \
@@ -236,3 +252,11 @@ export HOME="$fxroute_home"
   --yes
 
 completed=1
+
+fxroute_device="$(derive_fxroute_device_name || printf 'fxroute\n')"
+fxroute_ip="$(current_ipv4_addresses | head -n 1 || true)"
+if [[ -n "$fxroute_ip" ]]; then
+  console_note "FXRoute ready: http://${fxroute_ip}:8000 and http://${fxroute_device}.local:8000"
+else
+  console_note "FXRoute ready: http://${fxroute_device}.local:8000"
+fi

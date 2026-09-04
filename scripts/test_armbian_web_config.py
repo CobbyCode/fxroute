@@ -1178,6 +1178,78 @@ BSS 11:22:33:44:55:66(on wlan0)
             server.server_close()
             server_thread.join(2)
 
+    def test_ethernet_setup_console_lines_point_at_the_setup_page(self):
+        self.assertEqual(
+            self.web.ethernet_setup_console_lines(["192.168.178.23"]),
+            [
+                "FXRoute setup: open https://192.168.178.23 "
+                "on another computer to configure this device."
+            ],
+        )
+        self.assertEqual(
+            self.web.ethernet_setup_console_lines(["192.168.1.20", "10.0.0.5"]),
+            [
+                "FXRoute setup: open https://192.168.1.20 or https://10.0.0.5 "
+                "on another computer to configure this device."
+            ],
+        )
+        self.assertEqual(self.web.ethernet_setup_console_lines([]), [])
+
+    def test_ready_console_lines_show_ip_and_dotlocal_address(self):
+        self.assertEqual(
+            self.web.ready_console_lines(["192.168.178.23"], "fxroute-1af688"),
+            [
+                "FXRoute ready: http://192.168.178.23:8000 "
+                "and http://fxroute-1af688.local:8000"
+            ],
+        )
+        self.assertEqual(
+            self.web.ready_console_lines([], "fxroute-1af688"),
+            ["FXRoute ready: http://fxroute-1af688.local:8000"],
+        )
+
+    def test_announce_console_mirrors_to_consoles_without_failing(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "console"
+            missing = Path(directory) / "absent" / "console"
+            with mock.patch.object(self.web.LOG, "info"):
+                self.web.announce_console(["hello"], console_paths=(target, missing))
+            self.assertEqual(target.read_text(encoding="utf-8"), "hello\n")
+            with mock.patch.object(self.web.LOG, "info"):
+                self.web.announce_console([], console_paths=(target,))
+
+    def test_serve_over_dhcp_announces_the_setup_address_on_console(self):
+        onboarding = self.web.Onboarding("wlan0", "rpi4b")
+        marker = mock.Mock()
+        marker.exists.return_value = True
+        configured = mock.Mock()
+        configured.exists.return_value = False
+        with (
+            mock.patch.object(self.web, "MARKER_PATH", marker),
+            mock.patch.object(self.web, "CONFIGURED_MARKER", configured),
+            mock.patch.object(self.web, "has_usable_ethernet", return_value=True),
+            mock.patch.object(self.web, "has_ethernet_carrier", return_value=False),
+            mock.patch.object(
+                self.web, "interface_ipv4_addresses", return_value=["192.168.178.23"]
+            ),
+            mock.patch.object(
+                onboarding, "recover_interrupted_setup", return_value=False
+            ),
+            mock.patch.object(onboarding, "prime_wifi_scan"),
+            mock.patch.object(self.web, "ensure_tls_certificate"),
+            mock.patch.object(self.web, "announce_console") as announce,
+            mock.patch.object(
+                self.web, "SetupServer", side_effect=RuntimeError("stop here")
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "stop here"):
+                onboarding.serve()
+        announced = announce.call_args.args[0]
+        self.assertEqual(len(announced), 1)
+        self.assertIn("https://192.168.178.23", announced[0])
+
 
 if __name__ == "__main__":
     unittest.main()

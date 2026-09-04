@@ -755,6 +755,53 @@ def completion_device_name(hostname_value: str, preview: bool = False) -> str:
     return derive_fxroute_device_name()
 
 
+CONSOLE_PATHS = (Path("/dev/console"), Path("/dev/tty1"))
+
+
+def ethernet_setup_console_lines(addresses: list[str]) -> list[str]:
+    """Console lines pointing another computer at the LAN setup page."""
+
+    urls = [f"https://{address}" for address in addresses]
+    if not urls:
+        return []
+    return [
+        "FXRoute setup: open "
+        + (" or ".join(urls))
+        + " on another computer to configure this device."
+    ]
+
+
+def ready_console_lines(addresses: list[str], device_name: str) -> list[str]:
+    """Console lines for the finished installation with IP and .local."""
+
+    lan_url = fxroute_lan_url(device_name)
+    ip_urls = [f"http://{address}:{FXROUTE_WEB_PORT}" for address in addresses]
+    if not ip_urls:
+        return [f"FXRoute ready: {lan_url}"]
+    return [f"FXRoute ready: {', '.join(ip_urls)} and {lan_url}"]
+
+
+def announce_console(
+    lines: list[str],
+    console_paths: tuple[Path, ...] = CONSOLE_PATHS,
+) -> None:
+    """Mirror status lines to the attached monitor without ever failing."""
+
+    if not lines:
+        return
+    for line in lines:
+        LOG.info("%s", line)
+    text = "\n".join(lines) + "\n"
+    for console_path in console_paths:
+        try:
+            if console_path.is_symlink():
+                continue
+            with console_path.open("a", encoding="utf-8") as stream:
+                stream.write(text)
+        except OSError:
+            continue
+
+
 def setup_completion_html(
     device_name: str, addresses: list[str], username: str
 ) -> str:
@@ -1322,6 +1369,11 @@ class Onboarding:
                 raise RuntimeError("No Wi-Fi interface is available for headless setup")
             self.prime_wifi_scan()
             LOG.info("wired Ethernet detected; serving setup over the DHCP network")
+            try:
+                setup_addresses = interface_ipv4_addresses()
+            except (OSError, RuntimeError, subprocess.CalledProcessError):
+                setup_addresses = []
+            announce_console(ethernet_setup_console_lines(setup_addresses))
         else:
             self.prime_wifi_scan()
             self.start_access_point()

@@ -298,6 +298,46 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn("begin_setup_response", self.web_config)
         self.assertIn("send_response(202)", self.web_config)
 
+    def test_ethernet_onboarding_announces_setup_address_on_console(self):
+        self.assertIn("ethernet_setup_console_lines", self.web_config)
+        self.assertIn("announce_console", self.web_config)
+        self.assertIn("/dev/console", self.web_config)
+        self.assertIn("/dev/tty1", self.web_config)
+        self.assertIn("interface_ipv4_addresses()", self.web_config)
+        self.assertIn(
+            "announce_console(ethernet_setup_console_lines(setup_addresses))",
+            self.web_config,
+        )
+        self.assertLess(
+            self.web_config.index("serving setup over the DHCP network"),
+            self.web_config.index(
+                "announce_console(ethernet_setup_console_lines(setup_addresses))"
+            ),
+        )
+        self.assertNotIn("avahi", self.web_config)
+        self.assertNotIn("nmcli", self.web_config)
+        self.assertNotIn("hostnamectl", self.web_config)
+        self.assertNotIn("nss-mdns", self.web_config)
+
+    def test_first_boot_announces_ready_address_on_console(self):
+        self.assertIn("FXRoute ready", self.first_boot)
+        self.assertIn("console_note", self.first_boot)
+        self.assertIn("current_ipv4_addresses", self.first_boot)
+        self.assertIn("hostname -I", self.first_boot)
+        self.assertIn("/dev/console", self.first_boot)
+        self.assertIn("/dev/tty1", self.first_boot)
+        self.assertIn('http://${fxroute_device}.local:8000', self.first_boot)
+        self.assertLess(
+            self.first_boot.index("completed=1"),
+            self.first_boot.index("FXRoute ready"),
+        )
+        self.assertNotIn("hostnamectl", self.first_boot)
+        self.assertNotIn("netplan", self.first_boot)
+        self.assertNotIn("hostapd", self.first_boot)
+        self.assertNotIn("dnsmasq", self.first_boot)
+        self.assertNotIn("avahi", self.first_boot)
+        self.assertNotIn("nmcli", self.first_boot)
+
     def test_first_boot_service_is_retryable_and_headless(self):
         self.assertIn("After=network-online.target armbian-firstrun.service", self.service)
         self.assertIn("Wants=network-online.target armbian-firstrun.service", self.service)
