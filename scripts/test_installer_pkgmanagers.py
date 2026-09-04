@@ -433,6 +433,44 @@ systemctl() {{ SYSTEMCTL_CALLS="$SYSTEMCTL_CALLS|systemctl $*"; return 0; }}
         native_body = _extract_function(self.text, "ensure_native_packages")
         self.assertIn("package_installed rtkit", native_body)
 
+    def test_debian_pipewire_backports_wired_for_trixie(self):
+        native_body = _extract_function(self.text, "ensure_native_packages")
+        self.assertIn("ensure_debian_pipewire_backports", native_body)
+        backports_body = _extract_function(self.text, "ensure_debian_pipewire_backports")
+        self.assertIn("-t trixie-backports", backports_body)
+        for package in ("pipewire", "pipewire-bin", "pipewire-pulse",
+                        "libpipewire-0.3-modules", "libspa-0.2-modules",
+                        "libspa-0.2-bluetooth", "wireplumber"):
+            self.assertIn(package, backports_body)
+        guard_body = _extract_function(self.text, "debian_trixie_backports_available")
+        self.assertIn("VERSION_CODENAME", guard_body)
+        self.assertIn('"trixie"', guard_body)
+        self.assertIn("trixie-backports", guard_body)
+
+    def test_debian_pipewire_backports_never_aborts_install(self):
+        backports_body = _extract_function(self.text, "ensure_debian_pipewire_backports")
+        self.assertIn('"${PACKAGE_MANAGER:-}" == "apt"', backports_body)
+        self.assertIn("warn", backports_body)
+        self.assertNotIn("die", backports_body)
+        self.assertIn("return 0", backports_body)
+
+    def test_debian_pipewire_backports_guard_rejects_other_releases(self):
+        guard_body = _extract_function(INSTALL_SH.read_text(), "debian_trixie_backports_available")
+        with tempfile.TemporaryDirectory() as tmp:
+            noble = Path(tmp) / "os-release"
+            noble.write_text('ID=ubuntu\nVERSION_CODENAME=noble\n')
+            missing = Path(tmp) / "does-not-exist"
+            for fixture in (noble, missing):
+                code = (
+                    "set -u\n"
+                    f"{guard_body}\n"
+                    f'debian_trixie_backports_available "{fixture}"'
+                )
+                completed = subprocess.run(
+                    ["bash", "-c", code], capture_output=True, text=True, timeout=10,
+                )
+                self.assertNotEqual(completed.returncode, 0, fixture)
+
     def test_spotify_autostart_default_is_x86_64_only(self):
         self.assertIn('[[ "$(uname -m)" != "x86_64" ]]', self.text)
         self.assertIn('spotify_autostart="off"', self.text)

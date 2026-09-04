@@ -1878,6 +1878,42 @@ zypper_python_package() {
   esac
 }
 
+debian_trixie_backports_available() {
+  local os_release_path="${1:-/etc/os-release}"
+  local codename=""
+  if [[ -f "$os_release_path" ]]; then
+    codename="$(grep -E '^VERSION_CODENAME=' "$os_release_path" | cut -d= -f2 | tr -d '"')"
+  fi
+  [[ "$codename" == "trixie" ]] || return 1
+  grep -rq "trixie-backports" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null
+}
+
+ensure_debian_pipewire_backports() {
+  # PipeWire minor releases carry null-sink/graph behaviors FXRoute relies
+  # on (verified on real hardware: the 1.4.9 null-sink follows the graph
+  # clock while the 1.4.2 ingress stays pinned at its 48 kHz default and
+  # forces a permanent resampling stage).  On Debian 13 (trixie, including
+  # Armbian) the fixed stack comes from trixie-backports; every other
+  # distro keeps its default packages.  A failed backports install must
+  # never abort the installer: the distribution stack keeps working.
+  [[ "${PACKAGE_MANAGER:-}" == "apt" ]] || return 0
+  if ! debian_trixie_backports_available; then
+    log "PipeWire backports: no Debian 13 host with trixie-backports configured; keeping distribution packages"
+    return 0
+  fi
+  local backport_packages=(pipewire pipewire-bin pipewire-pulse libpipewire-0.3-0t64 libpipewire-0.3-modules libspa-0.2-modules libspa-0.2-bluetooth wireplumber libwireplumber-0.5-0)
+  if [[ $PKG_REFRESH_DONE -eq 0 ]]; then
+    run_cmd "${SUDO_CMD[@]}" apt-get update
+    PKG_REFRESH_DONE=1
+  fi
+  if run_cmd "${SUDO_CMD[@]}" apt-get install -y -t trixie-backports "${backport_packages[@]}"; then
+    pass "PipeWire audio stack from trixie-backports"
+  else
+    warn "PipeWire backports install failed; keeping distribution packages (null-sink rate following needs PipeWire 1.4.9 or newer)"
+  fi
+  return 0
+}
+
 ensure_native_packages() {
   local core_packages=()
   local support_packages=(curl git socat tar)
@@ -1953,6 +1989,7 @@ ensure_native_packages() {
   if [[ ${#missing_audio_stack[@]} -gt 0 || $need_bt_plugin_pkg -eq 1 ]]; then
     pkg_install "${audio_stack_packages[@]}"
   fi
+  ensure_debian_pipewire_backports
 
   if [[ $need_venv_pkg -eq 1 ]] && ! python3 -m venv --help >/dev/null 2>&1; then
     case "$PACKAGE_MANAGER" in
