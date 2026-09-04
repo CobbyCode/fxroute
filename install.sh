@@ -60,6 +60,8 @@ SPOTIFYD_INSTALLED_BY_FXROUTE=0
 SPOTIFYD_SOURCE_BUILT=0
 SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE=0
 SPOTIFYD_CONFIG_INSTALLED_BY_FXROUTE=0
+SPOTIFYD_DEVICE_NAME_CHANGED=0
+SPOTIFYD_CONNECT_NAME=""
 SPOTIFYD_BINARY_PATH=""
 SPOTIFYD_BINARY_SHA256=""
 SPOTIFYD_BINARY_IDENTITY_CHANGED=0
@@ -2636,20 +2638,134 @@ spotifyd_binary_path() {
   command -v spotifyd 2>/dev/null || true
 }
 
+fxroute_spotify_humanize_label() {
+  # Turn a hostname fragment into a short display label (Title Case).
+  local part="${1:-}" norm="" word="" lower="" title="" out=""
+  norm="$(printf '%s' "$part" | tr 'A-Z' 'a-z' | sed -e 's/[-_]/ /g; s/  */ /g; s/^ //; s/ $//')"
+  [[ -n "$norm" ]] || return 1
+  for word in $norm; do
+    lower="${word,,}"
+    title="${lower^}"
+    if [[ -n "$out" ]]; then
+      out+=" $title"
+    else
+      out="$title"
+    fi
+  done
+  out="${out:0:20}"
+  out="${out%"${out##*[![:space:]]}"}"
+  [[ -n "$out" ]] || return 1
+  printf '%s\n' "$out"
+}
+
+fxroute_spotify_persistent_suffix() {
+  # Print the stable 4-char device suffix, creating it once when needed.
+  local file="${1:-$HOME/.config/fxroute/device-suffix}" cur=""
+  if [[ -f "$file" ]]; then
+    cur="$(tr -d '[:space:]' <"$file" 2>/dev/null | tr 'a-z' 'A-Z')"
+    if [[ "$cur" =~ ^[0-9A-F]{4}$ ]]; then
+      printf '%s\n' "$cur"
+      return 0
+    fi
+  fi
+  if command -v od >/dev/null 2>&1; then
+    cur="$(od -An -tx1 -N2 /dev/urandom 2>/dev/null | tr -d ' \n' | tr 'a-z' 'A-Z')"
+  fi
+  if [[ ! "$cur" =~ ^[0-9A-F]{4}$ ]]; then
+    cur="$(printf '%04X' $(( (RANDOM << 15 | RANDOM) % 65536 )))"
+  fi
+  run_as_target_user mkdir -p "$(dirname "$file")"
+  printf '%s\n' "$cur" | run_as_target_user tee "$file" >/dev/null
+  printf '%s\n' "$cur"
+}
+
+fxroute_spotify_connect_name() {
+  # Short unique Spotify Connect name from hostname/machine-id (read-only).
+  # Never touches hostname, Avahi, Caddy, or DNS; never prints .local.
+  local host="${1:-$(hostname 2>/dev/null || true)}"
+  local mid="${2:-$(cat /etc/machine-id 2>/dev/null || true)}"
+  local suffix_file="${3:-$HOME/.config/fxroute/device-suffix}"
+  local rest="" label="" clean="" suffix=""
+  host="$(printf '%s' "$host" | tr 'A-Z' 'a-z' | sed -e 's/^[[:space:]]*//; s/[[:space:]]*$//; s/\.local$//; s/\.*$//')"
+  host="${host%%.*}"
+  if [[ -n "$host" && "$host" != localhost && "$host" != fxroute ]]; then
+    if [[ "$host" =~ ^fxroute-([0-9a-f]{6})$ ]]; then
+      suffix="${BASH_REMATCH[1]:0:4}"
+      printf 'FXRoute %s\n' "${suffix^^}"
+      return 0
+    fi
+    rest="$host"
+    if [[ "$host" == fxroute-* ]]; then
+      rest="${host#fxroute-}"
+    elif [[ "$host" == fxroute* ]]; then
+      rest="${host#fxroute}"
+    fi
+    rest="${rest##[-_]}"
+    label="$(fxroute_spotify_humanize_label "$rest" || true)"
+    if [[ -n "$label" ]]; then
+      printf 'FXRoute %s\n' "$label"
+      return 0
+    fi
+  fi
+  clean="$(printf '%s' "$mid" | tr 'A-Z' 'a-z' | tr -cd '0-9a-f')"
+  if [[ ${#clean} -ge 4 ]]; then
+    suffix="${clean:0:4}"
+    printf 'FXRoute %s\n' "${suffix^^}"
+    return 0
+  fi
+  printf 'FXRoute %s\n' "$(fxroute_spotify_persistent_suffix "$suffix_file")"
+}
+
+sync_spotifyd_device_name() {
+  # Align an FXRoute-managed spotifyd device_name with the Connect name.
+  # Custom names (anything not starting with FXRoute) are never rewritten.
+  local config_path="${1:-$HOME/.config/spotifyd/spotifyd.conf}"
+  local desired="" current=""
+  desired="$(fxroute_spotify_connect_name 2>/dev/null || true)"
+  [[ -n "$desired" ]] || return 0
+  SPOTIFYD_CONNECT_NAME="$desired"
+  [[ -f "$config_path" ]] || return 0
+  current="$(sed -n -E 's/^[[:space:]]*device_name[[:space:]]*=[[:space:]]*["'"'"']([^"'"'"']*)["'"'"'].*/\1/p' "$config_path" | head -n 1)"
+  if [[ -z "$current" ]]; then
+    if grep -q -E '^[[:space:]]*\[global\][[:space:]]*$' "$config_path"; then
+      run_as_target_user sed -i -E '/^[[:space:]]*\[global\][[:space:]]*$/a device_name = "'"$desired"'"' "$config_path"
+    else
+      printf '\n[global]\ndevice_name = "%s"\n' "$desired" | run_as_target_user tee -a "$config_path" >/dev/null
+    fi
+    SPOTIFYD_DEVICE_NAME_CHANGED=1
+    pass "spotifyd Connect name set to ${desired}"
+    return 0
+  fi
+  if [[ "$current" != "FXRoute" && "$current" != "FXRoute "* ]]; then
+    return 0
+  fi
+  if [[ "$current" == "$desired" ]]; then
+    return 0
+  fi
+  run_as_target_user sed -i -E 's/^([[:space:]]*device_name[[:space:]]*=[[:space:]]*)["'"'"'].*["'"'"'](.*)$/\1"'"$desired"'"\2/' "$config_path"
+  SPOTIFYD_DEVICE_NAME_CHANGED=1
+  pass "spotifyd Connect name updated to ${desired}"
+}
+
 write_spotifyd_config() {
   local config_dir="$HOME/.config/spotifyd"
   local config_path="$config_dir/spotifyd.conf"
+  local connect_name=""
 
   SPOTIFYD_CONFIG_PATH="$config_path"
   run_as_target_user mkdir -p "$config_dir"
   if [[ -f "$config_path" ]]; then
+    sync_spotifyd_device_name "$config_path"
     pass "spotifyd config preserved; FXRoute service pins Zeroconf port ${SPOTIFYD_ZEROCONF_PORT}"
     return 0
   fi
 
+  connect_name="$(fxroute_spotify_connect_name 2>/dev/null || true)"
+  [[ -n "$connect_name" ]] || connect_name="FXRoute 0000"
+  SPOTIFYD_CONNECT_NAME="$connect_name"
   run_as_target_user tee "$config_path" >/dev/null <<EOF
 [global]
-device_name = "FXRoute"
+device_name = "${connect_name}"
 device_type = "speaker"
 backend = "pulseaudio"
 use_mpris = true
@@ -2661,7 +2777,7 @@ zeroconf_port = ${SPOTIFYD_ZEROCONF_PORT}
 EOF
   run_as_target_user chmod 600 "$config_path"
   SPOTIFYD_CONFIG_INSTALLED_BY_FXROUTE=1
-  pass "spotifyd config created for FXRoute/PipeWire-Pulse"
+  pass "spotifyd config created for FXRoute/PipeWire-Pulse (${connect_name})"
 }
 
 spotifyd_runtime_missing_libraries() {
@@ -2946,6 +3062,14 @@ install_spotifyd() {
     SPOTIFYD_PROVIDER_STATUS="owned service unavailable; preserved"
     return 0
   fi
+  if [[ $SPOTIFYD_DEVICE_NAME_CHANGED -eq 1 ]] && user_unit_exists spotifyd.service \
+    && user_systemctl is-active --quiet spotifyd.service >/dev/null 2>&1; then
+    if user_systemctl restart spotifyd.service >/dev/null 2>&1; then
+      pass "spotifyd restarted with Connect name ${SPOTIFYD_CONNECT_NAME}"
+    else
+      warn "spotifyd Connect name updated but the service could not be restarted"
+    fi
+  fi
   if [[ $SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]]; then
     ensure_lan_firewall_rule mdns_5353_udp "spotifyd Zeroconf mDNS discovery"
     ensure_lan_firewall_rule spotifyd_zeroconf_4444_tcp "spotifyd Zeroconf TCP authentication"
@@ -2956,7 +3080,7 @@ install_spotifyd() {
   else
     SPOTIFYD_PROVIDER_STATUS="installed/configured by FXRoute"
   fi
-  echo "spotifyd first run: select FXRoute in Spotify Connect. If OAuth is needed, stop the service and run:"
+  echo "spotifyd first run: select ${SPOTIFYD_CONNECT_NAME:-FXRoute} in Spotify Connect. If OAuth is needed, stop the service and run:"
   echo "  systemctl --user stop spotifyd && ${spotifyd_path:-$HOME/.local/bin/spotifyd} authenticate --config-path $HOME/.config/spotifyd/spotifyd.conf"
   echo "  systemctl --user start spotifyd"
 }

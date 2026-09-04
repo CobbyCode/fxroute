@@ -751,6 +751,7 @@ from streaming.tidal import auth as tidal_auth
 from streaming.tidal import playback as tidal_playback
 from streaming.tidal.cache import library_cache as tidal_library_cache
 from streaming.qobuz import connect_state
+from streaming.spotify import connect_name as spotify_connect_name
 from streaming.spotify import mpris as spotify_mpris
 from streaming.spotify.mpris import playerctl_available, spotify_installed
 from streaming.spotify.provider import (
@@ -3203,6 +3204,10 @@ async def lifespan(app: FastAPI):
 
         runtime.player_instance.register_callbacks(_dispatch_player_state_change)
         downloader.register_callback(on_download_progress, asyncio.get_running_loop())
+        try:
+            await _sync_spotify_connect_name_best_effort()
+        except Exception as exc:
+            logger.warning("Spotify Connect name sync failed: %s", exc)
         logger.info("Application startup complete build_id=%s", _read_build_id())
         yield
     except asyncio.CancelledError:
@@ -5888,6 +5893,32 @@ def _mdns_device_name() -> str:
     return socket.gethostname().strip().strip(".").lower()
 
 
+async def _restart_spotifyd_best_effort() -> bool:
+    """Restart the spotifyd user service; never raises, returns success."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl", "--user", "restart", "spotifyd.service",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=15)
+        return proc.returncode == 0
+    except (OSError, asyncio.TimeoutError):
+        return False
+
+
+async def _sync_spotify_connect_name_best_effort() -> dict:
+    """Align the managed spotifyd name; restarts spotifyd only on change."""
+    try:
+        result = await asyncio.to_thread(spotify_connect_name.sync_spotifyd_device_name)
+    except Exception as exc:
+        logger.warning("Spotify Connect name sync skipped: %s", exc)
+        return {"changed": False}
+    if result.get("changed"):
+        logger.info("Spotify Connect name set to %s", result.get("desired"))
+        result["restarted"] = await _restart_spotifyd_best_effort()
+    return result
+
+
 @app.get("/api/system/device-name")
 async def api_get_device_name():
     """Current LAN device name (*.local) with change capability info."""
@@ -5960,7 +5991,15 @@ async def api_set_device_name(request: Request):
             avahi, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
         )
         raise
-    return {"hostname": value, "changed": True}
+    response: dict = {"hostname": value, "changed": True}
+    try:
+        sync_result = await _sync_spotify_connect_name_best_effort()
+        if sync_result.get("desired"):
+            response["spotify_connect_name"] = sync_result.get("desired")
+            response["spotify_device_updated"] = bool(sync_result.get("changed"))
+    except Exception as exc:
+        logger.warning("Spotify Connect name sync after hostname change failed: %s", exc)
+    return response
 
 
 # ---------------------------------------------------------------------------

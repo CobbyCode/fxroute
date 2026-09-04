@@ -94,7 +94,15 @@ does not receive or store Spotify credentials.
 ### spotifyd
 
 The installer creates `~/.config/spotifyd/spotifyd.conf` only when that file
-does not already exist. The generated config names the device `FXRoute`, uses
+does not already exist. The generated config names the device with a short
+unique Spotify Connect name derived from the system hostname (read-only):
+a deliberate name such as `fxroute-wohnzimmer` becomes `FXRoute Wohnzimmer`,
+an image auto name such as `fxroute-1af688` becomes `FXRoute 1AF6`, and a
+bare `fxroute`/`localhost` falls back to a stable machine-id suffix
+(`FXRoute XXXX`). The name never contains `.local` and never changes the
+hostname, Avahi, Caddy, or DNS setup. On reruns, an existing
+FXRoute-managed name (`FXRoute` or `FXRoute …`) is aligned with the current
+hostname while a user-customized name is preserved. The config uses
 the PipeWire-Pulse backend, enables MPRIS, and uses the session D-Bus.
 The generated config and FXRoute-owned user service both pin the Spotify
 Zeroconf TCP port to `4444`; the installer opens TCP 4444 and UDP 5353 only

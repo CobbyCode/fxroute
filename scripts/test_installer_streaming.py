@@ -414,7 +414,7 @@ test ! -e "$HOME/.local/bin/spotifyd"
     def test_spotifyd_config_has_device_mpris_and_pipewire_without_credentials_or_volume(self):
         body = extract_function(self.install, "write_spotifyd_config")
         for setting in (
-            'device_name = "FXRoute"',
+            "fxroute_spotify_connect_name",
             'backend = "pulseaudio"',
             "use_mpris = true",
             'dbus_type = "session"',
@@ -423,8 +423,20 @@ test ! -e "$HOME/.local/bin/spotifyd"
             'volume_controller = "none"',
         ):
             self.assertIn(setting, body)
-        for forbidden in ("username", "password", "volume ="):
+        # The Connect name is short, unique, and never the bare default.
+        self.assertIn('device_name = "${connect_name}"', body)
+        self.assertNotIn('device_name = "FXRoute"\n', body)
+        for forbidden in ("username", "password", "volume =", ".local"):
             self.assertNotIn(forbidden, body)
+
+    def test_spotifyd_rerun_syncs_managed_names_without_touching_hostname_or_dns(self):
+        body = extract_function(self.install, "sync_spotifyd_device_name")
+        self.assertIn("fxroute_spotify_connect_name", body)
+        for forbidden in ("hostnamectl", "avahi", "caddy", ".local"):
+            self.assertNotIn(forbidden.lower(), body.lower())
+        rerun = extract_function(self.install, "install_spotifyd")
+        self.assertIn("sync_spotifyd_device_name", extract_function(self.install, "write_spotifyd_config"))
+        self.assertIn("SPOTIFYD_DEVICE_NAME_CHANGED", rerun)
 
     def test_owned_provider_services_are_reenabled_on_rerun(self):
         spotifyd = extract_function(self.install, "configure_spotifyd_service")
