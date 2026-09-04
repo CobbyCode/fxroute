@@ -95,17 +95,14 @@ class AutoSubConfirmationSweepTests(unittest.TestCase):
         applied: true`` from the persisted snapshot while the confirmation
         gate had restored the original state (0.0 dB). Both gate-failure
         branches must refresh ``job["auto_gain"]`` like the 2.2 runners do.
+        Under summation-first there is no pre-alignment trim, so both the
+        gate-kept and the reverted path report the original level.
         """
         source = inspect.getsource(autosub._run_auto_sub_optimize)
         self.assertIn(
-            '"final_level_db": balanced_level',
-            source,
-            "gate-kept balance must refresh the gain diagnostics final level",
-        )
-        self.assertIn(
             '"final_level_db": original_level',
             source,
-            "gate revert must refresh the gain diagnostics final level",
+            "gate paths must refresh the gain diagnostics final level to the original level",
         )
         self.assertIn(
             '"final_deltas_db": {"left": 0.0, "right": 0.0}',

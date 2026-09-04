@@ -227,18 +227,18 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
 
         Since the combined dip-guard change the fixture dips (R +4.6 with L
         improved -3.25, combined +0.48) no longer veto: the gate keeps the
-        winner (final_kept) and the final state carries the transferred
-        balance trim on top of the balanced levels.
+        winner (final_kept) and the final state carries the single-stage
+        Gain from the accepted alignment at the original levels.
         """
         job, state, _original = await self._run_reference_case()
 
         self.assertEqual(job["status"], "completed", job.get("error"))
         self.assertEqual(job["result"]["confirmation_gate"]["action"], "final_kept")
         self.assertEqual(state["subwoofers"]["sub1"], {
-            "level_db": 3.3360000000000003, "alignment_ms": -2.14, "polarity": "invert",
+            "level_db": 3.111, "alignment_ms": -2.14, "polarity": "invert",
         })
         self.assertEqual(state["subwoofers"]["sub2"], {
-            "level_db": 1.0275, "alignment_ms": -2.54, "polarity": "normal",
+            "level_db": 0.412, "alignment_ms": -2.54, "polarity": "normal",
         })
         self.assertEqual(job["result"]["applied_sub1_alignment_ms"], -2.14)
 
@@ -253,8 +253,8 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["result"]["applied_sub2_alignment_ms"], -2.54)
         self.assertEqual(job["polarity_check"]["left"]["selected"], "invert")
         self.assertEqual(job["result"]["confirmation_gate"]["failed_sides"], ["right"])
-        self.assertEqual(job["auto_gain"]["final_levels_db"], {"sub1": 3.3360000000000003, "sub2": 1.0275})
-        self.assertEqual(job["auto_gain"]["final_deltas_db"], {"left": 0.225, "right": 0.6155})
+        self.assertEqual(job["auto_gain"]["final_levels_db"], {"sub1": 3.111, "sub2": 0.412})
+        self.assertEqual(job["auto_gain"]["final_deltas_db"], {"left": 3.111, "right": 0.412})
 
     async def test_failed_final_commit_restores_and_verifies_original_state(self):
         job, state, original = await self._run_reference_case(fail_final_commit=True)
@@ -271,7 +271,7 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(job["status"], "completed", job.get("error"))
         self.assertEqual(state["subwoofers"]["sub1"], {
-            "level_db": 3.3360000000000003, "alignment_ms": -2.14, "polarity": "normal",
+            "level_db": 3.111, "alignment_ms": -2.14, "polarity": "normal",
         })
         self.assertTrue(job["deep_bass_check"]["reverted_polarity"])
         self.assertEqual(job["result"]["confirmation_gate"]["action"], "final_kept")

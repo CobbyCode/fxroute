@@ -170,13 +170,13 @@ async def _run_auto_sub_optimize(
         balance_sweep_total = 2
         total = coarse_sweep_total + balance_sweep_total
 
-        # Coarse level balance before any alignment decision: the incumbent
-        # state is measured and its Target residual — via the same method the
-        # later Gain stage uses — is applied as a bounded trim, so the
-        # alignment/polarity optimization runs under a realistic sub/main
-        # balance and the later Gain step becomes a fine trim.
+        # Summation-first baseline: measure the incumbent state at the
+        # original level for the Before display and the confirmation gate.
+        # No Target/Anchor gain is calculated or applied here: Delay and
+        # Polarity must see the unconditioned acoustic summation, the single
+        # Gain step afterwards is the only place that may use Target/Anchor.
         job["stage"] = "balance_check"
-        job["message"] = "Auto Sub Optimize: measuring incumbent balance"
+        job["message"] = "Auto Sub Optimize: measuring incumbent baseline"
         balance_sweep = await _measure_auto_sub_combined_candidate(
             delay_ms=current_alignment, job=job, candidate_index=1, total=1,
             sweep_index_start=1, sweep_total=total, stage="balance_check", fc=fc,
@@ -191,29 +191,16 @@ async def _run_auto_sub_optimize(
             job["message"] = "Auto Sub Optimize cancelled."
             await _restore_original_config()
             return
-        balance_diagnostics = _calculate_auto_sub_gain(
-            mode=OUTPUT_MODE_SUBWOOFER_21, target_curve=job.get("target_curve"),
-            anchor=job.get("main_target_anchor"),
-            winner_curves={
-                "left": balance_sweep.get("calibrated_points_left") or [],
-                "right": balance_sweep.get("calibrated_points_right") or [],
-            }, crossover_hz=fc,
-        )
-        balance_deltas = _auto_sub_gain_deltas(
-            balance_diagnostics, OUTPUT_MODE_SUBWOOFER_21, max_abs_db=6.0,
-        )
-        balance_delta = balance_deltas.get("left", 0.0)
-        balanced_level = max(-24.0, min(12.0, original_level + balance_delta))
+        balance_delta = 0.0
+        balanced_level = original_level  # alias kept for snapshot compat; alignment runs at original_level
         job["balance_check"] = {
-            "deltas_db": {side: round(balance_delta, 3) for side in ("left", "right")},
-            "residuals_db": {
-                side: ((balance_diagnostics.get("channels", {}).get(side) or {}).get("raw_recommendation_db"))
-                for side in ("left", "right")
-            },
-            "confidence": balance_diagnostics.get("confidence"),
+            "deltas_db": {side: 0.0 for side in ("left", "right")},
+            "residuals_db": {side: None for side in ("left", "right")},
+            "confidence": None,
             "level_before_db": original_level,
-            "level_after_db": balanced_level,
-            "applied": bool(balance_deltas),
+            "level_after_db": original_level,
+            "applied": False,
+            "reason": "summation-first: no pre-alignment Target trim; Gain is single-stage after alignment",
         }
         logger.info("AUTOSUB_BALANCE job=%s mode=2.1 %s", job_id, json.dumps(job["balance_check"], sort_keys=True))
 
@@ -236,7 +223,7 @@ async def _run_auto_sub_optimize(
                     calibration_bytes=calibration_bytes,
                     auto_sub_sweep_profile=auto_sub_sweep_profile,
                     auto_sub_rate=auto_sub_rate,
-                    original_level=balanced_level,
+                    original_level=original_level,
                     original_polarity=original_polarity,
                     original_highpass=original_highpass,
                 )
@@ -352,7 +339,7 @@ async def _run_auto_sub_optimize(
                             calibration_bytes=calibration_bytes,
                             auto_sub_sweep_profile=auto_sub_sweep_profile,
                             auto_sub_rate=auto_sub_rate,
-                            original_level=balanced_level,
+                            original_level=original_level,
                             original_polarity=original_polarity,
                             original_highpass=original_highpass,
                         )
@@ -524,7 +511,7 @@ async def _run_auto_sub_optimize(
                 sub_config = {
                     "crossover_frequency_hz": fc,
                     "sub_alignment_ms": best_delay,
-                    "sub_level_db": balanced_level,
+                    "sub_level_db": original_level,
                     "sub_polarity": original_polarity,
                     "main_highpass_enabled": original_highpass,
                 }
@@ -571,7 +558,7 @@ async def _run_auto_sub_optimize(
                 reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
                 calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
                 auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
-                original_level=balanced_level, original_polarity=opposite,
+                original_level=original_level, original_polarity=opposite,
                 original_highpass=original_highpass,
             )
             try:
@@ -602,7 +589,7 @@ async def _run_auto_sub_optimize(
                             mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
                             calibration_ref=calibration_ref, calibration_filename=calibration_filename,
                             calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
-                            auto_sub_rate=auto_sub_rate, original_level=balanced_level,
+                            auto_sub_rate=auto_sub_rate, original_level=original_level,
                             original_polarity=opposite, original_highpass=original_highpass,
                         )
                         placeholder = 2.0 + idx
@@ -647,7 +634,7 @@ async def _run_auto_sub_optimize(
 
             await asyncio.to_thread(set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, {
                 "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                "sub_level_db": balanced_level, "sub_polarity": final_polarity,
+                "sub_level_db": original_level, "sub_polarity": final_polarity,
                 "main_highpass_enabled": original_highpass,
             })
             if _dsp_runtime() is not None:
@@ -663,46 +650,19 @@ async def _run_auto_sub_optimize(
         )
         logger.info("AUTOSUB_GAIN mode=2.1 diagnostics=%s", json.dumps(job["auto_gain"], sort_keys=True))
         gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_21, max_abs_db=6.0)
-        # The balance trim was measured at the original alignment. When the
-        # accepted delay differs, transfer the trim to the accepted
-        # configuration (plus its own measured level delta) instead of
-        # re-closing the old configuration's residual on top of the old trim.
-        alignment_changed = abs(applied_delay - current_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS
-        incumbent_residual_common: float | None = None
-        if alignment_changed:
-            incumbent_candidate = _auto_sub_result_for_delay(list(sweep_results), current_alignment) or {}
-            try:
-                residual_left, _mad_l, _u_l = _auto_sub_target_residual_raw_db(
-                    incumbent_candidate.get("calibrated_points_left") or [], job.get("target_curve"),
-                    job.get("main_target_anchor"), fc,
-                )
-                residual_right, _mad_r, _u_r = _auto_sub_target_residual_raw_db(
-                    incumbent_candidate.get("calibrated_points_right") or [], job.get("target_curve"),
-                    job.get("main_target_anchor"), fc,
-                )
-                incumbent_residual_common = (residual_left + residual_right) / 2.0
-            except (ValueError, TypeError, KeyError, IndexError):
-                incumbent_residual_common = None
-        winner_residual_common = (job["auto_gain"].get("recommendation") or {}).get("raw_delta_db")
-        balance_transfer = _auto_sub_balance_transfer_deltas(
-            balance_deltas_db={"left": balance_delta, "right": balance_delta},
-            winner_residuals_db={"left": winner_residual_common, "right": winner_residual_common},
-            incumbent_residuals_db={"left": incumbent_residual_common, "right": incumbent_residual_common},
-            alignment_changed={"left": alignment_changed, "right": alignment_changed},
-        )
-        if balance_transfer.get("available"):
-            applied_gain_delta = float(balance_transfer["deltas_db"].get("left", 0.0))
-            job["auto_gain"]["configuration_transfer"] = json.loads(json.dumps(balance_transfer))
-            logger.info(
-                "AUTOSUB_TRANSFER job=%s mode=2.1 %s", job_id,
-                json.dumps(job["auto_gain"]["configuration_transfer"], sort_keys=True),
-            )
-        else:
-            applied_gain_delta = gain_deltas.get("left", 0.0)
-            job["auto_gain"]["configuration_transfer"] = {
-                "available": False, "reason": balance_transfer.get("reason"),
-                "alignment_changed": balance_transfer.get("alignment_changed"),
-            }
+        # Summation-first: no pre-alignment balance trim exists, so the final
+        # Gain is single-stage from the accepted alignment at the original
+        # level. The legacy balance-transfer helper stays untouched for unit
+        # coverage but is not part of this path.
+        applied_gain_delta = gain_deltas.get("left", 0.0)
+        job["auto_gain"]["configuration_transfer"] = {
+            "available": False,
+            "reason": "summation-first: no pre-alignment balance trim; single-stage Gain from accepted alignment",
+            "alignment_changed": {
+                "left": abs(applied_delay - current_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
+                "right": abs(applied_delay - current_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
+            },
+        }
         _auto_sub_gain_log_line("AUTOGAIN_INIT", {
             "mode": OUTPUT_MODE_SUBWOOFER_21, "xo_hz": fc,
             "target": (job.get("target_curve") or {}).get("label"),
@@ -714,7 +674,7 @@ async def _run_auto_sub_optimize(
             "combined_delta_db": (job["auto_gain"].get("recommendation") or {}).get("raw_delta_db"),
             "first_step_db": applied_gain_delta,
         })
-        gained_level = max(-24.0, min(12.0, balanced_level + applied_gain_delta))
+        gained_level = max(-24.0, min(12.0, original_level + applied_gain_delta))
         if abs(applied_gain_delta) > 0.0005:
             await asyncio.to_thread(set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, {
                 "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
@@ -743,9 +703,7 @@ async def _run_auto_sub_optimize(
         )
         gain_verdict = _auto_sub_gain_verdict(job["auto_gain"], gain_after, OUTPUT_MODE_SUBWOOFER_21)
         final_gain_deltas = gain_deltas if gain_verdict["accepted"] else {"left": 0.0, "right": 0.0}
-        if gain_verdict["accepted"] and (job["auto_gain"].get("configuration_transfer") or {}).get("available"):
-            final_gain_deltas = {"left": applied_gain_delta, "right": applied_gain_delta}
-        final_gain_level = gained_level if gain_verdict["accepted"] else balanced_level
+        final_gain_level = gained_level if gain_verdict["accepted"] else original_level
         final_gain_sweep = gain_after_sweep if gain_verdict["accepted"] else gain_winner
         correction_deltas: dict[str, float] = {}
         correction_plan = None
@@ -754,21 +712,11 @@ async def _run_auto_sub_optimize(
         if not gain_verdict["accepted"]:
             await asyncio.to_thread(set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, {
                 "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                "sub_level_db": balanced_level, "sub_polarity": final_polarity,
+                "sub_level_db": original_level, "sub_polarity": final_polarity,
                 "main_highpass_enabled": original_highpass,
             })
             if _dsp_runtime() is not None:
                 await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
-        elif (job["auto_gain"].get("configuration_transfer") or {}).get("available"):
-            # The transferred trim is the final single-stage trim for the
-            # accepted configuration; the response-correction step must not
-            # re-close the balance stage's unrealized residual on top of it.
-            correction_verdict = {
-                "accepted": False,
-                "reason": "Balance trim transferred to the accepted alignment; residual re-closure skipped",
-                "channels": {},
-                "step1_retained": True,
-            }
         else:
             correction_plan = _auto_sub_gain_response_correction(
                 job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_21,
@@ -901,7 +849,7 @@ async def _run_auto_sub_optimize(
             }
             if _gate_should_veto:
                 job["stage"] = "confirmation_recheck"
-                job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent alignment at balanced level"
+                job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent alignment at original level"
                 recheck_sweep = await _measure_auto_sub_combined_candidate(
                     delay_ms=current_alignment, job=job, candidate_index=1, total=1,
                     sweep_index_start=total + 5, sweep_total=total + 7,
@@ -910,7 +858,7 @@ async def _run_auto_sub_optimize(
                     reference_input_channel=reference_input_channel,
                     calibration_ref=calibration_ref, calibration_filename=calibration_filename,
                     calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
-                    auto_sub_rate=auto_sub_rate, original_level=balanced_level,
+                    auto_sub_rate=auto_sub_rate, original_level=original_level,
                     original_polarity=original_polarity, original_highpass=original_highpass,
                 )
                 recheck_dips = {
@@ -967,14 +915,13 @@ async def _run_auto_sub_optimize(
                         await _restore_original_config()
                         return
                 elif recheck_outcome == "incumbent_kept":
-                    # Keep the balance fix, revert the alignment (and any
-                    # polarity flip) to the incumbent state the balance was
-                    # computed for.
+                    # No pre-alignment trim exists: revert alignment (and any
+                    # polarity flip) to the incumbent state at the original level.
                     applied_delay = current_alignment
                     final_polarity = original_polarity
-                    final_gain_level = balanced_level
+                    final_gain_level = original_level
                     final_gain_sweep = recheck_sweep
-                    final_gain_deltas = {"left": balance_delta, "right": balance_delta}
+                    final_gain_deltas = {"left": 0.0, "right": 0.0}
                     await asyncio.to_thread(set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, {
                         "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
                         "sub_level_db": final_gain_level, "sub_polarity": final_polarity,
@@ -983,13 +930,13 @@ async def _run_auto_sub_optimize(
                     if _dsp_runtime() is not None:
                         await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
                     confirmation_gate["action"] = "alignment_reverted_balance_kept"
-                    # The gate reverted the fine trim and kept only the
-                    # balance; the gain diagnostics must describe the state
-                    # that was actually committed.
+                    # The gate reverted to the incumbent alignment at the
+                    # original level; the gain diagnostics must describe the
+                    # state that was actually committed.
                     job["auto_gain"].update({
                         "applied": False, "reverted": True,
                         "final_deltas_db": dict(final_gain_deltas),
-                        "final_level_db": balanced_level,
+                        "final_level_db": original_level,
                     })
                 else:
                     if not await _restore_original_config():
@@ -1060,8 +1007,8 @@ async def _run_auto_sub_optimize(
         baseline_measurement = None
         confirmation_measurement = None
         all_sweep_results = list(sweep_results) + list(fine_results)
-        # The balance-stage sweep is the true Before state (original level);
-        # the coarse incumbent candidate was measured at the balanced level.
+        # The baseline-stage sweep is the true Before state (original level);
+        # all alignment candidates were measured at the same original level.
         baseline_sweep = balance_sweep
 
         # Chain-anchor display correction: pull each trace back to the run's
@@ -1127,7 +1074,7 @@ async def _run_auto_sub_optimize(
                 offset_db=_offset_db,
             )
 
-        _final_level = final_gain_level if auto_apply else balanced_level
+        _final_level = final_gain_level if auto_apply else original_level
         _final_delay = float(applied_delay if auto_apply else current_alignment)
         # Run's scored anchor offset (calibrated coords); the frontend combines
         # it with each trace's display_offset_db to place the target exactly.

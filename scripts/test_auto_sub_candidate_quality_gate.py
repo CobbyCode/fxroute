@@ -4,9 +4,11 @@ uncertain near-tie re-measurement.
 
 The real-run fixture reproduces the 2026-08-31 2.2-stereo failure: the single
 +1.76 ms candidate sweep was a capture artifact (normal 200-600 Hz chain
-anchor, bass-band energy collapsed by ~20 dB) and, before the gate existed,
-its extreme values defined both ends of the scorer's min-max normalization —
-flipping the accepted right winner from +1.56 ms to +2.34 ms.
+anchor, bass-band energy collapsed by ~20 dB). Before the gate existed its
+extreme values defined the scorer normalization and flipped the winner;
+under level-invariant shape scoring the uniformly collapsed artifact even
+wins the unguarded set outright, so the gate must exclude it before scoring
+and the healthy winner (+1.56 ms) is restored.
 """
 
 import copy
@@ -80,7 +82,11 @@ class CandidatePlausibilityGateTests(unittest.TestCase):
         """The real run regression: one collapsed sweep must not decide the winner."""
         rows = load_fixture_rows()
         dirty = score(rows)
-        self.assertEqual(round(float(dirty["winner"]["delay_ms"]), 2), 2.34)
+        # Under level-invariant shape scoring the uniformly collapsed
+        # artifact even wins the unguarded set on shape alone (flat collapse
+        # looks dip-free), which is exactly why the energy gate must run
+        # before scoring. The production path never uses this dirty winner.
+        self.assertEqual(round(float(dirty["winner"]["delay_ms"]), 2), 1.76)
 
         kept, exclusions = _auto_sub_gate_candidate_rows(copy.deepcopy(rows), FC, context="test")
         self.assertEqual(len(exclusions), 1)

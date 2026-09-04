@@ -2306,14 +2306,19 @@ def score_sub_alignment_candidates(
             return [(v - mn) / (mx - mn) for v in vals]
         return [(mx - v) / (mx - mn) for v in vals]
 
-    # Weights: primary band 60 %, secondary 40 %
-    # Within each band: mean 40 %, dip severity 25 %, swing 20 %, roughness 15 %
-    n_pri_mean = _norm([p["mean"] for p in primary], True)
+    # Weights: primary band 60 %, secondary 40 %.
+    # Within each band only cancellation/shape metrics decide: dip severity,
+    # swing and roughness. The absolute band mean is level, not summation
+    # quality: with main M and sub S the wide-band sum averages to
+    # |M|^2 + |S|^2 independent of delay phase, so neighbouring delays move
+    # the scored mean only by measurement noise (b314da49f859 right: 0.3 dB
+    # set range decided 8.6 pp against worse dip/swing/roughness). Mean stays
+    # diagnostic only (mean_primary_db/mean_secondary_db); shape keeps its
+    # relative ratios 25/20/15 rescaled to 25/60, 20/60, 15/60.
     n_pri_dip = _norm([p["mean"] - p["min"] for p in primary], False)
     n_pri_swing = _norm([p["swing"] for p in primary], False)
     n_pri_rough = _norm([p["roughness"] for p in primary], False)
 
-    n_sec_mean = _norm([p["mean"] for p in secondary], True)
     n_sec_dip = _norm([p["mean"] - p["min"] for p in secondary], False)
     n_sec_swing = _norm([p["swing"] for p in secondary], False)
     n_sec_rough = _norm([p["roughness"] for p in secondary], False)
@@ -2342,16 +2347,14 @@ def score_sub_alignment_candidates(
         )
 
         score_pri = (
-            n_pri_mean[i] * 0.40
-            + n_pri_dip[i] * 0.25
-            + n_pri_swing[i] * 0.20
-            + n_pri_rough[i] * 0.15
+            + n_pri_dip[i] * (25.0 / 60.0)
+            + n_pri_swing[i] * (20.0 / 60.0)
+            + n_pri_rough[i] * (15.0 / 60.0)
         )
         score_sec = (
-            n_sec_mean[i] * 0.40
-            + n_sec_dip[i] * 0.25
-            + n_sec_swing[i] * 0.20
-            + n_sec_rough[i] * 0.15
+            + n_sec_dip[i] * (25.0 / 60.0)
+            + n_sec_swing[i] * (20.0 / 60.0)
+            + n_sec_rough[i] * (15.0 / 60.0)
         )
         timing_band_score = (score_pri * 0.60 + score_sec * 0.40)
         low_guard_loss_db = max(0.0, float(reference_low_guard["p20"]) - float(low_guard[i]["p20"]))

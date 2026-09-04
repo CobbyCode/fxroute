@@ -172,13 +172,14 @@ async def _run_auto_sub_22_optimize(
             await _restore_original_config()
             return
 
-        # Coarse level balance before the matrix optimization: measure the
-        # incumbent pair (both subs, original alignments/levels) and apply
-        # its common Target residual as a bounded trim, so the matrix is
-        # scored under a realistic sub/main balance and the later Gain step
-        # becomes a fine trim.
+        # Summation-first baseline: measure the incumbent pair (both subs,
+        # original alignments/levels) for the Before display and the
+        # confirmation gate. No Target/Anchor gain is calculated or applied
+        # here: Delay and Polarity must see the unconditioned acoustic
+        # summation, the single Gain step afterwards is the only place that
+        # may use Target/Anchor.
         job["stage"] = "balance_check"
-        job["message"] = "Auto Sub Optimize: measuring incumbent balance"
+        job["message"] = "Auto Sub Optimize: measuring incumbent baseline"
         balance_sweep_total = 2
         balance_sweep = await _measure_auto_sub_combined_candidate(
             delay_ms=original_sub1_alignment, job=job, candidate_index=1, total=1,
@@ -196,30 +197,13 @@ async def _run_auto_sub_22_optimize(
             job["message"] = "Auto Sub Optimize cancelled."
             await _restore_original_config()
             return
-        balance_diagnostics = _calculate_auto_sub_gain(
-            mode=OUTPUT_MODE_SUBWOOFER_22, target_curve=job.get("target_curve"),
-            anchor=job.get("main_target_anchor"),
-            winner_curves={
-                "left": balance_sweep.get("calibrated_points_left") or [],
-                "right": balance_sweep.get("calibrated_points_right") or [],
-            }, crossover_hz=fc,
-        )
-        balance_deltas = _auto_sub_gain_deltas(
-            balance_diagnostics, OUTPUT_MODE_SUBWOOFER_22, max_abs_db=6.0,
-        )
-        balanced_snapshot = _auto_sub_22_snapshot_with_gain(
-            original_config_snapshot,
-            left_delta_db=balance_deltas.get("left", 0.0),
-            right_delta_db=balance_deltas.get("right", 0.0),
-        )
+        balanced_snapshot = _auto_sub_snapshot_copy(original_config_snapshot)
         job["balance_check"] = {
-            "deltas_db": {side: round(value, 3) for side, value in balance_deltas.items()},
-            "residuals_db": {
-                side: ((balance_diagnostics.get("channels", {}).get(side) or {}).get("raw_recommendation_db"))
-                for side in ("left", "right")
-            },
-            "confidence": balance_diagnostics.get("confidence"),
-            "applied": bool(balance_deltas),
+            "deltas_db": {side: 0.0 for side in ("left", "right")},
+            "residuals_db": {side: None for side in ("left", "right")},
+            "confidence": None,
+            "applied": False,
+            "reason": "summation-first: no pre-alignment Target trim; Gain is single-stage after alignment",
         }
         logger.info("AUTOSUB_BALANCE job=%s mode=2.2_mono %s", job_id, json.dumps(job["balance_check"], sort_keys=True))
         if _dsp_runtime() is not None:
@@ -491,61 +475,24 @@ async def _run_auto_sub_22_optimize(
         )
         logger.info("AUTOSUB_GAIN mode=2.2_mono diagnostics=%s", json.dumps(job["auto_gain"], sort_keys=True))
         gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_22, max_abs_db=6.0)
-        # The balance trim was measured at the original sub pair. When the
-        # accepted matrix pair differs, transfer the trim to the accepted
-        # configuration (plus its own measured level delta) instead of
-        # re-closing the old configuration's residual on top of the old trim.
-        alignment_changed = (
-            abs(best_sub1 - original_sub1_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS
-            or abs(best_sub2 - original_sub2_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS
-        )
-        incumbent_residual_common: float | None = None
-        if alignment_changed:
-            # The transfer compares the accepted pair against the incumbent
-            # pair. Both must come from the Both-subs matrix (same active
-            # configuration, same balanced level): the coarse single-sub
-            # rows measure one sub in isolation, so their residual carries
-            # the single->both summation difference as an error term.
-            incumbent_candidate = next(
-                (row for row in matrix_results
-                 if _same_pair(
-                     (float(row.get("sub1_alignment_ms", 0.0) or 0.0),
-                      float(row.get("sub2_alignment_ms", 0.0) or 0.0)),
-                     original_sub1_alignment, original_sub2_alignment,
-                 )),
-                {},
-            )
-            try:
-                residual_left, _mad_l, _u_l = _auto_sub_target_residual_raw_db(
-                    incumbent_candidate.get("calibrated_points_left") or [], job.get("target_curve"),
-                    job.get("main_target_anchor"), fc,
-                )
-                residual_right, _mad_r, _u_r = _auto_sub_target_residual_raw_db(
-                    incumbent_candidate.get("calibrated_points_right") or [], job.get("target_curve"),
-                    job.get("main_target_anchor"), fc,
-                )
-                incumbent_residual_common = (residual_left + residual_right) / 2.0
-            except (ValueError, TypeError, KeyError, IndexError):
-                incumbent_residual_common = None
-        winner_residual_common = (job["auto_gain"].get("recommendation") or {}).get("raw_delta_db")
-        balance_transfer = _auto_sub_balance_transfer_deltas(
-            balance_deltas_db={"left": balance_deltas.get("left", 0.0), "right": balance_deltas.get("right", 0.0)},
-            winner_residuals_db={"left": winner_residual_common, "right": winner_residual_common},
-            incumbent_residuals_db={"left": incumbent_residual_common, "right": incumbent_residual_common},
-            alignment_changed={"left": alignment_changed, "right": alignment_changed},
-        )
-        if balance_transfer.get("available"):
-            gain_deltas = dict(balance_transfer["deltas_db"])
-            job["auto_gain"]["configuration_transfer"] = json.loads(json.dumps(balance_transfer))
-            logger.info(
-                "AUTOSUB_TRANSFER job=%s mode=2.2_mono %s", job_id,
-                json.dumps(job["auto_gain"]["configuration_transfer"], sort_keys=True),
-            )
-        else:
-            job["auto_gain"]["configuration_transfer"] = {
-                "available": False, "reason": balance_transfer.get("reason"),
-                "alignment_changed": balance_transfer.get("alignment_changed"),
-            }
+        # Summation-first: no pre-alignment balance trim exists, so the final
+        # Gain is single-stage from the accepted matrix pair. The legacy
+        # balance-transfer helper stays untouched for unit coverage but is not
+        # part of this path.
+        job["auto_gain"]["configuration_transfer"] = {
+            "available": False,
+            "reason": "summation-first: no pre-alignment balance trim; single-stage Gain from accepted alignment",
+            "alignment_changed": {
+                "left": (
+                    abs(best_sub1 - original_sub1_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS
+                    or abs(best_sub2 - original_sub2_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS
+                ),
+                "right": (
+                    abs(best_sub1 - original_sub1_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS
+                    or abs(best_sub2 - original_sub2_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS
+                ),
+            },
+        }
         _auto_sub_gain_log_line("AUTOGAIN_INIT", {
             "mode": OUTPUT_MODE_SUBWOOFER_22, "xo_hz": fc,
             "target": (job.get("target_curve") or {}).get("label"),
@@ -778,7 +725,7 @@ async def _run_auto_sub_22_optimize(
         # Final Before/After confirmation gate (see the 2.1/2.2-stereo
         # runners): the adopted matrix winner must not introduce a clearly
         # deeper local dip than the measured Before state. On failure the
-        # incumbent pair under the balanced levels is measured and adopted
+        # incumbent pair at the original levels is measured and adopted
         # when it passes; otherwise the original state is restored.
         # scored_* preserves the accepted optimum: the gate below resets
         # best_* to the incumbent pair on revert, while suggested_* must
@@ -809,7 +756,7 @@ async def _run_auto_sub_22_optimize(
         }
         if _mono_should_veto:
             job["stage"] = "confirmation_recheck"
-            job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent pair at balanced levels"
+            job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent pair at original levels"
             recheck_sweep = await _measure_auto_sub_combined_candidate(
                 delay_ms=original_sub1_alignment, job=job, candidate_index=1, total=1,
                 sweep_index_start=matrix_sweep_total + 5, sweep_total=matrix_sweep_total + 7,
@@ -837,8 +784,8 @@ async def _run_auto_sub_22_optimize(
             )
             confirmation_gate.update({"recheck_local_dip_db": recheck_dips, "recheck_passed": recheck_passed})
             if recheck_passed:
-                # Keep the balance fix, revert the pair (and any polarity
-                # change) to the incumbent state the balance was computed for.
+                # No pre-alignment trim exists: revert the pair (and any
+                # polarity change) to the incumbent state at the original levels.
                 final_gain_snapshot = balanced_snapshot
                 final_gain_sweep = recheck_sweep
                 best_sub1 = original_sub1_alignment
@@ -894,8 +841,8 @@ async def _run_auto_sub_22_optimize(
 
         # Build baseline and confirmation measurements for before/after graph display
         all_22_sweeps = list(coarse1_results) + list(coarse2_results) + list(matrix_results)
-        # The balance-stage sweep is the true Before state (both subs, original
-        # alignments/levels); matrix candidates were measured balanced.
+        # The baseline-stage sweep is the true Before state (both subs, original
+        # alignments/levels); all matrix candidates were measured at the same original levels.
         baseline_22_sweep = balance_sweep
         # Prefer the final measured sweep (gain verification or polarity-refined
         # winner) so the confirmation always reflects the applied pair; fall
@@ -1003,7 +950,7 @@ async def _run_auto_sub_22_optimize(
                 _measurement["measurement_kind"] = "auto_sub"
                 _measurement["autosub_meta"] = _autosub_meta
         gate_suffix = {
-            "alignment_reverted_balance_kept": "; final state regressed locally - incumbent pair kept, balance applied",
+            "alignment_reverted_balance_kept": "; final state regressed locally - incumbent pair kept at original levels",
             "reverted_to_original": "; final state regressed locally - original state restored",
         }.get(gate_action)
         decision_label = "Kept 2.2 incumbent" if matrix_scoring.get("incumbent_accepted") else "Applied 2.2"

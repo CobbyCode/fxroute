@@ -201,15 +201,14 @@ async def _run_auto_sub_22_stereo_optimize(
             + 2  # deep-bass check: one both-subs sweep per side before the Gain stage
         )
 
-        # Coarse level balance before any alignment decision: the incumbent
-        # state (both subs, original alignments/levels) is measured and its
-        # per-channel Target residual — via the same method the later Gain
-        # stage uses — is applied as a bounded trim. The alignment/polarity
-        # optimization then runs under a realistic sub/main balance instead
-        # of the pre-balance one, and the later Gain step becomes a fine
-        # trim that no longer re-shapes the scored interference pattern.
+        # Summation-first baseline: measure the incumbent state (both subs,
+        # original alignments/levels), one sweep per side, for the Before
+        # display and the confirmation gate. No Target/Anchor gain is
+        # calculated or applied here: Delay and Polarity must see the
+        # unconditioned acoustic summation, the single Gain step afterwards is
+        # the only place that may use Target/Anchor.
         job["stage"] = "balance_check"
-        job["message"] = "Auto Sub Optimize: measuring incumbent balance"
+        job["message"] = "Auto Sub Optimize: measuring incumbent baseline"
         balance_left = await _measure_auto_sub_candidate(
             delay_ms=original_left_alignment, job=job, candidate_index=1, total=2,
             stage="balance_check", fc=fc, input_id=input_id, channel="left",
@@ -240,30 +239,13 @@ async def _run_auto_sub_22_stereo_optimize(
             job["message"] = "Auto Sub Optimize cancelled."
             await _restore_original_config()
             return
-        balance_diagnostics = _calculate_auto_sub_gain(
-            mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, target_curve=job.get("target_curve"),
-            anchor=job.get("main_target_anchor"),
-            winner_curves={
-                "left": balance_left.get("calibrated_points") or [],
-                "right": balance_right.get("calibrated_points") or [],
-            }, crossover_hz=fc,
-        )
-        balance_deltas = _auto_sub_gain_deltas(
-            balance_diagnostics, OUTPUT_MODE_SUBWOOFER_22_STEREO, max_abs_db=6.0,
-        )
-        balanced_snapshot = _auto_sub_22_snapshot_with_gain(
-            original_config_snapshot,
-            left_delta_db=balance_deltas.get("left", 0.0),
-            right_delta_db=balance_deltas.get("right", 0.0),
-        )
+        balanced_snapshot = _auto_sub_snapshot_copy(original_config_snapshot)
         job["balance_check"] = {
-            "deltas_db": {side: round(value, 3) for side, value in balance_deltas.items()},
-            "residuals_db": {
-                side: ((balance_diagnostics.get("channels", {}).get(side) or {}).get("raw_recommendation_db"))
-                for side in ("left", "right")
-            },
-            "confidence": balance_diagnostics.get("confidence"),
-            "applied": bool(balance_deltas),
+            "deltas_db": {side: 0.0 for side in ("left", "right")},
+            "residuals_db": {side: None for side in ("left", "right")},
+            "confidence": None,
+            "applied": False,
+            "reason": "summation-first: no pre-alignment Target trim; Gain is single-stage after alignment",
         }
         logger.info("AUTOSUB_BALANCE job=%s mode=2.2_stereo %s", job_id, json.dumps(job["balance_check"], sort_keys=True))
         if _dsp_runtime() is not None:
@@ -1006,59 +988,24 @@ async def _run_auto_sub_22_stereo_optimize(
         )
         logger.info("AUTOSUB_GAIN mode=2.2_stereo diagnostics=%s", json.dumps(job["auto_gain"], sort_keys=True))
         gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_22_STEREO, max_abs_db=6.0)
-        # Per-side configuration check: the balance trim was measured for the
-        # incumbent alignments. A side whose accepted alignment differs no
-        # longer owns that trim; its final delta is the level-consistent
-        # transfer (balance trim + measured configuration delta at the same
-        # balanced level) instead of accumulating the stale trim.
+        # Summation-first: no pre-alignment balance trim exists, so the final
+        # Gain is single-stage from the accepted alignment at the original
+        # levels. The legacy balance-transfer helper stays untouched for unit
+        # coverage but is not part of this path.
         alignment_changed = {
             "left": abs(best_left - original_left_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
             "right": abs(best_right - original_right_alignment) > _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
         }
-        incumbent_residuals: dict[str, float | None] = {}
-        for side, sweeps, original_alignment in (
-            ("left", list(left_results) + list(left_fine_results), original_left_alignment),
-            ("right", list(right_results) + list(right_fine_results), original_right_alignment),
-        ):
-            incumbent_residuals[side] = None
-            if not alignment_changed[side]:
-                continue
-            incumbent_result = _auto_sub_result_for_delay(sweeps, original_alignment)
-            incumbent_points = (incumbent_result or {}).get("calibrated_points") or []
-            try:
-                raw_residual, _mad, _usable = _auto_sub_target_residual_raw_db(
-                    incumbent_points, job.get("target_curve"), job.get("main_target_anchor"), fc,
-                )
-                incumbent_residuals[side] = raw_residual
-            except (ValueError, TypeError, KeyError, IndexError):
-                incumbent_residuals[side] = None
-        winner_residuals = {
-            side: ((job["auto_gain"].get("channels") or {}).get(side) or {}).get("raw_recommendation_db")
-            for side in ("left", "right")
+        first_step_deltas = dict(gain_deltas)
+        job["auto_gain"]["configuration_transfer"] = {
+            "available": False,
+            "reason": "summation-first: no pre-alignment balance trim; single-stage Gain from accepted alignment",
+            "alignment_changed": alignment_changed,
         }
-        balance_transfer = _auto_sub_balance_transfer_deltas(
-            balance_deltas_db=balance_deltas,
-            winner_residuals_db=winner_residuals,
-            incumbent_residuals_db=incumbent_residuals,
-            alignment_changed=alignment_changed,
+        logger.info(
+            "AUTOSUB_TRANSFER job=%s mode=2.2_stereo single-stage reason=%s", job_id,
+            job["auto_gain"]["configuration_transfer"]["reason"],
         )
-        if balance_transfer.get("available"):
-            first_step_deltas = dict(balance_transfer["deltas_db"])
-            job["auto_gain"]["configuration_transfer"] = json.loads(json.dumps(balance_transfer))
-            logger.info(
-                "AUTOSUB_TRANSFER job=%s mode=2.2_stereo %s", job_id,
-                json.dumps(job["auto_gain"]["configuration_transfer"], sort_keys=True),
-            )
-        else:
-            first_step_deltas = dict(gain_deltas)
-            job["auto_gain"]["configuration_transfer"] = {
-                "available": False, "reason": balance_transfer.get("reason"),
-                "alignment_changed": alignment_changed,
-            }
-            logger.info(
-                "AUTOSUB_TRANSFER job=%s mode=2.2_stereo unavailable reason=%s", job_id,
-                balance_transfer.get("reason"),
-            )
         _auto_sub_gain_log_line("AUTOGAIN_INIT", {
             "mode": OUTPUT_MODE_SUBWOOFER_22_STEREO, "xo_hz": fc,
             "target": (job.get("target_curve") or {}).get("label"),
@@ -1164,18 +1111,6 @@ async def _run_auto_sub_22_stereo_optimize(
                 "accepted": False,
                 "reason": "Retained improved Stereo side; restored regressed side",
                 "channels": gain_verdict.get("channels", {}),
-                "step1_retained": True,
-            }
-        elif alignment_changed["left"] or alignment_changed["right"]:
-            # The transferred delta is the final single-stage trim for the
-            # accepted configuration. Chasing the remaining anchored-median
-            # residual would re-close the balance stage's unrealised share on
-            # the new configuration - the documented accumulation defect - so
-            # the response-correction and stereo-probe stages stay off.
-            correction_verdict = {
-                "accepted": False,
-                "reason": "Balance trim transferred to the accepted alignment; residual re-closure skipped",
-                "channels": {},
                 "step1_retained": True,
             }
         else:
@@ -1406,11 +1341,10 @@ async def _run_auto_sub_22_stereo_optimize(
         # introduce a clearly deeper local dip than the measured Before
         # state. The metric (curve minus 1/1-octave moving-median surround)
         # is immune to the legitimate broadband balance change, so only real
-        # new notches trip it — mean-based shape metrics stayed "better" in
-        # the rejected real run while a 7 dB notch appeared. On failure the
-        # incumbent alignment under the balanced levels is measured as a
-        # diagnostic; when it passes, the balance Gain is kept but the scored
-        # alignment/polarity remains authoritative.
+        # new notches trip it. On failure the incumbent alignment at the
+        # original levels is measured as a diagnostic; when it passes, the
+        # single-stage Gain is dropped but the scored alignment/polarity
+        # remains authoritative.
         gate_band_low, gate_band_high = fc * 0.5, fc * 2.0
         gate_before_dips = {
             "left": _auto_sub_local_dip_db(balance_left.get("points") or [], gate_band_low, gate_band_high),
@@ -1435,7 +1369,7 @@ async def _run_auto_sub_22_stereo_optimize(
         }
         if _stereo_should_veto:
             job["stage"] = "confirmation_recheck"
-            job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent alignment at balanced levels"
+            job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent alignment at original levels"
             recheck_left = await _measure_auto_sub_candidate(
                 delay_ms=original_left_alignment, job=job, candidate_index=1, total=2,
                 stage="confirmation_recheck", fc=fc, input_id=input_id, channel="left",
@@ -1473,9 +1407,9 @@ async def _run_auto_sub_22_stereo_optimize(
             )
             confirmation_gate.update({"recheck_local_dip_db": recheck_dips, "recheck_passed": recheck_passed})
             if recheck_passed and _auto_sub_has_points(recheck_left, "points") and _auto_sub_has_points(recheck_right, "points"):
-                # Keep the accepted balance gains without allowing the
-                # diagnostic incumbent recheck to replace the scored winner.
-                # The deep-bass sweeps match this gain/alignment/polarity state.
+                # Drop the single-stage Gain without allowing the diagnostic
+                # incumbent recheck to replace the scored winner. The
+                # deep-bass sweeps match this gain/alignment/polarity state.
                 if not deep_bass_reverted:
                     final_gain_left, final_gain_right = deep_bass_left, deep_bass_right
                 final_gain_snapshot = balanced_snapshot
@@ -1550,9 +1484,9 @@ async def _run_auto_sub_22_stereo_optimize(
                         "left": final_gain_left.get("stage_output_peaks"),
                         "right": final_gain_right.get("stage_output_peaks"),
                     },
-                    "confirmation_gain_fallback": "balanced_gain",
+                    "confirmation_gain_fallback": "original_gain",
                 })
-                confirmation_gate["action"] = "winner_alignment_balance_kept"
+                confirmation_gate["action"] = "winner_alignment_original_kept"
             else:
                 if not await _restore_original_config():
                     return
@@ -1583,7 +1517,7 @@ async def _run_auto_sub_22_stereo_optimize(
         gate_action = (job.get("confirmation_gate") or {}).get("action", "final_kept")
         job["status"] = "completed"
         gate_suffix = {
-            "winner_alignment_balance_kept": "; balance Gain kept, selected alignment/polarity committed",
+            "winner_alignment_original_kept": "; original Gain dropped, selected alignment/polarity committed",
             "reverted_to_original": "; final state regressed locally - original state restored",
         }.get(gate_action)
         job["message"] = (
@@ -1610,7 +1544,7 @@ async def _run_auto_sub_22_stereo_optimize(
             return sweep if sweep and _auto_sub_has_points(sweep, "points") else None
 
         exact_confirmation_required = bool(
-            deep_bass_reverted and gate_action == "winner_alignment_balance_kept"
+            deep_bass_reverted and gate_action == "winner_alignment_original_kept"
         )
         left_confirm = _points_sweep(final_gain_left)
         right_confirm = _points_sweep(final_gain_right)
@@ -1722,7 +1656,7 @@ async def _run_auto_sub_22_stereo_optimize(
             "auto_applied": gate_action != "reverted_to_original",
             "apply_decision": {
                 "final_kept": "applied_22_stereo_separate_lr",
-                "winner_alignment_balance_kept": "applied_winner_alignment_with_balanced_gain",
+                "winner_alignment_original_kept": "applied_winner_alignment_with_original_gain",
                 "reverted_to_original": "reverted_to_original_state",
             }.get(gate_action, "applied_22_stereo_separate_lr"),
             "candidate_ledger": candidate_ledger,

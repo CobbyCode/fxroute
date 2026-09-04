@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Path coverage: 2.2-mono candidate -> derived -> apply -> stored final state.
 
-Covers the bf217b7b318a regression chain:
-- the balance-transfer incumbent residual must come from the Both-subs
-  matrix incumbent row, never from a single-sub coarse row;
+Covers the bf217b7b318a regression chain under summation-first:
+- alignment runs at the original levels with level-invariant shape scoring;
+  Gain is single-stage from the accepted pair (no legacy transfer);
 - after a confirmation-gate revert the stored applied_* delays describe
   the incumbent pair while suggested_* keeps the rejected winner.
 """
@@ -279,24 +279,21 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reject_reason"], "final_state_regressed_incumbent_pair_kept")
 
     async def test_transfer_incumbent_comes_from_both_subs_matrix(self):
+        # Summation-first: the legacy balance transfer is no longer part of
+        # the runner path. Gain is single-stage from the accepted pair, so no
+        # incumbent-residual lookup may run.
         _job, _state, seen, _stages = await self._run_path(gate_veto=False, verdict_accepted=True)
-        # The runner's transfer lookup resolves the incumbent residual from
-        # the Both-subs matrix row: the lookup must succeed (no fallback to
-        # a missing/empty candidate which yields incumbent None -> transfer
-        # unavailable or a stale single-sub residual).
-        self.assertIn("left", seen)
-        self.assertIn("right", seen)
+        self.assertEqual(seen, {})
 
     async def test_balance_transfer_forwards_the_real_right_delta(self):
-        # Regression: the mono transfer used to mirror the left delta into
-        # ``right`` (balance_deltas.get("left", 0.0)), which only went
-        # unnoticed because mono sets both deltas equal. Distinct values must
-        # arrive untouched.
+        # Summation-first regression guard: distinct mocked balance deltas
+        # must never reach the (un-called) transfer; alignment runs at the
+        # original levels and Gain is single-stage.
         _job, _state, seen, _stages = await self._run_path(
             gate_veto=False, verdict_accepted=True,
             balance_deltas_db={"left": -2.0, "right": 1.5},
         )
-        self.assertEqual(seen.get("balance_deltas_db"), {"left": -2.0, "right": 1.5})
+        self.assertEqual(seen, {})
 
     async def test_restore_failure_fails_the_job_with_restore_detail(self):
         # Finding: a restore that cannot be verified (even after the one

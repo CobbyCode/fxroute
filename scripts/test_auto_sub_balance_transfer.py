@@ -194,57 +194,54 @@ class BalanceTransferMathTests(unittest.TestCase):
 
 
 class BalanceTransferWiringTests(unittest.TestCase):
-    """Runner wiring: changed alignments transfer the trim and skip the
-    residual re-closure; unchanged alignments keep the fine-trim flow."""
+    """Runner wiring under the summation-first rule.
 
-    def test_22_stereo_wiring(self):
-        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
+    Delay/Polarity must see the unconditioned acoustic summation at the
+    original levels; only the single Gain step afterwards may use
+    Target/Anchor. The legacy transfer helper stays unit-covered above but
+    is no longer part of any runner path: runners must neither apply a
+    pre-alignment balance trim nor call the transfer.
+    """
+
+    def _assert_summation_first(self, fn, mode: str) -> None:
+        source = inspect.getsource(fn)
         self.assertIn(
+            "summation-first",
+            source,
+            f"{mode} must document the summation-first order",
+        )
+        self.assertNotIn(
             "_auto_sub_balance_transfer_deltas(",
             source,
-            "2.2 Stereo must derive the final delta from the configuration transfer",
+            f"{mode} must not derive Gain from the legacy balance transfer",
         )
+        self.assertNotIn(
+            "balance_deltas = _auto_sub_gain_deltas(",
+            source,
+            f"{mode} must not compute a pre-alignment Target trim",
+        )
+        self.assertNotIn(
+            "balanced_snapshot = _auto_sub_22_snapshot_with_gain(",
+            source,
+            f"{mode} must not precondition alignment scans with a gained snapshot",
+        )
+
+    def test_22_stereo_wiring(self):
+        self._assert_summation_first(
+            autosub._run_auto_sub_22_stereo_optimize, "2.2 Stereo",
+        )
+        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
         self.assertIn(
             "_AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS",
             source,
-            "2.2 Stereo must compare the accepted delays against the balance configuration",
-        )
-        self.assertIn(
-            "Balance trim transferred to the accepted alignment; residual re-closure skipped",
-            source,
-            "2.2 Stereo must skip the response-correction re-closure for transferred trims",
-        )
-        self.assertIn(
-            "_auto_sub_target_residual_raw_db(",
-            source,
-            "2.2 Stereo needs the incumbent configuration's balanced-level residual",
+            "2.2 Stereo still guards alignment changes for Gain staging",
         )
 
     def test_21_wiring(self):
-        source = inspect.getsource(autosub._run_auto_sub_optimize)
-        self.assertIn(
-            "_auto_sub_balance_transfer_deltas(",
-            source,
-            "2.1 must derive the final delta from the configuration transfer",
-        )
-        self.assertIn(
-            "residual re-closure skipped",
-            source,
-            "2.1 must skip the response-correction re-closure for transferred trims",
-        )
+        self._assert_summation_first(autosub._run_auto_sub_optimize, "2.1")
 
     def test_22_mono_wiring(self):
-        source = inspect.getsource(autosub._run_auto_sub_22_optimize)
-        self.assertIn(
-            "_auto_sub_balance_transfer_deltas(",
-            source,
-            "2.2 mono must derive the final delta from the configuration transfer",
-        )
-        self.assertIn(
-            "residual re-closure skipped",
-            source,
-            "2.2 mono must skip the response-correction re-closure for transferred trims",
-        )
+        self._assert_summation_first(autosub._run_auto_sub_22_optimize, "2.2 mono")
 
     def test_confirmation_gate_stays_wired_after_transfer(self):
         # The transfer changes the trim derivation, not the final diagnostic.
