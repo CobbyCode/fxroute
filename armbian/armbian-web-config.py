@@ -717,6 +717,141 @@ def interface_ipv4_addresses(interface: str | None = None) -> list[str]:
     return addresses
 
 
+MACHINE_ID_PATH = Path("/etc/machine-id")
+FXROUTE_WEB_PORT = 8000
+
+
+def derive_fxroute_device_name(
+    machine_id_text: str | None = None,
+    machine_id_path: Path = MACHINE_ID_PATH,
+) -> str:
+    """Mirror first-boot-install.sh derive_fxroute_device_name in Python."""
+
+    if machine_id_text is None:
+        try:
+            if machine_id_path.is_symlink():
+                return "fxroute"
+            machine_id_text = machine_id_path.read_text(encoding="utf-8")
+        except OSError:
+            return "fxroute"
+    cleaned = re.sub(r"[^a-z0-9]", "", machine_id_text.lower())
+    if len(cleaned) >= 6:
+        return f"fxroute-{cleaned[:6]}"
+    return "fxroute"
+
+
+def fxroute_lan_url(device_name: str) -> str:
+    """Return the stable post-install web address for a device name."""
+
+    return f"http://{device_name}.local:{FXROUTE_WEB_PORT}"
+
+
+def completion_device_name(hostname_value: str, preview: bool = False) -> str:
+    """Return the device name shown on the setup completion page."""
+
+    if preview:
+        cleaned = re.sub(r"[^A-Za-z0-9-]", "-", hostname_value).strip("-")
+        return (cleaned or "fxroute-preview").lower()
+    return derive_fxroute_device_name()
+
+
+def setup_completion_html(
+    device_name: str, addresses: list[str], username: str
+) -> str:
+    """Render the completion fragment with the prominent .local address."""
+
+    url = fxroute_lan_url(device_name)
+    escaped_url = html.escape(url, quote=True)
+    escaped_text = html.escape(url)
+    escaped_device = html.escape(f"{username}@{device_name}.local")
+    parts = [
+        "<h2>Setup complete</h2>",
+        "<p>Your future FXRoute address:</p>",
+        f'<p><strong><a href="{escaped_url}">{escaped_text}</a></strong></p>',
+        f'<p><a href="{escaped_url}">Open FXRoute</a> '
+        f'<button type="button" id="copy-address" '
+        f'data-address="{escaped_url}">Copy address</button></p>',
+        "<script>"
+        "(function(){var button=document.getElementById('copy-address');"
+        "if(!button)return;"
+        "button.addEventListener('click',function(){"
+        "var address=button.getAttribute('data-address');"
+        "function done(){button.textContent='Copied';}"
+        "if(navigator.clipboard&&navigator.clipboard.writeText){"
+        "navigator.clipboard.writeText(address).then(done,function(){fallback();});"
+        "}else{fallback();}"
+        "function fallback(){"
+        "var area=document.createElement('textarea');"
+        "area.value=address;document.body.appendChild(area);area.select();"
+        "try{document.execCommand('copy');done();}catch(e){}"
+        "area.remove();"
+        "}"
+        "});})();"
+        "</script>",
+        "<p>FXRoute is being installed. The web interface will be "
+        "available at the address above once first-boot installation "
+        "finishes.</p>",
+    ]
+    if addresses:
+        links = "".join(
+            f'<li><a href="http://{html.escape(address)}:{FXROUTE_WEB_PORT}">'
+            f"http://{html.escape(address)}:{FXROUTE_WEB_PORT}</a></li>"
+            for address in addresses
+        )
+        parts.append(
+            "<p>While the device keeps its current network address, "
+            f"it is also reachable at:</p><ul>{links}</ul>".format(links=links)
+        )
+    else:
+        parts.append(
+            "<p>If the .local name does not resolve yet, find the device "
+            "address on your router; FXRoute will be at "
+            "http://&lt;address&gt;:8000.</p>"
+        )
+    parts.append(
+        f"<p>SSH will be available as {escaped_device} once the device "
+        f"is reachable on your normal network. If the temporary "
+        f"setup network disappeared, reconnect your computer first.</p>"
+        f"</body></html>"
+    )
+    return "".join(parts)
+
+
+def preview_completion_html(device_name: str) -> str:
+    """Render the preview completion fragment with the same .local UX."""
+
+    url = fxroute_lan_url(device_name)
+    escaped_url = html.escape(url, quote=True)
+    escaped_text = html.escape(url)
+    return (
+        "<h2>Preview accepted</h2>"
+        "<p>No system changes were made.</p>"
+        "<p>Your future FXRoute address (preview):</p>"
+        f'<p><strong><a href="{escaped_url}">{escaped_text}</a></strong></p>'
+        f'<p><a href="{escaped_url}">Open FXRoute</a> '
+        f'<button type="button" id="copy-address" '
+        f'data-address="{escaped_url}">Copy address</button></p>'
+        "<script>"
+        "(function(){var button=document.getElementById('copy-address');"
+        "if(!button)return;"
+        "button.addEventListener('click',function(){"
+        "var address=button.getAttribute('data-address');"
+        "function done(){button.textContent='Copied';}"
+        "if(navigator.clipboard&&navigator.clipboard.writeText){"
+        "navigator.clipboard.writeText(address).then(done,function(){fallback();});"
+        "}else{fallback();}"
+        "function fallback(){"
+        "var area=document.createElement('textarea');"
+        "area.value=address;document.body.appendChild(area);area.select();"
+        "try{document.execCommand('copy');done();}catch(e){}"
+        "area.remove();"
+        "}"
+        "});})();"
+        "</script>"
+        "</body></html>"
+    )
+
+
 def wifi_is_connected(interface: str) -> bool:
     result = command(["iw", "dev", interface, "link"], check=False)
     return "Connected to " in result.stdout
@@ -1875,39 +2010,26 @@ class SetupHandler(BaseHTTPRequestHandler):
             success, message = False, str(error)
         if success:
             if preview:
+                device_name = completion_device_name(
+                    str(getattr(self.server.onboarding, "hostname", "")),
+                    preview=True,
+                )
                 self.wfile.write(
-                    b"<h2>Preview accepted</h2>"
-                    b"<p>No system changes were made.</p></body></html>"
+                    preview_completion_html(device_name).encode("utf-8")
                 )
             else:
                 # The Wi-Fi AP may already be gone, so stop both listeners before
                 # attempting the optional final response write.
                 self.server.onboarding.request_shutdown()
+                device_name = completion_device_name(
+                    str(getattr(self.server.onboarding, "hostname", ""))
+                )
                 addresses = self.setup_completion_addresses()
-                if addresses:
-                    links = "".join(
-                        f'<li><a href="http://{html.escape(address)}:8000">'
-                        f"http://{html.escape(address)}:8000</a></li>"
-                        for address in addresses
-                    )
-                    self.wfile.write(
-                        f"<h2>Setup complete</h2>"
-                        f"<p>FXRoute is being installed. The web interface will be "
-                        f"available at:</p><ul>{links}</ul>"
-                        f"<p>SSH will be available as "
-                        f"{html.escape(username)}@&lt;address&gt; once the device "
-                        f"is reachable on your normal network. If the temporary "
-                        f"setup network disappeared, reconnect your computer first."
-                        f"</p></body></html>".encode("utf-8")
-                    )
-                else:
-                    self.wfile.write(
-                        b"<h2>Setup complete</h2>"
-                        b"<p>Reconnect your computer to your normal network. "
-                        b"Find the device address on your router; FXRoute will be "
-                        b"available at http://&lt;address&gt;:8000 once first-boot "
-                        b"installation finishes.</p></body></html>"
-                    )
+                self.wfile.write(
+                    setup_completion_html(
+                        device_name, addresses, username
+                    ).encode("utf-8")
+                )
             self.wfile.flush()
         else:
             LOG.warning("Wi-Fi setup was not completed: %s", message)

@@ -1072,6 +1072,112 @@ BSS 11:22:33:44:55:66(on wlan0)
             server.server_close()
             server_thread.join(2)
 
+    def test_device_name_mirrors_first_boot_machine_id_scheme(self):
+        self.assertEqual(
+            self.web.derive_fxroute_device_name("1af6881234567890abcdef1234567890"),
+            "fxroute-1af688",
+        )
+        self.assertEqual(
+            self.web.derive_fxroute_device_name("0123456789abcdef"),
+            "fxroute-012345",
+        )
+        self.assertEqual(self.web.derive_fxroute_device_name("short"), "fxroute")
+        self.assertEqual(self.web.derive_fxroute_device_name(""), "fxroute")
+        self.assertEqual(
+            self.web.fxroute_lan_url("fxroute-1af688"),
+            "http://fxroute-1af688.local:8000",
+        )
+
+    def test_completion_device_name_uses_preview_hostname_in_preview(self):
+        self.assertEqual(
+            self.web.completion_device_name("fxroute-preview", preview=True),
+            "fxroute-preview",
+        )
+        with mock.patch.object(
+            self.web, "derive_fxroute_device_name", return_value="fxroute-1af688"
+        ):
+            self.assertEqual(
+                self.web.completion_device_name("vim1s", preview=False),
+                "fxroute-1af688",
+            )
+
+    def test_completion_html_promotes_the_dotlocal_address(self):
+        page = self.web.setup_completion_html(
+            "fxroute-1af688", ["192.168.1.20"], "operator"
+        )
+        self.assertIn("http://fxroute-1af688.local:8000", page)
+        self.assertIn("Open FXRoute", page)
+        self.assertIn("Copy address", page)
+        self.assertIn('data-address="http://fxroute-1af688.local:8000"', page)
+        self.assertIn("http://192.168.1.20:8000", page)
+        self.assertIn("operator@fxroute-1af688.local", page)
+
+    def test_completion_html_without_ips_keeps_router_fallback(self):
+        page = self.web.setup_completion_html("fxroute-1af688", [], "operator")
+        self.assertIn("http://fxroute-1af688.local:8000", page)
+        self.assertIn("Open FXRoute", page)
+        self.assertIn("Copy address", page)
+        self.assertIn("router", page)
+
+    def test_preview_completion_html_promotes_the_dotlocal_address(self):
+        page = self.web.preview_completion_html("fxroute-preview")
+        self.assertIn("http://fxroute-preview.local:8000", page)
+        self.assertIn("Open FXRoute", page)
+        self.assertIn("Copy address", page)
+        self.assertIn("No system changes were made.", page)
+
+    def test_successful_submission_links_the_dotlocal_address(self):
+        class FakeOnboarding:
+            hostname = "vim1s"
+            ap_active = False
+
+            def submit(self, *_args):
+                return True, "Setup complete"
+
+            def request_shutdown(self):
+                server.shutdown()
+
+        server = self.web.SetupServer(
+            ("127.0.0.1", 0), self.web.SetupHandler, FakeOnboarding(), secure=True
+        )
+        server_thread = threading.Thread(target=server.serve_forever)
+        server_thread.start()
+        try:
+            with (
+                mock.patch.object(self.web, "has_usable_ethernet", return_value=True),
+                mock.patch.object(
+                    self.web,
+                    "derive_fxroute_device_name",
+                    return_value="fxroute-1af688",
+                ),
+                mock.patch.object(
+                    self.web, "interface_ipv4_addresses", return_value=["192.168.1.20"]
+                ),
+            ):
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+                connection.request(
+                    "POST",
+                    "/setup",
+                    body=(
+                        b"username=operator&account_password=long%20enough%20password"
+                        b"&account_password_confirm=long%20enough%20password"
+                        b"&wifi_country=GB"
+                    ),
+                )
+                response = connection.getresponse()
+                body = response.read().decode("utf-8")
+                self.assertEqual(response.status, 202)
+                self.assertIn("Setup complete", body)
+                self.assertIn("http://fxroute-1af688.local:8000", body)
+                self.assertIn("Open FXRoute", body)
+                self.assertIn("Copy address", body)
+                self.assertIn("http://192.168.1.20:8000", body)
+                connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(2)
+
 
 if __name__ == "__main__":
     unittest.main()
