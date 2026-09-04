@@ -59,17 +59,27 @@ const savedAutoSub = {
     autosub_meta: autoSubMeta,
     traces: [{ label: 'Before L', display_offset_db: 10, points: [[20, -2], [100, 0], [500, 1]] }],
 };
-window.FXRouteMeasurementGraph.init({
-    getDisplaySmoothing: () => 'raw',
-    getMeasurementTargetCurvePreview: () => ({ points: [[20, 0], [20000, 0]] }),
-    getAutoSubDisplayReferenceEntries: () => [savedAutoSub],
-    getCurrentMeasurementEntries: () => [],
-    getVisibleMeasurementEntries: () => [savedAutoSub],
-    getVisibleMeasurementColorById: () => ({ 'saved-autosub': '#60a5fa' }),
-});
+const MeasurementUI = window.FXRouteMeasurementUI || require(path.join(__dirname, '..', 'static', 'measurement_ui.js'));
+const targetKeys = ['neutral', 'harman', 'bk'];
+const alignedByTarget = {};
+for (const key of targetKeys) {
+    const previewPoints = MeasurementUI.measurementConvolverCurves[key].points;
+    window.FXRouteMeasurementGraph.init({
+        getDisplaySmoothing: () => 'raw',
+        getMeasurementTargetCurvePreview: () => ({ points: previewPoints }),
+        getAutoSubDisplayReferenceEntries: () => [savedAutoSub],
+        getCurrentMeasurementEntries: () => [],
+        getVisibleMeasurementEntries: () => [savedAutoSub],
+        getVisibleMeasurementColorById: () => ({ 'saved-autosub': '#60a5fa' }),
+    });
+    alignedByTarget[key] = window.FXRouteMeasurementGraph.getGraphMeasurementEntries();
+}
 
-const alignedEntries = window.FXRouteMeasurementGraph.getGraphMeasurementEntries();
-assert.deepEqual(alignedEntries[0].traces[0].points, [[20, 4], [100, 6], [500, 7]],
+assert.deepEqual(alignedByTarget.neutral[0].traces[0].points, [[20, 4], [100, 6], [500, 7]],
     'saved AutoSub traces must be aligned through the actual graph-entry path');
+assert.deepEqual(alignedByTarget.harman[0].traces[0].points, alignedByTarget.neutral[0].traces[0].points,
+    'Harman target selection must not move traces through the graph path');
+assert.deepEqual(alignedByTarget.bk[0].traces[0].points, alignedByTarget.neutral[0].traces[0].points,
+    'BK target selection must not move traces through the graph path');
 
 console.log('PASS test_measurement_graph_contract.js');

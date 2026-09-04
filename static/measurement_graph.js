@@ -89,9 +89,10 @@
         if (deps.getMeasurementGraphView() === 'ir' || typeof autoSubTarget.alignAutoSubEntries !== 'function') {
             return entries;
         }
-        const targetPoints = deps.getMeasurementTargetCurvePreview()?.points || [];
+        // Trace positions never depend on the selected Target Curve. Only the
+        // drawn target line uses getMeasurementTargetCurvePreview().
         const referenceEntries = deps.getAutoSubDisplayReferenceEntries();
-        return autoSubTarget.alignAutoSubEntries(entries, targetPoints, referenceEntries);
+        return autoSubTarget.alignAutoSubEntries(entries, null, referenceEntries);
     }
 
 

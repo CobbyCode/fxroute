@@ -23,11 +23,11 @@ const autosubMeta = {
     main_reference_points: mainReferencePoints,
 };
 
-function savedAutoSubEntry(id, label, displayOffsetDb, levels) {
+function savedAutoSubEntry(id, label, displayOffsetDb, levels, meta = autosubMeta) {
     return {
         id,
         measurement_kind: 'auto_sub',
-        autosub_meta: autosubMeta,
+        autosub_meta: meta,
         traces: [{
             label,
             display_offset_db: displayOffsetDb,
@@ -36,22 +36,29 @@ function savedAutoSubEntry(id, label, displayOffsetDb, levels) {
     };
 }
 
-// Custom targets use the same endpoint extension as the graph renderer. This
-// keeps broadband Main references usable when a custom file covers only part
-// of 120-8000 Hz or the editor currently contains one point.
+// Target selection must never move traces. Narrow, single-point and custom
+// targets all resolve through the same fixed Neutral reference.
 {
     const entry = savedAutoSubEntry('before-l', 'Before L', 10, [-2, 0, 1]);
-    const narrowTarget = [[500, 0], [1000, 2]];
-    const narrowAligned = autosubTarget.alignAutoSubEntries([entry], narrowTarget);
-    assert.deepEqual(narrowAligned[0].traces[0].points, [[20, 6], [100, 8], [500, 9]]);
+    const neutralAligned = autosubTarget.alignAutoSubEntries([entry], neutralTarget);
+    assert.deepEqual(neutralAligned[0].traces[0].points, [[20, 4], [100, 6], [500, 7]]);
+
+    const narrowAligned = autosubTarget.alignAutoSubEntries([entry], [[500, 0], [1000, 2]]);
+    assert.deepEqual(narrowAligned[0].traces[0].points, neutralAligned[0].traces[0].points,
+        'narrow target must not move traces');
 
     const onePointAligned = autosubTarget.alignAutoSubEntries([entry], [[1000, 1]]);
-    assert.deepEqual(onePointAligned[0].traces[0].points, [[20, 5], [100, 7], [500, 8]]);
+    assert.deepEqual(onePointAligned[0].traces[0].points, neutralAligned[0].traces[0].points,
+        'single-point target must not move traces');
+
+    const nullAligned = autosubTarget.alignAutoSubEntries([entry], null);
+    assert.deepEqual(nullAligned[0].traces[0].points, neutralAligned[0].traces[0].points,
+        'graph path passes no target; traces must stay identical');
 }
 
-// Built-in shaped targets remain selected and unmodified while the AutoSub
-// set receives one constant vertical shift.
-for (const key of ['bk', 'harman']) {
+// Built-in shaped targets keep their shape; the AutoSub set receives one
+// constant vertical shift that is identical for every target.
+for (const key of ['neutral', 'bk', 'harman']) {
     const targetPoints = measurementUi.measurementConvolverCurves[key].points;
     const targetSnapshot = targetPoints.map(point => [...point]);
     const entry = savedAutoSubEntry(`${key}-before`, 'Before L', 10, [-2, 0, 1]);
@@ -64,9 +71,60 @@ for (const key of ['bk', 'harman']) {
     assert.deepEqual(targetPoints, targetSnapshot, `${key} target shape must stay unchanged`);
 }
 
-// Saved split traces from one run must move as one rigid set into the normal
-// graph coordinate. Median display offset 10 minus current Neutral anchor 4
-// gives a +6 dB trace shift, while the Neutral target itself remains at 0 dB.
+// Regression: a bass-heavy Main previously moved 2.5 dB between Neutral and
+// Harman (1.5 dB for BK) with no new sweep. All three must now agree exactly.
+{
+    const freqs = [120, 200, 500, 1000, 2000, 5000, 8000];
+    const bassHeavy = [5, 5, 0, 0, 0, 0, 0];
+    const heavyMeta = {
+        target: { key: 'run-target', label: 'Run Target', points: runTarget },
+        main_reference_points: {
+            left: freqs.map((f, i) => [f, bassHeavy[i]]),
+            right: freqs.map((f, i) => [f, bassHeavy[i]]),
+        },
+    };
+    const entry = savedAutoSubEntry('heavy-before', 'Before L', 10, [-2, 0, 1], heavyMeta);
+    const byTarget = {};
+    for (const key of ['neutral', 'harman', 'bk']) {
+        const pts = measurementUi.measurementConvolverCurves[key].points;
+        byTarget[key] = autosubTarget.alignAutoSubEntries([entry], pts)[0].traces[0].points;
+    }
+    assert.deepEqual(byTarget.harman, byTarget.neutral,
+        'Harman selection must not move traces (was -2.5 dB)');
+    assert.deepEqual(byTarget.bk, byTarget.neutral,
+        'BK selection must not move traces (was -1.5 dB)');
+}
+
+// Two runs with different Mains previously drifted relative to each other on
+// target switch (flat vs bass-heavy: 0.0 dB at Neutral, -2.5 dB at Harman).
+// Their relative distance must now be target-independent.
+{
+    const freqs = [120, 200, 500, 1000, 2000, 5000, 8000];
+    const flat = [0, 0, 0, 0, 0, 0, 0];
+    const bass = [5, 5, 0, 0, 0, 0, 0];
+    const metaFor = (arr) => ({
+        main_reference_points: {
+            left: freqs.map((f, i) => [f, arr[i]]),
+            right: freqs.map((f, i) => [f, arr[i]]),
+        },
+    });
+    const runA = savedAutoSubEntry('run-a', 'Before', 10, [0, 0, 0], metaFor(flat));
+    const runB = savedAutoSubEntry('run-b', 'Before', 10, [0, 0, 0], metaFor(bass));
+    const relByTarget = {};
+    for (const key of ['neutral', 'harman', 'bk']) {
+        const pts = measurementUi.measurementConvolverCurves[key].points;
+        const [a, b] = autosubTarget.alignAutoSubEntries([runA, runB], pts);
+        relByTarget[key] = b.traces[0].points[0][1] - a.traces[0].points[0][1];
+    }
+    assert.equal(relByTarget.harman, relByTarget.neutral,
+        'inter-run distance must not depend on target');
+    assert.equal(relByTarget.bk, relByTarget.neutral,
+        'inter-run distance must not depend on target');
+}
+
+// Saved split traces from one run must move as one rigid set into the fixed
+// normal coordinate. Median display offset 10 minus Neutral anchor 4 gives a
+// +6 dB trace shift, while the Neutral target itself remains at 0 dB.
 {
     const entries = [
         savedAutoSubEntry('before-l', 'Before L', 7, [-2, 0, 1]),
@@ -83,7 +141,7 @@ for (const key of ['bk', 'harman']) {
         [[20, 7], [100, 10], [500, 11]],
     ]);
     assert.deepEqual(neutralTarget, [[20, 0], [20000, 0]],
-        'the selected target stays in the normal graph coordinate');
+        'the fixed reference stays in the normal graph coordinate');
 
     for (let pointIndex = 0; pointIndex < 3; pointIndex += 1) {
         const beforeDifference = entries[2].traces[0].points[pointIndex][1]
@@ -101,8 +159,8 @@ for (const key of ['bk', 'harman']) {
         'hiding sibling traces from the run must not change the display coordinate');
 }
 
-// The current target owns both shape and anchor. The target stored with the
-// AutoSub run remains metadata and must not lock graph selection.
+// The stored run target remains metadata only and never moves traces. The
+// currently selected target owns shape alone.
 {
     const entry = savedAutoSubEntry('before-l', 'Before L', 10, [-2, 0, 1]);
     const currentCustomTarget = [[20, 1], [20000, 1]];
@@ -110,8 +168,8 @@ for (const key of ['bk', 'harman']) {
     const customAligned = autosubTarget.alignAutoSubEntries([entry], currentCustomTarget);
 
     assert.deepEqual(neutralAligned[0].traces[0].points, [[20, 4], [100, 6], [500, 7]]);
-    assert.deepEqual(customAligned[0].traces[0].points, [[20, 5], [100, 7], [500, 8]],
-        'changing the current target must recompute the trace display anchor');
+    assert.deepEqual(customAligned[0].traces[0].points, neutralAligned[0].traces[0].points,
+        'changing the current target must not move traces; only the target line changes');
     assert.notDeepEqual(currentCustomTarget, runTarget,
         'the fixture must use a current target different from the stored run target');
     assert.equal(autosubTarget.resolveTargetCurve, undefined,
@@ -143,15 +201,15 @@ for (const key of ['bk', 'harman']) {
     assert.deepEqual(autosubTarget.alignAutoSubEntries([], neutralTarget), []);
 }
 
-// Source-level integration contract: graph entries are aligned from the
-// current target before range calculation/drawing; target drawing stays raw.
+// Source-level integration contract: graph entries are aligned without the
+// selected target; target drawing stays raw and owns shape alone.
 {
     const graphSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_graph.js'), 'utf8');
     const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
-    assert.ok(graphSource.includes('alignAutoSubEntries(entries, targetPoints, referenceEntries)'),
-        'measurement graph must align AutoSub traces before rendering');
-    assert.ok(appSource.includes('getMeasurementTargetCurvePreview,'),
-        'graph alignment must receive the current UI target');
+    assert.ok(graphSource.includes('alignAutoSubEntries(entries, null, referenceEntries)'),
+        'measurement graph must align AutoSub traces without the selected target');
+    assert.ok(!graphSource.includes('getMeasurementTargetCurvePreview()?.points'),
+        'trace alignment must not read the current UI target');
     assert.ok(appSource.includes('getAutoSubDisplayReferenceEntries,'),
         'graph alignment must receive hidden sibling traces from saved AutoSub runs');
     assert.ok(!appSource.includes('resolveTargetOffsetDb(entries, points)'),

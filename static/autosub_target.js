@@ -9,13 +9,16 @@
  *   calibrated   = raw = normalized + normalized_by_db
  *
  * Scoring/Gain work in the CALIBRATED coordinate. Graph traces are moved as
- * one rigid set into the normal measurement coordinate, where the selected
- * Target Curve keeps its unshifted shape (Neutral at 0 dB).
+ * one rigid set into a fixed normal measurement coordinate (flat Neutral at
+ * 0 dB) that never depends on the currently selected Target Curve. Switching
+ * the Target Curve (Neutral/Harman/BK/custom) only changes the drawn target
+ * line; all Before/After/Reference traces stay in the same shared dB
+ * coordinate.
  *
  * Saved runs embed the calibrated Main L/R reference points and each trace's
  * calibrated-to-display offset. The graph recomputes the broadband Main/Target
- * anchor for the currently selected curve and applies the inverse of the old
- * target shift to the traces instead.
+ * anchor against the fixed Neutral reference and applies one constant shift
+ * per run.
  *
  * The current graph Target Curve remains UI-owned. autosub_meta.target records
  * which curve the run used for its result summary, but never selects a curve.
@@ -96,12 +99,19 @@
         return JSON.stringify(normalized);
     }
 
+    // Fixed display reference: flat Neutral at 0 dB. Trace alignment must
+    // never depend on the currently selected Target Curve.
+    const FIXED_DISPLAY_REFERENCE_POINTS = [[20, 0], [20000, 0]];
+
     /**
-     * Move each saved AutoSub run as one rigid set into the selected Target
-     * Curve's normal graph coordinate. A single median display offset per run
-     * keeps Before/After and L/R differences unchanged and order-independent.
+     * Move each saved AutoSub run as one rigid set into the fixed normal
+     * graph coordinate. A single median display offset per run keeps
+     * Before/After and L/R differences unchanged and order-independent.
+     * The selected Target Curve is intentionally ignored: switching targets
+     * must only change the drawn target line.
      */
-    function alignAutoSubEntries(entries, targetPoints, referenceEntries = entries) {
+    function alignAutoSubEntries(entries, _ignoredTargetPoints, referenceEntries = entries) {
+        const targetPoints = FIXED_DISPLAY_REFERENCE_POINTS;
         if (!Array.isArray(entries)) return entries;
         const groups = new Map();
         const groupKeyByEntryIndex = new Map();
