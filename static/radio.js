@@ -262,6 +262,17 @@
         return state.stations.find(station => stationsMatch(station, catalogStation)) || null;
     }
 
+    function isCatalogStationFavorited(catalogStation) {
+        if (!catalogStation) return false;
+        if (catalogStation.is_saved) return true;
+        const savedStations = Array.isArray(state.stations) ? state.stations : [];
+        if (catalogStation.saved_station_id
+            && savedStations.some(station => station.id === catalogStation.saved_station_id)) {
+            return true;
+        }
+        return savedStations.some(station => stationsMatch(station, catalogStation));
+    }
+
     async function removeSavedStationById(savedId, button) {
         if (!savedId || button?.disabled) return false;
         const saved = state.stations.find(station => station.id === savedId);
@@ -619,8 +630,10 @@
         if (!elements.stationCatalogGrid) return;
         window.FXRouteContentState.hide(elements.stationCatalogLoading);
         const query = getStationSearchQuery();
+        // Display-only filter: favorited curated stations stay in My Stations
+        // and are hidden here; nothing is deleted or moved.
         const filtered = state.catalogStations.filter(station =>
-            !station.is_saved && stationMatchesSearch(station, query));
+            !isCatalogStationFavorited(station) && stationMatchesSearch(station, query));
         if (filtered.length === 0) {
             elements.stationCatalogGrid.innerHTML = '';
             window.FXRouteContentState.set(elements.stationCatalogEmptySearch, 'empty',
@@ -788,7 +801,10 @@
             }
         });
         const personal = personalStations.map(station => ({ ...station, searchSource: 'personal' }));
+        // Display-only filter: favorited curated stations appear only under
+        // My Stations, never simultaneously in the catalog group.
         const catalog = catalogMatches
+            .filter(station => !isCatalogStationFavorited(station))
             .filter(station => !personal.some(saved => stationsMatch(saved, station)))
             .map(station => ({ ...station, searchSource: 'catalog' }));
         const online = onlineMatches
