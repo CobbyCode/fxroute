@@ -92,7 +92,7 @@
     gap: 0.72rem;
 }
 .radio-manage-submit-row-station-manage {
-    justify-content: flex-start;
+    justify-content: center;
     gap: 0.6rem;
     flex-wrap: wrap;
     margin-top: 0.85rem;

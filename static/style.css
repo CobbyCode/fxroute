@@ -866,7 +866,7 @@ body {
     gap: 0.72rem;
 }
 .radio-manage-submit-row-station-manage {
-    justify-content: flex-start;
+    justify-content: center;
     gap: 0.6rem;
     flex-wrap: wrap;
     margin-top: 0.85rem;
@@ -3179,6 +3179,38 @@ body {
     color: var(--text-secondary);
     cursor: default;
 }
+/* Station favorite heart — same language as the Library .album-card-fav and
+   the TIDAL .streaming-fav on tiles: absolute top-right on the cover,
+   semi-transparent round button, muted when unsaved, green when in
+   My Stations. */
+.station-card-fav {
+    position: absolute;
+    top: 0.95rem;
+    right: 0.95rem;
+    z-index: var(--z-raised);
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(8, 18, 26, 0.72);
+    backdrop-filter: blur(4px);
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: color .12s var(--ease), border-color .12s var(--ease), transform .12s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.station-card-fav:hover,
+.station-card-fav.is-active { color: var(--accent); border-color: var(--accent); }
+.station-card-fav:active { transform: scale(.92); }
+.station-card-fav:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.station-card-fav:disabled { opacity: .45; cursor: wait; }
 .station-browser-status {
     min-height: 1.25rem;
     color: var(--text-secondary);
@@ -7364,6 +7396,7 @@ input[type="number"]::-webkit-outer-spin-button {
     .control-btn-clear,
     .track-favorite-btn,
     .album-card-fav,
+    .station-card-fav,
     .streaming-fav,
     .track-row-favorite,
     .track-fav,
@@ -7377,6 +7410,7 @@ input[type="number"]::-webkit-outer-spin-button {
     .control-btn-clear::after,
     .track-favorite-btn::after,
     .album-card-fav::after,
+    .station-card-fav::after,
     .streaming-fav::after,
     .track-row-favorite::after,
     .track-fav::after,

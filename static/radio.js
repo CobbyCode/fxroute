@@ -195,15 +195,130 @@
 
     function handleStationCardKeydown(event) {
         if (event.key !== 'Enter' && event.key !== ' ') return;
+        if (event.target?.closest?.('.station-card-fav')) return;
         event.preventDefault();
         activateStationCard(event.currentTarget);
     }
 
     function bindStationCardPlayback(container) {
         container?.querySelectorAll('.station-card[data-station-id]').forEach(card => {
-            card.addEventListener('click', () => activateStationCard(card));
+            card.addEventListener('click', (event) => {
+                if (event.target?.closest?.('.station-card-fav')) return;
+                activateStationCard(card);
+            });
             card.addEventListener('keydown', handleStationCardKeydown);
         });
+    }
+
+    function stationFavButtonHtml(active, extraAttrs) {
+        const cls = active ? 'station-card-fav is-active' : 'station-card-fav';
+        const heart = active ? '♥' : '♡';
+        const pressed = active ? 'true' : 'false';
+        const label = active ? 'Remove from My Stations' : 'Add to My Stations';
+        return `<button type="button" class="${cls}" ${extraAttrs} aria-pressed="${pressed}" aria-label="${label}" title="${label}">${heart}</button>`;
+    }
+
+    function updateStationFavButton(button, active) {
+        if (!button) return;
+        button.classList.toggle('is-active', !!active);
+        button.textContent = active ? '♥' : '♡';
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        const label = active ? 'Remove from My Stations' : 'Add to My Stations';
+        button.setAttribute('aria-label', label);
+        button.title = label;
+    }
+
+    function bindStationFavButtons(container) {
+        container?.querySelectorAll('.station-card-fav[data-station-fav]').forEach(button => {
+            button.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                togglePersonalStationFav(button.dataset.stationFav, button);
+            });
+        });
+        container?.querySelectorAll('.station-card-fav[data-catalog-fav]').forEach(button => {
+            button.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleCatalogStationFav(button.dataset.catalogFav, button);
+            });
+        });
+        container?.querySelectorAll('.station-card-fav[data-browser-fav]').forEach(button => {
+            button.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleOnlineStationFav(button.dataset.browserFav, button);
+            });
+        });
+    }
+
+    function findSavedStationForCatalog(catalogId) {
+        const catalogStation = state.catalogStations.find(station => station.id === catalogId);
+        if (catalogStation?.saved_station_id) {
+            const byId = state.stations.find(station => station.id === catalogStation.saved_station_id);
+            if (byId) return byId;
+        }
+        if (!catalogStation) return null;
+        return state.stations.find(station => stationsMatch(station, catalogStation)) || null;
+    }
+
+    async function removeSavedStationById(savedId, button) {
+        if (!savedId || button?.disabled) return false;
+        const saved = state.stations.find(station => station.id === savedId);
+        const title = saved?.title || 'Station';
+        if (button) button.disabled = true;
+        try {
+            const resp = await fetch(`/api/stations/${encodeURIComponent(savedId)}`, { method: 'DELETE' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || 'Failed to delete station');
+            await fetchStations();
+            showToast(`Removed from My Stations: ${title}`, 'success');
+            return true;
+        } catch (e) {
+            if (button) button.disabled = false;
+            showToast(e.message || 'Failed to delete station', 'error');
+            return false;
+        }
+    }
+
+    async function togglePersonalStationFav(stationId, button) {
+        await removeSavedStationById(stationId, button);
+    }
+
+    async function toggleCatalogStationFav(catalogId, button) {
+        if (!catalogId || button?.disabled) return;
+        const catalogStation = state.catalogStations.find(station => station.id === catalogId);
+        const saved = findSavedStationForCatalog(catalogId);
+        if (saved || catalogStation?.is_saved) {
+            const savedId = saved?.id || catalogStation?.saved_station_id || null;
+            if (savedId) {
+                await removeSavedStationById(savedId, button);
+                return;
+            }
+            await fetchStations();
+            return;
+        }
+        await addCatalogStation(catalogId, button);
+    }
+
+    async function toggleOnlineStationFav(stationUuid, button) {
+        if (!stationUuid || button?.disabled) return;
+        const onlineStation = Array.isArray(state.onlineStations)
+            ? state.onlineStations.find(station => station.stationuuid === stationUuid)
+            : null;
+        let savedId = onlineStation?.saved_station_id || null;
+        if (!savedId && onlineStation) {
+            savedId = state.stations.find(station => stationsMatch(station, onlineStation))?.id || null;
+        }
+        if (onlineStation?.is_saved || savedId) {
+            if (savedId) {
+                await removeSavedStationById(savedId, button);
+                return;
+            }
+            await fetchStations();
+            return;
+        }
+        await addOnlineStation(stationUuid, button);
     }
 
     function toggleStationManagePanel(forceOpen = null) {
@@ -490,10 +605,12 @@
                 <div class="${wrapClass}">
                     <img class="${imgClass}" src="${escapeHtml(artSrc)}" data-art-candidates="${stationArtCandidatesAttribute(artCandidates)}" data-art-index="0" alt="${escapeHtml(station.title)}" loading="lazy" />
                 </div>
+                ${stationFavButtonHtml(true, `data-station-fav="${escapeHtml(station.id)}"`)}
                 <div class="station-name">${escapeHtml(station.title)}</div>
             </div>`;
         }).join('');
         bindStationCardPlayback(elements.stationsGrid);
+        bindStationFavButtons(elements.stationsGrid);
         bindStationArtFallbacks(elements.stationsGrid);
         highlightActiveTrack();
     }
@@ -518,16 +635,14 @@
             const isFallbackArt = artSrc.startsWith('data:image/svg+xml');
             const wrapClass = isFallbackArt ? 'station-art-wrap station-art-wrap--fallback' : 'station-art-wrap station-art-wrap--real';
             const imgClass = isFallbackArt ? 'station-art station-art--fallback' : 'station-art station-art--real';
-            const action = station.is_saved
-                ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-catalog-id="${escapeHtml(station.id)}" disabled>Saved</button>`
-                : `<button class="catalog-station-action" type="button" data-catalog-id="${escapeHtml(station.id)}">Add to My Stations</button>`;
+            const fav = stationFavButtonHtml(!!station.is_saved, `data-catalog-fav="${escapeHtml(station.id)}"`);
             return `
             <div class="station-card catalog-station-card">
                 <div class="${wrapClass}">
                     <img class="${imgClass}" src="${escapeHtml(artSrc)}" data-art-candidates="${stationArtCandidatesAttribute(artCandidates)}" data-art-index="0" alt="${escapeHtml(station.title)}" loading="lazy" />
                 </div>
+                ${fav}
                 <div class="station-name">${escapeHtml(station.title)}</div>
-                ${action}
             </div>`;
         };
         elements.stationCatalogGrid.innerHTML = providerOrder.map(provider => {
@@ -539,9 +654,7 @@
                 <div class="stations-grid">${stations.map(renderCard).join('')}</div>
             </section>`;
         }).join('');
-        elements.stationCatalogGrid.querySelectorAll('.catalog-station-action[data-catalog-id]').forEach(button => {
-            button.addEventListener('click', () => addCatalogStation(button.dataset.catalogId, button));
-        });
+        bindStationFavButtons(elements.stationCatalogGrid);
         bindStationArtFallbacks(elements.stationCatalogGrid);
     }
 
@@ -568,6 +681,10 @@
     function markCatalogStationSaved(button) {
         if (!button) return;
         button.disabled = true;
+        if (button.classList.contains('station-card-fav')) {
+            updateStationFavButton(button, true);
+            return;
+        }
         button.classList.add('catalog-station-action--saved');
         button.textContent = 'Saved';
         button.title = 'Added to My Stations';
@@ -714,19 +831,15 @@
                     const isFallbackArt = artSrc.startsWith('data:image/svg+xml');
                     const wrapClass = isFallbackArt ? 'station-art-wrap station-art-wrap--fallback' : 'station-art-wrap station-art-wrap--real';
                     const imgClass = isFallbackArt ? 'station-art station-art--fallback' : 'station-art station-art--real';
-                    let action = '';
-                    if (station.searchSource === 'catalog') {
-                        action = station.is_saved
-                            ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-catalog-id="${escapeHtml(station.id)}" disabled>Saved</button>`
-                            : `<button class="catalog-station-action" type="button" data-catalog-id="${escapeHtml(station.id)}">Add to My Stations</button>`;
+                    let fav = '';
+                    if (station.searchSource === 'personal') {
+                        fav = stationFavButtonHtml(true, `data-station-fav="${escapeHtml(station.id)}"`);
+                    } else if (station.searchSource === 'catalog') {
+                        fav = stationFavButtonHtml(!!station.is_saved, `data-catalog-fav="${escapeHtml(station.id)}"`);
                     } else if (station.searchSource === 'online') {
-                        if (!station.stationuuid) {
-                            action = '';
-                        } else {
-                            action = station.is_saved
-                                ? `<button class="catalog-station-action catalog-station-action--saved" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}" disabled>Saved</button>`
-                                : `<button class="catalog-station-action" type="button" data-browser-uuid="${escapeHtml(station.stationuuid)}">Add to My Stations</button>`;
-                        }
+                        fav = station.stationuuid
+                            ? stationFavButtonHtml(!!station.is_saved, `data-browser-fav="${escapeHtml(station.stationuuid)}"`)
+                            : '';
                     }
                     const cardAttrs = station.searchSource === 'personal'
                         ? ` data-station-id="${escapeHtml(station.id)}" role="button" tabindex="0"`
@@ -739,19 +852,14 @@
                         <div class="${wrapClass}">
                             <img class="${imgClass}" src="${escapeHtml(artSrc)}" data-art-candidates="${stationArtCandidatesAttribute(artCandidates)}" data-art-index="0" alt="${escapeHtml(station.title)}" loading="lazy" />
                         </div>
+                        ${fav}
                         <div class="station-name">${escapeHtml(station.title)}</div>
                         ${meta}
-                        ${action}
                     </div>`;
                 }).join('')}</div>
             </section>`).join('');
         bindStationCardPlayback(elements.stationSearchGrid);
-        elements.stationSearchGrid.querySelectorAll('.catalog-station-action[data-catalog-id]').forEach(button => {
-            button.addEventListener('click', () => addCatalogStation(button.dataset.catalogId, button));
-        });
-        elements.stationSearchGrid.querySelectorAll('.catalog-station-action[data-browser-uuid]').forEach(button => {
-            button.addEventListener('click', () => addOnlineStation(button.dataset.browserUuid, button));
-        });
+        bindStationFavButtons(elements.stationSearchGrid);
         bindStationArtFallbacks(elements.stationSearchGrid);
         highlightActiveTrack();
     }
