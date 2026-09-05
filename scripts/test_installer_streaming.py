@@ -520,6 +520,72 @@ test ! -e "$HOME/.local/bin/spotifyd"
                     f"{expected_alsa} libdbus-1-3 avahi-daemon libavahi-client3 libnss-mdns",
                 )
 
+    def test_provider_setup_ensures_target_user_cache_ownership(self):
+        # qbzd fatally requires a writable user cache dir; provider setup
+        # must repair a foreign-owned ~/.cache before any daemon can start.
+        body = extract_function(self.install, "configure_optional_streaming")
+        self.assertIn("ensure_target_user_cache_ownership", body)
+        self.assertLess(
+            body.index("ensure_target_user_cache_ownership"),
+            body.index("detect_existing_provider_components"),
+        )
+        cache = extract_function(self.install, "ensure_target_user_cache_ownership")
+        self.assertIn("$HOME/.cache", cache)
+        self.assertIn("run_as_target_user mkdir -p", cache)
+        self.assertIn("symlink", cache)
+        self.assertIn("chown", cache)
+
+    def test_cache_ownership_repair_creates_missing_dir_and_refuses_symlinks(self):
+        cache = extract_function(self.install, "ensure_target_user_cache_ownership")
+        helpers = extract_function(self.install, "path_has_symlink_component")
+        preamble = (
+            "run_as_target_user() { \"$@\"; }\n"
+            "log() { printf '[fxroute] %s\\n' \"$*\"; }\n"
+            "die() { printf '[fxroute][error] %s\\n' \"$*\" >&2; exit 1; }\n"
+        )
+        me = subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip()
+        gid = subprocess.run(["id", "-gn"], capture_output=True, text=True).stdout.strip()
+        uid = str(os.getuid())
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            home.mkdir()
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "FXROUTE_TARGET_USER": me,
+                "FXROUTE_TARGET_UID": uid,
+                "FXROUTE_TARGET_GROUP": gid,
+            }
+            # Missing cache dir is created for the target user.
+            result = subprocess.run(
+                ["bash", "-c", f"{preamble}\n{helpers}\n{cache}\nensure_target_user_cache_ownership"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((home / ".cache").is_dir())
+            # An already correctly owned dir is accepted untouched.
+            result = subprocess.run(
+                ["bash", "-c", f"{preamble}\n{helpers}\n{cache}\nensure_target_user_cache_ownership"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # A symlinked cache dir is refused (no chown across links).
+            (home / ".cache").rmdir()
+            (home / "real-cache").mkdir()
+            (home / ".cache").symlink_to(home / "real-cache")
+            result = subprocess.run(
+                ["bash", "-c", f"{preamble}\n{helpers}\n{cache}\nensure_target_user_cache_ownership"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("symlink", result.stderr)
+
     def test_tidal_is_an_optional_python_dependency(self):
         self.assertNotIn("tidalapi", self.base_requirements)
         self.assertIn("tidalapi==0.8.11", self.tidal_requirements)

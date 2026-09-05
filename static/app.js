@@ -2578,6 +2578,13 @@ function providerAdminButtonHtml(provider) {
             // re-read a (restored) credential file without SSH and acts as
             // Start on an inactive unit. Only show it while qbzd is down.
             if (!provider.available) {
+                // Binary present but daemon never set up (manually placed
+                // binary or interrupted install): route through the regular
+                // installer run, which adopts the binary, pins the volume
+                // contract, creates/starts the user service and records the
+                // install state. Install is otherwise only offered while not
+                // installed, which dead-ends exactly this state.
+                buttons.push(`<button type="button" class="btn-primary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>Complete setup…</button>`);
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-service="restart" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Restart</button>`);
             }
         } else if (provider.id !== 'spotify') {

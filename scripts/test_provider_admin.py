@@ -16,6 +16,7 @@ device-name endpoints and the installer flags they drive:
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -363,6 +364,45 @@ class ImageFirstBootNamingTests(unittest.TestCase):
         self.assertIn("derive_fxroute_device_name()", script)
         self.assertIn("/etc/machine-id", script)
         self.assertIn("fxroute-", script)
+
+
+class QobuzSetupCompletionTests(unittest.TestCase):
+    """A present-but-never-set-up qbzd must stay repairable via the installer.
+
+    Binary present + daemon down (manually placed binary or interrupted
+    install) used to dead-end: Settings offered Connect/Uninstall/Restart,
+    while Install was only offered when not installed. The completing run
+    (install.sh --providers-only --qobuz) adopts the binary, pins the volume
+    contract, creates/starts the user service and records the install state.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app_js = (ROOT / "static" / "app.js").read_text()
+        cls.main = (ROOT / "main.py").read_text()
+
+    def test_qobuz_offers_complete_setup_while_daemon_down(self):
+        match = re.search(
+            r"if \(!provider\.available\) \{(.*?)data-provider-service=\"restart\"",
+            self.app_js,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match, "qobuz down-state must render recovery actions")
+        self.assertIn("data-provider-install", match.group(1))
+        self.assertIn("Complete setup", match.group(1))
+
+    def test_complete_setup_reuses_provider_install_flow(self):
+        # The button must use the same hook the Install wiring consumes, so
+        # it rides runProviderInstall -> POST .../install -> providers-only.
+        self.assertIn("querySelectorAll('[data-provider-install]')", self.app_js)
+        self.assertIn("runProviderInstall(button.getAttribute(", self.app_js)
+
+    def test_install_endpoint_allows_completing_run_when_installed(self):
+        body = self.main.split("async def api_streaming_provider_install")[1]
+        body = body.split("\n@app.")[0]
+        self.assertIn('"--providers-only"', body)
+        self.assertIn('"qobuz": "--qobuz"', body)
+        self.assertNotIn("already installed", body)
 
 
 if __name__ == "__main__":

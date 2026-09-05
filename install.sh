@@ -3431,7 +3431,36 @@ install_qobuz() {
   echo "Then enable Qobuz Connect in qbzd and select its device from the Qobuz app."
 }
 
+ensure_target_user_cache_ownership() {
+  local cache_dir="$HOME/.cache"
+  local owner_uid=""
+
+  [[ ! -L "$cache_dir" ]] || die "Refusing to use a symlinked target-user cache directory: $cache_dir"
+  if path_has_symlink_component "$cache_dir"; then
+    die "Refusing to use a symlinked parent as a target-user cache directory: $cache_dir"
+  fi
+  if [[ ! -e "$cache_dir" ]]; then
+    run_as_target_user mkdir -p "$cache_dir"
+    return 0
+  fi
+  [[ -d "$cache_dir" ]] || die "Target-user cache path is not a directory: $cache_dir"
+  owner_uid="$(stat -c '%u' "$cache_dir" 2>/dev/null || true)"
+  [[ -n "$owner_uid" ]] || die "Could not stat the target-user cache directory: $cache_dir"
+  if [[ "$owner_uid" != "$FXROUTE_TARGET_UID" ]]; then
+    if [[ "$(id -u)" -eq 0 ]]; then
+      log "Target-user cache directory is owned by uid $owner_uid; taking ownership for $FXROUTE_TARGET_USER"
+      chown "$FXROUTE_TARGET_UID:$FXROUTE_TARGET_GROUP" "$cache_dir" \
+        || die "Could not take ownership of the target-user cache directory: $cache_dir"
+    else
+      die "Target-user cache directory is not owned by $FXROUTE_TARGET_USER ($cache_dir); re-run once from a shell with sudo so the installer can repair it"
+    fi
+  fi
+}
+
 configure_optional_streaming() {
+  # Provider daemons (qbzd fatally requires a writable user cache dir)
+  # must never start into a foreign-owned ~/.cache.
+  ensure_target_user_cache_ownership
   detect_existing_provider_components
 
   if [[ $SELECT_SPOTIFY_DESKTOP -eq 1 ]]; then
