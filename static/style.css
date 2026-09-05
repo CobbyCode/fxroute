@@ -2385,7 +2385,59 @@ body {
     flex: 1;
     box-sizing: border-box;
 }
-.library-import-option .upload-area-text,
+/* Shared three-row interior for both import tiles: icon row, main-text
+   row, sub-text row — one rule set, so both zones share height,
+   typography, line-height and vertical rhythm exactly. */
+.upload-area-import {
+    display: grid;
+    grid-template-rows: auto auto auto;
+    align-content: center;
+    justify-items: center;
+    gap: 0.35rem;
+    min-height: 124px;
+    height: 100%;
+    box-sizing: border-box;
+    margin-bottom: 0;
+    padding: 1rem 1rem 0.95rem;
+    border-width: 2px;
+    border-style: dashed;
+    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(110,231,183,0.05));
+}
+.upload-area-import .upload-area-icon {
+    display: inline-flex;
+    align-items: center;
+    height: 1.4rem;
+    font-size: 1.4rem;
+    line-height: 1;
+}
+.upload-area-import .upload-area-icon svg {
+    width: 1.4rem;
+    height: 1.4rem;
+}
+.upload-area-import .upload-area-text {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 2.6em;
+    margin: 0;
+    padding: 0;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    font-weight: 600;
+    line-height: 1.3;
+    text-align: center;
+}
+.upload-area-import .upload-area-filename {
+    display: block;
+    min-height: 1.2em;
+    margin: 0;
+    padding: 0;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 500;
+    line-height: 1.35;
+    text-align: center;
+}
 .upload-area-url-station .upload-area-text {
     min-height: 2.6em;
     display: flex;
@@ -2395,7 +2447,6 @@ body {
     font-weight: 600;
     line-height: 1.3;
 }
-.library-import-option .upload-area-filename,
 .upload-area-url-station .upload-area-filename {
     min-height: 1.2em;
     color: var(--text-secondary);
@@ -2404,7 +2455,7 @@ body {
     line-height: 1.35;
 }
 .upload-area-url {
-    margin-bottom: 0;
+    margin-bottom: 0.75rem;
     padding: 1rem 1rem 0.95rem;
     border-style: solid;
     background: linear-gradient(180deg, rgba(110,231,183,0.05), rgba(110,231,183,0.04));
@@ -2417,10 +2468,6 @@ body {
 }
 .upload-area-file-primary {
     min-height: 124px;
-    border-width: 2px;
-    border-style: dashed;
-    padding: 1rem 1rem 0.95rem;
-    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(110,231,183,0.05));
 }
 .upload-area-url-station {
     min-height: 112px;
@@ -2431,15 +2478,13 @@ body {
 .upload-area-url .upload-area-icon {
     font-size: 1.1rem;
 }
-.upload-area-url-primary .upload-area-icon,
-.upload-area-file-primary .upload-area-icon {
+.upload-area-url-primary .upload-area-icon {
     font-size: 1.4rem;
 }
 .upload-area-url-station .upload-area-icon {
     font-size: 1.45rem;
 }
 .upload-area-url .upload-area-text,
-.upload-area-file-primary .upload-area-text,
 .upload-area-url-station .upload-area-text {
     color: var(--text-primary);
 }
