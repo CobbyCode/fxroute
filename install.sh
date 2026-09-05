@@ -1906,12 +1906,26 @@ zypper_python_package() {
 
 debian_trixie_backports_available() {
   local os_release_path="${1:-/etc/os-release}"
+  local sources_root="${2:-/etc/apt}"
   local codename=""
   if [[ -f "$os_release_path" ]]; then
     codename="$(grep -E '^VERSION_CODENAME=' "$os_release_path" | cut -d= -f2 | tr -d '"')"
   fi
   [[ "$codename" == "trixie" ]] || return 1
-  grep -rq "trixie-backports" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null
+  grep -rq "trixie-backports" "$sources_root/sources.list" "$sources_root/sources.list.d/" 2>/dev/null
+}
+
+debian_trixie_backports_active() {
+  # True once the host actually runs the backported PipeWire runtime, so the
+  # matching -dev packages must come from the same suite. The runtime is only
+  # switched by ensure_debian_pipewire_backports; a merely configured
+  # trixie-backports suite with the stock 1.4.2 runtime keeps the main -dev
+  # packages.
+  [[ "${PACKAGE_MANAGER:-}" == "apt" ]] || return 1
+  debian_trixie_backports_available "$@" || return 1
+  local installed=""
+  installed="$(dpkg-query -W -f='${Version}' pipewire 2>/dev/null || true)"
+  [[ "$installed" == *bpo13* ]]
 }
 
 ensure_debian_pipewire_backports() {
@@ -4373,7 +4387,31 @@ build_native_dsp_engine() {
     zypper) dsp_packages=(gcc gcc-c++ cmake pkgconf-pkg-config pipewire-devel lilv liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel) ;;
     pacman) dsp_packages=(gcc pkgconf libpipewire lilv lilv-tools lv2 lsp-plugins zam-plugins calf libebur128 libsamplerate speexdsp) ;;
   esac
-  [[ ${#dsp_packages[@]} -eq 0 ]] || pkg_install "${dsp_packages[@]}"
+  # On Debian 13 the backported PipeWire 1.4.9 runtime needs its matching
+  # -dev packages from the same suite; the trixie/main 1.4.2 -dev packages
+  # conflict with the backported runtime libraries. Install them from
+  # trixie-backports only when that runtime is actually active.
+  if [[ "$PACKAGE_MANAGER" == "apt" ]] && debian_trixie_backports_active; then
+    local dsp_backports_packages=()
+    local dsp_main_packages=()
+    local dsp_package=""
+    for dsp_package in "${dsp_packages[@]}"; do
+      case "$dsp_package" in
+        libpipewire-0.3-dev|libspa-0.2-dev) dsp_backports_packages+=("$dsp_package") ;;
+        *) dsp_main_packages+=("$dsp_package") ;;
+      esac
+    done
+    [[ ${#dsp_main_packages[@]} -eq 0 ]] || pkg_install "${dsp_main_packages[@]}"
+    if [[ ${#dsp_backports_packages[@]} -gt 0 ]]; then
+      if [[ $PKG_REFRESH_DONE -eq 0 ]]; then
+        run_cmd "${SUDO_CMD[@]}" apt-get update
+        PKG_REFRESH_DONE=1
+      fi
+      run_cmd "${SUDO_CMD[@]}" apt-get install -y -t trixie-backports "${dsp_backports_packages[@]}"
+    fi
+  else
+    [[ ${#dsp_packages[@]} -eq 0 ]] || pkg_install "${dsp_packages[@]}"
+  fi
 
   if [[ "$PACKAGE_MANAGER" == "zypper" ]] && ! lv2_plugin_available 'http://calf.sourceforge.net/plugins/BassEnhancer'; then
     install_calf_lv2_from_source

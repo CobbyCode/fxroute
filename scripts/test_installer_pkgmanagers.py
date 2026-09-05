@@ -471,6 +471,82 @@ systemctl() {{ SYSTEMCTL_CALLS="$SYSTEMCTL_CALLS|systemctl $*"; return 0; }}
                 )
                 self.assertNotEqual(completed.returncode, 0, fixture)
 
+    def test_debian_pipewire_backports_dev_split(self):
+        """libpipewire/libspa -dev must follow the active runtime suite.
+
+        Live .125 finding: after the 1.4.9-1~bpo13+2 runtime is installed,
+        the trixie/main 1.4.2 -dev packages conflict with it, so the native
+        DSP dependency step must pull the matching -dev pair from
+        trixie-backports instead of failing on the version conflict.
+        """
+        dsp_body = _extract_function(self.text, "build_native_dsp_engine")
+        self.assertIn("debian_trixie_backports_active", dsp_body)
+        self.assertIn("libpipewire-0.3-dev|libspa-0.2-dev", dsp_body)
+        self.assertIn("-t trixie-backports", dsp_body)
+        # The -dev split itself must not abort the install: a backports miss
+        # surfaces through the regular apt failure path, not a new die gate.
+        backports_branch = dsp_body.split("debian_trixie_backports_active", 1)[1]
+        backports_branch = backports_branch.split("\n  else\n", 1)[0]
+        self.assertNotIn("|| die", backports_branch)
+        self.assertNotIn(" && die", backports_branch)
+
+    def _run_backports_probe(self, os_release: str, pipewire_version: str, sources_setup: str) -> int:
+        text = INSTALL_SH.read_text()
+        available_body = _extract_function(text, "debian_trixie_backports_available")
+        active_body = _extract_function(text, "debian_trixie_backports_active")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "os-release").write_text(os_release)
+            (root / "sources.list").write_text("")
+            (root / "sources.list.d").mkdir()
+            code = (
+                "set -u\n"
+                "PACKAGE_MANAGER=apt\n"
+                "dpkg-query() { printf '%s' \"$FXROUTE_FAKE_PIPEWIRE_VERSION\"; }\n"
+                f"{available_body}\n"
+                f"{active_body}\n"
+                f"{sources_setup}\n"
+                'debian_trixie_backports_active "$0" "$1"'
+            )
+            completed = subprocess.run(
+                ["bash", "-c", code, str(root / "os-release"), str(root)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "FXROUTE_FAKE_PIPEWIRE_VERSION": pipewire_version,
+                },
+            )
+            return completed.returncode
+
+    def test_debian_pipewire_backports_active_matches_runtime(self):
+        trixie = 'ID=debian\nVERSION_CODENAME=trixie\n'
+        with_backports = 'printf "%s\\n" "deb http://deb.debian.org/debian trixie-backports main" > "$1/sources.list"\n'
+        without_backports = 'rm -f "$1/sources.list"\n'
+        noble = 'ID=ubuntu\nVERSION_CODENAME=noble\n'
+        # Backported 1.4.9 runtime + configured suite -> active.
+        self.assertEqual(
+            self._run_backports_probe(trixie, "1.4.9-1~bpo13+2", with_backports), 0,
+        )
+        # Stock 1.4.2 runtime keeps the main -dev packages even with the
+        # suite configured.
+        self.assertNotEqual(
+            self._run_backports_probe(trixie, "1.4.2-1", with_backports), 0,
+        )
+        # Missing runtime package is not a backports host.
+        self.assertNotEqual(
+            self._run_backports_probe(trixie, "", with_backports), 0,
+        )
+        # No configured suite -> never active.
+        self.assertNotEqual(
+            self._run_backports_probe(trixie, "1.4.9-1~bpo13+2", without_backports), 0,
+        )
+        # Other releases never match.
+        self.assertNotEqual(
+            self._run_backports_probe(noble, "1.4.9-1~bpo13+2", with_backports), 0,
+        )
+
     def test_spotify_autostart_default_is_x86_64_only(self):
         self.assertIn('[[ "$(uname -m)" != "x86_64" ]]', self.text)
         self.assertIn('spotify_autostart="off"', self.text)
