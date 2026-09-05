@@ -286,11 +286,14 @@
     // holds its Before/After fixture pair (Before L/R + After L/R traces
     // with the run's autosub_meta). The demo replays the matching pair so
     // the graph shows the true Before/After curves, never a full sweep.
+    // The demo starts in 2.2 mode with Target Curve = Neutral, so the
+    // 2.2 default is the Neutral pair; BK replays the BK pair.
     function autoSubRunFor(mode, targetKey) {
         const saved = S.getSavedMeasurements();
         const byId = (id) => saved.find((m) => m.id === id) || null;
         const runs = [
             { mode: 'subwoofer-2.1', targets: ['neutral'], before: 'autosub-21-neutral-before', after: 'autosub-21-neutral-after' },
+            { mode: 'subwoofer-2.2', targets: ['neutral'], before: 'autosub-22-neutral-before', after: 'autosub-22-neutral-after' },
             { mode: 'subwoofer-2.2', targets: ['bk'], before: 'autosub-22-bk-before', after: 'autosub-22-bk-after' },
             { mode: 'subwoofer-2.2-stereo', targets: ['neutral'], before: 'autosub-22stereo-neutral-before', after: 'autosub-22stereo-neutral-after' },
             { mode: 'subwoofer-2.2-stereo', targets: ['bk'], before: 'autosub-22stereo-bk-before', after: 'autosub-22stereo-bk-after' },

@@ -411,6 +411,7 @@ const radio = state.getPlayback();
         'Sweep-Close-L-1', 'Sweep-Close-R-1',
         'Advanced 2.2 Mono · L', 'Advanced 2.2 Mono · R',
         'Auto-Sub-Optimize-2.1 (Neutral) · Before', 'Auto-Sub-Optimize-2.1 (Neutral) · After',
+        'Auto-Sub-Optimize-2.2 (Neutral) · Before', 'Auto-Sub-Optimize-2.2 (Neutral) · After',
         'Auto-Sub-Optimize-2.2 (BK) · Before', 'Auto-Sub-Optimize-2.2 (BK) · After',
         'Auto-Sub-Optimize-2.2-Stereo (Neutral) · Before', 'Auto-Sub-Optimize-2.2-Stereo (Neutral) · After',
         'Auto-Sub-Optimize-2.2-Stereo (BK) · Before', 'Auto-Sub-Optimize-2.2-Stereo (BK) · After']) {
@@ -421,6 +422,15 @@ const radio = state.getPlayback();
     const autosubKinds = new Set(context.FXROUTE_DEMO_MEASUREMENTS.savedMeasurements
         .filter(m => /Auto-Sub/.test(m.name)).map(m => m.measurement_kind));
     assert.deepEqual([...autosubKinds], ['auto_sub']);
+    // Auto-sub fixtures must carry the real labels and band stats: the
+    // saved list renders input label · channel on the left and points +
+    // frequency range on the right, never "No graph data".
+    for (const m of context.FXROUTE_DEMO_MEASUREMENTS.savedMeasurements.filter(x => /Auto-Sub/.test(x.name))) {
+        assert.equal(m.input_device.label, 'Capture input');
+        assert.ok(m.summary && m.summary.point_count >= 379, m.name + ' needs real point count');
+        assert.ok(m.summary.min_hz >= 20 && m.summary.min_hz <= 22, m.name + ' needs real min_hz');
+        assert.equal(m.summary.max_hz, 20000);
+    }
     const directLeft = state.makeMeasurement({ role: 'direct', channel: 'left', id: 'demo_direct_l' });
     assert.equal(directLeft.analysis.direct_response.usable, true);
     assert.ok(directLeft.analysis.direct_response.points.length > 0);
@@ -608,22 +618,28 @@ const radio = state.getPlayback();
     assert.ok(autoSubResult.winner && Number.isFinite(autoSubResult.winner.score_pct));
     assert.ok(autoSubResult.baseline_measurement && Array.isArray(autoSubResult.baseline_measurement.traces));
     assert.ok(autoSubResult.confirmation_measurement && Array.isArray(autoSubResult.confirmation_measurement.traces));
-    // The finished 2.2 (BK) run must carry the real Before/After curves.
+    // The finished 2.2 run replays the Neutral pair by default (the demo
+    // starts in 2.2 mode with Target Curve = Neutral).
     assert.ok(autoSubResult.baseline_measurement.traces.every(t => /^Before /.test(t.label)),
         '2.2 baseline must be Before curves, got: ' + autoSubResult.baseline_measurement.traces.map(t => t.label).join(','));
     assert.ok(autoSubResult.confirmation_measurement.traces.every(t => /^After /.test(t.label)),
         '2.2 confirmation must be After curves, got: ' + autoSubResult.confirmation_measurement.traces.map(t => t.label).join(','));
-    assert.match(autoSubResult.baseline_measurement.name, /\(BK\) · Before/);
-    assert.match(autoSubResult.confirmation_measurement.name, /\(BK\) · After/);
-    // The default 2.2 start (no snapshot) falls back to Neutral, but the
-    // only 2.2 fixture pair is the BK run, so it replays BK curves.
-    assert.equal(autoSubDone.target_curve.label, 'Bruel & Kjaer-style');
-    // The applied alignment must land in the audio-output model so the
-    // subwoofer card shows the new derived delays after the run.
+    assert.match(autoSubResult.baseline_measurement.name, /2\.2 \(Neutral\) · Before/);
+    assert.match(autoSubResult.confirmation_measurement.name, /2\.2 \(Neutral\) · After/);
+    assert.equal(autoSubDone.target_curve.key, 'neutral');
+    // With a BK snapshot the same mode must replay the BK pair instead.
+    const bkForm22 = new context.FormData();
+    bkForm22.append('target_curve_snapshot', JSON.stringify({ key: 'bk', label: 'Bruel & Kjaer-style', provenance: 'built_in', points: [[20, 2], [20000, -3.5]] }));
+    const autoSubBk22Start = await (await demoFetch('/api/measurements/auto-sub-optimize/start', { method: 'POST', body: bkForm22 })).json();
+    const autoSubBk22Done = context.FXROUTE_DEMO_API.autoSubJobPayload(autoSubBk22Start.job.id, 100000);
+    assert.equal(autoSubBk22Done.target_curve.key, 'bk');
+    assert.match(autoSubBk22Done.result.baseline_measurement.name, /2\.2 \(BK\) · Before/);
+    assert.match(autoSubBk22Done.result.confirmation_measurement.name, /2\.2 \(BK\) · After/);
+    // The BK run applies its own delays — assert them right away, before
+    // the later mode switches move the output state on.
     const outputsAfterAutoSub = await (await demoFetch('/api/audio/outputs')).json();
-    assert.equal(outputsAfterAutoSub.output_mode.derived_sub1_delay_ms, autoSubResult.applied_sub1_alignment_ms);
-    assert.equal(outputsAfterAutoSub.output_mode.derived_sub2_delay_ms, autoSubResult.applied_sub2_alignment_ms);
-    assert.equal(outputsAfterAutoSub.output_mode.subwoofers.sub1.alignment_ms, autoSubResult.applied_sub1_alignment_ms);
+    assert.equal(outputsAfterAutoSub.output_mode.derived_sub1_delay_ms, autoSubBk22Done.result.applied_sub1_alignment_ms);
+    assert.equal(outputsAfterAutoSub.output_mode.subwoofers.sub1.alignment_ms, autoSubBk22Done.result.applied_sub1_alignment_ms);
     // 2.1 mode must still produce a single-sub result with coarse/fine winners.
     await (await demoFetch('/api/audio/output-mode', { method: 'POST', body: JSON.stringify({ mode: 'subwoofer-2.1' }) })).json();
     const autoSub21Start = await (await demoFetch('/api/measurements/auto-sub-optimize/start', { method: 'POST' })).json();
