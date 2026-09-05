@@ -14534,14 +14534,21 @@ function setSpotifyUiVisibility(installed) {
 
 function handleIncomingQobuzState(data, options = {}) {
     // Thin footer path for Qobuz, mirroring the footer half of
-    // handleIncomingSpotifyState. Qobuz payloads are complete snapshots, so
-    // no merge step; the Qobuz tab itself keeps rendering via streaming.js.
+    // handleIncomingSpotifyState. The Qobuz tab itself keeps rendering via
+    // streaming.js.
     if (!data) return;
     const { renderFooter = true } = options;
-    window.__qobuzLastData = data;
+    // Volume-domain guard: GET /api/streaming/qobuz/status returns the raw
+    // qbzd engine snapshot (unity-pinned 100%, no source_volume), while WS
+    // broadcasts, init and Qobuz actions carry normalized UI state with
+    // volume in the master domain plus source_volume for the raw value.
+    // A raw engine volume must never slam the shared master slider.
+    const normalized = { ...data };
+    if (!('source_volume' in normalized)) delete normalized.volume;
+    window.__qobuzLastData = normalized;
     reconcileFooterSource();
     if (renderFooter && window.__footerSource === 'qobuz') {
-        updateFooterForStreamingOwner(data);
+        updateFooterForStreamingOwner(normalized);
     }
 }
 

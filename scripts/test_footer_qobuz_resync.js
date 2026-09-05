@@ -162,6 +162,31 @@ check('fresh qobuz snapshot replaces stale paused cache', () => {
     assert.equal(sandbox.window.__qobuzLastData.title, 'Made');
 });
 
+// 4. Volume-domain guard: raw provider snapshots must not slam the master.
+check('raw qobuz snapshot without source_volume keeps master volume', () => {
+    const { sandbox, rendered } = makeSandbox({ owner: 'qobuz', footerSource: 'qobuz' });
+    vm.runInContext(
+        `handleIncomingQobuzState({ available: true, installed: true, status: 'Playing', title: 'Made', artist: 'Dub FX', volume: 100 }, { renderFooter: true });`,
+        sandbox,
+    );
+    // Display state is adopted (Not-Playing repair still works) ...
+    assert.equal(sandbox.window.__qobuzLastData.title, 'Made');
+    assert.equal(sandbox.window.__footerSource, 'qobuz');
+    // ... but the raw engine volume never reaches the footer renderer.
+    assert.equal(rendered().length, 1);
+    assert.ok(!('volume' in rendered()[0]), 'raw volume must be stripped before render');
+    assert.ok(!('volume' in sandbox.window.__qobuzLastData), 'raw volume must not be cached');
+});
+check('normalized qobuz snapshot keeps master volume', () => {
+    const { sandbox, rendered } = makeSandbox({ owner: 'qobuz', footerSource: 'qobuz' });
+    vm.runInContext(
+        `handleIncomingQobuzState({ available: true, installed: true, status: 'Playing', title: 'Made', artist: 'Dub FX', volume: 25, source_volume: 100 }, { renderFooter: true });`,
+        sandbox,
+    );
+    assert.equal(rendered().length, 1);
+    assert.equal(rendered()[0].volume, 25);
+});
+
 // 3. Poll gates: footer resync runs exactly when the footer can need Qobuz.
 check('shouldPollQobuz gates', () => {
     const poll = (opts) => {
