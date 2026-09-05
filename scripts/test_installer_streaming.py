@@ -703,6 +703,7 @@ test ! -e "$HOME/.local/bin/spotifyd"
             "debian_trixie_backports_available() { return \"$BACKPORTS_RC\"; }\n"
             "run_cmd() { printf 'run:%s\\n' \"$*\" >> \"$CALLS_FILE\"; return 0; }\n"
             "pkg_install() { printf 'pkg:%s\\n' \"$*\" >> \"$CALLS_FILE\"; return 0; }\n"
+            "provider_privileged() { printf 'helper:%s\\n' \"$*\" >> \"$CALLS_FILE\"; return 0; }\n"
             "log() { :; }\n"
             "pass() { :; }\n"
             "die() { printf '[fxroute][error] %s\\n' \"$*\" >&2; exit 1; }\n"
@@ -714,6 +715,7 @@ test ! -e "$HOME/.local/bin/spotifyd"
                 "PACKAGE_MANAGER=apt\n"
                 "PKG_REFRESH_DONE=1\n"
                 "SUDO_CMD=()\n"
+                "PROVIDERS_ONLY_MODE=0\n"
                 "ensure_qbzd_alsa_pipewire_bridge\n"
             )
             for installed_rc, backports_rc, expected in (
@@ -731,6 +733,35 @@ test ! -e "$HOME/.local/bin/spotifyd"
                         "PATH": "/usr/bin:/bin",
                         "CALLS_FILE": str(calls_file),
                         "PACKAGE_INSTALLED_RC": installed_rc,
+                        "BACKPORTS_RC": backports_rc,
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls_file.read_text().strip(), expected)
+            # Providers-only path: backports go through the fixed helper
+            # action, plain installs through pkg_install -> helper packages.
+            helper_harness = (
+                f"{preamble}\n{bridge}\n"
+                "PACKAGE_MANAGER=apt\n"
+                "PKG_REFRESH_DONE=1\n"
+                "SUDO_CMD=()\n"
+                "PROVIDERS_ONLY_MODE=1\n"
+                "ensure_qbzd_alsa_pipewire_bridge\n"
+            )
+            for backports_rc, expected in (
+                ("0", "run:provider_privileged backports-pipewire-alsa"),
+                ("1", "pkg:pipewire-alsa"),
+            ):
+                calls_file.write_text("")
+                result = subprocess.run(
+                    ["bash", "-c", helper_harness],
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "PATH": "/usr/bin:/bin",
+                        "CALLS_FILE": str(calls_file),
+                        "PACKAGE_INSTALLED_RC": "1",
                         "BACKPORTS_RC": backports_rc,
                     },
                 )

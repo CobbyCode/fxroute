@@ -32,6 +32,7 @@ SPOTIFY_APT_KEY_FILE="/usr/share/keyrings/spotify-archive-keyring.gpg"
 SPOTIFY_APT_KEY_FINGERPRINT="E1096BCBFF6D418796DE78515384CE82BA52C83A"
 SPOTIFYD_ZEROCONF_PORT="4444"
 CIFS_HELPER_SHA256="a878afbf1927bdd14ed3049df39a41929a54cd18a1ab89a377ba1ed4c4b453d8"
+PROVIDER_HELPER_SHA256="990a00b8b05750e4db6fb2a2dbb487d29742a50645edbb61487c6891f5e5a906"
 SYSTEM_UPDATE_HELPER_SHA256="b9e67b2f396e814930d1ebfeba8f6d9d483b601a3fbd27cc7dd8c32b7d3506eb"
 PRESERVE_INSTALL_STATE=0
 PROVIDER_LAN_CLEANUP_DEFERRED=0
@@ -1898,10 +1899,12 @@ remove_owned_tidal_dependency() {
 
 remove_provider_privilege_escalation() {
   local sudo_cmd=()
-  local sudoers_path="/etc/sudoers.d/fxroute-providers"
+  local helper_path="/usr/local/sbin/fxroute-provider-privileged"
+  local sudoers_path="/etc/sudoers.d/fxroute-provider-privileged"
   local owned=""
   local recorded_sha256=""
   local current_sha256=""
+  local current_helper_sha256=""
 
   owned="$(read_install_state_field "providers.privilege_escalation.installed_by_fxroute" 2>/dev/null || true)"
   [[ "$owned" == "true" ]] || return 0
@@ -1913,33 +1916,58 @@ remove_provider_privilege_escalation() {
   elif command -v sudo >/dev/null 2>&1; then
     sudo_cmd=(sudo)
   else
-    warn "Cannot remove the FXRoute provider privilege rule because sudo is unavailable"
+    warn "Cannot remove the FXRoute provider privilege helper because sudo is unavailable"
     PRESERVE_INSTALL_STATE=1
     return 0
   fi
-  [[ -e "$sudoers_path" || -L "$sudoers_path" ]] || return 0
-  [[ -f "$sudoers_path" && ! -L "$sudoers_path" ]] || {
-    warn "Refusing to remove a non-regular FXRoute provider privilege file"
-    PRESERVE_INSTALL_STATE=1
-    return 0
-  }
-  recorded_sha256="$(read_install_state_field "providers.privilege_escalation.sudoers_sha256" 2>/dev/null || true)"
-  current_sha256="$("${sudo_cmd[@]}" sha256sum "$sudoers_path" 2>/dev/null | awk '{print $1}')"
-  if [[ -z "$recorded_sha256" || "$current_sha256" != "$recorded_sha256" ]]; then
-    warn "Refusing to remove the changed or unverified FXRoute provider privilege rule"
+  if [[ -e "$helper_path" || -L "$helper_path" ]]; then
+    [[ -f "$helper_path" && ! -L "$helper_path" ]] || {
+      warn "Refusing to remove a non-regular FXRoute provider privilege helper"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    }
+    current_helper_sha256="$("${sudo_cmd[@]}" sha256sum "$helper_path" 2>/dev/null | awk '{print $1}')"
+    if [[ "$current_helper_sha256" != "$PROVIDER_HELPER_SHA256" ]]; then
+      warn "Refusing to remove a changed FXRoute provider privilege helper"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  fi
+  if [[ -e "$sudoers_path" || -L "$sudoers_path" ]]; then
+    [[ -f "$sudoers_path" && ! -L "$sudoers_path" ]] || {
+      warn "Refusing to remove a non-regular FXRoute provider sudoers file"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    }
+    recorded_sha256="$(read_install_state_field "providers.privilege_escalation.sudoers_sha256" 2>/dev/null || true)"
+    current_sha256="$("${sudo_cmd[@]}" sha256sum "$sudoers_path" 2>/dev/null | awk '{print $1}')"
+    if [[ -z "$recorded_sha256" || "$current_sha256" != "$recorded_sha256" ]]; then
+      warn "Refusing to remove the changed or unverified FXRoute provider sudoers rule"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  fi
+  [[ -e "$helper_path" || -e "$sudoers_path" ]] || return 0
+  if ! confirm "Remove the FXRoute provider privilege helper at $helper_path and its sudoers rule? Settings -> Providers installs will need the full installer again."; then
+    warn "Keeping the FXRoute provider privilege helper"
     PRESERVE_INSTALL_STATE=1
     return 0
   fi
-  if ! confirm "Remove the FXRoute provider privilege rule at $sudoers_path? Settings -> Providers installs will need a sudo password again."; then
-    warn "Keeping the FXRoute provider privilege rule"
-    PRESERVE_INSTALL_STATE=1
-    return 0
+  if [[ -e "$helper_path" || -L "$helper_path" ]]; then
+    if "${sudo_cmd[@]}" rm -f "$helper_path"; then
+      log "Removed the FXRoute provider privilege helper"
+    else
+      warn "Could not remove the FXRoute provider privilege helper"
+      PRESERVE_INSTALL_STATE=1
+    fi
   fi
-  if "${sudo_cmd[@]}" rm -f "$sudoers_path"; then
-    log "Removed the FXRoute provider privilege rule"
-  else
-    warn "Could not remove the FXRoute provider privilege rule"
-    PRESERVE_INSTALL_STATE=1
+  if [[ -e "$sudoers_path" || -L "$sudoers_path" ]]; then
+    if "${sudo_cmd[@]}" rm -f "$sudoers_path"; then
+      log "Removed the FXRoute provider sudoers rule"
+    else
+      warn "Could not remove the FXRoute provider sudoers rule"
+      PRESERVE_INSTALL_STATE=1
+    fi
   fi
 }
 

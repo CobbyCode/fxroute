@@ -179,6 +179,22 @@ class InstallerIntegrationTests(unittest.TestCase):
         # helper are allowed as privileged artifacts.
         self.assertNotIn("FXROUTE_POWER_USER ALL=(ALL)", self.install_text)
 
+    def test_provider_sudoers_allows_only_the_root_owned_helper(self):
+        # The single provider sudoers entry must reference only the
+        # root-owned helper path variable, never the user-writable
+        # install.sh: a wildcard on a user-writable script would be root
+        # execution of attacker-controlled code.
+        rule = self.install_text[self.install_text.index("provider_privilege_rule_content() {"):]
+        rule = rule[:rule.index("\n}\n")]
+        self.assertIn("NOPASSWD:", rule)
+        self.assertIn("PROVIDER_HELPER_PATH", rule)
+        printf_lines = [line for line in rule.splitlines() if line.strip().startswith("printf")]
+        self.assertEqual(len(printf_lines), 1)
+        command = printf_lines[0]
+        for forbidden in ("install.sh", "apt-get", "systemctl", "usermod", "--providers-only"):
+            self.assertNotIn(forbidden, command)
+        self.assertNotIn(" *", command)
+
     def test_install_ensures_dbus_send(self):
         self.assertIn("ensure_dbus_send_binary", self.install_text)
         self.assertIn("dbus-send", self.install_text)

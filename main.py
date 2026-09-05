@@ -5725,30 +5725,24 @@ async def _run_provider_installer_op(script: Path, label: str, *args: str) -> di
 
     The subprocess lives in its own session so a timeout/cancel can signal the
     whole child tree, mirroring the bounded update-script execution path.
-    Provider installs are non-interactive: they run through ``sudo -n`` so a
-    sudo password prompt can never stall the UI request. The FXRoute installer
-    owns exactly one narrow sudoers rule for this (``install.sh
-    --providers-only *``); without it the endpoint reports 503 with the
-    one-time shell bootstrap instead of hanging on a TTY prompt.
+    Provider installs run fully unprivileged (no sudo here): the only root
+    steps are the fixed actions of the root-owned helper
+    ``/usr/local/sbin/fxroute-provider-privileged``, which the full
+    installer sets up. A missing helper therefore means "rerun the full
+    install.sh once", reported as 503 instead of hanging on a TTY prompt.
     """
     if not script.exists():
         raise HTTPException(status_code=500, detail=f"Installer script missing: {script}")
-    if os.geteuid() == 0:
-        argv: list[str] = [str(script), *args]
-    elif shutil.which("sudo") is not None:
-        argv = ["sudo", "-n", str(script), *args]
-    else:
-        raise HTTPException(status_code=503, detail=f"{label} requires sudo; run it once from a shell to cache credentials")
     try:
         proc = await asyncio.create_subprocess_exec(
-            *argv,
+            str(script), *args,
             cwd=str(BASE_DIR),
             start_new_session=True,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError:
-        raise HTTPException(status_code=503, detail=f"{label} requires sudo; run it once from a shell to cache credentials") from None
+        raise HTTPException(status_code=500, detail=f"Installer script missing: {script}") from None
     communicate_task = asyncio.create_task(proc.communicate())
     try:
         stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate_task), timeout=_PROVIDER_OP_TIMEOUT_SECONDS)
@@ -5770,13 +5764,12 @@ async def _run_provider_installer_op(script: Path, label: str, *args: str) -> di
         "stdout": stdout.decode(errors="replace"),
         "stderr": stderr.decode(errors="replace"),
     }
-    if proc.returncode == 1 and "a password is required" in _provider_op_log_tail(result):
+    if "Provider privilege helper unavailable" in _provider_op_log_tail(result):
         raise HTTPException(
             status_code=503,
             detail=(
-                f"{label} needs one interactive sudo bootstrap: run "
-                f"'sudo {script.name} --providers-only --yes' once from a shell, "
-                "then retry the install from Settings"
+                f"{label} needs the provider privilege helper: rerun the full "
+                "install.sh once, then retry the install from Settings"
             ),
         ) from None
     if proc.returncode != 0:
@@ -5836,6 +5829,20 @@ async def api_streaming_provider_install(provider_id: str, request: Request):
     if flag is None:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} cannot be installed from the UI")
     result = await _run_provider_installer_op(PROVIDER_INSTALL_SCRIPT, f"{provider_id} install", "--providers-only", flag, "--yes")
+    if provider_id == "tidal":
+        # tidalapi is imported once at module load (streaming.tidal.auth);
+        # a fresh pip install in the same venv is invisible to the running
+        # process. Re-exec the import so the response (and the admin/status
+        # endpoints served by this process) report the new state honestly
+        # instead of a false "installed": false until the next restart.
+        try:
+            import importlib
+
+            import streaming.tidal.auth as _tidal_auth
+
+            importlib.reload(_tidal_auth)
+        except Exception:
+            logger.warning("TIDAL provider module reload failed", exc_info=True)
     return {
         "ok": True,
         "provider_id": provider_id,

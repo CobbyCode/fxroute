@@ -158,16 +158,28 @@ not invoke login or create credentials. The TIDAL session file at
 
 ### Settings → Providers privilege
 
-Provider installs from the Settings UI run `install.sh --providers-only`
-non-interactively (`sudo -n`, never a password prompt). The first
-providers-only run asks for the sudo password once and installs exactly one
-narrow sudoers entry (`/etc/sudoers.d/fxroute-providers`): the install user
-may run only this script with `--providers-only` without a password. Package
-installs, Avahi enablement, journal-group membership, firewall rules, and the
-state sync stay inside that audited flow; no bare apt/systemctl/usermod grant
-is given. Ownership is recorded in `install-state.json`
-(`providers.privilege_escalation`) and removed via
-`./uninstall.sh --provider privilege` (full uninstall removes it too).
+Provider installs from Settings → Providers run `install.sh --providers-only`
+fully unprivileged: the process never calls sudo itself, so no password
+prompt can stall a UI request. The few privileged steps (provider runtime
+packages, ALSA→PipeWire backports bridge, Avahi enablement, journal-group
+membership, the two provider firewall rules, Spotify apt source, root state
+mirror) run through the root-owned helper
+`/usr/local/sbin/fxroute-provider-privileged` (source:
+`scripts/fxroute-provider-privileged`, sha-pinned like the CIFS helper).
+The helper allow-lists every action and argument strictly (package names per
+manager, fixed firewall rule ids, fixed service/group operations, pinned
+Spotify key fingerprint); unknown actions and out-of-allow-list values exit
+2 before any privileged step runs.
+
+sudoers contains exactly one entry
+(`/etc/sudoers.d/fxroute-provider-privileged`): the install user may run
+only that helper without a password. It deliberately never points at the
+user-writable `install.sh` (a wildcard there would be root execution of
+attacker-controlled code). The full installer sets helper + sudoers entry
+up automatically right after the CIFS helper, so a fresh image is UI-ready
+without any manual bootstrap. Ownership is recorded in `install-state.json`
+(`providers.privilege_escalation`, helper + sudoers sha) and removed via
+`./uninstall.sh --provider privilege` (full uninstall removes both).
 
 ## Reruns and Uninstall
 

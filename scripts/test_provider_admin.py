@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 INSTALL_SH = ROOT / "install.sh"
 UNINSTALL_SH = ROOT / "uninstall.sh"
+PROVIDER_HELPER = ROOT / "scripts" / "fxroute-provider-privileged"
 ISO_FIRST_BOOT = ROOT / "iso" / "scripts" / "first-boot-install.sh"
 ARMBIAN_FIRST_BOOT = ROOT / "armbian" / "first-boot-install.sh"
 
@@ -292,49 +293,92 @@ class InstallerProviderOnlyTests(unittest.TestCase):
         self.assertNotIn("write_service_unit", body)
         self.assertNotIn("setup_python_env", body)
 
-    def test_providers_only_resolves_privilege_before_privileged_steps(self):
-        # The single non-interactive bootstrap must run before any apt-get /
-        # systemctl / usermod call of the providers-only run, and the SUDO_CMD
-        # selection must switch to "sudo -n" only for that verified mode.
+    def test_providers_only_needs_helper_and_no_sudo(self):
+        # The providers-only path must never call sudo itself: the only
+        # root steps are the fixed helper actions (provider_privileged).
+        # A missing helper fails closed with a rerun-the-installer error.
         body = self.install[self.install.index("main_providers_only() {"):]
         body = body[:body.index("\nmain() {")]
-        self.assertIn("ensure_provider_privilege_escalation", body)
-        self.assertLess(
-            body.index("ensure_provider_privilege_escalation"),
-            body.index("configure_optional_streaming"),
-        )
-        sudo_body = self.install[self.install.index("choose_sudo() {"):]
-        sudo_body = sudo_body[:sudo_body.index("\n}\n")]
-        self.assertIn("PROVIDER_PRIVILEGE_MODE", sudo_body)
-        self.assertIn("sudo -n", sudo_body)
+        self.assertIn("provider_helper_usable", body)
+        self.assertIn("Provider privilege helper unavailable", body)
+        self.assertNotIn("SUDO_CMD", body)
+        self.assertNotIn("choose_sudo", body)
 
-    def test_provider_privilege_rule_is_scoped_to_providers_only(self):
-        # Central allow-list: exactly one sudoers entry, this script with
-        # --providers-only only. The rule body must contain a single NOPASSWD
-        # command line and no separate allow-listed binaries or ALL grant.
+    def test_provider_privilege_rule_allows_only_the_root_owned_helper(self):
+        # sudoers must allow exactly the root-owned helper, nothing else:
+        # no user-writable install.sh path, no wildcard on a script, no
+        # bare apt/systemctl/usermod command.
         rule = self.install[self.install.index("provider_privilege_rule_content() {"):]
         rule = rule[:rule.index("\n}\n")]
-        self.assertIn("--providers-only", rule)
         self.assertIn("NOPASSWD:", rule)
+        self.assertIn("PROVIDER_HELPER_PATH", rule)
         printf_lines = [line for line in rule.splitlines() if line.strip().startswith("printf")]
         self.assertEqual(len(printf_lines), 1)
         command = printf_lines[0]
-        for forbidden in ("apt-get", "systemctl", "usermod", "ALL=(ALL)", "ALL = (ALL)"):
+        for forbidden in ("install.sh", "apt-get", "systemctl", "usermod", "--providers-only", "ALL=(ALL)", "ALL = (ALL)"):
             self.assertNotIn(forbidden, command)
+        # No wildcard suffix: the entry is the bare helper path (the helper
+        # validates action + arguments itself).
+        self.assertNotIn(" *", command)
+
+    def test_provider_helper_rejects_unknown_actions_and_packages(self):
+        helper = PROVIDER_HELPER.read_text()
+        # Fail-closed dispatch: unknown actions exit 2, never fall through
+        # to a shell or generic command runner.
+        self.assertIn('*)', helper)
+        self.assertIn("Unknown action", helper)
+        self.assertNotIn("eval", helper)
+        self.assertNotIn("bash -c", helper)
+        # Package installs are allow-listed per manager on both sides.
+        self.assertIn("allowlisted_package", helper)
+        for package in ("libnss-mdns", "avahi-daemon", "pipewire-alsa"):
+            self.assertIn(package, helper)
+        # Firewall rule ids are fixed; purpose labels are charset-bounded.
+        self.assertIn("mdns_5353_udp", helper)
+        self.assertIn("spotifyd_zeroconf_4444_tcp", helper)
+        # Spotify apt repo pins URL + fingerprint inside the helper.
+        self.assertIn("repository.spotify.com", helper)
+        self.assertIn("E1096BCBFF6D418796DE78515384CE82BA52C83A", helper)
+        # SUDO_USER-derived identity only; never a username argument.
+        self.assertIn("SUDO_USER", helper)
+
+    def test_provider_helper_actions_are_fixed_and_bounded(self):
+        helper = PROVIDER_HELPER.read_text()
+        for action in ("packages", "backports-pipewire-alsa", "avahi-enable",
+                       "journal-group", "fw-open", "fw-query",
+                       "spotify-apt-repo", "state-mirror"):
+            self.assertIn(f"{action})", helper)
+        # Every privileged step validates its argument count strictly.
+        self.assertGreaterEqual(helper.count("takes no arguments"), 3)
+        self.assertIn("takes no arguments", helper)
 
     def test_provider_privilege_state_is_recorded_for_uninstall(self):
         self.assertIn("privilege_escalation", self.install)
         self.assertIn("sudoers_sha256", self.install)
         self.assertIn("providers.privilege_escalation.installed_by_fxroute", self.install)
         self.assertIn("remove_provider_privilege_escalation", self.uninstall)
-        self.assertIn("fxroute-providers", self.uninstall)
+        self.assertIn("fxroute-provider-privileged", self.uninstall)
 
-    def test_provider_install_endpoint_uses_noninteractive_sudo(self):
+    def test_full_install_sets_up_the_provider_helper(self):
+        # Fresh images must be UI-ready without a manual bootstrap: the
+        # full installer installs the helper right after the CIFS helper.
+        body = self.install[self.install.index("\nmain() {"):]
+        self.assertIn("install_provider_privileged_helper", body)
+        self.assertLess(
+            body.index("install_network_library_helper"),
+            body.index("install_provider_privileged_helper"),
+        )
+        self.assertLess(
+            body.index("install_provider_privileged_helper"),
+            body.index("setup_python_env"),
+        )
+
+    def test_provider_install_endpoint_runs_unprivileged(self):
         main_text = (ROOT / "main.py").read_text()
         body = main_text.split("async def _run_provider_installer_op")[1]
         body = body.split("\n@app.")[0]
-        self.assertIn('"sudo", "-n"', body)
-        self.assertIn("a password is required", body)
+        self.assertNotIn('"sudo", "-n"', body)
+        self.assertIn("Provider privilege helper unavailable", body)
         self.assertIn("503", body)
 
     def test_providers_only_respects_recorded_install_root(self):

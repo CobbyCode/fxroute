@@ -834,7 +834,7 @@ ensure_target_user_audio_access
 
     def test_journal_group_is_added_with_membership_check(self):
         fn = extract_function(self.install, "ensure_target_user_journal_access")
-        for preamble_member, expect_usermod in (("0", False), ("1", True)):
+        for preamble_member, expect_helper in (("0", False), ("1", True)):
             code = f"""
 {fn}
 FXROUTE_TARGET_USER=khadas
@@ -845,7 +845,7 @@ SUDO_CMD=(sudo)
 getent() {{ [[ "$1" == group && "$2" == systemd-journal ]]; }}
 target_user_in_journal_group() {{ return {preamble_member}; }}
 target_user_has_seat_session() {{ return 0; }}
-sudo() {{ echo "SUDO usermod -aG systemd-journal khadas"; }}
+provider_privileged() {{ echo "HELPER journal-group"; }}
 pass() {{ echo "PASS:$*"; }}
 warn() {{ echo "WARN:$*" >&2; }}
 log() {{ echo "LOG:$*"; }}
@@ -854,10 +854,11 @@ ensure_target_user_journal_access
 printf 'flag=%s\\n' "$JOURNAL_GROUP_ADDED_BY_FXROUTE"
 """
             result = subprocess.run(["bash", "-c", code], capture_output=True, text=True, check=True)
-            if expect_usermod:
-                self.assertIn("SUDO usermod -aG systemd-journal khadas", result.stdout)
+            if expect_helper:
+                self.assertIn("HELPER journal-group", result.stdout)
                 self.assertIn("flag=1", result.stdout)
             else:
+                self.assertNotIn("journal-group", result.stdout)
                 self.assertNotIn("usermod", result.stdout)
                 self.assertIn("flag=0", result.stdout)
 

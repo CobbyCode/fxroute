@@ -36,6 +36,7 @@ QBZD_VERSION="2.0.2"
 SPOTIFYD_ZEROCONF_PORT="4444"
 CIFS_HELPER_SHA256="a878afbf1927bdd14ed3049df39a41929a54cd18a1ab89a377ba1ed4c4b453d8"
 CIFS_HELPER_LEGACY_SHA256="e69249dca5ef58f3b18081c9bfce1b7ccab8f400fb117f3ee6c7a58daa3ac4b9"
+PROVIDER_HELPER_SHA256="990a00b8b05750e4db6fb2a2dbb487d29742a50645edbb61487c6891f5e5a906"
 SYSTEM_UPDATE_HELPER_SHA256="b9e67b2f396e814930d1ebfeba8f6d9d483b601a3fbd27cc7dd8c32b7d3506eb"
 POWER_POLKIT_TEMPLATE_SHA256="67497733c846fda6eddd11f80eb626bdffa0d76530ad7bb5fe5a65ebf1669806"
 QOBUZ_VOLUME_MODE_KEY="qconnect.volume_mode"
@@ -115,8 +116,8 @@ PACKAGE_MANAGER=""
 PACKAGE_INSTALL_CMD=()
 PKG_REFRESH_DONE=0
 SUDO_CMD=()
-PROVIDER_PRIVILEGE_MODE=""
-PROVIDER_SUDOERS_FILE="/etc/sudoers.d/fxroute-providers"
+PROVIDER_HELPER_PATH="/usr/local/sbin/fxroute-provider-privileged"
+PROVIDER_SUDOERS_FILE="/etc/sudoers.d/fxroute-provider-privileged"
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
 INSTALL_CONFIG_FILE="$HOME/.config/fxroute/install-config.env"
 ROOT_INSTALL_STATE_FILE="/var/lib/fxroute/state/$(id -u)/install-state.json"
@@ -595,6 +596,7 @@ reject_managed_user_symlinks() {
     "$INSTALL_ROOT/scripts"
     "$INSTALL_ROOT/scripts/update_fxroute.sh"
     "$INSTALL_ROOT/scripts/system-package-update.sh"
+    "$INSTALL_ROOT/scripts/fxroute-provider-privileged"
     "$INSTALL_ROOT/scripts/spotify-cache-cleanup.sh"
     "$INSTALL_ROOT/scripts/spotify-autostart.sh"
     "$INSTALL_ROOT/assets"
@@ -749,91 +751,106 @@ require_cmd() {
 }
 
 provider_privilege_rule_content() {
-  # Central allow-list for Settings -> Providers (--providers-only): exactly
-  # one sudoers entry, this script with --providers-only only. A sudoers
-  # Cmnd_Alias cannot express "this script with that flag for this user"
-  # without also matching other flags, so the script-plus-flag pair in a
-  # single rule is the narrowest correct form: it keeps package installs,
-  # Avahi enablement, journal-group membership, firewall rules and the state
-  # sync in the already-audited provider flow instead of opening arbitrary
-  # apt/systemctl/usermod access.
+  # Central allow-list for Settings -> Providers: exactly one sudoers entry,
+  # the root-owned helper only. The helper itself allow-lists every action
+  # and argument (packages per manager, fixed firewall rule ids, fixed
+  # service/group operations); sudoers therefore needs no command suffix
+  # beyond the helper path. Never point sudo at the user-writable
+  # install.sh: a wildcard on a user-writable script is root execution of
+  # attacker-controlled code.
   local install_user="$1"
-  local script_path="$2"
-  printf '%s ALL=(root) NOPASSWD: %s --providers-only *\n' "$install_user" "$script_path"
+  printf '%s ALL=(root) NOPASSWD: %s\n' "$install_user" "$PROVIDER_HELPER_PATH"
 }
 
-ensure_provider_privilege_escalation() {
-  # One interactive sudo bootstrap for the providers-only path. Installs the
-  # narrowly scoped sudoers rule above (this script, --providers-only only)
-  # so the FXRoute web UI can run later installs non-interactively via
-  # "sudo -n <script> --providers-only ...". Runs before any privileged
-  # provider step so a single password prompt covers the rule install plus
-  # the later apt-get/systemctl/usermod calls of the same run. A failed
-  # bootstrap leaves PROVIDER_PRIVILEGE_MODE=interactive so those calls keep
-  # working through the normal sudo password prompt; only a verified
-  # non-interactive rule switches the mode to passwordless.
-  local install_user="$FXROUTE_TARGET_USER"
-  local script_path=""
-  local rule=""
-  local tmp_rule=""
-  local current_sha256=""
+provider_helper_usable() {
+  # True when the installed helper is intact (root-owned, exact sha) and
+  # the caller may run it without a password.
+  [[ -f "$PROVIDER_HELPER_PATH" && ! -L "$PROVIDER_HELPER_PATH" ]] || return 1
+  [[ "$(stat -c '%u' "$PROVIDER_HELPER_PATH" 2>/dev/null || true)" == "0" ]] || return 1
+  [[ "$(sha256sum "$PROVIDER_HELPER_PATH" 2>/dev/null | awk '{print $1}')" == "$PROVIDER_HELPER_SHA256" ]] || return 1
+  local query_rc=0
+  sudo -n "$PROVIDER_HELPER_PATH" fw-query mdns_5353_udp >/dev/null 2>&1 || query_rc=$?
+  # 0 = open, 1 = closed/no backend (both fine); 2 = rejected/error.
+  [[ $query_rc -le 1 ]]
+}
 
-  PROVIDER_PRIVILEGE_MODE="interactive"
-  [[ $PROVIDERS_ONLY_MODE -eq 1 ]] || return 0
-  [[ "$(id -u)" -ne 0 && "$install_user" != "root" ]] || return 0
-  [[ "$install_user" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || return 0
-  command -v sudo >/dev/null 2>&1 || return 0
-  if sudo -n true >/dev/null 2>&1; then
-    PROVIDER_PRIVILEGE_MODE="passwordless"
-    return 0
+install_provider_privileged_helper() {
+  # Install the root-owned provider helper plus its sudoers entry. Runs
+  # during the full installation (root context via SUDO_CMD) so a fresh
+  # image is UI-ready without any manual bootstrap. Refuses to overwrite
+  # foreign files; repairs only FXRoute-owned ones.
+  local helper_src="$INSTALL_ROOT/scripts/fxroute-provider-privileged"
+  local sudoers_path="$PROVIDER_SUDOERS_FILE"
+  local tmp_sudoers=""
+  local existing_sudoers=""
+  local sudoers_rule=""
+  local helper_sha256=""
+  local existing_helper_sha256=""
+  local tmp_helper=""
+  local sudoers_rule_present=0
+  local install_helper=0
+  local install_user="$FXROUTE_TARGET_USER"
+
+  [[ -f "$helper_src" && ! -L "$helper_src" ]] || die "Missing provider privilege helper: $helper_src"
+  helper_sha256="$(sha256sum "$helper_src" | awk '{print $1}')"
+  [[ "$helper_sha256" == "$PROVIDER_HELPER_SHA256" ]] \
+    || die "Refusing to install an unverified provider privilege helper"
+  [[ "$install_user" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || die "Invalid install user for provider helper"
+  if [[ -e "$PROVIDER_HELPER_PATH" || -L "$PROVIDER_HELPER_PATH" ]]; then
+    [[ -f "$PROVIDER_HELPER_PATH" && ! -L "$PROVIDER_HELPER_PATH" ]] \
+      || die "Refusing to overwrite a non-regular provider privilege helper"
+    existing_helper_sha256="$("${SUDO_CMD[@]}" sha256sum "$PROVIDER_HELPER_PATH" | awk '{print $1}')"
+    [[ "$existing_helper_sha256" == "$PROVIDER_HELPER_SHA256" ]] \
+      || die "Refusing to overwrite a non-FXRoute-owned provider privilege helper"
+  else
+    install_helper=1
   fi
-  script_path="$(readlink -f -- "$SOURCE_DIR/install.sh" 2>/dev/null || true)"
-  [[ -n "$script_path" && -f "$script_path" && ! -L "$script_path" ]] || return 0
-  rule="$(provider_privilege_rule_content "$install_user" "$script_path")"
-  if [[ -L "$PROVIDER_SUDOERS_FILE" || ( -e "$PROVIDER_SUDOERS_FILE" && ! -f "$PROVIDER_SUDOERS_FILE" ) ]]; then
-    warn "Refusing to use a non-regular provider privilege file at $PROVIDER_SUDOERS_FILE"
-    return 0
-  fi
-  if [[ -e "$PROVIDER_SUDOERS_FILE" ]]; then
-    if grep -Fqx -- "$rule" "$PROVIDER_SUDOERS_FILE" 2>/dev/null; then
-      # A matching rule for this exact script path is already on disk. It
-      # may predate the sudo timestamp (cached credentials expired), so an
-      # interactive sudo refresh still counts as verified: the UI calls use
-      # "sudo -n <script> --providers-only ...", which the rule itself will
-      # then allow without a password.
-      if sudo -n true >/dev/null 2>&1 || sudo true >/dev/null 2>&1; then
-        PROVIDER_PRIVILEGE_MODE="passwordless"
-        return 0
-      fi
-      return 0
+  if [[ $install_helper -eq 1 ]]; then
+    tmp_helper="$(mktemp)"
+    if ! "${SUDO_CMD[@]}" install -m 600 "$helper_src" "$tmp_helper" \
+      || [[ "$("${SUDO_CMD[@]}" sha256sum "$tmp_helper" | awk '{print $1}')" != "$PROVIDER_HELPER_SHA256" ]]; then
+      "${SUDO_CMD[@]}" rm -f "$tmp_helper"
+      die "Refusing to install a changed provider privilege helper"
     fi
-    if [[ $PROVIDER_PRIVILEGE_INSTALLED_BY_FXROUTE -ne 1 ]]; then
-      return 0
+    if ! "${SUDO_CMD[@]}" install -m 755 "$tmp_helper" "$PROVIDER_HELPER_PATH"; then
+      "${SUDO_CMD[@]}" rm -f "$tmp_helper"
+      die "Could not install the provider privilege helper"
     fi
-    if [[ -n "$PROVIDER_PRIVILEGE_SUDOERS_SHA256" ]]; then
-      current_sha256="$(sudo sha256sum "$PROVIDER_SUDOERS_FILE" 2>/dev/null | awk '{print $1}')"
-      [[ "$current_sha256" == "$PROVIDER_PRIVILEGE_SUDOERS_SHA256" ]] || return 0
-    fi
-  fi
-  tmp_rule="$(mktemp)"
-  printf '%s' "$rule" > "$tmp_rule"
-  # NOTE: this visudo check intentionally uses interactive sudo (password
-  # prompt), not "sudo -n": this is the one-time bootstrap, and the rule
-  # being validated is what enables all later non-interactive calls.
-  if command -v visudo >/dev/null 2>&1; then
-    sudo visudo -cf "$tmp_rule" >/dev/null 2>&1 || {
-      rm -f "$tmp_rule"
-      return 0
-    }
-  fi
-  if sudo install -m 440 "$tmp_rule" "$PROVIDER_SUDOERS_FILE" >/dev/null 2>&1 \
-    && sudo -n true >/dev/null 2>&1; then
-    PROVIDER_PRIVILEGE_MODE="passwordless"
+    "${SUDO_CMD[@]}" rm -f "$tmp_helper"
     PROVIDER_PRIVILEGE_INSTALLED_BY_FXROUTE=1
-    PROVIDER_PRIVILEGE_SUDOERS_SHA256="$(sudo -n sha256sum "$PROVIDER_SUDOERS_FILE" 2>/dev/null | awk '{print $1}')"
-    pass "provider privilege escalation ready (passwordless --providers-only)"
   fi
-  rm -f "$tmp_rule"
+  [[ "$("${SUDO_CMD[@]}" sha256sum "$PROVIDER_HELPER_PATH" | awk '{print $1}')" == "$PROVIDER_HELPER_SHA256" ]] \
+    || die "Installed provider privilege helper failed verification"
+  tmp_sudoers="$(mktemp)"
+  sudoers_rule="$(provider_privilege_rule_content "$install_user")"
+  if [[ -L "$sudoers_path" || ( -e "$sudoers_path" && ! -f "$sudoers_path" ) ]]; then
+    rm -f "$tmp_sudoers"
+    die "Refusing to overwrite a non-regular provider sudoers file"
+  fi
+  existing_sudoers="$("${SUDO_CMD[@]}" cat "$sudoers_path" 2>/dev/null || true)"
+  if [[ -e "$sudoers_path" && "$PROVIDER_PRIVILEGE_INSTALLED_BY_FXROUTE" -eq 1 \
+    && -n "$PROVIDER_PRIVILEGE_SUDOERS_SHA256" \
+    && "$("${SUDO_CMD[@]}" sha256sum "$sudoers_path" | awk '{print $1}')" != "$PROVIDER_PRIVILEGE_SUDOERS_SHA256" ]]; then
+    rm -f "$tmp_sudoers"
+    die "Refusing to overwrite a changed provider sudoers file"
+  fi
+  if grep -Fqx -- "$sudoers_rule" <<<"$existing_sudoers"; then
+    sudoers_rule_present=1
+  fi
+  if [[ -n "$existing_sudoers" ]]; then
+    printf '%s\n' "$existing_sudoers" > "$tmp_sudoers"
+  fi
+  if [[ $sudoers_rule_present -eq 0 ]]; then
+    printf '%s\n' "$sudoers_rule" >> "$tmp_sudoers"
+    PROVIDER_PRIVILEGE_INSTALLED_BY_FXROUTE=1
+  fi
+  if command -v visudo >/dev/null 2>&1; then
+    "${SUDO_CMD[@]}" visudo -cf "$tmp_sudoers" >/dev/null
+  fi
+  "${SUDO_CMD[@]}" install -m 440 "$tmp_sudoers" "$sudoers_path"
+  rm -f "$tmp_sudoers"
+  PROVIDER_PRIVILEGE_SUDOERS_SHA256="$("${SUDO_CMD[@]}" sha256sum "$sudoers_path" | awk '{print $1}')"
+  pass "provider privilege helper installed"
 }
 
 parse_provider_selection() {
@@ -1756,8 +1773,37 @@ ensure_ufw_rule() {
   local rule_id="$1"
   local purpose="$2"
   local port=""
+  local query_rc=0
 
   port="$(firewall_rule_port "$rule_id")" || return 0
+  if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    # Non-interactive provider path: only the two provider rule ids. One
+    # helper fw-open call owns the whole backends decision (firewalld or
+    # ufw or inactive-noop) and re-validates rule + purpose itself; the
+    # ownership flags are recorded for whichever backend applied.
+    case "$rule_id" in
+      mdns_5353_udp|spotifyd_zeroconf_4444_tcp) ;;
+      *) return 0 ;;
+    esac
+    provider_privileged fw-query "$rule_id" >/dev/null 2>&1 || query_rc=$?
+    if [[ $query_rc -eq 0 ]]; then
+      mark_firewall_rule_owned firewalld "$rule_id"
+      mark_firewall_rule_owned ufw "$rule_id"
+      return 0
+    elif [[ $query_rc -ne 1 ]]; then
+      warn "Optional LAN comfort could not verify firewall rule for '$port'"
+      return 0
+    fi
+    log "provider helper fw-open $rule_id"
+    if ! provider_privileged fw-open "$rule_id" "$purpose"; then
+      warn "Optional LAN comfort could not open firewall rule '$port' for $purpose"
+      return 0
+    fi
+    mark_firewall_rule_owned firewalld "$rule_id"
+    mark_firewall_rule_owned ufw "$rule_id"
+    pass "firewall rule opened ($port)"
+    return 0
+  fi
   ufw_is_active || return 0
 
   if "${SUDO_CMD[@]}" ufw status 2>/dev/null | grep -Eq "^${port}([[:space:]]+\\(v6\\))?[[:space:]]+ALLOW"; then
@@ -1774,10 +1820,42 @@ ensure_ufw_rule() {
   pass "ufw rule opened ($port)"
 }
 
+ensure_firewalld_rule_providers_only() {
+  # Narrow provider-path variant: only the two provider rule ids, no
+  # legacy port migration (interactive prompt). The single fw-open call in
+  # ensure_ufw_rule already owns the firewalld-or-ufw-or-noop decision, so
+  # this function only records the firewalld-side ownership view: when the
+  # rule queries open afterwards, it was opened (or already open) on the
+  # firewalld backend.
+  local rule_id="$1"
+  local query_rc=0
+
+  case "$rule_id" in
+    mdns_5353_udp|spotifyd_zeroconf_4444_tcp) ;;
+    *) return 0 ;;
+  esac
+  firewall_rule_port "$rule_id" >/dev/null || return 0
+  provider_privileged fw-query "$rule_id" >/dev/null 2>&1 || query_rc=$?
+  if [[ $query_rc -eq 0 ]]; then
+    [[ $FIREWALLD_LEGACY_PORT_MIGRATION -eq 1 ]] || FIREWALLD_RULE_FORMAT="rich-priority"
+    mark_firewall_rule_owned firewalld "$rule_id"
+  elif [[ $query_rc -ne 1 ]]; then
+    warn "Optional LAN comfort could not verify firewalld rich rule for '$(firewall_rule_port "$rule_id")'"
+  fi
+}
+
 ensure_lan_firewall_rule() {
   local rule_id="$1"
   local purpose="$2"
 
+  if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    # Non-interactive provider path: only the two provider rule ids, no
+    # legacy migration prompts. ensure_ufw_rule performs the single owning
+    # fw-open; the firewalld view is recorded afterwards from the query.
+    ensure_ufw_rule "$rule_id" "$purpose"
+    ensure_firewalld_rule_providers_only "$rule_id"
+    return 0
+  fi
   ensure_firewalld_rule "$rule_id" "$purpose"
   ensure_ufw_rule "$rule_id" "$purpose"
 }
@@ -1838,14 +1916,19 @@ choose_sudo() {
   if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
     SUDO_CMD=()
   elif command -v sudo >/dev/null 2>&1; then
-    if [[ $PROVIDERS_ONLY_MODE -eq 1 && "${PROVIDER_PRIVILEGE_MODE:-}" == "passwordless" ]]; then
-      SUDO_CMD=(sudo -n)
-    else
-      SUDO_CMD=(sudo)
-    fi
+    SUDO_CMD=(sudo)
   else
     die "sudo is required for package installation"
   fi
+}
+
+provider_privileged() {
+  # Run one allow-listed privileged provider step through the root-owned
+  # helper. The helper validates action + arguments itself; callers pass
+  # only fixed action names and values from the provider allow-lists, never
+  # user input. Non-interactive: uses "sudo -n" so a password prompt can
+  # never stall a Settings-UI request.
+  sudo -n "$PROVIDER_HELPER_PATH" "$@"
 }
 
 capture_lan_comfort_baseline() {
@@ -1911,6 +1994,15 @@ run_cmd() {
 
 pkg_install() {
   local packages=("$@")
+  # Provider installs (Settings -> Providers, --providers-only) run without
+  # a TTY: route package installs through the root-owned helper, whose
+  # per-manager package names are allow-listed on both sides. The helper
+  # skips already-installed packages itself, so callers pass the missing
+  # set and stay idempotent.
+  if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    run_cmd provider_privileged packages "${packages[@]}"
+    return 0
+  fi
   case "$PACKAGE_MANAGER" in
     apt)
       if [[ $PKG_REFRESH_DONE -eq 0 ]]; then
@@ -2648,7 +2740,28 @@ install_spotify_desktop_apt() {
     existing_source=1
   fi
 
-  if [[ $existing_source -eq 0 ]]; then
+  if [[ $existing_source -eq 0 && $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    # Non-interactive provider path: source + fingerprint-pinned keyring are
+    # written atomically by the root-owned helper (action spotify-apt-repo),
+    # so no repo line or key bytes cross the sudo boundary here.
+    require_cmd gpg
+    log "Installing official Spotify apt repository (provider helper)"
+    if ! provider_privileged spotify-apt-repo; then
+      return 1
+    fi
+    SPOTIFY_DESKTOP_KEY_INSTALLED_BY_FXROUTE=1
+    SPOTIFY_DESKTOP_REPO_INSTALLED_BY_FXROUTE=1
+    SPOTIFY_DESKTOP_KEY_FINGERPRINT="$SPOTIFY_APT_KEY_FINGERPRINT"
+    if [[ -f "$SPOTIFY_APT_SOURCE_FILE" ]]; then
+      SPOTIFY_DESKTOP_REPO_SHA256="$(sha256sum "$SPOTIFY_APT_SOURCE_FILE" | awk '{print $1}')"
+    fi
+    # The source was added after the normal package refresh; the helper
+    # refreshed apt itself after writing the source, so mark the refresh
+    # done to avoid a second non-interactive update before spotify-client.
+    PKG_REFRESH_DONE=1
+  fi
+
+  if [[ $existing_source -eq 0 && $PROVIDERS_ONLY_MODE -eq 0 ]]; then
     require_cmd gpg
     tmp_source="$(mktemp)"
     printf '%s\n' \
@@ -2709,6 +2822,12 @@ install_spotify_desktop_flatpak() {
 
   if flatpak remotes --system --columns=name 2>/dev/null | grep -Fxq flathub; then
     remote_exists=1
+  fi
+  if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    # Non-interactive provider path: no system flatpak mutations without a
+    # TTY. The x86_64 desktop case is covered by the full installer; the
+    # Settings UI reports this honestly instead of failing on sudo.
+    die "Spotify Desktop Flatpak setup needs the full installer on this host; rerun install.sh interactively"
   fi
   if [[ $remote_exists -eq 0 ]]; then
     run_cmd "${SUDO_CMD[@]}" flatpak remote-add --if-not-exists --system flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -3325,6 +3444,18 @@ ensure_qbzd_alsa_pipewire_bridge() {
   if package_installed pipewire-alsa; then
     return 0
   fi
+  if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    # Non-interactive provider path: the helper owns the whole
+    # backports-vs-plain decision (same rule as below) and validates it
+    # itself, so no apt command line ever crosses the sudo boundary here.
+    if debian_trixie_backports_available; then
+      run_cmd provider_privileged backports-pipewire-alsa
+    else
+      pkg_install pipewire-alsa
+    fi
+    pass "ALSA->PipeWire bridge installed for qbzd"
+    return 0
+  fi
   if debian_trixie_backports_available; then
     if [[ $PKG_REFRESH_DONE -eq 0 ]]; then
       run_cmd "${SUDO_CMD[@]}" apt-get update
@@ -3351,7 +3482,13 @@ ensure_qobuz_runtime_dependencies() {
     if [[ "$was_active" == "0" || "$was_enabled" == "0" ]]; then
       AVAHI_ENABLED_BY_FXROUTE=1
     fi
-    if "${SUDO_CMD[@]}" systemctl enable --now avahi-daemon; then
+    if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+      if provider_privileged avahi-enable; then
+        pass "Avahi enabled for Qobuz Connect discovery"
+      else
+        warn "Avahi is installed but could not be enabled for Qobuz Connect discovery"
+      fi
+    elif "${SUDO_CMD[@]}" systemctl enable --now avahi-daemon; then
       pass "Avahi enabled for Qobuz Connect discovery"
     else
       warn "Avahi is installed but could not be enabled for Qobuz Connect discovery"
@@ -4031,7 +4168,14 @@ ensure_target_user_journal_access() {
   # tail needs traverse/read rights on the runtime journal, which only the
   # systemd-journal group grants.
   log "Adding $install_user to the systemd-journal group for Qobuz Connect volume tracking"
-  if ! "${SUDO_CMD[@]}" usermod -aG systemd-journal "$install_user"; then
+  if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    # Non-interactive provider path: fixed group operation through the
+    # root-owned helper (SUDO_USER-derived user, no username argument).
+    if ! provider_privileged journal-group; then
+      warn "Could not add $install_user to the systemd-journal group"
+      return 0
+    fi
+  elif ! "${SUDO_CMD[@]}" usermod -aG systemd-journal "$install_user"; then
     warn "Could not add $install_user to the systemd-journal group"
     return 0
   fi
@@ -4378,7 +4522,12 @@ EOF
     return 1
   fi
   chmod 644 "$temp_file"
-  if ! "${SUDO_CMD[@]}" install -d -o root -g root -m 755 "$(dirname "$root_state_file")" \
+  if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    # Non-interactive provider path: the unprivileged run writes the user
+    # state below; the root-owned mirror is a fixed helper action (source
+    # path fixed, uid validated inside the helper).
+    :
+  elif ! "${SUDO_CMD[@]}" install -d -o root -g root -m 755 "$(dirname "$root_state_file")" \
     || ! "${SUDO_CMD[@]}" install -o root -g root -m 644 "$temp_file" "$root_state_file"; then
     rm -f "$temp_file"
     return 1
@@ -4387,6 +4536,13 @@ EOF
     || ! run_as_target_user install -m 600 "$temp_file" "$state_file"; then
     rm -f "$temp_file"
     return 1
+  fi
+  if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    # Mirror the user state to the root-owned state dir through the fixed
+    # helper action. Best effort: a failed mirror must not fail the
+    # provider install (the user state is authoritative for the UI).
+    provider_privileged state-mirror "$FXROUTE_TARGET_UID" >/dev/null 2>&1 \
+      || warn "Root-owned install state mirror skipped; user state is authoritative"
   fi
   rm -f "$temp_file"
   pass "install state recorded"
@@ -6619,19 +6775,22 @@ main_providers_only() {
   # Settings -> Providers backend path: only provider installation in an
   # existing FXRoute checkout. Reuses the exact provider install flows so UI
   # installs match installer installs byte for byte, and refreshes the
-  # ownership state afterwards so uninstall stays safe.
+  # ownership state afterwards so uninstall stays safe. Runs entirely
+  # unprivileged except for the fixed root-owned helper actions
+  # (provider_privileged); it never calls sudo itself, so no TTY/password
+  # prompt can stall a Settings-UI request.
   require_cmd python3
   require_cmd getent
   require_cmd ps
   if [[ "$(id -u)" -eq 0 && "$FXROUTE_TARGET_USER" != "root" ]]; then
     require_cmd runuser
   fi
-  choose_sudo
+  if ! provider_helper_usable >/dev/null 2>&1; then
+    die "Provider privilege helper unavailable; rerun the full install.sh once so Settings installs work without a password"
+  fi
   confirm_supported_distro
   load_provider_ownership_state
   select_optional_providers
-  ensure_provider_privilege_escalation
-  choose_sudo
   STATE_CHECKPOINT_ENABLED=1
   trap 'checkpoint_install_state_on_exit' EXIT
   configure_optional_streaming
@@ -6673,6 +6832,7 @@ main() {
   create_env_if_missing
   ensure_no_foreign_fxroute_services
   install_network_library_helper
+  install_provider_privileged_helper
   setup_python_env
   build_native_dsp_engine
   ensure_target_user_ownership

@@ -1,0 +1,459 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# fxroute-provider-privileged: root-owned helper for the small set of
+# privileged steps the Settings -> Providers installs need.
+#
+# Installed root-owned at /usr/local/sbin/fxroute-provider-privileged
+# (mode 755, root:root) by install.sh; callable by the FXRoute install user
+# via exactly one sudoers entry:
+#   <user> ALL=(root) NOPASSWD: /usr/local/sbin/fxroute-provider-privileged *
+#
+# Design (mirrors scripts/fxroute-cifs-mount):
+# - The helper is root-owned and NOT writable by the FXRoute user, so the
+#   sudoers wildcard cannot be abused by editing the target.
+# - Every action is a fixed, allow-listed operation with strictly validated
+#   arguments. There is deliberately no generic "run this command" action
+#   and no shell passthrough: unknown actions and out-of-allow-list values
+#   are rejected with exit 2 before any privileged step runs.
+# - The caller identity comes from SUDO_USER (like the CIFS helper): the
+#   helper only runs through sudo, never as a login shell.
+#
+# Actions (all idempotent; verification-only actions are read-only):
+#   packages <opaque...>        Install provider runtime packages via the
+#                               host package manager. Each remaining argument
+#                               must be an exact allow-listed package name for
+#                               the detected manager (apt/dnf/zypper/pacman);
+#                               anything else is rejected.
+#   backports-pipewire-alsa     Install pipewire-alsa from trixie-backports
+#                               (Debian 13 only, apt only). No arguments.
+#   avahi-enable                Enable + start avahi-daemon via systemctl.
+#                               No arguments.
+#   journal-group               Add the calling user to systemd-journal.
+#                               No arguments.
+#   fw-open <rule> <purpose>    Open one allow-listed LAN firewall rule via
+#                               firewalld (rich rule) or ufw. <rule> is one of
+#                               mdns_5353_udp, spotifyd_zeroconf_4444_tcp.
+#                               <purpose> is a short human label used as the
+#                               ufw comment (strict charset, max 64 chars).
+#   fw-query <rule>             Read-only: report whether an allow-listed
+#                               rule is already open (exit 0 = open,
+#                               exit 1 = closed, exit 2 = error/unknown).
+#   spotify-apt-repo            Install the official Spotify apt source +
+#                               keyring (apt only). Verifies the key
+#                               fingerprint before writing. No arguments.
+#   spotify-flatpak <args...>   Reserved for non-apt Spotify Desktop installs.
+#                               Currently rejected (not needed on the image
+#                               targets); kept as an explicit stub so a
+#                               future allow-listed form fails closed today.
+#   state-mirror <uid>          Copy the FXRoute install state written by the
+#                               unprivileged provider run into the root-owned
+#                               state dir /var/lib/fxroute/state/<uid>/. The
+#                               source path is fixed
+#                               (~<user>/.config/fxroute/install-state.json);
+#                               only the numeric uid argument varies.
+#
+# Exit codes: 0 ok, 1 operation failed (caller should surface stderr),
+# 2 invalid usage / rejected argument (caller must not retry as-is).
+set -euo pipefail
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+usage() {
+  echo "usage: fxroute-provider-privileged <action> [args...]" >&2
+  echo "actions: packages, backports-pipewire-alsa, avahi-enable, journal-group, fw-open, fw-query, spotify-apt-repo, state-mirror" >&2
+}
+
+die() {
+  echo "fxroute-provider-privileged: $*" >&2
+  exit "${2:-1}"
+}
+
+caller_user() {
+  local user="${SUDO_USER:-}"
+  [[ -n "$user" && "$user" != "root" ]] || {
+    echo "fxroute-provider-privileged must be run through sudo" >&2
+    exit 2
+  }
+  getent passwd "$user" >/dev/null 2>&1 || {
+    echo "Unknown calling user: $user" >&2
+    exit 2
+  }
+  printf '%s\n' "$user"
+}
+
+detect_manager() {
+  if command -v apt-get >/dev/null 2>&1; then
+    printf 'apt\n'
+  elif command -v dnf >/dev/null 2>&1; then
+    printf 'dnf\n'
+  elif command -v zypper >/dev/null 2>&1; then
+    printf 'zypper\n'
+  elif command -v pacman >/dev/null 2>&1; then
+    printf 'pacman\n'
+  else
+    echo "No supported package manager found" >&2
+    exit 1
+  fi
+}
+
+# Exact allow-list of provider runtime packages per manager. Must stay in
+# sync with qobuz_runtime_packages_for_manager() (Qobuz/qbzd runtime deps),
+# spotify_keyring_packages_for_manager() (Spotify keyring deps) and the
+# ca-certificates/gnupg/flatpak bootstrap used by the Spotify Desktop path
+# in install.sh, plus the ALSA->PipeWire bridge where it is a plain package.
+allowlisted_package() {
+  local manager="$1"
+  local package="$2"
+  case "$manager" in
+    apt)
+      case "$package" in
+        libasound2|libasound2t64|libdbus-1-3|avahi-daemon|libavahi-client3|libnss-mdns|pipewire-alsa|gnome-keyring|libsecret-1-0|libpam-gnome-keyring|ca-certificates|gnupg|flatpak|spotify-client) return 0 ;;
+      esac
+      ;;
+    dnf)
+      case "$package" in
+        alsa-lib|dbus-libs|avahi|nss-mdns|gnome-keyring|libsecret) return 0 ;;
+      esac
+      ;;
+    zypper)
+      case "$package" in
+        alsa|libdbus-1-3|avahi|libavahi-client3|nss-mdns|gnome-keyring|libsecret-1-0) return 0 ;;
+      esac
+      ;;
+    pacman)
+      case "$package" in
+        alsa-lib|dbus|avahi|nss-mdns|gnome-keyring|libsecret) return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+action_packages() {
+  local manager=""
+  local package=""
+  local missing=()
+  local refresh_done_file=""
+  manager="$(detect_manager)"
+  [[ $# -ge 1 ]] || {
+    echo "packages requires at least one package name" >&2
+    exit 2
+  }
+  for package in "$@"; do
+    allowlisted_package "$manager" "$package" || {
+      echo "Refusing to install non-allow-listed package: $package" >&2
+      exit 2
+    }
+    case "$manager" in
+      apt) dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'ok installed' || missing+=("$package") ;;
+      dnf|zypper) rpm -q "$package" >/dev/null 2>&1 || missing+=("$package") ;;
+      pacman) pacman -Q "$package" >/dev/null 2>&1 || missing+=("$package") ;;
+    esac
+  done
+  [[ ${#missing[@]} -gt 0 ]] || exit 0
+  # One refresh per boot is enough; marker lives in /run (tmpfs) so a stale
+  # "already refreshed" can never survive a reboot.
+  refresh_done_file="/run/fxroute-provider-privileged-refresh-$manager"
+  case "$manager" in
+    apt)
+      if [[ ! -e "$refresh_done_file" ]]; then
+        DEBIAN_FRONTEND=noninteractive apt-get update || exit 1
+        : > "$refresh_done_file" || exit 1
+      fi
+      DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}" || exit 1
+      ;;
+    dnf)
+      if [[ ! -e "$refresh_done_file" ]]; then
+        dnf install -y --refresh "${missing[@]}" || exit 1
+        : > "$refresh_done_file" || exit 1
+      else
+        dnf install -y "${missing[@]}" || exit 1
+      fi
+      ;;
+    zypper)
+      if [[ ! -e "$refresh_done_file" ]]; then
+        zypper --non-interactive refresh || exit 1
+        : > "$refresh_done_file" || exit 1
+      fi
+      zypper --non-interactive install --no-recommends "${missing[@]}" || exit 1
+      ;;
+    pacman)
+      # Rolling release: the first provider package install after boot
+      # performs the normal full sync, later ones only add missing packages.
+      if [[ ! -e "$refresh_done_file" ]]; then
+        pacman -Syu --needed --noconfirm "${missing[@]}" || exit 1
+        : > "$refresh_done_file" || exit 1
+      else
+        pacman -S --needed --noconfirm "${missing[@]}" || exit 1
+      fi
+      ;;
+  esac
+}
+
+action_backports_pipewire_alsa() {
+  [[ $# -eq 0 ]] || {
+    echo "backports-pipewire-alsa takes no arguments" >&2
+    exit 2
+  }
+  command -v apt-get >/dev/null 2>&1 || {
+    echo "backports-pipewire-alsa is apt-only" >&2
+    exit 2
+  }
+  dpkg-query -W -f='${Status}' pipewire-alsa 2>/dev/null | grep -q 'ok installed' && exit 0
+  grep -E '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | grep -q trixie || {
+    echo "backports-pipewire-alsa needs Debian 13 (trixie)" >&2
+    exit 1
+  }
+  grep -rq "trixie-backports" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null || {
+    echo "trixie-backports is not configured" >&2
+    exit 1
+  }
+  DEBIAN_FRONTEND=noninteractive apt-get update || exit 1
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -t trixie-backports pipewire-alsa || exit 1
+}
+
+action_avahi_enable() {
+  [[ $# -eq 0 ]] || {
+    echo "avahi-enable takes no arguments" >&2
+    exit 2
+  }
+  systemctl enable --now avahi-daemon || exit 1
+}
+
+action_journal_group() {
+  local user=""
+  [[ $# -eq 0 ]] || {
+    echo "journal-group takes no arguments" >&2
+    exit 2
+  }
+  user="$(caller_user)"
+  getent group systemd-journal >/dev/null 2>&1 || {
+    echo "No systemd-journal group exists" >&2
+    exit 1
+  }
+  id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx systemd-journal && exit 0
+  usermod -aG systemd-journal "$user" || exit 1
+}
+
+firewall_rule_port() {
+  case "$1" in
+    mdns_5353_udp) printf '5353/udp\n' ;;
+    spotifyd_zeroconf_4444_tcp) printf '4444/tcp\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+firewalld_active() {
+  command -v firewall-cmd >/dev/null 2>&1 || return 1
+  firewall-cmd --state >/dev/null 2>&1
+}
+
+ufw_active() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ufw status 2>/dev/null | grep -qi '^Status: active\|^Status: Aktiv'
+}
+
+fw_rule_open() {
+  local rule="$1"
+  local port=""
+  port="$(firewall_rule_port "$rule")" || return 2
+  if firewalld_active; then
+    local number="${port%/*}"
+    local proto="${port#*/}"
+    local rich="rule priority=\"100\" port port=\"$number\" protocol=\"$proto\" accept"
+    firewall-cmd --query-rich-rule="$rich" >/dev/null 2>&1 && return 0
+    firewall-cmd --permanent --query-rich-rule="$rich" >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  if ufw_active; then
+    ufw status 2>/dev/null | grep -Eq "^${port}([[:space:]]+\(v6\))?[[:space:]]+ALLOW" && return 0
+    return 1
+  fi
+  return 2
+}
+
+action_fw_query() {
+  [[ $# -eq 1 ]] || {
+    echo "fw-query requires exactly one rule id" >&2
+    exit 2
+  }
+  firewall_rule_port "$1" >/dev/null || {
+    echo "Unknown firewall rule: $1" >&2
+    exit 2
+  }
+  # No active backend means "no rule to open": report closed (1), never
+  # error (2), so callers treat it as "nothing to do" instead of failing.
+  # Errors inside fw_rule_open other than "no backend" still propagate.
+  if firewalld_active || ufw_active; then
+    fw_rule_open "$1"
+  else
+    exit 1
+  fi
+}
+
+action_fw_open() {
+  local rule="$1"
+  local purpose="${2:-}"
+  local port=""
+  [[ $# -eq 2 ]] || {
+    echo "fw-open requires a rule id and a purpose label" >&2
+    exit 2
+  }
+  port="$(firewall_rule_port "$rule")" || {
+    echo "Unknown firewall rule: $rule" >&2
+    exit 2
+  }
+  # Tight charset for the ufw comment: human label only, no shell
+  # metacharacters, no newlines, bounded length.
+  [[ "$purpose" =~ ^[A-Za-z0-9][A-Za-z0-9\ _.,:/-]{0,63}$ ]] || {
+    echo "Invalid purpose label" >&2
+    exit 2
+  }
+  if fw_rule_open "$rule"; then
+    exit 0
+  elif [[ $? -eq 2 ]]; then
+    # Backend went away between query and open, or no backend is active:
+    # nothing to open, not a failure (matches the full-installer warning
+    # path that skips firewall configuration on such hosts).
+    echo "No active firewalld/ufw stack; skipping firewall configuration" >&2
+    exit 0
+  fi
+  if firewalld_active; then
+    local number="${port%/*}"
+    local proto="${port#*/}"
+    local rich="rule priority=\"100\" port port=\"$number\" protocol=\"$proto\" accept"
+    firewall-cmd --permanent --add-rich-rule="$rich" || exit 1
+    firewall-cmd --reload || exit 1
+    exit 0
+  fi
+  if ufw_active; then
+    ufw allow "$port" comment "$purpose" || exit 1
+    exit 0
+  fi
+  echo "No active firewall backend" >&2
+  exit 1
+}
+
+action_spotify_apt_repo() {
+  local key_file="/usr/share/keyrings/spotify-archive-keyring.gpg"
+  local source_file="/etc/apt/sources.list.d/spotify.list"
+  local key_url="https://download.spotify.com/debian/pubkey_5384CE82BA52C83A.asc"
+  local fingerprint="E1096BCBFF6D418796DE78515384CE82BA52C83A"
+  local source_line="deb [arch=amd64 signed-by=${key_file}] https://repository.spotify.com stable non-free"
+  local tmp_key=""
+  local tmp_source=""
+  local actual=""
+  [[ $# -eq 0 ]] || {
+    echo "spotify-apt-repo takes no arguments" >&2
+    exit 2
+  }
+  command -v apt-get >/dev/null 2>&1 || {
+    echo "spotify-apt-repo is apt-only" >&2
+    exit 2
+  }
+  if grep -Rqs "repository\.spotify\.com" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+    exit 0
+  fi
+  tmp_key="$(mktemp)" || exit 1
+  tmp_source="$(mktemp)" || {
+    rm -f "$tmp_key"
+    exit 1
+  }
+  trap 'rm -f "$tmp_key" "$tmp_source"' EXIT
+  curl -fsSL -o "$tmp_key" "$key_url" || exit 1
+  actual="$(gpg --show-keys --with-colons --fingerprint "$tmp_key" 2>/dev/null | awk -F: '$1 == "fpr" {print toupper($10); exit}')"
+  [[ "$actual" == "$fingerprint" ]] || {
+    echo "Spotify apt signing key fingerprint mismatch" >&2
+    exit 1
+  }
+  gpg --dearmor < "$tmp_key" | tee "$key_file" >/dev/null || exit 1
+  chmod 644 "$key_file" || exit 1
+  printf '%s\n' "$source_line" > "$tmp_source" || exit 1
+  install -m 644 "$tmp_source" "$source_file" || exit 1
+  trap - EXIT
+  rm -f "$tmp_key" "$tmp_source"
+  # The caller installs packages from the new source right away; refresh
+  # here so no second update round-trip is needed.
+  DEBIAN_FRONTEND=noninteractive apt-get update || exit 1
+}
+
+action_state_mirror() {
+  local user=""
+  local uid=""
+  local src=""
+  local dest_dir=""
+  local tmp=""
+  [[ $# -eq 1 ]] || {
+    echo "state-mirror requires exactly one uid argument" >&2
+    exit 2
+  }
+  uid="$1"
+  [[ "$uid" =~ ^[0-9]{1,6}$ ]] || {
+    echo "Invalid uid: $uid" >&2
+    exit 2
+  }
+  user="$(caller_user)"
+  [[ "$(id -u "$user")" == "$uid" ]] || {
+    echo "Refusing to mirror state for another uid" >&2
+    exit 2
+  }
+  src="$(getent passwd "$user" | cut -d: -f6)/.config/fxroute/install-state.json"
+  [[ -f "$src" && ! -L "$src" ]] || {
+    echo "No provider install state to mirror: $src" >&2
+    exit 1
+  }
+  python3 - "$src" <<'PY' || exit 1
+import json
+import sys
+from pathlib import Path
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text())
+except (OSError, ValueError):
+    raise SystemExit(1)
+if not isinstance(payload, dict) or not isinstance(payload.get("install_root"), str):
+    raise SystemExit(1)
+PY
+  dest_dir="/var/lib/fxroute/state/$uid"
+  install -d -o root -g root -m 755 "$dest_dir" || exit 1
+  tmp="$(mktemp "$dest_dir/.install-state.XXXXXX")" || exit 1
+  cat "$src" > "$tmp" || {
+    rm -f "$tmp"
+    exit 1
+  }
+  chmod 644 "$tmp" || {
+    rm -f "$tmp"
+    exit 1
+  }
+  mv -f "$tmp" "$dest_dir/install-state.json" || {
+    rm -f "$tmp"
+    exit 1
+  }
+}
+
+[[ $EUID -eq 0 ]] || {
+  echo "fxroute-provider-privileged must run as root (through sudo)" >&2
+  exit 2
+}
+
+action="${1:-}"
+shift || true
+case "$action" in
+  packages) action_packages "$@" ;;
+  backports-pipewire-alsa) action_backports_pipewire_alsa "$@" ;;
+  avahi-enable) action_avahi_enable "$@" ;;
+  journal-group) action_journal_group "$@" ;;
+  fw-open) action_fw_open "$@" ;;
+  fw-query) action_fw_query "$@" ;;
+  spotify-apt-repo) action_spotify_apt_repo "$@" ;;
+  spotify-flatpak)
+    echo "spotify-flatpak is not allow-listed on this host" >&2
+    exit 2
+    ;;
+  state-mirror) action_state_mirror "$@" ;;
+  "" | -h | --help) usage; exit 2 ;;
+  *)
+    echo "Unknown action: $action" >&2
+    exit 2
+    ;;
+esac
