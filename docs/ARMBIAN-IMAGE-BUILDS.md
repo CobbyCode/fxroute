@@ -4,6 +4,46 @@ Build-Protokoll der offiziellen Armbian-Images (`armbian/build-image.sh`).
 Ablage der Images: `dist/` (git-ignoriert). Build-Logs `armbian-vim1s-build-*.log`
 sind ebenfalls git-ignoriert und liegen nur lokal im Checkout.
 
+## 2026-09-05 — khadas-vim1s (trixie/legacy), HEAD `5dfda4e`
+
+- FXRoute HEAD: `5dfda4e5fcbfc4c19b6006a903b934cdb41a386b`
+  (`fix(armbian): disable Wi-Fi input while Ethernet is active`)
+- Enthaltene First-Boot/Onboarding-Fixes seit `12bbd06`: `5dfda4e`
+  (WLAN-Eingabe bei aktivem Ethernet deaktiviert, Stray-WLAN im POST wird
+  ignoriert), `84f43b9` (root-staged Installer-Override ohne Reflash),
+  `7c7dc0a` (PipeWire `-dev`-Pakete aus trixie-backports bei aktivem
+  1.4.9-Backports-Laufzeitsystem; behebt den auf .125 reproduzierten
+  `libpipewire-0.3-dev`-Abhängigkeitsabbruch im First-Boot).
+- Ausgangszustand: sauberer kanonischer `main`, keine weiteren funktionalen
+  Aenderungen in diesem Durchlauf.
+- Armbian-Pin: `4a50e16e09222e00d3f57884b4dfbf8fdb4ce5dc`
+  (Cache-Verzeichnis bereits auf diesem Pin, Docker-Basis vorhanden).
+- Kommando: `./armbian/build-image.sh --board khadas-vim1s`
+  (BOARD=khadas-vim1s, RELEASE=trixie, BRANCH=legacy, EXT=image-output-oowow).
+- Build: Start 2026-09-05T14:54Z, Ende 2026-09-05T15:02Z, Exit-Status 0.
+  Einzige Warnung: bekannte kosmetische `Permission denied`-Meldungen beim
+  Aufraeumen Docker-erzeugter root-owned Cache-Dateien (beeinflusst Exit-Status nicht).
+- Erzeugtes Image: `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz`
+  (405950464 Bytes), plus `.sha256`-Sidecar:
+  `1f566fea905efd580b2518c02179a8934ac21780a899e690b8bb98e7298c77bc`.
+- Das neue Image ersetzt das alte (Stand 2026-09-05T09:27Z, HEAD `12bbd06`)
+  auf demselben Ausgabepfad; `sha256sum -c` des neuen Images: OK.
+- Verifikation (HEAD im Image enthalten):
+  - `sha256sum -c` des neuen Images: OK.
+  - `/opt/fxroute-armbian/source.tar` aus dem Image extrahiert und byte-identisch
+    mit dem deterministischen Archiv aus HEAD (gleicher md5).
+  - `install.sh` aus dem Image-Archiv identisch mit Checkout (`0c75dcb8…`),
+    enthaelt `debian_trixie_backports_active` (2 Treffer).
+  - `armbian-web-config.py` aus dem Image-Archiv enthaelt `disableWifiForEthernet`
+    (2 Treffer); `first-boot-install.sh` enthaelt `INSTALLER_OVERRIDE_FILE`
+    (3 Treffer).
+  - Wrapper-Regression `scripts/test_armbian_images.py`: 46/46 OK,
+    `scripts/test_armbian_web_config.py`: 66/66 OK (vor dem Build).
+- Build-Log: `armbian-vim1s-build-2026-09-05-5dfda4e.log` (lokal, git-ignoriert).
+- Kein Push, kein Release. Flashen per OOWOW erfolgt manuell; die
+  Endverifikation (Onboarding, First-Boot, fxroute.service, HTTP :8000)
+  laeuft auf dem frisch geflashten Geraet.
+
 ## 2026-09-05 — khadas-vim1s (trixie/legacy), HEAD `12bbd06`
 
 - FXRoute HEAD: `12bbd06a369a0558fedd5cfd35ff919eab68470a`
