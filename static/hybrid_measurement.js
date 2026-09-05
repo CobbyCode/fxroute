@@ -9,6 +9,7 @@
     const CONFIG = Object.freeze({
         listeningWeights: Object.freeze({ mlp: 0.70, left: 0.15, right: 0.15 }),
         spatialConsistencyDb: 6.0,
+        directTransitionOctaves: 1 / 3,
         bassNullVetoHz: 300,
         bassNullVetoStartDb: 2.5,
         bassNullVetoFullDb: 7.0,
@@ -125,12 +126,15 @@
 
     function getDirectModelWeight(frequency, gatedDirectLowerLimitHz, directConfidence, disagreementDb, spatialSpreadDb) {
         const limitHz = Number(gatedDirectLowerLimitHz);
-        if (!Number.isFinite(limitHz)) return 0;
-        if (frequency < limitHz) return 0;
+        if (!Number.isFinite(limitHz) || limitHz <= 0) return 0;
+        if (frequency <= limitHz) return 0;
         const confidence = Math.min(1, Math.max(0, Number(directConfidence) || 0));
         const agreement = Math.exp(-Math.abs(Number(disagreementDb) || 0) / CONFIG.spatialConsistencyDb);
         const spatialConsistency = Math.exp(-Math.max(0, Number(spatialSpreadDb) || 0) / CONFIG.spatialConsistencyDb);
-        return confidence * (agreement + ((1 - agreement) * (1 - spatialConsistency)));
+        // Fade in only above the valid direct band, with flat slopes at both ends.
+        const transition = Math.min(1, Math.max(0, Math.log2(frequency / limitHz) / CONFIG.directTransitionOctaves));
+        const directFade = transition * transition * (3 - (2 * transition));
+        return confidence * (agreement + ((1 - agreement) * (1 - spatialConsistency))) * directFade;
     }
 
     function buildHybridSide(captures, channel) {

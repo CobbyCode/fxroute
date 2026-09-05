@@ -99,7 +99,8 @@ assert(peakAnalysis.corrections[0].correctionDb < -7, 'stable peak must remain c
 
 const lower = 300;
 assert.equal(Hybrid.getDirectModelWeight(299, lower, 1, 0, 0), 0, 'direct model must stop below its gate limit');
-assert.equal(Hybrid.getDirectModelWeight(300, lower, 0.8, 0, 0), 0.8, 'direct confidence must cap its model weight');
+assert.equal(Hybrid.getDirectModelWeight(300, lower, 0.8, 0, 0), 0, 'direct model must fade in above its gate limit');
+assert.equal(Hybrid.getDirectModelWeight(400, lower, 0.8, 0, 0), 0.8, 'direct confidence must cap its model weight');
 const stableDisagreementWeight = Hybrid.getDirectModelWeight(400, lower, 1, 6, 0);
 const variableDisagreementWeight = Hybrid.getDirectModelWeight(400, lower, 1, 6, 6);
 assert(variableDisagreementWeight > stableDisagreementWeight, 'spatially unstable area data must favor the direct model');
