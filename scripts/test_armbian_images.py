@@ -258,6 +258,16 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn("systemctl disable armbian-web-config.service", self.first_boot)
         self.assertNotIn("disable --now armbian-web-config.service", self.first_boot)
 
+    def test_first_boot_supports_a_root_staged_installer_override(self):
+        """A root-staged override tar can hotfix install.sh without an image rebuild."""
+        self.assertIn('INSTALLER_OVERRIDE_FILE="/var/lib/fxroute-armbian/installer-override.tar"', self.first_boot)
+        self.assertIn("--overwrite", self.first_boot)
+        self.assertIn("The installer override archive does not contain install.sh", self.first_boot)
+        self.assertLess(
+            self.first_boot.index("INSTALLER_OVERRIDE_FILE="),
+            self.first_boot.index('"$SOURCE_DIR/install.sh"'),
+        )
+
     def test_first_boot_provisions_user_and_calls_existing_installer(self):
         self.assertIn("getent passwd", self.first_boot)
         self.assertNotIn("provision_user", self.first_boot)

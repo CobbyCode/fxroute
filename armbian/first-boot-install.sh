@@ -172,12 +172,23 @@ fxroute_home="$(getent passwd "$FXROUTE_USER" | cut -d: -f6)"
   || { printf 'FXRoute user has no usable home directory: %s\n' "$FXROUTE_USER" >&2; exit 1; }
 reset_incomplete_install "$fxroute_home"
 
+INSTALLER_OVERRIDE_FILE="/var/lib/fxroute-armbian/installer-override.tar"
 staging_dir="$(mktemp -d "$BASE_DIR/source.XXXXXX")"
 tar --extract --file "$SOURCE_ARCHIVE" --directory "$staging_dir" --no-same-owner
 [[ -f "$staging_dir/install.sh" ]] || {
   printf '%s\n' "The FXRoute source archive does not contain install.sh" >&2
   exit 1
 }
+# Installer hotfix slot (no image rebuild): a root-staged override archive
+# replaces files from the baked source tree after extraction. Used to ship
+# installer fixes to already flashed first-boot systems.
+if [[ -f "$INSTALLER_OVERRIDE_FILE" && ! -L "$INSTALLER_OVERRIDE_FILE" ]]; then
+  tar --extract --file "$INSTALLER_OVERRIDE_FILE" --directory "$staging_dir" --no-same-owner --overwrite
+  [[ -f "$staging_dir/install.sh" ]] || {
+    printf '%s\n' "The installer override archive does not contain install.sh" >&2
+    exit 1
+  }
+fi
 rm -rf -- "$SOURCE_DIR"
 mv -- "$staging_dir" "$SOURCE_DIR"
 staging_dir=""
