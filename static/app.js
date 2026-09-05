@@ -481,6 +481,15 @@ const elements = {
     qobuzLoginFinishBtn: document.getElementById('qobuz-login-finish'),
     qobuzLoginCancelBtn: document.getElementById('qobuz-login-cancel'),
     qobuzLoginCloseBtn: document.getElementById('qobuz-login-close'),
+    tidalLoginPanel: document.getElementById('tidal-login-panel'),
+    tidalLoginUrl: document.getElementById('tidal-login-url'),
+    tidalLoginOpen: document.getElementById('tidal-login-open'),
+    tidalLoginCopy: document.getElementById('tidal-login-copy'),
+    tidalLoginRedirect: document.getElementById('tidal-login-redirect'),
+    tidalLoginStatus: document.getElementById('tidal-login-status'),
+    tidalLoginFinishBtn: document.getElementById('tidal-login-finish'),
+    tidalLoginCancelBtn: document.getElementById('tidal-login-cancel'),
+    tidalLoginCloseBtn: document.getElementById('tidal-login-close'),
     settingsMaintenanceStatus: document.getElementById('settings-maintenance-status'),
     settingsMaintenanceCurrent: document.getElementById('settings-maintenance-current'),
     settingsMaintenanceLatestRow: document.getElementById('settings-maintenance-latest-row'),
@@ -998,6 +1007,7 @@ document.addEventListener('DOMContentLoaded', () => {
             aboutHtml: detailAboutHtml,
             spotifyCommand,
             spotifySeek,
+            openTidalLogin: () => void beginTidalLogin(),
         });
     } catch(e) { console.error('streaming module initialization crashed:', e); }
     try { setupLibraryActions(); } catch(e) { console.error('setupLibraryActions crashed:', e); }
@@ -1469,6 +1479,7 @@ function setupSettingsActions() {
     const backdrop = elements.settingsPanel.querySelector('.manage-overlay-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => toggleSettingsPanel(false));
     setupQobuzLoginModal();
+    setupTidalLoginModal();
     renderSettingsPanel();
 }
 
@@ -2522,6 +2533,127 @@ function setupQobuzLoginModal() {
     // while completing the sign-in in another tab.
 }
 
+// TIDAL account login (browser PKCE handoff; same dialog flow as Qobuz)
+// ---------------------------------------------------------------------------
+
+async function beginTidalLogin() {
+    try {
+        const resp = await fetch('/api/streaming/tidal/auth/pkce', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Could not start the TIDAL login');
+        if (!data.url) throw new Error('TIDAL login did not return a sign-in URL');
+        openTidalLoginModal(data.url);
+    } catch (error) {
+        showToast(error.message || 'Could not start the TIDAL login', 'error');
+    }
+}
+
+const tidalLoginState = { loginUrl: '', finishing: false, wired: false };
+
+function setTidalLoginStatus(message, mode = '') {
+    if (!elements.tidalLoginStatus) return;
+    elements.tidalLoginStatus.textContent = message || '';
+    elements.tidalLoginStatus.classList.toggle('switching', mode === 'busy');
+}
+
+function setTidalLoginBusy(busy) {
+    tidalLoginState.finishing = !!busy;
+    if (elements.tidalLoginFinishBtn) elements.tidalLoginFinishBtn.disabled = !!busy;
+    if (elements.tidalLoginCancelBtn) elements.tidalLoginCancelBtn.disabled = !!busy;
+    if (elements.tidalLoginCloseBtn) elements.tidalLoginCloseBtn.disabled = !!busy;
+    if (elements.tidalLoginRedirect) elements.tidalLoginRedirect.disabled = !!busy;
+}
+
+function openTidalLoginModal(loginUrl) {
+    if (!elements.tidalLoginPanel) return;
+    tidalLoginState.loginUrl = String(loginUrl || '');
+    if (elements.tidalLoginUrl) elements.tidalLoginUrl.value = tidalLoginState.loginUrl;
+    if (elements.tidalLoginOpen) elements.tidalLoginOpen.href = tidalLoginState.loginUrl || '#';
+    if (elements.tidalLoginRedirect && document.activeElement !== elements.tidalLoginRedirect) {
+        elements.tidalLoginRedirect.value = '';
+    }
+    setTidalLoginBusy(false);
+    setTidalLoginStatus('Waiting for sign-in…');
+    elements.tidalLoginPanel.classList.remove('hidden');
+    // Same stacking as the Qobuz dialog: the PKCE flow keeps no server-side
+    // listener, but the operator still switches tabs to sign in; only
+    // explicit Cancel/Close ends the dialog.
+    window.FXRouteModal?.open(elements.tidalLoginPanel, {
+        initialFocus: elements.tidalLoginOpen,
+        onEscape: () => { if (!tidalLoginState.finishing) closeTidalLoginModal(); },
+    });
+}
+
+function closeTidalLoginModal() {
+    if (!elements.tidalLoginPanel) return;
+    elements.tidalLoginPanel.classList.add('hidden');
+    window.FXRouteModal?.close(elements.tidalLoginPanel);
+}
+
+async function copyTidalLoginUrl() {
+    const url = tidalLoginState.loginUrl || elements.tidalLoginUrl?.value || '';
+    if (!url) return;
+    try {
+        await navigator.clipboard.writeText(url);
+        showToast('Sign-in link copied.', 'success');
+    } catch (_error) {
+        try {
+            elements.tidalLoginUrl?.focus();
+            elements.tidalLoginUrl?.select();
+        } catch (_selectError) { /* input unavailable */ }
+        const ok = document.execCommand ? document.execCommand('copy') : false;
+        showToast(ok ? 'Sign-in link copied.' : 'Copy the sign-in URL manually.', ok ? 'success' : 'info');
+    }
+}
+
+async function finishTidalLoginFromModal() {
+    if (tidalLoginState.finishing) return;
+    const pasted = String(elements.tidalLoginRedirect?.value || '').trim();
+    if (!pasted || pasted === tidalLoginState.loginUrl) {
+        setTidalLoginStatus('Paste the redirect URL from the TIDAL sign-in tab, then press Connect.');
+        showToast('Paste the redirect URL first — the login is still waiting.', 'info');
+        elements.tidalLoginRedirect?.focus();
+        return;
+    }
+    setTidalLoginBusy(true);
+    setTidalLoginStatus('Completing the TIDAL login…', 'busy');
+    try {
+        const resp = await fetch('/api/streaming/tidal/auth/pkce/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ redirect_url: pasted }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'TIDAL login failed');
+        closeTidalLoginModal();
+        showToast('TIDAL connected', 'success');
+    } catch (error) {
+        setTidalLoginStatus(error.message || 'TIDAL login failed — check the pasted URL and try again.');
+        showToast(error.message || 'TIDAL login failed', 'error');
+    } finally {
+        setTidalLoginBusy(false);
+        void fetchProviderAdmin();
+        window.FXRouteStreaming?.refreshActiveTab?.();
+    }
+}
+
+function setupTidalLoginModal() {
+    if (tidalLoginState.wired || !elements.tidalLoginPanel) return;
+    tidalLoginState.wired = true;
+    elements.tidalLoginCopy?.addEventListener('click', () => void copyTidalLoginUrl());
+    elements.tidalLoginFinishBtn?.addEventListener('click', () => void finishTidalLoginFromModal());
+    elements.tidalLoginCancelBtn?.addEventListener('click', () => closeTidalLoginModal());
+    elements.tidalLoginCloseBtn?.addEventListener('click', () => closeTidalLoginModal());
+    elements.tidalLoginRedirect?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            void finishTidalLoginFromModal();
+        }
+    });
+    // Backdrop clicks must not cancel: the operator leaves this modal open
+    // while completing the sign-in in another tab.
+}
+
 async function qobuzLogout() {
     if (!confirm('Disconnect the Qobuz account? Playback stops until you sign in again. Your Qobuz library and favorites stay on your Qobuz account.')) return;
     try {
@@ -2654,9 +2786,7 @@ function renderProviderSettings() {
         button.addEventListener('click', () => {
             const provider = state.settings.providers.list.find((p) => p.id === 'tidal');
             if (provider && provider.enabled === false) setProviderEnabled('tidal', true);
-            toggleSettingsPanel(false);
-            switchTab('tidal');
-            window.FXRouteStreaming?.startTidalLogin?.(provider?.installed === true);
+            void beginTidalLogin();
         });
     });
     elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-logout]').forEach((button) => {

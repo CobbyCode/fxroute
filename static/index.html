@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.180">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.181">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -1444,6 +1444,54 @@
         </section>
     </div>
 
+    <div id="tidal-login-panel" class="manage-overlay tidal-login-overlay hidden">
+        <div class="manage-overlay-backdrop"></div>
+        <section class="manage-dialog" role="dialog" aria-modal="true" aria-labelledby="tidal-login-title">
+            <div class="manage-dialog-header dialog-header-corner-close">
+                <div>
+                    <h2 id="tidal-login-title" class="section-title">Connect TIDAL</h2>
+                    <p class="section-subtitle">Sign in via browser — this window stays open while you switch tabs.</p>
+                </div>
+                <button id="tidal-login-close" class="btn-ghost btn-close-manage" type="button" aria-label="Cancel TIDAL login">
+                    <span class="btn-ghost-icon">✕</span>
+                    <span class="dialog-close-label">Close</span>
+                </button>
+            </div>
+
+            <div class="effects-stack">
+                <section class="radio-manage-section">
+                    <div class="radio-manage-section-header">
+                        <h3>1. Open the TIDAL sign-in page</h3>
+                        <p>Open the link, sign in, then come back here. The running login keeps waiting.</p>
+                    </div>
+                    <div class="field-group">
+                        <label for="tidal-login-url">Sign-in URL</label>
+                        <input type="text" id="tidal-login-url" class="url-input" readonly autocomplete="off" spellcheck="false" />
+                    </div>
+                    <div class="radio-manage-submit-row radio-manage-submit-row-station-manage">
+                        <a id="tidal-login-open" class="btn-primary" href="#" target="_blank" rel="noopener noreferrer">Open TIDAL login</a>
+                        <button id="tidal-login-copy" class="btn-secondary" type="button">Copy link</button>
+                    </div>
+                </section>
+                <section class="radio-manage-section">
+                    <div class="radio-manage-section-header">
+                        <h3>2. Paste the redirect back here</h3>
+                        <p>After login, your browser may show an unreachable page. That is expected — copy the complete URL from the address bar, paste it below, then finish.</p>
+                    </div>
+                    <div class="field-group">
+                        <label for="tidal-login-redirect">Redirect URL</label>
+                        <input type="text" id="tidal-login-redirect" class="url-input" placeholder="https://tidal.com/android/login/auth?code=…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="url" />
+                    </div>
+                    <p id="tidal-login-status" class="settings-inline-note" aria-live="polite">Waiting for sign-in…</p>
+                    <div class="radio-manage-submit-row radio-manage-submit-row-station-manage">
+                        <button id="tidal-login-finish" class="btn-primary" type="button">Connect</button>
+                        <button id="tidal-login-cancel" class="btn-secondary" type="button">Cancel</button>
+                    </div>
+                </section>
+            </div>
+        </section>
+    </div>
+
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
@@ -1454,7 +1502,7 @@
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
     <script src="/static/measurement_flows.js?v=0.9.20"></script>
     <script src="/static/radio.js?v=0.9.18"></script>
-    <script src="/static/app.js?v=0.9.108"></script>
-    <script src="/static/streaming.js?v=0.9.59"></script>
+    <script src="/static/app.js?v=0.9.109"></script>
+    <script src="/static/streaming.js?v=0.9.60"></script>
 </body>
 </html>

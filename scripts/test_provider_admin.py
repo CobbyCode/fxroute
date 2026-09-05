@@ -405,5 +405,101 @@ class QobuzSetupCompletionTests(unittest.TestCase):
         self.assertNotIn("already installed", body)
 
 
+class TidalLoginParityTests(unittest.TestCase):
+    """TIDAL browser login must mirror the Qobuz login dialog flow.
+
+    Same dialog structure, same step order, same UI states (connect,
+    external sign-in, success, error, disconnect). Only the provider
+    endpoints differ; the PKCE/auth backend itself stays untouched.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.index = (ROOT / "static" / "index.html").read_text()
+        cls.app_js = (ROOT / "static" / "app.js").read_text()
+        cls.streaming_js = (ROOT / "static" / "streaming.js").read_text()
+        cls.main = (ROOT / "main.py").read_text()
+
+    def _panel(self, provider):
+        match = re.search(
+            rf'<div id="{provider}-login-panel".*?</section>\s*</div>',
+            self.index,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match, f"{provider} login panel is missing")
+        return match.group(0)
+
+    def test_login_panels_share_dialog_structure(self):
+        for panel in (self._panel("qobuz"), self._panel("tidal")):
+            for token in (
+                'class="manage-overlay-backdrop"',
+                'role="dialog"',
+                'class="effects-stack"',
+                'class="radio-manage-section"',
+                'class="url-input"',
+                'aria-live="polite">Waiting for sign-in…</p>',
+                ">Connect</button>",
+                ">Cancel</button>",
+            ):
+                self.assertIn(token, panel)
+        for element_id in (
+            "tidal-login-panel",
+            "tidal-login-title",
+            "tidal-login-close",
+            "tidal-login-url",
+            "tidal-login-open",
+            "tidal-login-copy",
+            "tidal-login-redirect",
+            "tidal-login-status",
+            "tidal-login-finish",
+            "tidal-login-cancel",
+        ):
+            self.assertIn(f'id="{element_id}"', self.index)
+
+    def test_tidal_modal_uses_pkce_endpoints_with_qobuz_states(self):
+        self.assertIn("fetch('/api/streaming/tidal/auth/pkce'", self.app_js)
+        self.assertIn("fetch('/api/streaming/tidal/auth/pkce/finish'", self.app_js)
+        self.assertIn("body: JSON.stringify({ redirect_url: pasted })", self.app_js)
+        for token in (
+            "setTidalLoginStatus('Waiting for sign-in…')",
+            "setTidalLoginStatus('Completing the TIDAL login…', 'busy')",
+            "showToast('TIDAL connected', 'success')",
+            "showToast('Sign-in link copied.', 'success')",
+        ):
+            self.assertIn(token, self.app_js)
+        # Enter commits, Cancel/Close only close: PKCE keeps no cancelable
+        # server listener, unlike the qbzd one-shot process.
+        self.assertIn("void finishTidalLoginFromModal()", self.app_js)
+        self.assertIn(
+            "elements.tidalLoginCancelBtn?.addEventListener('click', () => closeTidalLoginModal())",
+            self.app_js,
+        )
+
+    def test_settings_connect_opens_tidal_modal(self):
+        match = re.search(
+            r"querySelectorAll\('\[data-provider-tidal-login\]'\)(.*?)querySelectorAll\('\[data-provider-tidal-logout\]'\)",
+            self.app_js,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        self.assertIn("void beginTidalLogin()", match.group(1))
+        self.assertNotIn("switchTab('tidal')", match.group(1))
+        self.assertIn("openTidalLogin: () => void beginTidalLogin()", self.app_js)
+
+    def test_tab_primary_login_routes_to_modal_and_keeps_device_flow(self):
+        self.assertIn("api.openTidalLogin", self.streaming_js)
+        self.assertIn("renderTidalDevice", self.streaming_js)
+        self.assertIn("renderTidalPkce", self.streaming_js)
+
+    def test_tidal_auth_backend_is_untouched(self):
+        for token in (
+            "async def api_tidal_pkce_login_url",
+            "async def api_tidal_finish_pkce_login",
+            "async def api_tidal_logout",
+            "finish_pkce_login(redirect_url)",
+        ):
+            self.assertIn(token, self.main)
+
+
 if __name__ == "__main__":
     unittest.main()
