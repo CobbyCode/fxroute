@@ -481,6 +481,15 @@ const elements = {
     qobuzLoginFinishBtn: document.getElementById('qobuz-login-finish'),
     qobuzLoginCancelBtn: document.getElementById('qobuz-login-cancel'),
     qobuzLoginCloseBtn: document.getElementById('qobuz-login-close'),
+    tidalLoginPanel: document.getElementById('tidal-login-panel'),
+    tidalLoginUrl: document.getElementById('tidal-login-url'),
+    tidalLoginOpen: document.getElementById('tidal-login-open'),
+    tidalLoginCopy: document.getElementById('tidal-login-copy'),
+    tidalLoginRedirect: document.getElementById('tidal-login-redirect'),
+    tidalLoginStatus: document.getElementById('tidal-login-status'),
+    tidalLoginFinishBtn: document.getElementById('tidal-login-finish'),
+    tidalLoginCancelBtn: document.getElementById('tidal-login-cancel'),
+    tidalLoginCloseBtn: document.getElementById('tidal-login-close'),
     settingsMaintenanceStatus: document.getElementById('settings-maintenance-status'),
     settingsMaintenanceCurrent: document.getElementById('settings-maintenance-current'),
     settingsMaintenanceLatestRow: document.getElementById('settings-maintenance-latest-row'),
@@ -998,6 +1007,7 @@ document.addEventListener('DOMContentLoaded', () => {
             aboutHtml: detailAboutHtml,
             spotifyCommand,
             spotifySeek,
+            openTidalLogin: () => void beginTidalLogin(),
         });
     } catch(e) { console.error('streaming module initialization crashed:', e); }
     try { setupLibraryActions(); } catch(e) { console.error('setupLibraryActions crashed:', e); }
@@ -1469,6 +1479,7 @@ function setupSettingsActions() {
     const backdrop = elements.settingsPanel.querySelector('.manage-overlay-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => toggleSettingsPanel(false));
     setupQobuzLoginModal();
+    setupTidalLoginModal();
     renderSettingsPanel();
 }
 
@@ -2522,6 +2533,127 @@ function setupQobuzLoginModal() {
     // while completing the sign-in in another tab.
 }
 
+// TIDAL account login (browser PKCE handoff; same dialog flow as Qobuz)
+// ---------------------------------------------------------------------------
+
+async function beginTidalLogin() {
+    try {
+        const resp = await fetch('/api/streaming/tidal/auth/pkce', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Could not start the TIDAL login');
+        if (!data.url) throw new Error('TIDAL login did not return a sign-in URL');
+        openTidalLoginModal(data.url);
+    } catch (error) {
+        showToast(error.message || 'Could not start the TIDAL login', 'error');
+    }
+}
+
+const tidalLoginState = { loginUrl: '', finishing: false, wired: false };
+
+function setTidalLoginStatus(message, mode = '') {
+    if (!elements.tidalLoginStatus) return;
+    elements.tidalLoginStatus.textContent = message || '';
+    elements.tidalLoginStatus.classList.toggle('switching', mode === 'busy');
+}
+
+function setTidalLoginBusy(busy) {
+    tidalLoginState.finishing = !!busy;
+    if (elements.tidalLoginFinishBtn) elements.tidalLoginFinishBtn.disabled = !!busy;
+    if (elements.tidalLoginCancelBtn) elements.tidalLoginCancelBtn.disabled = !!busy;
+    if (elements.tidalLoginCloseBtn) elements.tidalLoginCloseBtn.disabled = !!busy;
+    if (elements.tidalLoginRedirect) elements.tidalLoginRedirect.disabled = !!busy;
+}
+
+function openTidalLoginModal(loginUrl) {
+    if (!elements.tidalLoginPanel) return;
+    tidalLoginState.loginUrl = String(loginUrl || '');
+    if (elements.tidalLoginUrl) elements.tidalLoginUrl.value = tidalLoginState.loginUrl;
+    if (elements.tidalLoginOpen) elements.tidalLoginOpen.href = tidalLoginState.loginUrl || '#';
+    if (elements.tidalLoginRedirect && document.activeElement !== elements.tidalLoginRedirect) {
+        elements.tidalLoginRedirect.value = '';
+    }
+    setTidalLoginBusy(false);
+    setTidalLoginStatus('Waiting for sign-in…');
+    elements.tidalLoginPanel.classList.remove('hidden');
+    // Same stacking as the Qobuz dialog: the PKCE flow keeps no server-side
+    // listener, but the operator still switches tabs to sign in; only
+    // explicit Cancel/Close ends the dialog.
+    window.FXRouteModal?.open(elements.tidalLoginPanel, {
+        initialFocus: elements.tidalLoginOpen,
+        onEscape: () => { if (!tidalLoginState.finishing) closeTidalLoginModal(); },
+    });
+}
+
+function closeTidalLoginModal() {
+    if (!elements.tidalLoginPanel) return;
+    elements.tidalLoginPanel.classList.add('hidden');
+    window.FXRouteModal?.close(elements.tidalLoginPanel);
+}
+
+async function copyTidalLoginUrl() {
+    const url = tidalLoginState.loginUrl || elements.tidalLoginUrl?.value || '';
+    if (!url) return;
+    try {
+        await navigator.clipboard.writeText(url);
+        showToast('Sign-in link copied.', 'success');
+    } catch (_error) {
+        try {
+            elements.tidalLoginUrl?.focus();
+            elements.tidalLoginUrl?.select();
+        } catch (_selectError) { /* input unavailable */ }
+        const ok = document.execCommand ? document.execCommand('copy') : false;
+        showToast(ok ? 'Sign-in link copied.' : 'Copy the sign-in URL manually.', ok ? 'success' : 'info');
+    }
+}
+
+async function finishTidalLoginFromModal() {
+    if (tidalLoginState.finishing) return;
+    const pasted = String(elements.tidalLoginRedirect?.value || '').trim();
+    if (!pasted || pasted === tidalLoginState.loginUrl) {
+        setTidalLoginStatus('Paste the redirect URL from the TIDAL sign-in tab, then press Connect.');
+        showToast('Paste the redirect URL first — the login is still waiting.', 'info');
+        elements.tidalLoginRedirect?.focus();
+        return;
+    }
+    setTidalLoginBusy(true);
+    setTidalLoginStatus('Completing the TIDAL login…', 'busy');
+    try {
+        const resp = await fetch('/api/streaming/tidal/auth/pkce/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ redirect_url: pasted }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'TIDAL login failed');
+        closeTidalLoginModal();
+        showToast('TIDAL connected', 'success');
+    } catch (error) {
+        setTidalLoginStatus(error.message || 'TIDAL login failed — check the pasted URL and try again.');
+        showToast(error.message || 'TIDAL login failed', 'error');
+    } finally {
+        setTidalLoginBusy(false);
+        void fetchProviderAdmin();
+        window.FXRouteStreaming?.refreshActiveTab?.();
+    }
+}
+
+function setupTidalLoginModal() {
+    if (tidalLoginState.wired || !elements.tidalLoginPanel) return;
+    tidalLoginState.wired = true;
+    elements.tidalLoginCopy?.addEventListener('click', () => void copyTidalLoginUrl());
+    elements.tidalLoginFinishBtn?.addEventListener('click', () => void finishTidalLoginFromModal());
+    elements.tidalLoginCancelBtn?.addEventListener('click', () => closeTidalLoginModal());
+    elements.tidalLoginCloseBtn?.addEventListener('click', () => closeTidalLoginModal());
+    elements.tidalLoginRedirect?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            void finishTidalLoginFromModal();
+        }
+    });
+    // Backdrop clicks must not cancel: the operator leaves this modal open
+    // while completing the sign-in in another tab.
+}
+
 async function qobuzLogout() {
     if (!confirm('Disconnect the Qobuz account? Playback stops until you sign in again. Your Qobuz library and favorites stay on your Qobuz account.')) return;
     try {
@@ -2578,6 +2710,13 @@ function providerAdminButtonHtml(provider) {
             // re-read a (restored) credential file without SSH and acts as
             // Start on an inactive unit. Only show it while qbzd is down.
             if (!provider.available) {
+                // Binary present but daemon never set up (manually placed
+                // binary or interrupted install): route through the regular
+                // installer run, which adopts the binary, pins the volume
+                // contract, creates/starts the user service and records the
+                // install state. Install is otherwise only offered while not
+                // installed, which dead-ends exactly this state.
+                buttons.push(`<button type="button" class="btn-primary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>Complete setup…</button>`);
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-service="restart" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Restart</button>`);
             }
         } else if (provider.id !== 'spotify') {
@@ -2647,9 +2786,7 @@ function renderProviderSettings() {
         button.addEventListener('click', () => {
             const provider = state.settings.providers.list.find((p) => p.id === 'tidal');
             if (provider && provider.enabled === false) setProviderEnabled('tidal', true);
-            toggleSettingsPanel(false);
-            switchTab('tidal');
-            window.FXRouteStreaming?.startTidalLogin?.(provider?.installed === true);
+            void beginTidalLogin();
         });
     });
     elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-logout]').forEach((button) => {
@@ -3275,6 +3412,12 @@ function getBackendFooterOwner(playback = state.playback) {
 
 function getEffectivePlaybackControlSource() {
     const backendOwner = getBackendFooterOwner();
+    // Transport follows the same stale-commit override as the footer itself:
+    // with live qbzd playback and no live spotify playback, the controls
+    // must drive qobuz even when the cached commit still names spotify.
+    if (backendOwner === 'spotify' && qobuzPlayingOwnsFooter() && !spotifyPlayingOwnsFooter()) {
+        return 'qobuz';
+    }
     if (backendOwner) return backendOwner;
     if (spotifyPlayingOwnsFooter()) return 'spotify';
     if (localPlaybackHasFooterContext(state.playback) || localEndedPlaybackHasFooterContext(state.playback)) return 'local';
@@ -4333,6 +4476,16 @@ function spotifyPausedHasFooterContext(data = window.__spotifyLastData) {
     return !!(data && data.available && data.status === 'Paused');
 }
 
+// Live-qobuz counterpart to spotifyPlayingOwnsFooter: the shared footer must
+// be able to reach qobuz from live provider truth, not only from the cached
+// backend commit. The guards mirror Spotify's: an imminent local single-track
+// start and actually-playing local MPV playback keep the footer.
+function qobuzPlayingOwnsFooter(data = window.__qobuzLastData) {
+    if (footerSingleTrackStartLockActive()) return false;
+    if (activeLocalPlaybackBlocksSpotifyOwnership()) return false;
+    return !!(data && data.available && data.status === 'Playing');
+}
+
 function localFooterHoldHasContext(playback = state.playback) {
     const track = playback?.current_track;
     if (!(track && (track.source === 'radio' || track.source === 'local'))) return false;
@@ -4346,6 +4499,15 @@ function reconcileFooterSource() {
         return;
     }
     if (backendOwner === 'spotify') {
+        // A cached spotify commit is stale when live qbzd playback runs while
+        // spotify itself is not playing (missed owner broadcast while an
+        // external renderer owned playback): the actually playing renderer
+        // owns the shared footer. A live-playing spotify keeps commit
+        // priority, mirroring the backend read-only order (spotify>qobuz).
+        if (qobuzPlayingOwnsFooter() && !spotifyPlayingOwnsFooter()) {
+            setFooterSource('qobuz', 'qobuz-playing-overrides-stale-spotify-commit');
+            return;
+        }
         setFooterSource('spotify', 'backend-footer-owner-spotify');
         return;
     }
@@ -4355,6 +4517,10 @@ function reconcileFooterSource() {
     }
     if (spotifyPlayingOwnsFooter()) {
         setFooterSource('spotify', 'spotify-playing');
+        return;
+    }
+    if (qobuzPlayingOwnsFooter()) {
+        setFooterSource('qobuz', 'qobuz-playing');
         return;
     }
     if (Date.now() < _spotifyTakeoverUntil) {
@@ -4410,6 +4576,12 @@ function syncFooterOwnershipFromPlayback(playback = state.playback) {
         return;
     }
     if (backendOwner === 'spotify') {
+        // Same stale-commit override as reconcileFooterSource: live qbzd
+        // playback while spotify is not playing wins over the cached commit.
+        if (qobuzPlayingOwnsFooter() && !spotifyPlayingOwnsFooter()) {
+            setFooterSource('qobuz', 'sync-playback-qobuz-overrides-stale-spotify-commit');
+            return;
+        }
         setFooterSource('spotify', 'sync-playback-backend-owner-spotify');
         return;
     }
@@ -4419,6 +4591,10 @@ function syncFooterOwnershipFromPlayback(playback = state.playback) {
     }
     if (spotifyPlayingOwnsFooter()) {
         setFooterSource('spotify', 'sync-playback-spotify-still-playing');
+        return;
+    }
+    if (qobuzPlayingOwnsFooter()) {
+        setFooterSource('qobuz', 'sync-playback-qobuz-playing');
         return;
     }
     if (localPlaybackHasFooterContext(playback)) {

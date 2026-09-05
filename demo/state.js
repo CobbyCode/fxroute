@@ -55,13 +55,24 @@
     // Radio streams have no finite track duration in the normal FXRoute UI.
 
     // ── Shared mutable DSP hooks (set by routes.js) ─────────────────────
-    let dspHeadroom = 0; // negative dB applied to the meter sim
+    // The meter sim applies a single audible offset (dB): preset gain plus
+    // the enabled tone extras. The protection limiter never raises the
+    // level; it only clamps peaks that would exceed its threshold.
+    let dspMeterOffsetDb = 0;
+    let dspLimiterThresholdDb = -1;
+    let dspLimiterEnabled = true;
     let dspExtras = {};
     let dspPresets = [];
     let dspActivePreset = 'Direct';
 
-    function setDspSnapshot({ headroomDb, extras, presets, activePreset }) {
-        dspHeadroom = Number(headroomDb || 0);
+    function setDspSnapshot({ meterOffsetDb, limiterThresholdDb, limiterEnabled, extras, presets, activePreset }) {
+        dspMeterOffsetDb = Number(meterOffsetDb || 0);
+        if (limiterThresholdDb !== undefined && limiterThresholdDb !== null) {
+            dspLimiterThresholdDb = Number(limiterThresholdDb);
+        }
+        if (limiterEnabled !== undefined && limiterEnabled !== null) {
+            dspLimiterEnabled = !!limiterEnabled;
+        }
         dspExtras = extras || {};
         dspPresets = presets || [];
         dspActivePreset = activePreset || 'Direct';
@@ -87,32 +98,47 @@
 
     const meter = { vu_db_l: -60, vu_db_r: -60, vu_fresh: false };
     function peakSnapshot() {
+        const limiting = dspLimiterEnabled && (meter.vu_db_l >= dspLimiterThresholdDb || meter.vu_db_r >= dspLimiterThresholdDb);
+        const over = meter.vu_db_l > 0 || meter.vu_db_r > 0;
+        const detected = !!(meter.vu_fresh && (limiting || over));
         return {
             available: true,
-            detected: false,
-            hold_ms: 0,
+            detected,
+            hold_ms: detected ? 500 : 0,
             threshold: 1.0,
             vu_db: (meter.vu_db_l + meter.vu_db_r) / 2,
             vu_db_l: meter.vu_db_l,
             vu_db_r: meter.vu_db_r,
-            detected_l: false,
-            detected_r: false,
-            hold_ms_l: 0,
-            hold_ms_r: 0,
+            detected_l: !!(meter.vu_fresh && (over || (dspLimiterEnabled && meter.vu_db_l >= dspLimiterThresholdDb))),
+            detected_r: !!(meter.vu_fresh && (over || (dspLimiterEnabled && meter.vu_db_r >= dspLimiterThresholdDb))),
+            hold_ms_l: detected ? 500 : 0,
+            hold_ms_r: detected ? 500 : 0,
             vu_fresh: !!meter.vu_fresh,
             vu_age_ms: 200,
             target: { description: 'DSP output monitor' },
-            last_over_at: null,
-            last_over_at_l: null,
-            last_over_at_r: null,
+            last_over_at: detected ? new Date().toISOString() : null,
+            last_over_at_l: detected ? new Date().toISOString() : null,
+            last_over_at_r: detected ? new Date().toISOString() : null,
             last_error: null,
         };
     }
 
     setInterval(() => {
         if (playing && !paused && currentTrack) {
-            meter.vu_db_l = -20 + Math.random() * 14 - Math.abs(dspHeadroom);
-            meter.vu_db_r = -20 + Math.random() * 14 - Math.abs(dspHeadroom);
+            // Audible chain, deliberately small and clamped: the base program
+            // sits around -13 dB so Direct stays green, +3 dB approaches the
+            // limiter threshold and +6 dB regularly exceeds it.
+            let levelL = -20 + Math.random() * 14 + dspMeterOffsetDb;
+            let levelR = -20 + Math.random() * 14 + dspMeterOffsetDb;
+            if (dspLimiterEnabled && Number.isFinite(dspLimiterThresholdDb)) {
+                levelL = Math.min(levelL, dspLimiterThresholdDb + Math.random() * 1.5);
+                levelR = Math.min(levelR, dspLimiterThresholdDb + Math.random() * 1.5);
+            } else {
+                levelL = Math.min(levelL, 3);
+                levelR = Math.min(levelR, 3);
+            }
+            meter.vu_db_l = Math.round(levelL * 10) / 10;
+            meter.vu_db_r = Math.round(levelR * 10) / 10;
             meter.vu_fresh = true;
         } else {
             meter.vu_db_l = -60;
@@ -759,9 +785,10 @@
     qobuz.lastTick = Date.now();
 
     // ── Measurements ────────────────────────────────────────────────────
-    // Seeded with four real saved measurements (demo/data/measurements.js);
-    // new demo sweeps reuse those real datasets (rotating Sweep 1-4) so the
-    // simulated result renders exactly like the saved measurements.
+    // Seeded with real saved measurements from .104
+    // (demo/data/measurements.js); new demo sweeps reuse those real
+    // datasets by name so the simulated result renders exactly like the
+    // saved measurements.
     const savedMeasurementFixtures = (window.FXROUTE_DEMO_MEASUREMENTS
         && Array.isArray(window.FXROUTE_DEMO_MEASUREMENTS.savedMeasurements)
         ? window.FXROUTE_DEMO_MEASUREMENTS.savedMeasurements
@@ -772,14 +799,34 @@
     let lastJobId = 0;
     const jobs = Object.create(null);
 
-    // Fixture roles: index 0 = left sweep, 1/2 = right sweeps, 3 = hybrid L.
+    // Fixture roles follow the .104 measurement names: plain single sweeps
+    // by channel, close-mic repeats as L/R-repeat sources, convolver
+    // captures as filter Before/Reference slots.
+    function fixtureByName(match, channel) {
+        const normalized = String(channel || '').toLowerCase();
+        return savedMeasurementFixtures.find((fixture) => {
+            if (normalized && String(fixture.channel || '').toLowerCase() !== normalized
+                && String(fixture.channel || '').toLowerCase() !== 'stereo') return false;
+            return match.test(String(fixture.name || ''));
+        }) || null;
+    }
     function fixtureForChannel(channel) {
         const normalized = String(channel || 'left').toLowerCase();
         if (!savedMeasurementFixtures.length) return null;
         if (normalized === 'right') {
-            return savedMeasurementFixtures[1] || savedMeasurementFixtures[0];
+            return fixtureByName(/Sweep-R-Raw/, 'right')
+                || fixtureByName(/Raw/, 'right')
+                || savedMeasurementFixtures[1]
+                || savedMeasurementFixtures[0];
         }
-        return savedMeasurementFixtures[0];
+        return fixtureByName(/Sweep-L-Raw/, 'left')
+            || fixtureByName(/Raw/, 'left')
+            || savedMeasurementFixtures[0];
+    }
+    function fixtureForRepeat(channel) {
+        const normalized = String(channel || 'left').toLowerCase();
+        return fixtureByName(/Close/, normalized)
+            || fixtureForChannel(normalized);
     }
 
     function makeComplexResponse(tracePoints, count = 160, maxHz = 2000) {
@@ -917,9 +964,27 @@
         const name = opts.name || 'Demo Measurement ' + measurementSeq;
         const created = new Date(Date.now() - (opts.createdOffsetMs || 0)).toISOString();
         if (savedMeasurementFixtures.length) {
-            const source = (opts.channel && String(opts.channel).toLowerCase() === 'right')
-                ? fixtureForChannel('right')
-                : savedMeasurementFixtures[sweepFixtureIndex % savedMeasurementFixtures.length];
+            const role = String(opts.role || '').toLowerCase();
+            const channel = String(opts.channel || 'left').toLowerCase();
+            let source = null;
+            if (role === 'direct') {
+                source = fixtureByName(/Close/, channel) || fixtureForChannel(channel);
+            } else if (role === 'mlp' || role === 'secondary') {
+                source = fixtureByName(/Convolver/, channel) || fixtureForChannel(channel);
+            } else if (role === 'integration') {
+                source = fixtureByName(/L\/R-Convolver/, 'stereo')
+                    || fixtureByName(/L\/R-Raw/, 'stereo')
+                    || fixtureForChannel(channel);
+            } else if (channel === 'right') {
+                source = fixtureForChannel('right');
+            } else if (channel === 'stereo') {
+                source = fixtureByName(/L\/R-Raw/, 'stereo') || fixtureForChannel('left');
+            } else {
+                const singles = savedMeasurementFixtures.filter((fixture) =>
+                    /Sweep-.*-Raw/.test(String(fixture.name || '')) && String(fixture.channel || '').toLowerCase() === 'left');
+                const pool = singles.length ? singles : savedMeasurementFixtures;
+                source = pool[sweepFixtureIndex % pool.length];
+            }
             sweepFixtureIndex += 1;
             const measurement = prepareFixtureMeasurement(source, opts);
             measurement.id = id;
@@ -1053,8 +1118,8 @@
             job.timer = null;
             job.status = 'completed';
             job.message = 'L/R repeat finished. Review the combined L and R results, then save them together.';
-            const left = buildLrRepeatSummary(baseName, fixtureForChannel('left'), 'left');
-            const right = buildLrRepeatSummary(baseName, fixtureForChannel('right'), 'right');
+            const left = buildLrRepeatSummary(baseName, fixtureForRepeat('left'), 'left');
+            const right = buildLrRepeatSummary(baseName, fixtureForRepeat('right'), 'right');
             job.result = {
                 measurements: [left, right],
                 base_name: baseName,

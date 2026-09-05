@@ -834,7 +834,13 @@
                     '<button type="button" class="btn-ghost" id="tidal-auth-device">Device login (limited to AAC 320 kbps)</button>' +
                 '</div>' +
             '</div>';
-        content.querySelector('#tidal-auth-pkce').addEventListener('click', () => { state.tidal.view = 'pkce'; renderTidalPkce(content); });
+        content.querySelector('#tidal-auth-pkce').addEventListener('click', () => {
+            // Primary browser login lives in the shared provider login dialog
+            // (same flow as Qobuz); the embedded form below stays as the
+            // fallback when the dialog bridge is unavailable.
+            if (typeof api.openTidalLogin === 'function') { api.openTidalLogin(); return; }
+            state.tidal.view = 'pkce'; renderTidalPkce(content);
+        });
         content.querySelector('#tidal-auth-device').addEventListener('click', () => { state.tidal.view = 'device'; renderTidalDevice(content); });
     }
 
@@ -973,6 +979,9 @@
             if (state.tidal.contentKey !== 'browse') void refreshTidalStatus();
             return;
         }
+        // Same dialog flow as Qobuz; the embedded tab form stays as the
+        // fallback when the dialog bridge is unavailable.
+        if (typeof api.openTidalLogin === 'function') { api.openTidalLogin(); return; }
         state.tidal.view = null;
         if (entry) renderTidalLogin(entry);
     }

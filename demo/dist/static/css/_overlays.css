@@ -92,19 +92,22 @@
     gap: 0.72rem;
 }
 .radio-manage-submit-row-station-manage {
-    justify-content: flex-start;
+    justify-content: center;
     gap: 0.6rem;
     flex-wrap: wrap;
     margin-top: 0.85rem;
 }
-/* Qobuz/qbzd login stacks above the settings dialog it is launched from. */
-.qobuz-login-overlay {
+/* Qobuz/qbzd and TIDAL logins stack above the settings dialog they are launched from. */
+.qobuz-login-overlay,
+.tidal-login-overlay {
     z-index: calc(var(--z-overlay) + 10);
 }
-.qobuz-login-overlay .url-input {
+.qobuz-login-overlay .url-input,
+.tidal-login-overlay .url-input {
     width: 100%;
 }
-.qobuz-login-overlay a.btn-primary {
+.qobuz-login-overlay a.btn-primary,
+.tidal-login-overlay a.btn-primary {
     text-decoration: none;
     display: inline-flex;
     align-items: center;

@@ -224,6 +224,27 @@ assert.match(streamingSource, /Spotify is not running/);
 assert.match(streamingSource, /Nothing is playing/);
 assert.match(routesSource, /id: 'spotify'[\s\S]*authenticated: true[\s\S]*connected: true/);
 assert.match(routesSource, /id: 'tidal'[\s\S]*authenticated: true[\s\S]*connected: true/);
+// Demo DSP stock mirrors .104: the +3/+6 dB entries are real selectable
+// filter presets (no headroom), the convolver kernels ship as presets +
+// IRs, and the limiter default matches .104 (on, -1 dB).
+assert.match(routesSource, /presetEntry\('\+3'\)/);
+assert.match(routesSource, /presetEntry\('\+6'\)/);
+assert.match(routesSource, /Conv LR MinAlign Harman 30-300Hz -7dB/);
+assert.match(routesSource, /Conv LR HybAlign BK 30-3000Hz -7dB/);
+assert.doesNotMatch(routesSource, /Room Curve/);
+assert.doesNotMatch(routesSource, /Vocal Boost/);
+assert.match(routesSource, /thresholdDb: -1\.0/);
+assert.match(routesSource, /presetMeterGainDb/);
+assert.match(routesSource, /demoMeterOffsetDb/);
+assert.doesNotMatch(routesSource, /Math\.abs\(dspHeadroom\)/);
+assert.match(routesSource, /\/api\/dsp\/extras' && !post/);
+assert.match(routesSource, /\/api\/streaming\/providers\/admin/);
+assert.match(routesSource, /\/api\/system\/device-name/);
+assert.match(routesSource, /\/api\/streaming\/qobuz\/auth\/login/);
+assert.match(routesSource, /\/api\/measurements\/calibrations\/active/);
+assert.match(htmlSource, /id="tidal-login-panel"/);
+assert.match(htmlSource, /id="qobuz-login-panel"/);
+assert.match(htmlSource, /id="settings-device-name-apply"/);
 
 (async () => {
     const capabilities = await (await demoFetch('/api/system/power')).json();
@@ -378,6 +399,25 @@ const radio = state.getPlayback();
     assert.ok(outputs.output_mode.derived_sub2_delay_ms > 0);
 
     // ── Measurement simulation contract ─────────────────────────────────
+    // Fixtures are the current .104 stock, assigned by name: plain Raw
+    // sweeps per channel, Close-mic repeats as direct/L-R sources,
+    // Convolver captures as mlp/secondary slots, stereo captures as the
+    // integration slot, plus hybrid models, repeat summaries and the
+    // auto-sub Before/After pair.
+    const savedNames = context.FXROUTE_DEMO_MEASUREMENTS.savedMeasurements.map(m => m.name);
+    for (const expected of ['Sweep-L-Raw', 'Sweep-R-Raw', 'Sweep-L/R-Raw',
+        'Sweep-L-Convolver', 'Sweep-R-Convolver', 'Sweep-L/R-Convolver',
+        'Sweep-Close-L-1', 'Sweep-Close-R-1',
+        'Advanced 2.2 Mono · L', 'Advanced 2.2 Mono · R',
+        'Auto-Sub-Optimize-2.2 Before L', 'Auto-Sub-Optimize-2.2 Before R',
+        'Auto-Sub-Optimize-2.2 After L', 'Auto-Sub-Optimize-2.2 After R']) {
+        assert.ok(savedNames.includes(expected), 'demo fixtures must include ' + expected);
+    }
+    assert.ok(savedNames.some(name => /^L\/R Repeat .* · L$/.test(name)));
+    assert.ok(savedNames.some(name => /^L\/R Repeat .* · R$/.test(name)));
+    const autosubKinds = new Set(context.FXROUTE_DEMO_MEASUREMENTS.savedMeasurements
+        .filter(m => /Auto-Sub/.test(m.name)).map(m => m.measurement_kind));
+    assert.deepEqual([...autosubKinds], ['auto_sub']);
     const directLeft = state.makeMeasurement({ role: 'direct', channel: 'left', id: 'demo_direct_l' });
     assert.equal(directLeft.analysis.direct_response.usable, true);
     assert.ok(directLeft.analysis.direct_response.points.length > 0);
@@ -411,6 +451,35 @@ const radio = state.getPlayback();
     const lrPoll = state.jobPayload(lrJobId);
     assert.equal(lrPoll.job_kind, 'lr-repeat');
     assert.match(lrPoll.message, /L\/R repeat/);
+
+    // ── Playback meter simulation contract ──────────────────────────────
+    // Only the audible chain moves the visible level: +3/+6 dB filter
+    // presets (real presets, no headroom), autogain, loudness, bass
+    // enhancer; the protection limiter only clamps into limiting. The
+    // snapshot flags limiting (level at/above the -1 dB threshold) and
+    // clipping (above 0 dB), so Direct at -13 dB stays clean while a hot
+    // +6 dB program into the limiter trips detection.
+    state.playLocal(state.localTracks[0].id);
+    const meterOf = () => state.getPeak();
+    await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: 'Direct' }) })).json();
+    state.getMeter().vu_db_l = -13; state.getMeter().vu_db_r = -13; state.getMeter().vu_fresh = true;
+    assert.equal(meterOf().detected, false);
+    await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: '+6' }) })).json();
+    state.getMeter().vu_db_l = 0.5; state.getMeter().vu_db_r = 0.5; state.getMeter().vu_fresh = true;
+    assert.equal(meterOf().detected, true);
+    state.getMeter().vu_db_l = -0.5; state.getMeter().vu_db_r = -0.5; state.getMeter().vu_fresh = true;
+    assert.equal(meterOf().detected, true);
+    await (await demoFetch('/api/dsp/extras', { method: 'POST', body: JSON.stringify({ loudnessEnabled: true, loudnessStrength: 10 }) })).json();
+    const loudExtras = await (await demoFetch('/api/dsp/presets')).json();
+    assert.equal(loudExtras.global_extras.loudness.enabled, true);
+    await (await demoFetch('/api/dsp/extras', { method: 'POST', body: JSON.stringify({ loudnessEnabled: false }) })).json();
+    await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: 'Direct' }) })).json();
+    state.getMeter().vu_db_l = -13; state.getMeter().vu_db_r = -13; state.getMeter().vu_fresh = true;
+    assert.equal(meterOf().detected, false);
+    const dspAfterMeter = await (await demoFetch('/api/dsp/presets')).json();
+    assert.ok(dspAfterMeter.presets.some(p => p.name === '+3'));
+    assert.ok(dspAfterMeter.presets.some(p => p.name === '+6'));
+    assert.equal(dspAfterMeter.active_preset, 'Direct');
 
     const splGet = await (await demoFetch('/api/measurements/spl-calibration')).json();
     assert.equal(splGet.automatic.available, true);

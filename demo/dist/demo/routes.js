@@ -27,33 +27,72 @@
     };
 
     // ── DSP state ───────────────────────────────────────────────────────
+    // Mirrors the .104 preset stock: the empty Direct/Neutral chains, the
+    // +3/+6 dB filter presets (real selectable presets, no headroom), the
+    // PEQ/Combo chains and the four convolver kernels. Active preset and
+    // limiter default match .104 (Conv LR MinAlign Harman 30-300Hz -7dB,
+    // limiter on at -1 dB).
+    function presetEntry(name, extra) {
+        return { name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], ...(extra || {}) };
+    }
     let dspPresets = [
-        { name: 'Direct', filename: 'Direct.json', path: '/demo/presets/Direct.json', source_presets: [] },
-        { name: 'Neutral', filename: 'Neutral.json', path: '/demo/presets/Neutral.json', source_presets: [] },
-        { name: 'Room Curve', filename: 'Room-Curve.json', path: '/demo/presets/Room-Curve.json', source_presets: [] },
-        { name: 'PEQ — Vocal Boost', filename: 'PEQ-Vocal-Boost.json', path: '/demo/presets/PEQ-Vocal-Boost.json', source_presets: [] },
+        presetEntry('Direct'),
+        presetEntry('Neutral'),
+        presetEntry('+3'),
+        presetEntry('+6'),
+        presetEntry('Combo', { source_presets: ['+3', 'PEQ', 'Conv LR HybAlign BK 30-3000Hz -7dB'] }),
+        presetEntry('Conv LR HybAlign BK 30-10000Hz -7dB', { convolver: true }),
+        presetEntry('Conv LR HybAlign BK 30-12000Hz -7dB', { convolver: true }),
+        presetEntry('Conv LR HybAlign BK 30-3000Hz -7dB', { convolver: true }),
+        presetEntry('Conv LR MinAlign Harman 30-300Hz -7dB', { convolver: true }),
+        presetEntry('PEQ', { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } }),
     ];
-    let dspActivePreset = 'Direct';
+    let dspActivePreset = 'Conv LR MinAlign Harman 30-300Hz -7dB';
     let dspExtras = {
-        limiter: { enabled: false, params: {} },
+        limiter: { enabled: true, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
         headroom: { enabled: false, params: { gainDb: -3 } },
         delay: { enabled: false, params: { leftMs: 0, rightMs: 0 } },
-        bass_enhancer: { enabled: false, params: { amount: 0 } },
-        autogain: { enabled: false, params: { targetDb: -12 } },
-        loudness: { enabled: false, params: { strength: 10, fftSize: 4096, volumeDb: 0 } },
+        bass_enhancer: { enabled: false, params: { amount: 0, harmonics: 8.5, scope: 100.0, blend: 0.0 } },
+        autogain: { enabled: false, params: { targetDb: -18 } },
+        loudness: { enabled: false, params: { strength: 2, fftSize: 16384, volumeDb: 0 } },
         tone_effect: { enabled: false, mode: 'crystalizer' },
     };
-    let dspCompare = { presetA: '', presetB: '', activeSide: null };
+    let dspCompare = { presetA: 'Neutral', presetB: 'Conv LR MinAlign Harman 30-300Hz -7dB', activeSide: 'B' };
+
+    // Audible preset gain for the meter sim: only the +3/+6 dB filter
+    // presets lift the visible level (their real chains hold a broadband
+    // gain stage); every other preset is level-neutral in the demo.
+    function presetMeterGainDb(name) {
+        if (name === '+3') return 3;
+        if (name === '+6') return 6;
+        return 0;
+    }
+
+    function demoMeterOffsetDb() {
+        let offset = presetMeterGainDb(dspActivePreset);
+        const extras = dspExtras || {};
+        if (extras.autogain && extras.autogain.enabled) offset += 2;
+        if (extras.loudness && extras.loudness.enabled) {
+            offset += 0.4 * Math.max(1, Math.min(10, Number(extras.loudness.params && extras.loudness.params.strength) || 0));
+        }
+        if (extras.bass_enhancer && extras.bass_enhancer.enabled) {
+            offset += Math.max(0, Math.min(3, Number(extras.bass_enhancer.params && extras.bass_enhancer.params.amount) || 0) / 4);
+        }
+        return Math.round(offset * 10) / 10;
+    }
 
     function syncDspToState() {
-        const headroom = dspExtras.headroom;
+        const limiter = dspExtras.limiter || {};
         S.setDspSnapshot({
-            headroomDb: headroom.enabled ? Number(headroom.params && headroom.params.gainDb) || 0 : 0,
+            meterOffsetDb: demoMeterOffsetDb(),
+            limiterThresholdDb: Number(limiter.params && limiter.params.thresholdDb) || -1,
+            limiterEnabled: !!limiter.enabled,
             extras: dspExtras,
             presets: dspPresets,
             activePreset: dspActivePreset,
         });
     }
+    syncDspToState();
 
     function dspPayload() {
         return {
@@ -62,8 +101,10 @@
             preset_count: dspPresets.length,
             active_preset: dspActivePreset,
             irs: [
-                { name: 'Studio A — Large Live Room', basename: 'studio-a-live.irs', path: '/demo/irs/studio-a-live.irs', size: 128410 },
-                { name: 'Club Room — 200 Capacity', basename: 'club-room-200.irs', path: '/demo/irs/club-room-200.irs', size: 96420 },
+                { name: 'Conv LR HybAlign BK 30-10000Hz -7dB', basename: 'Conv LR HybAlign BK 30-10000Hz -7dB', path: '/demo/irs/Conv LR HybAlign BK 30-10000Hz -7dB.irs', size: 262428 },
+                { name: 'Conv LR HybAlign BK 30-12000Hz -7dB', basename: 'Conv LR HybAlign BK 30-12000Hz -7dB', path: '/demo/irs/Conv LR HybAlign BK 30-12000Hz -7dB.irs', size: 262644 },
+                { name: 'Conv LR HybAlign BK 30-3000Hz -7dB', basename: 'Conv LR HybAlign BK 30-3000Hz -7dB', path: '/demo/irs/Conv LR HybAlign BK 30-3000Hz -7dB.irs', size: 262644 },
+                { name: 'Conv LR MinAlign Harman 30-300Hz -7dB', basename: 'Conv LR MinAlign Harman 30-300Hz -7dB', path: '/demo/irs/Conv LR MinAlign Harman 30-300Hz -7dB.irs', size: 262644 },
             ],
             global_extras: dspExtras,
             global_extras_excluded_presets: [],
@@ -620,15 +661,62 @@
                 { id: 'tidal', name: 'Tidal', installed: true, available: true, authenticated: true, connected: true, capabilities: { catalog: true, cover: true, progress: true } },
             ] });
         }
+        // The demo provider flags live on the shared state object so the
+        // enabled toggles persist across fetch calls.
         if (p === '/api/streaming/providers/discovery') {
             // Same shape as the backend's streaming.discover_providers(): the
             // current frontend builds the provider tabs from this endpoint.
+            S.demoProviderEnabled = S.demoProviderEnabled || { spotify: true, qobuz: true, tidal: true };
+            const enabled = S.demoProviderEnabled;
             return j({ providers: [
-                { id: 'spotify', name: 'Spotify', implemented: true, installed: true, available: true, authenticated: true, connected: true, backend: 'spotifyd', capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
-                { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: true, connected: true, backend: 'qbzd', capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
-                { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: true, connected: true, backend: 'tidalapi', capabilities: { catalog: true, cover: true, progress: true } },
+                { id: 'spotify', name: 'Spotify', implemented: true, installed: true, available: true, authenticated: null, enabled: enabled.spotify !== false, connected: true, backend: 'spotifyd', capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
+                { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.qobuz !== false, connected: true, backend: 'qbzd', capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
+                { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.tidal !== false, connected: true, backend: 'tidalapi', capabilities: { catalog: true, cover: true, progress: true } },
             ] });
         }
+        // Settings -> Providers admin (device name rides the same payload).
+        // Demo keeps all providers installed/connected; toggles only flip
+        // the local enabled flag so tabs hide/show like the real backend.
+        function demoProviderAdmin() {
+            S.demoProviderEnabled = S.demoProviderEnabled || { spotify: true, qobuz: true, tidal: true };
+            const enabled = S.demoProviderEnabled;
+            return {
+                providers: [
+                    { id: 'spotify', name: 'Spotify', implemented: true, installed: true, available: true, authenticated: null, enabled: enabled.spotify !== false },
+                    { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.qobuz !== false },
+                    { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.tidal !== false },
+                ],
+                device_name: 'fxroute',
+                device_name_can_change: false,
+            };
+        }
+        if (p === '/api/streaming/providers/admin') return j(demoProviderAdmin());
+        const providerEnabledMatch = p.match(/^\/api\/streaming\/providers\/([^/]+)\/enabled$/);
+        if (providerEnabledMatch && post) {
+            const id = providerEnabledMatch[1];
+            S.demoProviderEnabled = S.demoProviderEnabled || { spotify: true, qobuz: true, tidal: true };
+            if (id in S.demoProviderEnabled) S.demoProviderEnabled[id] = body.enabled !== false;
+            return j({ ok: true, enabled: S.demoProviderEnabled[id] !== false });
+        }
+        const providerOpMatch = p.match(/^\/api\/streaming\/providers\/([^/]+)\/(install|uninstall)$/);
+        if (providerOpMatch && post) {
+            return j({ installed: true, log: 'Demo: provider operation simulated.' });
+        }
+        const providerSvcMatch = p.match(/^\/api\/streaming\/providers\/([^/]+)\/service\/([^/]+)$/);
+        if (providerSvcMatch && post) {
+            return j({ ok: true });
+        }
+        if (p === '/api/system/device-name' && post) {
+            return j({ hostname: 'fxroute', changed: false });
+        }
+        if (p === '/api/streaming/qobuz/auth/login' && post) {
+            return j({ login_url: 'https://example.invalid/qobuz-login-demo' });
+        }
+        if (p === '/api/streaming/qobuz/auth/login/cancel' && post) return j({ ok: true });
+        if (p === '/api/streaming/qobuz/auth/login/finish' && post) {
+            return j({ success: true });
+        }
+        if (p === '/api/streaming/qobuz/auth/logout' && post) return j({ success: true });
         if (p === '/api/spotify/status') return j(S.spotify.snapshot());
         const spotifyCmd = p.match(/^\/api\/spotify\/([a-z_]+)$/);
         if (spotifyCmd && post) {
@@ -932,20 +1020,61 @@
         }
         if (p === '/api/dsp/compare' && post) { dspCompare = { ...body }; return j({ ok: true }); }
         if (p === '/api/dsp/extras' && post) {
-            const merge = (key) => {
-                const enabledKey = key + 'Enabled';
-                if (body[enabledKey] === undefined && body.key !== key) return;
-                dspExtras[key].enabled = !!body[enabledKey];
-                if (key === 'headroom') dspExtras[key].params = { gainDb: Number(body.headroomGainDb ?? dspExtras[key].params.gainDb) };
-                if (key === 'autogain') dspExtras[key].params = { targetDb: Number(body.autogainTargetDb ?? dspExtras[key].params.targetDb) };
-                if (key === 'loudness') dspExtras[key].params = { ...dspExtras[key].params, strength: Number(body.loudnessStrength ?? dspExtras[key].params.strength), fftSize: Number(body.loudnessFftSize ?? dspExtras[key].params.fftSize) };
-                if (key === 'delay') dspExtras[key].params = { ...dspExtras[key].params, leftMs: Number(body.delayLeftMs ?? 0), rightMs: Number(body.delayRightMs ?? 0) };
-                if (key === 'bass_enhancer') dspExtras[key].params = { ...dspExtras[key].params, amount: Number(body.bassAmount ?? 0) };
-                if (key === 'tone_effect') dspExtras[key].mode = String(body.toneEffectMode ?? 'crystalizer');
+            // Same merge vocabulary as the backend
+            // (merge_effects_extras_from_json): camelCase from the app and
+            // snake_case from the form posts, applied only when supplied.
+            // The extras response mirrors save_dsp_extras: { status, extras }.
+            const toBool = (value) => value === true || value === 'true' || value === 1;
+            const pick = (...names) => {
+                for (const name of names) {
+                    if (body[name] !== undefined) return body[name];
+                }
+                return undefined;
             };
-            ['limiter', 'headroom', 'autogain', 'loudness', 'delay', 'bass_enhancer', 'tone_effect'].forEach(merge);
+            const section = (key) => {
+                dspExtras[key] = dspExtras[key] || {};
+                return dspExtras[key];
+            };
+            const params = (key) => {
+                const entry = section(key);
+                entry.params = entry.params && typeof entry.params === 'object' ? entry.params : {};
+                return entry.params;
+            };
+            let value = pick('limiterEnabled', 'limiter_enabled');
+            if (value !== undefined) section('limiter').enabled = toBool(value);
+            value = pick('headroomEnabled', 'headroom_enabled');
+            if (value !== undefined) section('headroom').enabled = toBool(value);
+            value = pick('headroomGainDb', 'headroom_gain_db');
+            if (value !== undefined) params('headroom').gainDb = Number(value);
+            value = pick('autogainEnabled', 'autogain_enabled');
+            if (value !== undefined) section('autogain').enabled = toBool(value);
+            value = pick('autogainTargetDb', 'autogain_target_db');
+            if (value !== undefined) params('autogain').targetDb = Number(value);
+            value = pick('loudnessEnabled', 'loudness_enabled');
+            if (value !== undefined) section('loudness').enabled = toBool(value);
+            value = pick('loudnessStrength', 'loudness_strength');
+            if (value !== undefined) params('loudness').strength = Number(value);
+            value = pick('loudnessFftSize', 'loudness_fft_size');
+            if (value !== undefined) params('loudness').fftSize = Number(value);
+            value = pick('delayEnabled', 'delay_enabled');
+            if (value !== undefined) section('delay').enabled = toBool(value);
+            value = pick('delayLeftMs', 'delay_left_ms');
+            if (value !== undefined) params('delay').leftMs = Number(value);
+            value = pick('delayRightMs', 'delay_right_ms');
+            if (value !== undefined) params('delay').rightMs = Number(value);
+            value = pick('bassEnabled', 'bass_enabled');
+            if (value !== undefined) section('bass_enhancer').enabled = toBool(value);
+            value = pick('bassAmount', 'bass_amount');
+            if (value !== undefined) params('bass_enhancer').amount = Number(value);
+            value = pick('toneEffectEnabled', 'tone_effect_enabled');
+            if (value !== undefined) section('tone_effect').enabled = toBool(value);
+            value = pick('toneEffectMode', 'tone_effect_mode');
+            if (value !== undefined) section('tone_effect').mode = String(value);
             syncDspToState();
-            return j({ ok: true, extras: dspExtras });
+            return j({ status: 'ok', ok: true, extras: dspExtras });
+        }
+        if (p === '/api/dsp/extras' && !post) {
+            return j({ status: 'ok', extras: dspExtras, excluded_presets: [] });
         }
         if (p === '/api/dsp/presets/import-json' && post) {
             const name = String(body.preset_name || body.name || 'Imported Preset').trim() || 'Imported Preset';
@@ -981,6 +1110,7 @@
         }
 
         // ── Measurements ────────────────────────────────────────────────
+        // Seeded with the .104 fixtures; demo sweeps reuse them by name.
         if (p === '/api/measurements') {
             const list = [];
             S.getSavedMeasurements().forEach(m => { if (!list.find(x => x.id === m.id)) list.push(m); });
@@ -988,10 +1118,10 @@
             return j({
                 measurements: list,
                 storage: { used_bytes: 2000000, available_bytes: 100000000 },
-                calibrations: [],
+                calibrations: [{ id: 'MM1CES_allein_00d.txt', filename: 'MM1CES_allein_00d.txt' }],
                 house_curves: [],
-                active_calibration_file_id: '',
-                measurement_settings: { selectedInputId: 'demo_mic', selectedInputKey: 'demo_mic', selectedMicInputChannel: '1', measurementSampleRate: '48000' },
+                active_calibration_file_id: 'MM1CES_allein_00d.txt',
+                measurement_settings: { selectedInputId: 'demo_mic', selectedInputKey: 'demo_mic', selectedMicInputChannel: '1', selectedReferenceInputChannel: '2', measurementSampleRate: '48000' },
                 scope_note: 'Ready for the first measurement.',
             });
         }
@@ -1064,10 +1194,57 @@
             return j({ measurement: S.addSavedMeasurement(m) });
         }
         if (p === '/api/measurements/settings' && post) return j({ ok: true });
-        if (p === '/api/measurements/calibrations' && post) return j({ ok: true });
-        if (p === '/api/measurements/calibrations') return j({ calibrations: [] });
-        if (p === '/api/measurements/house-curves' && post) return j({ ok: true });
-        if (p === '/api/measurements/house-curves') return j({ house_curves: [] });
+        // Calibration + house-curve files: the demo ships the .104 mic
+        // calibration as the selected file; uploads/deletes only mutate the
+        // in-memory option list and echo the applier shape
+        // ({ calibrations, active_calibration_file_id } /
+        // { house_curves }) the real frontend consumes.
+        S.demoCalibrationOptions = S.demoCalibrationOptions || [{ id: 'MM1CES_allein_00d.txt', filename: 'MM1CES_allein_00d.txt' }];
+        S.demoHouseCurveOptions = S.demoHouseCurveOptions || [];
+        S.demoActiveCalibrationId = (S.demoActiveCalibrationId === undefined) ? 'MM1CES_allein_00d.txt' : S.demoActiveCalibrationId;
+        function demoCalibrationState() {
+            return { calibrations: S.demoCalibrationOptions.slice(), active_calibration_file_id: S.demoActiveCalibrationId || '' };
+        }
+        if (p === '/api/measurements/calibrations' && post) {
+            const filename = String(body.calibration_file_name || body.filename || body.name || 'uploaded-calibration.txt');
+            const id = filename;
+            if (!S.demoCalibrationOptions.find(o => o.id === id)) S.demoCalibrationOptions.push({ id, filename });
+            S.demoActiveCalibrationId = id;
+            return j(demoCalibrationState());
+        }
+        if (p === '/api/measurements/calibrations') return j(demoCalibrationState());
+        if (p === '/api/measurements/calibrations/active' && (method === 'PATCH' || post)) {
+            const id = String(body.calibration_file_id || '');
+            S.demoActiveCalibrationId = (!id || S.demoCalibrationOptions.find(o => o.id === id)) ? id : '';
+            return j(demoCalibrationState());
+        }
+        const demoCalCrud = p.match(/^\/api\/measurements\/calibrations\/([^/]+)(\/export)?$/);
+        if (demoCalCrud) {
+            if (demoCalCrud[2]) return j({ redirect: './demo/data/measurements.js' });
+            if (method === 'DELETE') {
+                S.demoCalibrationOptions = S.demoCalibrationOptions.filter(o => o.id !== demoCalCrud[1]);
+                if (S.demoActiveCalibrationId === demoCalCrud[1]) S.demoActiveCalibrationId = '';
+                return j(demoCalibrationState());
+            }
+        }
+        function demoHouseCurveState(extra) {
+            return { house_curves: S.demoHouseCurveOptions.slice(), ...(extra || {}) };
+        }
+        if (p === '/api/measurements/house-curves' && post) {
+            const filename = String(body.house_curve_file_name || body.filename || body.name || 'house-curve.txt');
+            const id = 'demo-house-' + Date.now();
+            S.demoHouseCurveOptions.push({ id, filename });
+            return j(demoHouseCurveState({ uploaded_house_curve_id: id }));
+        }
+        if (p === '/api/measurements/house-curves') return j(demoHouseCurveState());
+        const demoHouseCrud = p.match(/^\/api\/measurements\/house-curves\/([^/]+)(\/export)?$/);
+        if (demoHouseCrud) {
+            if (demoHouseCrud[2]) return j({ redirect: './demo/data/measurements.js' });
+            if (method === 'DELETE') {
+                S.demoHouseCurveOptions = S.demoHouseCurveOptions.filter(o => o.id !== demoHouseCrud[1]);
+                return j(demoHouseCurveState());
+            }
+        }
         if (p === '/api/measurements/spl-calibration') return j(S.splCalibrationPayload());
         if (p === '/api/measurements/spl-calibration/noise' && post) {
             if (body.enabled) {
