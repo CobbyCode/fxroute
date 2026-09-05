@@ -245,6 +245,29 @@
         };
     }
 
+    // Static demo stand-ins for the shared artist enrichment the backend
+    // attaches to TIDAL details: invented short bios (same `about` field
+    // the real UI renders) plus similar artists drawn only from the demo
+    // TIDAL catalog — same shape ({ type, artist, provider_artist_id,
+    // art_url }) the real hydration/navigation expects, so similar cards
+    // resolve to browsable demo artists without new logic.
+    function tidalArtistEnrichment(artist) {
+        const about = (lib.tidalArtistAbout && lib.tidalArtistAbout[artist.name]) || '';
+        const similar = typeof lib.tidalSimilarFor === 'function' ? lib.tidalSimilarFor(artist.id) : [];
+        return { available: true, about, similar };
+    }
+
+    function tidalAlbumEnrichment(album, artist) {
+        const name = (artist && artist.name) || album.artist || '';
+        const about = (lib.tidalArtistAbout && lib.tidalArtistAbout[name]) || '';
+        const similar = (artist && typeof lib.tidalSimilarFor === 'function') ? lib.tidalSimilarFor(artist.id) : [];
+        return {
+            available: true,
+            artist: { about },
+            similar,
+        };
+    }
+
     function emitState() {
         window.__demoBroadcast && window.__demoBroadcast('playback', S.getPlayback());
     }
@@ -943,7 +966,8 @@
         if (tidalAlbumDetail) {
             const album = tidalAlbums().find(a => a.id === tidalAlbumDetail[1]);
             if (!album) return err('Album not found');
-            return j({ ...album, tracks: album.tracks });
+            const artist = tidalArtists().find(a => a.id === album.artist_id);
+            return j({ ...album, tracks: album.tracks, enrichment: tidalAlbumEnrichment(album, artist) });
         }
         const tidalAlbumTracks = p.match(/^\/api\/streaming\/tidal\/albums\/([^/]+)\/tracks$/);
         if (tidalAlbumTracks) {
@@ -959,7 +983,7 @@
                 ...artist,
                 albums: albums.map(a => ({ id: a.id, title: a.title, artist: artist.name, year: a.year, audio_quality: a.audio_quality, num_tracks: a.num_tracks, art_url: a.cover_url })),
                 top_tracks: albums.flatMap(a => a.tracks.slice(0, 3).map((t, i) => ({ ...t, id: a.id + '_top' + i, artist: artist.name, album: a.title, art_url: a.cover_url }))).slice(0, 10),
-                enrichment: { about: artist.name + ' is part of the FXRoute demo catalog. The simulated TIDAL library is fully browsable.' },
+                enrichment: tidalArtistEnrichment(artist),
             });
         }
         if (p === '/api/streaming/tidal/search') {

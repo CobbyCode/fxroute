@@ -262,6 +262,58 @@
         artist.art_url = artist.image_url;
     });
 
+    // ---------------------------------------------------------------------
+    // TIDAL About + Discover Similar (static demo stand-ins for the shared
+    // artist enrichment: MusicBrainz about text + ListenBrainz similar
+    // artists). Short invented bios keyed by artist name; similar lists
+    // reuse only artists that exist in this TIDAL catalog so every card
+    // resolves to a real demo artist with stored art. Same-genre artists
+    // first, then the rest in catalog order, max 6 — mirroring the real
+    // renderSimilarArtists cap.
+    // ---------------------------------------------------------------------
+    const TIDAL_ARTIST_ABOUT = {
+        'Night Arcade': 'Night Arcade channel neon-soaked synthwave through vintage drum machines and chorus-drenched guitars. Their records play like lost arcade soundtracks from a summer that never ended.',
+        'Cassiopeia': 'Cassiopeia writes starry indie pop with fingerpicked guitars and double-tracked harmonies. Home Recordings collects four-track sketches polished just enough to shine.',
+        'Deep Field': 'Deep Field maps deep space in sound: long ambient swells over faint electronic pulses. Crystal Circuit is their most melodic transmission yet.',
+        'The Lowlights': 'The Lowlights play barroom indie rock with the lights turned low. Expect ringing Telecasters, close harmonies and choruses built for last call.',
+        'Night Bus': 'Night Bus makes lo-fi beats for empty back seats and rainy windows. Night Bus Diaries loops dusty piano figures under soft vinyl crackle.',
+        'Aether Drift': 'Aether Drift explores the seam between IDM and stargazing synth music. Intricate programming dissolves into weightless pads without warning.',
+        'Opal Vanguard': 'Opal Vanguard drags classical forms into the present with electronics and heavy dynamics. Crimson Tides moves from whispered strings to full-orchestra thunder.',
+        'SubRoot System': 'SubRoot System runs a hand-built dub rig of tape echoes and spring reverbs. Bass Garden is four extended takes with the faders ridden live.',
+        'Velvet Static': 'Velvet Static layers hazy synths over driving retro beats. Synthetic Love is chrome-plated pop with the top down and the volume up.',
+        'Marina Vale': 'Marina Vale sings salt-air indie pop about harbors and low tides. Her songs pair fingerpicked guitar with wide-open choruses.',
+        'The Bramble Trio': 'The Bramble Trio is a working jazz trio with two decades of club dates behind it. Old Town Sessions captures their late set: brushed drums, upright bass and unhurried piano.',
+        'Aurora Signal': 'Aurora Signal transmits melodic electronica from somewhere above the treeline. Gravity Well pairs shifting polyrhythms with wide-open synth chords.',
+        'Fern Hollow': 'Fern Hollow is a folk project built on fingerpicked guitar and forest-floor percussion. Woodland Sketches was recorded in a cabin with the windows open.',
+        'Kilo City Collective': 'Kilo City Collective is a rotating hip-hop crew trading verses over dusty loops. Concrete Bloom maps their city block by block, rooftop by rooftop.',
+        'Sierra Reyes': 'Sierra Reyes plays high-altitude rock with room-sized guitars and close harmonies. Vantage Point was cut live on a mountain lodge porch at dusk.',
+        'Nordkap': 'Nordkap composes slow ambient pieces from bowed strings, tape loops and shortwave static. Polar Circle follows a full Arctic night from blue hour to midnight sun.',
+        'Delta Hollis': 'Delta Hollis carries the hill-country blues forward with stomp, slide and harmonica. Delta Rain Hymns collects juke-joint originals and slow storm songs.',
+        'Kestrel Wire': 'Kestrel Wire stretches post-rock guitars across long instrumental arcs. Overpass was recorded in a concrete underpass for its natural seven-second decay.',
+        'Glass Tiger': 'Glass Tiger sharpens indie guitars into chrome-edged alternative anthems. Tone Poems balances paper-dry verses against arena-sized choruses.',
+        'Waves of Amber': 'Waves of Amber drift between chillwave haze and indie songcraft. Waves of Gold pairs golden-hour synths with saltwater harmonies.',
+        'Mirage Motel': 'Mirage Motel checks into poolside synthwave: chrome palms, neon lobbies, endless summer nights. Every chorus arrives with the top down.',
+        'Sable & Finch': 'Sable & Finch sing close-harmony indie folk for cedar porches and quiet rooms. Hollow & Home keeps the arrangements spare and the voices forward.',
+        'Cobalt Arcade': 'Cobalt Arcade wires electro-funk basslines into pixel-bright synth hooks. Their records sound like a high score with a backbeat.',
+        'Velvet Hour': 'Velvet Hour pours neo-soul slow jams for the last hour of the night. Silk Rhodes chords slide under unhurried, honeyed vocals.',
+        'The Morning Line': 'The Morning Line writes commuter-belt alternative rock about platforms and departures. Big choruses, bigger hopes, first train out.',
+        'Iris Bloom': 'Iris Bloom grows art pop like a greenhouse: strange, colorful and carefully tended. Petal Logic pairs odd meters with disarming melodies.',
+        'Static River': 'Static River drags post-punk basslines through grey concrete landscapes. Static River is all tension: wire guitars over relentless drums.',
+        'Nova Format': 'Nova Format programs precision IDM with a human pulse underneath. Nova Format flickers between signal drift and sudden melodic clarity.',
+        'Harbor Glass': 'Harbor Glass bottles chillwave panoramas: tidewater synths, marina lights, slow-motion summers. Best played loud with the windows down.',
+        'Onyx Chapel': 'Onyx Chapel holds dark-ambient services in imaginary stone chapels. Candle Frequency is organ drone, deep aisles and slow-burning air.',
+    };
+    function tidalSimilarFor(artistId) {
+        const self = TIDAL_ARTISTS.find(a => a.id === artistId);
+        if (!self) return [];
+        const sameGenre = (a) => (a.genres || []).some(g => (self.genres || []).includes(g));
+        return TIDAL_ARTISTS
+            .filter(a => a.id !== artistId)
+            .sort((a, b) => (sameGenre(a) ? 0 : 1) - (sameGenre(b) ? 0 : 1))
+            .slice(0, 6)
+            .map(a => ({ type: 'artist', artist: a.name, provider_artist_id: a.id, art_url: a.art_url || a.image_url || '' }));
+    }
+
     const TIDAL_ALBUM_SEEDS = [
         ['t_album_01', 'Neon Rain', 't_artist_09', 2023, 'HI_RES_LOSSLESS', ['Neon Rain', 214], ['Midnight Arcade', 189], ['Chrome Sunset', 243], ['Analog Dreams', 201], ['Glass Horizon', 232]],
         ['t_album_02', 'Harbor Lights', 't_artist_10', 2021, 'LOSSLESS', ['Paper Planes at Dawn', 197], ['Harbor Lights', 226], ['Salt & Cedar', 184], ['Slow Tide', 251], ['First Light Ferry', 208]],
@@ -451,6 +503,8 @@
         tidalTracks,
         tidalArtists: TIDAL_ARTISTS,
         tidalPlaylists,
+        tidalArtistAbout: TIDAL_ARTIST_ABOUT,
+        tidalSimilarFor,
         spotifyTracks,
         qobuzTracks,
     };

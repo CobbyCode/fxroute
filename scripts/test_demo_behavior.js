@@ -508,6 +508,36 @@ const radio = state.getPlayback();
     const unknownDisc = await demoFetch('/api/albums/does-not-exist/discover');
     assert.equal(unknownDisc.status, 404);
 
+    // ── TIDAL About + Discover Similar contract ─────────────────────────
+    // Same enrichment fields the backend attaches (enrichment.about /
+    // enrichment.similar on the artist detail; enrichment.artist.about /
+    // enrichment.similar on the album detail). About texts are static
+    // demo bios; similar cards reuse only artists from the demo TIDAL
+    // catalog with stored art so every card resolves to a browsable
+    // artist — the real UI behavior, no new logic.
+    const tidalArtists = context.FXROUTE_DEMO_LIBRARY.tidalArtists;
+    assert.ok(tidalArtists.length >= 10);
+    assert.ok(tidalArtists.every(a => context.FXROUTE_DEMO_LIBRARY.tidalArtistAbout[a.name]
+        && context.FXROUTE_DEMO_LIBRARY.tidalArtistAbout[a.name].length > 40));
+    for (const artistId of ['t_artist_01', 't_artist_11', 't_artist_16']) {
+        const detail = await (await demoFetch('/api/streaming/tidal/artists/' + artistId)).json();
+        assert.ok(detail.enrichment && detail.enrichment.about && detail.enrichment.about.length > 40);
+        assert.ok(Array.isArray(detail.enrichment.similar) && detail.enrichment.similar.length === 6);
+        assert.ok(detail.enrichment.similar.every(item => item.artist && item.provider_artist_id && item.art_url),
+            'similar cards need artist + provider id + art');
+        assert.ok(detail.enrichment.similar.every(item => item.artist !== detail.name),
+            'similar must not include the artist itself');
+        assert.ok(detail.enrichment.similar.every(item => tidalArtists.some(a => a.id === item.provider_artist_id && a.name === item.artist)),
+            'every similar card must resolve to a demo catalog artist');
+    }
+    const tidalAlbum = await (await demoFetch('/api/streaming/tidal/albums/t_album_01')).json();
+    assert.ok(tidalAlbum.enrichment && tidalAlbum.enrichment.artist && tidalAlbum.enrichment.artist.about
+        && tidalAlbum.enrichment.artist.about.length > 40);
+    assert.ok(Array.isArray(tidalAlbum.enrichment.similar) && tidalAlbum.enrichment.similar.length === 6);
+    assert.ok(tidalAlbum.enrichment.similar.every(item => tidalArtists.some(a => a.id === item.provider_artist_id)));
+    const unknownTidalArtist = await demoFetch('/api/streaming/tidal/artists/does-not-exist');
+    assert.equal(unknownTidalArtist.status, 404);
+
     const splGet = await (await demoFetch('/api/measurements/spl-calibration')).json();
     assert.equal(splGet.automatic.available, true);
     assert.equal(splGet.automatic.microphone_model, 'UMIK-1');
