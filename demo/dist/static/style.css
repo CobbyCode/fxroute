@@ -2372,12 +2372,18 @@ body {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: 0.95rem;
+    align-items: stretch;
 }
 .library-import-option {
     min-width: 0;
+    display: flex;
+    flex-direction: column;
 }
 .library-import-option .upload-area {
     min-height: 124px;
+    height: 100%;
+    flex: 1;
+    box-sizing: border-box;
 }
 .library-import-option .upload-area-text,
 .upload-area-url-station .upload-area-text {
@@ -2395,7 +2401,7 @@ body {
     line-height: 1.35;
 }
 .upload-area-url {
-    margin-bottom: 0.75rem;
+    margin-bottom: 0;
     padding: 1rem 1rem 0.95rem;
     border-style: solid;
     background: linear-gradient(180deg, rgba(110,231,183,0.05), rgba(110,231,183,0.04));
@@ -5517,14 +5523,18 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-actions-rew-dual {
+    display: grid;
+    grid-template-columns: minmax(0, calc((100% - 0.9rem) / 2)) auto;
+    justify-content: start;
     align-items: center;
     gap: 0.65rem;
     flex-wrap: wrap;
 }
 
 .effects-rew-dual-name-input {
-    flex: 1 1 220px;
-    max-width: 280px;
+    flex: none;
+    width: 100%;
+    max-width: none;
     min-width: 0;
     min-height: 34px;
     padding: 0.4rem 0.65rem;
@@ -5583,12 +5593,17 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-actions-peq-dual {
+    display: grid;
+    grid-template-columns: minmax(0, calc((100% - 0.8rem) / 2)) auto;
+    justify-content: start;
     align-items: center;
     gap: 0.7rem;
 }
 
 .effects-actions-peq-dual .effects-rew-dual-name-input {
-    max-width: 320px;
+    flex: none;
+    width: 100%;
+    max-width: none;
 }
 
 .effects-actions-peq-dual .btn-primary {

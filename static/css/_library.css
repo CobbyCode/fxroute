@@ -1167,12 +1167,18 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: 0.95rem;
+    align-items: stretch;
 }
 .library-import-option {
     min-width: 0;
+    display: flex;
+    flex-direction: column;
 }
 .library-import-option .upload-area {
     min-height: 124px;
+    height: 100%;
+    flex: 1;
+    box-sizing: border-box;
 }
 .library-import-option .upload-area-text,
 .upload-area-url-station .upload-area-text {
@@ -1190,7 +1196,7 @@
     line-height: 1.35;
 }
 .upload-area-url {
-    margin-bottom: 0.75rem;
+    margin-bottom: 0;
     padding: 1rem 1rem 0.95rem;
     border-style: solid;
     background: linear-gradient(180deg, rgba(110,231,183,0.05), rgba(110,231,183,0.04));
