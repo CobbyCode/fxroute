@@ -283,24 +283,25 @@
     let autoSubSeq = 0;
 
     // Real .104 auto-sub runs, keyed by output mode + target key. Each run
-    // holds its Before/After fixture pair (Before L/R + After L/R traces
-    // with the run's autosub_meta). The demo replays the matching pair so
-    // the graph shows the true Before/After curves, never a full sweep.
+    // holds its Before/After fixture pairs exactly as saved on .104: one
+    // single-trace file per channel (left/right), so the demo replays the
+    // true per-channel Before/After curves, never a full sweep.
     // The demo starts in 2.2 mode with Target Curve = Neutral, so the
     // 2.2 default is the Neutral pair; BK replays the BK pair.
     function autoSubRunFor(mode, targetKey) {
         const saved = S.getSavedMeasurements();
         const byId = (id) => saved.find((m) => m.id === id) || null;
         const runs = [
-            { mode: 'subwoofer-2.1', targets: ['neutral'], before: 'autosub-21-neutral-before', after: 'autosub-21-neutral-after' },
-            { mode: 'subwoofer-2.2', targets: ['neutral'], before: 'autosub-22-neutral-before', after: 'autosub-22-neutral-after' },
-            { mode: 'subwoofer-2.2', targets: ['bk'], before: 'autosub-22-bk-before', after: 'autosub-22-bk-after' },
-            { mode: 'subwoofer-2.2-stereo', targets: ['neutral'], before: 'autosub-22stereo-neutral-before', after: 'autosub-22stereo-neutral-after' },
-            { mode: 'subwoofer-2.2-stereo', targets: ['bk'], before: 'autosub-22stereo-bk-before', after: 'autosub-22stereo-bk-after' },
+            { mode: 'subwoofer-2.1', targets: ['neutral'], before: ['autosub-21-neutral-before-l', 'autosub-21-neutral-before-r'], after: ['autosub-21-neutral-after-l', 'autosub-21-neutral-after-r'] },
+            { mode: 'subwoofer-2.2', targets: ['neutral'], before: ['autosub-22-neutral-before-l', 'autosub-22-neutral-before-r'], after: ['autosub-22-neutral-after-l', 'autosub-22-neutral-after-r'] },
+            { mode: 'subwoofer-2.2', targets: ['bk'], before: ['autosub-22-bk-before-l', 'autosub-22-bk-before-r'], after: ['autosub-22-bk-after-l', 'autosub-22-bk-after-r'] },
+            { mode: 'subwoofer-2.2-stereo', targets: ['neutral'], before: ['autosub-22stereo-neutral-before-l', 'autosub-22stereo-neutral-before-r'], after: ['autosub-22stereo-neutral-after-l', 'autosub-22stereo-neutral-after-r'] },
+            { mode: 'subwoofer-2.2-stereo', targets: ['bk'], before: ['autosub-22stereo-bk-before-l', 'autosub-22stereo-bk-before-r'], after: ['autosub-22stereo-bk-after-l', 'autosub-22stereo-bk-after-r'] },
         ];
         const normalized = String(targetKey || 'neutral').toLowerCase();
-        return runs.find((run) => run.mode === mode && run.targets.includes(normalized))
-            || runs.find((run) => run.mode === mode && byId(run.before) && byId(run.after))
+        const complete = (run) => run.before.every(byId) && run.after.every(byId);
+        return runs.find((run) => run.mode === mode && run.targets.includes(normalized) && complete(run))
+            || runs.find((run) => run.mode === mode && complete(run))
             || null;
     }
 
@@ -308,8 +309,8 @@
         const run = autoSubRunFor(mode, targetKey);
         const saved = S.getSavedMeasurements();
         const byId = (id) => saved.find((m) => m.id === id) || null;
-        if (run && byId(run.before) && byId(run.after)) {
-            return { baseline: byId(run.before), confirmation: byId(run.after), run };
+        if (run) {
+            return { baseline: byId(run.before[0]), confirmation: byId(run.after[0]), run };
         }
         return { baseline: autoSubFallbackBaseline(mode), confirmation: autoSubFallbackConfirmation(mode), run: null };
     }
@@ -364,7 +365,7 @@
         // the run is in progress) and inside result (final graph display).
         // Both are the real Before/After pair of the matching .104 run.
         const { baseline, confirmation, run } = autoSubRunMeasurements(mode, targetKey);
-        const targetLabel = (run && run.before && baseline.autosub_meta && baseline.autosub_meta.target
+        const targetLabel = (run && baseline.autosub_meta && baseline.autosub_meta.target
             && baseline.autosub_meta.target.label) || autoSubTargetLabel(targetKey);
         const base = {
             id: job.id,
@@ -438,7 +439,7 @@
             : { originalSub1: 2.8, originalSub2: 2.45, appliedSub1: 3.4, appliedSub2: 3.1 };
         if (!run) return fallback;
         const saved = S.getSavedMeasurements();
-        const after = saved.find((m) => m.id === run.after);
+        const after = saved.find((m) => m.id === run.after[0]);
         const meta = (after && after.autosub_meta) || {};
         const delays = meta.final_delays_ms || {};
         const num = (value, fb) => (Number.isFinite(Number(value)) ? Number(value) : fb);
