@@ -251,18 +251,57 @@
 
     // ── Auto Sub Optimize simulation ────────────────────────────────────
     // A plausible multi-stage run: baseline sweep, per-sub coarse scans, a
-    // fine scan and the combined matrix, then a complete mode-aware result
-    // (2.2 / 2.2-stereo align both subs, 2.1 aligns the single sub). Stages
-    // advance by elapsed time so every poll shows further progress instead
-    // of jumping straight to a finished job.
+    // fine scan and the combined matrix, then the real Before/After result
+    // of the matching .104 run for the active output mode and target curve
+    // (2.1 Neutral, 2.2 BK, 2.2-Stereo Neutral or BK from the fixtures).
+    // Stages advance by elapsed time so every poll shows further progress
+    // instead of jumping straight to a finished job.
     const autoSubJobs = {};
     let autoSubSeq = 0;
 
-    function autoSubBaseline(mode) {
+    // Real .104 auto-sub runs, keyed by output mode + target key. Each run
+    // holds its Before/After fixture pair (Before L/R + After L/R traces
+    // with the run's autosub_meta). The demo replays the matching pair so
+    // the graph shows the true Before/After curves, never a full sweep.
+    function autoSubRunFor(mode, targetKey) {
+        const saved = S.getSavedMeasurements();
+        const byId = (id) => saved.find((m) => m.id === id) || null;
+        const runs = [
+            { mode: 'subwoofer-2.1', targets: ['neutral'], before: 'autosub-21-neutral-before', after: 'autosub-21-neutral-after' },
+            { mode: 'subwoofer-2.2', targets: ['bk'], before: 'autosub-22-bk-before', after: 'autosub-22-bk-after' },
+            { mode: 'subwoofer-2.2-stereo', targets: ['neutral'], before: 'autosub-22stereo-neutral-before', after: 'autosub-22stereo-neutral-after' },
+            { mode: 'subwoofer-2.2-stereo', targets: ['bk'], before: 'autosub-22stereo-bk-before', after: 'autosub-22stereo-bk-after' },
+        ];
+        const normalized = String(targetKey || 'neutral').toLowerCase();
+        return runs.find((run) => run.mode === mode && run.targets.includes(normalized))
+            || runs.find((run) => run.mode === mode && byId(run.before) && byId(run.after))
+            || null;
+    }
+
+    function autoSubRunMeasurements(mode, targetKey) {
+        const run = autoSubRunFor(mode, targetKey);
+        const saved = S.getSavedMeasurements();
+        const byId = (id) => saved.find((m) => m.id === id) || null;
+        if (run && byId(run.before) && byId(run.after)) {
+            return { baseline: byId(run.before), confirmation: byId(run.after), run };
+        }
+        return { baseline: autoSubFallbackBaseline(mode), confirmation: autoSubFallbackConfirmation(mode), run: null };
+    }
+
+    function autoSubFallbackBaseline(mode) {
         return S.makeMeasurement({ name: 'AutoSub Baseline', channel: 'left', seed: 21, mode });
     }
-    function autoSubConfirmation(mode) {
+    function autoSubFallbackConfirmation(mode) {
         return S.makeMeasurement({ name: 'AutoSub Confirmation', channel: 'right', seed: 22, mode });
+    }
+    function autoSubBaseline(mode) {
+        return autoSubRunMeasurements(mode, autoSubJobsTarget(mode)).baseline;
+    }
+    function autoSubConfirmation(mode) {
+        return autoSubRunMeasurements(mode, autoSubJobsTarget(mode)).confirmation;
+    }
+    function autoSubJobsTarget() {
+        return 'neutral';
     }
 
     function applyAutoSubResult(result) {
@@ -285,39 +324,50 @@
         }
     }
 
+    function autoSubTargetLabel(targetKey) {
+        const normalized = String(targetKey || 'neutral').toLowerCase();
+        if (normalized === 'bk') return 'Bruel & Kjaer-style';
+        if (normalized === 'harman') return 'Harman-style';
+        return 'Neutral';
+    }
+
     function autoSubResult(job) {
         const mode = job.mode;
+        const targetKey = job.targetKey || 'neutral';
         // The measurements travel both at job level (live baseline push while
         // the run is in progress) and inside result (final graph display).
-        const baseline = autoSubBaseline(mode);
-        const confirmation = autoSubConfirmation(mode);
+        // Both are the real Before/After pair of the matching .104 run.
+        const { baseline, confirmation, run } = autoSubRunMeasurements(mode, targetKey);
+        const targetLabel = (run && run.before && baseline.autosub_meta && baseline.autosub_meta.target
+            && baseline.autosub_meta.target.label) || autoSubTargetLabel(targetKey);
         const base = {
             id: job.id,
             status: 'completed',
             message: 'Auto Sub Optimize completed.',
-            target_curve: { label: 'Flat Target Curve' },
+            target_curve: { key: targetKey, label: targetLabel },
             baseline_measurement: baseline,
             confirmation_measurement: confirmation,
         };
         if (mode === 'subwoofer-2.2' || mode === 'subwoofer-2.2-stereo') {
+            const delays = autoSubRunDelays(run, mode);
             const result = {
                 mode,
                 applied: true,
                 baseline_measurement: baseline,
                 confirmation_measurement: confirmation,
-                original_sub1_alignment_ms: 2.8,
-                original_sub2_alignment_ms: 2.45,
-                applied_sub1_alignment_ms: 3.4,
-                applied_sub2_alignment_ms: 3.1,
+                original_sub1_alignment_ms: delays.originalSub1,
+                original_sub2_alignment_ms: delays.originalSub2,
+                applied_sub1_alignment_ms: delays.appliedSub1,
+                applied_sub2_alignment_ms: delays.appliedSub2,
                 left_score_pct: 84.6,
                 right_score_pct: 82.1,
                 overall_score_pct: 83.4,
                 winner: { score_pct: 83.0, score_L_pct: 84.6, score_R_pct: 82.1, overall_score_pct: 83.4 },
-                sub1_coarse_winner: { delay_ms: 3.4, score_pct: 84.6 },
-                sub2_coarse_winner: { delay_ms: 3.1, score_pct: 82.1 },
+                sub1_coarse_winner: { delay_ms: delays.appliedSub1, score_pct: 84.6 },
+                sub2_coarse_winner: { delay_ms: delays.appliedSub2, score_pct: 82.1 },
                 derived_main_delay_ms: 0.0,
-                derived_sub1_delay_ms: 3.4,
-                derived_sub2_delay_ms: 3.1,
+                derived_sub1_delay_ms: delays.appliedSub1,
+                derived_sub2_delay_ms: delays.appliedSub2,
                 fine_scan: { triggered: true, status: 'completed' },
                 confidence: 'high',
             };
@@ -328,26 +378,56 @@
             applyAutoSubResult(result);
             return { ...base, result };
         }
+        const delays = autoSubRunDelays(run, mode);
         const result = {
             mode,
             applied: true,
             baseline_measurement: baseline,
             confirmation_measurement: confirmation,
-            original_alignment_ms: 2.8,
-            applied_alignment_ms: 3.4,
-            suggested_alignment_ms: 3.4,
+            original_alignment_ms: delays.originalSub1,
+            applied_alignment_ms: delays.appliedSub1,
+            suggested_alignment_ms: delays.appliedSub1,
             left_score_pct: 84.6,
             right_score_pct: 82.1,
             overall_score_pct: 83.4,
             winner: { score_pct: 83.0, score_L_pct: 84.6, score_R_pct: 82.1, overall_score_pct: 83.4 },
-            coarse_winner: { delay_ms: 3.4, score_pct: 84.6 },
+            coarse_winner: { delay_ms: delays.appliedSub1, score_pct: 84.6 },
             runner_up: { delay_ms: 6.2, score_pct: 71.3 },
-            fine_winner: { delay_ms: 3.4, score_pct: 84.6 },
+            fine_winner: { delay_ms: delays.appliedSub1, score_pct: 84.6 },
             fine_scan: { triggered: true, status: 'completed' },
             confidence: 'high',
         };
         applyAutoSubResult(result);
         return { ...base, result };
+    }
+
+    // Delay/score anchors for the demo result: read the applied sub delays
+    // from the real run's autosub_meta so the status lines and the applied
+    // output state match the displayed Before/After curves. The Before
+    // delay is unknown to the demo, so the original is derived as a small
+    // plausible offset from the applied value.
+    function autoSubRunDelays(run, mode) {
+        const fallback = mode === 'subwoofer-2.1'
+            ? { originalSub1: 2.8, originalSub2: 2.8, appliedSub1: 3.4, appliedSub2: 3.4 }
+            : { originalSub1: 2.8, originalSub2: 2.45, appliedSub1: 3.4, appliedSub2: 3.1 };
+        if (!run) return fallback;
+        const saved = S.getSavedMeasurements();
+        const after = saved.find((m) => m.id === run.after);
+        const meta = (after && after.autosub_meta) || {};
+        const delays = meta.final_delays_ms || {};
+        const num = (value, fb) => (Number.isFinite(Number(value)) ? Number(value) : fb);
+        if (mode === 'subwoofer-2.1') {
+            const applied = num(delays.sub, fallback.appliedSub1);
+            return { originalSub1: Math.round((applied + 0.6) * 100) / 100, originalSub2: Math.round((applied + 0.6) * 100) / 100, appliedSub1: applied, appliedSub2: applied };
+        }
+        const appliedSub1 = num(delays.sub1, fallback.appliedSub1);
+        const appliedSub2 = num(delays.sub2, fallback.appliedSub2);
+        return {
+            originalSub1: Math.round((appliedSub1 + 0.6) * 100) / 100,
+            originalSub2: Math.round((appliedSub2 + 0.6) * 100) / 100,
+            appliedSub1,
+            appliedSub2,
+        };
     }
 
     // elapsedMs is injectable so the behavior test can fast-forward a run.
@@ -358,13 +438,17 @@
             return { id, status: 'cancelled', message: 'Auto Sub Optimize cancelled.' };
         }
         const mode = job.mode;
+        const targetKey = job.targetKey || 'neutral';
         const elapsed = (elapsedMs != null) ? elapsedMs : (Date.now() - job.startedAt);
         const isStereoBass = mode === 'subwoofer-2.2-stereo';
         const is22 = mode === 'subwoofer-2.2' || isStereoBass;
         const sub1Label = isStereoBass ? 'Left Sub' : 'Sub 1';
         const sub2Label = isStereoBass ? 'Right Sub' : 'Sub 2';
-        const base = { id, target_curve: { label: 'Flat Target Curve' } };
-        const withBaseline = () => ({ ...base, baseline_measurement: autoSubBaseline(mode) });
+        const { baseline } = autoSubRunMeasurements(mode, targetKey);
+        const targetLabel = (baseline.autosub_meta && baseline.autosub_meta.target
+            && baseline.autosub_meta.target.label) || autoSubTargetLabel(targetKey);
+        const base = { id, target_curve: { key: targetKey, label: targetLabel } };
+        const withBaseline = () => ({ ...base, baseline_measurement: baseline });
 
         if (elapsed < 900) return { ...base, status: 'queued', message: 'Auto Sub Optimize: queued' };
         if (elapsed < 2000) {
@@ -1265,7 +1349,23 @@
         }
         if (p === '/api/measurements/auto-sub-optimize/start' && post) {
             const id = 'demo_autosub_' + (++autoSubSeq);
-            autoSubJobs[id] = { id, mode: normalizeOutputModeName(outputMode.mode), startedAt: Date.now(), status: 'running' };
+            // The real frontend sends the selected target curve as a JSON
+            // snapshot in the FormData; the demo only needs its key to pick
+            // the matching real .104 run (neutral/bk/harman, house:* falls
+            // back to the mode default).
+            let targetKey = 'neutral';
+            const rawSnapshot = body.target_curve_snapshot;
+            if (typeof rawSnapshot === 'string' && rawSnapshot.trim()) {
+                try {
+                    const snapshot = JSON.parse(rawSnapshot);
+                    if (snapshot && typeof snapshot.key === 'string' && snapshot.key.trim()) {
+                        targetKey = snapshot.key.trim().toLowerCase().startsWith('house:')
+                            ? 'neutral'
+                            : snapshot.key.trim().toLowerCase();
+                    }
+                } catch (e) { /* keep the default */ }
+            }
+            autoSubJobs[id] = { id, mode: normalizeOutputModeName(outputMode.mode), targetKey, startedAt: Date.now(), status: 'running' };
             return j({ job: { id, status: 'queued', message: 'Auto Sub Optimize: queued' } });
         }
         const autoSubJob = p.match(/^\/api\/measurements\/auto-sub-optimize\/jobs\/([^/]+)$/);
