@@ -111,6 +111,9 @@ assert.equal(typeof bridgeContext.FXRouteMeasurementUI.smoothMeasurementTracePoi
 
 assert.match(buildSource, /data\/radio\.js/);
 assert.match(buildSource, /state\.js\?v=\d+/);
+const serveSource = fs.readFileSync(path.join(root, 'scripts', 'serve_demo.py'), 'utf8');
+assert.match(serveSource, /from urllib\.parse import unquote, urlsplit/);
+assert.match(serveSource, /path = unquote\(urlsplit\(self\.path\)\.path\)/);
 assert.match(buildSource, /static_src\s*\/\s*['"]demo['"]|demo_art/);
 assert.ok(fs.existsSync(path.join(root, 'static', 'demo', '1800ECLIPSE.jpg')));
 assert.ok(fs.existsSync(path.join(root, 'demo', 'dist', 'static', 'demo', '1800ECLIPSE.jpg')));
@@ -199,6 +202,19 @@ try {
 }
 const firstLibraryAlbum = context.FXROUTE_DEMO_LIBRARY.albums[0];
 assert.match(firstLibraryAlbum.demo_cover_url, /^\/static\/demo\/.*\.jpg$/);
+// Every demo cover URL must resolve to a real pooled file: file names with
+// spaces (e.g. "USER GUIDE.jpg") are served unencoded, so no cover URL may
+// carry percent-encoding (it 404s on the live demo route).
+const demoArtFiles = new Set(fs.readdirSync(path.join(root, 'static', 'demo')));
+for (const artist of context.FXROUTE_DEMO_LIBRARY.tidalArtists) {
+    assert.ok(artist.image_url && !artist.image_url.includes('%'),
+        `cover URL must not be percent-encoded for ${artist.name}: ${artist.image_url}`);
+    assert.ok(demoArtFiles.has(decodeURIComponent(artist.image_url.split('/').pop().replace(/\.jpg$/, '')) + '.jpg'),
+        `cover file missing for ${artist.name}: ${artist.image_url}`);
+}
+const opalVanguard = context.FXROUTE_DEMO_LIBRARY.tidalArtists.find(a => a.id === 't_artist_07');
+assert.ok(opalVanguard && opalVanguard.image_url === '/static/demo/USER GUIDE.jpg');
+assert.ok(fs.existsSync(path.join(root, 'static', 'demo', 'USER GUIDE.jpg')));
 assert.match(appSource, /album\.demo_cover_url/);
 assert.match(buildSource, /static_src\s*\/\s*['"]demo['"]|demo_art/);
 assert.match(routesSource, /suspend_supported: true/);

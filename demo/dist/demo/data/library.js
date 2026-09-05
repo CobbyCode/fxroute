@@ -42,7 +42,10 @@
             namespaceCursors.set(namespace, cursor + 1);
             keySlotCache.set(text, slot);
         }
-        return '/static/demo/' + encodeURIComponent(IMG_KEYS[slot]) + '.jpg';
+        // File names with spaces (e.g. "USER GUIDE.jpg") resolve on the
+        // demo server and static hosts without percent-encoding; encoded
+        // URLs 404 on the live demo route.
+        return '/static/demo/' + IMG_KEYS[slot] + '.jpg';
     }
 
     function slug(text) {

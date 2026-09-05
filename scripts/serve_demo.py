@@ -19,7 +19,7 @@ import http.server
 import mimetypes
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 SCRIPTS = Path(__file__).resolve().parent
 DEMO_ROOT = SCRIPTS.parent
@@ -36,7 +36,10 @@ class DemoMuxHandler(http.server.SimpleHTTPRequestHandler):
     """Route requests to either the canonical frontend or the demo layer."""
 
     def do_GET(self):
-        path = urlsplit(self.path).path
+        # Browsers send file names with spaces percent-encoded
+        # ("USER%20GUIDE.jpg"); decode before mapping to the pool so the
+        # artwork URLs the demo layer emits resolve.
+        path = unquote(urlsplit(self.path).path)
         if path in ("", "/"):
             self._serve_index()
             return
