@@ -61,6 +61,7 @@ SPOTIFYD_SOURCE_BUILT=0
 SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE=0
 SPOTIFYD_CONFIG_INSTALLED_BY_FXROUTE=0
 SPOTIFYD_DEVICE_NAME_CHANGED=0
+SPOTIFYD_DSP_SINK_ROUTED=0
 SPOTIFYD_CONNECT_NAME=""
 SPOTIFYD_BINARY_PATH=""
 SPOTIFYD_BINARY_SHA256=""
@@ -85,6 +86,10 @@ QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
 QBZD_QCONNECT_STARTUP_MODE_BEFORE=""
 QBZD_QCONNECT_STARTUP_MODE_AFTER=""
 QBZD_QCONNECT_CHANGED_BY_FXROUTE=0
+QBZD_AUDIO_BACKEND_BEFORE=""
+QBZD_AUDIO_DEVICE_BEFORE=""
+QBZD_AUDIO_SKIP_SINK_SWITCH_BEFORE=""
+QBZD_AUDIO_CHANGED_BY_FXROUTE=0
 QBZD_BINARY_IDENTITY_CHANGED=0
 TIDAL_PRESENT_BEFORE=0
 TIDAL_INSTALLED_BY_FXROUTE=0
@@ -102,6 +107,7 @@ FXROUTE_RUNTIME_DIR=""
 USER_LINGER_WAS_ENABLED=0
 USER_LINGER_ENABLED_BY_FXROUTE=0
 AUDIO_GROUP_ADDED_BY_FXROUTE=0
+JOURNAL_GROUP_ADDED_BY_FXROUTE=0
 
 VALIDATION_RESULTS=()
 WARNINGS=()
@@ -987,6 +993,16 @@ load_provider_ownership_state() {
     QBZD_QCONNECT_STARTUP_MODE_AFTER="$value"
   fi
   [[ "$(previous_install_state_field providers.qobuz.qconnect_changed_by_fxroute 2>/dev/null || true)" == "true" ]] && QBZD_QCONNECT_CHANGED_BY_FXROUTE=1
+  if value="$(previous_install_state_field providers.qobuz.audio_backend_before 2>/dev/null)"; then
+    QBZD_AUDIO_BACKEND_BEFORE="$value"
+  fi
+  if value="$(previous_install_state_field providers.qobuz.audio_device_before 2>/dev/null)"; then
+    QBZD_AUDIO_DEVICE_BEFORE="$value"
+  fi
+  if value="$(previous_install_state_field providers.qobuz.audio_skip_sink_switch_before 2>/dev/null)"; then
+    QBZD_AUDIO_SKIP_SINK_SWITCH_BEFORE="$value"
+  fi
+  [[ "$(previous_install_state_field providers.qobuz.audio_changed_by_fxroute 2>/dev/null || true)" == "true" ]] && QBZD_AUDIO_CHANGED_BY_FXROUTE=1
   [[ "$(previous_install_state_field providers.tidal.installed_by_fxroute 2>/dev/null || true)" == "true" ]] && TIDAL_INSTALLED_BY_FXROUTE=1
   if value="$(previous_install_state_field providers.tidal.installed_version 2>/dev/null)"; then
     [[ -n "$value" ]] && TIDAL_INSTALLED_VERSION="$value"
@@ -2794,6 +2810,28 @@ sync_spotifyd_device_name() {
   pass "spotifyd Connect name updated to ${desired}"
 }
 
+sync_spotifyd_dsp_sink() {
+  # Route spotifyd into the FXRoute DSP graph. Without an explicit device
+  # spotifyd renders to the PulseAudio default sink (hardware), bypassing
+  # DSP, ownership claims, peak monitoring and the remote volume bridge.
+  # A present device line is never rewritten.
+  local config_path="${1:-$HOME/.config/spotifyd/spotifyd.conf}"
+  local current=""
+
+  [[ -f "$config_path" ]] || return 0
+  current="$(sed -n -E 's/^[[:space:]]*device[[:space:]]*=[[:space:]]*["'"'"']([^"'"'"']*)["'"'"'].*/\1/p' "$config_path" | head -n 1)"
+  if [[ -n "$current" ]]; then
+    return 0
+  fi
+  if grep -q -E '^[[:space:]]*\[global\][[:space:]]*$' "$config_path"; then
+    run_as_target_user sed -i -E '/^[[:space:]]*\[global\][[:space:]]*$/a device = "fxroute_dsp_sink"' "$config_path"
+  else
+    printf '\n[global]\ndevice = "fxroute_dsp_sink"\n' | run_as_target_user tee -a "$config_path" >/dev/null
+  fi
+  SPOTIFYD_DSP_SINK_ROUTED=1
+  pass "spotifyd output routed to the FXRoute DSP sink"
+}
+
 write_spotifyd_config() {
   local config_dir="$HOME/.config/spotifyd"
   local config_path="$config_dir/spotifyd.conf"
@@ -2803,6 +2841,7 @@ write_spotifyd_config() {
   run_as_target_user mkdir -p "$config_dir"
   if [[ -f "$config_path" ]]; then
     sync_spotifyd_device_name "$config_path"
+    sync_spotifyd_dsp_sink "$config_path"
     pass "spotifyd config preserved; FXRoute service pins Zeroconf port ${SPOTIFYD_ZEROCONF_PORT}"
     return 0
   fi
@@ -2815,6 +2854,9 @@ write_spotifyd_config() {
 device_name = "${connect_name}"
 device_type = "speaker"
 backend = "pulseaudio"
+# Render into the FXRoute DSP graph (ownership claims, peak monitoring and
+# the remote volume bridge all observe this sink); never hardware-direct.
+device = "fxroute_dsp_sink"
 use_mpris = true
 dbus_type = "session"
 # Remote Connect volume is routed to the FXRoute master by the spotifyd
@@ -3109,6 +3151,14 @@ install_spotifyd() {
     SPOTIFYD_PROVIDER_STATUS="owned service unavailable; preserved"
     return 0
   fi
+  if [[ $SPOTIFYD_DSP_SINK_ROUTED -eq 1 ]] && user_unit_exists spotifyd.service \
+    && user_systemctl is-active --quiet spotifyd.service >/dev/null 2>&1; then
+    if user_systemctl restart spotifyd.service >/dev/null 2>&1; then
+      pass "spotifyd restarted on the FXRoute DSP sink"
+    else
+      warn "spotifyd output routed but the service could not be restarted"
+    fi
+  fi
   if [[ $SPOTIFYD_DEVICE_NAME_CHANGED -eq 1 ]] && user_unit_exists spotifyd.service \
     && user_systemctl is-active --quiet spotifyd.service >/dev/null 2>&1; then
     if user_systemctl restart spotifyd.service >/dev/null 2>&1; then
@@ -3389,6 +3439,74 @@ configure_qbzd_qconnect() {
   pass "qbzd Qobuz Connect auto-connect enabled"
 }
 
+read_qbzd_audio_output() {
+  local binary_path=""
+  binary_path="$(qbzd_binary_path || true)"
+  [[ -n "$binary_path" ]] || return 1
+  run_as_target_user "$binary_path" settings show --quiet --json 2>/dev/null | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (ValueError, OSError):
+    raise SystemExit(1)
+for key in ("audio.backend", "audio.device", "audio.skip_sink_switch"):
+    value = payload.get(key, "")
+    if not value:
+        raise SystemExit(1)
+    print(f"{key}={value}")
+'
+}
+
+configure_qbzd_audio_output() {
+  local current=""
+  local backend=""
+  local device=""
+  local skip=""
+  local binary_path=""
+
+  current="$(read_qbzd_audio_output || true)"
+  [[ -n "$current" ]] || die "Could not read qbzd audio output settings; refusing to leave Qobuz off the DSP sink"
+  backend="$(sed -n 's/^audio\.backend=//p' <<<"$current" | head -n 1)"
+  device="$(sed -n 's/^audio\.device=//p' <<<"$current" | head -n 1)"
+  skip="$(sed -n 's/^audio\.skip_sink_switch=//p' <<<"$current" | head -n 1)"
+  if [[ "$backend" == "pipewire" && "$device" == "fxroute_dsp_sink" && "$skip" == "true" ]]; then
+    pass "qbzd audio output already targets the FXRoute DSP sink"
+    return 0
+  fi
+
+  if [[ $QBZD_AUDIO_CHANGED_BY_FXROUTE -eq 0 ]]; then
+    QBZD_AUDIO_BACKEND_BEFORE="$backend"
+    QBZD_AUDIO_DEVICE_BEFORE="$device"
+    QBZD_AUDIO_SKIP_SINK_SWITCH_BEFORE="$skip"
+  fi
+  # Mark the side effect before invoking qbzd so an exit checkpoint can still
+  # offer restoration if a command changes a setting but read-back fails.
+  # The device name is deliberately untouched: it stays whatever the owner or
+  # qbzd setup chose.
+  QBZD_AUDIO_CHANGED_BY_FXROUTE=1
+  binary_path="$(qbzd_binary_path || true)"
+  [[ -n "$binary_path" ]] || die "qbzd binary disappeared before its audio output could be routed"
+  if ! run_as_target_user "$binary_path" settings set --quiet audio.backend pipewire; then
+    die "Could not set qbzd audio.backend=pipewire"
+  fi
+  if ! run_as_target_user "$binary_path" settings set --quiet audio.device fxroute_dsp_sink; then
+    die "Could not set qbzd audio.device=fxroute_dsp_sink"
+  fi
+  if ! run_as_target_user "$binary_path" settings set --quiet audio.skip_sink_switch true; then
+    die "Could not set qbzd audio.skip_sink_switch=true"
+  fi
+  current="$(read_qbzd_audio_output || true)"
+  backend="$(sed -n 's/^audio\.backend=//p' <<<"$current" | head -n 1)"
+  device="$(sed -n 's/^audio\.device=//p' <<<"$current" | head -n 1)"
+  skip="$(sed -n 's/^audio\.skip_sink_switch=//p' <<<"$current" | head -n 1)"
+  if [[ "$backend" != "pipewire" || "$device" != "fxroute_dsp_sink" || "$skip" != "true" ]]; then
+    die "qbzd did not retain the FXRoute DSP sink audio output"
+  fi
+  pass "qbzd audio output routed to the FXRoute DSP sink"
+}
+
 configure_qbzd_service() {
   local service_dir="$HOME/.config/systemd/user"
   local service_path="$service_dir/qbzd.service"
@@ -3421,7 +3539,7 @@ configure_qbzd_service() {
         return 0
       fi
     fi
-    if [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 || $QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 1 ]] \
+    if [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 || $QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 1 || $QBZD_AUDIO_CHANGED_BY_FXROUTE -eq 1 ]] \
       && [[ -f "$service_path" && ! -L "$service_path" ]] \
       && user_systemctl is-active --quiet qbzd.service; then
       if ! user_systemctl restart qbzd.service; then
@@ -3502,6 +3620,7 @@ install_qobuz() {
   ensure_qobuz_runtime_dependencies
   configure_qbzd_volume_mode
   configure_qbzd_qconnect
+  configure_qbzd_audio_output
   configure_qbzd_service
   if [[ $QBZD_SERVICE_IDENTITY_CHANGED -eq 1 || $QBZD_SERVICE_SETUP_FAILED -eq 1 ]]; then
     QOBUZ_PROVIDER_STATUS="owned service unavailable; preserved"
@@ -3546,8 +3665,11 @@ ensure_target_user_cache_ownership() {
 
 configure_optional_streaming() {
   # Provider daemons (qbzd fatally requires a writable user cache dir)
-  # must never start into a foreign-owned ~/.cache.
+  # must never start into a foreign-owned ~/.cache. The Qobuz volume
+  # bridge tails the journal as the target user, which needs the
+  # systemd-journal group wherever entries land outside user files.
   ensure_target_user_cache_ownership
+  ensure_target_user_journal_access
   detect_existing_provider_components
 
   if [[ $SELECT_SPOTIFY_DESKTOP -eq 1 ]]; then
@@ -3773,6 +3895,65 @@ target_user_has_seat_session() {
     | awk -v user="$FXROUTE_TARGET_USER" '$3 == user && $4 != "-" { found = 1 } END { exit found ? 0 : 1 }'
 }
 
+target_user_in_journal_group() {
+  id -nG "$FXROUTE_TARGET_USER" 2>/dev/null | tr ' ' '\n' | grep -qx systemd-journal
+}
+
+ensure_target_user_journal_access() {
+  local install_user="$FXROUTE_TARGET_USER"
+
+  if ! getent group systemd-journal >/dev/null 2>&1; then
+    warn "No systemd-journal group exists; the Qobuz remote volume bridge cannot follow the journal"
+    return 0
+  fi
+
+  if target_user_in_journal_group; then
+    pass "target user can read the journal"
+    return 0
+  fi
+
+  # The Qobuz volume bridge tails the qbzd journal as the target user. On
+  # hosts where new entries land outside the user-UID journal files, that
+  # tail needs traverse/read rights on the runtime journal, which only the
+  # systemd-journal group grants.
+  log "Adding $install_user to the systemd-journal group for Qobuz Connect volume tracking"
+  if ! "${SUDO_CMD[@]}" usermod -aG systemd-journal "$install_user"; then
+    warn "Could not add $install_user to the systemd-journal group"
+    return 0
+  fi
+  JOURNAL_GROUP_ADDED_BY_FXROUTE=1
+  pass "target user added to the systemd-journal group"
+
+  # Supplementary groups are fixed when the user manager starts. A
+  # providers-only run must never restart the running session (it would
+  # kill FXRoute mid-install): there the group applies after the next
+  # login or reboot.
+  if [[ $PROVIDERS_ONLY_MODE -eq 1 ]]; then
+    warn "The systemd-journal group applies after the next login or reboot"
+    return 0
+  fi
+  # Never restart a session on a seat: that would kill a running desktop.
+  if target_user_has_seat_session; then
+    warn "A graphical seat session is active; the systemd-journal group applies after the next login or reboot"
+    return 0
+  fi
+
+  local manager_unit="user@${FXROUTE_TARGET_UID}.service"
+  local deadline=$((SECONDS + 30))
+  if ! "${SUDO_CMD[@]}" systemctl restart "$manager_unit" >/dev/null 2>&1; then
+    warn "User session restart failed; the systemd-journal group takes effect after the next login or reboot"
+    return 0
+  fi
+  while (( SECONDS < deadline )); do
+    if [[ -d "$FXROUTE_RUNTIME_DIR" && -S "$FXROUTE_RUNTIME_DIR/bus" ]]; then
+      pass "target user session restarted with the systemd-journal group"
+      return 0
+    fi
+    sleep 1
+  done
+  warn "User session bus did not return after restart; the systemd-journal group takes effect after the next login or reboot"
+}
+
 ensure_target_user_audio_access() {
   local install_user="$FXROUTE_TARGET_USER"
 
@@ -3951,6 +4132,7 @@ write_install_state() {
   "user_linger_was_enabled": $( [[ $USER_LINGER_WAS_ENABLED -eq 1 ]] && echo true || echo false ),
   "user_linger_enabled_by_fxroute": $( [[ $USER_LINGER_ENABLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
   "audio_group_added_by_fxroute": $( [[ $AUDIO_GROUP_ADDED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+  "journal_group_added_by_fxroute": $( [[ $JOURNAL_GROUP_ADDED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
   "providers": {
     "spotify_desktop": {
       "selected": $( [[ $SELECT_SPOTIFY_DESKTOP -eq 1 ]] && echo true || echo false ),
@@ -3991,7 +4173,11 @@ write_install_state() {
       "volume_mode_changed_by_fxroute": $( [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
       "qconnect_startup_mode_before": "${QBZD_QCONNECT_STARTUP_MODE_BEFORE}",
       "qconnect_startup_mode_after": "${QBZD_QCONNECT_STARTUP_MODE_AFTER}",
-      "qconnect_changed_by_fxroute": $( [[ $QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 1 ]] && echo true || echo false )
+      "qconnect_changed_by_fxroute": $( [[ $QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+      "audio_backend_before": "${QBZD_AUDIO_BACKEND_BEFORE}",
+      "audio_device_before": "${QBZD_AUDIO_DEVICE_BEFORE}",
+      "audio_skip_sink_switch_before": "${QBZD_AUDIO_SKIP_SINK_SWITCH_BEFORE}",
+      "audio_changed_by_fxroute": $( [[ $QBZD_AUDIO_CHANGED_BY_FXROUTE -eq 1 ]] && echo true || echo false )
     },
     "tidal": {
       "selected": $( [[ $TIDAL_DEPENDENCY_SELECTED -eq 1 ]] && echo true || echo false ),

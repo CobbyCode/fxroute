@@ -351,6 +351,94 @@ printf 'mode=%s preserve=%s\\n' "$(<"$MODE_FILE")" "$PRESERVE_INSTALL_STATE"
             self.assertIn("mode=off preserve=0", result.stdout)
             self.assertIn('"qconnect_changed_by_fxroute": false', install_state.read_text())
 
+    def test_qobuz_audio_ownership_is_persisted_and_uninstaller_handles_it(self):
+        for field in (
+            "audio_backend_before",
+            "audio_device_before",
+            "audio_skip_sink_switch_before",
+            "audio_changed_by_fxroute",
+        ):
+            self.assertIn(field, self.install)
+            self.assertIn(field, self.uninstall)
+        configurator = extract_function(self.install, "configure_qbzd_audio_output")
+        self.assertIn("audio.backend", configurator)
+        self.assertIn("audio.device", configurator)
+        self.assertIn("audio.skip_sink_switch", configurator)
+        self.assertNotIn("device_name", configurator)
+        restore = extract_function(self.uninstall, "restore_qbzd_audio_output_if_owned")
+        self.assertIn("settings set --quiet audio.backend", restore)
+        self.assertIn("settings set --quiet audio.device", restore)
+        self.assertIn("settings set --quiet audio.skip_sink_switch", restore)
+        self.assertIn("clear_qbzd_audio_ownership_record", restore)
+
+    def test_uninstaller_restores_fxroute_owned_qobuz_audio_output(self):
+        reader = extract_function(self.uninstall, "read_qbzd_audio_output_for_uninstall")
+        restore = extract_function(self.uninstall, "restore_qbzd_audio_output_if_owned")
+        with tempfile.TemporaryDirectory() as td:
+            state_dir = Path(td) / "state"
+            state_dir.mkdir()
+            (state_dir / "backend").write_text("pipewire")
+            (state_dir / "device").write_text("fxroute_dsp_sink")
+            (state_dir / "skip").write_text("true")
+            install_state = Path(td) / "install-state.json"
+            fake_qbzd = Path(td) / "qbzd"
+            install_state.write_text(
+                '{"providers":{"qobuz":{"audio_backend_before":"system",'
+                '"audio_device_before":"system",'
+                '"audio_skip_sink_switch_before":"false",'
+                '"audio_changed_by_fxroute":true}}}\n'
+            )
+            fake_qbzd.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ $1 == settings && $2 == show ]]; then\n"
+                "  printf '{\"audio.backend\":\"%s\",\"audio.device\":\"%s\",\"audio.skip_sink_switch\":\"%s\"}\\n' \"$(<\"$STATE_DIR/backend\")\" \"$(<\"$STATE_DIR/device\")\" \"$(<\"$STATE_DIR/skip\")\"\n"
+                "elif [[ $1 == settings && $2 == set ]]; then\n"
+                "  case \"$4\" in\n"
+                "    audio.backend) printf '%s' \"$5\" > \"$STATE_DIR/backend\" ;;\n"
+                "    audio.device) printf '%s' \"$5\" > \"$STATE_DIR/device\" ;;\n"
+                "    audio.skip_sink_switch) printf '%s' \"$5\" > \"$STATE_DIR/skip\" ;;\n"
+                "  esac\n"
+                "fi\n"
+            )
+            fake_qbzd.chmod(0o755)
+            qbzd_sha256 = hashlib.sha256(fake_qbzd.read_bytes()).hexdigest()
+            harness = f"""
+{extract_function(self.uninstall, "run_as_target_user")}
+{reader}
+{extract_function(self.uninstall, "clear_qbzd_audio_ownership_record")}
+{extract_function(self.uninstall, "verify_owned_binary_identity")}
+{restore}
+read_install_state_field() {{
+  case "$1" in
+    providers.qobuz.audio_changed_by_fxroute) printf 'true\\n' ;;
+    providers.qobuz.audio_backend_before) printf 'system\\n' ;;
+    providers.qobuz.audio_device_before) printf 'system\\n' ;;
+    providers.qobuz.audio_skip_sink_switch_before) printf 'false\\n' ;;
+    providers.qobuz.binary_path) printf '%s\\n' "$QBZD_BINARY" ;;
+    providers.qobuz.binary_sha256) printf '%s\\n' "{qbzd_sha256}" ;;
+    *) return 1 ;;
+  esac
+}}
+confirm() {{ return 0; }}
+log() {{ :; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+PRESERVE_INSTALL_STATE=0
+INSTALL_STATE_FILE={install_state}
+FXROUTE_TARGET_USER="$(id -un)"
+FXROUTE_RUNTIME_DIR="/run/user/$(id -u)"
+restore_qbzd_audio_output_if_owned
+printf 'audio=%s/%s/%s preserve=%s\\n' "$(<"$STATE_DIR/backend")" "$(<"$STATE_DIR/device")" "$(<"$STATE_DIR/skip")" "$PRESERVE_INSTALL_STATE"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                env={**os.environ, "STATE_DIR": str(state_dir), "QBZD_BINARY": str(fake_qbzd)},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("audio=system/system/false preserve=0", result.stdout)
+            self.assertIn('"audio_changed_by_fxroute": false', install_state.read_text())
+
     def test_spotifyd_config_and_service_use_fixed_zeroconf_port(self):
         self.assertRegex(self.install, r'SPOTIFYD_ZEROCONF_PORT="[1-9][0-9]{3,4}"')
         config = extract_function(self.install, "write_spotifyd_config")
@@ -726,6 +814,60 @@ ensure_target_user_audio_access
 
     def test_install_state_records_audio_group_ownership(self):
         self.assertIn('"audio_group_added_by_fxroute"', self.install)
+
+    def test_journal_group_access_is_ensured_for_provider_setup(self):
+        body = extract_function(self.install, "configure_optional_streaming")
+        self.assertIn("ensure_target_user_journal_access", body)
+        access = extract_function(self.install, "ensure_target_user_journal_access")
+        self.assertIn("getent group systemd-journal", access)
+        self.assertIn("usermod -aG systemd-journal", access)
+        self.assertIn("JOURNAL_GROUP_ADDED_BY_FXROUTE=1", access)
+        self.assertIn("user@${FXROUTE_TARGET_UID}.service", access)
+
+    def test_journal_group_never_restarts_running_providers_only_session(self):
+        access = extract_function(self.install, "ensure_target_user_journal_access")
+        self.assertIn("PROVIDERS_ONLY_MODE -eq 1", access)
+        self.assertLess(
+            access.index("PROVIDERS_ONLY_MODE -eq 1"),
+            access.index('systemctl restart "$manager_unit"'),
+        )
+
+    def test_journal_group_is_added_with_membership_check(self):
+        fn = extract_function(self.install, "ensure_target_user_journal_access")
+        for preamble_member, expect_usermod in (("0", False), ("1", True)):
+            code = f"""
+{fn}
+FXROUTE_TARGET_USER=khadas
+FXROUTE_TARGET_UID=1000
+FXROUTE_RUNTIME_DIR=/run/user/1000
+PROVIDERS_ONLY_MODE=1
+SUDO_CMD=(sudo)
+getent() {{ [[ "$1" == group && "$2" == systemd-journal ]]; }}
+target_user_in_journal_group() {{ return {preamble_member}; }}
+target_user_has_seat_session() {{ return 0; }}
+sudo() {{ echo "SUDO usermod -aG systemd-journal khadas"; }}
+pass() {{ echo "PASS:$*"; }}
+warn() {{ echo "WARN:$*" >&2; }}
+log() {{ echo "LOG:$*"; }}
+JOURNAL_GROUP_ADDED_BY_FXROUTE=0
+ensure_target_user_journal_access
+printf 'flag=%s\\n' "$JOURNAL_GROUP_ADDED_BY_FXROUTE"
+"""
+            result = subprocess.run(["bash", "-c", code], capture_output=True, text=True, check=True)
+            if expect_usermod:
+                self.assertIn("SUDO usermod -aG systemd-journal khadas", result.stdout)
+                self.assertIn("flag=1", result.stdout)
+            else:
+                self.assertNotIn("usermod", result.stdout)
+                self.assertIn("flag=0", result.stdout)
+
+    def test_install_state_records_journal_group_ownership(self):
+        self.assertIn('"journal_group_added_by_fxroute"', self.install)
+
+    def test_uninstaller_removes_fxroute_owned_journal_group(self):
+        self.assertIn("remove_journal_group_if_owned()", self.uninstall)
+        self.assertIn("gpasswd -d", self.uninstall)
+        self.assertIn("journal_group_added_by_fxroute", self.uninstall)
 
     def test_pipewire_validation_requires_alsa_hardware_reachability(self):
         validation = extract_function(self.install, "validate_pipewire_session")

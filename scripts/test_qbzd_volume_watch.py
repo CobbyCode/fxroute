@@ -63,22 +63,18 @@ def _locked_line(percent: float) -> str:
     )
 
 
-def _fake_proc_static(lines):
-    proc = mock.Mock()
-    proc.returncode = None
-    results = [line.encode() for line in lines] + [b""]
-
-    async def readline():
-        if results:
-            return results.pop(0)
-        raise StopAsyncIteration
-
-    proc.stdout = mock.Mock()
-    proc.stdout.readline = readline
-    return proc
-
-
 class ParseTests(unittest.TestCase):
+    def test_journal_query_resolves_unit_across_split_files(self):
+        # --user-unit (not --user -u) is the only form that follows the
+        # unit's entries when user lines land outside user-UID.journal
+        # files (live-verified: --user -u follows a stale file forever).
+        # Cursor polling (not -f streaming) additionally survives rotation.
+        from playback.qbzd_volume_watch import JOURNALCTL_QUERY_BASE
+        self.assertIn("--user-unit=qbzd.service", JOURNALCTL_QUERY_BASE)
+        self.assertNotIn("--user", JOURNALCTL_QUERY_BASE)
+        self.assertNotIn("-u", JOURNALCTL_QUERY_BASE)
+        self.assertNotIn("-f", JOURNALCTL_QUERY_BASE)
+
     def test_locked_line_yields_percent(self):
         self.assertEqual(parse_ignored_volume(_LOCKED_LINE), 45)
         self.assertEqual(parse_ignored_volume(_locked_line("1.000")), 100)
@@ -307,74 +303,60 @@ class PickupTranslatorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
-    def _fake_proc(self, lines, gap=0.02):
-        proc = mock.Mock()
-        proc.returncode = None
+    def _fake_poll(self, batches):
+        """Script _poll_journal_lines batches; then hang for wait_for timeout."""
+        calls = []
+        it = iter(batches)
 
-        results = [line.encode() for line in lines] + [b""]
+        async def poll(cursor):
+            calls.append(cursor)
+            try:
+                return next(it)
+            except StopIteration:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
 
-        async def readline():
-            if gap > 0:
-                await asyncio.sleep(gap)
-            if results:
-                return results.pop(0)
-            raise StopAsyncIteration
+        return poll, calls
 
-        async def communicate():
-            # The one-shot bootstrap scan reads nothing here; history tests
-            # build their own proc with a scripted communicate().
-            return (b"", b"")
-
-        async def wait():
-            return 0
-
-        proc.stdout = mock.Mock()
-        proc.stdout.readline = readline
-        proc.communicate = communicate
-        proc.wait = wait
-        return proc
-
-    def _fake_spawn(self, proc):
-        async def spawn(*args, **kwargs):
-            return proc
-
-        return spawn
-
-    def _real_sleep_patch(self, watch):
-        # Keep real suspension so the event loop can still fire the wait_for
-        # timeout; patched AsyncMocks would starve it (no await yields).
-        return mock.patch.object(watch, "_sleep", new=lambda delay: asyncio.sleep(delay))
-
-    async def test_loop_ignores_far_side_gestures_and_picks_up_on_crossing(self):
-        applied = []
-
+    def _make_watch(self, applied, master=37, active=True, device_events=None):
         async def apply_value(value):
             applied.append(value)
 
-        proc = self._fake_proc(lines=[
-            _locked_line("0.980"),   # connect push (phone media volume)
-            _locked_line("0.900"),
-            _locked_line("0.600"),
-            _locked_line("0.370"),   # lands on the master: pickup
-            _locked_line("0.360"),   # picked up: absolute tracking
-            _locked_line("0.290"),
-        ])
-        watch = QobuzVolumeWatch(
+        kwargs = {}
+        if device_events is not None:
+            kwargs["on_device_active"] = lambda value: device_events.append(value)
+        return QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
-                is_active=lambda: True,
+                is_active=lambda: active,
                 apply_volume_value=apply_value,
-                current_master=lambda: 37,
+                current_master=lambda: master,
+                **kwargs,
             ),
             debounce_seconds=0.0,
         )
-        with mock.patch("asyncio.create_subprocess_exec", new=self._fake_spawn(proc)):
-            with self._real_sleep_patch(watch):
-                try:
-                    await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
-                except asyncio.TimeoutError:  # loop waits on backoff forever after EOF
-                    pass
-            await asyncio.sleep(0.05)
-            self.assertEqual(applied, [37, 36, 29])
+
+    async def _run_loop_until_timeout(self, watch, timeout=3.0):
+        try:
+            await asyncio.wait_for(watch.run_watch_loop(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+        await asyncio.sleep(0.05)
+
+    async def test_loop_ignores_far_side_gestures_and_picks_up_on_crossing(self):
+        applied = []
+        watch = self._make_watch(applied)
+        # Lines arrive spread across polls (as in live operation); each poll
+        # drains before the next, so the pickup write and the absolute
+        # tracking writes are all observable.
+        poll, _calls = self._fake_poll([
+            ([_locked_line("0.980"), _locked_line("0.900"), _locked_line("0.600"),
+              _locked_line("0.370")], "c1"),
+            ([_locked_line("0.360")], "c2"),
+            ([_locked_line("0.290")], "c3"),
+        ])
+        with mock.patch.object(watch, "_poll_journal_lines", new=poll):
+            await self._run_loop_until_timeout(watch)
+        self.assertEqual(applied, [37, 36, 29])
 
     async def test_value_seen_during_master_write_is_drained_without_next_event(self):
         applied = []
@@ -496,89 +478,116 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(watch._translator.pending)
 
-    async def test_loop_respawns_after_eof_keeping_session_state(self):
+    async def test_loop_advances_cursor_across_polls_without_replay(self):
         applied = []
-        spawned = []
-
-        async def apply_value(value):
-            applied.append(value)
-
-        first = self._fake_proc(lines=[_LOCKED_LINE])
-        second = self._fake_proc(lines=[_locked_line("0.440")])
-
-        def factory():
-            return first if not spawned else second
-
-        async def spawn(*args, **kwargs):
-            chosen = factory()
-            spawned.append(args)
-            return chosen
-
-        watch = QobuzVolumeWatch(
-            QobuzVolumeWatchDependencies(
-                is_active=lambda: True,
-                apply_volume_value=apply_value,
-                current_master=lambda: 45,
-            ),
-            debounce_seconds=0.0,
-        )
-        with mock.patch("asyncio.create_subprocess_exec", new=spawn):
-            with self._real_sleep_patch(watch):
-                with self.assertRaises(asyncio.TimeoutError):
-                    await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
-        await asyncio.sleep(0.05)
-        # The respawn is transparent: 45 anchors; 44 lands on the master
+        watch = self._make_watch(applied, master=45)
+        poll, calls = self._fake_poll([
+            ([_LOCKED_LINE], "c1"),
+            ([_locked_line("0.440")], "c2"),
+        ])
+        with mock.patch.object(watch, "_poll_journal_lines", new=poll):
+            await self._run_loop_until_timeout(watch)
+        # The cursor chains polls: 45 anchors; 44 lands on the master
         # (45) within the same crossing window and picks up.
         self.assertEqual(applied, [44])
-        # journalctl was (re)spawned after the first EOF, with the tail command.
-        self.assertGreaterEqual(len(spawned), 2)
-        self.assertEqual(spawned[0][3], "qbzd.service")
+        # Polls chain cursors instead of replaying history.
+        self.assertEqual(calls[0], None)
+        self.assertIn("c1", calls)
+
+    async def test_loop_survives_poll_failure_with_backoff(self):
+        applied = []
+        watch = self._make_watch(applied, master=37)
+        calls = []
+        batches = [([_locked_line("0.980"), _locked_line("0.370")], "c1")]
+        it = iter(batches)
+
+        async def flaky_poll(cursor):
+            calls.append(cursor)
+            if len(calls) == 1:
+                raise RuntimeError("journal temporarily unavailable")
+            return next(it)
+
+        with mock.patch.object(watch, "_poll_journal_lines", new=flaky_poll):
+            await self._run_loop_until_timeout(watch, timeout=4.0)
+        # 98 anchors, 37 lands on the master: pickup despite the failed poll.
+        self.assertEqual(applied, [37])
+        self.assertGreaterEqual(len(calls), 2)
+
+    async def test_poll_returns_lines_and_advances_cursor(self):
+        seen_args = []
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"line one\nline two\n-- cursor: CURSOR-9\n", b"")
+
+            async def wait(self):
+                return 0
+
+        async def spawn(*args, **kwargs):
+            seen_args.append(args)
+            return FakeProc()
+
+        watch = self._make_watch([])
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn):
+            lines, cursor = await watch._poll_journal_lines("CURSOR-0")
+        self.assertEqual(lines, ["line one", "line two"])
+        self.assertEqual(cursor, "CURSOR-9")
+        flat = " ".join(seen_args[0])
+        self.assertIn("--after-cursor", flat)
+        self.assertIn("CURSOR-0", flat)
+        self.assertNotIn("--lines=0", flat)
+
+    async def test_poll_anchors_without_replay_and_resets_on_failure(self):
+        seen_args = []
+
+        class FakeProc:
+            def __init__(self, returncode, output):
+                self.returncode = returncode
+                self._output = output
+
+            async def communicate(self):
+                return (self._output, b"")
+
+            async def wait(self):
+                return self.returncode
+
+        async def spawn_ok(*args, **kwargs):
+            seen_args.append(args)
+            return FakeProc(0, b"-- cursor: C-ANCHOR\n")
+
+        watch = self._make_watch([])
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn_ok):
+            lines, cursor = await watch._poll_journal_lines(None)
+        self.assertEqual(lines, [])
+        self.assertEqual(cursor, "C-ANCHOR")
+        self.assertIn("--lines=0", " ".join(seen_args[0]))
+
+        async def spawn_bad(*args, **kwargs):
+            return FakeProc(1, b"garbage without cursor\n")
+
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn_bad):
+            lines, cursor = await watch._poll_journal_lines("C-OLD")
+        self.assertEqual(lines, [])
+        self.assertIsNone(cursor)
 
     async def test_loop_ignores_intents_while_qobuz_does_not_own(self):
         applied = []
-
-        async def apply_value(value):
-            applied.append(value)
-
-        proc = self._fake_proc(lines=[_LOCKED_LINE])
-        watch = QobuzVolumeWatch(
-            QobuzVolumeWatchDependencies(
-                is_active=lambda: False,
-                apply_volume_value=apply_value,
-                current_master=lambda: 37,
-            ),
-            debounce_seconds=0.0,
-        )
-        with mock.patch("asyncio.create_subprocess_exec", new=self._fake_spawn(proc)):
-            with self._real_sleep_patch(watch):
-                with self.assertRaises(asyncio.TimeoutError):
-                    await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
-        await asyncio.sleep(0.05)
+        watch = self._make_watch(applied, master=37, active=False)
+        poll, _calls = self._fake_poll([([_LOCKED_LINE], "c1")])
+        with mock.patch.object(watch, "_poll_journal_lines", new=poll):
+            await self._run_loop_until_timeout(watch)
         self.assertEqual(applied, [])
 
     async def test_loop_warns_once_on_software_mode_lines(self):
         applied = []
-
-        async def apply_value(value):
-            applied.append(value)
-
+        watch = self._make_watch(applied, master=37)
         software_line = "[QConnect] Renderer command applied: SetVolume { volume: Some(69) }"
-        proc = self._fake_proc(lines=[software_line, software_line])
-        watch = QobuzVolumeWatch(
-            QobuzVolumeWatchDependencies(
-                is_active=lambda: True,
-                apply_volume_value=apply_value,
-                current_master=lambda: 37,
-            ),
-            debounce_seconds=0.0,
-        )
-        with mock.patch("asyncio.create_subprocess_exec", new=self._fake_spawn(proc)):
-            with self._real_sleep_patch(watch):
-                with mock.patch.object(watch, "_warn_software_mode_once") as warn:
-                    try:
-                        await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
-                    except asyncio.TimeoutError:
-                        pass
+        poll, _calls = self._fake_poll([([software_line, software_line], "c1")])
+        with mock.patch.object(watch, "_poll_journal_lines", new=poll):
+            with mock.patch.object(watch, "_warn_software_mode_once") as warn:
+                await self._run_loop_until_timeout(watch)
         # The first apply line only arms the pair check; the second consecutive
         # apply (no ignore line in between) proves software mode.
         self.assertEqual(warn.call_count, 1)
@@ -587,30 +596,10 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
     async def test_loop_notifies_device_state_on_activation_lines(self):
         applied = []
         device_events = []
-
-        async def apply_value(value):
-            applied.append(value)
-
-        proc = self._fake_proc(lines=[
-            _ACTIVATION_LINE,
-            _locked_line("0.500"),
-        ])
-        watch = QobuzVolumeWatch(
-            QobuzVolumeWatchDependencies(
-                is_active=lambda: True,
-                apply_volume_value=apply_value,
-                current_master=lambda: 37,
-                on_device_active=lambda value: device_events.append(value),
-            ),
-            debounce_seconds=0.0,
-        )
-        with mock.patch("asyncio.create_subprocess_exec", new=self._fake_spawn(proc)):
-            with self._real_sleep_patch(watch):
-                try:
-                    await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
-                except asyncio.TimeoutError:
-                    pass
-            await asyncio.sleep(0.05)
+        watch = self._make_watch(applied, master=37, device_events=device_events)
+        poll, _calls = self._fake_poll([([_ACTIVATION_LINE, _locked_line("0.500")], "c1")])
+        with mock.patch.object(watch, "_poll_journal_lines", new=poll):
+            await self._run_loop_until_timeout(watch)
         # Selection tracking follows the renderer commands; the app's
         # post-activation push only anchors (master 37, push 50: no crossing).
         self.assertEqual(device_events, [True])
@@ -697,7 +686,6 @@ class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
         async def apply_value(value):
             applied.append(value)
 
-        proc = _fake_proc_static(lines)
         watch = QobuzVolumeWatch(
             QobuzVolumeWatchDependencies(
                 is_active=lambda: True,
@@ -706,16 +694,18 @@ class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
             ),
             debounce_seconds=0.0,
         )
-        return watch, proc
+        return watch, [ (lines, "c1") ]
 
-    async def _run(self, watch, proc):
-        async def spawn(*args, **kwargs):
-            return proc
+    async def _run(self, watch, batches):
+        async def poll(cursor):
+            if batches:
+                return batches.pop(0)
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
 
-        with mock.patch("asyncio.create_subprocess_exec", new=spawn):
-            with mock.patch.object(watch, "_sleep", new=lambda delay: asyncio.sleep(delay)):
-                with self.assertRaises(asyncio.TimeoutError):
-                    await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
+        with mock.patch.object(watch, "_poll_journal_lines", new=poll):
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(watch.run_watch_loop(), timeout=3.0)
         await asyncio.sleep(0.05)
 
     async def test_connect_push_and_down_drag_never_jump_the_master(self):

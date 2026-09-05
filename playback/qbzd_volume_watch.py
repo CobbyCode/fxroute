@@ -11,10 +11,11 @@ intent is observable only through the daemon journal line::
 
     [QConnect] volume_mode=locked: ignoring remote SetVolume(0.450); player stays at 100%
 
-This module tails that line via ``journalctl --user -u qbzd.service -f`` and
-maps each intent onto the canonical FXRoute master volume. qbzd's own gain is
-never written here; the unity pin lives at the Qobuz claim/start path
-(``set_volume(100)`` works in locked mode through the local control plane).
+This module polls that line via cursor-anchored ``journalctl --user-unit``
+one-shot queries and maps each intent onto the canonical FXRoute master
+volume. qbzd's own gain is never written here; the unity pin lives at the
+Qobuz claim/start path (``set_volume(100)`` works in locked mode through
+the local control plane).
 
 Remote values are translated with **pickup semantics** (see
 :class:`playback.remote_volume.RemoteVolumePickupTranslator`): the
@@ -50,11 +51,17 @@ from playback.remote_volume import RemoteVolumePickupTranslator
 
 logger = logging.getLogger(__name__)
 
-# Tail only new lines: journalctl -f already streams; -n 0 avoids replaying
-# pre-start history (FXRoute must not apply volumes from before its start).
-JOURNALCTL_COMMAND = [
-    "journalctl", "--user", "-u", "qbzd.service", "-f", "-o", "cat", "-n", "0",
+# One-shot journal query base. A `-f` streaming tail demonstrably goes blind
+# on hosts with heavy journal rotation: it stays pinned to a stale file
+# while new entries land elsewhere, with no EOF or error to recover from.
+# Cursor-anchored polling re-resolves the files on every pass
+# (rotation- and split-proof) and never replays pre-start history.
+# --user-unit (not --user -u) resolves the unit's entries across split files.
+JOURNALCTL_QUERY_BASE = [
+    "journalctl", "--user-unit=qbzd.service", "-o", "cat", "--no-pager",
 ]
+POLL_INTERVAL_SECONDS = 0.5
+POLL_READ_TIMEOUT_SECONDS = 10.0
 RESTART_BACKOFF_BASE_SECONDS = 1.0
 RESTART_BACKOFF_MAX_SECONDS = 30.0
 DEBOUNCE_SECONDS = 0.15
@@ -142,12 +149,12 @@ class QobuzVolumeWatch:
         self,
         deps: QobuzVolumeWatchDependencies,
         *,
-        journal_command: list[str] | None = None,
         debounce_seconds: float = DEBOUNCE_SECONDS,
+        poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
     ) -> None:
         self._deps = deps
-        self._journal_command = list(journal_command or JOURNALCTL_COMMAND)
         self._debounce_seconds = debounce_seconds
+        self._poll_interval_seconds = poll_interval_seconds
         self._translator = RemoteVolumePickupTranslator(
             is_active=deps.is_active,
             apply_volume_value=deps.apply_volume_value,
@@ -248,7 +255,7 @@ class QobuzVolumeWatch:
         proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                "journalctl", "--user", "-u", "qbzd.service",
+                "journalctl", "--user-unit=qbzd.service",
                 "-n", "500", "-o", "cat", "--no-pager",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
@@ -271,6 +278,47 @@ class QobuzVolumeWatch:
                 except asyncio.TimeoutError:
                     proc.kill()
 
+    async def _poll_journal_lines(self, cursor: str | None) -> tuple[list[str], str | None]:
+        """Return new qbzd journal lines since cursor (cursor-anchored poll).
+
+        Each poll re-resolves the journal files, so rotation, split files or
+        vacuumed archives can never strand the reader on a dead file the way
+        a streaming ``-f`` tail does. A missing cursor anchors at now (no
+        replay of pre-start history); an unusable cursor re-anchors the same
+        way instead of failing the loop.
+        """
+        args = [*JOURNALCTL_QUERY_BASE, "--show-cursor"]
+        if cursor is None:
+            args += ["--lines=0"]
+        else:
+            args += ["--after-cursor", cursor]
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=POLL_READ_TIMEOUT_SECONDS
+            )
+        finally:
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+        if proc.returncode != 0:
+            return [], None
+        lines: list[str] = []
+        new_cursor = cursor
+        for raw in stdout.decode("utf-8", errors="replace").splitlines():
+            if raw.startswith("-- cursor:"):
+                new_cursor = raw.partition(":")[2].strip() or new_cursor
+            else:
+                lines.append(raw)
+        return lines, new_cursor
+
     async def run_watch_loop(self) -> None:
         logger.info("Qobuz qbzd journal volume watch loop entered")
         await self._bootstrap_device_state()
@@ -279,28 +327,21 @@ class QobuzVolumeWatch:
             name="qobuz-volume-owner-monitor",
         )
         self._owner_monitor_task = owner_monitor
-        proc: asyncio.subprocess.Process | None = None
         expect_ignore = False
+        cursor: str | None = None
         try:
             while True:
                 try:
-                    if proc is None or proc.returncode is not None:
-                        proc = await asyncio.create_subprocess_exec(
-                            *self._journal_command,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.DEVNULL,
-                        )
-                    line = await proc.stdout.readline()
-                    if not line:
-                        # EOF: journalctl exited (e.g. after a journal rotation);
-                        # respawn after a bounded backoff so a wedged journalctl
-                        # cannot busy-loop the event loop.
-                        proc = None
-                        expect_ignore = False
-                        await self._sleep(self._next_backoff())
-                        continue
-                    self._backoff_seconds = 0.0
-                    text = line.decode("utf-8", errors="replace")
+                    lines, cursor = await self._poll_journal_lines(cursor)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("Qobuz qbzd journal poll failed: %s", exc)
+                    expect_ignore = False
+                    await self._sleep(self._next_backoff())
+                    continue
+                self._backoff_seconds = 0.0
+                for text in lines:
                     if is_session_activation(text) or is_session_deactivation(text):
                         # A fresh Connect session re-anchors the controller scale;
                         # the app's post-activation sync push must not move master.
@@ -327,18 +368,7 @@ class QobuzVolumeWatch:
                         # ignore pair: qbzd applied the volume itself.
                         self._warn_software_mode_once(time.monotonic())
                         expect_ignore = False
-                except asyncio.CancelledError:
-                    if proc is not None:
-                        try:
-                            proc.terminate()
-                        except ProcessLookupError:
-                            pass
-                    raise
-                except Exception as exc:
-                    logger.warning("Qobuz qbzd journal volume watch pass failed: %s", exc)
-                    proc = None
-                    expect_ignore = False
-                    await self._sleep(self._next_backoff())
+                await self._sleep(self._poll_interval_seconds)
         finally:
             if self._owner_monitor_task is owner_monitor:
                 self._owner_monitor_task = None

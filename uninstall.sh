@@ -690,6 +690,29 @@ remove_audio_group_if_owned() {
   log "Removed $FXROUTE_TARGET_USER from the audio group added by FXRoute"
 }
 
+remove_journal_group_if_owned() {
+  local group_owned=""
+  local sudo_cmd=()
+
+  group_owned="$(read_install_state_field journal_group_added_by_fxroute 2>/dev/null || true)"
+  [[ "$group_owned" == "true" ]] || return 0
+  if [[ "$(id -u)" -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo_cmd=(sudo)
+    else
+      warn "Cannot remove FXRoute-owned systemd-journal group membership because sudo is unavailable"
+      PRESERVE_INSTALL_STATE=1
+      return 0
+    fi
+  fi
+  if ! "${sudo_cmd[@]}" gpasswd -d "$FXROUTE_TARGET_USER" systemd-journal; then
+    warn "Could not remove $FXROUTE_TARGET_USER from the systemd-journal group"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  log "Removed $FXROUTE_TARGET_USER from the systemd-journal group added by FXRoute"
+}
+
 remove_spotify_cleanup_helper() {
   local service_name="fxroute-spotify-cache-cleanup.service"
   local timer_name="fxroute-spotify-cache-cleanup.timer"
@@ -1691,6 +1714,137 @@ restore_qbzd_qconnect_if_owned() {
   log "Restored qbzd qconnect.startup_mode=$mode_before"
 }
 
+read_qbzd_audio_output_for_uninstall() {
+  local binary_path="$1"
+  [[ -x "$binary_path" ]] || return 1
+  run_as_target_user "$binary_path" settings show --quiet --json 2>/dev/null | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (ValueError, OSError):
+    raise SystemExit(1)
+for key in ("audio.backend", "audio.device", "audio.skip_sink_switch"):
+    value = payload.get(key, "")
+    if not value:
+        raise SystemExit(1)
+    print(f"{key}={value}")
+'
+}
+
+clear_qbzd_audio_ownership_record() {
+  local state_file="$INSTALL_STATE_FILE"
+  local temp_file=""
+
+  [[ -f "$state_file" ]] || return 0
+  temp_file="$(mktemp "$(dirname "$state_file")/.install-state.XXXXXX")" || return 1
+  if ! python3 - "$state_file" "$temp_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+temp_path = Path(sys.argv[2])
+try:
+    payload = json.loads(state_path.read_text())
+    qobuz = payload["providers"]["qobuz"]
+    qobuz["audio_changed_by_fxroute"] = False
+    qobuz["audio_backend_before"] = ""
+    qobuz["audio_device_before"] = ""
+    qobuz["audio_skip_sink_switch_before"] = ""
+    temp_path.write_text(json.dumps(payload, indent=2) + "\n")
+except (KeyError, OSError, TypeError, ValueError):
+    raise SystemExit(1)
+PY
+  then
+    rm -f "$temp_file"
+    return 1
+  fi
+  chmod 600 "$temp_file"
+  if ! mv -f "$temp_file" "$state_file"; then
+    rm -f "$temp_file"
+    return 1
+  fi
+  return 0
+}
+
+restore_qbzd_audio_output_if_owned() {
+  local changed_by_fxroute=""
+  local backend_before=""
+  local device_before=""
+  local skip_before=""
+  local binary_path=""
+  local current=""
+
+  changed_by_fxroute="$(read_install_state_field "providers.qobuz.audio_changed_by_fxroute" 2>/dev/null || true)"
+  [[ "$changed_by_fxroute" == "true" ]] || return 0
+  backend_before="$(read_install_state_field "providers.qobuz.audio_backend_before" 2>/dev/null || true)"
+  device_before="$(read_install_state_field "providers.qobuz.audio_device_before" 2>/dev/null || true)"
+  skip_before="$(read_install_state_field "providers.qobuz.audio_skip_sink_switch_before" 2>/dev/null || true)"
+  if [[ -z "$backend_before" || -z "$device_before" || -z "$skip_before" ]]; then
+    warn "Cannot restore the previous qbzd audio output because its ownership record is incomplete"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+
+  binary_path="$(read_install_state_field "providers.qobuz.binary_path" 2>/dev/null || true)"
+  if [[ -z "$binary_path" || ! -x "$binary_path" ]]; then
+    warn "Cannot restore the previous qbzd audio output because its recorded qbzd binary is unavailable"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+  if ! verify_owned_binary_identity "$binary_path" "$(read_install_state_field "providers.qobuz.binary_sha256" 2>/dev/null || true)" "recorded qbzd"; then
+    return 1
+  fi
+
+  current="$(read_qbzd_audio_output_for_uninstall "$binary_path" || true)"
+  if [[ "$current" == *$'audio.backend='"$backend_before"* \
+    && "$current" == *$'audio.device='"$device_before"* \
+    && "$current" == *$'audio.skip_sink_switch='"$skip_before"* ]]; then
+    if ! clear_qbzd_audio_ownership_record; then
+      warn "qbzd audio output is restored, but its ownership record could not be cleared"
+      PRESERVE_INSTALL_STATE=1
+      return 1
+    fi
+    log "qbzd audio output is already restored"
+    return 0
+  fi
+  if [[ "$current" != *$'audio.backend=pipewire'* \
+    || "$current" != *$'audio.device=fxroute_dsp_sink'* \
+    || "$current" != *$'audio.skip_sink_switch=true'* ]]; then
+    warn "Not restoring qbzd audio output: it changed from FXRoute's recorded routing after installation"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+  if ! confirm "FXRoute routed qbzd audio output to the FXRoute DSP sink. Restore the previous output ($backend_before/$device_before)?"; then
+    warn "Keeping qbzd audio output on the FXRoute DSP sink"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if ! run_as_target_user "$binary_path" settings set --quiet audio.backend "$backend_before" >/dev/null 2>&1 \
+    || ! run_as_target_user "$binary_path" settings set --quiet audio.device "$device_before" >/dev/null 2>&1 \
+    || ! run_as_target_user "$binary_path" settings set --quiet audio.skip_sink_switch "$skip_before" >/dev/null 2>&1; then
+    warn "Failed to restore the previous qbzd audio output"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+  current="$(read_qbzd_audio_output_for_uninstall "$binary_path" || true)"
+  if [[ "$current" != *$'audio.backend='"$backend_before"* \
+    || "$current" != *$'audio.device='"$device_before"* \
+    || "$current" != *$'audio.skip_sink_switch='"$skip_before"* ]]; then
+    warn "qbzd did not retain the restored audio output"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+  if ! clear_qbzd_audio_ownership_record; then
+    warn "qbzd audio output is restored, but its ownership record could not be cleared"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+  log "Restored qbzd audio output ($backend_before/$device_before)"
+}
+
 tidalapi_installed_version() {
   local python_path="$INSTALL_ROOT/.venv/bin/python3"
   [[ -x "$python_path" ]] || return 1
@@ -1764,6 +1918,9 @@ remove_owned_streaming_components() {
     PROVIDER_LAN_CLEANUP_DEFERRED=1
   elif ! restore_qbzd_qconnect_if_owned; then
     warn "Skipping qbzd binary/service removal until its FXRoute Qobuz Connect change can be restored"
+    PROVIDER_LAN_CLEANUP_DEFERRED=1
+  elif ! restore_qbzd_audio_output_if_owned; then
+    warn "Skipping qbzd binary/service removal until its FXRoute audio output change can be restored"
     PROVIDER_LAN_CLEANUP_DEFERRED=1
   else
     preserve_before=$PRESERVE_INSTALL_STATE
@@ -3500,6 +3657,8 @@ main() {
     remove_user_linger_if_owned
     log "Removing FXRoute-owned audio group membership"
     remove_audio_group_if_owned
+    log "Removing FXRoute-owned systemd-journal group membership"
+    remove_journal_group_if_owned
   else
     log "Keeping FXRoute user-session persistence while service cleanup is deferred"
   fi

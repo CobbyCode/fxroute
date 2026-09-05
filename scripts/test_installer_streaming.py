@@ -737,6 +737,136 @@ test ! -e "$HOME/.local/bin/spotifyd"
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(calls_file.read_text().strip(), expected)
 
+    def test_qbzd_audio_output_runs_after_qconnect_and_before_service(self):
+        body = extract_function(self.install, "install_qobuz")
+        self.assertLess(
+            body.index("configure_qbzd_qconnect"), body.index("configure_qbzd_audio_output")
+        )
+        self.assertLess(
+            body.index("configure_qbzd_audio_output"), body.index("configure_qbzd_service")
+        )
+
+    def test_qbzd_audio_output_is_idempotent_and_leaves_name_alone(self):
+        configurator = extract_function(self.install, "configure_qbzd_audio_output")
+        for token in (
+            "audio.backend",
+            "audio.device",
+            "audio.skip_sink_switch",
+            "settings set --quiet",
+            "already targets",
+        ):
+            self.assertIn(token, configurator)
+        self.assertNotIn("device_name", configurator)
+        self.assertNotIn("qconnect name", configurator)
+        self.assertLess(
+            configurator.index("QBZD_AUDIO_CHANGED_BY_FXROUTE=1"),
+            configurator.index("settings set --quiet"),
+        )
+
+    def test_existing_service_restarts_on_audio_output_change(self):
+        service = extract_function(self.install, "configure_qbzd_service")
+        self.assertIn("QBZD_AUDIO_CHANGED_BY_FXROUTE -eq 1", service)
+
+    def test_install_state_records_audio_output_ownership(self):
+        for field in (
+            "audio_backend_before",
+            "audio_device_before",
+            "audio_skip_sink_switch_before",
+            "audio_changed_by_fxroute",
+        ):
+            self.assertIn(field, self.install)
+
+    def test_qbzd_audio_configure_routes_and_rechecks_with_fake_qbzd(self):
+        reader = extract_function(self.install, "read_qbzd_audio_output")
+        configurator = extract_function(self.install, "configure_qbzd_audio_output")
+        path_reader = extract_function(self.install, "qbzd_binary_path")
+        preamble = (
+            "run_as_target_user() { \"$@\"; }\n"
+            "log() { :; }\n"
+            "pass() { printf '[pass] %s\\n' \"$*\"; }\n"
+            "die() { printf '[fxroute][error] %s\\n' \"$*\" >&2; exit 1; }\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            provider_dir = home / ".local" / "bin"
+            provider_dir.mkdir(parents=True)
+            calls_file = Path(td) / "calls"
+            fake_qbzd = provider_dir / "qbzd"
+            fake_qbzd.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ $1 == settings && $2 == show ]]; then\n"
+                "  printf '{\"audio.backend\":\"%s\",\"audio.device\":\"%s\",\"audio.skip_sink_switch\":\"%s\"}\\n' \"$(<\"$STATE_DIR/backend\")\" \"$(<\"$STATE_DIR/device\")\" \"$(<\"$STATE_DIR/skip\")\"\n"
+                "elif [[ $1 == settings && $2 == set ]]; then\n"
+                "  printf 'set:%s=%s\\n' \"$4\" \"$5\" >> \"$CALLS_FILE\"\n"
+                "  case \"$4\" in\n"
+                "    audio.backend) printf '%s' \"$5\" > \"$STATE_DIR/backend\" ;;\n"
+                "    audio.device) printf '%s' \"$5\" > \"$STATE_DIR/device\" ;;\n"
+                "    audio.skip_sink_switch) printf '%s' \"$5\" > \"$STATE_DIR/skip\" ;;\n"
+                "  esac\n"
+                "else\n"
+                "  exit 1\n"
+                "fi\n"
+            )
+            fake_qbzd.chmod(0o755)
+            harness = (
+                f"{preamble}\n{path_reader}\n{reader}\n{configurator}\n"
+                "QBZD_AUDIO_BACKEND_BEFORE=\"\"\n"
+                "QBZD_AUDIO_DEVICE_BEFORE=\"\"\n"
+                "QBZD_AUDIO_SKIP_SINK_SWITCH_BEFORE=\"\"\n"
+                "QBZD_AUDIO_CHANGED_BY_FXROUTE=0\n"
+                "configure_qbzd_audio_output\n"
+                "printf 'backend=%s device=%s skip=%s changed=%s calls=%s\\n' "
+                "\"$(<\"$STATE_DIR/backend\")\" \"$(<\"$STATE_DIR/device\")\" \"$(<\"$STATE_DIR/skip\")\" "
+                "\"$QBZD_AUDIO_CHANGED_BY_FXROUTE\" \"$(<\"$CALLS_FILE\")\"\n"
+            )
+            # Misrouted output is routed, verified, and recorded.
+            state_dir = Path(td) / "state-off"
+            state_dir.mkdir()
+            (state_dir / "backend").write_text("system")
+            (state_dir / "device").write_text("system")
+            (state_dir / "skip").write_text("false")
+            calls_file.write_text("")
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "PATH": "/usr/bin:/bin",
+                "CALLS_FILE": str(calls_file),
+                "STATE_DIR": str(state_dir),
+            }
+            result = subprocess.run(
+                ["bash", "-c", harness], capture_output=True, text=True, env=env
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = result.stdout
+            self.assertIn("backend=pipewire device=fxroute_dsp_sink skip=true changed=1", out)
+            self.assertIn("set:audio.backend=pipewire", out)
+            self.assertIn("set:audio.device=fxroute_dsp_sink", out)
+            self.assertIn("set:audio.skip_sink_switch=true", out)
+            # Already routed output is left untouched.
+            state_dir = Path(td) / "state-on"
+            state_dir.mkdir()
+            (state_dir / "backend").write_text("pipewire")
+            (state_dir / "device").write_text("fxroute_dsp_sink")
+            (state_dir / "skip").write_text("true")
+            calls_file.write_text("")
+            env.update({"STATE_DIR": str(state_dir)})
+            result = subprocess.run(
+                ["bash", "-c", harness], capture_output=True, text=True, env=env
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("already targets", result.stdout)
+            self.assertNotIn("set:audio", result.stdout)
+            # Unreadable settings abort the run instead of leaving DSP off.
+            broken = provider_dir / "qbzd-broken"
+            broken.write_text("#!/usr/bin/env bash\nexit 1\n")
+            broken.chmod(0o755)
+            (provider_dir / "qbzd").unlink()
+            broken.rename(provider_dir / "qbzd")
+            result = subprocess.run(
+                ["bash", "-c", harness], capture_output=True, text=True, env=env
+            )
+            self.assertNotEqual(result.returncode, 0)
+
     def test_tidal_is_an_optional_python_dependency(self):
         self.assertNotIn("tidalapi", self.base_requirements)
         self.assertIn("tidalapi==0.8.11", self.tidal_requirements)
