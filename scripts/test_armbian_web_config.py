@@ -283,7 +283,7 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
         self.assertIn('id="wifi_country" name="wifi_country"', page)
         self.assertIn("Germany (DE)", page)
         self.assertIn('id="wifi-password-note"', page)
-        self.assertIn("wifiPassword.required = selectedNetworkSecured === true;", page)
+        self.assertIn("wifiPassword.required = !ethernetActive && selectedNetworkSecured === true;", page)
         self.assertIn('wifiPassword.value = "";', page)
         self.assertIn("selectedNetworkSecured = null;", page)
         self.assertIn("Rescan", page)
@@ -482,7 +482,101 @@ class ArmbianWebConfigBehaviorTests(unittest.TestCase):
 
         page = self.web.setup_page("rpi4b", ethernet=True, ap_active=False)
         self.assertIn('action="/setup"', page)
-        self.assertNotIn("Ethernet", page)
+        self.assertIn('data-ethernet="true"', page)
+        self.assertIn("disableWifiForEthernet", page)
+        self.assertIn('id="wifi-note"', page)
+        self.assertIn(
+            "This device is connected over Ethernet, so no Wi-Fi setup is needed.",
+            page,
+        )
+        self.assertIn("syncNetworkFields();\n  }", page)
+
+    def test_ethernet_setup_page_disables_every_wifi_control(self):
+        page = self.web.setup_page("rpi4b", ethernet=True, ap_active=False)
+        script = page.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+        script = script.replace("{{", "{").replace("}}", "}")
+        namespace = {}
+        exec(compile("ETH_SCRIPT = " + repr(script), "<eth>", "exec"), namespace)
+        eth_script = namespace["ETH_SCRIPT"]
+        self.assertIn('form.dataset.ethernet === "true"', eth_script)
+        for statement in (
+            "scanButton.disabled = true;",
+            "manualToggle.disabled = true;",
+            'ssidInput.value = "";',
+            "ssidInput.disabled = true;",
+            'wifiPassword.value = "";',
+            "wifiPassword.disabled = true;",
+            "countrySelect.disabled = true;",
+            "lastScanResults = [];",
+            "stateMessage(",
+            '"Wired connection active. Wi-Fi setup is not needed."',
+            '"Connected over Ethernet; no Wi-Fi needed"',
+        ):
+            self.assertIn(statement, eth_script)
+        disable_body = eth_script.split("function disableWifiForEthernet()", 1)[1]
+        disable_body = disable_body.split("function clearNetworkSelection()", 1)[0]
+        self.assertIn("syncNetworkFields();", disable_body)
+        startup = eth_script.rsplit("scanButton.addEventListener", 1)[1]
+        self.assertIn("if (ethernetActive)", startup)
+        self.assertIn("disableWifiForEthernet();", startup)
+        self.assertIn("} else {", startup)
+        self.assertIn("scanNetworks();", startup)
+        # Required fields must not block the account-only submit, and the
+        # country falls back to the form default instead of a stale value.
+        self.assertIn("countrySelect.required = !ethernetActive &&", eth_script)
+        self.assertIn("wifiPassword.required = !ethernetActive &&", eth_script)
+        self.assertIn(
+            'countrySelect.value = countrySelect.options[0] ? countrySelect.options[0].value : "GB";',
+            disable_body,
+        )
+
+    def test_wifi_only_setup_page_keeps_every_wifi_control_enabled(self):
+        page = self.web.setup_page("rpi4b", ethernet=False, ap_active=True)
+        self.assertIn('data-ethernet="false"', page)
+        script = page.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+        script = script.replace("{{", "{").replace("}}", "}")
+        startup = script.rsplit("scanButton.addEventListener", 1)[1]
+        # Wi-Fi-only boots scan immediately in the else branch; the Ethernet
+        # freeze only runs when the form reports a wired connection.
+        self.assertIn("} else {", startup)
+        self.assertIn("scanNetworks();", startup.split("} else {", 1)[1])
+        self.assertIn("disableWifiForEthernet();", startup.split("} else {", 1)[0])
+
+    def test_ethernet_submit_ignores_stray_wifi_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            account_file = root / "account"
+            configured_marker = root / "configured"
+            onboarding = self.web.Onboarding("", "rpi4b")
+
+            with (
+                mock.patch.object(self.web, "ACCOUNT_FILE", account_file),
+                mock.patch.object(self.web, "CONFIGURED_MARKER", configured_marker),
+                mock.patch.object(self.web, "has_usable_ethernet", return_value=True),
+                mock.patch.object(self.web, "create_account"),
+                mock.patch.object(self.web, "configure_ssh_access"),
+                mock.patch.object(
+                    onboarding, "configure_wifi"
+                ) as configure_wifi,
+            ):
+                success, message = onboarding.submit(
+                    "Operator",
+                    "long enough password",
+                    "long enough password",
+                    VALID_SSH_KEY,
+                    "Stray-Network",
+                    "stray-password",
+                    "GB",
+                )
+
+            # Disabled controls submit nothing, but a hand-built POST with
+            # stray Wi-Fi values must still complete the account and keep
+            # onboarding active instead of failing on the mixed state.
+            self.assertTrue(success)
+            self.assertEqual(message, "Setup complete")
+            self.assertEqual(account_file.read_text(encoding="utf-8"), "operator\n")
+            self.assertTrue(configured_marker.exists())
+            configure_wifi.assert_not_called()
 
     def test_ap_setup_page_posts_account_credentials_over_tls(self):
         page = self.web.setup_page("rpi4b", ethernet=False, ap_active=True)

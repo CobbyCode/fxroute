@@ -1283,6 +1283,12 @@ class Onboarding:
                     ssh_key,
                 )
                 wifi_requested = bool(wifi_ssid or wifi_password)
+                if wifi_requested and self.has_usable_ethernet():
+                    # The Ethernet setup page disables every Wi-Fi control, so
+                    # stray Wi-Fi values from a hand-built POST must not create
+                    # a mixed wired/Wi-Fi state or fail onboarding.
+                    wifi_requested = False
+                    wifi_ssid, wifi_password = "", ""
                 if wifi_requested:
                     wifi_ssid, wifi_password, country = validate_setup(
                         wifi_ssid, wifi_password, country
@@ -1430,7 +1436,7 @@ def setup_page(
     ap_active: bool = True,
     preview: bool = False,
 ) -> str:
-    del hostname_value, ethernet
+    del hostname_value
     escaped_error = ""
     if error:
         escaped_error = f'<p class="error" role="alert">{html.escape(error)}</p>'
@@ -1438,6 +1444,7 @@ def setup_page(
     form_action = (
         f"https://{AP_ADDRESS}/setup" if ap_active and not preview else "/setup"
     )
+    ethernet_value = "true" if ethernet else "false"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1612,7 +1619,7 @@ button:disabled {{ cursor: wait; opacity: .6; }}
     <p>Configure your FXRoute administrator account and network.</p>
   </section>
   {escaped_error}
-  <form id="setup-form" method="post" action="{form_action}" data-preview="{preview_value}">
+  <form id="setup-form" method="post" action="{form_action}" data-preview="{preview_value}" data-ethernet="{ethernet_value}">
     <section class="card">
       <p class="section-kicker">Account</p>
       <h2>Administrator</h2>
@@ -1638,12 +1645,12 @@ button:disabled {{ cursor: wait; opacity: .6; }}
         </div>
       </details>
     </section>
-    <section class="card">
+    <section class="card" id="wifi-card">
       <div class="section-heading">
         <div><p class="section-kicker">Network</p><h2>Choose a Wi-Fi network</h2></div>
         <button class="secondary" id="scan-wifi" type="button">Rescan</button>
       </div>
-      <p class="section-note">Choose a nearby network, or enter its name manually.</p>
+      <p class="section-note" id="wifi-note">Choose a nearby network, or enter its name manually.</p>
       <div id="wifi-networks" class="network-list" role="list" aria-live="polite">
         <p class="network-state" role="listitem">Loading networks...</p>
       </div>
@@ -1683,6 +1690,11 @@ button:disabled {{ cursor: wait; opacity: .6; }}
   const wifiPasswordNote = document.getElementById("wifi-password-note");
   const countrySelect = document.getElementById("wifi_country");
   const selection = document.getElementById("wifi-selection");
+  const wifiNote = document.getElementById("wifi-note");
+  // A wired connection already carries this device: the Wi-Fi section is
+  // informational only and never submits credentials. The account fields
+  // above stay fully editable.
+  const ethernetActive = form.dataset.ethernet === "true";
   let selectedNetworkSecured = null;
   let lastSsid = "";
   let hasScanned = false;
@@ -1706,9 +1718,33 @@ button:disabled {{ cursor: wait; opacity: .6; }}
   }}
 
   function syncNetworkFields() {{
-    countrySelect.required = Boolean(ssidInput.value || wifiPassword.value);
-    wifiPassword.required = selectedNetworkSecured === true;
+    countrySelect.required = !ethernetActive && Boolean(ssidInput.value || wifiPassword.value);
+    wifiPassword.required = !ethernetActive && selectedNetworkSecured === true;
     wifiPasswordNote.textContent = selectedNetworkSecured === true ? "(required)" : "(if needed)";
+  }}
+
+  function disableWifiForEthernet() {{
+    // Freeze every Wi-Fi control (scan, list, manual entry, password,
+    // country) and clear pending values so no mixed wired/Wi-Fi state can
+    // be submitted. Disabled controls are omitted from the POST body.
+    if (!ethernetActive) return;
+    scanButton.disabled = true;
+    manualToggle.disabled = true;
+    ssidInput.value = "";
+    ssidInput.disabled = true;
+    wifiPassword.value = "";
+    wifiPassword.disabled = true;
+    countrySelect.value = countrySelect.options[0] ? countrySelect.options[0].value : "GB";
+    countrySelect.disabled = true;
+    networkList.replaceChildren(
+      stateMessage("Wired connection active. Wi-Fi setup is not needed.")
+    );
+    selection.textContent = "Connected over Ethernet; no Wi-Fi needed";
+    wifiNote.textContent = "This device is connected over Ethernet, so no Wi-Fi setup is needed.";
+    selectedNetworkSecured = null;
+    lastSsid = "";
+    lastScanResults = [];
+    syncNetworkFields();
   }}
 
   function clearNetworkSelection() {{
@@ -1875,7 +1911,11 @@ button:disabled {{ cursor: wait; opacity: .6; }}
   }});
   wifiPassword.addEventListener("input", syncNetworkFields);
   scanButton.addEventListener("click", scanNetworks);
-  scanNetworks();
+  if (ethernetActive) {{
+    disableWifiForEthernet();
+  }} else {{
+    scanNetworks();
+  }}
 }})();
 </script>
 </body>
