@@ -801,7 +801,9 @@ class MeasurementStore:
         reference_warning = str(input_channels.get("reference_disabled_reason") or "").strip()
         mic_target = str(selected_input.get("node_serial") or source_node_name).strip()
         cj["targets"] = time.monotonic()
-        policy_result = self._capture_policy.run(
+        direct_pair = measurement_role == "direct"
+        policy_call = self._capture_policy.run_direct_pair if direct_pair else self._capture_policy.run
+        policy_result = policy_call(
             job_id=job_id,
             owner_job_id=owner_job_id,
             use_electrical_reference=use_electrical_reference,

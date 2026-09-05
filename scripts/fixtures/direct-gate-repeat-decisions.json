@@ -1,0 +1,59 @@
+{
+  "description": "Saved Advanced direct decisions from 2026-09-05; metadata replay only, original full IRs are unavailable.",
+  "right": [
+    {
+      "job_id": "measurement-job-806d78512dd0",
+      "sample_rate": 48000,
+      "reference_path": {"channel": "input_2_electrical_reference"},
+      "direct_response": {
+        "status": "ok", "usable": true, "direct_arrival_index": 528155,
+        "first_reflection_index": 528465, "first_reflection_ms": 6.458,
+        "gate_end_index": 528458, "usable_window_ms": 6.312,
+        "gated_direct_lower_limit_hz": 237.6, "direct_confidence": 1.0,
+        "direct_detection": {"selection_rule": "first_local_peak_above_threshold", "selected_score": 0.063741},
+        "reflection_detection": {"direct_event_end_index": 528174, "direct_event_duration_ms": 0.396, "detected_threshold": 0.001035013267}
+      }
+    },
+    {
+      "job_id": "measurement-job-6c4f073d01c6",
+      "sample_rate": 48000,
+      "reference_path": {"channel": "input_2_electrical_reference"},
+      "direct_response": {
+        "status": "ok", "usable": true, "direct_arrival_index": 528163,
+        "first_reflection_index": 528260, "first_reflection_ms": 2.021,
+        "gate_end_index": 528253, "usable_window_ms": 1.875,
+        "gated_direct_lower_limit_hz": 800.0, "direct_confidence": 1.0,
+        "direct_detection": {"selection_rule": "first_local_peak_above_threshold", "selected_score": 0.484508},
+        "reflection_detection": {"direct_event_end_index": 528178, "direct_event_duration_ms": 0.312, "detected_threshold": 0.000308968126}
+      }
+    }
+  ],
+  "left": [
+    {
+      "job_id": "measurement-job-b65223794846",
+      "sample_rate": 48000,
+      "reference_path": {"channel": "input_2_electrical_reference"},
+      "direct_response": {
+        "status": "ok", "usable": true, "direct_arrival_index": 528160,
+        "first_reflection_index": 528268, "first_reflection_ms": 2.25,
+        "gate_end_index": 528261, "usable_window_ms": 2.104,
+        "gated_direct_lower_limit_hz": 712.9, "direct_confidence": 1.0,
+        "direct_detection": {"selection_rule": "promoted_to_best_score_in_window", "selected_score": 0.43788},
+        "reflection_detection": {"direct_event_end_index": 528176, "direct_event_duration_ms": 0.333, "detected_threshold": 0.000309260883}
+      }
+    },
+    {
+      "job_id": "measurement-job-b3550a0a8a2b",
+      "sample_rate": 48000,
+      "reference_path": {"channel": "input_2_electrical_reference"},
+      "direct_response": {
+        "status": "ok", "usable": true, "direct_arrival_index": 528163,
+        "first_reflection_index": 528270, "first_reflection_ms": 2.229,
+        "gate_end_index": 528263, "usable_window_ms": 2.083,
+        "gated_direct_lower_limit_hz": 720.0, "direct_confidence": 1.0,
+        "direct_detection": {"selection_rule": "first_local_peak_above_threshold", "selected_score": 0.578551},
+        "reflection_detection": {"direct_event_end_index": 528191, "direct_event_duration_ms": 0.583, "detected_threshold": 0.00035870428}
+      }
+    }
+  ]
+}

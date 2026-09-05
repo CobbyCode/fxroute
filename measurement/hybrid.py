@@ -23,6 +23,9 @@ DIRECT_REFLECTION_MIN_ENVELOPE_RATIO = 0.02
 DIRECT_REFLECTION_RISE_RATIO = 2.0
 DIRECT_REFLECTION_RISE_DURATION_MS = 0.08
 DIRECT_FREQUENCY_CYCLES = 1.5
+DIRECT_GATE_REPEAT_MAX_SPREAD_OCTAVES = 1.0 / 6.0
+DIRECT_IR_SEGMENT_PRE_SAMPLES = 64
+DIRECT_IR_SEGMENT_POST_SAMPLES = 64
 COMPLEX_RESPONSE_MIN_HZ = 20.0
 COMPLEX_RESPONSE_MAX_HZ = 2_000.0
 COMPLEX_RESPONSE_POINTS = 160
@@ -127,6 +130,17 @@ def analyze_direct_window(
             "speaker, then repeat the measurement."
         ),
     }
+    # Full-resolution replay segment covering the detector search range.
+    segment_start = max(0, direct - DIRECT_IR_SEGMENT_PRE_SAMPLES)
+    segment_end = min(ir.size, search_end + DIRECT_IR_SEGMENT_POST_SAMPLES)
+    if segment_end <= segment_start:
+        segment_end = min(ir.size, segment_start + 1)
+    ir_segment = {
+        "start_index": int(segment_start),
+        "end_index": int(segment_end),
+        "sample_rate": int(sample_rate),
+        "samples": [float(value) for value in ir[segment_start:segment_end]],
+    }
     return {
         "status": status,
         "usable": usable,
@@ -159,6 +173,7 @@ def analyze_direct_window(
             "local_rise_ratio": DIRECT_REFLECTION_RISE_RATIO,
             "rise_duration_ms": DIRECT_REFLECTION_RISE_DURATION_MS,
             "detected_threshold": round(float(reflection_threshold), 12) if reflection_threshold is not None else None,
+            "ir_segment": ir_segment,
         },
         "method": "direct arrival to first material reflection",
         "retry_reason": retry_reasons.get(status, ""),
