@@ -61,7 +61,7 @@ session.
 | --- | --- | --- | --- |
 | Spotify Desktop | Native `spotify-client` on apt; `com.spotify.Client` Flatpak otherwise | x86_64 with X11 or Wayland desktop session | Installs the official client, keyring/Secret-Service support, and optional autostart integration |
 | spotifyd | v0.4.2 full/MPRIS release; FXRoute ARM64 prebuilt v1 for aarch64 | x86_64 with a compatible runtime; aarch64 with the FXRoute artifact; armv7 where the release runtime is available | Installs `~/.local/bin/spotifyd`, a user service, and a minimal MPRIS/PipeWire-Pulse config with fixed Zeroconf TCP port 4444 |
-| Qobuz/qbzd | v2.0.2 standalone build | amd64, aarch64 | Installs `~/.local/bin/qbzd`, Avahi/mDNS support, `qconnect.volume_mode=locked`, and a `qbzd run` user service |
+| Qobuz/qbzd | v2.0.2 standalone build | amd64, aarch64 | Installs `~/.local/bin/qbzd`, Avahi/mDNS support, `qconnect.volume_mode=locked`, Qobuz Connect auto-connect (`qconnect.startup_mode=on`, device name untouched), and a `qbzd run` user service |
 | TIDAL | `tidalapi==0.8.11` in the FXRoute venv | Any supported FXRoute Python host | Adds the optional dependency used by FXRoute's existing PKCE login flow |
 
 The base installer supports apt, dnf, zypper, and pacman. Unsupported
@@ -135,9 +135,14 @@ device in the Qobuz app. FXRoute uses qbzd's local control plane at
 `127.0.0.1:8182`. The installer does not write Qobuz credentials, OAuth data,
 or playback credentials. It does set `qconnect.volume_mode=locked` through the
 qbzd settings command so qbzd remains at unity and the existing FXRoute phone
-volume bridge controls the FXRoute master. Other qbzd settings are not
+volume bridge controls the FXRoute master. It also runs the native
+`qbzd qconnect enable` step so the Qobuz Connect renderer auto-connects at
+daemon start; an already enabled renderer is left untouched and the qbzd
+device name is never replaced. Other qbzd settings are not
 replaced. If the installer changed a prior volume mode, uninstall offers to
 restore that recorded mode before removing the owned qbzd binary/service.
+A Qobuz Connect enablement owned by the installer is restored the same way
+(disabled again) when its ownership record is complete.
 
 The nftables mDNS guard is retained only for the Spotify Desktop-only case.
 It is not installed when spotifyd is selected or already present, because

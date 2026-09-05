@@ -130,6 +130,25 @@ printf 'mode=%s changed=%s before=%s\\n' "$(<"$MODE_FILE")" "$QBZD_VOLUME_MODE_C
             configurator.index("set_qbzd_volume_mode"),
         )
 
+    def test_qobuz_qconnect_ownership_is_persisted_and_uninstaller_handles_it(self):
+        for field in (
+            "qconnect_startup_mode_before",
+            "qconnect_startup_mode_after",
+            "qconnect_changed_by_fxroute",
+        ):
+            self.assertIn(field, self.install)
+            self.assertIn(field, self.uninstall)
+        configurator = extract_function(self.install, "configure_qbzd_qconnect")
+        self.assertIn("qconnect enable", configurator)
+        self.assertNotIn("qconnect name", configurator)
+        self.assertLess(
+            configurator.index("QBZD_QCONNECT_CHANGED_BY_FXROUTE=1"),
+            configurator.index("qconnect enable"),
+        )
+        restore = extract_function(self.uninstall, "restore_qbzd_qconnect_if_owned")
+        self.assertIn("qconnect disable", restore)
+        self.assertIn("clear_qbzd_qconnect_ownership_record", restore)
+
     def test_qobuz_owned_binary_hash_is_not_replaced_after_external_change(self):
         path_reader = extract_function(self.install, "qbzd_binary_path")
         installer = extract_function(self.install, "install_qbzd_binary")
@@ -272,6 +291,65 @@ printf 'mode=%s preserve=%s\\n' "$(<"$MODE_FILE")" "$PRESERVE_INSTALL_STATE"
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("mode=software preserve=0", result.stdout)
             self.assertIn('"volume_mode_changed_by_fxroute": false', install_state.read_text())
+
+    def test_uninstaller_restores_fxroute_owned_qobuz_qconnect(self):
+        reader = extract_function(self.uninstall, "read_qbzd_qconnect_startup_mode_for_uninstall")
+        restore = extract_function(self.uninstall, "restore_qbzd_qconnect_if_owned")
+        with tempfile.TemporaryDirectory() as td:
+            mode_file = Path(td) / "mode"
+            install_state = Path(td) / "install-state.json"
+            fake_qbzd = Path(td) / "qbzd"
+            mode_file.write_text("on")
+            install_state.write_text(
+                '{"providers":{"qobuz":{"qconnect_startup_mode_before":"off",'
+                '"qconnect_startup_mode_after":"on",'
+                '"qconnect_changed_by_fxroute":true}}}\n'
+            )
+            fake_qbzd.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ $1 == settings && $2 == show ]]; then\n"
+                "  printf '{\"qconnect.startup_mode\":\"%s\"}\\n' \"$(<\"$MODE_FILE\")\"\n"
+                "elif [[ $1 == qconnect && $2 == disable ]]; then\n"
+                "  printf '%s' 'off' > \"$MODE_FILE\"\n"
+                "fi\n"
+            )
+            fake_qbzd.chmod(0o755)
+            qbzd_sha256 = hashlib.sha256(fake_qbzd.read_bytes()).hexdigest()
+            harness = f"""
+{extract_function(self.uninstall, "run_as_target_user")}
+{reader}
+{extract_function(self.uninstall, "clear_qbzd_qconnect_ownership_record")}
+{extract_function(self.uninstall, "verify_owned_binary_identity")}
+{restore}
+read_install_state_field() {{
+  case "$1" in
+    providers.qobuz.qconnect_changed_by_fxroute) printf 'true\\n' ;;
+    providers.qobuz.qconnect_startup_mode_before) printf 'off\\n' ;;
+    providers.qobuz.qconnect_startup_mode_after) printf 'on\\n' ;;
+    providers.qobuz.binary_path) printf '%s\\n' "$QBZD_BINARY" ;;
+    providers.qobuz.binary_sha256) printf '%s\\n' "{qbzd_sha256}" ;;
+    *) return 1 ;;
+  esac
+}}
+confirm() {{ return 0; }}
+log() {{ :; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+PRESERVE_INSTALL_STATE=0
+INSTALL_STATE_FILE={install_state}
+FXROUTE_TARGET_USER="$(id -un)"
+FXROUTE_RUNTIME_DIR="/run/user/$(id -u)"
+restore_qbzd_qconnect_if_owned
+printf 'mode=%s preserve=%s\\n' "$(<"$MODE_FILE")" "$PRESERVE_INSTALL_STATE"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                env={**os.environ, "MODE_FILE": str(mode_file), "QBZD_BINARY": str(fake_qbzd)},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("mode=off preserve=0", result.stdout)
+            self.assertIn('"qconnect_changed_by_fxroute": false', install_state.read_text())
 
     def test_spotifyd_config_and_service_use_fixed_zeroconf_port(self):
         self.assertRegex(self.install, r'SPOTIFYD_ZEROCONF_PORT="[1-9][0-9]{3,4}"')

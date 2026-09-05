@@ -586,6 +586,108 @@ test ! -e "$HOME/.local/bin/spotifyd"
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("symlink", result.stderr)
 
+    def test_qconnect_enable_runs_after_volume_and_before_service(self):
+        body = extract_function(self.install, "install_qobuz")
+        self.assertLess(
+            body.index("configure_qbzd_volume_mode"), body.index("configure_qbzd_qconnect")
+        )
+        self.assertLess(
+            body.index("configure_qbzd_qconnect"), body.index("configure_qbzd_service")
+        )
+
+    def test_qconnect_enable_is_idempotent_and_leaves_name_alone(self):
+        configurator = extract_function(self.install, "configure_qbzd_qconnect")
+        self.assertIn("qconnect enable", configurator)
+        self.assertIn("already enabled", configurator)
+        self.assertNotIn("qconnect name", configurator)
+        self.assertLess(
+            configurator.index("QBZD_QCONNECT_CHANGED_BY_FXROUTE=1"),
+            configurator.index("qconnect enable"),
+        )
+
+    def test_existing_service_restarts_on_qconnect_change(self):
+        service = extract_function(self.install, "configure_qbzd_service")
+        self.assertIn("QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 1", service)
+        self.assertIn("user_systemctl restart qbzd.service", service)
+
+    def test_install_state_records_qconnect_ownership(self):
+        for field in (
+            "qconnect_startup_mode_before",
+            "qconnect_startup_mode_after",
+            "qconnect_changed_by_fxroute",
+        ):
+            self.assertIn(field, self.install)
+
+    def test_qconnect_configure_enables_and_rechecks_with_fake_qbzd(self):
+        reader = extract_function(self.install, "read_qbzd_qconnect_startup_mode")
+        configurator = extract_function(self.install, "configure_qbzd_qconnect")
+        path_reader = extract_function(self.install, "qbzd_binary_path")
+        preamble = (
+            "run_as_target_user() { \"$@\"; }\n"
+            "log() { :; }\n"
+            "pass() { printf '[pass] %s\\n' \"$*\"; }\n"
+            "die() { printf '[fxroute][error] %s\\n' \"$*\" >&2; exit 1; }\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            provider_dir = home / ".local" / "bin"
+            provider_dir.mkdir(parents=True)
+            mode_file = Path(td) / "mode"
+            calls_file = Path(td) / "calls"
+            fake_qbzd = provider_dir / "qbzd"
+            fake_qbzd.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ $1 == settings && $2 == show ]]; then\n"
+                "  printf '{\"qconnect.startup_mode\":\"%s\"}\\n' \"$(<\"$MODE_FILE\")\"\n"
+                "elif [[ $1 == qconnect && $2 == enable ]]; then\n"
+                "  printf 'enable\\n' >> \"$CALLS_FILE\"\n"
+                "  printf '%s' 'on' > \"$MODE_FILE\"\n"
+                "else\n"
+                "  exit 1\n"
+                "fi\n"
+            )
+            fake_qbzd.chmod(0o755)
+            harness = (
+                f"{preamble}\n{path_reader}\n{reader}\n{configurator}\n"
+                "QBZD_QCONNECT_STARTUP_MODE_BEFORE=\"\"\n"
+                "QBZD_QCONNECT_STARTUP_MODE_AFTER=\"\"\n"
+                "QBZD_QCONNECT_CHANGED_BY_FXROUTE=0\n"
+                "configure_qbzd_qconnect\n"
+                "printf 'mode=%s before=%s changed=%s calls=%s\\n' "
+                "\"$(<\"$MODE_FILE\")\" \"$QBZD_QCONNECT_STARTUP_MODE_BEFORE\" "
+                "\"$QBZD_QCONNECT_CHANGED_BY_FXROUTE\" \"$(<\"$CALLS_FILE\")\"\n"
+            )
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "PATH": "/usr/bin:/bin",
+                "MODE_FILE": str(mode_file),
+                "CALLS_FILE": str(calls_file),
+            }
+            # Disabled renderer is enabled, verified, and recorded.
+            mode_file.write_text("off")
+            calls_file.write_text("")
+            result = subprocess.run(
+                ["bash", "-c", harness], capture_output=True, text=True, env=env
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("mode=on before=off changed=1 calls=enable", result.stdout)
+            # Already enabled renderer is left untouched.
+            mode_file.write_text("on")
+            calls_file.write_text("")
+            result = subprocess.run(
+                ["bash", "-c", harness], capture_output=True, text=True, env=env
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("already enabled", result.stdout)
+            self.assertIn("mode=on before= changed=0 calls=", result.stdout)
+            # Unreadable settings abort the run instead of leaving Connect off.
+            fake_qbzd.write_text("#!/usr/bin/env bash\nexit 1\n")
+            result = subprocess.run(
+                ["bash", "-c", harness], capture_output=True, text=True, env=env
+            )
+            self.assertNotEqual(result.returncode, 0)
+
     def test_tidal_is_an_optional_python_dependency(self):
         self.assertNotIn("tidalapi", self.base_requirements)
         self.assertIn("tidalapi==0.8.11", self.tidal_requirements)

@@ -1573,6 +1573,124 @@ restore_qbzd_volume_mode_if_owned() {
   log "Restored qbzd qconnect.volume_mode=$mode_before"
 }
 
+read_qbzd_qconnect_startup_mode_for_uninstall() {
+  local binary_path="$1"
+  [[ -x "$binary_path" ]] || return 1
+  run_as_target_user "$binary_path" settings show --quiet --json 2>/dev/null | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+    value = payload.get("qconnect.startup_mode", "")
+except (ValueError, OSError):
+    raise SystemExit(1)
+if not value:
+    raise SystemExit(1)
+print(value)
+'
+}
+
+clear_qbzd_qconnect_ownership_record() {
+  local state_file="$INSTALL_STATE_FILE"
+  local temp_file=""
+
+  [[ -f "$state_file" ]] || return 0
+  temp_file="$(mktemp "$(dirname "$state_file")/.install-state.XXXXXX")" || return 1
+  if ! python3 - "$state_file" "$temp_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+temp_path = Path(sys.argv[2])
+try:
+    payload = json.loads(state_path.read_text())
+    qobuz = payload["providers"]["qobuz"]
+    qobuz["qconnect_changed_by_fxroute"] = False
+    qobuz["qconnect_startup_mode_before"] = ""
+    qobuz["qconnect_startup_mode_after"] = ""
+    temp_path.write_text(json.dumps(payload, indent=2) + "\n")
+except (KeyError, OSError, TypeError, ValueError):
+    raise SystemExit(1)
+PY
+  then
+    rm -f "$temp_file"
+    return 1
+  fi
+  chmod 600 "$temp_file"
+  if ! mv -f "$temp_file" "$state_file"; then
+    rm -f "$temp_file"
+    return 1
+  fi
+  return 0
+}
+
+restore_qbzd_qconnect_if_owned() {
+  local changed_by_fxroute=""
+  local mode_before=""
+  local mode_after=""
+  local binary_path=""
+  local current_mode=""
+
+  changed_by_fxroute="$(read_install_state_field "providers.qobuz.qconnect_changed_by_fxroute" 2>/dev/null || true)"
+  [[ "$changed_by_fxroute" == "true" ]] || return 0
+  mode_before="$(read_install_state_field "providers.qobuz.qconnect_startup_mode_before" 2>/dev/null || true)"
+  mode_after="$(read_install_state_field "providers.qobuz.qconnect_startup_mode_after" 2>/dev/null || true)"
+  if [[ -z "$mode_before" || -z "$mode_after" ]]; then
+    warn "Cannot restore the previous qbzd Qobuz Connect state because its ownership record is incomplete"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+
+  binary_path="$(read_install_state_field "providers.qobuz.binary_path" 2>/dev/null || true)"
+  if [[ -z "$binary_path" || ! -x "$binary_path" ]]; then
+    warn "Cannot restore qbzd qconnect.startup_mode=$mode_before because its recorded qbzd binary is unavailable"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+  if ! verify_owned_binary_identity "$binary_path" "$(read_install_state_field "providers.qobuz.binary_sha256" 2>/dev/null || true)" "recorded qbzd"; then
+    return 1
+  fi
+
+  current_mode="$(read_qbzd_qconnect_startup_mode_for_uninstall "$binary_path" || true)"
+  if [[ "$current_mode" == "$mode_before" ]]; then
+    if ! clear_qbzd_qconnect_ownership_record; then
+      warn "qbzd Qobuz Connect state is restored, but its ownership record could not be cleared"
+      PRESERVE_INSTALL_STATE=1
+      return 1
+    fi
+    log "qbzd Qobuz Connect state is already restored to $mode_before"
+    return 0
+  fi
+  if [[ "$current_mode" != "$mode_after" ]]; then
+    warn "Not restoring qbzd Qobuz Connect state: it changed from FXRoute's recorded value '$mode_after' after installation"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+  if ! confirm "FXRoute enabled qbzd Qobuz Connect auto-connect for the Qobuz renderer. Disable again and restore $mode_before?"; then
+    warn "Keeping qbzd qconnect.startup_mode=$mode_after"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if ! run_as_target_user "$binary_path" qconnect disable --quiet >/dev/null 2>&1; then
+    warn "Failed to restore qbzd qconnect.startup_mode=$mode_before"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+  if [[ "$(read_qbzd_qconnect_startup_mode_for_uninstall "$binary_path" || true)" != "$mode_before" ]]; then
+    warn "qbzd did not retain restored qconnect.startup_mode=$mode_before"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+  if ! clear_qbzd_qconnect_ownership_record; then
+    warn "qbzd Qobuz Connect state is restored, but its ownership record could not be cleared"
+    PRESERVE_INSTALL_STATE=1
+    return 1
+  fi
+  log "Restored qbzd qconnect.startup_mode=$mode_before"
+}
+
 tidalapi_installed_version() {
   local python_path="$INSTALL_ROOT/.venv/bin/python3"
   [[ -x "$python_path" ]] || return 1
@@ -1643,6 +1761,9 @@ remove_owned_streaming_components() {
 
   if ! restore_qbzd_volume_mode_if_owned; then
     warn "Skipping qbzd binary/service removal until its FXRoute volume-mode change can be restored"
+    PROVIDER_LAN_CLEANUP_DEFERRED=1
+  elif ! restore_qbzd_qconnect_if_owned; then
+    warn "Skipping qbzd binary/service removal until its FXRoute Qobuz Connect change can be restored"
     PROVIDER_LAN_CLEANUP_DEFERRED=1
   else
     preserve_before=$PRESERVE_INSTALL_STATE

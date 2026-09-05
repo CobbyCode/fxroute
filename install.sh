@@ -82,6 +82,9 @@ QBZD_SERVICE_SETUP_FAILED=0
 QBZD_VOLUME_MODE_BEFORE=""
 QBZD_VOLUME_MODE_AFTER=""
 QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
+QBZD_QCONNECT_STARTUP_MODE_BEFORE=""
+QBZD_QCONNECT_STARTUP_MODE_AFTER=""
+QBZD_QCONNECT_CHANGED_BY_FXROUTE=0
 QBZD_BINARY_IDENTITY_CHANGED=0
 TIDAL_PRESENT_BEFORE=0
 TIDAL_INSTALLED_BY_FXROUTE=0
@@ -977,6 +980,13 @@ load_provider_ownership_state() {
     QBZD_VOLUME_MODE_AFTER="$value"
   fi
   [[ "$(previous_install_state_field providers.qobuz.volume_mode_changed_by_fxroute 2>/dev/null || true)" == "true" ]] && QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=1
+  if value="$(previous_install_state_field providers.qobuz.qconnect_startup_mode_before 2>/dev/null)"; then
+    QBZD_QCONNECT_STARTUP_MODE_BEFORE="$value"
+  fi
+  if value="$(previous_install_state_field providers.qobuz.qconnect_startup_mode_after 2>/dev/null)"; then
+    QBZD_QCONNECT_STARTUP_MODE_AFTER="$value"
+  fi
+  [[ "$(previous_install_state_field providers.qobuz.qconnect_changed_by_fxroute 2>/dev/null || true)" == "true" ]] && QBZD_QCONNECT_CHANGED_BY_FXROUTE=1
   [[ "$(previous_install_state_field providers.tidal.installed_by_fxroute 2>/dev/null || true)" == "true" ]] && TIDAL_INSTALLED_BY_FXROUTE=1
   if value="$(previous_install_state_field providers.tidal.installed_version 2>/dev/null)"; then
     [[ -n "$value" ]] && TIDAL_INSTALLED_VERSION="$value"
@@ -3303,6 +3313,56 @@ configure_qbzd_volume_mode() {
   pass "qbzd QConnect volume mode set to locked (FXRoute master/unity contract)"
 }
 
+read_qbzd_qconnect_startup_mode() {
+  local binary_path=""
+  binary_path="$(qbzd_binary_path || true)"
+  [[ -n "$binary_path" ]] || return 1
+  run_as_target_user "$binary_path" settings show --quiet --json 2>/dev/null | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+    value = payload.get("qconnect.startup_mode", "")
+except (ValueError, OSError):
+    raise SystemExit(1)
+if not value:
+    raise SystemExit(1)
+print(value)
+'
+}
+
+configure_qbzd_qconnect() {
+  local current_mode=""
+  local binary_path=""
+
+  current_mode="$(read_qbzd_qconnect_startup_mode || true)"
+  [[ -n "$current_mode" ]] || die "Could not read qbzd qconnect.startup_mode; refusing to leave Qobuz Connect disabled"
+  QBZD_QCONNECT_STARTUP_MODE_AFTER="on"
+  if [[ "$current_mode" == "on" ]]; then
+    pass "qbzd Qobuz Connect auto-connect already enabled"
+    return 0
+  fi
+
+  if [[ $QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 0 ]]; then
+    QBZD_QCONNECT_STARTUP_MODE_BEFORE="$current_mode"
+  fi
+  # Mark the side effect before invoking qbzd so an exit checkpoint can still
+  # offer restoration if the command changes the setting but read-back fails.
+  # The device name is deliberately untouched: it stays whatever the owner or
+  # qbzd setup chose.
+  QBZD_QCONNECT_CHANGED_BY_FXROUTE=1
+  binary_path="$(qbzd_binary_path || true)"
+  [[ -n "$binary_path" ]] || die "qbzd binary disappeared before Qobuz Connect could be enabled"
+  if ! run_as_target_user "$binary_path" qconnect enable --quiet; then
+    die "Could not enable qbzd Qobuz Connect auto-connect"
+  fi
+  if [[ "$(read_qbzd_qconnect_startup_mode || true)" != "on" ]]; then
+    die "qbzd did not retain qconnect.startup_mode=on"
+  fi
+  pass "qbzd Qobuz Connect auto-connect enabled"
+}
+
 configure_qbzd_service() {
   local service_dir="$HOME/.config/systemd/user"
   local service_path="$service_dir/qbzd.service"
@@ -3335,11 +3395,11 @@ configure_qbzd_service() {
         return 0
       fi
     fi
-    if [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 \
-      && -f "$service_path" && ! -L "$service_path" ]] \
+    if [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 || $QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 1 ]] \
+      && [[ -f "$service_path" && ! -L "$service_path" ]] \
       && user_systemctl is-active --quiet qbzd.service; then
       if ! user_systemctl restart qbzd.service; then
-        die "Could not restart the existing qbzd service after setting qconnect.volume_mode=locked"
+        die "Could not restart the existing qbzd service after updating its Qobuz Connect settings"
       fi
     fi
     pass "existing qbzd user service preserved"
@@ -3415,6 +3475,7 @@ install_qobuz() {
   fi
   ensure_qobuz_runtime_dependencies
   configure_qbzd_volume_mode
+  configure_qbzd_qconnect
   configure_qbzd_service
   if [[ $QBZD_SERVICE_IDENTITY_CHANGED -eq 1 || $QBZD_SERVICE_SETUP_FAILED -eq 1 ]]; then
     QOBUZ_PROVIDER_STATUS="owned service unavailable; preserved"
@@ -3901,7 +3962,10 @@ write_install_state() {
       "service_sha256": "${QBZD_SERVICE_SHA256}",
       "volume_mode_before": "${QBZD_VOLUME_MODE_BEFORE}",
       "volume_mode_after": "${QBZD_VOLUME_MODE_AFTER}",
-      "volume_mode_changed_by_fxroute": $( [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]] && echo true || echo false )
+      "volume_mode_changed_by_fxroute": $( [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+      "qconnect_startup_mode_before": "${QBZD_QCONNECT_STARTUP_MODE_BEFORE}",
+      "qconnect_startup_mode_after": "${QBZD_QCONNECT_STARTUP_MODE_AFTER}",
+      "qconnect_changed_by_fxroute": $( [[ $QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 1 ]] && echo true || echo false )
     },
     "tidal": {
       "selected": $( [[ $TIDAL_DEPENDENCY_SELECTED -eq 1 ]] && echo true || echo false ),
