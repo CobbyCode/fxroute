@@ -23,6 +23,36 @@ DIRECT_REFLECTION_MIN_ENVELOPE_RATIO = 0.02
 DIRECT_REFLECTION_RISE_RATIO = 2.0
 DIRECT_REFLECTION_RISE_DURATION_MS = 0.08
 DIRECT_FREQUENCY_CYCLES = 1.5
+DIRECT_GATE_CONTRAST_SCALE = 1.5
+DIRECT_GATE_RUNNER_LIMIT = 1.15
+DIRECT_GATE_RUNNER_RANGE = 0.45
+DIRECT_GATE_CLUSTER_WINDOW_MS = 0.75
+DIRECT_GATE_CONTRAST_WINDOW_MS = 0.50
+
+
+def _direct_gate_confidence(
+    candidates: list[dict[str, float]],
+    sample_rate: int,
+) -> tuple[dict[str, Any], float]:
+    """Rate first-match decisiveness without second-guessing the candidate."""
+    if not candidates:
+        return {"contrast": 0.0, "cluster": 0, "runner_ratio": 0.0, "candidate_count": 0}, 0.0
+    first = candidates[0]
+    contrast = float(first["peak_contrast"])
+    cluster_window = max(1, int(round(sample_rate * DIRECT_GATE_CLUSTER_WINDOW_MS / 1000.0)))
+    cluster = sum(1 for item in candidates if item["rise_index"] - first["rise_index"] <= cluster_window)
+    later = [item for item in candidates if item["rise_index"] - first["rise_index"] > cluster_window]
+    runner_ratio = float(later[0]["peak_contrast"]) / max(contrast, 1e-12) if later else 0.0
+    contrast_part = min(1.0, max(0.0, (contrast - 1.0) / DIRECT_GATE_CONTRAST_SCALE))
+    runner_part = min(1.0, max(0.0, (DIRECT_GATE_RUNNER_LIMIT - runner_ratio) / DIRECT_GATE_RUNNER_RANGE))
+    confidence = contrast_part * runner_part
+    metrics = {
+        "contrast": round(contrast, 4),
+        "cluster": int(cluster),
+        "runner_ratio": round(runner_ratio, 4),
+        "candidate_count": len(candidates),
+    }
+    return metrics, confidence
 DIRECT_GATE_REPEAT_MAX_SPREAD_OCTAVES = 1.0 / 6.0
 DIRECT_IR_SEGMENT_PRE_SAMPLES = 64
 DIRECT_IR_SEGMENT_POST_SAMPLES = 64
@@ -69,6 +99,8 @@ def analyze_direct_window(
             quiet_start = None
 
     reflection_threshold = None
+    reflection_candidates: list[dict[str, float]] = []
+    contrast_samples = max(4, int(round(sample_rate * DIRECT_GATE_CONTRAST_WINDOW_MS / 1000.0)))
     if direct_event_end is not None:
         search_start = direct_event_end + valley_samples
         baseline_samples = max(valley_samples, int(round(sample_rate * 0.50 / 1000.0)))
@@ -79,17 +111,36 @@ def analyze_direct_window(
             baseline_end = max(direct_event_end + 1, index - guard_samples)
             baseline_start = max(direct_event_end, baseline_end - baseline_samples)
             local_baseline = float(np.median(energy_envelope[baseline_start:baseline_end]))
-            reflection_threshold = max(
+            threshold = max(
                 direct_envelope_peak * DIRECT_REFLECTION_MIN_ENVELOPE_RATIO,
                 local_baseline * DIRECT_REFLECTION_RISE_RATIO,
             )
-            if float(energy_envelope[index]) >= reflection_threshold:
+            reflection_threshold = threshold
+            if float(energy_envelope[index]) >= threshold:
                 rise_start = index if rise_start is None else rise_start
                 if index - rise_start + 1 >= rise_samples:
-                    reflection_index = rise_start
-                    break
+                    window = energy_envelope[rise_start:rise_start + contrast_samples]
+                    peak_contrast = float(np.max(window)) / max(threshold, 1e-12)
+                    reflection_candidates.append(
+                        {
+                            "rise_index": float(rise_start),
+                            "threshold": float(threshold),
+                            "confirm_margin": float(
+                                np.min(energy_envelope[rise_start:index + 1])
+                                / max(threshold, 1e-12)
+                            ),
+                            "peak_contrast": peak_contrast,
+                        }
+                    )
+                    if reflection_index is None:
+                        reflection_index = rise_start
+                        reflection_threshold = threshold
+                    rise_start = None
             else:
                 rise_start = None
+    if reflection_candidates:
+        reflection_threshold = float(reflection_candidates[0]["threshold"])
+    gate_metrics, gate_confidence = _direct_gate_confidence(reflection_candidates, sample_rate)
 
     margin = max(2, int(round(sample_rate * 0.00015)))
     if reflection_index is None:
@@ -154,6 +205,7 @@ def analyze_direct_window(
         "usable_window_ms": round(usable_seconds * 1000.0, 3),
         "gated_direct_lower_limit_hz": round(lower_hz, 1),
         "direct_confidence": round(confidence, 4),
+        "gate_confidence": round(gate_confidence, 4),
         "direct_detection": {
             "selection_rule": str((timing_metadata or {}).get("selection_rule") or ""),
             "selected_score": round(float((timing_metadata or {}).get("selected_score") or 0.0), 6),
@@ -174,6 +226,7 @@ def analyze_direct_window(
             "rise_duration_ms": DIRECT_REFLECTION_RISE_DURATION_MS,
             "detected_threshold": round(float(reflection_threshold), 12) if reflection_threshold is not None else None,
             "ir_segment": ir_segment,
+            "gate_metrics": gate_metrics,
         },
         "method": "direct arrival to first material reflection",
         "retry_reason": retry_reasons.get(status, ""),
