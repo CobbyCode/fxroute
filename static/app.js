@@ -3412,6 +3412,12 @@ function getBackendFooterOwner(playback = state.playback) {
 
 function getEffectivePlaybackControlSource() {
     const backendOwner = getBackendFooterOwner();
+    // Transport follows the same stale-commit override as the footer itself:
+    // with live qbzd playback and no live spotify playback, the controls
+    // must drive qobuz even when the cached commit still names spotify.
+    if (backendOwner === 'spotify' && qobuzPlayingOwnsFooter() && !spotifyPlayingOwnsFooter()) {
+        return 'qobuz';
+    }
     if (backendOwner) return backendOwner;
     if (spotifyPlayingOwnsFooter()) return 'spotify';
     if (localPlaybackHasFooterContext(state.playback) || localEndedPlaybackHasFooterContext(state.playback)) return 'local';
@@ -4470,6 +4476,16 @@ function spotifyPausedHasFooterContext(data = window.__spotifyLastData) {
     return !!(data && data.available && data.status === 'Paused');
 }
 
+// Live-qobuz counterpart to spotifyPlayingOwnsFooter: the shared footer must
+// be able to reach qobuz from live provider truth, not only from the cached
+// backend commit. The guards mirror Spotify's: an imminent local single-track
+// start and actually-playing local MPV playback keep the footer.
+function qobuzPlayingOwnsFooter(data = window.__qobuzLastData) {
+    if (footerSingleTrackStartLockActive()) return false;
+    if (activeLocalPlaybackBlocksSpotifyOwnership()) return false;
+    return !!(data && data.available && data.status === 'Playing');
+}
+
 function localFooterHoldHasContext(playback = state.playback) {
     const track = playback?.current_track;
     if (!(track && (track.source === 'radio' || track.source === 'local'))) return false;
@@ -4483,6 +4499,15 @@ function reconcileFooterSource() {
         return;
     }
     if (backendOwner === 'spotify') {
+        // A cached spotify commit is stale when live qbzd playback runs while
+        // spotify itself is not playing (missed owner broadcast while an
+        // external renderer owned playback): the actually playing renderer
+        // owns the shared footer. A live-playing spotify keeps commit
+        // priority, mirroring the backend read-only order (spotify>qobuz).
+        if (qobuzPlayingOwnsFooter() && !spotifyPlayingOwnsFooter()) {
+            setFooterSource('qobuz', 'qobuz-playing-overrides-stale-spotify-commit');
+            return;
+        }
         setFooterSource('spotify', 'backend-footer-owner-spotify');
         return;
     }
@@ -4492,6 +4517,10 @@ function reconcileFooterSource() {
     }
     if (spotifyPlayingOwnsFooter()) {
         setFooterSource('spotify', 'spotify-playing');
+        return;
+    }
+    if (qobuzPlayingOwnsFooter()) {
+        setFooterSource('qobuz', 'qobuz-playing');
         return;
     }
     if (Date.now() < _spotifyTakeoverUntil) {
@@ -4547,6 +4576,12 @@ function syncFooterOwnershipFromPlayback(playback = state.playback) {
         return;
     }
     if (backendOwner === 'spotify') {
+        // Same stale-commit override as reconcileFooterSource: live qbzd
+        // playback while spotify is not playing wins over the cached commit.
+        if (qobuzPlayingOwnsFooter() && !spotifyPlayingOwnsFooter()) {
+            setFooterSource('qobuz', 'sync-playback-qobuz-overrides-stale-spotify-commit');
+            return;
+        }
         setFooterSource('spotify', 'sync-playback-backend-owner-spotify');
         return;
     }
@@ -4556,6 +4591,10 @@ function syncFooterOwnershipFromPlayback(playback = state.playback) {
     }
     if (spotifyPlayingOwnsFooter()) {
         setFooterSource('spotify', 'sync-playback-spotify-still-playing');
+        return;
+    }
+    if (qobuzPlayingOwnsFooter()) {
+        setFooterSource('qobuz', 'sync-playback-qobuz-playing');
         return;
     }
     if (localPlaybackHasFooterContext(playback)) {
