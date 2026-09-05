@@ -6232,7 +6232,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     # Init is queued before the client is marked ready, so it is always the
     # first payload delivered by the per-client send worker.
-    await manager.send_to_client(websocket, json.dumps({"type": "init", "data": {"player": {"state": build_playback_payload()}, "spotify": await get_spotify_ui_state()}}))
+    await manager.send_to_client(websocket, json.dumps({"type": "init", "data": {"player": {"state": build_playback_payload()}, "spotify": await get_spotify_ui_state(), "qobuz": await get_qobuz_ui_state()}}))
     manager.mark_ready(websocket)
     disconnect_reason = "peer-closed"
     try:
