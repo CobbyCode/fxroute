@@ -808,6 +808,12 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         run = AsyncMock(return_value=SimpleNamespace(committed=True))
         with patch.object(main, "measurement_sr_session", SimpleNamespace(active=False, has_active_jobs=False)), patch.object(
             main, "prepare_audio_output_mode", return_value=target
+        ), patch.object(
+            # Pin the persisted start mode: the route takes the coordinator
+            # path only when the target mode differs from the persisted one
+            # (same-mode requests use the direct DSP-param sync instead), so
+            # the test must not depend on host configuration.
+            main.samplerate, "_load_audio_output_mode", return_value={"mode": "stereo"}
         ), patch.object(main, "_coordinator_current_playback_context", new=AsyncMock(return_value={
             "source": "local",
             "target_url": "/music/current.flac",

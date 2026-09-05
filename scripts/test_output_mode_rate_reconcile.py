@@ -136,9 +136,11 @@ async def main_async() -> None:
         assert force.await_args.args[0] == 96000
         trigger.assert_not_awaited()
 
-    # 8c. establish_target_rate: an unpinned sink at the graph default stays
-    #     a no-op (an unpinned sink settles at the default, so the reading is
-    #     already stable through the rebuild).
+    # 8c. establish_target_rate: an unpinned sink at the graph default is
+    #     still pinned (always-pin force-rate semantics from 32fe97d: the
+    #     null-sink ingress keeps its own 48 kHz default and never follows
+    #     the hardware sink, so skipping the pin leaves a permanent
+    #     resampling stage in the path even at the graph default).
     with mock.patch.object(main, "get_samplerate_status", return_value={
         "status": "ok", "active_rate": 44100, "force_rate": 0,
         "clock_rate": 44100, "mode": "auto", "default_rate": 44100,
@@ -148,7 +150,8 @@ async def main_async() -> None:
         await runtime.establish_target_rate(TransitionRequest(
             operation="play", source="local", target_rate=44100,
         ))
-        force.assert_not_awaited()
+        force.assert_awaited_once()
+        assert force.await_args.args[0] == 44100
         trigger.assert_not_awaited()
 
     # 8d. verify_output_mode_runtime (production verifier): the output-mode
