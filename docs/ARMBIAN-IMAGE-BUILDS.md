@@ -37,8 +37,28 @@ sind ebenfalls git-ignoriert und liegen nur lokal im Checkout.
   entfernbar (Daemon-seitiges Userns-Remapping; Host-Sudo braucht
   Passwort). Kosmetisch bei 304 GiB frei; der Build nutzt ein frisches
   mktemp-Work-Dir.
-- Ergebnis (Image, sha256, Exit-Status) wird nach Buildende hier ergaenzt.
-  Kein Push, kein Release.
+- Build: Ende 2026-09-05T22:29Z, Exit-Status 0 (8 Minuten 40 Sekunden).
+  Einzige Warnung: bekannte kosmetische `Permission denied`-Meldungen beim
+  Aufraeumen Docker-root-owned Cache-Restdateien; das Work-Dir `image.R2x7zv`
+  schliesst sich damit den drei Alt-Resten an (siehe oben).
+- Erzeugtes Image: `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz`
+  (406597632 Bytes), plus `.sha256`-Sidecar:
+  `a573f24aa7aa945cd8df9b2a720e3c797433d1d32b5af5821d3ee676025811e8`.
+- Verifikation (HEAD `a69d6b2` im Image enthalten):
+  - `sha256sum -c` des neuen Images: OK.
+  - `/opt/fxroute-armbian/source.tar` per dd + `debugfs` (aus dem
+    `--privileged` Armbian-Container; unprivilegierte Container-Zugriffe
+    scheitern am Daemon-seitigen Userns-Remapping) extrahiert: Inhalt
+    byte-identisch mit dem deterministischen Archiv aus `a69d6b2`
+    (`diff -rq` Exit 0, 713 Eintraege). Einziger Unterschied auf Tar-Ebene:
+    Modus-Bits der sechs `media/screenshots/*.png` (666 im Build-Archiv
+    wegen Disk-Modus im Haupt-Checkout vs. 644 in der Git-Referenz).
+  - Image-`installer_contract.py` enthaelt `PROVIDER_CONTRACT=helper-missing`,
+    Image-`install.sh` 7 Contract-Referenzen, Image-`armbian-web-config.py`
+    `disableWifiForEthernet` (2 Treffer).
+- Kein Push, kein Release. Flashen per OOWOW erfolgt manuell; die
+  Endverifikation (Onboarding, First-Boot, fxroute.service, HTTP :8000)
+  laeuft auf dem frisch geflashten Geraet.
 
 ## 2026-09-05 — khadas-vim1s (trixie/legacy), HEAD `5dfda4e`
 
