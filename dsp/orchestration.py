@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 import playback.state as playback_state
+import playback.source_policy as source_policy
 import audio.samplerate as samplerate
 from dsp.runtime import BassManagementConfig
 
@@ -360,6 +361,26 @@ class DspOrchestrator:
         status = dsp_manager.get_status()
         await self._deps.broadcast({"type": "dsp", "data": status})
 
+    @staticmethod
+    def _is_topology_complete_rate_only_mismatch(diagnosis: dict) -> bool:
+        """Return whether only the helper rate mismatches an intact topology.
+
+        All links present, source links complete, no direct-to-hardware
+        bypass, DSP/helper ports up: the graph is canonically linked and the
+        ``links_complete=False`` verdict rests solely on the track-derived
+        rate expectation. Rate ownership belongs to the drift observer.
+        """
+        links = diagnosis.get("links") or {}
+        if not isinstance(links, dict) or not links or not all(links.values()):
+            return False
+        return bool(
+            diagnosis.get("source_links_complete") is True
+            and not diagnosis.get("direct_source_to_hw_present")
+            and diagnosis.get("dsp_ports") is True
+            and diagnosis.get("helper_active") is True
+            and diagnosis.get("helper_rate_matches") is False
+        )
+
     async def runtime_link_watch_loop(self) -> None:
         while True:
             await self._deps.sleep(2.0)
@@ -397,6 +418,21 @@ class DspOrchestrator:
                     require_source=True,
                 )
                 if diagnosis.get("links_complete"):
+                    continue
+                if source_policy.is_mpv_source(source) and self._is_topology_complete_rate_only_mismatch(diagnosis):
+                    # Pure helper-rate mismatch with complete topology: the
+                    # track-derived target may be stale (e.g. a radio track
+                    # still carrying a previous fixed rate while live MPV
+                    # already runs the auto rate). The drift observer owns
+                    # rate mismatches with live-MPV authority and stable
+                    # readbacks; a full link-watcher recovery here would flap
+                    # the hardware rate.
+                    logger.debug(
+                        "Subwoofer link watcher deferring pure rate mismatch to drift observer: "
+                        "source=%s helper_rate=%s",
+                        source,
+                        diagnosis.get("helper_rate"),
+                    )
                     continue
                 logger.info(
                     "Subwoofer link watcher observed incomplete canonical graph; requesting Coordinator action: "

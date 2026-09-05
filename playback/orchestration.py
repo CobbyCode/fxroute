@@ -331,7 +331,27 @@ class PlaybackOrchestrator:
             detail=detail, output_mode_target=dict(overview), sample_rate_policy=dict(policy),
             **(self._deps.get_player_queue_fields() if source == "local" else {}),
         )
-        await self._deps.run_transition(request)
+        result = await self._deps.run_transition(request)
+        if (
+            getattr(result, "committed", False)
+            and self._deps.sample_rate_policy_is_auto()
+            and source_policy.is_mpv_source(source)
+            and isinstance(getattr(result, "target_rate", None), int)
+            and result.target_rate > 0
+        ):
+            # The committed hardware/helper rate is live-derived (MPV truth
+            # under auto). Refresh the committed track metadata so later
+            # watcher decisions derive their target from the new rate instead
+            # of a stale fixed-rate value (e.g. radio still carrying 88200
+            # after a fixed -> auto restore). Mirrors the recovery/play paths.
+            state = self._deps.get_playback_state()
+            current = state.current_track_info
+            if (
+                current
+                and current.get("source") == source
+                and current.get("url") == context.get("target_url")
+            ):
+                current["sample_rate_hz"] = result.target_rate
 
     async def _dsp_output_ports_present(self) -> bool:
         try:
