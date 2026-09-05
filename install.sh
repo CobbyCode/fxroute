@@ -3148,6 +3148,31 @@ qobuz_runtime_packages_for_manager() {
   esac
 }
 
+# qbzd renders through the ALSA->PipeWire bridge (its ALSA plugin); without
+# it qbzd falls back to raw hardware ALSA and never reaches Playing state on
+# the FXRoute DSP sink. Only apt is covered: the other managers pull the
+# bridge with their PipeWire stacks. On Debian 13 with the trixie-backports
+# PipeWire stack the bridge must come from backports as well, because mixing
+# it with the distribution revision makes apt refuse the whole transaction.
+ensure_qbzd_alsa_pipewire_bridge() {
+  if [[ "$PACKAGE_MANAGER" != "apt" ]]; then
+    return 0
+  fi
+  if package_installed pipewire-alsa; then
+    return 0
+  fi
+  if debian_trixie_backports_available; then
+    if [[ $PKG_REFRESH_DONE -eq 0 ]]; then
+      run_cmd "${SUDO_CMD[@]}" apt-get update
+      PKG_REFRESH_DONE=1
+    fi
+    run_cmd "${SUDO_CMD[@]}" apt-get install -y -t trixie-backports pipewire-alsa
+  else
+    pkg_install pipewire-alsa
+  fi
+  pass "ALSA->PipeWire bridge installed for qbzd"
+}
+
 ensure_qobuz_runtime_dependencies() {
   local was_present="$AVAHI_WAS_PRESENT_BEFORE"
   local was_active="$AVAHI_WAS_ACTIVE_BEFORE"
@@ -3157,6 +3182,7 @@ ensure_qobuz_runtime_dependencies() {
     AVAHI_INSTALLED_BY_FXROUTE=1
   fi
   install_missing_provider_packages "$(qobuz_runtime_packages_for_manager "$PACKAGE_MANAGER")"
+  ensure_qbzd_alsa_pipewire_bridge
   if avahi_is_present && ! systemctl is-active avahi-daemon >/dev/null 2>&1; then
     if [[ "$was_active" == "0" || "$was_enabled" == "0" ]]; then
       AVAHI_ENABLED_BY_FXROUTE=1

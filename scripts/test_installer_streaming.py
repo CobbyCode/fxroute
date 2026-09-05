@@ -688,6 +688,55 @@ test ! -e "$HOME/.local/bin/spotifyd"
             )
             self.assertNotEqual(result.returncode, 0)
 
+    def test_qbzd_alsa_pipewire_bridge_is_backports_aware(self):
+        body = extract_function(self.install, "ensure_qobuz_runtime_dependencies")
+        self.assertIn("ensure_qbzd_alsa_pipewire_bridge", body)
+        bridge = extract_function(self.install, "ensure_qbzd_alsa_pipewire_bridge")
+        self.assertIn("pipewire-alsa", bridge)
+        self.assertIn("apt-get install -y -t trixie-backports pipewire-alsa", bridge)
+        self.assertIn('"$PACKAGE_MANAGER" != "apt"', bridge)
+
+    def test_qbzd_alsa_bridge_install_matches_backports_stack(self):
+        bridge = extract_function(self.install, "ensure_qbzd_alsa_pipewire_bridge")
+        preamble = (
+            "package_installed() { return \"$PACKAGE_INSTALLED_RC\"; }\n"
+            "debian_trixie_backports_available() { return \"$BACKPORTS_RC\"; }\n"
+            "run_cmd() { printf 'run:%s\\n' \"$*\" >> \"$CALLS_FILE\"; return 0; }\n"
+            "pkg_install() { printf 'pkg:%s\\n' \"$*\" >> \"$CALLS_FILE\"; return 0; }\n"
+            "log() { :; }\n"
+            "pass() { :; }\n"
+            "die() { printf '[fxroute][error] %s\\n' \"$*\" >&2; exit 1; }\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            calls_file = Path(td) / "calls"
+            harness = (
+                f"{preamble}\n{bridge}\n"
+                "PACKAGE_MANAGER=apt\n"
+                "PKG_REFRESH_DONE=1\n"
+                "SUDO_CMD=()\n"
+                "ensure_qbzd_alsa_pipewire_bridge\n"
+            )
+            for installed_rc, backports_rc, expected in (
+                ("0", "0", ""),
+                ("1", "0", "run:apt-get install -y -t trixie-backports pipewire-alsa"),
+                ("1", "1", "pkg:pipewire-alsa"),
+            ):
+                calls_file.write_text("")
+                result = subprocess.run(
+                    ["bash", "-c", harness],
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "PATH": "/usr/bin:/bin",
+                        "CALLS_FILE": str(calls_file),
+                        "PACKAGE_INSTALLED_RC": installed_rc,
+                        "BACKPORTS_RC": backports_rc,
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls_file.read_text().strip(), expected)
+
     def test_tidal_is_an_optional_python_dependency(self):
         self.assertNotIn("tidalapi", self.base_requirements)
         self.assertIn("tidalapi==0.8.11", self.tidal_requirements)
