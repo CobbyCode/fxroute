@@ -584,16 +584,26 @@ class _RuntimeVerificationMixin:
                 f"expected={target_rate} actual={rate.get('force_rate')}"
             )
 
+        # An output-mode switch never (re)starts its source (see the
+        # post-start reconcile): only a playing source has stream links, so
+        # a paused owner must not pull its suspended stream into the verdict.
+        # Other operations keep the established target-or-play contract.
+        if request.operation == "output-mode-switch":
+            graph_source = request.source if request.should_play else None
+            require_source = bool(request.should_play)
+        else:
+            graph_source = (
+                request.source
+                if request.target_url or request.should_play
+                else None
+            )
+            require_source = bool(request.target_url or request.should_play)
         readbacks, signatures, stable = await stable_graph_readbacks(
             lambda: self._deps.playback_graph_diagnosis(
                 target_overview,
-                source=(
-                    request.source
-                    if request.target_url or request.should_play
-                    else None
-                ),
+                source=graph_source,
                 target_rate=target_rate,
-                require_source=bool(request.target_url or request.should_play),
+                require_source=require_source,
             )
         )
         if not stable:

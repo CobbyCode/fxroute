@@ -211,7 +211,9 @@ class _RuntimeOutputModeMixin:
         if mode in OUTPUT_MODE_SUBWOOFER_MODES:
             await self._deps.coordinator_reconcile_subwoofer_links_only()
 
-        source_required = bool(request.should_play or request.target_url)
+        # An output-mode switch never (re)starts its source (see the
+        # post-start reconcile): only a playing source has stream links.
+        source_required = bool(request.should_play)
         diagnosis = await self._deps.playback_graph_diagnosis(
             overview,
             source=request.source if source_required else None,

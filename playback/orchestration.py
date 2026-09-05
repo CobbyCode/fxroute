@@ -498,6 +498,12 @@ class PlaybackOrchestrator:
             else (dict(request.audio_overview) if request.audio_overview else None)
         )
         graph_source = request.source if request.target_url or request.should_play else None
+        if request.operation == "output-mode-switch" and not request.should_play:
+            # An output-mode switch never (re)starts its source: transport
+            # restore keeps a paused source paused, so a paused owner has no
+            # live stream ports by design. Only a playing source contributes
+            # stream links to the post-start production graph.
+            graph_source = None
         include_source = graph_source is not None
         diagnosis = await self.playback_graph_diagnosis(overview, source=graph_source, target_rate=target_rate, require_source=include_source)
         if diagnosis.get("direct_source_to_hw_present"):
