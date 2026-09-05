@@ -639,15 +639,20 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 .effects-actions-rew-dual {
     display: grid;
-    grid-template-columns: minmax(0, calc((100% - 0.9rem) / 2)) auto;
-    justify-content: start;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.9rem;
+    align-items: start;
+}
+
+.effects-rew-dual-preset-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 0.65rem;
-    flex-wrap: wrap;
+    gap: 0.75rem;
+    min-width: 0;
 }
 
 .effects-rew-dual-name-input {
-    flex: none;
     width: 100%;
     max-width: none;
     min-width: 0;
@@ -708,17 +713,15 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-actions-peq-dual {
-    display: grid;
-    grid-template-columns: minmax(0, calc((100% - 0.8rem) / 2)) auto;
-    justify-content: start;
-    align-items: center;
-    gap: 0.7rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.8rem;
+    align-items: start;
 }
 
 .effects-actions-peq-dual .effects-rew-dual-name-input {
-    flex: none;
     width: 100%;
     max-width: none;
+    min-width: 0;
 }
 
 .effects-actions-peq-dual .btn-primary {

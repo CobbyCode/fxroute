@@ -1358,13 +1358,17 @@
         }
 
         #tab-effects .effects-actions-rew-dual {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            align-items: center;
-            gap: 0.7rem;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            align-items: start;
+            gap: 0.9rem;
         }
 
-        #tab-effects .effects-actions-peq-dual,
+        #tab-effects .effects-actions-peq-dual {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            align-items: start;
+            gap: 0.8rem;
+        }
+
         #tab-effects .effects-actions-combine {
             display: grid;
             grid-template-columns: minmax(0, 1fr) auto;
@@ -1490,7 +1494,10 @@
         }
 
         .effects-actions-rew-dual,
-        .effects-actions-peq-dual,
+        .effects-actions-peq-dual {
+            grid-template-columns: 1fr;
+        }
+
         .effects-actions-combine {
             flex-direction: row;
             align-items: center;
@@ -1500,9 +1507,8 @@
 
         .effects-actions-rew-dual .effects-rew-dual-name-input,
         .effects-actions-peq-dual .effects-rew-dual-name-input {
-            flex: 0 1 170px;
-            max-width: 170px;
-            width: 170px;
+            width: 100%;
+            max-width: none;
         }
 
         .effects-actions-rew-dual .btn-primary,

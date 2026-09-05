@@ -1186,6 +1186,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    font-size: 0.95rem;
+    font-weight: 600;
+    line-height: 1.3;
 }
 .library-import-option .upload-area-filename,
 .upload-area-url-station .upload-area-filename {
@@ -1209,6 +1212,10 @@
 }
 .upload-area-file-primary {
     min-height: 124px;
+    border-width: 2px;
+    border-style: dashed;
+    padding: 1rem 1rem 0.95rem;
+    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(110,231,183,0.05));
 }
 .upload-area-url-station {
     min-height: 112px;
@@ -1219,7 +1226,8 @@
 .upload-area-url .upload-area-icon {
     font-size: 1.1rem;
 }
-.upload-area-url-primary .upload-area-icon {
+.upload-area-url-primary .upload-area-icon,
+.upload-area-file-primary .upload-area-icon {
     font-size: 1.4rem;
 }
 .upload-area-url-station .upload-area-icon {
@@ -1229,8 +1237,6 @@
 .upload-area-file-primary .upload-area-text,
 .upload-area-url-station .upload-area-text {
     color: var(--text-primary);
-    font-weight: 600;
-    font-size: 0.95rem;
 }
 .upload-area-text-input {
     position: absolute;
