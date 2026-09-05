@@ -484,6 +484,30 @@ const radio = state.getPlayback();
     assert.ok(dspAfterMeter.presets.some(p => p.name === '+6'));
     assert.equal(dspAfterMeter.active_preset, 'Direct');
 
+    // ── Album About + Discover Similar contract ─────────────────────────
+    // About texts ride the same backend fields (artist_description /
+    // album_description) the real UI renders as collapsible <details>;
+    // Discover reuses the demo library itself (same genre/decade first),
+    // max 6 items, never the album itself, 404 for unknown ids.
+    const demoAlbums = await (await demoFetch('/api/albums')).json();
+    const neonRain = demoAlbums.find(a => a.id === 'neon-rain');
+    assert.ok(neonRain && neonRain.artist_description && neonRain.artist_description.includes('Alistair Kade'));
+    assert.equal(neonRain.album_description || '', '');
+    const oldTown = demoAlbums.find(a => a.name === 'Old Town Sessions');
+    assert.ok(oldTown && oldTown.album_description && oldTown.album_description.length > 40);
+    assert.ok(oldTown.artist_description && oldTown.artist_description.length > 40);
+    for (const album of [neonRain, oldTown]) {
+        const disc = await (await demoFetch('/api/albums/' + encodeURIComponent(album.id) + '/discover')).json();
+        assert.equal(disc.album_id, album.id);
+        assert.ok(Array.isArray(disc.items) && disc.items.length > 0 && disc.items.length <= 6);
+        assert.ok(disc.items.every(item => item.id !== album.id), 'discover must not suggest the album itself');
+        assert.ok(disc.items.every(item => item.name && item.artist && item.coverUrl));
+    }
+    const neonDisc = await (await demoFetch('/api/albums/neon-rain/discover')).json();
+    assert.ok(neonDisc.items.some(item => item.artist !== 'Alistair Kade'), 'discover must reach beyond the same artist');
+    const unknownDisc = await demoFetch('/api/albums/does-not-exist/discover');
+    assert.equal(unknownDisc.status, 404);
+
     const splGet = await (await demoFetch('/api/measurements/spl-calibration')).json();
     assert.equal(splGet.automatic.available, true);
     assert.equal(splGet.automatic.microphone_model, 'UMIK-1');

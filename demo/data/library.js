@@ -120,6 +120,37 @@
         ['Dust Bowl Hymns', 'Delta Hollis', 'Dust Bowl Hymns', 'Blues', 2019, 284, 44100],
     ];
 
+    // ---------------------------------------------------------------------
+    // About texts (demo stand-ins for the enriched MusicBrainz artist/album
+    // descriptions). Short on purpose: the real UI renders them inside a
+    // collapsible <details> element, so two sentences are enough to show
+    // the open/close behavior. Keyed by artist name, with one album-level
+    // override to exercise the "About this album" label branch.
+    // ---------------------------------------------------------------------
+    const ARTIST_ABOUT = {
+        'Alistair Kade': 'Alistair Kade builds neon-lit synthwave around analog arpeggios and night-drive drums. The Neon Rain sessions were tracked live to tape with a wall of late-80s polysynths.',
+        'Rhea Lindqvist': 'Rhea Lindqvist writes quiet indie pop about harbors, ferries and slow tides. Her band records in single takes in a wooden boathouse north of Gothenburg.',
+        'The Bramble Trio': 'The Bramble Trio is a working jazz trio with two decades of club dates behind it. Old Town Sessions captures their late set: brushed drums, upright bass and unhurried piano.',
+        'Iris Nakamura': 'Iris Nakamura makes dense, melodic electronic music from modular sketches and field recordings. Gravity Well layers shifting polyrhythms under wide-open synth chords.',
+        'Fern Hollow': 'Fern Hollow is a folk project built on fingerpicked guitar and forest-floor percussion. Woodland Sketches was recorded in a cabin with the windows open.',
+        'Kilo City Collective': 'Kilo City Collective is a rotating hip-hop crew trading verses over dusty loops. Concrete Bloom maps their city block by block, rooftop by rooftop.',
+        'Sierra Reyes': 'Sierra Reyes plays high-altitude rock with room-sized guitars and close harmonies. Vantage Point was cut live on a mountain lodge porch at dusk.',
+        'Nordkap': 'Nordkap composes slow ambient pieces from bowed strings, tape loops and shortwave static. Polar Circle follows a full Arctic night from blue hour to midnight sun.',
+        'Delta Hollis': 'Delta Hollis carries the hill-country blues forward with stomp, slide and harmonica. Mississippi Notes collects juke-joint originals and one title-track confession.',
+        'Aether Drift': 'Aether Drift explores the seam between IDM and stargazing synth music. The self-titled record pairs crisp machine rhythms with weightless pads.',
+        'SubRoot System': 'SubRoot System runs a hand-built dub rig of tape echoes and spring reverbs. Bass Garden is four extended takes with the faders ridden live.',
+        'Kestrel Wire': 'Kestrel Wire stretches post-rock guitars across long instrumental arcs. Overpass was recorded in a concrete underpass for its natural seven-second decay.',
+        'Moru': 'Moru folds downtempo beats into hazy analog synth loops. Analog Dreams moves at walking pace through dusty drums and soft-focus chords.',
+        'Nova Circuit': 'Nova Circuit pairs bright synthpop hooks with restless sequencers. Their live show runs the whole rig without a laptop in sight.',
+        'Eiko Maru': 'Eiko Maru blends city pop grooves with modern funk guitar. Her songs switch between Japanese and English mid-chorus without slowing down.',
+        'Marisol Vega': 'Marisol Vega sings direct indie pop with mariachi-brass accents. Her choruses are written for open windows and full-volume car stereos.',
+        'Helios Strings': 'Helios Strings is a crossover ensemble mixing classical technique with film-score drama. Their readings favor slow builds and wide vibrato.',
+    };
+    const ALBUM_ABOUT = {
+        // Album-level override: renders as "About this album" instead of
+        // "About this artist", exactly like the real albumAboutHtml branch.
+        'Old Town Sessions': 'Old Town Sessions documents one November evening at the trio\u2019s residency club: two sets, no overdubs, applause left in. The room\u2019s upright piano had not been tuned in a year, which the band calls its fourth member.',
+    };
     const tracks = [];
     const albums = [];
     const byAlbum = new Map();
@@ -172,6 +203,10 @@
             has_external_cover: true,
             coverUrl: demoImage('album:' + first.album),
             demo_cover_url: demoImage('album:' + first.album),
+            // Same fields the enriched backend serves: the album detail
+            // renders them as collapsible About blocks, no demo-only UI.
+            ...(ARTIST_ABOUT[first.album_artist] ? { artist_description: ARTIST_ABOUT[first.album_artist] } : {}),
+            ...(ALBUM_ABOUT[first.album] ? { album_description: ALBUM_ABOUT[first.album] } : {}),
         });
     });
 

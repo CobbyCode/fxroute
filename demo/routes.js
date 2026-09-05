@@ -727,8 +727,25 @@
         }
         const albumDiscover = p.match(/^\/api\/albums\/([^/]+)\/discover$/);
         if (albumDiscover) {
-            const others = lib.albums.filter(a => a.id !== albumDiscover[1]).slice(0, 6);
-            return j({ album_id: albumDiscover[1], items: others.map(a => ({ id: a.id, name: a.name, artist: a.artist, cover_url: a.coverUrl, kind: 'album' })), source: 'demo', cached: true, error: '' });
+            // Same contract as the backend (ListenBrainz artist-seeded
+            // suggestions, max 6): reuse the demo library itself — same
+            // genre first, then same decade, then the rest in catalog
+            // order. Returns full album entries so the real UI renders
+            // identical tiles, no demo-only recommendation logic.
+            const album = lib.albums.find(a => a.id === albumDiscover[1]);
+            if (!album) return err('Album not found');
+            const genre = (album.genres || [])[0] || '';
+            const decade = Math.floor(Number(album.year || 0) / 10);
+            const scored = lib.albums
+                .filter(a => a.id !== album.id)
+                .map(a => {
+                    const sameGenre = genre && (a.genres || []).includes(genre) ? 0 : 1;
+                    const sameDecade = Number.isFinite(decade) && decade > 0
+                        && Math.floor(Number(a.year || 0) / 10) === decade ? 0 : 1;
+                    return { album: a, score: sameGenre * 10 + sameDecade };
+                })
+                .sort((x, y) => x.score - y.score);
+            return j({ album_id: album.id, items: scored.slice(0, 6).map(s => s.album), source: 'demo', cached: true, error: '' });
         }
         if (p === '/api/smart/top-tracks') return j(lib.tracks.slice(0, 40));
         if (p === '/api/library/status') return j({ scanning: false, tracks_found: lib.tracks.length, files_seen: 0 });
