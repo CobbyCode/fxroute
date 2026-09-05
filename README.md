@@ -1,150 +1,110 @@
 # FXRoute
 
-FXRoute is a browser-based control surface for Linux audio systems.
+FXRoute is a browser-based control surface for a Linux hi-fi audio box. One small PC or ARM board with a PipeWire user session becomes the source and DSP hub for local music, internet radio, Spotify, Qobuz, and TIDAL — controlled from any phone, tablet, or laptop on the local network.
 
-It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It combines local playback, FXRoute's native DSP engine, radio, library playback, measurement tools, and optional Spotify desktop control in one interface for phones, tablets, and laptops on the local network.
+Radio, the music library, the streaming providers, the native DSP engine, and the room-measurement tools all live in one interface. You browse and play from the couch; FXRoute owns the audio session, the DSP chain, and the output routing on the audio machine.
+
+## Web demo
+
+Try the interface without any audio hardware. The demo is the real FXRoute frontend — same checkout, same UI — with a simulated backend for playback, DSP, radio, and measurement, so every view is explorable in a normal browser.
+
+A stable demo link will be added here once the demo is published. Until then, run it locally:
+
+```bash
+git clone https://github.com/CobbyCode/fxroute.git
+cd fxroute
+python3 scripts/serve_demo.py     # then open http://127.0.0.1:8765
+```
+
+The demo page carries a small notice saying the backend is simulated. A static, publishable snapshot can be built with `python3 scripts/build_demo.py` (see `demo/README.md` for subpath hosting). The demo reuses the live frontend from this checkout, so it always reflects the current UI — there is no second UI source to keep in sync.
 
 <p align="center">
-  <strong>Measure, compare, and sketch PEQ/convolver corrections directly in the browser.</strong>
+  <img src="media/screenshots/radio-overview.png" width="32%" alt="FXRoute radio catalog with a station playing">
+  <img src="media/screenshots/dsp.png" width="32%" alt="FXRoute DSP page with A/B compare and subwoofer controls">
+  <img src="media/screenshots/measurement.png" width="32%" alt="FXRoute measurement assistant with a live sweep">
 </p>
 
-<table>
-  <tr>
-    <td width="33%"><img src="media/screenshots/01-radio.png" alt="FXRoute radio catalog and now-playing view"></td>
-    <td width="33%"><img src="media/screenshots/02-desktop-library.png" alt="FXRoute desktop library album grid"></td>
-    <td width="33%"><img src="media/screenshots/03-queue-now-playing.png" alt="FXRoute queue and now-playing view"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Radio</strong></td>
-    <td align="center"><strong>Desktop library</strong></td>
-    <td align="center"><strong>Queue / Now Playing</strong></td>
-  </tr>
-  <tr>
-    <td width="33%"><img src="media/screenshots/04-dsp-ab-output-helpers.png" alt="DSP A/B compare and output helpers"></td>
-    <td width="33%"><img src="media/screenshots/05-crossover-subwoofer.png" alt="FXRoute crossover and subwoofer controls"></td>
-    <td width="33%"><img src="media/screenshots/06-convolver-measurement.png" alt="FXRoute convolver and measurement view"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>DSP – A/B Compare &amp; Output Helpers</strong></td>
-    <td align="center"><strong>Crossover / Subwoofer</strong></td>
-    <td align="center"><strong>Convolver / Measurement</strong></td>
-  </tr>
-  <tr>
-    <td width="33%"><img src="media/screenshots/07-tidal.png" alt="FXRoute TIDAL catalog browse view"></td>
-    <td width="33%"><img src="media/screenshots/08-spl-calibration.png" alt="FXRoute SPL calibration view"></td>
-    <td width="33%"><img src="media/screenshots/09-advanced-measurement.png" alt="FXRoute Advanced measurement workflow"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>TIDAL</strong></td>
-    <td align="center"><strong>SPL Calibration</strong></td>
-    <td align="center"><strong>Advanced</strong></td>
-  </tr>
-</table>
+## What FXRoute does
 
-## What it does
+**Sources**
 
-- browser interface for desktop and mobile control
-- local music playback with queue, playlists, uploads, ZIP album imports, album browsing, cached album metadata, artist info, similar-artist discovery, and media URL imports
-- internet radio with a curated station catalog, personal station management
-  (add/edit/delete streams with custom artwork), Radio Browser station search,
-  and enriched metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
-- Spotify desktop control through `playerctl` / MPRIS, including passive metadata refresh for automatic track changes
-- Spotify Lossless playback through a current local Spotify desktop client for eligible Premium accounts, when Lossless is enabled in Spotify (up to 24-bit/44.1 kHz FLAC); FXRoute provides remote client control, not the Spotify stream
-- native DSP preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
-- stereo, 2.1 subwoofer, 2.2 subwoofer, and 2.2 Stereo Bass output modes
-- global DSP helpers for protection, gain management, loudness contouring, bass enhancement, and tone shaping; Loudness provides a calibrated contour that follows the playback level and also accounts for the Auto Gain target when both are active
-- room and speaker measurements with host microphone capture, including Advanced to measure speakers, room response, and microphone position,
-  calibration files, calibration-file export, smoothing, saved runs, a
-  twelve-filter PEQ editor, custom House Curve editing and export, PEQ filter
-  transfer, and stereo FIR/convolver preset creation with linear, minimum-
-  phase, minimum-aligned, and hybrid-aligned modes
-- SPL Calibration with −23-LUFS pink noise, automatic UMIK-1 / UMIK-2 /
-  Dayton UMM-6 SPL measurement, and manual C-weighted/Slow meter fallback;
-  Auto Gain and Loudness are neutralized only for calibration
-- Auto Sub Optimize with measured delay, polarity, and target-aware subwoofer
-  gain verification for 2.1, 2.2, and 2.2 Stereo Bass output modes; confirmed
-  AutoGain searches can use up to ±6 dB while the four final Stage outputs are
-  checked at the DAC level against the 0 dBFS full-scale/clipping limit, using
-  the real master/sink gain
-- automatic or fixed sample-rate playback handling for local files, radio, Spotify, and Bluetooth handoff cases; FXRoute supports sample rates up to 384 kHz, subject to the capabilities of the selected audio device
-- rich now-playing and cover detail views for local, radio, and Spotify
-  playback, including stream tech lines (codec/bitrate/sample rate) and
-  tag-info blocks
-- Bluetooth input visibility/control when the host audio stack supports it
-- optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
-- selectable local and SMB music libraries, with SMB share discovery and manual `smb://` share entry
-- streaming providers (Spotify, Qobuz, TIDAL) managed in **Technical settings → Providers**: install/remove backends, show/hide tabs, in-app Connect/Disconnect for Qobuz and TIDAL; Spotify pairs from the Spotify app by selecting the FXRoute device. Installer flags cover the same backends for shell-driven installs; see [docs/INSTALLER.md](docs/INSTALLER.md)
-- ready-made ARM64 Armbian images with local web onboarding; see [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md)
-- x86_64 openSUSE Leap 16 installation ISO with headless and desktop profiles; see [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md)
-- installer support for the native DSP build, systemd user service, PipeWire/BlueZ dependencies, firewall comfort rules, and `.local` LAN naming
-- installer package-manager support for apt (Debian/Ubuntu), dnf (Fedora),
-  zypper (openSUSE), and pacman (Arch/Manjaro); package-manager preparation
-  avoids repeated refreshes, with a required metadata refresh when a new
-  Spotify apt source is added
+- Local music library with album browsing, playlists, favorites, uploads, album ZIP imports, media-URL imports, and downloads
+- Internet radio with a curated station catalog, personal stations, and Radio Browser search; live metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
+- Spotify control for a local desktop client or spotifyd (Spotify Connect pairing, no FXRoute login), including Lossless-aware playback through a current desktop client
+- Qobuz Connect player control and a full TIDAL catalog browser with native playback through FXRoute's audio engine
+- Bluetooth input visibility and control when the host audio stack supports it
 
-## Intended setup
+**DSP and output**
 
-FXRoute runs in a **Linux user session with an active PipeWire audio stack**. That session can be a desktop session or a headless CLI/minimal setup (for example ARM64 Armbian) with the user services enabled. FXRoute is not intended to run as a system daemon.
+- A native DSP engine (`fxroute_dsp_sink`) built from source, in the same PipeWire session as playback
+- Presets with A/B compare, preset combining, and filter imports; two always-available presets: **Direct** (bypasses everything) and **Neutral** (clean chain, the default)
+- Global output helpers that apply on top of any preset: protection limiter, headroom, autogain, loudness contouring, bass enhancer, and tone effect
+- Stereo, 2.1, 2.2, and 2.2 Stereo Bass output modes with crossover, level, polarity, and alignment controls
+- Auto or fixed sample rate (up to 384 kHz, device permitting)
 
-The installer keeps FXRoute, PipeWire, WirePlumber, and PipeWire-Pulse in the
-same Unix user session. Run it as the audio user, or select that user when a
-root shell is used, for example `./install.sh --user khadas`. On a headless
-system the installer enables user-session persistence, starts the audio units
-and the session bus, and refuses to report a successful install unless the
-target user's session bus, PipeWire socket, `wpctl`, `pw-cli`, `pw-link`,
-PipeWire-Pulse socket, and FXRoute DSP ingress sink are reachable.
+**Measure and correct**
 
-Typical setup:
+- Host-microphone room and speaker measurement: single L/R/Stereo sweeps, same-position L/R Repeat, and a guided multi-position Advanced workflow
+- SPL calibration with UMIK-1/UMIK-2/Dayton UMM-6 support or a manual meter
+- Auto Sub Optimize for subwoofer alignment in subwoofer output modes
+- Correction tools on the measurement graph: a 12-filter PEQ sketchpad, custom House Curves, and FIR convolver preset creation in linear, minimum-phase, and aligned modes
 
-- small PC or ARM board near DAC, amp, active speakers, headphones, or TV
-- PipeWire-based Linux user session (desktop or headless)
-- FXRoute's native DSP engine in the same local PipeWire session
-- optional Spotify desktop client in the same session
-- control from any browser on the LAN
+**System**
 
-FXRoute coordinates local audio applications, its DSP engine, MPRIS/playerctl, and PipeWire routes through that user session. Playback applications enter the processing graph through the FXRoute-owned `fxroute_dsp_sink` Pulse/PipeWire sink.
+- Control from any browser on the LAN; SMB music shares in addition to the local folder
+- Optional local HTTPS via Caddy with a downloadable certificate
+- `GET /api/power/state` as a read-only hint for amplifier smart-plug automation
+- In-app maintenance updates, plus ready-made installers (see below)
 
-## Requirements
+## Install
 
-On supported distributions, `install.sh` installs and configures the runtime tools: Python dependencies, `mpv`, `ffmpeg`, `playerctl`, Bluetooth/PipeWire helpers, and service files.
+**Classic install** on a Linux PC or board with PipeWire:
 
-The installer builds the native DSP engine from the source shipped with FXRoute. A C compiler, `pkg-config`, PipeWire development headers, and the LV2 libraries and plugin packages used by the DSP effects (LSP, Zam, Calf) are installed on supported distributions.
+```bash
+git clone https://github.com/CobbyCode/fxroute.git
+cd fxroute
+./install.sh
+```
 
-Tested installer targets so far include:
+The installer prepares the system packages, builds the native DSP engine, creates the Python virtualenv, and enables the `fxroute.service` user service. Run it as the audio user; from a root shell on a host with several users, pass that user explicitly with `./install.sh --user <name>`. Custom install targets must be dedicated directories named `fxroute` unless `--local-project` is used.
 
-- Ubuntu 24.04 and 26.04 on x86_64
-- Manjaro / Arch-family x86_64 systems
-- openSUSE Tumbleweed on x86_64
-- Fedora-family x86_64 systems
-- Armbian 26.2.1 / Ubuntu 24.04 Noble on ARM64 (`aarch64`, Khadas VIM1S; PipeWire setup may be needed depending on the image)
-- Debian 13/Trixie on ARM64 (`aarch64`)
+**Ready-made images**
 
-## Native DSP engine
+- ARM64 Armbian image with web onboarding — [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md)
+- x86_64 openSUSE Leap installation ISO — [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md)
 
-FXRoute builds and runs its own PipeWire-native DSP engine. The stable ingress sink is `fxroute_dsp_sink`; the processing node is `fxroute_dsp`.
+Both images start with no streaming providers. Providers are added later in **Technical settings → Providers**, or at install time with installer flags:
 
-Fresh installs on x86_64 default Spotify autostart to enabled when a local Spotify desktop client is available, so the player can return after a desktop/session restart. Other architectures default Spotify autostart to disabled. Existing `.env` files are preserved on installer reruns.
+```bash
+./install.sh --providers spotify-desktop,spotifyd,qobuz,tidal
+```
 
-## Maintenance updates
+Supported package managers are apt, dnf, zypper, and pacman. The provider matrix, first-run authentication, and uninstall behavior are covered in [docs/INSTALLER.md](docs/INSTALLER.md).
 
-Installed git checkouts can be updated from **Technical settings → Maintenance** or from the `fxroute-update` helper. The update path uses the same install root, service name, virtualenv, and systemd user service assumptions as `install.sh`.
+## First start
 
-## Home Assistant / external automation
+- `systemctl --user status fxroute` — the service is `fxroute.service`.
+- Open the UI from any browser on the network:
+  - `http://fxroute.local:8000` (mDNS; the name is set in **Technical settings → Device Name**)
+  - `http://<host-ip>:8000`
+  - `http://localhost:8000` on the audio PC itself
+  - `https://<host-ip>` or `https://<device-name>.local` when the optional HTTPS proxy is enabled (HTTP stays reachable)
+- Play something from **Radio** or **Library** to confirm audio and DSP routing.
+- The music folder is configured in `.env` (`MUSIC_ROOT`) or selected in **Technical settings → Music Library**, which also lists discovered SMB shares.
 
-FXRoute exposes `GET /api/power/state` as a read-only power hint for external automation. It returns `amp_should_be_on: true` when local or Spotify playback is active, or when the Measurement Assistant is open. Home Assistant or another automation system can use this hint to control an amplifier smart plug or power socket. FXRoute does not require an MQTT broker and does not control the smart plug directly.
+FXRoute runs in a Linux user session with an active PipeWire audio stack — desktop or headless CLI with user services enabled. It is not intended to run as a system daemon. Playback applications enter the processing graph through the `fxroute_dsp_sink` Pulse/PipeWire sink.
 
-Minimal Home Assistant example:
+## Home Assistant
+
+`GET /api/power/state` is a read-only amplifier power hint for external automation: `amp_should_be_on` is true while local or Spotify playback is active or the Measurement Assistant is open. FXRoute does not require MQTT and never controls the plug itself.
 
 ```yaml
 rest:
   - resource: "http://fxroute.local:8000/api/power/state"  # Adapt host/port if needed.
     scan_interval: 5
     binary_sensor:
-      - name: "FXRoute Amp Should Be On"
+      - name: "FXRoute amp should be on"
         value_template: "{{ value_json.amp_should_be_on }}"
-    sensor:
-      - name: "FXRoute Amp Reason"
-        value_template: "{{ value_json.reason }}"
 
 automation:
   - alias: "FXRoute amp on"
@@ -155,7 +115,7 @@ automation:
     action:
       - service: switch.turn_on
         target:
-          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug entity.
+          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug.
 
   - alias: "FXRoute amp off after idle"
     trigger:
@@ -167,112 +127,16 @@ automation:
     action:
       - service: switch.turn_off
         target:
-          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug entity.
+          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug.
 ```
 
-## Quick start
+## Documentation
 
-Classic install:
-
-```bash
-git clone https://github.com/CobbyCode/fxroute.git && cd fxroute && ./install.sh
-```
-
-When installing from a root shell on a host with more than one normal user,
-pass the audio user explicitly: `./install.sh --user <name>`. A root shell on
-a host with one eligible normal user selects that user automatically. Custom
-install targets must be dedicated directories named `fxroute` unless
-`--local-project` is used.
-
-The installer creates `.env` automatically and preserves it on reruns. For manual setup, copy `.env.example` to `.env` and adjust at least `MUSIC_ROOT` when needed. Network libraries can be selected in **Technical settings**. FXRoute discovers accessible SMB shares and also accepts a manual `smb://server/share` entry.
-
-Streaming providers are managed in **Technical settings → Providers**: install or remove the backend, show or hide its tab, and connect or disconnect the account. Qobuz and TIDAL connect through the in-app browser flows; Spotify has no login inside FXRoute and pairs from the Spotify app by selecting the FXRoute device. The installer flags remain for shell-driven installs, for example:
-
-```bash
-./install.sh --providers spotify-desktop,spotifyd,qobuz,tidal
-```
-
-Spotify Desktop and spotifyd are independent choices. Spotify Desktop is limited to x86_64 desktop sessions; spotifyd and Qobuz/qbzd also support headless user sessions where their architecture and runtime are available. On ARM64 the installer uses a verified FXRoute spotifyd prebuilt. The installer does not write provider credentials or session data. See [docs/INSTALLER.md](docs/INSTALLER.md) for the supported matrix, first-run authentication, and uninstall behavior.
-
-Ready-made images (both start with `--providers none`; add providers later in **Technical settings → Providers**):
-
-- **ARM64 Armbian image** (for example Raspberry Pi 4/5): write the image, boot the board, and complete the local web onboarding (FXRoute user account, network). First boot installs FXRoute and enables the `.local` device name and HTTPS. See [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md).
-- **x86_64 installation ISO** (openSUSE Leap 16): write the ISO to USB, boot, select `FXRoute Headless` or `FXRoute Desktop`, review the Agama overview (network, target disk, locale/keyboard/timezone, account/password), then install and reboot. See [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md).
-
-Default user service:
-
-- `fxroute.service`
-
-Typical URLs:
-
-- `http://localhost:8000`
-- `http://<host-ip>:8000`
-- `http://<device-name>.local:8000` (default `http://fxroute.local:8000`) when mDNS is enabled
-- `https://<host-ip>` or `https://<device-name>.local` when the optional local HTTPS proxy is enabled
-
-The device name is shown and changed in **Technical settings → Device Name**. HTTP on port 8000 stays reachable when the HTTPS proxy is enabled.
-
-## Main sections
-
-- **Radio** — curated station catalog, personal stations, Radio Browser search, live metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
-- **Library** — local files, album browsing, cached metadata, artist info, similar-artist discovery, playlists, uploads, imports, downloads, and deletion
-- **DSP** — native DSP presets, PEQ, convolver, helpers, A/B compare, and preset creation
-- **Measure** — host-mic measurement, Advanced, subwoofer optimization, and tuning workflow
-- **Spotify** — control a local Spotify desktop client or spotifyd player
-- **Qobuz** — control a Qobuz Connect player on the audio PC
-- **TIDAL** — full catalog browser with login, search, favorites, and native playback
-- **Technical settings** — streaming providers (install, show/hide, Connect/Disconnect, remove), device name (`.local`), output selection, Stereo/2.1/2.2/2.2 Stereo Bass modes, Auto or fixed sample rate, music libraries, source state, Bluetooth status, Maintenance updates, and local certificate access
-
-## Library metadata
-
-FXRoute keeps local tags and local cover files as the source of truth, then enriches albums opportunistically with cached MusicBrainz IDs, Cover Art Archive fallback covers, compact album facts, optional Wikipedia/Wikidata artist summaries, and ListenBrainz similar-artist discovery.
-
-Metadata is cached locally so normal library scans stay fast and unchanged tracks do not need full audio probing on every run.
-
-## Measurement and convolver presets
-
-The Measure workflow creates native DSP FIR/convolver presets from
-saved measurements. For stereo correction, measure and save left and right
-separately, assign them in the Convolver assistant, then choose the target
-curve, correction range, phase mode, sample rate, and tap length.
-
-The Measurement assistant also includes:
-
-- a temporary PEQ editor with up to 12 filters before creating a preset
-- a Custom House Curve editor with up to 8 frequency/gain points
-- export of managed microphone calibration files and House Curve files
-
-Create Custom House Curves on the graph or edit them numerically. FXRoute saves
-them in the target-file format used by the existing House Curve workflow.
-Calibration and House Curve files can be exported again from the Measurement
-setup after they have been imported or created.
-
-Available phase modes:
-
-- **Linear phase** — symmetric FIR correction.
-- **Minimum phase** — default for broad room/speaker correction.
-- **Minimum phase aligned** — minimum-phase correction with measured L/R direct-arrival alignment for separately saved stereo measurements.
-- **Hybrid aligned** — minimum-phase bass correction blended into zero-delay linear-style upper correction, using the same L/R timing safety gate as Minimum phase aligned for stereo filters.
-
-## Service commands
-
-```bash
-systemctl --user status fxroute
-systemctl --user restart fxroute
-journalctl --user -u fxroute -f
-```
-
-Useful DSP graph checks:
-
-```bash
-wpctl status
-pw-cli ls Node | grep fxroute_dsp
-```
-
-## Manual
-
-See [MANUAL.md](MANUAL.md) for the short user manual.
+- [MANUAL.md](MANUAL.md) — the short user manual
+- [docs/INSTALLER.md](docs/INSTALLER.md) — installer, providers, and uninstall details
+- [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md) and [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md) — ready-made images
+- [CHANGELOG.md](CHANGELOG.md) — release history
 
 ## License
 
-See [LICENSE](LICENSE).
+AGPL-3.0 — see [LICENSE](LICENSE).
