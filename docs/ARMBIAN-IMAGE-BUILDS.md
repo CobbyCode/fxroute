@@ -4,6 +4,42 @@ Build-Protokoll der offiziellen Armbian-Images (`armbian/build-image.sh`).
 Ablage der Images: `dist/` (git-ignoriert). Build-Logs `armbian-vim1s-build-*.log`
 sind ebenfalls git-ignoriert und liegen nur lokal im Checkout.
 
+## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `a69d6b2`
+
+- FXRoute HEAD: `a69d6b2b8545c345d9ce5281f722aeaad1481730`
+  (`fix(providers): machine-readable 503 contract replaces prose-matching`),
+  sauberer kanonischer `main`, Working Tree clean.
+- Neubau nach Loeschen aller bisherigen VIM1S-Artefakte: Image
+  `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz` + `.sha256`
+  (Stand `5dfda4e`, 405950464 Bytes) sowie die drei alten Build-Logs
+  `armbian-vim1s-build-2026-09-05*.log` entfernt.
+- Vorab-Checks bestanden: 304 GiB frei auf /home (NVMe), 30 GiB RAM
+  (16 GiB verfuegbar; Swap 2/2 GiB belegt = Bestandszustand, identisch zu
+  den erfolgreichen Vorgaenger-Builds), Docker 29.4.0 mit
+  `ghcr.io/armbian/docker-armbian-build:armbian-debian-trixie-latest`,
+  Armbian-Cache-Checkout exakt auf Pin `4a50e16e…`, kein anderer Build
+  aktiv, `scripts/test_armbian_images.py` und `test_armbian_web_config.py`
+  vor dem Build OK.
+- Armbian-Pin: `4a50e16e09222e00d3f57884b4dfbf8fdb4ce5dc`
+  (Cache-Verzeichnis bereits auf diesem Pin, Docker-Basis vorhanden).
+- Kommando: `./armbian/build-image.sh --board khadas-vim1s`
+  (BOARD=khadas-vim1s, RELEASE=trixie, BRANCH=legacy, EXT=image-output-oowow).
+- Build: Start 2026-09-05T22:21:06Z, detached via `setsid nohup` (PID
+  2364666, eigene Session; laeuft unabhaengig von der Agent-Session
+  weiter). Work-Dir dieses Laufs: `image.R2x7zv`. Kernel-Artifact
+  `kernel-meson-s4t7-legacy 5.15.137` kommt aus dem Armbian-Remote-Cache.
+- Build-Log: `armbian-vim1s-build-2026-09-06-a69d6b2.log` (lokal,
+  git-ignoriert, persistent; der Wrapper haengt seine Exit-Status-Zeile
+  `[wrapper] exit status: <rc>` ans Logende).
+- Bemerkung: Drei alte Docker-root-owned Work-Dir-Reste
+  (`~/.cache/fxroute/armbian/tmp/image.{j75Asc,Pc2nmN,Ttv4aJ}`, je ~296 MB)
+  waren mit `rm` und Container-Root (auch `--userns=host`) nicht
+  entfernbar (Daemon-seitiges Userns-Remapping; Host-Sudo braucht
+  Passwort). Kosmetisch bei 304 GiB frei; der Build nutzt ein frisches
+  mktemp-Work-Dir.
+- Ergebnis (Image, sha256, Exit-Status) wird nach Buildende hier ergaenzt.
+  Kein Push, kein Release.
+
 ## 2026-09-05 — khadas-vim1s (trixie/legacy), HEAD `5dfda4e`
 
 - FXRoute HEAD: `5dfda4e5fcbfc4c19b6006a903b934cdb41a386b`
