@@ -287,16 +287,20 @@
     // single-trace file per channel (left/right), so the demo replays the
     // true per-channel Before/After curves, never a full sweep.
     // The demo starts in 2.2 mode with Target Curve = Neutral, so the
-    // 2.2 default is the Neutral pair; BK replays the BK pair.
+    // 2.2 default is the Neutral pair. Bass-heavy targets (BK, Harman,
+    // Bass Shelf) replay the BK pair — audibly closer than Neutral;
+    // Neutral keeps the Neutral pair.
+    // Bass-heavy targets without a BK run for their mode (2.1 has only
+    // Neutral fixtures) fall back to that mode's Neutral pair.
     function autoSubRunFor(mode, targetKey) {
         const saved = S.getSavedMeasurements();
         const byId = (id) => saved.find((m) => m.id === id) || null;
         const runs = [
-            { mode: 'subwoofer-2.1', targets: ['neutral'], before: ['autosub-21-neutral-before-l', 'autosub-21-neutral-before-r'], after: ['autosub-21-neutral-after-l', 'autosub-21-neutral-after-r'] },
+            { mode: 'subwoofer-2.1', targets: ['neutral', 'bk', 'harman', 'bass_shelf'], before: ['autosub-21-neutral-before-l', 'autosub-21-neutral-before-r'], after: ['autosub-21-neutral-after-l', 'autosub-21-neutral-after-r'] },
             { mode: 'subwoofer-2.2', targets: ['neutral'], before: ['autosub-22-neutral-before-l', 'autosub-22-neutral-before-r'], after: ['autosub-22-neutral-after-l', 'autosub-22-neutral-after-r'] },
-            { mode: 'subwoofer-2.2', targets: ['bk'], before: ['autosub-22-bk-before-l', 'autosub-22-bk-before-r'], after: ['autosub-22-bk-after-l', 'autosub-22-bk-after-r'] },
+            { mode: 'subwoofer-2.2', targets: ['bk', 'harman', 'bass_shelf'], before: ['autosub-22-bk-before-l', 'autosub-22-bk-before-r'], after: ['autosub-22-bk-after-l', 'autosub-22-bk-after-r'] },
             { mode: 'subwoofer-2.2-stereo', targets: ['neutral'], before: ['autosub-22stereo-neutral-before-l', 'autosub-22stereo-neutral-before-r'], after: ['autosub-22stereo-neutral-after-l', 'autosub-22stereo-neutral-after-r'] },
-            { mode: 'subwoofer-2.2-stereo', targets: ['bk'], before: ['autosub-22stereo-bk-before-l', 'autosub-22stereo-bk-before-r'], after: ['autosub-22stereo-bk-after-l', 'autosub-22stereo-bk-after-r'] },
+            { mode: 'subwoofer-2.2-stereo', targets: ['bk', 'harman', 'bass_shelf'], before: ['autosub-22stereo-bk-before-l', 'autosub-22stereo-bk-before-r'], after: ['autosub-22stereo-bk-after-l', 'autosub-22stereo-bk-after-r'] },
         ];
         const normalized = String(targetKey || 'neutral').toLowerCase();
         const complete = (run) => run.before.every(byId) && run.after.every(byId);
@@ -355,6 +359,7 @@
         const normalized = String(targetKey || 'neutral').toLowerCase();
         if (normalized === 'bk') return 'Bruel & Kjaer-style';
         if (normalized === 'harman') return 'Harman-style';
+        if (normalized === 'bass_shelf') return 'Bass Shelf';
         return 'Neutral';
     }
 

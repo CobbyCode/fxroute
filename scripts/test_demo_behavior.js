@@ -648,6 +648,18 @@ const radio = state.getPlayback();
     assert.equal(autoSubBk22Done.target_curve.key, 'bk');
     assert.match(autoSubBk22Done.result.baseline_measurement.name, /2\.2 \(BK\) · Before L/);
     assert.match(autoSubBk22Done.result.confirmation_measurement.name, /2\.2 \(BK\) · After L/);
+    // Bass-heavy targets without their own run (Harman, Bass Shelf)
+    // replay the BK pair — audibly closer than Neutral — while Neutral
+    // keeps the Neutral pair.
+    for (const bassKey of ['harman', 'bass_shelf']) {
+        const bassForm = new context.FormData();
+        bassForm.append('target_curve_snapshot', JSON.stringify({ key: bassKey, label: bassKey, provenance: 'built_in', points: [[20, 4], [20000, 0]] }));
+        const bassStart = await (await demoFetch('/api/measurements/auto-sub-optimize/start', { method: 'POST', body: bassForm })).json();
+        const bassDone = context.FXROUTE_DEMO_API.autoSubJobPayload(bassStart.job.id, 100000);
+        assert.equal(bassDone.target_curve.key, bassKey);
+        assert.match(bassDone.result.baseline_measurement.name, /2\.2 \(BK\) · Before L/);
+        assert.match(bassDone.result.confirmation_measurement.name, /2\.2 \(BK\) · After L/);
+    }
     // The BK run applies its own delays — assert them right away, before
     // the later mode switches move the output state on.
     const outputsAfterAutoSub = await (await demoFetch('/api/audio/outputs')).json();
