@@ -115,6 +115,8 @@ PACKAGE_MANAGER=""
 PACKAGE_INSTALL_CMD=()
 PKG_REFRESH_DONE=0
 SUDO_CMD=()
+PROVIDER_PRIVILEGE_MODE=""
+PROVIDER_SUDOERS_FILE="/etc/sudoers.d/fxroute-providers"
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
 INSTALL_CONFIG_FILE="$HOME/.config/fxroute/install-config.env"
 ROOT_INSTALL_STATE_FILE="/var/lib/fxroute/state/$(id -u)/install-state.json"
@@ -169,6 +171,8 @@ POWER_POLKIT_RULE_SHA256=""
 MDNS_OPENED_BY_FXROUTE=0
 INSTALL_STATE_LOADED=0
 STATE_CHECKPOINT_ENABLED=0
+PROVIDER_PRIVILEGE_INSTALLED_BY_FXROUTE=0
+PROVIDER_PRIVILEGE_SUDOERS_SHA256=""
 
 # Firewall ownership is tracked per concrete backend/rule pair. The legacy
 # aggregate flags below remain in the state file for older installations.
@@ -744,6 +748,94 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Required command missing: $1"
 }
 
+provider_privilege_rule_content() {
+  # Central allow-list for Settings -> Providers (--providers-only): exactly
+  # one sudoers entry, this script with --providers-only only. A sudoers
+  # Cmnd_Alias cannot express "this script with that flag for this user"
+  # without also matching other flags, so the script-plus-flag pair in a
+  # single rule is the narrowest correct form: it keeps package installs,
+  # Avahi enablement, journal-group membership, firewall rules and the state
+  # sync in the already-audited provider flow instead of opening arbitrary
+  # apt/systemctl/usermod access.
+  local install_user="$1"
+  local script_path="$2"
+  printf '%s ALL=(root) NOPASSWD: %s --providers-only *\n' "$install_user" "$script_path"
+}
+
+ensure_provider_privilege_escalation() {
+  # One interactive sudo bootstrap for the providers-only path. Installs the
+  # narrowly scoped sudoers rule above (this script, --providers-only only)
+  # so the FXRoute web UI can run later installs non-interactively via
+  # "sudo -n <script> --providers-only ...". Runs before any privileged
+  # provider step so a single password prompt covers the rule install plus
+  # the later apt-get/systemctl/usermod calls of the same run. A failed
+  # bootstrap leaves PROVIDER_PRIVILEGE_MODE=interactive so those calls keep
+  # working through the normal sudo password prompt; only a verified
+  # non-interactive rule switches the mode to passwordless.
+  local install_user="$FXROUTE_TARGET_USER"
+  local script_path=""
+  local rule=""
+  local tmp_rule=""
+  local current_sha256=""
+
+  PROVIDER_PRIVILEGE_MODE="interactive"
+  [[ $PROVIDERS_ONLY_MODE -eq 1 ]] || return 0
+  [[ "$(id -u)" -ne 0 && "$install_user" != "root" ]] || return 0
+  [[ "$install_user" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || return 0
+  command -v sudo >/dev/null 2>&1 || return 0
+  if sudo -n true >/dev/null 2>&1; then
+    PROVIDER_PRIVILEGE_MODE="passwordless"
+    return 0
+  fi
+  script_path="$(readlink -f -- "$SOURCE_DIR/install.sh" 2>/dev/null || true)"
+  [[ -n "$script_path" && -f "$script_path" && ! -L "$script_path" ]] || return 0
+  rule="$(provider_privilege_rule_content "$install_user" "$script_path")"
+  if [[ -L "$PROVIDER_SUDOERS_FILE" || ( -e "$PROVIDER_SUDOERS_FILE" && ! -f "$PROVIDER_SUDOERS_FILE" ) ]]; then
+    warn "Refusing to use a non-regular provider privilege file at $PROVIDER_SUDOERS_FILE"
+    return 0
+  fi
+  if [[ -e "$PROVIDER_SUDOERS_FILE" ]]; then
+    if grep -Fqx -- "$rule" "$PROVIDER_SUDOERS_FILE" 2>/dev/null; then
+      # A matching rule for this exact script path is already on disk. It
+      # may predate the sudo timestamp (cached credentials expired), so an
+      # interactive sudo refresh still counts as verified: the UI calls use
+      # "sudo -n <script> --providers-only ...", which the rule itself will
+      # then allow without a password.
+      if sudo -n true >/dev/null 2>&1 || sudo true >/dev/null 2>&1; then
+        PROVIDER_PRIVILEGE_MODE="passwordless"
+        return 0
+      fi
+      return 0
+    fi
+    if [[ $PROVIDER_PRIVILEGE_INSTALLED_BY_FXROUTE -ne 1 ]]; then
+      return 0
+    fi
+    if [[ -n "$PROVIDER_PRIVILEGE_SUDOERS_SHA256" ]]; then
+      current_sha256="$(sudo sha256sum "$PROVIDER_SUDOERS_FILE" 2>/dev/null | awk '{print $1}')"
+      [[ "$current_sha256" == "$PROVIDER_PRIVILEGE_SUDOERS_SHA256" ]] || return 0
+    fi
+  fi
+  tmp_rule="$(mktemp)"
+  printf '%s' "$rule" > "$tmp_rule"
+  # NOTE: this visudo check intentionally uses interactive sudo (password
+  # prompt), not "sudo -n": this is the one-time bootstrap, and the rule
+  # being validated is what enables all later non-interactive calls.
+  if command -v visudo >/dev/null 2>&1; then
+    sudo visudo -cf "$tmp_rule" >/dev/null 2>&1 || {
+      rm -f "$tmp_rule"
+      return 0
+    }
+  fi
+  if sudo install -m 440 "$tmp_rule" "$PROVIDER_SUDOERS_FILE" >/dev/null 2>&1 \
+    && sudo -n true >/dev/null 2>&1; then
+    PROVIDER_PRIVILEGE_MODE="passwordless"
+    PROVIDER_PRIVILEGE_INSTALLED_BY_FXROUTE=1
+    PROVIDER_PRIVILEGE_SUDOERS_SHA256="$(sudo -n sha256sum "$PROVIDER_SUDOERS_FILE" 2>/dev/null | awk '{print $1}')"
+    pass "provider privilege escalation ready (passwordless --providers-only)"
+  fi
+  rm -f "$tmp_rule"
+}
+
 parse_provider_selection() {
   local selection="${1:-}"
   local token=""
@@ -1122,6 +1214,10 @@ load_provider_ownership_state() {
     [[ -n "$value" ]] && POWER_POLKIT_RULE_SHA256="$value"
   fi
   [[ "$(previous_install_state_field lan_comfort.power_polkit_rule_pre_existed 2>/dev/null || true)" == "true" ]] && POWER_POLKIT_RULE_PRE_EXISTED=1
+  [[ "$(previous_install_state_field providers.privilege_escalation.installed_by_fxroute 2>/dev/null || true)" == "true" ]] && PROVIDER_PRIVILEGE_INSTALLED_BY_FXROUTE=1
+  if value="$(previous_install_state_field providers.privilege_escalation.sudoers_sha256 2>/dev/null)"; then
+    [[ -n "$value" ]] && PROVIDER_PRIVILEGE_SUDOERS_SHA256="$value"
+  fi
   return 0
 }
 
@@ -1742,7 +1838,11 @@ choose_sudo() {
   if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
     SUDO_CMD=()
   elif command -v sudo >/dev/null 2>&1; then
-    SUDO_CMD=(sudo)
+    if [[ $PROVIDERS_ONLY_MODE -eq 1 && "${PROVIDER_PRIVILEGE_MODE:-}" == "passwordless" ]]; then
+      SUDO_CMD=(sudo -n)
+    else
+      SUDO_CMD=(sudo)
+    fi
   else
     die "sudo is required for package installation"
   fi
@@ -4198,6 +4298,10 @@ write_install_state() {
       "present_before": $( [[ $TIDAL_PRESENT_BEFORE -eq 1 ]] && echo true || echo false ),
       "installed_by_fxroute": $( [[ $TIDAL_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
       "installed_version": "${TIDAL_INSTALLED_VERSION}"
+    },
+    "privilege_escalation": {
+      "installed_by_fxroute": $( [[ $PROVIDER_PRIVILEGE_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+      "sudoers_sha256": "${PROVIDER_PRIVILEGE_SUDOERS_SHA256}"
     }
   },
   "dsp": {
@@ -6526,6 +6630,8 @@ main_providers_only() {
   confirm_supported_distro
   load_provider_ownership_state
   select_optional_providers
+  ensure_provider_privilege_escalation
+  choose_sudo
   STATE_CHECKPOINT_ENABLED=1
   trap 'checkpoint_install_state_on_exit' EXIT
   configure_optional_streaming

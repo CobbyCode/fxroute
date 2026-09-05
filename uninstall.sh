@@ -62,7 +62,7 @@ Usage: ./uninstall.sh [options]
 Options:
   --target <dir>                Uninstall from this directory (default: $INSTALL_ROOT_DEFAULT)
   --user <name>                 Select the FXRoute user when invoked as root
-  --provider <id>               Remove only one provider (spotify, qobuz, tidal); FXRoute itself stays installed
+  --provider <id>               Remove only one provider (spotify, qobuz, tidal, privilege); FXRoute itself stays installed
   --remove-project-dir          Remove the project directory after uninstall
   -y, --yes                     Assume yes for optional removals
   -h, --help                    Show this help
@@ -128,10 +128,10 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --provider)
-      [[ $# -ge 2 ]] || { echo "--provider requires an id (spotify, qobuz, tidal)" >&2; exit 1; }
+      [[ $# -ge 2 ]] || { echo "--provider requires an id (spotify, qobuz, tidal, privilege)" >&2; exit 1; }
       case "$2" in
-        spotify|qobuz|tidal) PROVIDER_ONLY_ARG="$2" ;;
-        *) echo "Unknown provider '$2'. Expected spotify, qobuz, or tidal." >&2; exit 1 ;;
+        spotify|qobuz|tidal|privilege) PROVIDER_ONLY_ARG="$2" ;;
+        *) echo "Unknown provider '$2'. Expected spotify, qobuz, tidal, or privilege." >&2; exit 1 ;;
       esac
       shift 2
       ;;
@@ -1896,6 +1896,53 @@ remove_owned_tidal_dependency() {
   fi
 }
 
+remove_provider_privilege_escalation() {
+  local sudo_cmd=()
+  local sudoers_path="/etc/sudoers.d/fxroute-providers"
+  local owned=""
+  local recorded_sha256=""
+  local current_sha256=""
+
+  owned="$(read_install_state_field "providers.privilege_escalation.installed_by_fxroute" 2>/dev/null || true)"
+  [[ "$owned" == "true" ]] || return 0
+  if [[ -n "$PROVIDER_ONLY_ARG" && "$PROVIDER_ONLY_ARG" != "privilege" ]]; then
+    return 0
+  fi
+  if [[ "$(id -u)" -eq 0 ]]; then
+    sudo_cmd=()
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo_cmd=(sudo)
+  else
+    warn "Cannot remove the FXRoute provider privilege rule because sudo is unavailable"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  [[ -e "$sudoers_path" || -L "$sudoers_path" ]] || return 0
+  [[ -f "$sudoers_path" && ! -L "$sudoers_path" ]] || {
+    warn "Refusing to remove a non-regular FXRoute provider privilege file"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  }
+  recorded_sha256="$(read_install_state_field "providers.privilege_escalation.sudoers_sha256" 2>/dev/null || true)"
+  current_sha256="$("${sudo_cmd[@]}" sha256sum "$sudoers_path" 2>/dev/null | awk '{print $1}')"
+  if [[ -z "$recorded_sha256" || "$current_sha256" != "$recorded_sha256" ]]; then
+    warn "Refusing to remove the changed or unverified FXRoute provider privilege rule"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if ! confirm "Remove the FXRoute provider privilege rule at $sudoers_path? Settings -> Providers installs will need a sudo password again."; then
+    warn "Keeping the FXRoute provider privilege rule"
+    PRESERVE_INSTALL_STATE=1
+    return 0
+  fi
+  if "${sudo_cmd[@]}" rm -f "$sudoers_path"; then
+    log "Removed the FXRoute provider privilege rule"
+  else
+    warn "Could not remove the FXRoute provider privilege rule"
+    PRESERVE_INSTALL_STATE=1
+  fi
+}
+
 preserve_provider_data() {
   local path=""
   log "Provider config, credentials, sessions, and caches are preserved by default"
@@ -1940,6 +1987,7 @@ remove_owned_streaming_components() {
     PROVIDER_LAN_CLEANUP_DEFERRED=1
   fi
   remove_owned_tidal_dependency
+  remove_provider_privilege_escalation
   preserve_provider_data
 }
 
@@ -3563,6 +3611,10 @@ remove_single_provider() {
       ;;
     tidal)
       remove_owned_tidal_dependency
+      ;;
+    privilege)
+      remove_provider_privilege_escalation
+      return 0
       ;;
   esac
   clear_provider_ownership_state "$provider"

@@ -292,6 +292,51 @@ class InstallerProviderOnlyTests(unittest.TestCase):
         self.assertNotIn("write_service_unit", body)
         self.assertNotIn("setup_python_env", body)
 
+    def test_providers_only_resolves_privilege_before_privileged_steps(self):
+        # The single non-interactive bootstrap must run before any apt-get /
+        # systemctl / usermod call of the providers-only run, and the SUDO_CMD
+        # selection must switch to "sudo -n" only for that verified mode.
+        body = self.install[self.install.index("main_providers_only() {"):]
+        body = body[:body.index("\nmain() {")]
+        self.assertIn("ensure_provider_privilege_escalation", body)
+        self.assertLess(
+            body.index("ensure_provider_privilege_escalation"),
+            body.index("configure_optional_streaming"),
+        )
+        sudo_body = self.install[self.install.index("choose_sudo() {"):]
+        sudo_body = sudo_body[:sudo_body.index("\n}\n")]
+        self.assertIn("PROVIDER_PRIVILEGE_MODE", sudo_body)
+        self.assertIn("sudo -n", sudo_body)
+
+    def test_provider_privilege_rule_is_scoped_to_providers_only(self):
+        # Central allow-list: exactly one sudoers entry, this script with
+        # --providers-only only. The rule body must contain a single NOPASSWD
+        # command line and no separate allow-listed binaries or ALL grant.
+        rule = self.install[self.install.index("provider_privilege_rule_content() {"):]
+        rule = rule[:rule.index("\n}\n")]
+        self.assertIn("--providers-only", rule)
+        self.assertIn("NOPASSWD:", rule)
+        printf_lines = [line for line in rule.splitlines() if line.strip().startswith("printf")]
+        self.assertEqual(len(printf_lines), 1)
+        command = printf_lines[0]
+        for forbidden in ("apt-get", "systemctl", "usermod", "ALL=(ALL)", "ALL = (ALL)"):
+            self.assertNotIn(forbidden, command)
+
+    def test_provider_privilege_state_is_recorded_for_uninstall(self):
+        self.assertIn("privilege_escalation", self.install)
+        self.assertIn("sudoers_sha256", self.install)
+        self.assertIn("providers.privilege_escalation.installed_by_fxroute", self.install)
+        self.assertIn("remove_provider_privilege_escalation", self.uninstall)
+        self.assertIn("fxroute-providers", self.uninstall)
+
+    def test_provider_install_endpoint_uses_noninteractive_sudo(self):
+        main_text = (ROOT / "main.py").read_text()
+        body = main_text.split("async def _run_provider_installer_op")[1]
+        body = body.split("\n@app.")[0]
+        self.assertIn('"sudo", "-n"', body)
+        self.assertIn("a password is required", body)
+        self.assertIn("503", body)
+
     def test_providers_only_respects_recorded_install_root(self):
         self.assertIn("PROVIDERS_ONLY_MODE -eq 1 && $INSTALL_ROOT_EXPLICIT -eq 0", self.install)
         self.assertIn("FXROUTE_INSTALL_ROOT=", self.install)

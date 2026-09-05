@@ -156,6 +156,19 @@ FXRoute's existing PKCE login flow from the application. The installer does
 not invoke login or create credentials. The TIDAL session file at
 `~/.config/fxroute/tidal-session.json` is preserved during uninstall.
 
+### Settings → Providers privilege
+
+Provider installs from the Settings UI run `install.sh --providers-only`
+non-interactively (`sudo -n`, never a password prompt). The first
+providers-only run asks for the sudo password once and installs exactly one
+narrow sudoers entry (`/etc/sudoers.d/fxroute-providers`): the install user
+may run only this script with `--providers-only` without a password. Package
+installs, Avahi enablement, journal-group membership, firewall rules, and the
+state sync stay inside that audited flow; no bare apt/systemctl/usermod grant
+is given. Ownership is recorded in `install-state.json`
+(`providers.privilege_escalation`) and removed via
+`./uninstall.sh --provider privilege` (full uninstall removes it too).
+
 ## Reruns and Uninstall
 
 Installer reruns preserve existing provider binaries, services, and config
