@@ -46,6 +46,29 @@ SPOTIFY_APT_SOURCE_FILE="/etc/apt/sources.list.d/spotify.list"
 SPOTIFY_APT_KEY_FILE="/usr/share/keyrings/spotify-archive-keyring.gpg"
 SPOTIFY_APT_KEY_URL="https://download.spotify.com/debian/pubkey_5384CE82BA52C83A.asc"
 SPOTIFY_APT_KEY_FINGERPRINT="E1096BCBFF6D418796DE78515384CE82BA52C83A"
+# Machine-readable provider contract markers, kept in sync with
+# installer_contract.py (pinned on both sides by scripts/test_provider_admin.py).
+PROVIDER_CONTRACT_PREFIX="PROVIDER_CONTRACT="
+PROVIDER_CONTRACT_HELPER_MISSING="${PROVIDER_CONTRACT_PREFIX}helper-missing"
+
+# Read one KEY=VALUE value from installer_contract.py without importing it
+# (the shell contract is parsed, never executed). Prints nothing on failure.
+provider_contract_literal() {
+  local key="$1"
+  local file="${INSTALL_ROOT:-$SCRIPT_DIR}/installer_contract.py"
+  [[ -f "$file" ]] || return 1
+  sed -n "s/^${key} = \"\([^\" ]*\)\"$/\1/p" "$file" | head -n 1
+}
+
+# Pinned self-check: the shell markers must match the Python module so the
+# 503 contract cannot drift between the two sides.
+verify_provider_contract_literals() {
+  local prefix helper_missing
+  prefix="$(provider_contract_literal MARKER_PREFIX)" || return 1
+  helper_missing="$(provider_contract_literal MARKER_HELPER_MISSING)" || return 1
+  [[ "$prefix" == "$PROVIDER_CONTRACT_PREFIX" ]] || return 1
+  [[ "$helper_missing" == "$PROVIDER_CONTRACT_HELPER_MISSING" ]] || return 1
+}
 
 SPOTIFY_DESKTOP_PRESENT_BEFORE=0
 SPOTIFY_DESKTOP_INSTALLED_BY_FXROUTE=0
@@ -6785,7 +6808,15 @@ main_providers_only() {
   if [[ "$(id -u)" -eq 0 && "$FXROUTE_TARGET_USER" != "root" ]]; then
     require_cmd runuser
   fi
+  # Fail fast when this checkout's installer_contract.py drifted from the
+  # shell markers below: the 503 marker must never go stale silently.
+  if ! verify_provider_contract_literals; then
+    die "Provider contract literals diverged from installer_contract.py; sync install.sh with installer_contract.py"
+  fi
   if ! provider_helper_usable >/dev/null 2>&1; then
+    # Machine-readable contract line: main.py maps exactly this marker to
+    # HTTP 503; the prose line stays for the shell operator only.
+    printf '%s\n' "$PROVIDER_CONTRACT_HELPER_MISSING"
     die "Provider privilege helper unavailable; rerun the full install.sh once so Settings installs work without a password"
   fi
   confirm_supported_distro

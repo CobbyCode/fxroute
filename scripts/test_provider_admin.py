@@ -32,6 +32,7 @@ PROVIDER_HELPER = ROOT / "scripts" / "fxroute-provider-privileged"
 ISO_FIRST_BOOT = ROOT / "iso" / "scripts" / "first-boot-install.sh"
 ARMBIAN_FIRST_BOOT = ROOT / "armbian" / "first-boot-install.sh"
 
+import installer_contract as provider_contract  # noqa: E402
 import streaming.activation as activation  # noqa: E402
 
 
@@ -300,9 +301,38 @@ class InstallerProviderOnlyTests(unittest.TestCase):
         body = self.install[self.install.index("main_providers_only() {"):]
         body = body[:body.index("\nmain() {")]
         self.assertIn("provider_helper_usable", body)
-        self.assertIn("Provider privilege helper unavailable", body)
+        # The 503 trigger is the machine-readable contract marker, not the
+        # operator-facing prose (which is free to change).
+        self.assertIn("PROVIDER_CONTRACT_HELPER_MISSING", body)
         self.assertNotIn("SUDO_CMD", body)
         self.assertNotIn("choose_sudo", body)
+
+    def test_provider_contract_module_is_the_single_source(self):
+        # The shell-side markers must equal the Python contract module, so
+        # the 503 path cannot drift between install.sh and main.py.
+        self.assertEqual(provider_contract.MARKER_PREFIX, "PROVIDER_CONTRACT=")
+        self.assertEqual(
+            provider_contract.MARKER_HELPER_MISSING,
+            provider_contract.MARKER_PREFIX + "helper-missing",
+        )
+        shell = self.install
+        self.assertIn(f'PROVIDER_CONTRACT_PREFIX="{provider_contract.MARKER_PREFIX}"', shell)
+        self.assertIn(f'PROVIDER_CONTRACT_HELPER_MISSING="${{PROVIDER_CONTRACT_PREFIX}}helper-missing"', shell)
+        self.assertIn("verify_provider_contract_literals", shell)
+        main_text = (ROOT / "main.py").read_text()
+        self.assertIn("import installer_contract as provider_contract", main_text)
+        # Prose must not be load-bearing anywhere: no side may grep for it.
+        for text in (shell, main_text):
+            self.assertNotIn('"Provider privilege helper unavailable"', text)
+
+    def test_provider_contract_marker_shape(self):
+        # The marker must stay a KEY=VALUE pair so log scrapers and tests
+        # can rely on its shape.
+        marker = provider_contract.MARKER_HELPER_MISSING
+        self.assertIn("=", marker)
+        self.assertNotIn(" ", marker)
+        self.assertTrue(marker.split("=", 1)[0])
+        self.assertTrue(marker.split("=", 1)[1])
 
     def test_provider_privilege_rule_allows_only_the_root_owned_helper(self):
         # sudoers must allow exactly the root-owned helper, nothing else:
@@ -378,8 +408,38 @@ class InstallerProviderOnlyTests(unittest.TestCase):
         body = main_text.split("async def _run_provider_installer_op")[1]
         body = body.split("\n@app.")[0]
         self.assertNotIn('"sudo", "-n"', body)
-        self.assertIn("Provider privilege helper unavailable", body)
+        # The 503 mapping keys on the contract marker + machine detail only;
+        # the trailing prose hint is free-form.
+        self.assertIn("provider_contract.MARKER_HELPER_MISSING", body)
+        self.assertIn("_PROVIDER_HELPER_MISSING_CONTRACT", body)
+        self.assertIn("X-FXRoute-Provider-Contract", body)
         self.assertIn("503", body)
+
+    def test_provider_helper_missing_detail_is_the_contract_pair(self):
+        expected = (
+            f"{provider_contract.DETAILS_KEY_HELPER_MISSING}="
+            f"{provider_contract.DETAILS_VALUE_HELPER_MISSING}"
+            f";{provider_contract.DETAILS_KEY_RERUN_INSTALL}="
+            f"{provider_contract.DETAILS_VALUE_RERUN_INSTALL}"
+        )
+        main_text = (ROOT / "main.py").read_text()
+        self.assertIn("_PROVIDER_HELPER_MISSING_CONTRACT = (", main_text)
+        # The source must build the contract value from the constants (no
+        # raw duplicated literals), and the constants must equal the pinned
+        # machine values below.
+        block = main_text[main_text.index("_PROVIDER_HELPER_MISSING_CONTRACT = ("):]
+        block = block[:block.index(")")]
+        for name in (
+            "DETAILS_KEY_HELPER_MISSING",
+            "DETAILS_VALUE_HELPER_MISSING",
+            "DETAILS_KEY_RERUN_INSTALL",
+            "DETAILS_VALUE_RERUN_INSTALL",
+        ):
+            self.assertIn(f"provider_contract.{name}", block)
+        self.assertEqual(provider_contract.DETAILS_KEY_HELPER_MISSING, "reason")
+        self.assertEqual(provider_contract.DETAILS_VALUE_HELPER_MISSING, "helper-missing")
+        self.assertEqual(provider_contract.DETAILS_KEY_RERUN_INSTALL, "rerun")
+        self.assertEqual(provider_contract.DETAILS_VALUE_RERUN_INSTALL, "rerun-full-install")
 
     def test_providers_only_respects_recorded_install_root(self):
         self.assertIn("PROVIDERS_ONLY_MODE -eq 1 && $INSTALL_ROOT_EXPLICIT -eq 0", self.install)

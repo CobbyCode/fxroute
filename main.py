@@ -34,6 +34,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from config import get_settings
 from http_errors import bad_request, internal_error
+import installer_contract as provider_contract
 from library.sources import MusicLibraryManager
 from radio.metadata import RadioMetadataService
 
@@ -49,6 +50,16 @@ PROVIDER_UNINSTALL_SCRIPT = BASE_DIR / "uninstall.sh"
 # the FXRoute update path.
 _PROVIDER_OP_TIMEOUT_SECONDS = 15 * 60
 _PROVIDER_OP_OUTPUT_TAIL_CHARS = 4000
+# Machine contract for the helper-missing retry path: this value rides in
+# the X-FXRoute-Provider-Contract response header of the 503 (pinned by
+# scripts/test_provider_admin.py). The visible detail text stays unchanged
+# prose because the UI surfaces data.detail verbatim.
+_PROVIDER_HELPER_MISSING_CONTRACT = (
+    f"{provider_contract.DETAILS_KEY_HELPER_MISSING}="
+    f"{provider_contract.DETAILS_VALUE_HELPER_MISSING}"
+    f";{provider_contract.DETAILS_KEY_RERUN_INSTALL}="
+    f"{provider_contract.DETAILS_VALUE_RERUN_INSTALL}"
+)
 # Same rule as install.sh valid_local_hostname().
 _LOCAL_HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _LOCAL_HOSTNAME_RESERVED = {"localhost"}
@@ -5764,9 +5775,15 @@ async def _run_provider_installer_op(script: Path, label: str, *args: str) -> di
         "stdout": stdout.decode(errors="replace"),
         "stderr": stderr.decode(errors="replace"),
     }
-    if "Provider privilege helper unavailable" in _provider_op_log_tail(result):
+    # Machine-readable contract: install.sh prints a PROVIDER_CONTRACT=
+    # marker on stdout when the helper is missing; prose stays for the
+    # operator only and is never parsed. The machine pair travels in the
+    # X-FXRoute-Provider-Contract header; the visible detail is unchanged.
+    log_tail = _provider_op_log_tail(result)
+    if provider_contract.MARKER_HELPER_MISSING in log_tail:
         raise HTTPException(
             status_code=503,
+            headers={"X-FXRoute-Provider-Contract": _PROVIDER_HELPER_MISSING_CONTRACT},
             detail=(
                 f"{label} needs the provider privilege helper: rerun the full "
                 "install.sh once, then retry the install from Settings"
