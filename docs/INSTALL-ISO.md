@@ -58,6 +58,33 @@ export SOURCE_DATE_EPOCH=0
 ./iso/build-leap-16-iso.sh
 ```
 
+### Build record 2026-09-07 (HEAD `ebf2b09`)
+
+- Built from clean canonical `main` at `ebf2b09889e2fad3d947c8b3770cbd5c58190632`
+  (VERSION `0.9.17`, unchanged), on top of the previous ISO build record
+  (`6edc851`). This build carries exactly one fix since the previous ISO:
+  the desktop first-boot no longer deadlocks on `systemctl restart
+  display-manager-legacy.service` (the unit is ordered
+  `Before=display-manager.service`, resolved to `display-manager-legacy`;
+  the synchronous restart waited on the display-manager job, which waits
+  for first-boot — 30+ min hang on .129). Both restart/start now use
+  `--no-block`, so first-boot exits after the install and the manager
+  starts right after it (verified live on .129).
+- Old artifact (`dist/fxroute-leap-16-x86_64.iso`, 4579131392 bytes) and the
+  previous `iso-leap16-build-2026-09-06-6edc851.log` were removed before
+  the build to save space.
+- Command: `SOURCE_DATE_EPOCH=0 FXROUTE_ISO_ALLOW_UNPUSHED=1
+  ./iso/build-leap-16-iso.sh` (same opt-in flag as before: `origin/main`
+  is the stale public mirror). No version change, no further code changes,
+  no full suite and no additional checksum/unpack or QEMU verification
+  (as requested); the builder's own output markers are the completion gate.
+- Build: single background run, log `iso-leap16-build-2026-09-06-ebf2b09.log`
+  (git-ignored, local only). Successful: `[iso] wrote` + `[iso] sha512`
+  markers, no `[iso][error]`, exit status 0.
+- Result: `dist/fxroute-leap-16-x86_64.iso` (4579131392 bytes), sha512
+  `3314d54f517310fcde2843beeb85087a20dfa5481ccd08407ce14718add6c8ec9e7ee45224dbb234b81bd951903f28da0ea1dec90d882c6fe741e036724f233a`.
+- Kein Push, kein Release.
+
 ### Build record 2026-09-06 (HEAD `6edc851`)
 
 - Built from clean canonical `main` at `6edc8517c63080109cb323e7f46f48ea83dc5de6`
