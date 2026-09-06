@@ -4,6 +4,45 @@ Build-Protokoll der offiziellen Armbian-Images (`armbian/build-image.sh`).
 Ablage der Images: `dist/` (git-ignoriert). Build-Logs `armbian-vim1s-build-*.log`
 sind ebenfalls git-ignoriert und liegen nur lokal im Checkout.
 
+## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `3ab4fbc`
+
+- FXRoute HEAD: `3ab4fbc76c6b264bc3a14011e8b10849752cee2e`
+  (`fix(spotify): keep claim watch alive across late provider installs`),
+  sauberer kanonischer `main`, Working Tree clean.
+- Seit dem Vorgaenger-Build (`7ed93fa`) nur `3f26695` (docs) und `3ab4fbc`
+  (spotify claim-watch); `armbian/` zuletzt geaendert in `5dfda4e` — keine
+  offenen produktrelevanten Aenderungen, kein Build aktiv (nur die beiden
+  `armbian-web-config.py --preview`-Prozesse).
+- Altes Artefakt vorher geloescht:
+  `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz` + `.sha256`
+  (Stand HEAD `7ed93fa`, 393326592 Bytes, sha256 `c97c1bb7…`).
+- Armbian-Pin: `4a50e16e09222e00d3f57884b4dfbf8fdb4ce5dc` (im Wrapper
+  fest verdrahtet).
+- Kommando: `./armbian/build-image.sh --board khadas-vim1s`
+  (BOARD=khadas-vim1s, RELEASE=trixie, BRANCH=legacy, EXT=image-output-oowow).
+- Build: Start 2026-09-06T04:30:24Z, detached via `setsid nohup` (PID
+  2444241, eigene Session). Work-Dir dieses Laufs: `image.tq98UG`.
+- Build-Log: `armbian-vim1s-build-2026-09-06-3ab4fbc.log` (5094 Zeilen,
+  lokal, git-ignoriert, persistent).
+- Build: Ende ~2026-09-06T04:39Z (Dauer ca. 9 Minuten). Erfolgreich:
+  `[armbian] wrote` + `[armbian] sha256` im Log (deterministische Kopie via
+  `copy_image_output`), keine `[armbian][error]`-Zeilen, keine
+  interaktiven Prompts. Einzige Warnung: bekannte kosmetische
+  `Permission denied`-Meldungen (4780 Zeilen) beim Aufraeumen
+  Docker-root-owned Cache-Restdateien; das Work-Dir `image.tq98UG`
+  schliesst sich damit den Alt-Resten an.
+- Erzeugtes Image: `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz`
+  (394600448 Bytes), plus `.sha256`-Sidecar:
+  `a67c79dc4d9bd6431f9b983daca2819c4aa20e62aa5583f6d91ce8ee1aab46e6`.
+- Verifikation (grundlegende Build-Checks): `sha256sum -c` des neuen
+  Images: OK. `xz -t` (XZ-Stream-Integritaet): OK. Dateityp: XZ mit
+  CRC64-Checksumme.
+- Bewusst noch keine frische Image-Abnahme in diesem Schritt: nicht
+  geflasht, kein Onboarding/First-Boot-Test; die Endverifikation
+  (Onboarding, First-Boot, fxroute.service, HTTP :8000) laeuft auf dem
+  frisch geflashten Geraet.
+- Kein Push, kein Release.
+
 ## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `7ed93fa`
 
 - FXRoute HEAD: `7ed93fac909e1c4ff69504e1036346de5959a376`
