@@ -4,6 +4,7 @@
 import re
 import os
 import hashlib
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -1112,6 +1113,7 @@ printf 'link-graph=ok\\n'
 {user_systemctl}
 {run_as_target_user}
 {validation}
+FXROUTE_PIPEWIRE_VALIDATION_DEADLINE=0
 FXROUTE_TARGET_USER=khadas
 FXROUTE_TARGET_UID=1000
 FXROUTE_TARGET_HOME=/home/khadas
@@ -1136,6 +1138,88 @@ validate_pipewire_session
         result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
         self.assertEqual(result.returncode, 42)
         self.assertIn("Functional PipeWire/WirePlumber validation failed", result.stderr)
+
+    def test_pipewire_validation_gives_cold_start_a_real_deadline(self):
+        # Cold boot (first PipeWire graph build, DSP engine spawn,
+        # WirePlumber linking) can lag well behind the service start on
+        # slow hosts. The wait must be long enough to cover that.
+        body = extract_function(self.install, "validate_pipewire_session")
+        match = re.search(r"FXROUTE_PIPEWIRE_VALIDATION_DEADLINE:-(\d+)", body)
+        self.assertIsNotNone(match, "validate_pipewire_session must default to SECONDS + FXROUTE_PIPEWIRE_VALIDATION_DEADLINE")
+        self.assertGreaterEqual(int(match.group(1)), 90)
+
+    def test_pipewire_validation_retries_until_cold_boot_graph_is_ready(self):
+        # The .129 first boot failed here ~7s after the service start while
+        # the engine/links came up seconds later. Tools that fail twice and
+        # then answer must still yield a successful validation (no fail mark).
+        get = extract_function
+        parts = [get(self.install, name) for name in (
+            "user_systemctl", "run_as_target_user", "read_env_value",
+            "configured_dsp_binary", "pipewire_link_present",
+            "pipewire_port_linked", "validate_pipewire_session",
+        )]
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "run"
+            (runtime / "pulse").mkdir(parents=True)
+            sockets = []
+            for relative in ("pipewire-0", "pulse/native"):
+                sock = socket.socket(socket.AF_UNIX)
+                sock.bind(str(runtime / relative))
+                sockets.append(sock)
+            counter = Path(tmp) / "calls"
+            counter.write_text("0")
+            code = "\n".join(parts) + """
+alsa_hardware_present() { return 1; }
+fail() { printf 'FAIL:%s\\n' "$*"; }
+warn() { printf 'WARN:%s\\n' "$*" >&2; }
+die() { printf 'DIE:%s\\n' "$*" >&2; exit 42; }
+pass() { printf 'PASS:%s\\n' "$*"; }
+sleep() { :; }
+FXROUTE_TARGET_USER=khadas
+FXROUTE_TARGET_UID=1000
+FXROUTE_TARGET_HOME=/home/khadas
+FXROUTE_RUNTIME_DIR=@@RUNTIME@@
+INSTALL_ROOT=/home/khadas/fxroute
+SERVICE_NAME=fxroute
+CNT=@@CNT@@
+bump() { local n; n=$(cat "$CNT"); echo $((n + 1)) >"$CNT"; printf '%s' "$n"; }
+systemctl() {
+  case "$*" in
+    *MainPID*) printf '123\\n' ;;
+    *ActiveState*) printf 'active\\n' ;;
+  esac
+}
+ps() {
+  if [[ "$*" == *"-p "* ]]; then printf 'khadas\\n'; else printf 'khadas /home/khadas/fxroute/native_dsp/build/fxroute-dsp engine.sock\\n'; fi
+}
+wpctl() { local n; n=$(bump); (( n >= 10 )) || return 1; printf 'PipeWire remote pipewire-0\\n'; }
+pw-cli() { local n; n=$(bump); (( n >= 10 )) || return 1; printf 'name: "pipewire-0"\\n'; }
+pw-link() { local n; n=$(bump); (( n >= 10 )) || return 1; cat <<'LINKS'
+fxroute_dsp_sink:monitor_FL
+  |-> fxroute_dsp:input_1
+fxroute_dsp_sink:monitor_FR
+  |-> fxroute_dsp:input_2
+fxroute_dsp:output_1
+  |-> alsa_output:playback_FL
+fxroute_dsp:output_2
+  |-> alsa_output:playback_FR
+LINKS
+}
+pactl() { local n; n=$(bump); (( n >= 10 )) || return 1
+  if [[ "$1" == "info" ]]; then printf 'Server String: unix:%s/pulse/native\\n' "$FXROUTE_RUNTIME_DIR"; else printf '37\\tfxroute_dsp_sink\\tPipeWire\\n'; fi; }
+validate_pipewire_session
+""".replace("@@RUNTIME@@", str(runtime)).replace("@@CNT@@", str(counter))
+            try:
+                result = subprocess.run(["bash", "-c", code], capture_output=True, text=True)
+            finally:
+                for sock in sockets:
+                    sock.close()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("DIE:", result.stderr)
+            self.assertIn("functional PipeWire/WirePlumber session verified", result.stdout)
+            # Two full failing iterations (5 tool calls each) before the ready
+            # one: without the retry loop the first failure would have died.
+            self.assertGreaterEqual(int(counter.read_text()), 15)
 
     def test_validate_http_gives_cold_start_a_real_deadline(self):
         # Fresh installs restart the service and then validate; a cold start

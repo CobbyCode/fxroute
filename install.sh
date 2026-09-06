@@ -5604,79 +5604,104 @@ validate_pipewire_session() {
   [[ "$dsp_path" == /* ]] || dsp_path="$INSTALL_ROOT/$dsp_path"
   local unit_state=""
   local unit=""
+  local no_alsa_hardware=0
 
-  for unit in pipewire.service pipewire-pulse.service wireplumber.service "${SERVICE_NAME}.service"; do
-    unit_state="$(user_systemctl show "$unit" -p ActiveState --value 2>/dev/null || true)"
-    if [[ "$unit_state" != "active" ]]; then
-      failures+=("$unit is not active in the $FXROUTE_TARGET_USER user manager")
+  # A cold boot on a fresh install (first PipeWire graph build, DSP engine
+  # spawn, WirePlumber linking) can lag well behind the service start on
+  # slow hosts: poll the session until it is ready instead of failing on
+  # the first attempt and wrongly marking the install as failed.
+  # FXROUTE_PIPEWIRE_VALIDATION_DEADLINE exists for tests to shorten the wait.
+  local deadline=$((SECONDS + ${FXROUTE_PIPEWIRE_VALIDATION_DEADLINE:-120}))
+  while :; do
+    failures=()
+    output=""
+    no_alsa_hardware=0
+
+    for unit in pipewire.service pipewire-pulse.service wireplumber.service "${SERVICE_NAME}.service"; do
+      unit_state="$(user_systemctl show "$unit" -p ActiveState --value 2>/dev/null || true)"
+      if [[ "$unit_state" != "active" ]]; then
+        failures+=("$unit is not active in the $FXROUTE_TARGET_USER user manager")
+      fi
+    done
+
+    if [[ ! -S "$FXROUTE_RUNTIME_DIR/pipewire-0" ]]; then
+      failures+=("PipeWire socket is missing: $FXROUTE_RUNTIME_DIR/pipewire-0")
     fi
-  done
+    if [[ ! -S "$FXROUTE_RUNTIME_DIR/pulse/native" ]]; then
+      failures+=("PipeWire-Pulse socket is missing: $FXROUTE_RUNTIME_DIR/pulse/native")
+    fi
 
-  if [[ ! -S "$FXROUTE_RUNTIME_DIR/pipewire-0" ]]; then
-    failures+=("PipeWire socket is missing: $FXROUTE_RUNTIME_DIR/pipewire-0")
-  fi
-  if [[ ! -S "$FXROUTE_RUNTIME_DIR/pulse/native" ]]; then
-    failures+=("PipeWire-Pulse socket is missing: $FXROUTE_RUNTIME_DIR/pulse/native")
-  fi
-
-  if ! output="$(run_as_target_user wpctl status 2>&1)"; then
-    failures+=("wpctl status failed: ${output//$'\n'/; }")
-  elif ! grep -Fq "pipewire-0" <<<"$output"; then
-    failures+=("wpctl did not report the target PipeWire remote pipewire-0")
-  fi
-
-  if ! output="$(run_as_target_user pw-cli info 0 2>&1)"; then
-    failures+=("pw-cli info 0 failed: ${output//$'\n'/; }")
-  elif ! grep -Fq 'name: "pipewire-0"' <<<"$output"; then
-    failures+=("pw-cli did not report the target PipeWire core")
-  fi
-
-  if ! output="$(run_as_target_user pw-link -l 2>&1)"; then
-    failures+=("pw-link -l failed: ${output//$'\n'/; }")
-  elif ! pipewire_link_present "$output" \
-      "fxroute_dsp_sink:monitor_FL" "fxroute_dsp:input_1" \
-    || ! pipewire_link_present "$output" \
-      "fxroute_dsp_sink:monitor_FR" "fxroute_dsp:input_2" \
-    || ! pipewire_port_linked "$output" "fxroute_dsp:output_1" \
-    || ! pipewire_port_linked "$output" "fxroute_dsp:output_2"; then
-    failures+=("PipeWire DSP graph links are incomplete")
-  fi
-
-  if ! output="$(run_as_target_user pactl info 2>&1)"; then
-    failures+=("pactl info failed: ${output//$'\n'/; }")
-  elif ! grep -Fq "Server String: $FXROUTE_RUNTIME_DIR/pulse/native" <<<"$output" \
-    && ! grep -Fq "Server String: unix:$FXROUTE_RUNTIME_DIR/pulse/native" <<<"$output"; then
-    failures+=("pactl is not using $FXROUTE_RUNTIME_DIR/pulse/native")
-  fi
-
-  if ! output="$(run_as_target_user pactl list sinks short 2>&1)"; then
-    failures+=("pactl list sinks short failed: ${output//$'\n'/; }")
-  elif ! awk '{print $2}' <<<"$output" | grep -Fxq fxroute_dsp_sink; then
-    failures+=("FXRoute DSP ingress sink is not visible in the target PipeWire-Pulse graph")
-  fi
-
-  if alsa_hardware_present; then
     if ! output="$(run_as_target_user wpctl status 2>&1)"; then
       failures+=("wpctl status failed: ${output//$'\n'/; }")
-    elif ! grep -Fq '[alsa]' <<<"$output"; then
-      failures+=("ALSA hardware is present, but the $FXROUTE_TARGET_USER session cannot reach it (audio group or device access missing)")
+    elif ! grep -Fq "pipewire-0" <<<"$output"; then
+      failures+=("wpctl did not report the target PipeWire remote pipewire-0")
     fi
-  else
+
+    if ! output="$(run_as_target_user pw-cli info 0 2>&1)"; then
+      failures+=("pw-cli info 0 failed: ${output//$'\n'/; }")
+    elif ! grep -Fq 'name: "pipewire-0"' <<<"$output"; then
+      failures+=("pw-cli did not report the target PipeWire core")
+    fi
+
+    if ! output="$(run_as_target_user pw-link -l 2>&1)"; then
+      failures+=("pw-link -l failed: ${output//$'\n'/; }")
+    elif ! pipewire_link_present "$output" \
+        "fxroute_dsp_sink:monitor_FL" "fxroute_dsp:input_1" \
+      || ! pipewire_link_present "$output" \
+        "fxroute_dsp_sink:monitor_FR" "fxroute_dsp:input_2" \
+      || ! pipewire_port_linked "$output" "fxroute_dsp:output_1" \
+      || ! pipewire_port_linked "$output" "fxroute_dsp:output_2"; then
+      failures+=("PipeWire DSP graph links are incomplete")
+    fi
+
+    if ! output="$(run_as_target_user pactl info 2>&1)"; then
+      failures+=("pactl info failed: ${output//$'\n'/; }")
+    elif ! grep -Fq "Server String: $FXROUTE_RUNTIME_DIR/pulse/native" <<<"$output" \
+      && ! grep -Fq "Server String: unix:$FXROUTE_RUNTIME_DIR/pulse/native" <<<"$output"; then
+      failures+=("pactl is not using $FXROUTE_RUNTIME_DIR/pulse/native")
+    fi
+
+    if ! output="$(run_as_target_user pactl list sinks short 2>&1)"; then
+      failures+=("pactl list sinks short failed: ${output//$'\n'/; }")
+    elif ! awk '{print $2}' <<<"$output" | grep -Fxq fxroute_dsp_sink; then
+      failures+=("FXRoute DSP ingress sink is not visible in the target PipeWire-Pulse graph")
+    fi
+
+    if alsa_hardware_present; then
+      if ! output="$(run_as_target_user wpctl status 2>&1)"; then
+        failures+=("wpctl status failed: ${output//$'\n'/; }")
+      elif ! grep -Fq '[alsa]' <<<"$output"; then
+        failures+=("ALSA hardware is present, but the $FXROUTE_TARGET_USER session cannot reach it (audio group or device access missing)")
+      fi
+    else
+      no_alsa_hardware=1
+    fi
+
+    service_pid="$(user_systemctl show -p MainPID --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
+    if [[ -n "$service_pid" && "$service_pid" != "0" ]]; then
+      service_user="$(ps -o user= -p "$service_pid" 2>/dev/null | tr -d '[:space:]')"
+      [[ "$service_user" == "$FXROUTE_TARGET_USER" ]] \
+        || failures+=("FXRoute service PID $service_pid runs as ${service_user:-unknown}, not $FXROUTE_TARGET_USER")
+    fi
+
+    if ! ps -eo user=,args= 2>/dev/null \
+      | awk -v expected_user="$FXROUTE_TARGET_USER" \
+          -v expected_binary="$dsp_binary" -v expected_path="$dsp_path" \
+        '$2 !~ /(^|\/)awk$/ && $1 == expected_user && (index($0, expected_binary) > 0 || index($0, expected_path) > 0) { found = 1 } END { exit found ? 0 : 1 }'; then
+      failures+=("native DSP engine is not running as $FXROUTE_TARGET_USER: $dsp_binary")
+    fi
+
+    if [[ ${#failures[@]} -eq 0 ]]; then
+      break
+    fi
+    if (( SECONDS >= deadline )); then
+      break
+    fi
+    sleep 5
+  done
+
+  if [[ "$no_alsa_hardware" -eq 1 ]]; then
     warn "No ALSA sound hardware found; FXRoute is installed, but no hardware output will be selectable until audio hardware is present"
-  fi
-
-  service_pid="$(user_systemctl show -p MainPID --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
-  if [[ -n "$service_pid" && "$service_pid" != "0" ]]; then
-    service_user="$(ps -o user= -p "$service_pid" 2>/dev/null | tr -d '[:space:]')"
-    [[ "$service_user" == "$FXROUTE_TARGET_USER" ]] \
-      || failures+=("FXRoute service PID $service_pid runs as ${service_user:-unknown}, not $FXROUTE_TARGET_USER")
-  fi
-
-  if ! ps -eo user=,args= 2>/dev/null \
-    | awk -v expected_user="$FXROUTE_TARGET_USER" \
-        -v expected_binary="$dsp_binary" -v expected_path="$dsp_path" \
-      '$2 !~ /(^|\/)awk$/ && $1 == expected_user && (index($0, expected_binary) > 0 || index($0, expected_path) > 0) { found = 1 } END { exit found ? 0 : 1 }'; then
-    failures+=("native DSP engine is not running as $FXROUTE_TARGET_USER: $dsp_binary")
   fi
 
   if [[ ${#failures[@]} -gt 0 ]]; then
