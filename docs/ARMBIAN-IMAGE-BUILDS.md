@@ -1,8 +1,44 @@
 # FXRoute Armbian-Image-Builds
 
 Build-Protokoll der offiziellen Armbian-Images (`armbian/build-image.sh`).
-Ablage der Images: `dist/` (git-ignoriert). Build-Logs `armbian-vim1s-build-*.log`
-sind ebenfalls git-ignoriert und liegen nur lokal im Checkout.
+Ablage der Images: `dist/` (git-ignoriert). Build-Logs `armbian-*-build-*.log`
+und QEMU-Logs `armbian-*-qemu-*.log` sind ebenfalls git-ignoriert und liegen
+nur lokal im Checkout.
+
+## 2026-09-07 — rpi4 (trixie/current), HEAD `2d1394e` (Code `6edc851`)
+
+- FXRoute HEAD: `2d1394e` (nur Docs-Delta zu `6edc851`
+  `6edc8517c63080109cb323e7f46f48ea83dc5de6`; Code-Stand damit funktional
+  `6edc851`), sauberer Baum, Working Tree clean. VERSION: `0.9.17`
+  (unveraendert). Target/Pfad aus dem aktuellen Code festgestellt
+  (`armbian/build-image.sh`: `rpi4` -> Build-Board `rpi4b`, RELEASE=trixie,
+  BRANCH=current, Kernel-Pin `commit:b3aefe19d14cf15f2e41dfd269fa0ca6198dacd2`).
+- Kommando: `./armbian/build-image.sh --board rpi4`, als Hintergrund-Job.
+  Keine Versions-/Codeaenderungen, keine Full-Suite, keine zusaetzliche
+  Checksum-/Entpack-Verifikation und keine Provider-/DSP-Funktionsabnahme
+  (wie beauftragt); die Builder-Marker sind das Fertigstellungskriterium.
+- Build-Log: `armbian-rpi4-build-2026-09-06-2d1394e.log` (lokal,
+  git-ignoriert). Erfolgreich: `[armbian] wrote` + `[armbian] sha256`,
+  null `[armbian][error]`-Zeilen, Exit-Status 0. Einzige Warnung: bekannte
+  kosmetische `Permission denied`-Meldungen beim Aufraeumen
+  Docker-root-owned Cache-Restdateien, wie in frueheren Laeufen.
+- Erzeugtes Image: `dist/fxroute-armbian-rpi4-trixie-current.img`
+  (8589934592 Bytes, FIXED_IMAGE_SIZE=8192, unkomprimiert), plus
+  `.sha256`-Sidecar:
+  `0e7b4381d0ca656cdb86c3098a96fd2c2a8d2c5d6edd99a5dcd53ad9dc5fe771`.
+- Fokussierter QEMU-Check ueber den bestehenden Pfad
+  (`./armbian/test-image.sh --machine raspi4b --timeout 1800 <image>`,
+  Log `armbian-rpi4-qemu-2026-09-07-2d1394e.log`, lokal, git-ignoriert):
+  Exit-Status 0 — Pi-Kernel und Rootfs erreichen `basic.target`.
+- Grenze des vorhandenen QEMU-Pfads (keine neue Emulation gebaut):
+  Die Maschine `raspi4b` hat keinen nutzbaren Netzwerktreiber, daher
+  enden Onboarding/First-Boot-Pfad, FXRoute-Dienst-Check und Web-UI-Check
+  dort technisch bedingt vor diesen Schritten (Skript-Aussage:
+  „network/API checks require hardware or generic virt"). Die
+  `virt`-Variante setzt ein UEFI-arm64-Image voraus und kann das
+  rpi4b-Image nicht sinnvoll booten. Dienst- und Web-UI-Abnahme erfordern
+  physische Pi-Hardware.
+- Kein Push, kein Release.
 
 ## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `6edc851`
 
