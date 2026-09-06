@@ -298,8 +298,9 @@ EOF
   fi
 
   # The appliance never suspends, hibernates, or locks on its own: logind
-  # ignores lid and idle triggers. Explicit user actions (the FXRoute
-  # suspend/shutdown menu) keep working through logind.
+  # ignores lid and idle triggers, and the hardware power button always
+  # powers off cleanly instead of suspending. Explicit user actions (the
+  # FXRoute suspend/shutdown menu) keep working through logind.
   install -d -m 755 /etc/systemd/logind.conf.d
   cat > /etc/systemd/logind.conf.d/10-fxroute-appliance.conf <<'EOF'
 [Login]
@@ -307,6 +308,7 @@ HandleLidSwitch=ignore
 HandleLidSwitchExternalPower=ignore
 HandleLidSwitchDocked=ignore
 IdleAction=ignore
+HandlePowerKey=poweroff
 EOF
   chmod 644 /etc/systemd/logind.conf.d/10-fxroute-appliance.conf
 

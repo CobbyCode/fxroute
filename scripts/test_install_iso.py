@@ -476,6 +476,7 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("Autolock=false", script)
         self.assertIn("powerdevilrc", script)
         self.assertIn("10-fxroute-appliance.conf", script)
+        self.assertIn("HandlePowerKey=poweroff", script)
         self.assertIn("opensuse-welcome/launched", script)
         self.assertIn("fxroute-appliance-session-init.sh", script)
         session_init = self.read("iso/scripts/fxroute-appliance-session-init.sh")
