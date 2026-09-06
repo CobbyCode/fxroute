@@ -4,11 +4,17 @@ import os
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 
 _SYSTEM_SHARES = {"admin$", "ipc$", "print$", "profiles", "users"}
+
+# Upper bound for parallel host probes during one discovery cycle. The
+# per-command subprocess timeouts stay the actual bound; parallelism only
+# stops one slow/dead host from serializing all others behind it.
+_DISCOVERY_MAX_WORKERS = 8
 
 
 def _valid_smb_name(value: str, *, allow_spaces: bool = False) -> bool:
@@ -29,7 +35,10 @@ def default_discovery_hosts() -> list[str]:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return hosts
     for line in result.stdout.splitlines():
-        address = line.split(maxsplit=1)[0]
+        parts = line.split(maxsplit=1)
+        if not parts:
+            continue
+        address = parts[0]
         if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", address) and address not in hosts:
             hosts.append(address)
     return hosts
@@ -52,22 +61,48 @@ def _smb_entry(server: str, share: str, display_server: str | None = None) -> di
     }
 
 
-def discover_smb_shares(hosts: list[str]) -> list[dict[str, str]]:
-    """List guest-visible disk shares on known SMB hosts."""
+def _discover_host_shares(server: str) -> list[dict[str, str]]:
+    """List guest-visible disk shares on one SMB host (single probe unit)."""
     shares: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for server in hosts:
-        server = server.strip()
-        if not server:
+    server = server.strip()
+    if not server:
+        return shares
+    display_server, marker, address = server.partition("@")
+    if marker:
+        server = address
+    else:
+        display_server = _server_label(server)
+    try:
+        result = subprocess.run(
+            ["smbclient", "-g", "-N", "-L", f"//{server}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return shares
+    if result.returncode != 0:
+        return shares
+    seen: set[str] = set()
+    for line in result.stdout.splitlines():
+        kind, separator, rest = line.partition("|")
+        share, separator2, _comment = rest.partition("|")
+        key = share.lower()
+        if (
+            kind != "Disk"
+            or not separator
+            or not separator2
+            or not _valid_smb_name(server)
+            or not _valid_smb_name(share, allow_spaces=True)
+            or share.lower() in _SYSTEM_SHARES
+            or key in seen
+        ):
             continue
-        display_server, marker, address = server.partition("@")
-        if marker:
-            server = address
-        else:
-            display_server = _server_label(server)
         try:
-            result = subprocess.run(
-                ["smbclient", "-g", "-N", "-L", f"//{server}"],
+            access = subprocess.run(
+                ["smbclient", "-N", f"//{server}/{share}", "-c", "ls"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -75,37 +110,34 @@ def discover_smb_shares(hosts: list[str]) -> list[dict[str, str]]:
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
-        if result.returncode != 0:
+        if access.returncode != 0:
             continue
-        for line in result.stdout.splitlines():
-            kind, separator, rest = line.partition("|")
-            share, separator2, _comment = rest.partition("|")
-            key = (server.lower(), share.lower())
-            if (
-                kind != "Disk"
-                or not separator
-                or not separator2
-                or not _valid_smb_name(server)
-                or not _valid_smb_name(share, allow_spaces=True)
-                or share.lower() in _SYSTEM_SHARES
-                or key in seen
-            ):
-                continue
-            try:
-                access = subprocess.run(
-                    ["smbclient", "-N", f"//{server}/{share}", "-c", "ls"],
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                continue
-            if access.returncode != 0:
-                continue
-            seen.add(key)
-            shares.append(_smb_entry(server, share, display_server))
+        seen.add(key)
+        shares.append(_smb_entry(server, share, display_server))
+    return shares
+
+
+def discover_smb_shares(hosts: list[str]) -> list[dict[str, str]]:
+    """List guest-visible disk shares on known SMB hosts.
+
+    Hosts are probed in parallel with the usual bounded per-command
+    timeouts, so one slow or unreachable host no longer serializes the
+    whole cycle behind it. Results merge in host order (first host wins
+    on duplicates), matching the previous sequential behavior.
+    """
+    servers = [server.strip() for server in hosts if server and server.strip()]
+    if not servers:
+        return []
+    shares: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    with ThreadPoolExecutor(max_workers=min(_DISCOVERY_MAX_WORKERS, len(servers))) as pool:
+        for server, host_shares in zip(servers, pool.map(_discover_host_shares, servers)):
+            for entry in host_shares:
+                key = (str(entry["server"]).lower(), str(entry["share"]).lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                shares.append(entry)
     return shares
 
 
@@ -121,9 +153,11 @@ class MusicLibraryManager:
     ):
         self.local_root = local_root.expanduser().resolve(strict=False)
         self.mount_root = mount_root or (Path("/var/lib/fxroute/music-libraries") / str(os.getuid()))
-        if discovery_hosts is None:
-            discovery_hosts = default_discovery_hosts()
-        self.discovery_hosts = discovery_hosts
+        # An explicit host list (tests, operator override) stays frozen;
+        # otherwise resolve the neighbor table on every discovery cycle so
+        # hosts appearing after service start are found without a restart.
+        self._configured_hosts = discovery_hosts
+        self.discovery_hosts = list(discovery_hosts) if discovery_hosts is not None else []
         self.active_id = "local"
         self.active_type = "local"
         self.active_root = self.local_root
@@ -131,10 +165,17 @@ class MusicLibraryManager:
         self._discovered: list[dict[str, str]] = []
         self._discovered_at = 0.0
 
+    def _resolve_discovery_hosts(self) -> list[str]:
+        if self._configured_hosts is not None:
+            return list(self._configured_hosts)
+        return default_discovery_hosts()
+
     def list_libraries(self) -> list[dict[str, str]]:
         local = {"id": "local", "type": "local", "label": f"Local — {self.local_root.name or 'Music'}"}
         if time.monotonic() - self._discovered_at > 30:
-            self._discovered = discover_smb_shares(self.discovery_hosts)
+            hosts = self._resolve_discovery_hosts()
+            self.discovery_hosts = list(hosts)
+            self._discovered = discover_smb_shares(hosts)
             self._discovered_at = time.monotonic()
         discovered = self._discovered
         merged = {entry["id"]: entry for entry in discovered}
