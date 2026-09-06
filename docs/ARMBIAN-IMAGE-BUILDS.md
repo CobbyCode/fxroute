@@ -4,6 +4,72 @@ Build-Protokoll der offiziellen Armbian-Images (`armbian/build-image.sh`).
 Ablage der Images: `dist/` (git-ignoriert). Build-Logs `armbian-vim1s-build-*.log`
 sind ebenfalls git-ignoriert und liegen nur lokal im Checkout.
 
+## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `d40e801`
+
+- FXRoute HEAD: `d40e801f7e3351bbfff53a55430e53671b407068`
+  (`docs(release): 0.9.17 with provider-setup and DSP hygiene fixes`),
+  sauberer kanonischer `main`, Working Tree clean. VERSION im Repo und
+  damit im Build: `0.9.17` (Patch-Bump von 0.9.16, kein 1.x).
+- Enthalten seit dem Vorgaenger-Build (`b04d35b`): nur `57722bd`/`4f95e74`
+  (README/MANUAL-Dokumentation) und `d40e801` (Version-Bump 0.9.17);
+  `armbian/` seit `5dfda4e` unveraendert — keine produktrelevanten
+  Codeaenderungen, der Build traegt den abgenommenen 0.9.16-Stand plus
+  Release-Dokumentation.
+- Vorab-Checks bestanden: 298 GiB frei auf /home (NVMe), 30 GiB RAM
+  (16 GiB verfuegbar), Docker 29.4.0 mit
+  `ghcr.io/armbian/docker-armbian-build:armbian-debian-trixie-latest`,
+  Armbian-Cache-Checkout exakt auf Pin `4a50e16e…`, kein anderer Build
+  aktiv (nur die beiden `armbian-web-config.py --preview`-Prozesse),
+  `scripts/test_armbian_images.py` (46/46) und
+  `scripts/test_armbian_web_config.py` (66/66) vor dem Build OK.
+- Altes Artefakt vorher geloescht:
+  `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz` + `.sha256`
+  (Stand HEAD `b04d35b`, 394137600 Bytes, sha256 `378d7ed5…`).
+- Armbian-Pin: `4a50e16e09222e00d3f57884b4dfbf8fdb4ce5dc` (im Wrapper
+  fest verdrahtet; Cache-Checkout exakt auf diesem Pin, im Build-Log
+  bestaetigt).
+- Kommando: `./armbian/build-image.sh --board khadas-vim1s`
+  (BOARD=khadas-vim1s, RELEASE=trixie, BRANCH=legacy, EXT=image-output-oowow).
+- Build: Start 2026-09-06T14:25:33Z, detached via `setsid nohup` (PID
+  2505872, eigene Session). Work-Dir dieses Laufs: `image.yuIggN`.
+  Kernel-Artifact `linux-image-legacy-meson-s4t7 5.15.137` und U-Boot
+  `uboot-khadas-vim1s-legacy 2019.01` aus dem Armbian-Remote-Cache
+  (ORAS/ghcr).
+- Build-Log: `armbian-vim1s-build-2026-09-06-d40e801.log` (5094 Zeilen,
+  lokal, git-ignoriert, persistent).
+- Build: Ende 2026-09-06T14:33:54Z (Dauer ca. 8,5 Minuten). Erfolgreich:
+  `[armbian] wrote` + `[armbian] sha256` im Log, null
+  `[armbian][error]`-Zeilen, keine interaktiven Prompts. Einzige Warnung:
+  bekannte kosmetische `Permission denied`-Meldungen (4780 Zeilen) beim
+  Aufraeumen Docker-root-owned Cache-Restdateien; das Work-Dir
+  `image.yuIggN` schliesst sich damit den Alt-Resten an. Diesmal keine
+  `[wrapper] exit status`-Zeile im Log: die Zeile stammte in frueheren
+  Laeufen aus der ueberwachenden Shell, nicht aus dem Wrapper; der
+  Wrapper endete hier unmittelbar nach `copy_image_output` (letzte
+  Anweisung, `set -Eeuo pipefail`) mit Exit 0.
+- Erzeugtes Image: `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz`
+  (394338304 Bytes), plus `.sha256`-Sidecar:
+  `32081adb62757e19d087d198c808c55e3f0e62bbe27c91feedabacfe951d63f3`.
+- Verifikation (grundlegende Build-Checks): `sha256sum -c` des neuen
+  Images: OK. `xz -t` (XZ-Stream-Integritaet): OK. Dateityp: XZ mit
+  CRC64-Checksumme.
+- Provenienz (HEAD im Image nachgewiesen):
+  - Root-Partition (MBR, Start Sektor 8192) aus dem dekomprimierten Image
+    per dd extrahiert (im `--privileged` Armbian-Container; unprivilegierte
+    Container-Zugriffe scheitern am Daemon-seitigen Userns-Remapping) und
+    `/opt/fxroute-armbian/source.tar` per `debugfs` ausgelesen:
+    byte-identisch mit dem deterministischen Archiv aus HEAD `d40e801`
+    (gleicher sha256 `a911c7b4e3baf4745cb1804de1cac5300ef0cc0a859fe287f9e9ad04f5a821a3`,
+    39331840 Bytes, 719 Eintraege, `git ls-files`-Tar mit mtime 0).
+  - Damit enthaelt das Image nachweislich den 0.9.17-Stand (`VERSION`-
+    Bump `d40e801`) inklusive aller zuvor abgenommenen Fixes.
+- Bewusst noch keine frische Image-Abnahme in diesem Schritt: nicht
+  geflasht, kein Onboarding/First-Boot-Test; die bereits auf .126
+  erledigten End-to-End-Abnahmen wurden nicht wiederholt, die
+  Endverifikation (Onboarding, First-Boot, fxroute.service, HTTP :8000)
+  laeuft wie ueblich auf dem frisch geflashten Geraet.
+- Kein Push, kein Release.
+
 ## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `b04d35b`
 
 - FXRoute HEAD: `b04d35bbc6ddc6998709774af199a62ac051331e`
