@@ -469,6 +469,8 @@ ensure_target_user_ownership() {
     "$HOME/.config/pipewire"
     "$HOME/.config/pipewire/pipewire-pulse.conf.d"
     "$HOME/.config/pipewire/pipewire.conf.d"
+    "$HOME/.config/wireplumber"
+    "$HOME/.config/wireplumber/wireplumber.conf.d"
     "$HOME/.config/spotifyd"
     "$HOME/.config/qbzd"
     "$HOME/.config/autostart"
@@ -489,6 +491,8 @@ ensure_target_user_ownership() {
     "$HOME/.config/pipewire/pipewire-pulse.conf.d/50-fxroute-dsp-sink.conf"
     "$HOME/.config/pipewire/pipewire.conf.d"
     "$HOME/.config/pipewire/pipewire.conf.d/90-fxroute-clock-rate.conf"
+    "$HOME/.config/wireplumber/wireplumber.conf.d"
+    "$HOME/.config/wireplumber/wireplumber.conf.d/50-fxroute-bluetooth.conf"
     "$HOME/.config/spotifyd"
     "$HOME/.config/spotifyd/spotifyd.conf"
     "$HOME/.config/qbzd"
@@ -596,6 +600,8 @@ reject_managed_user_symlinks() {
     "$HOME/.config/pipewire/pipewire-pulse.conf.d/50-fxroute-dsp-sink.conf"
     "$HOME/.config/pipewire/pipewire.conf.d"
     "$HOME/.config/pipewire/pipewire.conf.d/90-fxroute-clock-rate.conf"
+    "$HOME/.config/wireplumber/wireplumber.conf.d"
+    "$HOME/.config/wireplumber/wireplumber.conf.d/50-fxroute-bluetooth.conf"
     "$HOME/.config/spotifyd"
     "$HOME/.config/spotifyd/spotifyd.conf"
     "$HOME/.config/qbzd"
@@ -4312,6 +4318,29 @@ EOF
   fi
 }
 
+configure_wireplumber_bluetooth() {
+  local config_dir="$HOME/.config/wireplumber/wireplumber.conf.d"
+  local config_file="$config_dir/50-fxroute-bluetooth.conf"
+
+  run_as_target_user mkdir -p "$config_dir"
+  run_as_target_user tee "$config_file" >/dev/null <<'EOF'
+# Managed by FXRoute. Headless appliances (linger, no login session) never
+# activate a logind seat; with seat-monitoring enabled WirePlumber never
+# creates the BlueZ monitor, no A2DP endpoints are registered and Bluetooth
+# input stays unavailable. Disable the seat gate so the monitor always runs.
+wireplumber.profiles = {
+  main = {
+    monitor.bluez.seat-monitoring = disabled
+  }
+}
+EOF
+  if user_systemctl restart wireplumber.service; then
+    pass "WirePlumber Bluetooth monitor configured without seat activation"
+  else
+    warn "WirePlumber Bluetooth config was written, but wireplumber could not be restarted in this shell"
+  fi
+}
+
 disable_legacy_samplerate_override() {
   user_systemctl stop switch-sample-rate.service >/dev/null 2>&1 || true
   user_systemctl disable switch-sample-rate.service >/dev/null 2>&1 || true
@@ -6872,6 +6901,7 @@ main() {
   enable_user_audio_services
   configure_pipewire_samplerates_if_available
   configure_dsp_ingress_sink
+  configure_wireplumber_bluetooth
   ensure_target_user_ownership
   # Record the selected providers and baseline before provider side effects.
   write_install_state

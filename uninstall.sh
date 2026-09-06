@@ -645,6 +645,13 @@ remove_dsp_ingress_sink() {
   user_systemctl restart pipewire-pulse.service >/dev/null 2>&1 || true
 }
 
+remove_wireplumber_bluetooth_config() {
+  local config_file="$HOME/.config/wireplumber/wireplumber.conf.d/50-fxroute-bluetooth.conf"
+  remove_file_if_exists "$config_file"
+  run_as_target_user rmdir "$(dirname "$config_file")" >/dev/null 2>&1 || true
+  user_systemctl restart wireplumber.service >/dev/null 2>&1 || true
+}
+
 remove_user_linger_if_owned() {
   local linger_owned=""
   local sudo_cmd=()
@@ -3697,6 +3704,9 @@ main() {
 
   log "Removing FXRoute DSP ingress sink"
   remove_dsp_ingress_sink
+
+  log "Removing FXRoute WirePlumber Bluetooth config"
+  remove_wireplumber_bluetooth_config
 
   log "Removing optional Spotify cache cleanup helper"
   remove_spotify_cleanup_helper
