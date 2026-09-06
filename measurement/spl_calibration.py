@@ -26,6 +26,42 @@ from audio.tool_env import c_locale_env
 
 logger = logging.getLogger(__name__)
 SPL_STOP_TIMEOUT_SECONDS = 40.0
+SPL_CAPTURE_SAMPLE_RATE = 48000
+SPL_CAPTURE_SECONDS = 5.0
+SPL_CAPTURE_FALLBACK_MARGIN_SECONDS = 0.5
+
+
+def _spl_pw_record_command(
+    node_name: str,
+    capture_path: Path,
+    *,
+    use_sample_count: bool,
+) -> list[str]:
+    """Build the SPL capture recorder command for the host pw-record.
+
+    ``--sample-count`` only exists on newer pw-record builds (>= 1.6 series;
+    absent up to 1.4.x); without it the recorder runs unbounded and the
+    caller stops it after the capture window instead.
+    """
+    command = [
+        "pw-record", "--target", node_name, "--rate", str(SPL_CAPTURE_SAMPLE_RATE),
+        "--channels", "2", "--format", "s16",
+    ]
+    if use_sample_count:
+        command.extend(["--sample-count", str(int(SPL_CAPTURE_SAMPLE_RATE * SPL_CAPTURE_SECONDS))])
+    command.append(str(capture_path))
+    return command
+
+
+def _spl_recorder_supports_sample_count(measurement_store: Any | None) -> bool:
+    """Probe the host pw-record through the established supports_option path."""
+    probe = getattr(measurement_store, "_pw_record_supports_option", None)
+    if not callable(probe):
+        return False
+    try:
+        return bool(probe("--sample-count"))
+    except Exception:
+        return False
 
 
 @dataclass
@@ -1172,17 +1208,33 @@ async def measure_spl_automatically():
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
 
+        use_sample_count = _spl_recorder_supports_sample_count(
+            dependencies.get_measurement_store()
+        )
         operation.recorder = subprocess.Popen(
-            [
-                "pw-record", "--target", node_name, "--rate", "48000",
-                "--channels", "2", "--format", "s16", "--sample-count", str(5 * 48000),
-                str(operation.capture_path),
-            ],
+            _spl_pw_record_command(
+                node_name,
+                operation.capture_path,
+                use_sample_count=use_sample_count,
+            ),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
         )
+        record_started = time.monotonic()
         await asyncio.sleep(0.2)
+        if operation.recorder.poll() is not None:
+            # The recorder died on arrival (e.g. an old pw-record rejecting
+            # its CLI): never start the calibration noise against a dead
+            # capture, report the recorder's own error instead.
+            _stdout, stderr = await _run_operation_thread(
+                operation,
+                operation.recorder.communicate,
+            )
+            raise RuntimeError(
+                f"pw-record exited {operation.recorder.returncode}: "
+                f"{(stderr or f'{microphone_model} automatic SPL capture failed').strip()}"
+            )
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
         await _run_operation_thread(
@@ -1190,6 +1242,17 @@ async def measure_spl_automatically():
             _start_spl_calibration_noise,
             operation,
         )
+        if not use_sample_count:
+            # Portable fallback for pw-record builds without --sample-count:
+            # record unbounded and stop after the capture window so the WAV
+            # is finalized, mirroring the sweep host-capture path.
+            elapsed = time.monotonic() - record_started
+            remaining = max(
+                0.0,
+                SPL_CAPTURE_SECONDS + SPL_CAPTURE_FALLBACK_MARGIN_SECONDS - elapsed,
+            )
+            await _run_operation_thread(operation, time.sleep, remaining)
+            await _run_operation_thread(operation, _terminate_and_reap, operation.recorder)
         try:
             _stdout, stderr = await _run_operation_thread(
                 operation,
