@@ -121,8 +121,13 @@ def main_test():
     )
 
     def fake_ip(command, **_kwargs):
-        assert command[:3] == ["ip", "neigh", "show"], command
-        return Result(stdout=neigh)
+        if command[:3] == ["ip", "neigh", "show"]:
+            return Result(stdout=neigh)
+        # Automatic discovery also reads the local addresses for the active
+        # subnet sweep; this fixture has no local network, so the sweep
+        # contributes nothing and the neighbor list stays authoritative.
+        assert command[:5] == ["ip", "-o", "-4", "addr", "show"], command
+        return Result(stdout="1: lo    inet 127.0.0.1/8 scope host lo\n")
 
     with mock.patch.object(sources.subprocess, "run", side_effect=fake_ip), \
          mock.patch.dict(os.environ, {"MUSIC_LIBRARY_SMB_HOSTS": ""}):

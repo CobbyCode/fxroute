@@ -1,7 +1,9 @@
 """Discovery and activation for local and mounted network music libraries."""
 
+import ipaddress
 import os
 import re
+import socket
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -16,18 +18,26 @@ _SYSTEM_SHARES = {"admin$", "ipc$", "print$", "profiles", "users"}
 # stops one slow/dead host from serializing all others behind it.
 _DISCOVERY_MAX_WORKERS = 8
 
+# Active subnet scan bounds for the automatic (unconfigured) discovery path.
+# A fresh boot has an empty neighbor table, so discovery must not depend on
+# already learned ARP entries: hosts with an open SMB port are found via a
+# short parallel TCP 445 sweep of each local IPv4 network. Only networks up
+# to _SUBNET_MAX_HOSTS hosts are swept; larger networks fall back to the
+# neighbor table so a /16 never triggers a 65k-host scan.
+_SMB_PORT = 445
+_SMB_CONNECT_TIMEOUT_SECONDS = 0.4
+_SUBNET_SCAN_MAX_WORKERS = 64
+_SUBNET_MAX_HOSTS = 1024
+
 
 def _valid_smb_name(value: str, *, allow_spaces: bool = False) -> bool:
     pattern = r"[A-Za-z0-9 ._()$-]+" if allow_spaces else r"[A-Za-z0-9._-]+"
     return bool(re.fullmatch(pattern, value or "")) and value not in {".", "..", "--remove-all"}
 
 
-def default_discovery_hosts() -> list[str]:
-    configured_hosts = os.environ.get("MUSIC_LIBRARY_SMB_HOSTS")
-    raw_hosts = configured_hosts or ""
-    hosts = [host.strip() for host in raw_hosts.split(",") if host.strip()]
-    if configured_hosts:
-        return hosts
+def _neighbor_hosts() -> list[str]:
+    """IPv4 addresses from the kernel neighbor table (passive, may be empty)."""
+    hosts: list[str] = []
     try:
         result = subprocess.run(
             ["ip", "neigh", "show"], capture_output=True, text=True, timeout=2, check=False
@@ -40,6 +50,103 @@ def default_discovery_hosts() -> list[str]:
             continue
         address = parts[0]
         if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", address) and address not in hosts:
+            hosts.append(address)
+    return hosts
+
+
+def _local_ipv4_networks() -> tuple[list["ipaddress.IPv4Network"], set[str]]:
+    """Local IPv4 networks plus own addresses from `ip -o -4 addr show`."""
+    networks: list["ipaddress.IPv4Network"] = []
+    own: set[str] = set()
+    try:
+        result = subprocess.run(
+            ["ip", "-o", "-4", "addr", "show"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return networks, own
+    if result.returncode != 0:
+        return networks, own
+    for match in re.finditer(r"inet (\d+\.\d+\.\d+\.\d+)/(\d+)", result.stdout):
+        address, prefix = match.group(1), int(match.group(2))
+        own.add(address)
+        try:
+            network = ipaddress.IPv4Interface(f"{address}/{prefix}").network
+        except ValueError:
+            continue
+        if network.is_loopback or network.prefixlen == 32:
+            continue
+        if network.num_addresses > _SUBNET_MAX_HOSTS + 2:
+            continue
+        if network not in networks:
+            networks.append(network)
+    return networks, own
+
+
+def _smb_port_open(address: str, timeout: float = _SMB_CONNECT_TIMEOUT_SECONDS) -> bool:
+    """Short TCP 445 probe (single host unit for the parallel subnet sweep)."""
+    try:
+        with socket.create_connection((address, _SMB_PORT), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _active_smb_hosts(
+    timeout: float = _SMB_CONNECT_TIMEOUT_SECONDS,
+    max_workers: int = _SUBNET_SCAN_MAX_WORKERS,
+) -> list[str]:
+    """Hosts with an open SMB port on the local IPv4 networks (active scan).
+
+    Independent of the neighbor table, so a freshly booted host finds SMB
+    servers without prior traffic. Candidates are probed in parallel with a
+    short connect timeout, so dead/filtered addresses never serialize the
+    cycle behind them.
+    """
+    networks, own = _local_ipv4_networks()
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for network in networks:
+        for ip in network.hosts():
+            candidate = str(ip)
+            if candidate in own or candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+    if not candidates:
+        return []
+    open_hosts: list[str] = []
+
+    def _probe(address: str) -> bool:
+        return _smb_port_open(address, timeout)
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(candidates))) as pool:
+        for address, is_open in zip(candidates, pool.map(_probe, candidates)):
+            if is_open:
+                open_hosts.append(address)
+    return open_hosts
+
+
+def default_discovery_hosts() -> list[str]:
+    configured_hosts = os.environ.get("MUSIC_LIBRARY_SMB_HOSTS")
+    raw_hosts = configured_hosts or ""
+    hosts = [host.strip() for host in raw_hosts.split(",") if host.strip()]
+    if configured_hosts:
+        return hosts
+    # Automatic path: passive neighbor entries plus an active TCP 445 sweep
+    # of the local IPv4 networks. The sweep is what makes a fresh boot work
+    # with an empty neighbor table; the neighbor table still contributes
+    # hosts outside the swept networks (VPNs, other subnets).
+    hosts = _neighbor_hosts()
+    try:
+        active = _active_smb_hosts()
+    except Exception:
+        active = []
+    for address in active:
+        if address not in hosts:
             hosts.append(address)
     return hosts
 
@@ -154,8 +261,9 @@ class MusicLibraryManager:
         self.local_root = local_root.expanduser().resolve(strict=False)
         self.mount_root = mount_root or (Path("/var/lib/fxroute/music-libraries") / str(os.getuid()))
         # An explicit host list (tests, operator override) stays frozen;
-        # otherwise resolve the neighbor table on every discovery cycle so
-        # hosts appearing after service start are found without a restart.
+        # otherwise re-resolve on every discovery cycle (neighbor table plus
+        # active local-subnet SMB sweep) so hosts appearing after service
+        # start are found without a restart.
         self._configured_hosts = discovery_hosts
         self.discovery_hosts = list(discovery_hosts) if discovery_hosts is not None else []
         self.active_id = "local"
