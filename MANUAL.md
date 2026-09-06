@@ -16,7 +16,7 @@ On that machine, FXRoute provides:
 - room and speaker measurement that feeds PEQ and FIR/convolver preset creation
 - control of the whole setup from browsers on the local network
 
-Spotify, Qobuz, and TIDAL integration is unofficial — it builds on community backends and protocols that the providers do not support and may change at any time.
+Spotify, Qobuz, and TIDAL integration is unofficial and builds on community backends and protocols.
 
 FXRoute exposes its web UI on the LAN. Keep it on a trusted network.
 
