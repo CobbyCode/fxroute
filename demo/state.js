@@ -179,13 +179,32 @@
         return trackPayload(currentTrack);
     }
 
-    function streamInfoFor(src) {
+    // Native playback stream facts mirror the real normalization
+    // (playback/stream_info.py): codec + `Lossless` profile, bit depth and
+    // `samplerate_hz` — the field names the shared footer renderer reads
+    // (formatRadioStreamLine). Spotify/Qobuz do not come through here; they
+    // are remote-renderer owners with their own payload facts.
+    function streamInfoFor(src, track = null) {
         if (src === 'local') return { codec: 'FLAC', bitrate_kbps: 1411, sample_rate: 48000 };
-        if (src === 'tidal') return { codec: 'FLAC', bitrate_kbps: 1411, sample_rate: 44100 };
+        if (src === 'tidal') return tidalStreamInfo(track);
         if (src === 'radio') return { codec: 'MP3', bitrate_kbps: 192, sample_rate: 44100 };
         if (src === 'spotify') return { codec: 'Ogg', bitrate_kbps: 320, sample_rate: 44100 };
         if (src === 'qobuz') return { codec: 'FLAC', bitrate_kbps: 1411, sample_rate: 96000 };
         return { codec: '', bitrate_kbps: 0, sample_rate: 0 };
+    }
+
+    // TIDAL facts per track, derived from the album's quality tier exactly
+    // like the real stream resolution (streaming/tidal/playback.py):
+    // HI_RES_LOSSLESS -> FLAC 24 bit/96 kHz, LOSSLESS -> FLAC 16 bit/44.1 kHz,
+    // HIGH -> AAC 320 kbps/44.1 kHz. Lossless keeps codec/profile/bit
+    // depth/rate; lossy AAC keeps the bitrate line instead (the renderer
+    // drops the redundant 'Lossless' profile for lossless codecs).
+    function tidalStreamInfo(track = null) {
+        const quality = String(track?.audio_quality || '');
+        if (quality === 'HI_RES_LOSSLESS') return { codec: 'FLAC', profile: 'Lossless', bit_depth: 24, samplerate_hz: 96000 };
+        if (quality === 'LOSSLESS') return { codec: 'FLAC', profile: 'Lossless', bit_depth: 16, samplerate_hz: 44100 };
+        if (quality === 'HIGH') return { codec: 'AAC', bitrate_kbps: 320, samplerate_hz: 44100 };
+        return { codec: 'FLAC', bitrate_kbps: 1411 };
     }
 
     function playbackPayload() {
@@ -212,7 +231,7 @@
             live_title: currentSource === 'radio' && radioMetadata ? radioMetadata.title : null,
             radio_metadata: currentSource === 'radio' ? radioMetadata : null,
             metadata: (currentSource === 'radio' && radioMetadata) ? { 'icy-title': radioMetadata.title } : {},
-            stream_info: streamInfoFor(currentSource),
+            stream_info: streamInfoFor(currentSource, currentTrack),
             output_peak_warning: peakSnapshot(),
             _seq: (window.__demoSeq = (window.__demoSeq || 0) + 1),
         };
@@ -370,6 +389,9 @@
             spotify.adopt(track);
         } else if (src === 'qobuz') {
             qobuz.adopt(track);
+        }
+        if (typeof window.FXROUTE_DEMO_STATE?.onSourceChanged === 'function') {
+            window.FXROUTE_DEMO_STATE.onSourceChanged();
         }
         emitPlayback();
     }
@@ -1332,6 +1354,10 @@
         // providers
         spotify,
         qobuz,
+        // Simulation hook: routes.js mirrors the native-kHz behavior here so
+        // the graph rate follows TIDAL Hi-Res/lossless playback like the real
+        // system (see /api/audio/samplerate).
+        onSourceChanged: null,
     };
 
     // Broadcast alias used by other modules.

@@ -394,6 +394,10 @@
                 album: album.title,
                 duration: t.duration,
                 track_number: t.trackNumber,
+                // Per-track TIDAL quality tier (HI_RES_LOSSLESS / LOSSLESS /
+                // HIGH): the playback state derives the footer stream facts
+                // (codec/bit depth/rate) from it per track.
+                audio_quality: album.audio_quality,
                 art_url: album.cover_url,
             });
         }

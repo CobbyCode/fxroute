@@ -417,6 +417,37 @@ const radio = state.getPlayback();
     state.qobuz.cycleLoop();
     assert.equal(state.qobuz.payload().loop, 'playlist');
 
+    // ── TIDAL footer stream facts ────────────────────────────────────────
+    // TIDAL is native playback: the footer renders the radio/local
+    // stream_info line, so the demo payload must carry the real
+    // normalization shape (codec + Lossless profile, bit_depth,
+    // samplerate_hz) derived per track from the album's quality tier — one
+    // static line for the whole catalog would flatten the tiers.
+    const tidalTierCases = [
+        ['t_album_01_t1', 'HI_RES_LOSSLESS', { codec: 'FLAC', profile: 'Lossless', bit_depth: 24, samplerate_hz: 96000 }, 96000],
+        ['t_album_02_t1', 'LOSSLESS', { codec: 'FLAC', profile: 'Lossless', bit_depth: 16, samplerate_hz: 44100 }, 44100],
+        ['t_album_06_t1', 'HIGH', { codec: 'AAC', bitrate_kbps: 320, samplerate_hz: 44100 }, 44100],
+    ];
+    for (const [tidalTrackId, tier, facts, graphRate] of tidalTierCases) {
+        const tidalTrack = state.playTidal(tidalTrackId);
+        assert.ok(tidalTrack, 'tidal track ' + tidalTrackId + ' must exist');
+        assert.equal(tidalTrack.audio_quality, tier);
+        const tidalPlayback = state.getPlayback();
+        assert.equal(tidalPlayback.playback_owner, 'tidal');
+        // Field-wise compare: stream_info is built inside the demo VM realm.
+        for (const [key, value] of Object.entries(facts)) {
+            assert.equal(tidalPlayback.stream_info[key], value,
+                'stream_info.' + key + ' for ' + tidalTrackId);
+        }
+        assert.equal(Object.keys(tidalPlayback.stream_info).length, Object.keys(facts).length);
+        // Native playback moves the graph rate like the real system: the
+        // effective output rate in the footer follows the tier (96 kHz
+        // Hi-Res, 44.1 kHz lossless/AAC), not the stale idle rate.
+        const rate = await (await demoFetch('/api/audio/samplerate')).json();
+        assert.equal(rate.active_rate, graphRate, 'graph rate for ' + tier);
+    }
+    state.stop();
+
     // The demo starts in 2.2 mode on the 4-channel interface, with crossover
     // and derived sub delays visible (seeded like a configured system).
     const outputs = await (await demoFetch('/api/audio/outputs')).json();

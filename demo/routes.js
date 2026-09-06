@@ -182,6 +182,25 @@
 
     let samplerate = { available: true, active_rate: 48000, mode: 'auto', policy: { mode: 'auto', rate: null }, support: { rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] } };
 
+    // Native-kHz simulation: like the real system, the graph rate follows
+    // native TIDAL playback (96 kHz Hi-Res, 44.1 kHz lossless, 48 kHz
+    // otherwise). Qobuz/Spotify are remote renderers with their own graph and
+    // never move the output rate. Without this the TIDAL footer would mix
+    // '24 bit' with the stale 48 kHz idle rate.
+    const TIDAL_TIER_GRAPH_RATE = { HI_RES_LOSSLESS: 96000, LOSSLESS: 44100, HIGH: 44100 };
+    function followSourceGraphRate() {
+        const playback = S.getPlayback();
+        const owner = playback.playback_owner;
+        if (owner === 'tidal') {
+            const track = S.tidalTracks().find(t => String(t.id) === String(playback.current_track?.id));
+            samplerate.active_rate = TIDAL_TIER_GRAPH_RATE[track?.audio_quality] || 48000;
+        } else if (owner !== 'qobuz' && owner !== 'spotify') {
+            samplerate.active_rate = 48000;
+        }
+        // qobuz/spotify: keep the current rate (separate renderer graph).
+    }
+    S.onSourceChanged = followSourceGraphRate;
+
     // ── Music libraries ─────────────────────────────────────────────────
     const musicLibraries = {
         active_id: 'local',
