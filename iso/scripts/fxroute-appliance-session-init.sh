@@ -18,22 +18,56 @@ note() {
   printf '%s\n' "$*" >> "$log_file" || true
 }
 
-# Wallpaper: Plasma's supported per-desktop image setter. Autostart can race
-# the plasmashell containment on the first login, so retry briefly.
+# Wallpaper: Plasma's supported per-desktop image setter, plus a config-file
+# fallback. Autostart can race the plasmashell containment on the first
+# login, so retry briefly; every attempt is time-boxed because a wedged
+# plasmashell scripting interface would otherwise stall the fullscreen
+# start for minutes. The config entry is always written as well so the
+# wallpaper is correct at the latest after the next shell start.
+write_wallpaper_config() {
+  if command -v kwriteconfig6 >/dev/null 2>&1; then
+    kwriteconfig6 --file plasma-org.kde.plasma.desktop-appletsrc \
+      --group Containments --group 1 --group Wallpaper --group org.kde.image --group General \
+      --key Image "file://$wallpaper" >/dev/null 2>&1 || return 1
+    return 0
+  fi
+  python3 - "$wallpaper" <<'PY' || return 1
+import configparser
+import os
+import sys
+
+appletsrc = os.path.join(
+    os.environ["HOME"], ".config", "plasma-org.kde.plasma.desktop-appletsrc")
+config = configparser.ConfigParser()
+config.read(appletsrc)
+section = "Containments][1][Wallpaper][org.kde.image][General"
+if section not in config:
+    config.add_section(section)
+config[section]["Image"] = "file://" + sys.argv[1]
+with open(appletsrc, "w") as handle:
+    config.write(handle)
+PY
+}
+
 apply_wallpaper() {
   local attempt=""
+  if write_wallpaper_config; then
+    note "wallpaper config written"
+  else
+    note "wallpaper config not written"
+  fi
   command -v plasma-apply-wallpaperimage >/dev/null 2>&1 || {
-    note "plasma-apply-wallpaperimage is unavailable; wallpaper not applied"
+    note "plasma-apply-wallpaperimage is unavailable; config applies at next shell start"
     return 0
   }
-  for attempt in 1 2 3 4 5 6 7 8; do
-    if plasma-apply-wallpaperimage "$wallpaper" >/dev/null 2>&1; then
+  for attempt in 1 2 3; do
+    if timeout 20 plasma-apply-wallpaperimage "$wallpaper" >/dev/null 2>&1; then
       note "wallpaper applied"
       return 0
     fi
     sleep 2
   done
-  note "wallpaper not applied after retries"
+  note "wallpaper tool did not respond; config applies at next shell start"
 }
 
 find_firefox_profile_dir() {
@@ -153,12 +187,12 @@ try:
     if "foreign_count" in place_columns:
         place_fields["foreign_count"] = 1
     place_names = [name for name in place_fields if name in place_columns]
-    connection.execute(
+    place_cursor = connection.execute(
         f"INSERT INTO moz_places ({', '.join(place_names)}) "
         f"VALUES ({', '.join('?' for _ in place_names)})",
         [place_fields[name] for name in place_names],
     )
-    place_id = connection.lastrowid
+    place_id = place_cursor.lastrowid
 
     bookmark_fields = {
         "type": 1,
@@ -185,7 +219,37 @@ finally:
 PY
 }
 
+# Visible entry points on the desktop. Resolved at login time so localized
+# folder names (e.g. Schreibtisch on German systems) are honored.
+ensure_desktop_links() {
+  local desktop_dir=""
+  desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+  [[ -n "$desktop_dir" ]] || desktop_dir="$HOME/Desktop"
+  mkdir -p "$desktop_dir" || {
+    note "desktop directory not writable: $desktop_dir"
+    return 0
+  }
+  cat > "$desktop_dir/FXRoute.desktop" <<'EOF'
+[Desktop Entry]
+Type=Link
+Name=FXRoute
+Comment=Open the FXRoute control surface
+URL=http://127.0.0.1:8000/
+Icon=/usr/share/pixmaps/fxroute.svg
+EOF
+  cat > "$desktop_dir/Spotify Download.desktop" <<'EOF'
+[Desktop Entry]
+Type=Link
+Name=Spotify
+Comment=Official Spotify download page for Linux
+URL=https://www.spotify.com/download/linux/
+Icon=internet-web-browser
+EOF
+  note "desktop links ensured in $desktop_dir"
+}
+
 note "FXRoute appliance session init start"
 apply_wallpaper
+ensure_desktop_links
 seed_firefox_bookmark | tee -a "$log_file"
 note "FXRoute appliance session init done"

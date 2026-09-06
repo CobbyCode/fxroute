@@ -432,7 +432,10 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn('COMPLETE_MARKER="$STATE_DIR/install-complete"', script)
         self.assertIn("network-online.target", script)
         self.assertIn("sddm.conf.d/10-fxroute-autologin.conf", script)
-        self.assertIn("plasmawayland", script)
+        # Autologin uses the default Plasma (X11) session the Leap desktop
+        # image boots into, not a Wayland session name.
+        self.assertIn("Session=default.desktop", script)
+        self.assertNotIn("plasmawayland", script)
         self.assertIn("derive_fxroute_device_name", script)
         self.assertIn('--device-name "$(derive_fxroute_device_name)"', script)
         # The Agama account is discovered: prefer the documented appliance
@@ -504,6 +507,9 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("systemctl start --no-block sddm.service", script)
         self.assertNotIn("systemctl enable --force --now sddm.service", script)
         self.assertIn("displaymanager_config", script)
+        # Agama images run display-manager-legacy: it stays in charge when
+        # enabled instead of starting a second manager via sddm.service.
+        self.assertIn("display-manager-legacy.service", script)
 
     def test_first_boot_operations_have_bounded_network_requests(self):
         script = self.read("iso/scripts/first-boot-install.sh")

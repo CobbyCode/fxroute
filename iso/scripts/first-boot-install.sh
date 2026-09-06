@@ -277,10 +277,14 @@ install_desktop_stack() {
   fi
 
   install -d -m 755 /etc/sddm.conf.d
+  # Autologin uses the default Plasma (X11) session: that is the session the
+  # Leap desktop image boots into (default.desktop is the vendor default and
+  # identical to plasma6.desktop here). A Wayland session name would not
+  # match the display-manager-legacy/X11 stack Agama installs.
   cat > "$sddm_config" <<EOF
 [Autologin]
 User=$FXROUTE_USER
-Session=plasmawayland
+Session=default.desktop
 Relogin=false
 EOF
   chmod 644 "$sddm_config"
@@ -318,7 +322,17 @@ EOF
   fi
 
   # Visible entry points on the desktop: FXRoute (fixed start target) and
-  # the official Spotify download page.
+  # the official Spotify download page. Honor an existing localized desktop
+  # folder (e.g. Schreibtisch on German systems); the session init ensures
+  # the links again at the first graphical login.
+  local xdg_entry=""
+  if [[ -f "$fxroute_home/.config/user-dirs.dirs" ]]; then
+    xdg_entry="$(grep -E '^XDG_DESKTOP_DIR=' "$fxroute_home/.config/user-dirs.dirs" | tail -n 1 | cut -d= -f2- | tr -d '"')"
+    case "$xdg_entry" in
+      '$HOME'/*) desktop_dir="$fxroute_home/${xdg_entry#'$HOME'/}" ;;
+      /*) desktop_dir="$xdg_entry" ;;
+    esac
+  fi
   install -d -o "$FXROUTE_USER" -g "$fxroute_group" -m 700 "$desktop_dir"
   cat > "$desktop_dir/FXRoute.desktop" <<'EOF'
 [Desktop Entry]
@@ -492,8 +506,19 @@ EOF
   chmod 644 "$autostart_file"
 
   systemctl set-default graphical.target
-  systemctl enable --force sddm.service
-  systemctl start --no-block sddm.service
+  # Agama desktop images run the display manager through
+  # display-manager-legacy (display-manager.service is its alias): keep that
+  # stack and only fall back to plain sddm.service when neither is enabled.
+  # Enabling both would start two competing display managers.
+  if systemctl is-enabled display-manager-legacy.service >/dev/null 2>&1 \
+      || systemctl is-enabled display-manager.service >/dev/null 2>&1; then
+    systemctl enable display-manager-legacy.service >/dev/null 2>&1 || true
+    systemctl restart display-manager-legacy.service || \
+      systemctl start display-manager-legacy.service || true
+  else
+    systemctl enable --force sddm.service
+    systemctl start --no-block sddm.service
+  fi
 }
 
 if [[ "$profile" == "desktop" ]]; then
