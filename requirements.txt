@@ -6,7 +6,7 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.12.5
 pydantic-settings==2.13.1
-requests==2.31.0
+requests==2.34.2
 mutagen==1.47.0
 yt-dlp==2026.03.17
 python-dotenv==1.0.0
