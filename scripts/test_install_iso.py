@@ -307,13 +307,15 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertNotIn("sddm-qt6", packages)
         self.assertNotIn("kde_plasma", profile["software"].get("patterns", []))
 
-    def test_desktop_profile_requests_plasma_wayland_and_sddm(self):
+    def test_desktop_profile_requests_plasma_wayland_and_firefox(self):
         profile = json.loads((PROFILE_DIR / "desktop.jsonnet").read_text())
         packages = set(profile["software"]["packages"])
 
         self.assertIn("plasma6-session", packages)
         self.assertIn("sddm-qt6", packages)
         self.assertIn("qt6-wayland", packages)
+        self.assertIn("MozillaFirefox", packages)
+        self.assertNotIn("google-chrome-stable", packages)
         self.assertNotIn("sddm-conf", packages)
         self.assertNotIn("python313-virtualenv", packages)
         self.assertIn("kde_plasma", profile["software"]["patterns"])
@@ -334,8 +336,8 @@ class InstallIsoContractTests(unittest.TestCase):
                 files["/opt/fxroute-iso-source.tar"]["url"],
                 "device:/fxroute/source.tar",
             )
-            # No key-only SSH hardening is shipped; the installed sshd
-            # keeps the distribution defaults for the Agama account.
+            # The sshd appliance default is written by the first-boot
+            # script after the account exists, not preseeded in the profile.
             self.assertNotIn("/etc/ssh/sshd_config.d/90-fxroute-iso.conf", files)
             self.assertNotIn("PasswordAuthentication no", json.dumps(profile))
             self.assertNotIn("PermitRootLogin", json.dumps(profile))
@@ -439,28 +441,48 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn('if id -u fxroute >/dev/null 2>&1; then', script)
         self.assertIn('--user "$FXROUTE_USER"', script)
 
-    def test_first_boot_keeps_distribution_sshd_defaults(self):
+    def test_first_boot_enables_password_ssh_and_blocks_root(self):
         script = self.read("iso/scripts/first-boot-install.sh")
 
         self.assertIn("systemctl enable --now sshd.service", script)
         self.assertIn("install -d -m 755 /run/sshd", script)
         self.assertIn("ssh-keygen -A", script)
-        self.assertNotIn("90-fxroute-iso.conf", script)
+        # The appliance is administrable over the LAN with the account
+        # password; keys may be added later; root login stays disabled.
+        self.assertIn("90-fxroute-iso.conf", script)
+        self.assertIn("PasswordAuthentication yes", script)
+        self.assertIn("KbdInteractiveAuthentication yes", script)
+        self.assertIn("PermitRootLogin no", script)
+        self.assertIn("PubkeyAuthentication yes", script)
         self.assertNotIn("PasswordAuthentication no", script)
         self.assertNotIn("KbdInteractiveAuthentication no", script)
-        self.assertNotIn("PermitRootLogin prohibit-password", script)
+        self.assertNotIn("PermitRootLogin yes", script)
 
-    def test_desktop_first_boot_uses_official_chrome_repository_and_not_kiosk(self):
+    def test_desktop_first_boot_configures_the_firefox_appliance(self):
         script = self.read("iso/scripts/first-boot-install.sh")
 
-        self.assertIn("https://dl.google.com/linux/chrome/rpm/stable/x86_64", script)
-        self.assertIn("https://dl.google.com/linux/linux_signing_key.pub", script)
-        self.assertIn("rpm --import", script)
-        self.assertIn("54dea5f6c2a26091578cf52a999cebc6b64df478d37ad4dce96376b711e3b27c", script)
-        self.assertIn("gpgkey=", script)
-        self.assertIn("google-chrome-stable", script)
-        self.assertIn("--new-window http://127.0.0.1:8000", script)
-        self.assertNotIn("--kiosk", script)
+        self.assertIn("MozillaFirefox", script)
+        self.assertNotIn("dl.google.com", script)
+        self.assertNotIn("google-chrome-stable", script)
+        self.assertNotIn("linux_signing_key", script)
+        self.assertIn("firefox --kiosk http://127.0.0.1:8000/", script)
+        self.assertIn("TryExec=firefox", script)
+        # Appliance defaults written into the FXRoute user's home.
+        self.assertIn("config_dir/kxkbrc", script)
+        self.assertIn("Enabled=false", script)
+        self.assertIn("Autolock=false", script)
+        self.assertIn("powerdevilrc", script)
+        self.assertIn("10-fxroute-appliance.conf", script)
+        self.assertIn("opensuse-welcome/launched", script)
+        self.assertIn("fxroute-appliance-session-init.sh", script)
+        session_init = self.read("iso/scripts/fxroute-appliance-session-init.sh")
+        self.assertIn("plasma-apply-wallpaperimage", session_init)
+        # Desktop links: FXRoute start target + official Spotify download.
+        self.assertIn("http://127.0.0.1:8000/", script)
+        self.assertIn("https://www.spotify.com/download/linux/", script)
+        self.assertIn("fxroute-wallpaper.png", script)
+        # The Plasma shell itself stays unlocked.
+        self.assertIn("closing the window returns to the normal desktop", script)
 
     def test_first_boot_can_retry_after_a_failed_attempt(self):
         script = self.read("iso/scripts/first-boot-install.sh")
@@ -489,7 +511,6 @@ class InstallIsoContractTests(unittest.TestCase):
             self.read(f"iso/profiles/{profile}.jsonnet")
             for profile in ("headless", "desktop")
         )
-        self.assertIn("--connect-timeout 10 --max-time 120", script)
         self.assertIn("--connect-timeout 5 --max-time 30", script)
         self.assertIn("TimeoutStartSec=2h", service_profiles)
 
@@ -518,7 +539,10 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("display-manager.service", runner)
         self.assertIn('loginctl show-session "$candidate" -p Type --value', runner)
         self.assertIn('= wayland', runner)
-        self.assertIn("gpgkey=https://dl.google.com/linux/linux_signing_key.pub", runner)
+        self.assertIn("MozillaFirefox", runner)
+        self.assertIn("firefox --kiosk http://127.0.0.1:8000/", runner)
+        self.assertIn("! rpm -q google-chrome-stable >/dev/null 2>&1", runner)
+        self.assertIn("fxroute-wallpaper.png", runner)
         self.assertIn("loginctl", runner)
         self.assertIn("127.0.0.1:8000", runner)
         self.assertIn("fxroute_dsp_sink", runner)
@@ -577,9 +601,12 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("nmcli", runner)
         self.assertIn("getent shadow", runner)
         # SSH reaches the installed system as the Agama account via its
-        # password; the image ships no key-only hardening and no root access.
+        # password; root login stays disabled and the image never switches
+        # to key-only SSH.
         self.assertIn("PreferredAuthentications=password", runner)
         self.assertIn("90-fxroute-iso.conf", runner)
+        self.assertIn("sshd -T | grep -Fx 'passwordauthentication yes'", runner)
+        self.assertIn("sshd -T | grep -Fx 'permitrootlogin no'", runner)
         self.assertIn("passwordauthentication no", runner)
         self.assertNotIn("PermitRootLogin prohibit-password", runner)
         self.assertIn("sshd -T", runner)
@@ -614,12 +641,16 @@ class InstallIsoContractTests(unittest.TestCase):
         )
         self.assertNotIn('dir="/tmp"', runner)
 
-    def test_desktop_verifier_waits_for_delayed_chrome_autostart(self):
+    def test_desktop_verifier_waits_for_delayed_firefox_autostart(self):
         runner = self.read("iso/test-leap-16-iso.sh")
 
-        self.assertIn("for _ in $(seq 1 60); do", runner)
+        self.assertIn("for _ in $(seq 1 90); do", runner)
         self.assertIn(
-            "if pgrep -u \"$account\" -f '(^|/)chrome( |$)' >/dev/null &&",
+            "if pgrep -u \"$account\" -f '(^|/)firefox( |$)' >/dev/null &&",
+            runner,
+        )
+        self.assertIn(
+            "pgrep -u \"$account\" -f '--kiosk' >/dev/null",
             runner,
         )
         self.assertIn(

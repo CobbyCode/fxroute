@@ -13,7 +13,6 @@ FAILED_MARKER="$STATE_DIR/install-failed"
 IN_PROGRESS_MARKER="$STATE_DIR/install-in-progress"
 FXROUTE_USER=""
 staging_dir=""
-chrome_key_file=""
 retry_attempt=0
 completed=0
 
@@ -42,9 +41,6 @@ cleanup() {
   local status=$?
   if [[ -n "$staging_dir" ]]; then
     rm -rf -- "$staging_dir"
-  fi
-  if [[ -n "$chrome_key_file" ]]; then
-    rm -f -- "$chrome_key_file"
   fi
   if [[ "$status" -eq 0 && "$completed" -eq 1 ]]; then
     rm -f -- "$IN_PROGRESS_MARKER" "$FAILED_MARKER"
@@ -101,8 +97,20 @@ discover_fxroute_user() {
 discover_fxroute_user
 install -d -m 755 /run/sshd
 ssh-keygen -A
+# Appliance SSH default: the account created in Agama is administrable over
+# the LAN with its password, SSH keys may be added later, and root login
+# stays disabled. The image never switches to key-only SSH.
+install -d -m 755 /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/90-fxroute-iso.conf <<'EOF'
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+PermitRootLogin no
+PubkeyAuthentication yes
+EOF
+chmod 644 /etc/ssh/sshd_config.d/90-fxroute-iso.conf
 sshd -t
 systemctl enable --now sshd.service
+systemctl reload-or-restart sshd.service
 systemctl start network-online.target
 
 staging_dir="$(mktemp -d /opt/fxroute-iso-source.XXXXXX)"
@@ -241,42 +249,32 @@ enable_git_updates() {
 enable_git_updates
 
 install_desktop_stack() {
-  local chrome_repo="https://dl.google.com/linux/chrome/rpm/stable/x86_64"
-  local chrome_key_url="https://dl.google.com/linux/linux_signing_key.pub"
-  local chrome_key_sha256="54dea5f6c2a26091578cf52a999cebc6b64df478d37ad4dce96376b711e3b27c"
-  local chrome_repo_file="/etc/zypp/repos.d/google-chrome.repo"
   local sddm_config="/etc/sddm.conf.d/10-fxroute-autologin.conf"
   local displaymanager_config="/etc/sysconfig/displaymanager"
   local launcher="/usr/local/bin/fxroute-desktop-launcher"
+  local session_init="/usr/local/libexec/fxroute-appliance-session-init.sh"
   local autostart_dir="$fxroute_home/.config/autostart"
   local autostart_file="$autostart_dir/fxroute.desktop"
+  local config_dir="$fxroute_home/.config"
   local fxroute_group=""
+  local wallpaper_src="$SOURCE_DIR/assets/fxroute-wallpaper.png"
+  local wallpaper_dst="/usr/share/wallpapers/fxroute-wallpaper.png"
+  local pixmaps_dir="/usr/share/pixmaps"
+  local desktop_dir="$fxroute_home/Desktop"
+  local firefox_policy=""
+  local xkb_layout=""
+  local xkb_model="pc105"
+  local xkb_variant=""
 
-  chrome_key_file="$(mktemp /run/fxroute-google-linux-signing-key.XXXXXX)"
-  curl --fail --location --retry 3 --connect-timeout 10 --max-time 120 \
-    --output "$chrome_key_file" "$chrome_key_url"
-  if ! printf '%s  %s\n' "$chrome_key_sha256" "$chrome_key_file" | sha256sum --check --status; then
-    printf '%s\n' "Google Chrome signing key checksum mismatch" >&2
+  fxroute_group="$(id -gn "$FXROUTE_USER")"
+
+  # Firefox comes from the Leap repositories as part of the desktop profile.
+  # No third-party browser repository or key is added on the installed
+  # system; Chrome is deliberately not part of the appliance image.
+  if ! rpm -q MozillaFirefox >/dev/null 2>&1; then
+    printf '%s\n' "MozillaFirefox is missing from the desktop profile" >&2
     exit 1
   fi
-  rpm --import "$chrome_key_file"
-  rm -f -- "$chrome_key_file"
-  chrome_key_file=""
-
-  if ! zypper --no-refresh lr -u | grep -Fq "$chrome_repo"; then
-    zypper --non-interactive ar --refresh "$chrome_repo" google-chrome
-  fi
-  [[ -f "$chrome_repo_file" ]] || {
-    printf '%s\n' "Google Chrome repository file was not created" >&2
-    exit 1
-  }
-  if grep -q '^gpgkey=' "$chrome_repo_file"; then
-    sed -i "s|^gpgkey=.*|gpgkey=$chrome_key_url|" "$chrome_repo_file"
-  else
-    printf 'gpgkey=%s\n' "$chrome_key_url" >> "$chrome_repo_file"
-  fi
-  zypper --non-interactive refresh google-chrome
-  zypper --non-interactive install --no-recommends google-chrome-stable
 
   install -d -m 755 /etc/sddm.conf.d
   cat > "$sddm_config" <<EOF
@@ -295,6 +293,169 @@ EOF
     fi
   fi
 
+  # The appliance never suspends, hibernates, or locks on its own: logind
+  # ignores lid and idle triggers. Explicit user actions (the FXRoute
+  # suspend/shutdown menu) keep working through logind.
+  install -d -m 755 /etc/systemd/logind.conf.d
+  cat > /etc/systemd/logind.conf.d/10-fxroute-appliance.conf <<'EOF'
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+IdleAction=ignore
+EOF
+  chmod 644 /etc/systemd/logind.conf.d/10-fxroute-appliance.conf
+
+  install -d -m 755 "$pixmaps_dir"
+  cp -- "$SOURCE_DIR/static/favicon.svg" "$pixmaps_dir/fxroute.svg"
+  chmod 644 "$pixmaps_dir/fxroute.svg"
+
+  # Wallpaper for the Plasma desktop (applied at the first graphical login).
+  if [[ -f "$wallpaper_src" && ! -L "$wallpaper_src" ]]; then
+    install -d -m 755 /usr/share/wallpapers
+    cp -- "$wallpaper_src" "$wallpaper_dst"
+    chmod 644 "$wallpaper_dst"
+  fi
+
+  # Visible entry points on the desktop: FXRoute (fixed start target) and
+  # the official Spotify download page.
+  install -d -o "$FXROUTE_USER" -g "$fxroute_group" -m 700 "$desktop_dir"
+  cat > "$desktop_dir/FXRoute.desktop" <<'EOF'
+[Desktop Entry]
+Type=Link
+Name=FXRoute
+Comment=Open the FXRoute control surface
+URL=http://127.0.0.1:8000/
+Icon=/usr/share/pixmaps/fxroute.svg
+EOF
+  chown "$FXROUTE_USER:$fxroute_group" "$desktop_dir/FXRoute.desktop"
+  chmod 644 "$desktop_dir/FXRoute.desktop"
+  cat > "$desktop_dir/Spotify Download.desktop" <<'EOF'
+[Desktop Entry]
+Type=Link
+Name=Spotify
+Comment=Official Spotify download page for Linux
+URL=https://www.spotify.com/download/linux/
+Icon=internet-web-browser
+EOF
+  chown "$FXROUTE_USER:$fxroute_group" "$desktop_dir/Spotify Download.desktop"
+  chmod 644 "$desktop_dir/Spotify Download.desktop"
+
+  # Firefox is the default browser and always opens the FXRoute control
+  # surface first (homepage/new-window start target).
+  for candidate in /usr/lib64/firefox/distribution /usr/lib/firefox/distribution; do
+    if install -d -m 755 "$candidate" 2>/dev/null; then
+      firefox_policy="$candidate/policies.json"
+      break
+    fi
+  done
+  if [[ -n "$firefox_policy" ]]; then
+    cat > "$firefox_policy" <<'EOF'
+{
+  "policies": {
+    "Homepage": {
+      "URL": "http://127.0.0.1:8000/",
+      "StartPage": "homepage"
+    },
+    "DontCheckDefaultBrowser": true,
+    "DisableFirefoxStudies": true,
+    "DisablePocket": true
+  }
+}
+EOF
+    chmod 644 "$firefox_policy"
+  fi
+
+  # Per-user desktop defaults for the appliance account: the keyboard layout
+  # chosen in Agama is adopted by Plasma (kxkbrc), KWallet/keyring onboarding
+  # is suppressed, and no automatic screen lock or PowerDevil sleep/dim/screen
+  # turn-off timeouts are active.
+  install -d -o "$FXROUTE_USER" -g "$fxroute_group" -m 700 "$config_dir"
+
+  # Keyboard: read the X11 layout Agama/localectl wrote and apply it to the
+  # Plasma Wayland keyboard config.
+  if [[ -f /etc/X11/xorg.conf.d/00-keyboard.conf ]]; then
+    xkb_layout="$(sed -n 's/^[[:space:]]*Option[[:space:]]*"XkbLayout"[[:space:]]*"\([^"]*\)".*/\1/p' /etc/X11/xorg.conf.d/00-keyboard.conf | head -n 1)"
+    xkb_model="$(sed -n 's/^[[:space:]]*Option[[:space:]]*"XkbModel"[[:space:]]*"\([^"]*\)".*/\1/p' /etc/X11/xorg.conf.d/00-keyboard.conf | head -n 1)"
+    xkb_variant="$(sed -n 's/^[[:space:]]*Option[[:space:]]*"XkbVariant"[[:space:]]*"\([^"]*\)".*/\1/p' /etc/X11/xorg.conf.d/00-keyboard.conf | head -n 1)"
+  fi
+  if [[ -z "$xkb_layout" && -f /etc/vconsole.conf ]]; then
+    xkb_layout="$(sed -n 's/^KEYMAP=//p' /etc/vconsole.conf | tr -d '"' | head -n 1)"
+  fi
+  [[ -n "$xkb_layout" ]] || xkb_layout="us"
+  [[ -n "$xkb_model" ]] || xkb_model="pc105"
+  {
+    printf '%s\n' '[Layout]'
+    printf 'LayoutList=%s\n' "$xkb_layout"
+    [[ -z "$xkb_variant" ]] || printf 'VariantList=%s\n' "$xkb_variant"
+    printf 'Model=%s\n' "$xkb_model"
+    printf 'Options=\n'
+    printf 'ResetOldOptions=true\n'
+    printf 'Use=true\n'
+  } > "$config_dir/kxkbrc"
+  chown "$FXROUTE_USER:$fxroute_group" "$config_dir/kxkbrc"
+  chmod 600 "$config_dir/kxkbrc"
+
+  # KWallet/keyring onboarding off. The wallet is disabled so no create or
+  # unlock dialog interrupts the appliance login or later app use; Spotify
+  # Desktop keeps its credentials in its own profile and is unaffected.
+  cat > "$config_dir/kwalletrc" <<'EOF'
+[Wallet]
+Enabled=false
+EOF
+  chown "$FXROUTE_USER:$fxroute_group" "$config_dir/kwalletrc"
+  chmod 600 "$config_dir/kwalletrc"
+
+  # No automatic screen locking, also not after resume.
+  cat > "$config_dir/kscreenlockerrc" <<'EOF'
+[Daemon]
+Autolock=false
+LockOnResume=false
+EOF
+  chown "$FXROUTE_USER:$fxroute_group" "$config_dir/kscreenlockerrc"
+  chmod 600 "$config_dir/kscreenlockerrc"
+
+  # PowerDevil: no dimming, no screen turn-off, no suspend/hibernate on
+  # inactivity for any power state. Empty sections mean all timeouts off.
+  cat > "$config_dir/powerdevilrc" <<'EOF'
+[AC]
+[AC][DimDisplay]
+[AC][DPMSControl]
+[AC][SuspendSession]
+[Battery]
+[Battery][DimDisplay]
+[Battery][DPMSControl]
+[Battery][SuspendSession]
+[LowBattery]
+[LowBattery][DimDisplay]
+[LowBattery][DPMSControl]
+[LowBattery][SuspendSession]
+EOF
+  chown "$FXROUTE_USER:$fxroute_group" "$config_dir/powerdevilrc"
+  chmod 600 "$config_dir/powerdevilrc"
+
+  # "Welcome to openSUSE Leap" / first-run is suppressed: the welcome
+  # launcher state marker is pre-set and its vendor autostart entry is
+  # shadowed for the appliance user.
+  install -d -o "$FXROUTE_USER" -g "$fxroute_group" -m 700 "$autostart_dir"
+  install -d -o "$FXROUTE_USER" -g "$fxroute_group" -m 700 \
+    "$fxroute_home/.local/share/opensuse-welcome"
+  printf '%s\n' "1" > "$fxroute_home/.local/share/opensuse-welcome/launched"
+  chown "$FXROUTE_USER:$fxroute_group" "$fxroute_home/.local/share/opensuse-welcome/launched"
+  chmod 600 "$fxroute_home/.local/share/opensuse-welcome/launched"
+  cat > "$autostart_dir/org.opensuse.opensuse_welcome_launcher.desktop" <<'EOF'
+[Desktop Entry]
+Hidden=true
+EOF
+  chown "$FXROUTE_USER:$fxroute_group" "$autostart_dir/org.opensuse.opensuse_welcome_launcher.desktop"
+  chmod 644 "$autostart_dir/org.opensuse.opensuse_welcome_launcher.desktop"
+
+  # One-shot graphical-login helper: applies the FXRoute wallpaper and seeds
+  # the Firefox start bookmark (best effort, first login only).
+  install -d -m 755 /usr/local/libexec
+  cp -- "$SOURCE_DIR/iso/scripts/fxroute-appliance-session-init.sh" "$session_init"
+  chmod 755 "$session_init"
+
   cat > "$launcher" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -302,11 +463,20 @@ until curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
     http://127.0.0.1:8000/api/status >/dev/null; do
   sleep 1
 done
-exec google-chrome-stable --new-window http://127.0.0.1:8000
+# First graphical login only: wallpaper + Firefox start bookmark.
+if [[ ! -f "$HOME/.local/share/fxroute/appliance-ready" ]]; then
+  if [[ -x /usr/local/libexec/fxroute-appliance-session-init.sh ]]; then
+    /usr/local/libexec/fxroute-appliance-session-init.sh || true
+  fi
+  install -d -m 700 "$HOME/.local/share/fxroute"
+  touch "$HOME/.local/share/fxroute/appliance-ready"
+fi
+# Fullscreen start of the FXRoute UI. The Plasma shell is not locked down;
+# closing the window returns to the normal desktop.
+exec firefox --kiosk http://127.0.0.1:8000/
 EOF
   chmod 755 "$launcher"
 
-  fxroute_group="$(id -gn "$FXROUTE_USER")"
   install -d -o "$FXROUTE_USER" -g "$fxroute_group" -m 700 "$autostart_dir"
   cat > "$autostart_file" <<EOF
 [Desktop Entry]
@@ -314,7 +484,7 @@ Type=Application
 Name=FXRoute
 Comment=Open the FXRoute control surface
 Exec=$launcher
-TryExec=google-chrome-stable
+TryExec=firefox
 OnlyShowIn=KDE;
 X-GNOME-Autostart-enabled=true
 EOF

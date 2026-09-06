@@ -37,7 +37,8 @@
       "sddm-qt6",
       "plasma6-pa",
       "plasma6-nm",
-      "qt6-wayland"
+      "qt6-wayland",
+      "MozillaFirefox"
     ]
   },
   "bootloader": {

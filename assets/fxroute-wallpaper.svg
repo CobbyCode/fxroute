@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3840 2160">
+  <!-- FXRoute appliance wallpaper. Follows the FXRoute UI/favicon style:
+       deep navy gradient background, the FX logotype tile, the teal
+       waveform baseline. Rasterized to PNG for the KDE wallpaper plugin. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b101c"/>
+      <stop offset="55%" stop-color="#0d0d12"/>
+      <stop offset="100%" stop-color="#140d26"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.16" cy="0.12" r="0.9">
+      <stop offset="0%" stop-color="#6ee7b7" stop-opacity="0.055"/>
+      <stop offset="100%" stop-color="#6ee7b7" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="fx" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6ee7b7"/>
+      <stop offset="100%" stop-color="#4dd8a0"/>
+    </linearGradient>
+    <filter id="glow-x" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <g id="fx-mark">
+      <rect width="208" height="208" rx="46" fill="#10141d"/>
+      <rect width="208" height="208" rx="46" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="2"/>
+      <g transform="translate(20 20) scale(0.3281)">
+        <path d="M108 352V160h168v54H170v30h96v52h-96v56z" fill="#f4f4f5" fill-opacity="0.92"/>
+        <path d="M312 158h70l-58 92 78 104h-74l-41-58-42 58h-74l80-106-58-90h71l25 42z"
+              fill="url(#fx)" filter="url(#glow-x)"/>
+      </g>
+    </g>
+    <path id="waveform"
+          d="M82 386c46 0 46-32 92-32s46 32 92 32 46-32 92-32 46 32 92 32"
+          fill="none" stroke="#6ee7b7" stroke-linecap="round"/>
+  </defs>
+
+  <rect width="3840" height="2160" fill="url(#bg)"/>
+  <rect width="3840" height="2160" fill="url(#glow)"/>
+
+  <!-- Brand lockup, top-left, mirroring the FXRoute UI header. -->
+  <use href="#fx-mark" x="300" y="240"/>
+
+  <text x="600" y="382" font-family="SUSE, sans-serif" font-weight="800"
+        font-size="148" letter-spacing="-0.015em" fill="#ececf0">
+    <tspan fill="#e1faeff0">FX</tspan><tspan>Route</tspan>
+  </text>
+  <text x="606" y="452" font-family="SUSE, sans-serif" font-weight="600"
+        font-size="40" letter-spacing="0.46em" fill="#b0b0be" fill-opacity="0.88">LOCAL AUDIO CONTROL</text>
+
+  <!-- Waveform baseline: three quiet repeats like the favicon. -->
+  <g transform="translate(320 790) scale(2.61)" opacity="0.34">
+    <use href="#waveform" transform="translate(-82 0)"/>
+    <use href="#waveform" transform="translate(346 0)"/>
+    <use href="#waveform" transform="translate(774 0)"/>
+  </g>
+  <g transform="translate(320 884) scale(2.61)" opacity="0.12">
+    <use href="#waveform" transform="translate(-82 0)"/>
+    <use href="#waveform" transform="translate(346 0)"/>
+    <use href="#waveform" transform="translate(774 0)"/>
+  </g>
+</svg>

@@ -670,7 +670,12 @@ verify_ssh_defaults() {
   local ssh_port="$1"
   sudo_guest_script "$ssh_port" bash -s <<'EOF'
 set -Eeuo pipefail
-test ! -f /etc/ssh/sshd_config.d/90-fxroute-iso.conf
+test -f /etc/ssh/sshd_config.d/90-fxroute-iso.conf
+grep -Fxq 'PermitRootLogin no' /etc/ssh/sshd_config.d/90-fxroute-iso.conf
+grep -Fxq 'PasswordAuthentication yes' /etc/ssh/sshd_config.d/90-fxroute-iso.conf
+grep -Fxq 'PubkeyAuthentication yes' /etc/ssh/sshd_config.d/90-fxroute-iso.conf
+sshd -T | grep -Fx 'passwordauthentication yes' >/dev/null
+sshd -T | grep -Fx 'permitrootlogin no' >/dev/null
 ! sshd -T | grep -Fx 'passwordauthentication no' >/dev/null
 ! sshd -T | grep -Fx 'kbdinteractiveauthentication no' >/dev/null
 EOF
@@ -794,14 +799,35 @@ test -x /usr/local/libexec/fxroute-first-boot-install.sh
 systemctl is-enabled fxroute-first-boot.service
 systemctl is-active fxroute-first-boot.service
 test "$(systemctl get-default)" = graphical.target
-rpm -q plasma6-session sddm-qt6 google-chrome-stable >/dev/null
-grep -Fxq 'gpgkey=https://dl.google.com/linux/linux_signing_key.pub' /etc/zypp/repos.d/google-chrome.repo
+rpm -q plasma6-session sddm-qt6 MozillaFirefox >/dev/null
+! rpm -q google-chrome-stable >/dev/null 2>&1
+test ! -e /etc/zypp/repos.d/google-chrome.repo
 test -f /etc/sddm.conf.d/10-fxroute-autologin.conf
 grep -Fxq "User=$account" /etc/sddm.conf.d/10-fxroute-autologin.conf
 grep -Fxq 'Session=plasmawayland' /etc/sddm.conf.d/10-fxroute-autologin.conf
 systemctl is-enabled display-manager.service
 systemctl is-enabled sddm.service
 test "$(readlink -f /etc/systemd/system/display-manager.service)" = /usr/lib/systemd/system/sddm.service
+test -f /etc/systemd/logind.conf.d/10-fxroute-appliance.conf
+grep -Fxq 'HandleLidSwitch=ignore' /etc/systemd/logind.conf.d/10-fxroute-appliance.conf
+test -f /usr/share/wallpapers/fxroute-wallpaper.png
+test -f /usr/share/pixmaps/fxroute.svg
+test -f "$HOME/Desktop/FXRoute.desktop"
+grep -Fq 'http://127.0.0.1:8000/' "$HOME/Desktop/FXRoute.desktop"
+test -f "$HOME/Desktop/Spotify Download.desktop"
+grep -Fq 'https://www.spotify.com/download/linux/' "$HOME/Desktop/Spotify Download.desktop"
+test -f "$HOME/.config/kwalletrc"
+grep -Fxq 'Enabled=false' "$HOME/.config/kwalletrc"
+test -f "$HOME/.config/kscreenlockerrc"
+grep -Fxq 'Autolock=false' "$HOME/.config/kscreenlockerrc"
+test -f "$HOME/.config/powerdevilrc"
+test -f "$HOME/.config/kxkbrc"
+grep -Eq '^LayoutList=' "$HOME/.config/kxkbrc"
+test -f "$HOME/.local/share/opensuse-welcome/launched"
+grep -Fq 'firefox --kiosk http://127.0.0.1:8000/' /usr/local/bin/fxroute-desktop-launcher
+firefox_policy="$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 3 -path '*/distribution/policies.json' 2>/dev/null | head -n 1)"
+test -n "$firefox_policy"
+grep -Fq 'http://127.0.0.1:8000/' "$firefox_policy"
 for _ in $(seq 1 90); do
   if systemctl is-active --quiet sddm.service; then
     session_id=""
@@ -831,15 +857,18 @@ test -n "$session_id"
 test "$(loginctl show-session "$session_id" -p Type --value)" = wayland
 test -x /usr/local/bin/fxroute-desktop-launcher
 test -f "$HOME/.config/autostart/fxroute.desktop"
-! grep -Fq -- '--kiosk' /usr/local/bin/fxroute-desktop-launcher "$HOME/.config/autostart/fxroute.desktop"
-for _ in $(seq 1 60); do
-  if pgrep -u "$account" -f '(^|/)chrome( |$)' >/dev/null &&
+grep -Fxq 'Exec=/usr/local/bin/fxroute-desktop-launcher' "$HOME/.config/autostart/fxroute.desktop"
+grep -Fxq 'TryExec=firefox' "$HOME/.config/autostart/fxroute.desktop"
+for _ in $(seq 1 90); do
+  if pgrep -u "$account" -f '(^|/)firefox( |$)' >/dev/null &&
+     pgrep -u "$account" -f '--kiosk' >/dev/null &&
      pgrep -u "$account" -f '127\.0\.0\.1:8000' >/dev/null; then
     break
   fi
   sleep 2
 done
-pgrep -u "$account" -f '(^|/)chrome( |$)' >/dev/null
+pgrep -u "$account" -f '(^|/)firefox( |$)' >/dev/null
+pgrep -u "$account" -f '--kiosk' >/dev/null
 pgrep -u "$account" -f '127\.0\.0\.1:8000' >/dev/null
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 systemctl --user is-active fxroute.service

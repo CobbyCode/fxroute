@@ -6,12 +6,11 @@ normal Agama boot menu:
 
 - `FXRoute Headless`: no graphical packages; FXRoute and its native DSP run as
   a lingering user service.
-- `FXRoute Desktop`: a small KDE Plasma 6 / Wayland base with SDDM, automatic
-  login as the account created during installation, and a normal Chrome
-  window opening the FXRoute UI.
-
-The desktop is not a kiosk. The Plasma desktop, shell, and keyboard shortcuts
-remain available.
+- `FXRoute Desktop`: a KDE Plasma 6 / Wayland appliance with SDDM and
+  automatic login as the account created during installation. Firefox starts
+  the FXRoute UI fullscreen after login; the Plasma shell, panel, and
+  keyboard shortcuts remain available (closing the window returns to the
+  normal desktop).
 
 ## Installation flow
 
@@ -134,14 +133,32 @@ It then installs FXRoute with `--with-lan-name` and `--with-caddy` under an
 automatically derived unique device name (`fxroute-<machine-id>`), so Caddy
 and HTTPS are set up while plain HTTP stays reachable.
 
-`sshd` is enabled with the distribution default configuration, so the account
-password created in Agama also works for remote administration. The image
-carries no key-only SSH hardening and no preinstalled keys; disable `sshd`
-after installation if remote administration is not required.
+`sshd` runs by default with the appliance SSH policy: the account created in
+Agama can log in over the LAN with its password, SSH keys may be added later,
+and root login stays disabled. The image never switches to key-only SSH and
+ships no preinstalled keys; disable `sshd` after installation if remote
+administration is not required.
 
-The Desktop profile installs Chrome from Google's official RPM repository:
-`https://dl.google.com/linux/chrome/rpm/stable/x86_64`. It does not use a
-Flatpak or a downloaded untrusted RPM.
+The Desktop profile gets Firefox (`MozillaFirefox`) from the Leap
+repositories; no third-party browser repository or signing key is added and
+Chrome is not part of the image. Firefox is the default browser, opens the
+FXRoute control surface (`http://127.0.0.1:8000/`) as its fixed start
+page, and the desktop shows an FXRoute link plus a link to the official
+Spotify download page (`https://www.spotify.com/download/linux/`).
+
+The Desktop profile also ships these appliance defaults (no FXRoute,
+Provider, or DSP behavior is changed):
+
+- Automatic login without a password prompt via SDDM (`plasmawayland`).
+- The keyboard layout selected in Agama is adopted by Plasma (`kxkbrc`).
+- Automatic suspend/sleep/hibernate and screen locking are off by default
+  (systemd-logind lid/idle drop-in plus PowerDevil and KScreenLocker
+  config); the explicit FXRoute suspend/shutdown menu still works.
+- "Welcome to openSUSE Leap" first-run and KWallet/keyring onboarding are
+  suppressed. KWallet is disabled; the Spotify Desktop client keeps its
+  credentials in its own profile and is unaffected.
+- An FXRoute wallpaper in the existing brand style is the default desktop
+  background (applied on the first graphical login).
 
 Leap 16's current Agama schema does not accept the older `user.autologin`
 profile property. The first-boot script therefore configures the supported
@@ -186,8 +203,9 @@ interactive Agama decisions through the installer's own Agama CLI
 (account/password, locale/keyboard/timezone, explicit target-disk
 selection, install start), waits for `/api/status`, and verifies the
 installed packages, user service, DSP binary, default target, SDDM
-autologin configuration, and Chrome setup. SSH into the installed
-system uses the account password created in Agama:
+autologin configuration, Firefox fullscreen autostart, and the appliance
+defaults. SSH into the installed system uses the account password created
+in Agama:
 
 ```bash
 FXROUTE_ISO_LIVE_PASSWORD="..." \
@@ -207,8 +225,9 @@ decisions can be made manually in a browser via `https://agama.local` or
 the forwarded ports.
 
 Set `FXROUTE_KEEP_ISO_TEST=1` to retain serial logs and guest disks after a
-test. The desktop check reboots the guest before validating SDDM, Wayland, and
-Chrome. QEMU emulates Ethernet networking only; the WLAN selection itself is
+test. The desktop check reboots the guest before validating SDDM, Wayland,
+Firefox fullscreen autostart, and the appliance defaults. QEMU emulates
+Ethernet networking only; the WLAN selection itself is
 covered by the Agama contract checks (no fixed network profile, interactive
 network section), while real WLAN hardware must be checked separately.
 
