@@ -18,6 +18,7 @@ import os
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -134,6 +135,37 @@ def main_test():
         hosts = sources.default_discovery_hosts()
     assert hosts == ["192.168.178.1", "192.168.178.50", "192.168.178.60"], hosts
     print("stale/failed neighbors still probed, non-IPv4 skipped: ok")
+
+    # Single-flight: concurrent reads share one running scan ------------
+    import threading
+
+    tmp2 = tempfile.TemporaryDirectory()
+    try:
+        manager2 = MusicLibraryManager(Path(tmp2.name) / "Music", discovery_hosts=["smbhost"])
+        manager2._discovered_at = 0.0  # stale for every calling thread
+        calls = {"count": 0}
+        go = threading.Event()
+
+        def slow_discover(hosts):
+            go.wait(timeout=10)
+            calls["count"] += 1
+            time.sleep(0.4)
+            return [{
+                "id": "smb:smbhost:Music", "type": "smb", "label": "x",
+                "server": "smbhost", "share": "Music",
+            }]
+
+        with mock.patch.object(sources, "discover_smb_shares", side_effect=slow_discover):
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                futures = [pool.submit(manager2.list_libraries) for _ in range(8)]
+                go.set()
+                results = [future.result(timeout=15) for future in futures]
+        assert calls["count"] == 1, f"overlapping reads started {calls['count']} scans"
+        for entries in results:
+            assert "smb:smbhost:Music" in [e["id"] for e in entries], entries
+    finally:
+        tmp2.cleanup()
+    print("concurrent reads share one running scan: ok")
 
     print("SMB discovery rescan: ok")
 

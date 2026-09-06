@@ -6,6 +6,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -282,33 +283,47 @@ class MusicLibraryManager:
         self._manual: dict[str, dict[str, str]] = {}
         self._discovered: list[dict[str, str]] = []
         self._discovered_at = 0.0
+        # Single-flight for network rescans: overlapping user-triggered
+        # reads share one running scan instead of stampeding the LAN with
+        # parallel subnet/smbclient sweeps. A plain thread lock is correct
+        # here because rescans always run in worker threads (never awaited
+        # while held) and the manager instance is never copied.
+        self._discovery_lock = threading.Lock()
 
     def _resolve_discovery_hosts(self) -> list[str]:
         if self._configured_hosts is not None:
             return list(self._configured_hosts)
         return default_discovery_hosts()
 
-    def list_libraries(self) -> list[dict[str, str]]:
+    def _list_cached(self) -> list[dict[str, str]]:
+        """Assemble the library list from known entries without any I/O."""
         local = {"id": "local", "type": "local", "label": f"Local — {self.local_root.name or 'Music'}"}
-        # Staleness gate only: rescans on user-triggered reads (selector /
-        # settings opened, manual add, select) when the cache expired. There
-        # is no background timer, so an idle system never scans; the frontend
-        # likewise fetches only on dialog open and after selection.
-        if time.monotonic() - self._discovered_at > _DISCOVERY_MIN_INTERVAL_SECONDS:
-            hosts = self._resolve_discovery_hosts()
-            self.discovery_hosts = list(hosts)
-            logger.info("SMB discovery refresh: probing %d host(s)", len(hosts))
-            self._discovered = discover_smb_shares(hosts)
-            self._discovered_at = time.monotonic()
-            logger.info("SMB discovery refresh: found %d share(s)", len(self._discovered))
-        discovered = self._discovered
-        merged = {entry["id"]: entry for entry in discovered}
+        merged = {entry["id"]: entry for entry in self._discovered}
         merged.update(self._manual)
         return [local, *merged.values(), {
             "id": "manual",
             "type": "action",
             "label": "Add network share manually…",
         }]
+
+    def list_libraries(self) -> list[dict[str, str]]:
+        # Staleness gate only: rescans on user-triggered reads (selector /
+        # settings opened, manual add) when the cache expired. There
+        # is no background timer, so an idle system never scans; the frontend
+        # likewise fetches only on dialog open and after selection.
+        # Overlapping reads share one running scan via single-flight.
+        if time.monotonic() - self._discovered_at > _DISCOVERY_MIN_INTERVAL_SECONDS:
+            with self._discovery_lock:
+                # Re-check after acquiring: a concurrent read may have
+                # refreshed the cache while this caller was waiting.
+                if time.monotonic() - self._discovered_at > _DISCOVERY_MIN_INTERVAL_SECONDS:
+                    hosts = self._resolve_discovery_hosts()
+                    self.discovery_hosts = list(hosts)
+                    logger.info("SMB discovery refresh: probing %d host(s)", len(hosts))
+                    self._discovered = discover_smb_shares(hosts)
+                    self._discovered_at = time.monotonic()
+                    logger.info("SMB discovery refresh: found %d share(s)", len(self._discovered))
+        return self._list_cached()
 
     def add_manual_url(self, url: str) -> dict[str, str]:
         parsed = urlparse(url.strip())
@@ -353,7 +368,7 @@ class MusicLibraryManager:
             return self.active_root
         if not library_id.startswith("smb:"):
             raise ValueError("Unsupported music library type")
-        entries = {entry["id"]: entry for entry in self.list_libraries() if entry["type"] == "smb"}
+        entries = {entry["id"]: entry for entry in self._list_cached() if entry["type"] == "smb"}
         if library_id not in entries:
             raise ValueError("Unknown music library")
         _kind, server, share = library_id.split(":", 2)
@@ -396,4 +411,12 @@ class MusicLibraryManager:
             "active_id": self.active_id,
             "active_type": self.active_type,
             "libraries": self.list_libraries(),
+        }
+
+    def status_cached(self) -> dict:
+        """Select-path response: known entries only, never a network rescan."""
+        return {
+            "active_id": self.active_id,
+            "active_type": self.active_type,
+            "libraries": self._list_cached(),
         }

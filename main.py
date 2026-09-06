@@ -5141,7 +5141,9 @@ async def select_music_library(request: Request):
         except (ValueError, FileNotFoundError) as exc:
             raise bad_request(exc) from exc
         if root == scanner.music_root:
-            return manager.status()
+            # Cached response: the selector entry was already known, so no
+            # network rescan belongs into this answer path.
+            return manager.status_cached()
         scanner.cancel_refresh()
         active_refreshes = [task for task in runtime.library_refresh_tasks if not task.done()]
         if active_refreshes:
@@ -5155,7 +5157,7 @@ async def select_music_library(request: Request):
         runtime.music_library.scanner = _library_scanner_for(root, library_id)
         runtime.music_library.scanner.prepare_scan_status()
         runtime.library_scan_task = _create_library_refresh_task(runtime.music_library.scanner, name="selected-library-scan")
-        return manager.status()
+        return manager.status_cached()
 
 
 @app.post("/api/library/refresh")

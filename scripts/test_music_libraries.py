@@ -203,6 +203,46 @@ class MusicLibraryManagerTests(unittest.TestCase):
 
             discover.assert_called_once()
 
+    def test_select_uses_cached_entries_without_rescan(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            manager = MusicLibraryManager(base / "Music", discovery_hosts=["openclaw"])
+            manager._discovered = [{
+                "id": "smb:server:Music", "type": "smb", "label": "SMB — server / Music",
+                "server": "server", "share": "Music",
+            }]
+            manager._discovered_at = 0.0  # stale: a rescan would be due
+            mounted = base / "mnt"
+            mounted.mkdir()
+            with patch(
+                "library.sources.discover_smb_shares",
+                side_effect=AssertionError("select must not trigger a network rescan"),
+            ), patch.object(
+                MusicLibraryManager, "_mounted_share_path", return_value=mounted,
+            ):
+                root = manager.activate("smb:server:Music")
+
+            self.assertEqual(root, mounted)
+            self.assertEqual(manager.active_id, "smb:server:Music")
+            self.assertEqual(manager.active_type, "smb")
+
+    def test_status_cached_never_scans(self):
+        with tempfile.TemporaryDirectory() as td:
+            manager = MusicLibraryManager(Path(td), discovery_hosts=["openclaw"])
+            manager._discovered = [{
+                "id": "smb:server:Music", "type": "smb", "label": "SMB — server / Music",
+                "server": "server", "share": "Music",
+            }]
+            manager._discovered_at = 0.0  # stale: a rescan would be due
+            with patch(
+                "library.sources.discover_smb_shares",
+                side_effect=AssertionError("cached status must not scan"),
+            ):
+                payload = manager.status_cached()
+
+            self.assertEqual(payload["active_id"], "local")
+            self.assertIn("smb:server:Music", [entry["id"] for entry in payload["libraries"]])
+
 
 if __name__ == "__main__":
     unittest.main()
