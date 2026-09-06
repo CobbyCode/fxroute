@@ -3380,6 +3380,22 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
     )
 
 
+def _current_output_mode() -> str:
+    """Cheap current output mode for the subwoofer link-watcher gate.
+
+    Prefers the committed DSP runtime config; falls back to the persisted
+    audio output mode (the same source the output-mode route uses).  It never
+    builds the PipeWire overview, so the idle link-watcher tick stays cheap.
+    """
+    dsp_runtime = runtime.dsp_runtime
+    if dsp_runtime is not None:
+        snapshot = dsp_runtime.snapshot()
+        mode = (snapshot.get("config") or {}).get("output_mode")
+        if mode:
+            return str(mode)
+    return samplerate._load_audio_output_mode().get("mode") or OUTPUT_MODE_STEREO
+
+
 def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
     """Bind the DSP/output orchestration to the application's runtime services.
 
@@ -3415,6 +3431,7 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         create_lifecycle_background_task=lambda coro, *, name: _create_lifecycle_background_task(coro, name=name),
         peak_monitor_restart_settle_ms=PEAK_MONITOR_RESTART_SETTLE_MS,
         sleep=lambda delay: asyncio.sleep(delay),
+        get_output_mode=lambda: _current_output_mode(),
     )
 
 

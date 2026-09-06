@@ -63,6 +63,7 @@ class DspOrchestrationDeps:
     create_lifecycle_background_task: Callable[..., Any]
     peak_monitor_restart_settle_ms: float
     sleep: Callable[[float], Awaitable[Any]]
+    get_output_mode: Callable[[], str] | None = None
 
 
 def helper_argument_sample_rate(snapshot: dict | None) -> int | None:
@@ -391,6 +392,12 @@ class DspOrchestrator:
                 await self._deps.observe_playback_samplerate_drift()
                 dsp_runtime = self._deps.get_dsp_runtime()
                 if dsp_runtime is None:
+                    continue
+                mode_provider = self._deps.get_output_mode
+                if mode_provider is not None and str(mode_provider() or "stereo") not in samplerate.OUTPUT_MODE_SUBWOOFER_MODES:
+                    # Stereo output needs no subwoofer link watch; skip the
+                    # overview build (dozens of short-lived PipeWire/BlueZ
+                    # subprocesses per tick) until a subwoofer mode is active.
                     continue
                 # The overview build spawns a dozen PipeWire/BlueZ subprocesses;
                 # keep that blocking pipeline off the event loop so playback
