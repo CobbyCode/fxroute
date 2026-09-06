@@ -4,6 +4,48 @@ Build-Protokoll der offiziellen Armbian-Images (`armbian/build-image.sh`).
 Ablage der Images: `dist/` (git-ignoriert). Build-Logs `armbian-vim1s-build-*.log`
 sind ebenfalls git-ignoriert und liegen nur lokal im Checkout.
 
+## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `b04d35b`
+
+- FXRoute HEAD: `b04d35bbc6ddc6998709774af199a62ac051331e`
+  (`fix(bluetooth): skip source-overview build while bluetooth input is idle`),
+  sauberer kanonischer `main`, Working Tree clean.
+- Enthalten seit dem Vorgaenger-Build (`3ab4fbc`): SMB-Discovery-Ueberarbeitung
+  (`f1adc62`/`e54dc1d`/`a991030`/`3b47066`/`e115c59`), Fresh-Install-Bluetooth-Fixes
+  samt Release `0.9.16` (`4b690c6`/`4c05de9`/`016f352`/`0536b67`) und die drei
+  Logging-Hygiene-Gates (`6a75d3d` Samplerate-Change-Gate, `9623680`
+  Subwoofer-Link-Watch-Gate, `b04d35b` Bluetooth-Source-Overview-Gate).
+  `armbian/` seit `5dfda4e` unveraendert.
+- Altes Artefakt vorher geloescht:
+  `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz` + `.sha256`
+  (Stand HEAD `3ab4fbc`, 394600448 Bytes, sha256 `a67c79dc…`).
+- Armbian-Pin: `4a50e16e09222e00d3f57884b4dfbf8fdb4ce5dc` (im Wrapper
+  fest verdrahtet; Cache-Checkout exakt auf diesem Pin).
+- Kommando: `./armbian/build-image.sh --board khadas-vim1s`
+  (BOARD=khadas-vim1s, RELEASE=trixie, BRANCH=legacy, EXT=image-output-oowow).
+- Build: Start 2026-09-06T10:38:43Z, detached via `setsid nohup` (PID
+  2479597, eigene Session). Work-Dir dieses Laufs: `image.OKnKDt`.
+  Kernel-Artifact `kernel-meson-s4t7-legacy 5.15.137` aus dem
+  Armbian-Remote-Cache.
+- Build-Log: `armbian-vim1s-build-2026-09-06-b04d35b.log` (5095 Zeilen,
+  lokal, git-ignoriert, persistent).
+- Build: Ende 2026-09-06T10:47:02Z (Dauer ca. 8,5 Minuten). Erfolgreich:
+  `[armbian] wrote` + `[armbian] sha256` im Log, `[wrapper] exit status: 0`
+  am Logende, keine `[armbian][error]`-Zeilen, keine interaktiven Prompts.
+  Einzige Warnung: bekannte kosmetische `Permission denied`-Meldungen (4780
+  Zeilen) beim Aufraeumen Docker-root-owned Cache-Restdateien; das Work-Dir
+  `image.OKnKDt` schliesst sich damit den Alt-Resten an.
+- Erzeugtes Image: `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz`
+  (394137600 Bytes), plus `.sha256`-Sidecar:
+  `378d7ed55ad3085397e3096f646c0b8a177d799360f8587bec20de644077a5a4`.
+- Verifikation (grundlegende Build-Checks): `sha256sum -c` des neuen
+  Images: OK. `xz -t` (XZ-Stream-Integritaet): OK. Dateityp: XZ mit
+  CRC64-Checksumme.
+- Bewusst noch keine frische Image-Abnahme in diesem Schritt: nicht
+  geflasht, kein Onboarding/First-Boot-Test; die Endverifikation
+  (Onboarding, First-Boot, fxroute.service, HTTP :8000) laeuft auf dem
+  frisch geflashten Geraet.
+- Kein Push, kein Release.
+
 ## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `3ab4fbc`
 
 - FXRoute HEAD: `3ab4fbc76c6b264bc3a14011e8b10849752cee2e`
