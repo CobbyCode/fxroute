@@ -1953,8 +1953,11 @@ function formatBluetoothModeStatus(bluetooth = {}) {
 }
 
 function settingsCertificateUrl() {
-    const host = String(window.location.host || window.location.hostname || '').trim();
-    return host ? `http://${host}/api/certificate/local-root` : '/api/certificate/local-root';
+    // Same-origin relative URL: the page may be served over HTTP or HTTPS
+    // (Caddy proxies both to the backend). An absolute http:// rewrite turns
+    // the link into mixed content on HTTPS pages, where browsers silently
+    // block the insecure download and the click appears to do nothing.
+    return '/api/certificate/local-root';
 }
 
 function isSelectFocused(selectEl) {
