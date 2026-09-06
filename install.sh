@@ -3213,10 +3213,29 @@ install_spotifyd_binary() {
 
   existing_path="$(spotifyd_binary_path || true)"
   if [[ $SPOTIFYD_INSTALLED_BY_FXROUTE -eq 1 ]]; then
-    if [[ -z "$SPOTIFYD_BINARY_PATH" || "$existing_path" != "$SPOTIFYD_BINARY_PATH" ]]; then
+    if [[ -z "$SPOTIFYD_BINARY_PATH" ]]; then
       SPOTIFYD_BINARY_IDENTITY_CHANGED=1
-      warn "FXRoute-managed spotifyd binary identity is unavailable or its path changed; refusing to replace it during provider setup"
+      warn "FXRoute-managed spotifyd binary path record is missing; refusing to replace it during provider setup"
       return 0
+    fi
+    if [[ "$existing_path" != "$SPOTIFYD_BINARY_PATH" ]]; then
+      if [[ -z "$existing_path" && "$SPOTIFYD_BINARY_PATH" == "$HOME/.local/bin/spotifyd" ]]; then
+        # The recorded FXRoute binary is absent at its recorded default
+        # path: a Settings uninstall removed it but could not clear the
+        # ownership records (the uninstall aborts at the stopped-service
+        # check before rewriting install-state.json). Stale records must
+        # not block a fresh install, otherwise provider installs become
+        # order-dependent (worked when installed after other providers,
+        # dead-ended silently when installed first on a fresh state).
+        SPOTIFYD_INSTALLED_BY_FXROUTE=0
+        SPOTIFYD_BINARY_PATH=""
+        SPOTIFYD_BINARY_SHA256=""
+        pass "FXRoute-owned spotifyd binary is absent; reinstalling over stale ownership records"
+      else
+        SPOTIFYD_BINARY_IDENTITY_CHANGED=1
+        warn "FXRoute-managed spotifyd binary identity is unavailable or its path changed; refusing to replace it during provider setup"
+        return 0
+      fi
     fi
   fi
   if [[ -n "$existing_path" ]]; then
@@ -3599,10 +3618,26 @@ install_qbzd_binary() {
 
   existing_path="$(qbzd_binary_path || true)"
   if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 || $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]]; then
-    if [[ -z "$QBZD_BINARY_PATH" || "$existing_path" != "$QBZD_BINARY_PATH" ]]; then
+    if [[ -z "$QBZD_BINARY_PATH" ]]; then
       QBZD_BINARY_IDENTITY_CHANGED=1
-      warn "FXRoute-managed qbzd binary identity is unavailable or its path changed; refusing to replace it during provider setup"
+      warn "FXRoute-managed qbzd binary path record is missing; refusing to replace it during provider setup"
       return 0
+    fi
+    if [[ "$existing_path" != "$QBZD_BINARY_PATH" ]]; then
+      if [[ -z "$existing_path" && "$QBZD_BINARY_PATH" == "$HOME/.local/bin/qbzd" ]]; then
+        # Same stale-records repair as spotifyd: a Settings uninstall removed
+        # the binary but the ownership records survived; reinstalling over
+        # them must not be refused.
+        QBZD_INSTALLED_BY_FXROUTE=0
+        QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
+        QBZD_BINARY_PATH=""
+        QBZD_BINARY_SHA256=""
+        pass "FXRoute-owned qbzd binary is absent; reinstalling over stale ownership records"
+      else
+        QBZD_BINARY_IDENTITY_CHANGED=1
+        warn "FXRoute-managed qbzd binary identity is unavailable or its path changed; refusing to replace it during provider setup"
+        return 0
+      fi
     fi
   fi
   if [[ -n "$existing_path" ]]; then
@@ -6846,10 +6881,23 @@ EOF
     return 0
   fi
   CADDY_PROXY_ENABLED=1
-  sleep 3
-  if ! curl -kfsS "https://${lan_ip}/api/status" >/dev/null 2>&1; then
+  # Caddy generates its local CA on demand; on slow devices (e.g. khadas
+  # vim1s) that first handshake can take well past a fixed 3 s wait, and
+  # bailing out here skipped the root-certificate copy: /etc/fxroute/certs
+  # stayed empty and the Settings certificate download answered 404 for
+  # the whole lifetime of the install. Wait (bounded) until HTTPS answers
+  # so the root CA exists for certain, but copy the certificate either way.
+  local caddy_ready=0
+  local wait_attempt
+  for wait_attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if curl -kfsS "https://${lan_ip}/api/status" >/dev/null 2>&1; then
+      caddy_ready=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ $caddy_ready -eq 0 ]]; then
     warn "Optional Caddy setup finished, but the HTTPS health check did not answer yet"
-    return 0
   fi
 
   if "${SUDO_CMD[@]}" test -f "$caddy_root_cert"; then
@@ -6860,7 +6908,28 @@ EOF
       CADDY_CERT_SHA256="$("${SUDO_CMD[@]}" sha256sum "$CADDY_CERT_PATH" | awk '{print $1}')"
     fi
   else
-    warn "Caddy HTTPS is active, but the generated root certificate was not found at ${caddy_root_cert}"
+    # The CA file appears only once Caddy processed the new config and saw
+    # the cert-directory trigger; on slow storage that lands seconds after
+    # the restart above. Retry briefly instead of giving up silently, or
+    # the download endpoint stays 404 until a manual reinstall.
+    local cert_retry
+    local cert_copied=0
+    for cert_retry in 1 2 3 4 5; do
+      sleep 2
+      if "${SUDO_CMD[@]}" test -f "$caddy_root_cert"; then
+        if "${SUDO_CMD[@]}" install -m 644 "$caddy_root_cert" "${caddy_cert_dir}/fxroute-local-root.crt"; then
+          CADDY_CERT_PATH="$caddy_cert_path"
+          CADDY_CERT_SHA256="$("${SUDO_CMD[@]}" sha256sum "$CADDY_CERT_PATH" | awk '{print $1}')"
+          cert_copied=1
+        else
+          warn "Caddy HTTPS is active, but the root certificate could not be copied into ${caddy_cert_dir}"
+        fi
+        break
+      fi
+    done
+    if [[ $cert_copied -eq 0 && -z "$CADDY_CERT_PATH" ]]; then
+      warn "Caddy HTTPS is active, but the generated root certificate was not found at ${caddy_root_cert}"
+    fi
   fi
 
   ensure_lan_firewall_service_open http "FXRoute port-80 LAN access"

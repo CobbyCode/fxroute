@@ -3601,6 +3601,12 @@ remove_project_dir_if_requested() {
 clear_provider_ownership_state() {
   # Rewrite install-state.json without the removed provider's ownership
   # records so a later full uninstall cannot try to remove it twice.
+  # Settings ids and state sections differ for Spotify: the UI id 'spotify'
+  # removes both spotify_desktop and spotifyd components, so all three
+  # sections must go with it. Leaving 'spotifyd' behind kept
+  # installed_by_fxroute=true with the deleted binary's sha256, and the
+  # next Spotify install refused to reinstall (identity guard) — that made
+  # provider installs order-dependent.
   local provider="$1"
   local state_file="$INSTALL_STATE_FILE"
   [[ -f "$state_file" && ! -L "$state_file" ]] || return 0
@@ -3610,13 +3616,19 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 provider = sys.argv[2]
+sections = {
+    "spotify": ["spotify", "spotify_desktop", "spotifyd"],
+    "qobuz": ["qobuz"],
+    "tidal": ["tidal"],
+}.get(provider, [provider])
 try:
     payload = json.loads(path.read_text())
 except (OSError, ValueError):
     raise SystemExit(0)
 providers = payload.get("providers")
 if isinstance(providers, dict):
-    providers.pop(provider, None)
+    for section in sections:
+        providers.pop(section, None)
     payload["providers"] = providers
 fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".install-state.")
 with os.fdopen(fd, "w") as handle:

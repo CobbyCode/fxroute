@@ -477,7 +477,13 @@ class InstallerProviderOnlyTests(unittest.TestCase):
         body = self.uninstall[self.uninstall.index("clear_provider_ownership_state() {"):]
         body = body[:body.index("remove_single_provider()")]
         self.assertIn('payload = json.loads(path.read_text())', body)
-        self.assertIn('providers.pop(provider, None)', body)
+        # The Settings id 'spotify' removes spotify_desktop AND spotifyd
+        # components, so all three state sections must be cleared together;
+        # leaving 'spotifyd' records behind made the next Spotify install
+        # refuse to reinstall (order-dependent provider installs).
+        self.assertIn('"spotify": ["spotify", "spotify_desktop", "spotifyd"]', body)
+        self.assertIn('for section in sections:', body)
+        self.assertIn('providers.pop(section, None)', body)
 
 
 class ImageFirstBootNamingTests(unittest.TestCase):

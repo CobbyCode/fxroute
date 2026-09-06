@@ -5903,6 +5903,26 @@ async def api_streaming_provider_set_enabled(provider_id: str, request: Request)
     return {"id": provider_id, "enabled": body["enabled"]}
 
 
+def _refresh_tidalapi_import_verdict() -> None:
+    """Re-evaluate streaming.tidal.auth's cached tidalapi import verdict.
+
+    tidalapi is imported once at module load; pip installing/removing it in
+    the same venv is invisible to the running process until the module is
+    reloaded. A bare importlib.reload is not enough after an uninstall: the
+    stale module still sits in sys.modules, so ``import tidalapi`` inside
+    the reload would succeed spuriously. Purge the cached modules first.
+    """
+    import importlib
+    import sys
+
+    import streaming.tidal.auth as _tidal_auth
+
+    for name in list(sys.modules):
+        if name == "tidalapi" or name.startswith("tidalapi."):
+            del sys.modules[name]
+    importlib.reload(_tidal_auth)
+
+
 @app.post("/api/streaming/providers/{provider_id}/install")
 async def api_streaming_provider_install(provider_id: str, request: Request):
     """Install a provider's backend via the existing installer path."""
@@ -5935,19 +5955,22 @@ async def api_streaming_provider_install(provider_id: str, request: Request):
         except Exception as exc:
             logger.warning("Could not rearm Spotify watch after install: %s", exc)
     if provider_id == "tidal":
-        # tidalapi is imported once at module load (streaming.tidal.auth);
-        # a fresh pip install in the same venv is invisible to the running
-        # process. Re-exec the import so the response (and the admin/status
-        # endpoints served by this process) report the new state honestly
-        # instead of a false "installed": false until the next restart.
+        # tidalapi is imported once at module load (streaming.tidal.auth); a
+        # fresh pip install in the same venv is invisible to the running
+        # process until the module re-imports it. Refresh so the response
+        # (and the admin/status endpoints served by this process) report the
+        # new state honestly instead of a false "installed": false until the
+        # next FXRoute restart.
         try:
-            import importlib
-
-            import streaming.tidal.auth as _tidal_auth
-
-            importlib.reload(_tidal_auth)
+            _refresh_tidalapi_import_verdict()
+            if not streaming.get_provider("tidal").is_installed():
+                logger.warning(
+                    "TIDAL install finished but tidalapi is still not importable "
+                    "in the running process; state may read as not installed "
+                    "until the next FXRoute restart"
+                )
         except Exception:
-            logger.warning("TIDAL provider module reload failed", exc_info=True)
+            logger.warning("TIDAL provider module refresh failed", exc_info=True)
     return {
         "ok": True,
         "provider_id": provider_id,
@@ -5966,6 +5989,14 @@ async def api_streaming_provider_uninstall(provider_id: str, request: Request):
     if provider_id not in {"spotify", "qobuz", "tidal"}:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} cannot be uninstalled from the UI")
     result = await _run_provider_installer_op(PROVIDER_UNINSTALL_SCRIPT, f"{provider_id} uninstall", "--provider", provider_id, "--yes")
+    if provider_id == "tidal":
+        # Mirror of the install path: pip-uninstalling tidalapi behind the
+        # running process leaves the module's import verdict stale; refresh
+        # so uninstall reports honestly instead of a false "installed": true.
+        try:
+            _refresh_tidalapi_import_verdict()
+        except Exception:
+            logger.warning("TIDAL provider module refresh failed after uninstall", exc_info=True)
     return {
         "ok": True,
         "provider_id": provider_id,

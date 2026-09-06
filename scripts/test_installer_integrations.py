@@ -233,6 +233,37 @@ printf 'hash=%s changed=%s\\n' "$SPOTIFYD_BINARY_SHA256" "$SPOTIFYD_BINARY_IDENT
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f"hash={expected_sha256} changed=1", result.stdout)
 
+    def test_spotifyd_absent_binary_reinstalls_over_stale_records(self):
+        # Order-independence guard: a Settings uninstall removes the binary
+        # but can leave the ownership records behind; the next install must
+        # repair the stale records and proceed (not refuse).
+        path_reader = extract_function(self.install, "spotifyd_binary_path")
+        installer = extract_function(self.install, "install_spotifyd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            harness = f"""
+{path_reader}
+{installer}
+SPOTIFYD_INSTALLED_BY_FXROUTE=1
+SPOTIFYD_BINARY_PATH="$HOME/.local/bin/spotifyd"
+SPOTIFYD_BINARY_SHA256=original-sha256
+SPOTIFYD_BINARY_IDENTITY_CHANGED=0
+SPOTIFYD_PRESENT_BEFORE=0
+pass() {{ :; }}
+warn() {{ :; }}
+spotifyd_arch_for_host() {{ :; }}
+install_spotifyd_binary
+printf 'owned=%s status=%s\\n' "$SPOTIFYD_INSTALLED_BY_FXROUTE" "$SPOTIFYD_PROVIDER_STATUS"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                env={**os.environ, "HOME": str(home), "PATH": "/usr/bin:/bin"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("owned=0 status=unsupported architecture", result.stdout)
+
     def test_uninstaller_restores_fxroute_owned_qobuz_volume_mode(self):
         reader = extract_function(self.uninstall, "read_qbzd_volume_mode_for_uninstall")
         restore = extract_function(self.uninstall, "restore_qbzd_volume_mode_if_owned")

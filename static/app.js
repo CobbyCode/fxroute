@@ -2359,8 +2359,32 @@ function renderProviderOperation(providerId, detail, log) {
     renderProviderSettings();
 }
 
+// While one provider operation runs, every provider action button (install,
+// uninstall, service, connect/disconnect) is disabled and visibly marked
+// busy. A silent early-return on a stale pending flag reads as a dead
+// button; the disabled state makes the reason explicit.
+function isProviderOpBusy(providerId) {
+    const pending = state.settings.providers.pendingOperation;
+    return !!pending && pending !== providerId;
+}
+
+function providerBusyAttribute(providerId) {
+    return isProviderOpBusy(providerId) ? ' data-provider-busy="1"' : '';
+}
+
+function wireProviderActionButtons() {
+    if (!elements.settingsProvidersList) return;
+    elements.settingsProvidersList.querySelectorAll('[data-provider-busy="1"] button').forEach((button) => {
+        button.disabled = true;
+        button.title = 'Another provider operation is running';
+    });
+}
+
 async function runProviderInstall(providerId) {
-    if (state.settings.providers.pendingOperation) return;
+    if (state.settings.providers.pendingOperation) {
+        showToast('Another provider operation is already running. Please wait for it to finish.', 'info');
+        return;
+    }
     state.settings.providers.pendingOperation = providerId;
     renderProviderOperation(providerId, '', '');
     try {
@@ -2380,7 +2404,10 @@ async function runProviderInstall(providerId) {
 }
 
 async function runProviderUninstall(providerId) {
-    if (state.settings.providers.pendingOperation) return;
+    if (state.settings.providers.pendingOperation) {
+        showToast('Another provider operation is already running. Please wait for it to finish.', 'info');
+        return;
+    }
     if (!confirm(PROVIDER_UNINSTALL_CONFIRM[providerId] || 'Remove this provider?')) return;
     state.settings.providers.pendingOperation = providerId;
     renderProviderOperation(providerId, '', '');
@@ -2402,7 +2429,10 @@ async function runProviderUninstall(providerId) {
 }
 
 async function runProviderServiceAction(providerId, action) {
-    if (state.settings.providers.pendingOperation) return;
+    if (state.settings.providers.pendingOperation) {
+        showToast('Another provider operation is already running. Please wait for it to finish.', 'info');
+        return;
+    }
     state.settings.providers.pendingOperation = providerId;
     renderProviderSettings();
     try {
@@ -2773,7 +2803,7 @@ function renderProviderSettings() {
                 : (provider.available ? 'Installed · ready' : 'Installed'));
         const checked = provider.enabled !== false;
         return `
-            <div class="settings-provider-row" data-provider-row="${escapeHtml(provider.id)}">
+            <div class="settings-provider-row" data-provider-row="${escapeHtml(provider.id)}"${providerBusyAttribute(provider.id)}>
                 <div class="settings-provider-info">
                     <label class="settings-provider-toggle">
                         <input type="checkbox" data-provider-enabled="${escapeHtml(provider.id)}"${checked ? ' checked' : ''} />
@@ -2814,6 +2844,7 @@ function renderProviderSettings() {
     elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-logout]').forEach((button) => {
         button.addEventListener('click', () => void tidalLogout());
     });
+    wireProviderActionButtons();
 }
 
 async function applyDeviceName(value) {
