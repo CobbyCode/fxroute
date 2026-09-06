@@ -59,32 +59,36 @@ export SOURCE_DATE_EPOCH=0
 ./iso/build-leap-16-iso.sh
 ```
 
-### Build record 2026-09-06 (HEAD `6f72c15`)
+### Build record 2026-09-06 (HEAD `be2ef71`)
 
-- Built from clean canonical `main` at `6f72c15b21e1d97350a3aff323e228caa5694b8a`
-  (VERSION `0.9.17`), the same tree as the same-day VIM1S OOWOW image build
-  (`docs/ARMBIAN-IMAGE-BUILDS.md`); no version or code changes were made for
-  the ISO build. The previous artifact (built from HEAD `7ed93fa`, 4577034240
-  bytes, sha512 `cae4ef3a…`) was removed beforehand.
+- Built from clean canonical `main` at `be2ef71292edb0f39629df790b8b18d740c9d44b`
+  (VERSION `0.9.17`), the same versioned tree as the same-day VIM1S OOWOW
+  image build (`docs/ARMBIAN-IMAGE-BUILDS.md`); no version or code changes
+  were made for the ISO builds. History: the first same-day ISO (built from
+  `6f72c15`, sha512 `55508d93…`) was deleted locally by accident and rebuilt
+  from the unchanged tree including the follow-up docs commit; only the
+  docs-only delta separates the two builds.
 - Pre-build checks: cached base ISO present and verified against the pinned
-  SHA-512 digest, `scripts/test_install_iso.py` 37/37 OK, all builder tools
-  (`mkmedia`, `mkisofs`, `isoinfo`, patched `mkmedia`/`isohybrid` shims)
-  available. No extra acceptance or full-suite run was started for this build;
-  the device smoke gate was satisfied by the verified VIM1S build-level checks.
+  SHA-512 digest, `scripts/test_install_iso.py` 37/37 OK (first build), all
+  builder tools (`mkmedia`, `mkisofs`, `isoinfo`, patched
+  `mkmedia`/`isohybrid` shims) available. No extra acceptance or full-suite
+  run was started for these builds; the device smoke gate was satisfied by
+  the verified VIM1S build-level checks.
 - Command: `SOURCE_DATE_EPOCH=0 FXROUTE_ISO_ALLOW_UNPUSHED=1
   ./iso/build-leap-16-iso.sh`. The opt-in flag is required because `origin/main`
   is the stale public mirror; first-boot updates on ISO installs then record
   the installed state as a local snapshot commit instead of fetching the built
   commit from GitHub.
-- Build: ~110 s, detached via `setsid nohup` (log
-  `iso-leap16-build-2026-09-06-d40e801.log`, git-ignored, local only).
+- Build: ~110 s each, detached via `setsid nohup` (logs
+  `iso-leap16-build-2026-09-06-6f72c15.log` (misnamed `…-d40e801.log`) and
+  `iso-leap16-build-2026-09-06-be2ef71.log`, git-ignored, local only).
   Successful: `[iso] wrote` + `[iso] sha512` markers, no `[iso][error]`.
 - Result: `dist/fxroute-leap-16-x86_64.iso` (4577034240 bytes), sha512
-  `55508d93ba287f0493448b42c4d241a4095491a84c1cec67faceccd1bc0ed8fbda89c9469b5025f7e9e976701408a109b2c2a336bd82a707255cebf1c2df2818`.
+  `5ffa71d0d10c662fe426e5ce28bfa26dfc5d689bc0f6e3291a4afb54befd5dd70c030b419d892997defbae4cf6ded794b819568bda66a812438d54ac4e09fc67`.
 - In-media verification: both `FXRoute Headless` and `FXRoute Desktop` boot
   labels present in the final GRUB config; `/fxroute/build-commit` contains
-  `6f72c15…`; the embedded `/fxroute/source.tar` is byte-identical with the
-  deterministic archive from HEAD (sha256 `c0d646d2b0f3d7a64ab2043f9527a3989823847e041f2b713fbc8a94d3fd3320`,
+  `be2ef71…`; the embedded `/fxroute/source.tar` is byte-identical with the
+  deterministic archive from HEAD (sha256 `8f96e91b335c0d9d781f494765d7233117fb01685e75c6d862c6d64d287a0bfa`,
   719 entries, contains VERSION `0.9.17`). Note: this archive uses the ISO
   builder's `--mtime='UTC 1970-01-01'` form and therefore differs byte-wise
   from the Armbian image's `--mtime=@0` archive of the same tree.
