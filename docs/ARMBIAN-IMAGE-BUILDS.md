@@ -4,6 +4,43 @@ Build-Protokoll der offiziellen Armbian-Images (`armbian/build-image.sh`).
 Ablage der Images: `dist/` (git-ignoriert). Build-Logs `armbian-vim1s-build-*.log`
 sind ebenfalls git-ignoriert und liegen nur lokal im Checkout.
 
+## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `6edc851`
+
+- FXRoute HEAD: `6edc8517c63080109cb323e7f46f48ea83dc5de6`
+  (`fix(installer): wait for PipeWire/DSP readiness instead of failing
+  cold boot`), sauberer kanonischer `main`, Working Tree clean. VERSION im
+  Repo und damit im Build: `0.9.17` (unveraendert).
+- Enthalten seit dem Vorgaenger-Build (`d40e801`, ebenfalls 0.9.17):
+  `e3b1d76` (Appliance-First-Boot: X11-Autologin-Session,
+  lokalisierte Desktop-Ordner, Bookmark-/Wallpaper-Robustheit),
+  `3a82d09` (Hardware-Power-Button faehrt sauber herunter) und `6edc851`
+  (PipeWire/DSP-Validierung mit begrenztem Wait/Retry statt Cold-Boot-Fehlalarm);
+  dazu zwei Docs-Commits. Keine Versionsaenderung.
+- Altes Artefakt vorher geloescht:
+  `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz` + `.sha256`
+  (Stand HEAD `d40e801`, 394338304 Bytes) sowie alle fuenf alten
+  `armbian-vim1s-build-*.log`-Dateien (Platzersparnis).
+- Armbian-Pin: `4a50e16e09222e00d3f57884b4dfbf8fdb4ce5dc` (im Wrapper
+  fest verdrahtet, unveraendert).
+- Kommando: `./armbian/build-image.sh --board khadas-vim1s`
+  (BOARD=khadas-vim1s, RELEASE=trixie, BRANCH=legacy, EXT=image-output-oowow),
+  als Hintergrund-Job. Keine weiteren Codeaenderungen, keine Full-Suite
+  und keine zusaetzliche Checksum-/Entpack-Verifikation (wie beauftragt);
+  die Builder-Marker sind das Fertigstellungskriterium.
+- Build-Log: `armbian-vim1s-build-2026-09-06-6edc851.log` (5094 Zeilen,
+  lokal, git-ignoriert). Erfolgreich: `[armbian] wrote` + `[armbian] sha256`
+  im Log, null `[armbian][error]`-Zeilen, Exit-Status 0. Einzige Warnung:
+  bekannte kosmetische `Permission denied`-Meldungen beim Aufraeumen
+  Docker-root-owned Cache-Restdateien (`[armbian][warn]` zum Work-Dir),
+  wie in frueheren Laeufen; beeinflusst den Erfolg nicht.
+- Erzeugtes Image: `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz`
+  (395694080 Bytes), plus `.sha256`-Sidecar:
+  `e05a6b9366b2dca98d2f62a720410bb355a551222d76ba8551e9b12f198d813f`.
+- Bewusst keine frische Image-Abnahme in diesem Schritt: nicht geflasht,
+  kein Onboarding/First-Boot-Test; die Endverifikation laeuft wie ueblich
+  auf dem frisch geflashten Geraet.
+- Kein Push, kein Release.
+
 ## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `d40e801`
 
 - FXRoute HEAD: `d40e801f7e3351bbfff53a55430e53671b407068`

@@ -58,6 +58,33 @@ export SOURCE_DATE_EPOCH=0
 ./iso/build-leap-16-iso.sh
 ```
 
+### Build record 2026-09-06 (HEAD `6edc851`)
+
+- Built from clean canonical `main` at `6edc8517c63080109cb323e7f46f48ea83dc5de6`
+  (VERSION `0.9.17`, unchanged), on top of the previous ISO build record
+  (`e3b1fde`). This build carries three appliance/installer fixes: SDDM
+  autologin uses the default Plasma (X11) session and keeps
+  display-manager-legacy in charge, the desktop links resolve localized
+  folders (Schreibtisch) with a first-login ensure, the session-init
+  bookmark seeding crash is fixed and its wallpaper step is time-boxed
+  with a config fallback, the logind default powers off on the hardware
+  power button, and the PipeWire/DSP validation polls up to 120 s so a
+  slow cold boot no longer records a false `install-failed`.
+- Old artifact (`dist/fxroute-leap-16-x86_64.iso`, 4579131392 bytes, sha512
+  `3b57fc5d…`) and all four previous `iso-leap16-build-*.log` files were
+  removed before the build to save space.
+- Command: `SOURCE_DATE_EPOCH=0 FXROUTE_ISO_ALLOW_UNPUSHED=1
+  ./iso/build-leap-16-iso.sh` (same opt-in flag as before: `origin/main`
+  is the stale public mirror). No version change, no further code changes,
+  no full suite and no additional checksum/unpack or QEMU verification
+  (as requested); the builder's own output markers are the completion gate.
+- Build: single background run, log `iso-leap16-build-2026-09-06-6edc851.log`
+  (git-ignored, local only). Successful: `[iso] wrote` + `[iso] sha512`
+  markers, no `[iso][error]`, exit status 0.
+- Result: `dist/fxroute-leap-16-x86_64.iso` (4579131392 bytes), sha512
+  `f30cd23a5524980d51f2f65a85aaba8861eaf3a3c0456c41ff6f1f15d3179c3517d29d6c265b107d7209dc2db8f3718c50b0a7344be4301ff5d8d30c7cc32fa1`.
+- Kein Push, kein Release.
+
 ### Build record 2026-09-06 (HEAD `e3b1fde`)
 
 - Built from clean canonical `main` at `e3b1fdeded50902436bdbd3869dd6b5596f27560`
