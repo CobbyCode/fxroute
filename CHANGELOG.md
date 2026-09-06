@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.9.16 (2026-09-06)
+
+### Bluetooth (fresh-install verified)
+- Fixed Bluetooth input on headless fresh installs: WirePlumber now runs
+  the BlueZ monitor without requiring an active logind seat, so A2DP
+  endpoints are registered and the controller advertises Audio Sink/Source
+  without any manual restart or login.
+- Fixed Bluetooth receiver authorization on fresh installs: the installer
+  now ships the BlueZ agent runtime (system D-Bus/PyGObject packages) so
+  the headless pairing agent actually starts; incoming A2DP/HFP
+  connections are no longer rejected while pairing succeeds.
+- An immediately exiting BlueZ agent is now logged as a warning instead
+  of failing silently behind a ready-looking receiver state.
+- The local root certificate download link stays same-origin, so it also
+  works from HTTPS pages (browsers silently block the previous absolute
+  `http://` rewrite as mixed content).
+- The internal DSP ingress sink is never offered or auto-selected as an
+  output device.
+
+### Installer / platforms
+- PipeWire stack (including `-dev` packages) comes from trixie-backports
+  on Debian 13, fixing null-sink clock behavior on Armbian and desktop
+  installs.
+- openSUSE Leap 16 ISO flow continued (headless Agama CLI installs,
+  target-user first-boot git setup); `requests` pinned for the tidalapi
+  floor; CIFS helper mountpoint/regex fixes.
+- Armbian first boot: credential-free onboarding, installer override slot,
+  Wi-Fi/Ethernet priority handling, stable `.local` address and console
+  announcements.
+
+### Playback / DSP
+- Output-mode switches no longer demand stream ports of a paused source;
+  radio sample-rate flapping on fixed-to-auto restore is gone; force-rate
+  stays pinned across playback transitions.
+- Closed verified PEQ/convolver review gaps in the native DSP lifecycle.
+
+### Measurement / AutoSub
+- Direct-blend scaling by gate decisiveness with same-position repeat
+  validation; convolver band-energy centering via median trim.
+- More robust AutoSub candidate gating, arrival confirmation, 2.1/2.2
+  consistency and honest gate-revert reporting.
+
+### Library (SMB)
+- Stale-while-revalidate discovery with active subnet sweeps and parallel
+  rescans; selections come from cache with single-flight rescans.
+- Track favorites survive rescans of edited files; uploads are kept when
+  the post-save refresh fails.
+
+### Streaming providers
+- Machine-readable provider states (503 contract), root-owned privilege
+  helper replacing wildcard sudo, non-interactive provider installs.
+- Qobuz bridge hardened (ALSA-PipeWire routing, DSP-sink pinning,
+  cursor-based journal polling) with Connect auto-connect and browser
+  login orchestration; TIDAL mirrors the login dialog flow.
+- Remote volume pickup restored for Spotify/Qobuz (soft pickup, gesture
+  adoption, per-transition re-arm); Spotify claim watch survives late
+  provider installs.
+
+### UI / security
+- App shell is never browser-cached; unified library import tiles;
+  refreshed header/navigation, device-name row, in-app provider login
+  modal and footer queue pill.
+- Provider admin, system update/restore and Qobuz auth POSTs hardened
+  against cross-site calls with strict origin/port parsing.
+- README and MANUAL refreshed to the current install and Providers flow.
+
 ## 0.9.15 (2026-08-31)
 
 ### Installer / platforms
