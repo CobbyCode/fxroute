@@ -33,6 +33,7 @@ class BluetoothInputDependencies:
     """Live services the Bluetooth input monitor needs."""
 
     sync_peak_monitor_for_source_mode_state: SourceModePeakSync
+    get_persisted_source_mode: Callable[[], str] | None = None
 
 
 class BluetoothInputMonitor:
@@ -186,6 +187,18 @@ class BluetoothInputMonitor:
 
     async def run_monitor_loop(self) -> None:
         while True:
+            mode_provider = getattr(self._deps, "get_persisted_source_mode", None)
+            if (
+                mode_provider is not None
+                and mode_provider() != SOURCE_MODE_BLUETOOTH_INPUT
+                and self.input_source_name is None
+                and self.agent_process is None
+            ):
+                # Bluetooth input is not selected and nothing is active: the
+                # expensive source-overview build (bluetoothctl/pactl/pw-cli
+                # subprocess pipeline) has no cleanup or sync duty this tick.
+                await asyncio.sleep(3)
+                continue
             try:
                 overview = await asyncio.to_thread(get_audio_source_overview)
                 if overview.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT:

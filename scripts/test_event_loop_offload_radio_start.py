@@ -187,6 +187,57 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
             "run_monitor_loop built the source overview on the event loop",
         )
 
+    async def test_bluetooth_monitor_skips_overview_when_source_mode_is_app_playback(self):
+        seen = []
+        monitor = BluetoothInputMonitor(
+            SimpleNamespace(
+                sync_peak_monitor_for_source_mode_state=None,
+                get_persisted_source_mode=lambda: "app-playback",
+            )
+        )
+        sleeps = 0
+
+        def overview_builder():
+            seen.append(True)
+            return {"mode": "app_playback", "bluetooth": {}}
+
+        async def two_sleeps_then_cancel(_delay):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps >= 2:
+                raise asyncio.CancelledError
+
+        with patch.object(
+            bluetooth_module, "get_audio_source_overview", overview_builder
+        ), patch.object(bluetooth_module.asyncio, "sleep", two_sleeps_then_cancel):
+            task = asyncio.create_task(monitor.run_monitor_loop())
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(seen, [], "app-playback ticks must not build the source overview")
+
+    async def test_bluetooth_monitor_without_mode_provider_keeps_legacy_overview(self):
+        seen = []
+        monitor = BluetoothInputMonitor(
+            SimpleNamespace(sync_peak_monitor_for_source_mode_state=None)
+        )
+
+        async def one_sleep(_delay):
+            raise asyncio.CancelledError
+
+        def overview_builder():
+            seen.append(True)
+            return {"mode": "app_playback", "bluetooth": {}}
+
+        with patch.object(
+            bluetooth_module, "get_audio_source_overview", overview_builder
+        ), patch.object(bluetooth_module.asyncio, "sleep", one_sleep):
+            task = asyncio.create_task(monitor.run_monitor_loop())
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(
+            seen, [True], "without a mode provider the legacy tick must build the overview"
+        )
+
     async def test_read_transition_snapshot_builds_status_and_overview_off_loop(self):
         seen = []
 

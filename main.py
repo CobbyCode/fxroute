@@ -1005,6 +1005,9 @@ external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
 
 bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
     sync_peak_monitor_for_source_mode_state=lambda overview=None: peak_monitor_coordinator.sync_source_mode_state(overview),
+    get_persisted_source_mode=lambda: (
+        samplerate._load_audio_source_selection().get("mode") or SOURCE_MODE_APP_PLAYBACK
+    ),
 ))
 
 samplerate_drift = SamplerateDriftObserver(SamplerateDriftDependencies(
