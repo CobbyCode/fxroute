@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS = 2
 
+# Re-evaluation interval while no Spotify backend is installed. Image installs
+# start FXRoute before providers (first boot uses --providers none, Settings
+# installs land later), so the watch must wait here instead of exiting: a
+# late Settings install becomes effective without an FXRoute restart.
+SPOTIFY_AVAILABILITY_RETRY_SECONDS = 5.0
+
 
 @dataclass
 class SpotifyWatchDependencies:
@@ -45,11 +51,28 @@ class SpotifyWatchDependencies:
 class SpotifyPlayerctlWatch:
     """Single owner of the playerctl watch loop, detect task and throttle."""
 
-    def __init__(self, deps: SpotifyWatchDependencies) -> None:
+    def __init__(
+        self,
+        deps: SpotifyWatchDependencies,
+        *,
+        retry_seconds: float = SPOTIFY_AVAILABILITY_RETRY_SECONDS,
+    ) -> None:
         self._deps = deps
+        self._retry_seconds = retry_seconds
         self.last_trigger_at: float = 0.0
         self.watch_task: asyncio.Task | None = None
         self.detect_task: asyncio.Task | None = None
+        self._rescan_event = asyncio.Event()
+
+    def notify_provider_installed(self) -> None:
+        """Rearm after a late provider install without an FXRoute restart.
+
+        Wakes a waiting availability poll so the follow loop starts at once;
+        also resets the trigger throttle. Safe to call when the watch is
+        already following (the stale wake is consumed harmlessly).
+        """
+        self.last_trigger_at = 0.0
+        self._rescan_event.set()
 
     async def _event_detect_check(self, reason: str) -> None:
         deps = self._deps
@@ -187,15 +210,37 @@ class SpotifyPlayerctlWatch:
 
     async def run_watch_loop(self) -> None:
         logger.info("Spotify playerctl watch loop entered")
-        if not spotify_installed():
-            logger.info("Spotify playerctl watch skipped: Spotify client not installed")
-            return
-        playerctl_path = shutil.which("playerctl")
-        if not playerctl_path:
-            logger.info("Spotify playerctl watch skipped: playerctl not available")
-            return
-        logger.info("Spotify playerctl watch resolved playerctl path: %s", playerctl_path)
+        waiting_logged = False
         while True:
+            if not spotify_installed():
+                # Late Settings installs land after FXRoute start: wait and
+                # re-evaluate instead of exiting, so no restart is required.
+                if not waiting_logged:
+                    logger.info("Spotify playerctl watch waiting: Spotify client not installed")
+                    waiting_logged = True
+                try:
+                    await asyncio.wait_for(
+                        self._rescan_event.wait(),
+                        timeout=self._retry_seconds,
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    pass
+                self._rescan_event.clear()
+                continue
+            waiting_logged = False
+            playerctl_path = shutil.which("playerctl")
+            if not playerctl_path:
+                logger.info("Spotify playerctl watch waiting: playerctl not available")
+                try:
+                    await asyncio.wait_for(
+                        self._rescan_event.wait(),
+                        timeout=self._retry_seconds,
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    pass
+                self._rescan_event.clear()
+                continue
+            logger.info("Spotify playerctl watch resolved playerctl path: %s", playerctl_path)
             proc = None
             try:
                 # Follow both Spotify backends. The selector is fixed for the

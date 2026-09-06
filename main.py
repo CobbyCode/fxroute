@@ -5850,6 +5850,22 @@ async def api_streaming_provider_install(provider_id: str, request: Request):
     if flag is None:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} cannot be installed from the UI")
     result = await _run_provider_installer_op(PROVIDER_INSTALL_SCRIPT, f"{provider_id} install", "--providers-only", flag, "--yes")
+    if provider_id == "spotify" and streaming.get_provider(provider_id).is_installed():
+        # A late Settings install must enable the MPRIS claim watch without
+        # an FXRoute restart: image installs start FXRoute before providers,
+        # so the watch may still be in its availability wait (or a previous
+        # run may have ended). Rearm it here; the waiting poll is the fallback.
+        try:
+            spotify_playerctl_watch.notify_provider_installed()
+            if spotify_playerctl_watch.watch_task is None or spotify_playerctl_watch.watch_task.done():
+                spotify_playerctl_watch.last_trigger_at = 0.0
+                spotify_playerctl_watch.watch_task = asyncio.create_task(
+                    spotify_playerctl_watch.run_watch_loop(),
+                    name="spotify-playerctl-watch",
+                )
+                logger.info("Spotify playerctl watch (re)started after provider install")
+        except Exception as exc:
+            logger.warning("Could not rearm Spotify watch after install: %s", exc)
     if provider_id == "tidal":
         # tidalapi is imported once at module load (streaming.tidal.auth);
         # a fresh pip install in the same venv is invisible to the running
