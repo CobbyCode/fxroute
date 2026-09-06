@@ -70,7 +70,11 @@ if [[ "$server" == "--remove-all" ]]; then
   exit 0
 fi
 [[ "$server" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid SMB server" >&2; exit 2; }
-[[ "$share" =~ ^[A-Za-z0-9._()\ $-]+$ && "$share" != "." && "$share" != ".." ]] || {
+# The pattern lives in a variable on purpose: an unquoted $-inside-[...]
+# would expand the shell flags before the regex compiles and then silently
+# reject hyphens in ordinary share names.
+share_re='^[A-Za-z0-9._() $-]+$'
+[[ $share =~ $share_re && "$share" != "." && "$share" != ".." ]] || {
   echo "Invalid SMB share" >&2
   exit 2
 }

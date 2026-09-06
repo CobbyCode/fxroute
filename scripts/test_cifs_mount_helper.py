@@ -104,6 +104,61 @@ class CifsMountHelperTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(fake_fstab.read_text(), original)
 
+    def test_share_pattern_is_quoted_variable(self):
+        # An unquoted $-inside-[...] expands the shell flags before the
+        # regex compiles and then rejects hyphens (e.g. Music-Demo).
+        text = HELPER.read_text()
+        self.assertIn("share_re=", text)
+        self.assertIn("[[ $share =~ $share_re", text)
+        self.assertNotIn("=~ ^[A-Za-z0-9._()\\ $-]", text)
+
+    def test_hyphenated_share_names_are_accepted(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_fstab = root / "fstab"
+            fake_fstab.write_text("# test fstab\n")
+
+            scripts = {
+                "getent": '#!/bin/sh\nprintf "tester:x:1000:1000::%s/home:/bin/sh\\n" "$TEST_ROOT"\n',
+                "id": '#!/bin/sh\n[ "$1" = -u ] && echo 1000 || echo 1000\n',
+                "systemd-escape": '#!/bin/sh\necho test-mount\n',
+                "systemctl": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\n',
+                "install": '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do case "$1" in -o|-g|-m) shift 2;; -d) shift;; *) mkdir -p "$1"; shift;; esac; done\n',
+            }
+            for name, content in scripts.items():
+                path = fake_bin / name
+                path.write_text(content)
+                path.chmod(0o755)
+
+            helper = root / "helper"
+            source = (
+                HELPER.read_text()
+                .replace("/etc/fstab", str(fake_fstab))
+                .replace("/run/lock/fxroute-cifs-mount.lock", str(root / "mount.lock"))
+                .replace('PATH="/usr/sbin:/usr/bin:/sbin:/bin"', f'PATH="{fake_bin}:{os.environ["PATH"]}"')
+                .replace("/var/lib/fxroute", str(root / "var" / "lib" / "fxroute"))
+            )
+            helper.write_text(source)
+            helper.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "SUDO_USER": "tester",
+                "TEST_ROOT": str(root),
+                "COMMAND_LOG": str(root / "commands.log"),
+            }
+            source = helper.read_text().replace('[[ $EUID -eq 0 &&', '[[ 0 -eq 0 &&')
+            helper.write_text(source)
+            for share in ("Music-Demo", "a-b", "My Music", "music"):
+                result = subprocess.run(
+                    [str(helper), "192.168.178.100", share],
+                    env=env, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, f"{share}: {result.stderr}")
+                self.assertNotIn("Invalid SMB share", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
