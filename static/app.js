@@ -2892,7 +2892,17 @@ function renderSettingsPanel() {
             return `<option value="${escapeHtml(output.key || '')}">${escapeHtml(label)}</option>`;
         });
         elements.settingsOutputSelect.innerHTML = options.join('') || '<option value="">No outputs available</option>';
-        if (effectiveSelectedKey) elements.settingsOutputSelect.value = effectiveSelectedKey;
+        // Never leave the field blank on an unmatchable key (e.g. a stale
+        // non-selectable sink): prefer the computed key, then the PipeWire
+        // default, then the first selectable output.
+        const optionKeys = new Set(selectableOutputs.map((output) => output.key || ''));
+        let selectKey = effectiveSelectedKey && optionKeys.has(effectiveSelectedKey) ? effectiveSelectedKey : '';
+        if (!selectKey) {
+            const defaultKey = overview.default_output?.key || overview.default_output?.target_name || '';
+            selectKey = defaultKey && optionKeys.has(defaultKey) ? defaultKey : '';
+        }
+        if (!selectKey && selectableOutputs.length) selectKey = selectableOutputs[0].key || '';
+        if (selectKey) elements.settingsOutputSelect.value = selectKey;
         elements.settingsOutputSelect.disabled = !overview.available || !!pendingSelectionKey || !selectableOutputs.length;
     }
 

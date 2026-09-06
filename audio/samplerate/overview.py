@@ -86,20 +86,49 @@ def _set_source_port(source_name: str, port_key: str) -> None:
     _run_command(["pactl", "set-source-port", source_name, port_key])
 
 def _build_selected_output_payload(selected_key: str | None, current_name: str | None, explicit_outputs: list[dict[str, Any]]) -> dict[str, Any] | None:
-    lookup_key = selected_key or current_name
-    selected_output = next((item for item in explicit_outputs if item.get("key") == lookup_key), None)
-    if selected_output:
-        return {
-            "key": selected_output.get("key"),
-            "label": selected_output.get("label") or selected_output.get("name") or "Unknown output",
-            "target_name": selected_output.get("name"),
-            "target_label": selected_output.get("label") or selected_output.get("name") or "Unknown output",
-            "is_default": selected_output.get("is_default", False),
-            "sample_spec": selected_output.get("sample_spec"),
-            "channels": selected_output.get("channels"),
-            "active_rate": selected_output.get("active_rate"),
-            "supported_rates": list(selected_output.get("supported_rates") or []),
-        }
+    # Only a present *selectable* sink may become the selection. Internal
+    # DSP sinks (fxroute_dsp_sink) stay listed for inventory, but promoting
+    # one to selected/effective output would leave the device dropdown
+    # without a matching option and route the DSP graph into itself.
+    for lookup_key in (selected_key, current_name):
+        if not lookup_key:
+            continue
+        selected_output = next(
+            (item for item in explicit_outputs
+             if item.get("key") == lookup_key and item.get("selectable", True)),
+            None,
+        )
+        if selected_output:
+            return {
+                "key": selected_output.get("key"),
+                "label": selected_output.get("label") or selected_output.get("name") or "Unknown output",
+                "target_name": selected_output.get("name"),
+                "target_label": selected_output.get("label") or selected_output.get("name") or "Unknown output",
+                "is_default": selected_output.get("is_default", False),
+                "sample_spec": selected_output.get("sample_spec"),
+                "channels": selected_output.get("channels"),
+                "active_rate": selected_output.get("active_rate"),
+                "supported_rates": list(selected_output.get("supported_rates") or []),
+            }
+    return None
+
+
+def _selectable_fallback_key(explicit_outputs: list[dict[str, Any]], default_name: str | None) -> str | None:
+    """First usable device key when no persisted selection applies.
+
+    The live PipeWire default wins when it is a real selectable device;
+    otherwise the first selectable sink is used. Internal DSP sinks are
+    never candidates, so a fresh install without a selection file still
+    lands on hardware instead of the always-running DSP ingress sink.
+    """
+    if default_name and any(
+        item.get("key") == default_name and item.get("selectable")
+        for item in explicit_outputs
+    ):
+        return default_name
+    for item in explicit_outputs:
+        if item.get("selectable") and item.get("key"):
+            return item["key"]
     return None
 
 def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -223,9 +252,18 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
     if selected_key and not any(item.get("key") == selected_key for item in explicit_outputs):
         notes.append(f"Saved output selection {selected_key} is not currently available.")
         selected_key = None
+    elif selected_key and not any(
+        item.get("key") == selected_key and item.get("selectable") for item in explicit_outputs
+    ):
+        notes.append(f"Saved output selection {selected_key} is not a selectable output device.")
+        selected_key = None
 
     current_output = next((item for item in explicit_outputs if item.get("is_current")), None)
     selected_output = _build_selected_output_payload(selected_key, current_name, explicit_outputs)
+    if selected_output is None:
+        fallback_key = _selectable_fallback_key(explicit_outputs, default_name)
+        if fallback_key is not None:
+            selected_output = _build_selected_output_payload(fallback_key, None, explicit_outputs)
     effective_output = next((item for item in explicit_outputs if item.get("key") == (selected_output or {}).get("key")), None) or current_output
     output_mode_available = bool((effective_output or {}).get("channels") and (effective_output or {}).get("channels") >= 4)
     if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and not output_mode_available:
