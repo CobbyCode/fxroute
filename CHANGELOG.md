@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.17 (2026-09-06)
+
+### Installer / providers
+- Provider setup is order-independent on slow boards: the Caddy local-root
+  certificate copy retries until the root exists, so the local certificate
+  download works on first boot (VIM1S).
+- Stale provider ownership records are repaired when the recorded binary is
+  absent; uninstall now clears ownership records for every component key of
+  a provider, not just the literal provider key.
+- The running process reports provider installed state honestly after
+  install/uninstall (tidalapi is purged from `sys.modules` before reload).
+- Provider admin actions give immediate feedback and are disabled while an
+  operation is pending.
+
+### Playback / DSP hygiene
+- The Bluetooth input monitor skips the full source-overview build while no
+  source is active, and the subwoofer link watcher skips it in stereo output
+  mode; this removes the main periodic triggers of the recurring Amlogic
+  audio-fabric kernel bursts on VIM1S.
+- Samplerate status logs INFO only on an actual state change.
+
+### Docs
+- README/MANUAL refreshed (Home Assistant configuration example, softened
+  unofficial-provider note); Armbian image build protocol updated.
+
 ## 0.9.16 (2026-09-06)
 
 ### Bluetooth (fresh-install verified)
