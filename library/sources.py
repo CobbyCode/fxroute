@@ -1,6 +1,7 @@
 """Discovery and activation for local and mounted network music libraries."""
 
 import ipaddress
+import logging
 import os
 import re
 import socket
@@ -11,12 +12,20 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 
+logger = logging.getLogger(__name__)
+
 _SYSTEM_SHARES = {"admin$", "ipc$", "print$", "profiles", "users"}
 
 # Upper bound for parallel host probes during one discovery cycle. The
 # per-command subprocess timeouts stay the actual bound; parallelism only
 # stops one slow/dead host from serializing all others behind it.
 _DISCOVERY_MAX_WORKERS = 8
+
+# Minimum interval between two network discovery scans. This only throttles
+# user-triggered rescans (opening the library selector, explicit refresh);
+# it never starts a scan by itself, so an idle system performs no network
+# probing at all.
+_DISCOVERY_MIN_INTERVAL_SECONDS = 30.0
 
 # Active subnet scan bounds for the automatic (unconfigured) discovery path.
 # A fresh boot has an empty neighbor table, so discovery must not depend on
@@ -263,7 +272,8 @@ class MusicLibraryManager:
         # An explicit host list (tests, operator override) stays frozen;
         # otherwise re-resolve on every discovery cycle (neighbor table plus
         # active local-subnet SMB sweep) so hosts appearing after service
-        # start are found without a restart.
+        # start are found without a restart. Cycles only run on
+        # user-triggered reads; there is no background timer.
         self._configured_hosts = discovery_hosts
         self.discovery_hosts = list(discovery_hosts) if discovery_hosts is not None else []
         self.active_id = "local"
@@ -280,11 +290,17 @@ class MusicLibraryManager:
 
     def list_libraries(self) -> list[dict[str, str]]:
         local = {"id": "local", "type": "local", "label": f"Local — {self.local_root.name or 'Music'}"}
-        if time.monotonic() - self._discovered_at > 30:
+        # Staleness gate only: rescans on user-triggered reads (selector /
+        # settings opened, manual add, select) when the cache expired. There
+        # is no background timer, so an idle system never scans; the frontend
+        # likewise fetches only on dialog open and after selection.
+        if time.monotonic() - self._discovered_at > _DISCOVERY_MIN_INTERVAL_SECONDS:
             hosts = self._resolve_discovery_hosts()
             self.discovery_hosts = list(hosts)
+            logger.info("SMB discovery refresh: probing %d host(s)", len(hosts))
             self._discovered = discover_smb_shares(hosts)
             self._discovered_at = time.monotonic()
+            logger.info("SMB discovery refresh: found %d share(s)", len(self._discovered))
         discovered = self._discovered
         merged = {entry["id"]: entry for entry in discovered}
         merged.update(self._manual)
