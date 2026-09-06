@@ -386,6 +386,11 @@ const radio = state.getPlayback();
     assert.ok(qobuz.duration > 0);
     assert.ok(Array.isArray(state.qobuz.qlist));
     assert.ok(state.qobuz.qlist.length <= 4);
+    // Real qbzd stream facts: the footer pill must render the full
+    // 'FLAC · 16/24 bit · rate kHz' line, not the bare hardware rate.
+    assert.equal(qobuz.audio_format, 'flac');
+    assert.equal(qobuz.bit_depth, 24);
+    assert.equal(qobuz.sample_rate, 96000);
     // Spotify and Qobuz must draw from distinct catalogs: same metadata
     // (title, artist, album, cover) never appears on the other provider.
     const spotifyIds = new Set(state.spotify.list.map(t => String(t.id)));
@@ -400,6 +405,13 @@ const radio = state.getPlayback();
     assert.ok(spAlbum >= 2, 'Spotify queue must span multiple albums');
     const qbAlbum = new Set(state.qobuz.qlist.map(t => t.album)).size;
     assert.ok(qbAlbum >= 2, 'Qobuz queue must span multiple albums');
+    // Every queued Qobuz track carries complete provider stream facts so a
+    // track switch keeps the full quality line (never collapses to the rate).
+    for (const track of state.qobuz.qlist) {
+        assert.equal(track.audio_format ?? 'flac', 'flac');
+        assert.ok(track.bit_depth, 'qobuz track must carry bit_depth');
+        assert.ok(track.sample_rate_hz, 'qobuz track must carry sample_rate_hz');
+    }
     state.qobuz.toggleShuffle();
     assert.equal(state.qobuz.payload().shuffle, true);
     state.qobuz.cycleLoop();

@@ -1167,11 +1167,12 @@ function scheduleOfflineIndicator() {
 async function resyncPlaybackAfterReconnect() {
     const generation = ++wsReconnectSyncGeneration;
     try {
-        const [playback, spotify] = await Promise.all([
+        const [playback, spotify, qobuz] = await Promise.all([
             fetch('/api/status')
                 .then(resp => resp.ok ? resp.json() : null)
                 .catch(() => null),
             fetchSpotifyStatus(),
+            fetchQobuzStatus(),
         ]);
         if (generation !== wsReconnectSyncGeneration) return;
 
@@ -1183,12 +1184,20 @@ async function resyncPlaybackAfterReconnect() {
         if (spotify) {
             handleIncomingSpotifyState(spotify, { renderTab: true, renderFooter: true });
         }
+        if (qobuz) {
+            handleIncomingQobuzState(qobuz, { renderFooter: true });
+        }
         reconcileFooterSource();
         updatePlaybackUI();
         if (shouldPollSpotify()) {
             startSpotifyPoll();
         } else {
             stopSpotifyPoll();
+        }
+        if (shouldPollQobuz()) {
+            startQobuzPoll();
+        } else {
+            stopQobuzPoll();
         }
     } catch (e) {
         console.debug('Reconnect state sync failed', e);
@@ -1217,6 +1226,9 @@ function handleWebSocketMessage(msg) {
             }
             if (data.spotify) {
                 handleIncomingSpotifyState(data.spotify, { renderTab: true, renderFooter: true });
+            }
+            if (data.qobuz) {
+                handleIncomingQobuzState(data.qobuz, { renderFooter: true });
             }
             if (data.player && data.player.state && data.player.state.dsp) {
                 state.dsp = data.player.state.dsp;
@@ -1300,11 +1312,11 @@ function handleWebSocketMessage(msg) {
             }
             break;
         case 'qobuz':
-            window.__qobuzLastData = data || null;
+            handleIncomingQobuzState(data, { renderFooter: true });
             if (data && data.available && (data.status === 'Playing' || data.status === 'Paused' || data.title)) {
                 reconcileFooterSource();
                 if (window.__footerSource === 'qobuz') {
-                    updateFooterForStreamingOwner(data);
+                    startQobuzPoll();
                 }
             }
             break;
@@ -3396,6 +3408,14 @@ function switchTab(tabId) {
     } else if (window.__footerSource !== 'spotify') {
         stopSpotifyPoll();
     }
+    if (tabId === 'qobuz') {
+        startQobuzPoll();
+        void fetchQobuzStatus().then(data => {
+            handleIncomingQobuzState(data, { renderFooter: true });
+        }).catch(() => {});
+    } else if (window.__footerSource !== 'qobuz' && window.__visibleTab !== 'qobuz' && getBackendFooterOwner() !== 'qobuz') {
+        stopQobuzPoll();
+    }
 }
 
 function getBackendFooterOwner(playback = state.playback) {
@@ -4914,6 +4934,12 @@ function updatePlaybackUI() {
     } else {
         _spotifyPollGeneration++;
         stopSpotifyPoll();
+    }
+    if (shouldPollQobuz()) {
+        startQobuzPoll();
+    } else {
+        _qobuzPollGeneration++;
+        stopQobuzPoll();
     }
     // When an external renderer (Spotify/Qobuz) owns the footer, local UI must
     // NOT touch footer elements at all. Refresh from the owner's normalized
@@ -14398,6 +14424,19 @@ async function fetchSpotifyStatus() {
     }
 }
 
+// Footer-owned Qobuz snapshot, mirroring fetchSpotifyStatus: the shared
+// footer needs an HTTP resync path because WS broadcasts can be missed
+// while a client is backgrounded, and the Qobuz tab poll only feeds the tab.
+async function fetchQobuzStatus() {
+    try {
+        const resp = await fetch('/api/streaming/qobuz/status');
+        if (!resp.ok) throw new Error('request failed');
+        return await resp.json();
+    } catch {
+        return { available: false, installed: false, source: 'qobuz', capabilities: {}, status: 'Stopped', artist: '', title: '', album: '' };
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Render
 // ---------------------------------------------------------------------------
@@ -14490,6 +14529,26 @@ function setSpotifyUiVisibility(installed) {
     updateTabsScrollAffordance();
     if (!visible && window.__visibleTab === 'spotify') {
         switchTab('radio');
+    }
+}
+
+function handleIncomingQobuzState(data, options = {}) {
+    // Thin footer path for Qobuz, mirroring the footer half of
+    // handleIncomingSpotifyState. The Qobuz tab itself keeps rendering via
+    // streaming.js.
+    if (!data) return;
+    const { renderFooter = true } = options;
+    // Volume-domain guard: GET /api/streaming/qobuz/status returns the raw
+    // qbzd engine snapshot (unity-pinned 100%, no source_volume), while WS
+    // broadcasts, init and Qobuz actions carry normalized UI state with
+    // volume in the master domain plus source_volume for the raw value.
+    // A raw engine volume must never slam the shared master slider.
+    const normalized = { ...data };
+    if (!('source_volume' in normalized)) delete normalized.volume;
+    window.__qobuzLastData = normalized;
+    reconcileFooterSource();
+    if (renderFooter && window.__footerSource === 'qobuz') {
+        updateFooterForStreamingOwner(normalized);
     }
 }
 
@@ -14663,6 +14722,51 @@ async function spotifySeek(positionSec) {
         const fresh = await fetchSpotifyStatus();
         handleIncomingSpotifyState(fresh, { renderTab: true, renderFooter: true });
     }, 700);
+}
+
+function qobuzIsInstalled(data = window.__qobuzLastData) {
+    return data?.installed === true;
+}
+
+function shouldPollQobuz() {
+    // Mirror shouldPollSpotify, plus the authoritative backend commit: when
+    // the backend names qobuz, the footer must resync even if its own source
+    // still points elsewhere (stale after a missed broadcast).
+    return qobuzIsInstalled() && (window.__visibleTab === 'qobuz' || window.__footerSource === 'qobuz' || getBackendFooterOwner() === 'qobuz');
+}
+
+let _qobuzPollTimer = null;
+let _qobuzPollGeneration = 0;
+let _qobuzPollTimerGeneration = null;
+
+function stopQobuzPoll() {
+    if (_qobuzPollTimer) {
+        clearInterval(_qobuzPollTimer);
+        _qobuzPollTimer = null;
+    }
+    _qobuzPollTimerGeneration = null;
+}
+
+function startQobuzPoll() {
+    if (!shouldPollQobuz()) return;
+    if (_qobuzPollTimer) {
+        if (_qobuzPollTimerGeneration !== _qobuzPollGeneration) stopQobuzPoll();
+        else return;
+    }
+    const gen = ++_qobuzPollGeneration;
+    _qobuzPollTimerGeneration = gen;
+    _qobuzPollTimer = setInterval(async () => {
+        if (document.hidden) return;
+        if (!shouldPollQobuz()) {
+            _qobuzPollGeneration++;
+            stopQobuzPoll();
+            return;
+        }
+        if (gen !== _qobuzPollGeneration) return;
+        const data = await fetchQobuzStatus();
+        if (gen !== _qobuzPollGeneration) return;
+        handleIncomingQobuzState(data, { renderFooter: true });
+    }, 2000);
 }
 
 // ---------------------------------------------------------------------------

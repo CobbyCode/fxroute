@@ -48,7 +48,7 @@ DEMO_PRE_SCRIPTS = """    <!-- Demo transport: must load before the real app scr
     <script src="./demo/data/library.js?v=3"></script>
     <script src="./demo/data/radio.js?v=1"></script>
     <script src="./demo/data/measurements.js?v=1"></script>
-    <script src="./demo/state.js?v=8"></script>
+    <script src="./demo/state.js?v=9"></script>
     <script src="./demo/routes.js?v=8"></script>
     <script src="./demo/streaming.js?v=1"></script>
     <script src="./demo/ws.js?v=1"></script>

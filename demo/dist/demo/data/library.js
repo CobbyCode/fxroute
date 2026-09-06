@@ -457,7 +457,7 @@
     // provider namespace so the same title never reuses the local art.
     function buildProviderTracks(provider, seeds) {
         return seeds.map((seed, index) => {
-            const [title, artist, album, genre, year, duration, sampleRate] = seed;
+            const [title, artist, album, genre, year, duration, sampleRate, bitDepth] = seed;
             const art = demoImage(provider + ':' + title);
             return {
                 id: 'demo_' + provider + '_' + (index + 1),
@@ -469,6 +469,7 @@
                 year,
                 duration,
                 sample_rate_hz: sampleRate || 44100,
+                bit_depth: bitDepth || null,
                 source: provider,
                 url: 'file://demo/' + provider + '/' + title + '.flac',
                 cover_url: art,
@@ -488,11 +489,13 @@
         ['Paper Satellites', 'Marisol Vega', 'Orbit Hours', 'Indie Pop', 2023, 198, 44100],
         ['Golden Gate Lights', 'Marisol Vega', 'Orbit Hours', 'Indie Pop', 2023, 226, 44100],
     ];
+    // Qobuz streams FLAC at every quality tier; the trailing bit depth
+    // mirrors the real provider payload (16-bit CD quality, 24-bit hi-res).
     const QOBUZ_TRACK_SEEDS = [
-        ['Aurora Borealis', 'Helios Strings', 'Northern Skies', 'Classical Crossover', 2022, 312, 96000],
-        ['Midnight Glacier', 'Helios Strings', 'Northern Skies', 'Classical Crossover', 2022, 287, 96000],
-        ['Velvet Circuit', 'Eiko Maru', 'Neon Kaidan', 'City Pop', 2021, 243, 44100],
-        ['Rainy Shinjuku', 'Eiko Maru', 'Neon Kaidan', 'City Pop', 2021, 265, 44100],
+        ['Aurora Borealis', 'Helios Strings', 'Northern Skies', 'Classical Crossover', 2022, 312, 96000, 24],
+        ['Midnight Glacier', 'Helios Strings', 'Northern Skies', 'Classical Crossover', 2022, 287, 96000, 24],
+        ['Velvet Circuit', 'Eiko Maru', 'Neon Kaidan', 'City Pop', 2021, 243, 44100, 16],
+        ['Rainy Shinjuku', 'Eiko Maru', 'Neon Kaidan', 'City Pop', 2021, 265, 44100, 16],
     ];
     const spotifyTracks = buildProviderTracks('spotify', SPOTIFY_TRACK_SEEDS);
     const qobuzTracks = buildProviderTracks('qobuz', QOBUZ_TRACK_SEEDS);
