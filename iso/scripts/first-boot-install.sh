@@ -512,11 +512,16 @@ EOF
   # display-manager-legacy (display-manager.service is its alias): keep that
   # stack and only fall back to plain sddm.service when neither is enabled.
   # Enabling both would start two competing display managers.
+  # The first-boot unit is ordered Before=display-manager.service (resolved
+  # to display-manager-legacy.service): a synchronous restart/start here
+  # would wait on the display-manager job, which in turn waits for this
+  # service, deadlocking the boot until TimeoutStartSec. Queue the start
+  # with --no-block so this service exits and the manager starts after it.
   if systemctl is-enabled display-manager-legacy.service >/dev/null 2>&1 \
       || systemctl is-enabled display-manager.service >/dev/null 2>&1; then
     systemctl enable display-manager-legacy.service >/dev/null 2>&1 || true
-    systemctl restart display-manager-legacy.service || \
-      systemctl start display-manager-legacy.service || true
+    systemctl restart --no-block display-manager-legacy.service || \
+      systemctl start --no-block display-manager-legacy.service || true
   else
     systemctl enable --force sddm.service
     systemctl start --no-block sddm.service

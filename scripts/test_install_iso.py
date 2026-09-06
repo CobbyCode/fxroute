@@ -511,6 +511,19 @@ class InstallIsoContractTests(unittest.TestCase):
         # Agama images run display-manager-legacy: it stays in charge when
         # enabled instead of starting a second manager via sddm.service.
         self.assertIn("display-manager-legacy.service", script)
+        # The first-boot unit is ordered Before=display-manager.service
+        # (resolved to display-manager-legacy.service): a synchronous
+        # restart/start would wait on the display-manager job, which waits
+        # for first-boot (.129: 30+ min deadlock). Both must be --no-block.
+        self.assertIn("systemctl restart --no-block display-manager-legacy.service", script)
+        self.assertIn("systemctl start --no-block display-manager-legacy.service", script)
+        blocking = [
+            line.strip()
+            for line in script.splitlines()
+            if re.search(r"systemctl\s+(restart|start)\s+display-manager-legacy\.service", line)
+            and "--no-block" not in line
+        ]
+        self.assertEqual(blocking, [])
 
     def test_first_boot_operations_have_bounded_network_requests(self):
         script = self.read("iso/scripts/first-boot-install.sh")
