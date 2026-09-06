@@ -4680,15 +4680,25 @@ async def system_restore(request: Request):
 
 
 
+# INFO only on state change; unchanged readback polls and transition bursts stay silent.
+_last_logged_samplerate_signature = None
+
+
 @app.get("/api/audio/samplerate")
 async def audio_samplerate_status():
     status = await asyncio.to_thread(get_samplerate_status)
-    logger.info(
-        "audio_samplerate_status entry: playback_owner=%s active_rate=%s sink_state=%s",
+    signature = (
         playback_state.current_playback_owner,
         status.get("active_rate"),
         (status.get("relevant_sink") or {}).get("state"),
     )
+    global _last_logged_samplerate_signature
+    if signature != _last_logged_samplerate_signature:
+        _last_logged_samplerate_signature = signature
+        logger.info(
+            "audio_samplerate_status entry: playback_owner=%s active_rate=%s sink_state=%s",
+            *signature,
+        )
     # This endpoint is a pure readback.  Any corrective action must enter the
     # PlaybackTransitionCoordinator through an explicit recovery request.
     return status
