@@ -31,13 +31,16 @@ _DISCOVERY_MIN_INTERVAL_SECONDS = 30.0
 # Active subnet scan bounds for the automatic (unconfigured) discovery path.
 # A fresh boot has an empty neighbor table, so discovery must not depend on
 # already learned ARP entries: hosts with an open SMB port are found via a
-# short parallel TCP 445 sweep of each local IPv4 network. Only networks up
+# short parallel TCP sweep of each local IPv4 network. Only networks up
 # to _SUBNET_MAX_HOSTS hosts are swept; larger networks fall back to the
 # neighbor table so a /16 never triggers a 65k-host scan.
-_SMB_PORT = 445
 _SMB_CONNECT_TIMEOUT_SECONDS = 0.4
 _SUBNET_SCAN_MAX_WORKERS = 64
 _SUBNET_MAX_HOSTS = 1024
+# SMB ports probed by the active sweep. 445 is the modern direct-hosting
+# port; 139 is kept so a hypothetical NetBIOS-only host is not silently
+# dropped (smbclient itself would still reach it).
+_SMB_PORTS = (445, 139)
 
 
 def _valid_smb_name(value: str, *, allow_spaces: bool = False) -> bool:
@@ -96,27 +99,36 @@ def _local_ipv4_networks() -> tuple[list["ipaddress.IPv4Network"], set[str]]:
     return networks, own
 
 
-def _smb_port_open(address: str, timeout: float = _SMB_CONNECT_TIMEOUT_SECONDS) -> bool:
-    """Short TCP 445 probe (single host unit for the parallel subnet sweep)."""
+def _smb_port_open(address: str, port: int, timeout: float = _SMB_CONNECT_TIMEOUT_SECONDS) -> bool:
+    """Short TCP probe of one SMB port (single unit of the parallel sweep)."""
     try:
-        with socket.create_connection((address, _SMB_PORT), timeout=timeout):
+        with socket.create_connection((address, port), timeout=timeout):
             return True
     except OSError:
         return False
 
 
-def _active_smb_hosts(
+def _address_in_networks(address: str, networks: list["ipaddress.IPv4Network"]) -> bool:
+    try:
+        parsed = ipaddress.IPv4Address(address)
+    except ValueError:
+        return False
+    return any(parsed in network for network in networks)
+
+
+def _sweep_open_hosts(
+    networks: list["ipaddress.IPv4Network"],
+    own: set[str],
     timeout: float = _SMB_CONNECT_TIMEOUT_SECONDS,
     max_workers: int = _SUBNET_SCAN_MAX_WORKERS,
 ) -> list[str]:
-    """Hosts with an open SMB port on the local IPv4 networks (active scan).
+    """Enumerated addresses with an open SMB port, in enumeration order.
 
     Independent of the neighbor table, so a freshly booted host finds SMB
     servers without prior traffic. Candidates are probed in parallel with a
     short connect timeout, so dead/filtered addresses never serialize the
     cycle behind them.
     """
-    networks, own = _local_ipv4_networks()
     candidates: list[str] = []
     seen: set[str] = set()
     for network in networks:
@@ -128,16 +140,18 @@ def _active_smb_hosts(
             candidates.append(candidate)
     if not candidates:
         return []
-    open_hosts: list[str] = []
 
-    def _probe(address: str) -> bool:
-        return _smb_port_open(address, timeout)
+    def _probe(pair: tuple[str, int]) -> str | None:
+        address, port = pair
+        return address if _smb_port_open(address, port, timeout) else None
 
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(candidates))) as pool:
-        for address, is_open in zip(candidates, pool.map(_probe, candidates)):
-            if is_open:
-                open_hosts.append(address)
-    return open_hosts
+    pairs = [(address, port) for address in candidates for port in _SMB_PORTS]
+    open_set: set[str] = set()
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(pairs))) as pool:
+        for address in pool.map(_probe, pairs):
+            if address is not None:
+                open_set.add(address)
+    return [address for address in candidates if address in open_set]
 
 
 def default_discovery_hosts() -> list[str]:
@@ -146,16 +160,27 @@ def default_discovery_hosts() -> list[str]:
     hosts = [host.strip() for host in raw_hosts.split(",") if host.strip()]
     if configured_hosts:
         return hosts
-    # Automatic path: passive neighbor entries plus an active TCP 445 sweep
-    # of the local IPv4 networks. The sweep is what makes a fresh boot work
-    # with an empty neighbor table; the neighbor table still contributes
-    # hosts outside the swept networks (VPNs, other subnets).
-    hosts = _neighbor_hosts()
+    # Automatic path: passive neighbor entries plus an active TCP sweep of
+    # the local IPv4 networks. The sweep makes a fresh boot work with an
+    # empty neighbor table; its verdicts also spare smbclient probes to
+    # swept hosts with verifiably closed SMB ports (measured ~3.4 s of
+    # wasted smbclient latency per dead neighbor on a busy /24, same
+    # negative result). Hosts outside the swept networks cannot be judged
+    # and are still probed, as is every host with an open SMB port.
+    neigh = _neighbor_hosts()
+    networks, _own = _local_ipv4_networks()
     try:
-        active = _active_smb_hosts()
+        open_hosts = _sweep_open_hosts(networks, _own) if networks else []
     except Exception:
-        active = []
-    for address in active:
+        open_hosts = []
+    open_set = set(open_hosts)
+    hosts = []
+    for address in neigh:
+        if address not in open_set and _address_in_networks(address, networks):
+            continue
+        if address not in hosts:
+            hosts.append(address)
+    for address in open_hosts:
         if address not in hosts:
             hosts.append(address)
     return hosts
@@ -295,6 +320,50 @@ class MusicLibraryManager:
             return list(self._configured_hosts)
         return default_discovery_hosts()
 
+    def _is_stale(self) -> bool:
+        return time.monotonic() - self._discovered_at > _DISCOVERY_MIN_INTERVAL_SECONDS
+
+    def discovery_running(self) -> bool:
+        """Whether a network rescan is currently running (single-flight)."""
+        return self._discovery_lock.locked()
+
+    def claim_background_refresh(self, *, force: bool = False) -> bool:
+        """Non-blocking single-flight claim for a background rescan.
+
+        Returns True only to the one caller that must now run
+        run_claimed_refresh() in a worker thread. Returns False when the
+        cache is fresh (unless forced) or another scan is already running;
+        waiting callers keep serving cached data and check back later.
+        """
+        if not force and not self._is_stale():
+            return False
+        if not self._discovery_lock.acquire(blocking=False):
+            return False
+        if not force and not self._is_stale():
+            self._discovery_lock.release()
+            return False
+        return True
+
+    def run_claimed_refresh(self) -> None:
+        """Execute a claimed background rescan and release the claim.
+
+        Must run in a worker thread; never blocks the event loop. Failures
+        inside the scan keep the previous cache (discover_smb_shares only
+        returns what it could verify).
+        """
+        try:
+            self._run_discovery_scan()
+        finally:
+            self._discovery_lock.release()
+
+    def _run_discovery_scan(self) -> None:
+        hosts = self._resolve_discovery_hosts()
+        self.discovery_hosts = list(hosts)
+        logger.info("SMB discovery refresh: probing %d host(s)", len(hosts))
+        self._discovered = discover_smb_shares(hosts)
+        self._discovered_at = time.monotonic()
+        logger.info("SMB discovery refresh: found %d share(s)", len(self._discovered))
+
     def _list_cached(self) -> list[dict[str, str]]:
         """Assemble the library list from known entries without any I/O."""
         local = {"id": "local", "type": "local", "label": f"Local — {self.local_root.name or 'Music'}"}
@@ -312,17 +381,12 @@ class MusicLibraryManager:
         # is no background timer, so an idle system never scans; the frontend
         # likewise fetches only on dialog open and after selection.
         # Overlapping reads share one running scan via single-flight.
-        if time.monotonic() - self._discovered_at > _DISCOVERY_MIN_INTERVAL_SECONDS:
+        if self._is_stale():
             with self._discovery_lock:
                 # Re-check after acquiring: a concurrent read may have
                 # refreshed the cache while this caller was waiting.
-                if time.monotonic() - self._discovered_at > _DISCOVERY_MIN_INTERVAL_SECONDS:
-                    hosts = self._resolve_discovery_hosts()
-                    self.discovery_hosts = list(hosts)
-                    logger.info("SMB discovery refresh: probing %d host(s)", len(hosts))
-                    self._discovered = discover_smb_shares(hosts)
-                    self._discovered_at = time.monotonic()
-                    logger.info("SMB discovery refresh: found %d share(s)", len(self._discovered))
+                if self._is_stale():
+                    self._run_discovery_scan()
         return self._list_cached()
 
     def add_manual_url(self, url: str) -> dict[str, str]:

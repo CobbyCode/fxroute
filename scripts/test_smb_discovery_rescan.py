@@ -167,6 +167,48 @@ def main_test():
         tmp2.cleanup()
     print("concurrent reads share one running scan: ok")
 
+    # Background single-flight claim ------------------------------------
+    tmp3 = tempfile.TemporaryDirectory()
+    try:
+        claimed = MusicLibraryManager(Path(tmp3.name) / "Claimed", discovery_hosts=["smbhost"])
+        # Fresh cache: no claim, nothing running.
+        claimed._discovered = [{
+            "id": "smb:smbhost:Music", "type": "smb", "label": "x",
+            "server": "smbhost", "share": "Music",
+        }]
+        claimed._discovered_at = time.monotonic()
+        assert claimed.claim_background_refresh() is False
+        assert claimed.discovery_running() is False
+        # Stale cache: exactly one claim, second caller sees it running.
+        claimed._discovered_at = 0.0
+        assert claimed.claim_background_refresh() is True
+        assert claimed.claim_background_refresh() is False
+        assert claimed.discovery_running() is True
+        # A forced claim bypasses a fresh gate but still single-flights.
+        claimed._discovery_lock.release()
+        claimed._discovered_at = time.monotonic()
+        assert claimed.claim_background_refresh(force=True) is True
+        assert claimed.claim_background_refresh(force=True) is False
+        claimed._discovery_lock.release()
+        # The claimed run performs exactly one scan and refreshes the cache.
+        claimed._discovered_at = 0.0
+        assert claimed.claim_background_refresh() is True
+        with mock.patch.object(
+            sources, "discover_smb_shares",
+            return_value=[{
+                "id": "smb:smbhost:Music", "type": "smb", "label": "x",
+                "server": "smbhost", "share": "Music",
+            }],
+        ) as discover:
+            claimed.run_claimed_refresh()
+            discover.assert_called_once_with(["smbhost"])
+        assert claimed.discovery_running() is False
+        assert "smb:smbhost:Music" in [e["id"] for e in claimed.list_libraries()]
+        assert claimed.claim_background_refresh() is False
+    finally:
+        tmp3.cleanup()
+    print("background refresh claims single-flight: ok")
+
     print("SMB discovery rescan: ok")
 
 

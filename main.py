@@ -5106,7 +5106,41 @@ async def list_music_libraries():
     manager = runtime.music_library.manager
     if manager is None:
         raise HTTPException(status_code=503, detail="Music libraries are not initialized")
-    return await asyncio.to_thread(manager.status)
+    # Stale-while-revalidate: known shares answer immediately; a stale cache
+    # refreshes once in the background (single-flight) while the UI shows
+    # the cached list with a scanning hint and re-fetches afterwards.
+    cached = await asyncio.to_thread(manager.status_cached)
+    refreshing = await _request_library_discovery_refresh(manager)
+    return {**cached, "discovery_refreshing": refreshing}
+
+
+async def _request_library_discovery_refresh(manager, *, force: bool = False) -> bool:
+    """Trigger one background library rescan when due. Never blocks on network.
+
+    Returns True while a scan is running afterwards (just started here or
+    already in flight elsewhere), so the UI can show progress and re-fetch
+    once instead of polling.
+    """
+    if await asyncio.to_thread(manager.claim_background_refresh, force=force):
+        async def _run_claimed_refresh():
+            try:
+                await asyncio.to_thread(manager.run_claimed_refresh)
+            except Exception:
+                logger.exception("Background music library discovery refresh failed")
+        asyncio.create_task(_run_claimed_refresh())
+        return True
+    return await asyncio.to_thread(manager.discovery_running)
+
+
+@app.post("/api/music-libraries/refresh")
+async def refresh_music_libraries():
+    """Explicit manual refresh: rescan once in the background, answer from cache."""
+    manager = runtime.music_library.manager
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Music libraries are not initialized")
+    cached = await asyncio.to_thread(manager.status_cached)
+    refreshing = await _request_library_discovery_refresh(manager, force=True)
+    return {**cached, "discovery_refreshing": refreshing}
 
 
 @app.post("/api/music-libraries/manual")
@@ -5119,7 +5153,9 @@ async def add_manual_music_library(request: Request):
         entry = manager.add_manual_url(str(body.get("url") or ""))
     except (ValueError, TypeError) as exc:
         raise bad_request(exc) from exc
-    return {"entry": entry, **await asyncio.to_thread(manager.status)}
+    cached = await asyncio.to_thread(manager.status_cached)
+    refreshing = await _request_library_discovery_refresh(manager)
+    return {"entry": entry, **cached, "discovery_refreshing": refreshing}
 
 
 @app.post("/api/music-libraries/select")

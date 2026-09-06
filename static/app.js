@@ -414,6 +414,7 @@ let libraryModeRequestInFlight = false;
 let effectsCompareLoadInFlight = false;
 let settingsStatusPollTimer = null;
 let settingsOutputScanOnFocusDone = false;
+let musicLibraryRefreshTimer = null;
 let measurementInputScanOnFocusDone = false;
 let measurementSettingsRevision = 0;
 let measurementGraphResizeObserver = null;
@@ -458,6 +459,7 @@ const elements = {
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
     settingsMusicLibrarySelect: document.getElementById('settings-music-library-select'),
+    settingsMusicLibraryHint: document.getElementById('settings-music-library-hint'),
     settingsProvidersList: document.getElementById('settings-providers-list'),
     settingsProvidersSummary: document.getElementById('settings-providers-summary'),
     settingsProviderOperation: document.getElementById('settings-provider-operation'),
@@ -1876,6 +1878,10 @@ function stopSettingsStatusPolling() {
         clearInterval(settingsStatusPollTimer);
         settingsStatusPollTimer = null;
     }
+    if (musicLibraryRefreshTimer) {
+        clearTimeout(musicLibraryRefreshTimer);
+        musicLibraryRefreshTimer = null;
+    }
 }
 
 function startSettingsStatusPolling() {
@@ -3002,6 +3008,11 @@ function renderSettingsPanel() {
         elements.settingsMusicLibrarySelect.value = model.value;
         elements.settingsMusicLibrarySelect.disabled = model.disabled;
     }
+    if (elements.settingsMusicLibraryHint) {
+        const cachedCount = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries.length : 0;
+        elements.settingsMusicLibraryHint.textContent =
+            musicLibrary.scanning && cachedCount > 0 ? 'Scanning…' : '';
+    }
     renderProviderSettings();
     renderDeviceNameSettings();
     renderHardwareController();
@@ -3041,10 +3052,26 @@ async function fetchMusicLibraries() {
         const resp = await fetch('/api/music-libraries');
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to discover music libraries');
-        state.settings.musicLibrary = { ...data, pending: false, loading: false };
+        state.settings.musicLibrary = { ...data, pending: false, loading: false, scanning: !!data.discovery_refreshing };
         renderSettingsPanel();
+        // Stale-while-revalidate: the response above already shows cached
+        // shares; when the backend refreshed in the background, fetch once
+        // more so new shares appear without another user action. The timer
+        // dies with the dialog (stopSettingsStatusPolling).
+        if (musicLibraryRefreshTimer) {
+            clearTimeout(musicLibraryRefreshTimer);
+            musicLibraryRefreshTimer = null;
+        }
+        if (data.discovery_refreshing) {
+            musicLibraryRefreshTimer = setTimeout(() => {
+                musicLibraryRefreshTimer = null;
+                if (elements.settingsPanel && !elements.settingsPanel.classList.contains('hidden')) {
+                    void fetchMusicLibraries();
+                }
+            }, 5000);
+        }
     } catch (error) {
-        state.settings.musicLibrary = { ...(state.settings.musicLibrary || {}), loading: false };
+        state.settings.musicLibrary = { ...(state.settings.musicLibrary || {}), loading: false, scanning: false };
         renderSettingsPanel();
         console.debug('Failed to discover music libraries', error);
     }
@@ -3052,6 +3079,10 @@ async function fetchMusicLibraries() {
 
 async function selectMusicLibrary(libraryId) {
     const previousId = state.settings.musicLibrary.active_id;
+    if (musicLibraryRefreshTimer) {
+        clearTimeout(musicLibraryRefreshTimer);
+        musicLibraryRefreshTimer = null;
+    }
     state.settings.musicLibrary.pending = true;
     renderSettingsPanel();
     try {
@@ -3083,6 +3114,10 @@ async function selectMusicLibrary(libraryId) {
 }
 
 async function addManualMusicLibrary(url) {
+    if (musicLibraryRefreshTimer) {
+        clearTimeout(musicLibraryRefreshTimer);
+        musicLibraryRefreshTimer = null;
+    }
     try {
         const resp = await fetch('/api/music-libraries/manual', {
             method: 'POST',
