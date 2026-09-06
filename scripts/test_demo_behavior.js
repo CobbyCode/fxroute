@@ -405,6 +405,12 @@ const radio = state.getPlayback();
     assert.ok(spAlbum >= 2, 'Spotify queue must span multiple albums');
     const qbAlbum = new Set(state.qobuz.qlist.map(t => t.album)).size;
     assert.ok(qbAlbum >= 2, 'Qobuz queue must span multiple albums');
+    // Distinct cover pools: the provider artwork namespaces must never
+    // collapse onto the same pooled files, or both tabs render identical art.
+    const spCovers = new Set(state.spotify.list.map(t => t.art_url));
+    const qbCovers = new Set(state.qobuz.qlist.map(t => t.art_url));
+    assert.ok(![...spCovers].some(url => qbCovers.has(url)),
+        'Spotify/Qobuz cover pools must be disjoint');
     // Every queued Qobuz track carries complete provider stream facts so a
     // track switch keeps the full quality line (never collapses to the rate).
     for (const track of state.qobuz.qlist) {

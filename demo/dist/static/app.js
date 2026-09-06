@@ -331,6 +331,7 @@ let state = {
             active_type: 'local',
             libraries: [],
             pending: false,
+            loading: false,
         },
         providers: {
             loaded: false,
@@ -2986,12 +2987,10 @@ function renderSettingsPanel() {
     }
     const musicLibrary = state.settings?.musicLibrary || {};
     if (elements.settingsMusicLibrarySelect && !isSelectFocused(elements.settingsMusicLibrarySelect)) {
-        const libraries = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries : [];
-        elements.settingsMusicLibrarySelect.innerHTML = libraries
-            .map((library) => `<option value="${escapeHtml(library.id || '')}">${escapeHtml(library.label || '')}</option>`)
-            .join('') || '<option value="local">Local</option>';
-        elements.settingsMusicLibrarySelect.value = musicLibrary.active_id || 'local';
-        elements.settingsMusicLibrarySelect.disabled = !!musicLibrary.pending;
+        const model = musicLibrarySelectModel(musicLibrary);
+        elements.settingsMusicLibrarySelect.innerHTML = model.html;
+        elements.settingsMusicLibrarySelect.value = model.value;
+        elements.settingsMusicLibrarySelect.disabled = model.disabled;
     }
     renderProviderSettings();
     renderDeviceNameSettings();
@@ -3001,14 +3000,42 @@ function renderSettingsPanel() {
     applySourceModeUiState();
 }
 
+// Select-model for the Music Library selector in Technical settings.
+// While a discovery fetch is in flight and no list is cached yet, the
+// selector shows an explicit disabled loading state instead of a bare
+// "Local" option that reads like a finished, share-less result. A cached
+// list stays visible (stale-while-revalidate) and the select is disabled
+// until the response lands.
+function musicLibrarySelectModel(musicLibrary = {}) {
+    const libraries = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries : [];
+    if (libraries.length === 0 && musicLibrary.loading) {
+        return {
+            html: '<option value="">Discovering network shares…</option>',
+            value: '',
+            disabled: true,
+        };
+    }
+    return {
+        html: libraries
+            .map((library) => `<option value="${escapeHtml(library.id || '')}">${escapeHtml(library.label || '')}</option>`)
+            .join('') || '<option value="local">Local</option>',
+        value: musicLibrary.active_id || 'local',
+        disabled: !!musicLibrary.pending || !!musicLibrary.loading,
+    };
+}
+
 async function fetchMusicLibraries() {
+    state.settings.musicLibrary = { ...(state.settings.musicLibrary || {}), loading: true };
+    renderSettingsPanel();
     try {
         const resp = await fetch('/api/music-libraries');
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to discover music libraries');
-        state.settings.musicLibrary = { ...data, pending: false };
+        state.settings.musicLibrary = { ...data, pending: false, loading: false };
         renderSettingsPanel();
     } catch (error) {
+        state.settings.musicLibrary = { ...(state.settings.musicLibrary || {}), loading: false };
+        renderSettingsPanel();
         console.debug('Failed to discover music libraries', error);
     }
 }

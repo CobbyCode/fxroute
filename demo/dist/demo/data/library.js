@@ -28,7 +28,19 @@
     // to even distribution once a namespace outgrows the pool.
     const keySlotCache = new Map();
     const namespaceCursors = new Map();
-    const NAMESPACE_OFFSETS = { album: 0, 'tidal-album': 7, 'tidal-artist': 17, playlist: 27, 'tidal-playlist': 33, artist: 40 };
+    const NAMESPACE_OFFSETS = {
+        album: 0,
+        'tidal-album': 7,
+        'tidal-artist': 17,
+        playlist: 27,
+        'tidal-playlist': 33,
+        artist: 40,
+        // Streaming providers get their own artwork sequences so the Spotify
+        // and Qobuz tabs never show the same covers.
+        spotify: 3,
+        qobuz: 21,
+        track: 12,
+    };
 
     function demoImage(key) {
         const text = String(key);
