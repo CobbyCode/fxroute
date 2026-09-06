@@ -182,22 +182,35 @@
 
     let samplerate = { available: true, active_rate: 48000, mode: 'auto', policy: { mode: 'auto', rate: null }, support: { rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] } };
 
-    // Native-kHz simulation: like the real system, the graph rate follows
-    // native TIDAL playback (96 kHz Hi-Res, 44.1 kHz lossless, 48 kHz
-    // otherwise). Qobuz/Spotify are remote renderers with their own graph and
-    // never move the output rate. Without this the TIDAL footer would mix
-    // '24 bit' with the stale 48 kHz idle rate.
+    // Native-kHz simulation: mirrors the real rate resolution
+    // (playback/orchestration.py coordinator_source_rate +
+    // audio/samplerate/persistence.py effective_playback_rate). A fixed
+    // policy pins the graph regardless of source; in auto the graph follows
+    // the source: Spotify 44.1 kHz (SPOTIFY_PREARM_SAMPLE_RATE_HZ),
+    // Qobuz/radio track rate with 44.1 kHz fallback, TIDAL per quality tier
+    // (96 kHz Hi-Res, 44.1 kHz lossless/AAC), local track rate, 48 kHz idle.
     const TIDAL_TIER_GRAPH_RATE = { HI_RES_LOSSLESS: 96000, LOSSLESS: 44100, HIGH: 44100 };
     function followSourceGraphRate() {
+        if (samplerate.mode === 'fixed' && samplerate.policy?.rate) return;
         const playback = S.getPlayback();
-        const owner = playback.playback_owner;
-        if (owner === 'tidal') {
-            const track = S.tidalTracks().find(t => String(t.id) === String(playback.current_track?.id));
-            samplerate.active_rate = TIDAL_TIER_GRAPH_RATE[track?.audio_quality] || 48000;
-        } else if (owner !== 'qobuz' && owner !== 'spotify') {
+        // Stop/idle (no current track) releases the graph back to the
+        // default rate, like the real system clearing the source pin. A
+        // paused source keeps its rate: its renderer sink-input stays
+        // allocated while paused.
+        if (!playback.current_track) {
             samplerate.active_rate = 48000;
+            return;
         }
-        // qobuz/spotify: keep the current rate (separate renderer graph).
+        const owner = playback.playback_owner;
+        const trackId = playback.current_track?.id;
+        const findTrack = (list) => (list || []).find(t => String(t.id) === String(trackId));
+        let rate = 48000;
+        if (owner === 'spotify') rate = 44100;
+        else if (owner === 'qobuz') rate = Number(S.qobuz.current?.sample_rate_hz) || 44100;
+        else if (owner === 'radio') rate = 44100;
+        else if (owner === 'local') rate = Number(findTrack(S.localTracks)?.sample_rate_hz) || 48000;
+        else if (owner === 'tidal') rate = TIDAL_TIER_GRAPH_RATE[findTrack(S.tidalTracks())?.audio_quality] || 48000;
+        samplerate.active_rate = rate;
     }
     S.onSourceChanged = followSourceGraphRate;
 

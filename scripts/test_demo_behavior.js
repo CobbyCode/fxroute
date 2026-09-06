@@ -448,6 +448,31 @@ const radio = state.getPlayback();
     }
     state.stop();
 
+    // ── Spotify footer parity ────────────────────────────────────────────
+    // The real system pins the graph to 44.1 kHz while Spotify plays
+    // (coordinator_source_rate -> SPOTIFY_PREARM_SAMPLE_RATE_HZ), so the
+    // real Spotify footer pill shows '44.1 kHz' — never the 48 kHz idle
+    // rate. A fixed policy must pin the graph regardless of source.
+    state.spotify.demoStart();
+    assert.equal(state.getPlayback().playback_owner, 'spotify');
+    let sr = await (await demoFetch('/api/audio/samplerate')).json();
+    assert.equal(sr.active_rate, 44100, 'spotify pins the graph at 44.1 kHz');
+    const spotifyPayload = state.spotify.snapshot();
+    // Payload shape must match the real playerctl/provider surface.
+    assert.ok(spotifyPayload.trackId.startsWith('spotify:track:'), 'MPRIS-shaped trackId');
+    assert.equal(spotifyPayload.capabilities.volume, true);
+    assert.equal(spotifyPayload.capabilities.audio_format, undefined, 'no invented Spotify format facts');
+    state.stop();
+    sr = await (await demoFetch('/api/audio/samplerate')).json();
+    assert.equal(sr.active_rate, 48000, 'idle graph returns to 48 kHz');
+    // Fixed policy wins over any source rate (effective_playback_rate).
+    await demoFetch('/api/audio/samplerate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'fixed', rate: 96000 }) });
+    state.spotify.demoStart();
+    sr = await (await demoFetch('/api/audio/samplerate')).json();
+    assert.equal(sr.active_rate, 96000, 'fixed policy overrides the spotify pin');
+    await demoFetch('/api/audio/samplerate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'auto' }) });
+    state.stop();
+
     // The demo starts in 2.2 mode on the 4-channel interface, with crossover
     // and derived sub delays visible (seeded like a configured system).
     const outputs = await (await demoFetch('/api/audio/outputs')).json();

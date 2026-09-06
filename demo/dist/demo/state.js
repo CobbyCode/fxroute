@@ -390,9 +390,6 @@
         } else if (src === 'qobuz') {
             qobuz.adopt(track);
         }
-        if (typeof window.FXROUTE_DEMO_STATE?.onSourceChanged === 'function') {
-            window.FXROUTE_DEMO_STATE.onSourceChanged();
-        }
         emitPlayback();
     }
 
@@ -446,6 +443,10 @@
     }
 
     function emitPlayback() {
+        // Fire before broadcasting so rate changes land in the same event.
+        if (typeof window.FXROUTE_DEMO_STATE?.onSourceChanged === 'function') {
+            window.FXROUTE_DEMO_STATE.onSourceChanged();
+        }
         window.__demoBroadcast && window.__demoBroadcast('playback', playbackPayload());
     }
 
@@ -788,8 +789,11 @@
                 artwork_url: cur?.art_url || '',
                 artwork_available: !!cur,
                 artwork_source: cur ? 'spotify' : 'none',
-                trackId: cur?.id || '',
-                trackid: cur?.id || '',
+                // MPRIS-shaped track id like playerctl reports (d-bus
+                // object path), so track-change detection behaves like the
+                // real payload rather than matching library ids.
+                trackId: cur?.id ? 'spotify:track:' + cur.id : '',
+                trackid: cur?.id ? 'spotify:track:' + cur.id : '',
                 position: Math.round(this.position()),
                 duration: cur?.duration || 0,
                 shuffle: this.shuffle,
@@ -797,7 +801,9 @@
                 volume,
                 source_volume: 100,
                 footer_owner: this.playing ? 'spotify' : null,
-                capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true },
+                // Real provider capability set (streaming/spotify/provider.py):
+                // transport-only MPRIS surface plus volume and cover.
+                capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true, volume: true },
                 ...this.queueInfo(),
             };
         },
