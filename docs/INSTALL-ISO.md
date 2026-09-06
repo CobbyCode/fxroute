@@ -58,6 +58,36 @@ export SOURCE_DATE_EPOCH=0
 ./iso/build-leap-16-iso.sh
 ```
 
+### Build record 2026-09-06 (HEAD `e3b1fde`)
+
+- Built from clean canonical `main` at `e3b1fdeded50902436bdbd3869dd6b5596f27560`
+  (VERSION `0.9.17`, unchanged), on top of the previous ISO build record
+  (`be2ef71`). This build carries the desktop-appliance completion commit:
+  the Desktop profile now uses Firefox from the Leap repositories instead of
+  Chrome (fullscreen FXRoute start at login, fixed start page, desktop
+  links), ships the appliance defaults (autologin, Agama keyboard layout in
+  Plasma, no automatic suspend/hibernate/lock, suppressed Welcome-to-Leap
+  and KWallet onboarding, FXRoute wallpaper), and writes the explicit
+  `90-fxroute-iso.conf` sshd default (password auth on, key login allowed,
+  root login off). No FXRoute/Provider/DSP code changed.
+- Pre-build checks: cached base ISO present and verified against the pinned
+  SHA-512 digest, focused contract check `scripts/test_install_iso.py` 37/37
+  OK at `e3b1fde`, builder tools (`mkmedia`, `mkisofs`, `isoinfo`, patched
+  `mkmedia`/`isohybrid` shims) available. No full suite and no additional
+  checksum/unpack or QEMU verification was run (as requested); the builder's
+  own output markers are the completion gate.
+- Command: `SOURCE_DATE_EPOCH=0 FXROUTE_ISO_ALLOW_UNPUSHED=1
+  ./iso/build-leap-16-iso.sh`. The opt-in flag is required because `origin/main`
+  is the stale public mirror; first-boot updates on ISO installs then record
+  the installed state as a local snapshot commit instead of fetching the built
+  commit from GitHub.
+- Build: single foreground run, log `iso-leap16-build-2026-09-06-e3b1fde.log`
+  (git-ignored, local only). Successful: `[iso] wrote` + `[iso] sha512`
+  markers, no `[iso][error]`.
+- Result: `dist/fxroute-leap-16-x86_64.iso` (4579131392 bytes), sha512
+  `3b57fc5d05368b91ad6bf8f0b160f56da70036465058767c181412a5fb6d861c68cc7bde6d43a4217a2670ada46888a65d79b53c7e1937c2af90115a41913800`.
+- Kein Push, kein Release.
+
 ### Build record 2026-09-06 (HEAD `be2ef71`)
 
 - Built from clean canonical `main` at `be2ef71292edb0f39629df790b8b18d740c9d44b`
