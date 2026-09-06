@@ -59,6 +59,37 @@ export SOURCE_DATE_EPOCH=0
 ./iso/build-leap-16-iso.sh
 ```
 
+### Build record 2026-09-06 (HEAD `6f72c15`)
+
+- Built from clean canonical `main` at `6f72c15b21e1d97350a3aff323e228caa5694b8a`
+  (VERSION `0.9.17`), the same tree as the same-day VIM1S OOWOW image build
+  (`docs/ARMBIAN-IMAGE-BUILDS.md`); no version or code changes were made for
+  the ISO build. The previous artifact (built from HEAD `7ed93fa`, 4577034240
+  bytes, sha512 `cae4ef3a…`) was removed beforehand.
+- Pre-build checks: cached base ISO present and verified against the pinned
+  SHA-512 digest, `scripts/test_install_iso.py` 37/37 OK, all builder tools
+  (`mkmedia`, `mkisofs`, `isoinfo`, patched `mkmedia`/`isohybrid` shims)
+  available. No extra acceptance or full-suite run was started for this build;
+  the device smoke gate was satisfied by the verified VIM1S build-level checks.
+- Command: `SOURCE_DATE_EPOCH=0 FXROUTE_ISO_ALLOW_UNPUSHED=1
+  ./iso/build-leap-16-iso.sh`. The opt-in flag is required because `origin/main`
+  is the stale public mirror; first-boot updates on ISO installs then record
+  the installed state as a local snapshot commit instead of fetching the built
+  commit from GitHub.
+- Build: ~110 s, detached via `setsid nohup` (log
+  `iso-leap16-build-2026-09-06-d40e801.log`, git-ignored, local only).
+  Successful: `[iso] wrote` + `[iso] sha512` markers, no `[iso][error]`.
+- Result: `dist/fxroute-leap-16-x86_64.iso` (4577034240 bytes), sha512
+  `55508d93ba287f0493448b42c4d241a4095491a84c1cec67faceccd1bc0ed8fbda89c9469b5025f7e9e976701408a109b2c2a336bd82a707255cebf1c2df2818`.
+- In-media verification: both `FXRoute Headless` and `FXRoute Desktop` boot
+  labels present in the final GRUB config; `/fxroute/build-commit` contains
+  `6f72c15…`; the embedded `/fxroute/source.tar` is byte-identical with the
+  deterministic archive from HEAD (sha256 `c0d646d2b0f3d7a64ab2043f9527a3989823847e041f2b713fbc8a94d3fd3320`,
+  719 entries, contains VERSION `0.9.17`). Note: this archive uses the ISO
+  builder's `--mtime='UTC 1970-01-01'` form and therefore differs byte-wise
+  from the Armbian image's `--mtime=@0` archive of the same tree.
+- Kein Push, kein Release.
+
 Use `--base-iso` or `--output` to override individual values. The source
 archive is created from `git ls-files`, with normalized tar metadata, and is
 copied to the installed system by Agama before the first boot.
