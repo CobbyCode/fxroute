@@ -3671,7 +3671,10 @@ async def read_root(request: Request):
     html = (STATIC_DIR / "index.html").read_text()
     if _effective_request_scheme(request) != "https":
         html = re.sub(r'\s*<link rel="manifest" href="/static/site\.webmanifest\?v=[^"]+">\n?', '', html, count=1)
-    return HTMLResponse(content=html)
+    # The shell carries the versioned asset URLs: it must never be served
+    # from the browser cache, or clients keep booting stale JS/CSS after a
+    # deploy even though the assets themselves are cache-busted.
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store, must-revalidate"})
 
 @app.get("/favicon.ico")
 async def favicon_root():
