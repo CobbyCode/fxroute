@@ -4,6 +4,52 @@ Build-Protokoll der offiziellen Armbian-Images (`armbian/build-image.sh`).
 Ablage der Images: `dist/` (git-ignoriert). Build-Logs `armbian-vim1s-build-*.log`
 sind ebenfalls git-ignoriert und liegen nur lokal im Checkout.
 
+## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `7ed93fa`
+
+- FXRoute HEAD: `7ed93fac909e1c4ff69504e1036346de5959a376`
+  (`fix(deps): pin requests==2.34.2 to satisfy tidalapi floor`),
+  sauberer kanonischer `main`, Working Tree clean.
+- Vorab-Checks bestanden: 303 GiB frei auf /home (NVMe), 30 GiB RAM
+  (16 GiB verfuegbar; Swap 2/2 GiB belegt = Bestandszustand, identisch zu
+  den erfolgreichen Vorgaenger-Builds), Docker 29.4.0 mit
+  `ghcr.io/armbian/docker-armbian-build:armbian-debian-trixie-latest`,
+  Armbian-Cache-Checkout exakt auf Pin `4a50e16e…`, kein anderer Build
+  aktiv, `scripts/test_armbian_images.py` (46/46) und
+  `scripts/test_armbian_web_config.py` (66/66) vor dem Build OK.
+- Armbian-Pin: `4a50e16e09222e00d3f57884b4dfbf8fdb4ce5dc`
+  (Cache-Verzeichnis bereits auf diesem Pin, Docker-Basis vorhanden).
+- Kommando: `./armbian/build-image.sh --board khadas-vim1s`
+  (BOARD=khadas-vim1s, RELEASE=trixie, BRANCH=legacy, EXT=image-output-oowow).
+- Build: Start 2026-09-06T02:50:57Z, detached via `setsid nohup` (PID
+  2421688, eigene Session; laeuft unabhaengig von der Agent-Session
+  weiter). Work-Dir dieses Laufs: `image.ij2TBk`. Kernel-Artifact
+  `kernel-meson-s4t7-legacy 5.15.137` und U-Boot
+  `uboot-khadas-vim1s-legacy 2019.01` kommen aus dem
+  Armbian-Remote-Cache.
+- Build-Log: `armbian-vim1s-build-2026-09-06-7ed93fa.log` (lokal,
+  git-ignoriert, persistent).
+- Bemerkung: bekannte kosmetische `Permission denied`-Meldungen (4780
+  Zeilen) beim Aufraeumen Docker-root-owned Cache-Restdateien
+  (Daemon-seitiges Userns-Remapping; beeinflusst Exit-Status nicht); das
+  Work-Dir `image.ij2TBk` schliesst sich damit den Alt-Resten an.
+- Build: Ende 2026-09-06T02:59Z (Dauer ca. 8,5 Minuten), Exit-Status 0.
+  Der Wrapper lief vollstaendig bis zum erfolgreichen `copy_image_output`
+  (`[armbian] wrote` + `[armbian] sha256` im Log); einzige Warnung die
+  bekannte kosmetische Aufraeum-Meldung.
+- Erzeugtes Image: `dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz`
+  (393326592 Bytes), plus `.sha256`-Sidecar:
+  `c97c1bb7b0892464c6f1af7683ce6751cfebca353c6c9639cf4da0d17bb7d347`.
+  Es ersetzt das alte Image (Stand HEAD `a69d6b2`, 406597632 Bytes) auf
+  demselben Ausgabepfad.
+- Verifikation (grundlegende Build-Checks): `sha256sum -c` des neuen
+  Images: OK. `xz -t` (XZ-Stream-Integritaet): OK. Dateityp: XZ mit
+  CRC64-Checksumme.
+- Bewusst noch keine frische Image-Abnahme in diesem Schritt: nicht
+  geflasht, kein Onboarding/First-Boot-Test; die Endverifikation
+  (Onboarding, First-Boot, fxroute.service, HTTP :8000) laeuft auf dem
+  frisch geflashten Geraet.
+- Kein Push, kein Release.
+
 ## 2026-09-06 — khadas-vim1s (trixie/legacy), HEAD `a69d6b2`
 
 - FXRoute HEAD: `a69d6b2b8545c345d9ce5281f722aeaad1481730`
