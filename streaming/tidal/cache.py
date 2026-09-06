@@ -49,14 +49,17 @@ class TidalLibraryCache:
 
     def __init__(self, db_path: Path | None = None) -> None:
         self.db_path = Path(db_path) if db_path is not None else (_config_dir() / "tidal-cache.sqlite")
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
+        # Create the directory/database lazily on first use: merely importing
+        # this module (or instantiating the shared singleton below) must
+        # never write to the product config dir (test isolation).
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path), timeout=15)
         conn.row_factory = sqlite3.Row
         try:
+            self._init_schema(conn)
             yield conn
             conn.commit()
         except Exception:
@@ -65,19 +68,18 @@ class TidalLibraryCache:
         finally:
             conn.close()
 
-    def _init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS library_cache (
-                    user_id TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    fetched_at TEXT NOT NULL,
-                    PRIMARY KEY (user_id, kind)
-                )
-                """
+    def _init_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS library_cache (
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, kind)
             )
+            """
+        )
 
     # -- single-kind access -------------------------------------------------
 

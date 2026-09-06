@@ -28,6 +28,28 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# ---------------------------------------------------------------------------
+# Hermetic XDG sandbox
+# ---------------------------------------------------------------------------
+# No test may ever write the invoking user's real product configuration.
+# Persistence resolves $XDG_CONFIG_HOME/fxroute (config),
+# $XDG_STATE_HOME (measurement/autosub state) and $XDG_DATA_HOME with a
+# $HOME fallback, so point the three XDG roots at a fresh throwaway dir for
+# the whole run. Tests that sandbox themselves (TemporaryDirectory + XDG
+# override, or path patches) are unaffected; everything else lands in the
+# sandbox, which is removed afterwards. NOTE: HOME itself is deliberately
+# untouched — project dependencies resolve through the user site-packages
+# under $HOME/.local, so overriding HOME would break every test import.
+# See also scripts/check_test_xdg_isolation.py, which audits every test
+# file for product-config writes so future tests cannot regress this.
+FXROUTE_TEST_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/fxroute-tests-XXXXXXXX")"
+export XDG_CONFIG_HOME="$FXROUTE_TEST_SANDBOX/config"
+export XDG_STATE_HOME="$FXROUTE_TEST_SANDBOX/state"
+export XDG_DATA_HOME="$FXROUTE_TEST_SANDBOX/data"
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME"
+cleanup_test_sandbox() { rm -rf "$FXROUTE_TEST_SANDBOX"; }
+trap cleanup_test_sandbox EXIT
+
 MODE="local"
 VERBOSE=0
 for arg in "$@"; do

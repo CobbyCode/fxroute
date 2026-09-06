@@ -378,9 +378,15 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(
             main.samplerate, "clear_auto_policy_force_rate", new=clear_pin
-        ):
+        ), patch.object(
+            # The production rollback persists the snapshot policy for real;
+            # never let it reach the product config file from a test.
+            main.samplerate, "persist_sample_rate_policy",
+            return_value={"mode": "auto", "rate": None},
+        ) as persist:
             await runtime.rollback_sample_rate_policy(None, snapshot)
 
+        persist.assert_called_once_with({"mode": "auto", "rate": None})
         self.assertEqual(cleared, [44100])
 
     async def test_spotify_play_clears_stale_hardware_and_internal_mutes(self):
