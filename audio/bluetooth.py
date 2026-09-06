@@ -92,7 +92,12 @@ class BluetoothInputMonitor:
         if self.agent_process.returncode is not None:
             stderr = await self.agent_process.stderr.read()
             self.agent_process = None
-            raise RuntimeError((stderr or b"BlueZ audio agent exited immediately").decode(errors="ignore").strip())
+            message = (stderr or b"BlueZ audio agent exited immediately").decode(errors="ignore").strip()
+            # A dead agent leaves receiver mode visibly ready while every
+            # incoming A2DP/HFP connection is rejected ("Authentication
+            # attempt without agent"), so never swallow this silently.
+            logger.warning("BlueZ audio agent exited immediately; Bluetooth pairing/authorization will fail: %s", message)
+            raise RuntimeError(message)
 
     async def clear_links(self) -> None:
         previous_source = self.input_source_name

@@ -2112,6 +2112,8 @@ zypper_python_package() {
         case "$package_kind" in
           pip) printf 'python313-pip\n' ;;
           virtualenv) printf 'python313-virtualenv\n' ;;
+          dbus) printf 'python313-dbus-python\n' ;;
+          gobject) printf 'python313-gobject\n' ;;
           *) return 1 ;;
         esac
         return 0
@@ -2121,6 +2123,8 @@ zypper_python_package() {
   case "$package_kind" in
     pip) printf 'python3-pip\n' ;;
     virtualenv) printf 'python3-virtualenv\n' ;;
+    dbus) printf 'python3-dbus-python\n' ;;
+    gobject) printf 'python3-gobject\n' ;;
     *) return 1 ;;
   esac
 }
@@ -2184,6 +2188,7 @@ ensure_native_packages() {
   local missing_audio_stack=()
   local need_venv_pkg=0
   local need_bt_plugin_pkg=0
+  local need_bt_agent_pkgs=0
   local zypper_pip_package=""
   local zypper_venv_package=""
 
@@ -2232,11 +2237,15 @@ ensure_native_packages() {
     need_bt_plugin_pkg=1
   fi
 
+  if ! bluetooth_agent_deps_present; then
+    need_bt_agent_pkgs=1
+  fi
+
   if ! python3 -m venv --help >/dev/null 2>&1; then
     need_venv_pkg=1
   fi
 
-  if [[ ${#missing_packages[@]} -eq 0 && ${#missing_support[@]} -eq 0 && ${#missing_audio_stack[@]} -eq 0 && $need_venv_pkg -eq 0 && $need_bt_plugin_pkg -eq 0 ]]; then
+  if [[ ${#missing_packages[@]} -eq 0 && ${#missing_support[@]} -eq 0 && ${#missing_audio_stack[@]} -eq 0 && $need_venv_pkg -eq 0 && $need_bt_plugin_pkg -eq 0 && $need_bt_agent_pkgs -eq 0 ]]; then
     pass "native packages already available"
     return
   fi
@@ -2251,6 +2260,7 @@ ensure_native_packages() {
     pkg_install "${audio_stack_packages[@]}"
   fi
   ensure_debian_pipewire_backports
+  ensure_bluetooth_agent_packages
 
   if [[ $need_venv_pkg -eq 1 ]] && ! python3 -m venv --help >/dev/null 2>&1; then
     case "$PACKAGE_MANAGER" in
@@ -2274,6 +2284,9 @@ ensure_native_packages() {
   done
   if ! bt_plugin_present; then
     warn "PipeWire BlueZ SPA plugin is still missing; Bluetooth input mode will not be available until the host provides libspa-bluez5.so"
+  fi
+  if ! bluetooth_agent_deps_present; then
+    warn "BlueZ agent runtime (python3 dbus/gi) is still missing; incoming Bluetooth audio connections will be rejected until the host provides it"
   fi
   pass "native packages installed"
 }
@@ -2316,6 +2329,47 @@ ensure_dbus_send_binary() {
   else
     warn "Could not install '$pkg' for dbus-send; suspend/shutdown actions will be unavailable"
   fi
+}
+
+bluetooth_agent_deps_present() {
+  python3 -c "import dbus" >/dev/null 2>&1 \
+    && python3 -c "from gi.repository import GLib" >/dev/null 2>&1
+}
+
+ensure_bluetooth_agent_packages() {
+  # audio/bluez_agent.py runs on the system python3 (outside the venv) and
+  # needs the D-Bus bindings plus PyGObject/GLib:
+  #   apt (Debian/Ubuntu/Armbian): python3-dbus python3-gi gir1.2-glib-2.0
+  #   dnf (Fedora/RHEL):           python3-dbus python3-gobject
+  #   zypper (openSUSE):           python313-dbus-python python313-gobject
+  #                                (Leap 16; elsewhere via python3-* provides)
+  #   pacman (Arch/Manjaro):       python-dbus python-gobject
+  # Without them the agent exits immediately, no BlueZ agent is registered
+  # and incoming A2DP/HFP connections are rejected ("Authentication attempt
+  # without agent") even though pairing works.  A failed install must never
+  # abort the installer: pairing still works, only audio authorization fails.
+  bluetooth_agent_deps_present && return 0
+  local agent_packages=()
+
+  case "$PACKAGE_MANAGER" in
+    apt) agent_packages=(python3-dbus python3-gi gir1.2-glib-2.0) ;;
+    dnf) agent_packages=(python3-dbus python3-gobject) ;;
+    zypper) agent_packages=("$(zypper_python_package dbus)" "$(zypper_python_package gobject)") ;;
+    pacman) agent_packages=(python-dbus python-gobject) ;;
+    *)
+      warn "BlueZ agent runtime is missing and the package manager is unknown; incoming Bluetooth audio connections will be rejected"
+      return 0
+      ;;
+  esac
+
+  log "installing BlueZ agent runtime (from packages '${agent_packages[*]}', distro: $PACKAGE_MANAGER)"
+  if pkg_install "${agent_packages[@]}"; then
+    pass "BlueZ agent runtime installed via ${agent_packages[*]}"
+  else
+    warn "Could not install '${agent_packages[*]}' for the BlueZ agent; incoming Bluetooth audio connections will be rejected"
+  fi
+  bluetooth_agent_deps_present \
+    || warn "BlueZ agent imports (python3 dbus/gi) are still unavailable; incoming Bluetooth audio connections will be rejected until the host provides them"
 }
 
 ensure_firewall_cmd_binary() {
