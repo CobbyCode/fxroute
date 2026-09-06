@@ -6,7 +6,7 @@ This is the short manual. The [README](README.md) covers the feature overview, i
 
 ## 1. What FXRoute is for
 
-FXRoute assumes one audio machine running a Linux user session with an active PipeWire stack (desktop or headless CLI with user services enabled). It is not meant to run as a system daemon.
+FXRoute assumes one audio machine running a Linux user session with an active PipeWire stack (desktop or headless CLI with user services enabled).
 
 On that machine, FXRoute provides:
 
@@ -15,6 +15,8 @@ On that machine, FXRoute provides:
 - DSP presets, A/B compare, filter imports, and output-mode routing
 - room and speaker measurement that feeds PEQ and FIR/convolver preset creation
 - control of the whole setup from browsers on the local network
+
+Spotify, Qobuz, and TIDAL integration is unofficial — it builds on community backends and protocols that the providers do not support and may change at any time.
 
 FXRoute exposes its web UI on the LAN. Keep it on a trusted network.
 
@@ -213,7 +215,41 @@ When the optional HTTPS proxy is enabled, FXRoute runs a local certificate autho
 
 ## 10. Home Assistant / external automation
 
-FXRoute exposes `GET /api/power/state` as a read-only power hint: `amp_should_be_on` is true while playback is active or the Measurement Assistant is open. A Home Assistant or similar automation can use it to switch an amplifier smart plug; FXRoute needs no MQTT broker and never controls the plug itself. A minimal configuration example is in the [README](README.md).
+FXRoute exposes `GET /api/power/state` as a read-only power hint: `amp_should_be_on` is true while playback is active or the Measurement Assistant is open. A Home Assistant or similar automation can use it to switch an amplifier smart plug; FXRoute needs no MQTT broker and never controls the plug itself.
+
+A minimal configuration polls the endpoint as a binary sensor and switches the plug on when playback starts and off after an idle period:
+
+```yaml
+rest:
+  - resource: "http://fxroute.local:8000/api/power/state"  # Adapt host/port if needed.
+    scan_interval: 5
+    binary_sensor:
+      - name: "FXRoute amp should be on"
+        value_template: "{{ value_json.amp_should_be_on }}"
+
+automation:
+  - alias: "FXRoute amp on"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.fxroute_amp_should_be_on
+        to: "on"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug.
+
+  - alias: "FXRoute amp off after idle"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.fxroute_amp_should_be_on
+        to: "off"
+        for:
+          minutes: 20
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug.
+```
 
 ## 11. If something fails
 

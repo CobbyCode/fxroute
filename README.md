@@ -2,11 +2,11 @@
 
 FXRoute is a browser-based control surface for a Linux hi-fi audio box. One small PC or ARM board with a PipeWire user session becomes the source and DSP hub for local music, internet radio, Spotify, Qobuz, and TIDAL — controlled from any phone, tablet, or laptop on the local network.
 
-Radio, the music library, the streaming providers, the native DSP engine, and the room-measurement tools all live in one interface. You browse and play from the couch; FXRoute owns the audio session, the DSP chain, and the output routing on the audio machine.
+Radio, the music library, the streaming providers, the native DSP engine, and the room-measurement tools all in one interface. You browse and play from the couch; FXRoute owns the audio session, the DSP chain, and the output routing on the audio machine.
 
 ## Web demo
 
-Try the interface without any audio hardware. The demo is the real FXRoute frontend — same checkout, same UI — with a simulated backend for playback, DSP, radio, and measurement, so every view is explorable in a normal browser.
+Try the interface without any audio hardware. The demo is the real FXRoute frontend — same checkout, same UI — with some simulated backend for playback, DSP, radio, and measurement, so every view is explorable in a normal browser.
 
 A stable demo link will be added here once the demo is published. Until then, run it locally:
 
@@ -66,69 +66,29 @@ cd fxroute
 ./install.sh
 ```
 
-The installer prepares the system packages, builds the native DSP engine, creates the Python virtualenv, and enables the `fxroute.service` user service. Run it as the audio user; from a root shell on a host with several users, pass that user explicitly with `./install.sh --user <name>`. Custom install targets must be dedicated directories named `fxroute` unless `--local-project` is used.
+The installer prepares the system packages, builds the native DSP engine, creates the Python virtualenv, and enables the `fxroute.service` user service. Run it as the audio user; from a root shell on a host with several users, pass that user explicitly with `./install.sh --user <name>`. Custom install targets must be dedicated directories named `fxroute` unless `--local-project` is used (that flag installs in place from the current project directory).
+
+Supported package managers are apt, dnf, zypper, and pacman. The provider matrix, first-run authentication, and uninstall behavior are covered in [docs/INSTALLER.md](docs/INSTALLER.md).
 
 **Ready-made images**
 
 - ARM64 Armbian image with web onboarding — [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md)
 - x86_64 openSUSE Leap installation ISO — [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md)
 
-Both images start with no streaming providers. Providers are added later in **Technical settings → Providers**, or at install time with installer flags:
-
-```bash
-./install.sh --providers spotify-desktop,spotifyd,qobuz,tidal
-```
-
-Supported package managers are apt, dnf, zypper, and pacman. The provider matrix, first-run authentication, and uninstall behavior are covered in [docs/INSTALLER.md](docs/INSTALLER.md).
-
 ## First start
 
 - `systemctl --user status fxroute` — the service is `fxroute.service`.
 - Open the UI from any browser on the network:
-  - `http://fxroute.local:8000` (mDNS; the name is set in **Technical settings → Device Name**)
+  - `http://fxroute.local:8000` (mDNS; the name is set in **Technical settings → Device Name**; ready-made images install a unique id, e.g. `http://fxroute-ab12cd.local:8000`)
   - `http://<host-ip>:8000`
   - `http://localhost:8000` on the audio PC itself
   - `https://<host-ip>` or `https://<device-name>.local` when the optional HTTPS proxy is enabled (HTTP stays reachable)
 - Play something from **Radio** or **Library** to confirm audio and DSP routing.
 - The music folder is configured in `.env` (`MUSIC_ROOT`) or selected in **Technical settings → Music Library**, which also lists discovered SMB shares.
 
-FXRoute runs in a Linux user session with an active PipeWire audio stack — desktop or headless CLI with user services enabled. It is not intended to run as a system daemon. Playback applications enter the processing graph through the `fxroute_dsp_sink` Pulse/PipeWire sink.
-
 ## Home Assistant
 
-`GET /api/power/state` is a read-only amplifier power hint for external automation: `amp_should_be_on` is true while local or Spotify playback is active or the Measurement Assistant is open. FXRoute does not require MQTT and never controls the plug itself.
-
-```yaml
-rest:
-  - resource: "http://fxroute.local:8000/api/power/state"  # Adapt host/port if needed.
-    scan_interval: 5
-    binary_sensor:
-      - name: "FXRoute amp should be on"
-        value_template: "{{ value_json.amp_should_be_on }}"
-
-automation:
-  - alias: "FXRoute amp on"
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.fxroute_amp_should_be_on
-        to: "on"
-    action:
-      - service: switch.turn_on
-        target:
-          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug.
-
-  - alias: "FXRoute amp off after idle"
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.fxroute_amp_should_be_on
-        to: "off"
-        for:
-          minutes: 20
-    action:
-      - service: switch.turn_off
-        target:
-          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug.
-```
+`GET /api/power/state` is a read-only amplifier power hint for external automation: `amp_should_be_on` is true while local or Spotify playback is active or the Measurement Assistant is open. FXRoute does not require MQTT and never controls the plug itself. A complete configuration example lives in the [manual](MANUAL.md#10-home-assistant--external-automation).
 
 ## Documentation
 
