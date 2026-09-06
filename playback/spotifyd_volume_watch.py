@@ -100,6 +100,11 @@ class SpotifydVolumeWatch:
         self.watch_task: asyncio.Task | None = None
         self._drain_task: asyncio.Task | None = None
 
+    def reset_session(self) -> None:
+        # Start/resume edge: drop anchor and latch so the next absolute
+        # value re-anchors instead of tracking a stale pickup.
+        self._translator.observe_activation()
+
     async def _sleep(self, delay: float) -> None:
         await asyncio.sleep(delay)
 

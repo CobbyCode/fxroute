@@ -2535,6 +2535,7 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
     the read-only derived owner is only a fallback for display and must never
     suppress the commit that makes the owner persist across a pause.
     """
+    spotifyd_volume_watch.reset_session()
     claim_intent_generation = playback_state.playback_intent_generation
     if playback_state.current_playback_owner == "spotify":
         return await get_spotify_ui_state()
@@ -6121,6 +6122,7 @@ def _resolve_playback_source_producer_ports(source: str | None) -> tuple[str, st
 
 @app.post("/api/spotify/play")
 async def api_spotify_play():
+    spotifyd_volume_watch.reset_session()
     target_rate = _coordinator_target_rate("spotify")
     rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
     request = TransitionRequest(
@@ -6158,6 +6160,7 @@ async def api_spotify_pause():
 
 @app.post("/api/spotify/toggle")
 async def api_spotify_toggle():
+    spotifyd_volume_watch.reset_session()
     sd = await get_spotify_ui_state()
     if sd.get("status") == "Playing":
         # Toggling an already-playing Spotify source is transport-only.  In

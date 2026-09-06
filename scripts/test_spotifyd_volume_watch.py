@@ -383,6 +383,43 @@ class SpotifydVolumeWatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await watch.poll_once())
         self.assertEqual(applied, [])
 
+    async def test_reset_session_rearms_pickup(self):
+        # A start/resume edge must drop anchor and latch through the public
+        # reset, never by touching the translator directly.
+        scripted = _ScriptedWatch(values=[44, 45], master=44)
+        await scripted.poll()
+        await scripted.poll()
+        self.assertEqual(scripted.applied, [45])
+        self.assertTrue(scripted.watch._translator.picked_up)
+        scripted.watch.reset_session()
+        self.assertFalse(scripted.watch._translator.picked_up)
+        self.assertIsNone(scripted.watch._translator.pending)
+
+    async def test_start_push_after_reset_only_anchors(self):
+        # Regression: pickup -> pause (owner stays) -> Play pushes 100.
+        # The Play-entry reset re-arms, so 100 anchors and master is untouched.
+        scripted = _ScriptedWatch(values=[30, 32, 100], master=30)
+        await scripted.poll()
+        await scripted.poll()
+        self.assertEqual(scripted.applied, [32])
+        scripted.watch.reset_session()
+        await scripted.poll()
+        self.assertEqual(scripted.applied, [32])
+        self.assertFalse(scripted.watch._translator.picked_up)
+
+    async def test_reset_drops_pending_without_writing(self):
+        # A pending gesture dropped by the start-edge reset must never reach
+        # the master; the next absolute value anchors the fresh session.
+        scripted = _ScriptedWatch(values=[30, 32, 100], master=30)
+        await scripted.poll()
+        self.assertTrue(await scripted.watch.poll_once())
+        self.assertIsNotNone(scripted.watch._translator.pending)
+        scripted.watch.reset_session()
+        self.assertIsNone(scripted.watch._translator.pending)
+        await scripted.poll()
+        self.assertEqual(scripted.applied, [])
+        self.assertFalse(scripted.watch._translator.picked_up)
+
 
 class ReadSourceVolumeTests(unittest.IsolatedAsyncioTestCase):
     async def test_parses_playerctl_fraction_into_percent(self):
