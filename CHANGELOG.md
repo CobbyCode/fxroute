@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0-beta (2026-09-07)
+
+First public beta. Distribution channels: web demo on GitHub Pages,
+Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 ISO via
+SourceForge. Khadas/VIM1S stays internal and gets no public image.
+
+Public release artifact names:
+
+- `fxroute-1.0-beta-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta-x86_64-leap16.iso` (SourceForge)
+
 ## 0.9.17 (2026-09-06)
 
 ### Installer / providers
