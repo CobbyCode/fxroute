@@ -1,0 +1,513 @@
+.radio-panel {
+    background: rgba(22, 22, 26, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.065);
+    border-radius: 22px;
+    padding: clamp(1rem, 1.7vw, 1.45rem);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.018);
+}
+.radio-panel-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(420px, 820px) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.8rem;
+    margin-bottom: 1.45rem;
+}
+.radio-panel-header .section-title {
+    margin: 0;
+}
+/* Narrow panels: put the search on its own row so the action buttons on the
+   right never push the header past the viewport (base grid keeps a 420px
+   search minimum, which overflows at 601-660px). Mirrors the <=600px rules. */
+
+.radio-search-field {
+    width: 100%;
+    max-width: 820px;
+    justify-self: center;
+    display: flex;
+    flex-direction: column;
+    gap: 0.42rem;
+}
+.radio-search-input-wrap {
+    position: relative;
+    min-width: 0;
+}
+.station-search-input {
+    width: 100%;
+    padding: 0.55rem 2.1rem 0.55rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.86rem;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+    box-sizing: border-box;
+    height: 44px;
+}
+.station-search-input::-webkit-search-cancel-button,
+.station-search-input::-webkit-search-decoration {
+    appearance: none;
+    -webkit-appearance: none;
+}
+.station-search-input::placeholder {
+    color: var(--text-muted);
+}
+.station-search-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.station-search-clear {
+    position: absolute;
+    right: 0.32rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.55rem;
+    height: 1.55rem;
+    border: 0;
+    border-radius: 999px;
+    background: var(--border);
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.42;
+    -webkit-tap-highlight-color: transparent;
+}
+.station-search-clear:not(:disabled) {
+    opacity: 1;
+}
+.station-search-clear:not(:disabled):hover {
+    background: var(--border-strong);
+    color: var(--text-primary);
+}
+.station-search-clear:disabled {
+    cursor: default;
+}
+.station-search-clear:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.radio-header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+    justify-self: end;
+}
+.btn-icon-only {
+    padding: 0.5rem;
+    min-width: 44px;
+}
+.radio-station-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 1.6rem;
+}
+.station-catalog-section {
+    margin: 0;
+    position: relative;
+}
+.station-catalog-summary {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.7rem 3rem 0.7rem 0;
+    color: var(--text-primary);
+    cursor: pointer;
+    user-select: none;
+}
+.station-catalog-summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+}
+.station-catalog-summary::marker {
+    content: '';
+}
+.station-catalog-summary::-webkit-details-marker {
+    display: none;
+}
+.station-catalog-summary > span:first-child {
+    font-size: 0.95rem;
+    font-weight: 700;
+}
+.station-catalog-summary-hint {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 400;
+}
+.station-catalog-toggle {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
+    width: 2.25rem;
+    height: 2.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    color: var(--text-primary);
+    pointer-events: none;
+    transition: color 0.16s ease;
+}
+.station-catalog-section[open] .station-catalog-toggle {
+    color: var(--accent);
+}
+.station-catalog-toggle svg {
+    width: 1.25rem;
+    height: 1.25rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.25;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 0.18s ease;
+}
+.station-catalog-section[open] .station-catalog-toggle svg {
+    transform: rotate(180deg);
+}
+.station-catalog-content {
+    padding-top: 0.45rem;
+}
+.station-catalog-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 1.45rem;
+}
+.station-catalog-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+.station-catalog-group-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+.radio-search-results {
+    gap: 0.55rem;
+}
+.radio-search-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+}
+.station-result-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.72rem;
+}
+.station-result-group + .station-result-group {
+    padding-top: 1.1rem;
+    border-top: 1px solid var(--border);
+}
+.station-result-group-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.65rem;
+}
+.station-result-group-header h4 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    font-weight: 700;
+}
+.station-result-group-header span {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+.radio-search-results .station-name {
+    min-height: calc(1.3em * 2);
+}
+.radio-search-results .online-station-meta {
+    min-height: calc(1.3em * 2);
+}
+.catalog-station-card .station-name {
+    min-height: calc(1.3em * 2);
+}
+.catalog-station-card .catalog-station-action {
+    margin-top: auto;
+}
+.radio-station-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+}
+.radio-station-section + .radio-station-section {
+    padding-top: 1.35rem;
+    border-top: 1px solid var(--border);
+}
+.radio-station-section-header h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+.radio-station-section-header p {
+    margin-top: 0.16rem;
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+}
+.btn-manage-trigger {
+    flex-shrink: 0;
+}
+.btn-ghost {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 500;
+    font-family: inherit;
+    min-height: 44px;
+    padding: 0.5rem 1rem;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    transition: color 0.15s var(--ease), background 0.15s var(--ease), border-color 0.15s var(--ease);
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+.btn-ghost:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+}
+.btn-ghost:active {
+    transform: scale(0.96);
+}
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible,
+.btn-ghost:focus-visible,
+.btn-danger:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.btn-ghost-icon {
+    font-size: 0.88rem;
+    opacity: 0.7;
+    transition: opacity 0.15s var(--ease);
+}
+.btn-ghost:hover .btn-ghost-icon {
+    opacity: 1;
+}
+.btn-close-manage {
+    padding: 0.3rem 0.55rem;
+    font-size: 0.8rem;
+}
+.stations-grid {
+    display: grid;
+    /* Shared tile basis (narrower radio derivative token) so stations,
+       albums and TIDAL tiles keep one size rhythm across breakpoints. */
+    grid-template-columns: repeat(auto-fill, minmax(var(--tile-min-radio), 1fr));
+    justify-content: stretch;
+    gap: var(--tile-gap);
+}
+.station-card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.012));
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 17px;
+    padding: .7rem;
+    cursor: pointer;
+    transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), border-color 0.18s var(--ease), background 0.18s var(--ease);
+    position: relative;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: .68rem;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+}
+.station-art-wrap {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 13px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+}
+.station-art-wrap--real {
+    background:
+        radial-gradient(circle at top right, rgba(255,255,255,0.08), transparent 34%),
+        linear-gradient(180deg, rgba(255,255,255,0.05), rgba(0,0,0,0.16));
+    border-color: rgba(255,255,255,0.08);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.station-art-wrap--real::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(255,255,255,0.035), transparent 36%, rgba(0,0,0,0.1));
+}
+.station-art-wrap--fallback {
+    background: rgba(255,255,255,0.03);
+}
+.station-art {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-position: center;
+    background: rgba(0,0,0,0.08);
+}
+.station-art--real {
+    object-fit: contain;
+    padding: 0.35rem;
+}
+.station-art--fallback {
+    object-fit: contain;
+    padding: 0.45rem;
+}
+.station-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+    border-color: rgba(255,255,255,0.14);
+    background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
+}
+.station-card:active {
+    transform: scale(0.98) translateY(-1px);
+}
+/* Keyboard focus */
+.station-card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+/* Touch feedback: subtle ripple-like press */
+@supports (-webkit-tap-highlight-color: transparent) {
+    .station-card {
+        touch-action: manipulation;
+    }
+}
+.station-card.active::after {
+    content: '♫';
+    position: absolute;
+    top: 0.7rem;
+    right: 0.8rem;
+    font-size: 0.96rem;
+    color: var(--accent);
+    animation: pulse 1.5s ease-in-out infinite;
+    display: none;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}
+.station-name {
+    font-weight: 700;
+    font-size: .95rem;
+    color: var(--text-primary);
+    line-height: 1.3;
+    letter-spacing: -0.015em;
+    min-height: auto;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.catalog-station-card {
+    cursor: default;
+}
+.catalog-station-card:hover {
+    transform: none;
+}
+.catalog-station-action {
+    width: 100%;
+    min-height: 36px;
+    padding: 0.48rem 0.65rem;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent-dim);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+.catalog-station-action:hover:not(:disabled) {
+    background: var(--accent);
+    color: var(--bg-primary);
+}
+.catalog-station-action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.catalog-station-action--saved {
+    border-color: var(--border);
+    background: rgba(255,255,255,0.035);
+    color: var(--text-secondary);
+    cursor: default;
+}
+/* Station favorite heart — same language as the Library .album-card-fav and
+   the TIDAL .streaming-fav on tiles: absolute top-right on the cover,
+   semi-transparent round button, muted when unsaved, green when in
+   My Stations. */
+.station-card-fav {
+    position: absolute;
+    top: 0.95rem;
+    right: 0.95rem;
+    z-index: var(--z-raised);
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(8, 18, 26, 0.72);
+    backdrop-filter: blur(4px);
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: color .12s var(--ease), border-color .12s var(--ease), transform .12s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.station-card-fav:hover,
+.station-card-fav.is-active { color: var(--accent); border-color: var(--accent); }
+.station-card-fav:active { transform: scale(.92); }
+.station-card-fav:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.station-card-fav:disabled { opacity: .45; cursor: wait; }
+.station-browser-status {
+    min-height: 1.25rem;
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+}
+.online-station-meta {
+    min-height: calc(1.3em * 2);
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.radio-manage-stack {
+    gap: 0.8rem;
+}
+
+.station-search-input,
+.url-input {
+    border-color: rgba(255,255,255,.075);
+    background: rgba(255,255,255,.035);
+}
+
+.station-card.active {
+    border-color: rgba(110,231,183,.72);
+    background: linear-gradient(180deg, rgba(110,231,183,.105), rgba(255,255,255,.014));
+    box-shadow: 0 0 0 1px rgba(110,231,183,.38), 0 14px 30px rgba(0,0,0,.26);
+}

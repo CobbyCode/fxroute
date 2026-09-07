@@ -1,0 +1,428 @@
+.header {
+    background: rgba(14, 14, 17, 0.94);
+    min-height: 72px;
+    padding: .85rem clamp(1rem, 2.1vw, 2rem);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.9rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+    /* No backdrop-filter here: it would create a stacking context that
+       traps the header tooltips and power menu behind the tab bar. The
+       header is a static bar (nothing ever scrolls underneath it) and its
+       background is nearly opaque, so the blur had no visible effect. With
+       no context on the header, the popups escape to the root stacking
+       context via their own z-index values (--z-tooltip, --z-header-menu). */
+}
+.brand-lockup {
+    display: flex;
+    align-items: center;
+    gap: 0.39rem;
+    min-width: 0;
+}
+.brand-lockup-button {
+    position: relative;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.brand-lockup-button:hover .brand-mark,
+.brand-lockup-button:focus-visible .brand-mark {
+    border-color: rgba(110, 231, 183, 0.28);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.025), 0 0 0 3px rgba(110, 231, 183, 0.08);
+}
+.brand-lockup-button:focus-visible {
+    /* Same visible keyboard ring as the power button next in the header. */
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+/* Custom CSS tooltips (header buttons): the brand/settings trigger and the
+   power button use the same look. The attribute selector keeps the shared
+   visuals in one place; per-button rules only set the horizontal anchor. */
+.brand-lockup-button[data-tooltip]::after,
+.power-btn[data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    top: calc(100% + 0.45rem);
+    z-index: var(--z-tooltip);
+    padding: 0.32rem 0.52rem;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    box-shadow: 0 8px 24px var(--shadow);
+    font-size: 0.72rem;
+    font-weight: 650;
+    line-height: 1.2;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateY(-2px);
+    transition: opacity 0.15s var(--ease), visibility 0.15s var(--ease), transform 0.15s var(--ease);
+}
+.brand-lockup-button[data-tooltip]::after {
+    left: 0;
+}
+.power-btn[data-tooltip]::after {
+    right: 0;
+}
+.brand-lockup-button[data-tooltip]:hover::after,
+.brand-lockup-button:focus-visible::after,
+.power-btn[data-tooltip]:hover::after,
+.power-btn:focus-visible::after {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+/* The open power menu covers the area under the button, so its tooltip must
+   stay hidden while the button is expanded. */
+.power-btn[data-tooltip][aria-expanded="true"]::after {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-2px);
+}
+
+.brand-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    border-radius: var(--radius-md);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.008));
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
+    font-weight: 800;
+    font-size: 0.95rem;
+    letter-spacing: -0.075em;
+    flex-shrink: 0;
+}
+.brand-mark-f {
+    color: rgba(244, 244, 245, 0.9);
+}
+.brand-mark-x {
+    color: rgba(110, 231, 183, 0.82);
+}
+.brand-text-block {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.12rem;
+    min-width: 0;
+    line-height: 0.98;
+    padding-top: 1px;
+}
+.brand-title {
+    color: var(--text-primary);
+    font-size: 1.22rem;
+    font-weight: 740;
+    letter-spacing: -0.035em;
+}
+.brand-title-fx {
+    color: rgba(225, 250, 239, 0.94);
+}
+.brand-subtitle {
+    color: rgba(176, 176, 190, 0.9);
+    font-size: 0.63rem;
+    font-weight: 650;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+/* Header-right cluster: power button */
+.header-status {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-shrink: 0;
+}
+
+/* Power menu (header) */
+.power-menu-root {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+.power-btn {
+    position: relative;
+    width: 38px;
+    height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.18s var(--ease),
+                background 0.18s var(--ease),
+                border-color 0.18s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.power-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+}
+.power-btn:focus-visible {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.power-btn[aria-expanded="true"] {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+}
+.power-btn-icon {
+    width: 18px;
+    height: 18px;
+    display: block;
+}
+.power-btn.is-online .power-btn-icon {
+    color: var(--success);
+    filter: drop-shadow(0 0 4px rgba(52,211,153,0.35));
+}
+.power-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 168px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: 0 18px 36px -18px var(--shadow);
+    padding: 0.35rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    z-index: var(--z-header-menu);
+}
+/* The open menu's --z-header-menu value keeps it above the tab bar and
+   transient toasts in the root stacking context; the header itself must
+   never be raised (it would cover the tab bar). */
+.power-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    background: transparent;
+    border: 0;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 500;
+    text-align: left;
+    padding: 0.55rem 0.7rem;
+    border-radius: 9px;
+    cursor: pointer;
+    width: 100%;
+    transition: background 0.15s var(--ease), color 0.15s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.power-menu-item:hover {
+    background: var(--bg-hover);
+}
+.power-menu-item:focus-visible {
+    background: var(--bg-hover);
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.power-menu-item-icon {
+    width: 17px;
+    height: 17px;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+}
+.power-menu-item-icon-danger {
+    color: var(--danger);
+}
+.power-menu-item:hover .power-menu-item-icon-danger {
+    color: var(--danger);
+}
+.power-menu-item.active,
+.power-menu-item[data-pending="true"] {
+    color: var(--text-muted);
+    pointer-events: none;
+}
+.power-menu-item[data-pending="true"] .power-menu-item-icon {
+    color: var(--accent);
+}
+
+/* ============================================================
+   Tabs
+   ============================================================ */
+.tabs {
+    display: flex;
+    position: relative;
+    z-index: var(--z-tabs);
+    background: rgba(14, 14, 17, 0.94);
+    padding: .42rem clamp(.7rem, 1.4vw, 1.2rem);
+    gap: .25rem;
+    border-top: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+.tabs.can-scroll::after {
+    content: '';
+    position: sticky;
+    right: 0;
+    margin-left: auto;
+    flex-shrink: 0;
+    align-self: stretch;
+    width: 44px;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, var(--bg-surface));
+}
+.tabs::-webkit-scrollbar { display: none; }
+/* ARIA tablist wrapper inside the nav landmark; inherits the responsive
+   gap/justify tweaks applied to .tabs so button spacing stays consistent. */
+.tabs-list {
+    display: flex;
+    gap: inherit;
+    justify-content: inherit;
+    align-items: center;
+    flex: 1 1 auto;
+    min-width: max-content;
+}
+.tab-btn {
+    flex: 0 0 auto;
+    min-width: 112px;
+    min-height: 42px;
+    padding: .52rem .9rem;
+    background: transparent;
+    border: none;
+    color: #9999a6;
+    cursor: pointer;
+    font-size: .9rem;
+    font-weight: 560;
+    border-radius: var(--radius-md);
+    transition: color 0.2s var(--ease), background 0.2s var(--ease), box-shadow 0.2s var(--ease);
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+.tab-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+.tab-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+/* The active accent stays inside the tab: a short centered underline and a
+   faint inner glow, with no green edge or outer glow bleeding toward the
+   brand lockup / first tab. The underline spans only the inner part of the
+   button, so the active state never reaches the edge facing the logo. */
+.tab-btn.active {
+    color: #f3f3f5;
+    background: rgba(110, 231, 183, 0.07);
+    font-weight: 600;
+    position: relative;
+    box-shadow: inset 0 0 12px rgba(110, 231, 183, 0.07);
+}
+.tab-btn.active::after {
+    content: '';
+    position: absolute;
+    left: 30%;
+    right: 30%;
+    bottom: 3px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+    opacity: 0.9;
+}
+/* Tab content */
+.tab-content {
+    max-width: 1500px;
+    padding: 1.35rem clamp(1rem, 2.2vw, 2rem) calc(2rem + var(--playback-footer-space));
+    margin: 0 auto;
+    min-height: 350px;
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; animation: fadeIn 0.25s var(--ease); }
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+/* Shared compact content state — one vocabulary for Loading / Empty / Error
+   text slots used by Library, Radio and TIDAL browse. Base padding and type
+   stay identical when a slot switches between states, so there is no layout
+   jump; the modifier only changes the tone and the loading pulse dot. */
+.content-state {
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 2rem 1rem;
+    font-size: 0.88rem;
+    line-height: 1.5;
+}
+.content-state--empty {
+    color: var(--text-muted);
+}
+.content-state--error {
+    color: var(--danger);
+}
+.content-state--loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+}
+.content-state--loading::before {
+    content: '';
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: 0.6;
+    animation: content-state-pulse 1.6s ease-in-out infinite;
+}
+@keyframes content-state-pulse {
+    0%, 100% { opacity: 0.2; }
+    50%      { opacity: 0.7; }
+}
+/* ============================================================
+   Station Cards — Radio tab
+   ============================================================ */
+.section-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+.section-subtitle {
+    margin-top: 0.2rem;
+    color: var(--text-secondary);
+    font-size: 0.92rem;
+}
+
+/* ============================================================
+   2026 visual refresh — shell, navigation and content rhythm
+   (Duplicate base/override rules were folded into their base definitions;
+   the rest are refresh-only chrome and responsive refinements.)
+   ============================================================ */
+
+.tab-glyph {
+    width: 1.05rem;
+    display: inline-grid;
+    place-items: center;
+    color: rgba(110,231,183,0.75);
+    font-size: .9rem;
+}
+.tab-btn[data-tab="spotify"] .tab-glyph { color: #4ed68b; }
+.tab-btn[data-tab="radio"] .tab-glyph { color: #7fe2b7; }
+.tab-btn.active .tab-glyph { color: var(--accent); }

@@ -1,0 +1,431 @@
+.manage-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-overlay);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem;
+}
+.manage-overlay-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
+.manage-dialog {
+    position: relative;
+    width: min(520px, 100%);
+    max-height: 85vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--bg-hover) transparent;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xl);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+    padding: 1.1rem;
+    touch-action: manipulation;
+}
+.manage-dialog::-webkit-scrollbar {
+    width: 5px;
+}
+.manage-dialog::-webkit-scrollbar-track {
+    background: transparent;
+}
+.manage-dialog::-webkit-scrollbar-thumb {
+    background: var(--bg-hover);
+    border-radius: 3px;
+}
+.manage-dialog-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.8rem;
+    margin-bottom: 0.9rem;
+}
+.manage-dialog-header .section-title {
+    font-size: 1.15rem;
+}
+.manage-dialog-header .section-subtitle {
+    margin-top: 0.15rem;
+    font-size: 0.9rem;
+}
+
+.radio-manage-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.78rem;
+    padding: 0.95rem;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.015);
+}
+.radio-manage-section-header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.16rem;
+}
+.radio-manage-section-header h3 {
+    font-size: 0.97rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+.radio-manage-section-header p {
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+    line-height: 1.4;
+}
+.radio-manage-submit-row {
+    display: flex;
+    justify-content: center;
+    margin-top: 0.1rem;
+}
+.radio-manage-submit-row .btn-primary {
+    min-width: 0;
+    width: auto;
+}
+#station-existing-fields:not(.hidden) {
+    display: flex;
+    flex-direction: column;
+    gap: 0.72rem;
+}
+.radio-manage-submit-row-station-manage {
+    justify-content: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-top: 0.85rem;
+}
+/* Qobuz/qbzd and TIDAL logins stack above the settings dialog they are launched from. */
+.qobuz-login-overlay,
+.tidal-login-overlay {
+    z-index: calc(var(--z-overlay) + 10);
+}
+.qobuz-login-overlay .url-input,
+.tidal-login-overlay .url-input {
+    width: 100%;
+}
+.qobuz-login-overlay a.btn-primary,
+.tidal-login-overlay a.btn-primary {
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+}
+
+.settings-dialog {
+    width: min(560px, 100%);
+}
+.settings-stack {
+    gap: 0.85rem;
+}
+.settings-section {
+    gap: 0.7rem;
+}
+.settings-field-group {
+    margin-top: 0.1rem;
+}
+.settings-field-group label {
+    display: block;
+    margin-bottom: 0.38rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+.settings-inline-note {
+    margin-top: 0.45rem;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.4;
+}
+.settings-inline-note.switching {
+    color: var(--accent);
+    animation: switching-pulse 1.2s ease-in-out infinite;
+}
+@keyframes switching-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+.settings-certificate-note {
+    margin: 0.1rem 0 0;
+    text-align: right;
+}
+/* Settings -> Providers: one calm row per provider. */
+.settings-providers-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+.settings-provider-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem 0.8rem;
+    flex-wrap: wrap;
+}
+.settings-provider-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+    min-width: 0;
+    flex: 1 1 12rem;
+}
+.settings-provider-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.settings-provider-toggle input {
+    accent-color: var(--accent);
+}
+.settings-provider-status {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+.settings-provider-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.4rem;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+.settings-provider-operation {
+    margin-top: 0.45rem;
+}
+.settings-provider-operation pre {
+    margin: 0;
+    max-height: 9rem;
+    overflow: auto;
+    padding: 0.5rem 0.65rem;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
+    font-size: 0.72rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.field-group.settings-device-name-row {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+}
+.settings-device-name-row .url-input {
+    flex: 1 1 18rem;
+    min-width: 0;
+}
+.settings-device-name-row .btn-secondary {
+    flex: 0 0 auto;
+}
+.settings-certificate-note a {
+    color: var(--text-secondary);
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+}
+.settings-certificate-note a:hover {
+    color: var(--accent);
+}
+.settings-maintenance-status {
+    display: grid;
+    gap: 0.45rem;
+    margin: 0 0 0.75rem;
+}
+.settings-maintenance-status div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.42rem 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+.settings-maintenance-status dt {
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.settings-maintenance-status dd {
+    min-width: 0;
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.86rem;
+    font-weight: 700;
+    text-align: right;
+    overflow-wrap: anywhere;
+}
+.settings-maintenance-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+    width: min(100%, 420px);
+    margin: 0 auto;
+}
+.settings-maintenance-actions .btn-primary,
+.settings-maintenance-actions .btn-secondary {
+    width: 100%;
+    min-width: 0;
+}
+.settings-restore-note {
+    margin-top: 0.6rem;
+    margin-bottom: 0.5rem;
+}
+#settings-restore-section .btn-danger {
+    width: min(100%, 420px);
+    display: block;
+    margin: 0 auto;
+}
+.settings-details-toggle {
+    appearance: none;
+    align-self: center;
+    margin-top: 0.68rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+    cursor: pointer;
+}
+.settings-details-toggle:hover {
+    color: var(--accent);
+}
+.settings-update-details {
+    margin-top: 0.65rem;
+}
+.settings-update-log {
+    max-height: 220px;
+    overflow: auto;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.56);
+    color: #d1d5db;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+
+.dialog-header-corner-close {
+    margin-bottom: 1rem;
+    padding-right: 3rem;
+}
+.dialog-header-corner-close .btn-close-manage {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    width: 34px;
+    height: 34px;
+    min-height: 34px;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    line-height: 1;
+}
+.dialog-header-corner-close .dialog-close-label {
+    display: none;
+}
+.dialog-header-corner-close .btn-close-manage .btn-ghost-icon {
+    font-size: 0.95rem;
+    opacity: 0.9;
+    line-height: 1;
+}
+
+/* ============================================================
+   Toasts
+   ============================================================ */
+.toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: var(--z-toast);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: 320px;
+}
+.toast {
+    padding: 0.85rem 1.1rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    box-shadow: 0 8px 24px var(--shadow);
+    animation: toastIn 0.3s var(--ease);
+    font-size: 0.88rem;
+    line-height: 1.4;
+}
+.toast.success { border-left-color: var(--success); }
+.toast.error   { border-left-color: var(--danger); }
+.toast.info    { border-left-color: var(--accent); }
+.toast.now-playing-cue {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    min-width: min(320px, calc(100% - 2rem));
+    max-width: min(420px, calc(100% - 2rem));
+    padding: 0.65rem 0.85rem;
+}
+.now-playing-cover {
+    width: 0;
+    height: 56px;
+    border-radius: 0.7rem;
+    object-fit: contain;
+    background: var(--bg-elevated);
+    flex: 0 0 auto;
+    opacity: 0;
+    border: 0;
+    box-shadow: none;
+    transition: width 0.18s var(--ease), opacity 0.18s var(--ease);
+}
+.now-playing-cue.has-cover .now-playing-cover.is-ready {
+    width: 56px;
+    opacity: 1;
+    border: 1px solid var(--border);
+    box-shadow: 0 6px 18px var(--shadow);
+}
+.now-playing-text {
+    min-width: 0;
+}
+.now-playing-label {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.12rem;
+}
+.now-playing-title,
+.now-playing-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.now-playing-title {
+    color: var(--text-primary);
+    font-weight: 700;
+}
+.now-playing-meta {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-top: 0.1rem;
+}
+.toast.remove {
+    animation: toastOut 0.25s ease-in forwards;
+}
+@keyframes toastIn {
+    from { opacity: 0; transform: translateX(30px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes toastOut {
+    to { opacity: 0; transform: translateX(30px); }
+}

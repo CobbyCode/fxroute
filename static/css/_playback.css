@@ -1,0 +1,545 @@
+.measurement-calibration-select-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 0.5rem;
+    align-items: stretch;
+}
+
+.measurement-calibration-select-row .btn-secondary,
+.measurement-calibration-select-row .btn-danger {
+    min-width: 92px;
+    padding-left: 0.9rem;
+    padding-right: 0.9rem;
+}
+
+.measurement-calibration-upload-area {
+    min-height: 64px;
+    padding: 0.9rem 1rem;
+}
+
+.measurement-calibration-upload-area .upload-area-icon {
+    font-size: 1.1rem;
+}
+
+/* ============================================================
+   Playback Bar (fixed bottom)
+   ============================================================ */
+.playback-bar {
+    position: fixed;
+    left: 50%;
+    bottom: max(6px, env(safe-area-inset-bottom));
+    width: min(1560px, calc(100% - 20px));
+    min-height: 112px;
+    transform: translateX(-50%);
+    z-index: var(--z-playback-bar);
+    display: grid;
+    grid-template-columns: minmax(180px, 0.72fr) minmax(390px, 1.75fr) minmax(130px, 0.52fr) minmax(200px, 0.78fr);
+    grid-template-areas: "track transport meter volume";
+    align-items: center;
+    gap: clamp(0.75rem, 1.3vw, 1.35rem);
+    padding: 0.82rem clamp(0.9rem, 1.55vw, 1.45rem);
+    border: 1px solid rgba(255,255,255,0.085);
+    border-radius: 22px;
+    background:
+        radial-gradient(circle at 18% 0%, rgba(110,231,183,0.045), transparent 30%),
+        linear-gradient(180deg, rgba(24,24,29,0.96), rgba(14,14,18,0.965));
+    box-shadow: 0 18px 50px rgba(0,0,0,0.46), inset 0 1px 0 rgba(255,255,255,0.035);
+    backdrop-filter: blur(24px) saturate(1.12);
+    -webkit-backdrop-filter: blur(24px) saturate(1.12);
+    transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.playback-bar.is-playing {
+    border-color: rgba(110,231,183,0.18);
+    box-shadow: 0 18px 50px rgba(0,0,0,0.46), 0 -1px 22px rgba(110,231,183,0.045), inset 0 1px 0 rgba(255,255,255,0.035);
+}
+.playback-bar.is-paused {
+    border-color: rgba(110, 231, 183, 0.16);
+}
+
+.playback-bar .track-info {
+    grid-area: track;
+    min-width: 0;
+    max-width: 100%;
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    align-items: center;
+    gap: 0.82rem;
+}
+.playback-visual {
+    position: relative;
+    width: 72px;
+    height: 72px;
+    border-radius: 14px;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    background:
+        radial-gradient(circle at 25% 15%, rgba(110,231,183,0.11), transparent 42%),
+        rgba(255,255,255,0.035);
+    border: 1px solid rgba(255,255,255,0.09);
+    box-shadow: 0 8px 22px rgba(0,0,0,0.28);
+}
+.playback-cover {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: inherit;
+    cursor: pointer;
+    position: relative;
+    z-index: var(--z-raised);
+}
+.playback-cover.hidden { display: none; }
+.playback-cover-placeholder {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: inherit;
+}
+.playback-visual:has(.playback-cover:not(.hidden)) .playback-cover-placeholder { display: none; }
+
+.track-copy {
+    min-width: 0;
+    display: grid;
+    gap: 0.38rem;
+}
+.track-fallback,
+.playback-bar .song-info {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    max-width: 100%;
+    display: grid;
+    gap: 0.08rem;
+}
+.playback-bar .song-info:not(:has(> :not(:empty))) { display: none; }
+.playback-bar .song-info > :empty { display: none; }
+.playback-bar .track-title,
+.playback-bar .song-info .sc-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: rgba(255,255,255,0.97);
+    font-weight: 720;
+    font-size: clamp(0.9rem, 1vw, 1.02rem);
+    line-height: 1.25;
+    text-align: left;
+}
+.playback-bar .track-title.placeholder { color: var(--text-muted); font-weight: 560; }
+.playback-bar .track-artist,
+.playback-bar .song-info .sc-artist,
+.playback-bar .song-info .sc-album {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    color: var(--text-secondary);
+    line-height: 1.2;
+}
+.playback-bar .track-artist,
+.playback-bar .song-info .sc-artist { font-size: 0.76rem; font-weight: 590; }
+.playback-bar .song-info .sc-album { font-size: 0.7rem; color: var(--text-muted); }
+.track-favorite-btn:hover {
+    color: var(--accent);
+    background: rgba(110,231,183,0.08);
+}
+.track-favorite-btn:focus-visible {
+    color: var(--accent);
+    background: rgba(110,231,183,0.08);
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+.track-favorite-btn:active { transform: scale(.92); }
+.track-favorite-btn.active { color: var(--accent); text-shadow: 0 0 12px rgba(110,231,183,.22); }
+.track-favorite-btn:disabled { opacity: .45; cursor: wait; }
+.playback-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: nowrap;
+    min-height: 1.25rem;
+    /* The row must never paint past the track column into the gap before
+       the seek time: pills already shrink with ellipsis, this clips any
+       remainder at the row edge. */
+    overflow: hidden;
+}
+.playback-meta-row:not(:has(> :not(.hidden):not(:empty))) { display: none; }
+.samplerate-status,
+.queue-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 1.25rem;
+    padding: .08rem .48rem;
+    border-radius: 999px;
+    font-size: .64rem;
+    font-weight: 680;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    white-space: nowrap;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); padding: .08rem .36rem; }
+/* The queue pill is text-only: no leading icon, so longer track numbers
+   cost less width and the gap to the seek time stays untouched. */
+.queue-status { background: rgba(110,231,183,.08); color: var(--accent); }
+
+.playback-center {
+    grid-area: transport;
+    min-width: 0;
+    width: 100%;
+    display: grid;
+    align-items: center;
+    gap: 0.48rem;
+}
+.control-btn {
+    width: 56px;
+    height: 56px;
+    flex: 0 0 auto;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 1px solid rgba(110,231,183,.38);
+    background:
+        radial-gradient(circle at 50% 35%, rgba(110,231,183,.24), rgba(110,231,183,.07) 62%, transparent 63%),
+        rgba(13,20,18,.92);
+    color: #f0fff8;
+    box-shadow: 0 0 0 5px rgba(110,231,183,.035), 0 8px 22px rgba(0,0,0,.25);
+    cursor: pointer;
+    font-size: 1.25rem;
+    transition: transform .12s var(--ease), border-color .15s var(--ease), background .15s var(--ease), box-shadow .15s var(--ease);
+}
+.control-btn:hover:not(:disabled),
+.control-btn:focus-visible:not(:disabled) {
+    border-color: rgba(110,231,183,.64);
+    box-shadow: 0 0 0 5px rgba(110,231,183,.055), 0 8px 24px rgba(0,0,0,.3);
+    outline: none;
+}
+.control-btn:active:not(:disabled) { transform: scale(.94); }
+.control-btn:disabled { opacity: .32; cursor: default; }
+.control-btn-secondary,
+.control-btn-clear {
+    width: 38px;
+    height: 38px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    box-shadow: none;
+    font-size: .98rem;
+}
+.control-btn-secondary:hover:not(:disabled),
+.control-btn-secondary:focus-visible:not(:disabled),
+.control-btn-clear:hover:not(:disabled),
+.control-btn-clear:focus-visible:not(:disabled) {
+    color: var(--text-primary);
+    background: rgba(255,255,255,.045);
+    border-color: rgba(255,255,255,.06);
+    box-shadow: none;
+}
+
+.seek-row {
+    display: grid;
+    /* Time cells grow past 2.5rem for long durations instead of overflowing
+       toward the slider or the queue pill; the slider yields the width. */
+    grid-template-columns: minmax(2.5rem, max-content) minmax(100px, 1fr) minmax(2.5rem, max-content);
+    align-items: center;
+    gap: .35rem;
+    width: 100%;
+    min-width: 0;
+}
+.seek-time {
+    color: var(--text-muted);
+    font-size: .66rem;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    text-align: center;
+    white-space: nowrap;
+}
+.seek-slider,
+.volume-slider {
+    --range-progress: 0%;
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    /* Touch hit area: transparent padding expands the drag target to ~25px
+       while the negative margin keeps the layout height at the 3px visual
+       track. background-clip keeps the gradient on the content box only. */
+    margin-block: -10px;
+    padding-block: 10px;
+    border: 0;
+    border-radius: 999px;
+    outline: none;
+    cursor: pointer;
+    box-sizing: content-box;
+    /* One slider dialect for the whole footer: seek and volume share track
+       height and thumb size in every range. Integer px only, so OS display
+       scaling cannot round one slider up and the other down. The ranges
+       below only switch the shared desktop size to the shared phone size;
+       both sliders always move together. */
+    height: 3px;
+    background: linear-gradient(to right,
+        var(--accent) 0%,
+        var(--accent) var(--range-progress),
+        rgba(255,255,255,.10) var(--range-progress),
+        rgba(255,255,255,.10) 100%);
+    background-clip: content-box;
+    box-shadow: none;
+}
+/* Seek and volume share one thumb in every range (single rule, no
+   per-slider sizes). */
+.seek-slider::-webkit-slider-thumb,
+.volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 1px solid rgba(0,0,0,0.5);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.1);
+    transition: transform .12s var(--ease), box-shadow .12s var(--ease);
+}
+.seek-slider::-moz-range-thumb,
+.volume-slider::-moz-range-thumb {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 1px solid rgba(0,0,0,0.5);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+}
+.seek-slider:hover::-webkit-slider-thumb,
+.volume-slider:hover::-webkit-slider-thumb {
+    transform: scale(1.18);
+    box-shadow: 0 0 0 3px rgba(110,231,183,.22), 0 2px 6px rgba(0,0,0,0.6);
+}
+.seek-slider:hover::-moz-range-thumb,
+.volume-slider:hover::-moz-range-thumb {
+    transform: scale(1.18);
+    box-shadow: 0 0 0 3px rgba(110,231,183,.22), 0 2px 6px rgba(0,0,0,0.6);
+}
+.seek-slider:focus-visible::-webkit-slider-thumb,
+.volume-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(110,231,183,.28); }
+.seek-slider:focus-visible::-moz-range-thumb,
+.volume-slider:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 4px rgba(110,231,183,.28); }
+
+.meter-segments i.is-lit { background: #55d99f; }
+.meter-segments i.is-lit.is-warn { background: #e9b949; }
+.meter-segments i.is-lit.is-hot { background: #ef7b4f; }
+.meter-segments i.is-peak {
+    background: #ff5a5f;
+    box-shadow: 0 0 8px rgba(255,90,95,.72);
+}
+
+.playback-bar .controls {
+    grid-area: volume;
+    min-width: 0;
+}
+.volume-control {
+    display: grid;
+    grid-template-columns: 24px minmax(130px,1fr) 2.5rem;
+    align-items: center;
+    gap: .5rem;
+    min-width: 0;
+}
+.volume-icon {
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    color: var(--text-secondary);
+}
+.volume-icon svg { width: 20px; height: 20px; display: block; }
+.volume-slider { min-width: 130px; }
+.playback-bar .controls.is-adjusting-volume .volume-display { color: var(--text-primary); }
+
+.playback-bar.progress-readonly .seek-slider:disabled {
+    cursor: default;
+    opacity: 0.9;
+}
+
+/* ============================================================
+   Playback footer refinement — consolidated survivors
+   (verbatim rules previously spread across the v1-v4 blocks)
+   ============================================================ */
+
+.control-btn-mode:hover:not(:disabled), .control-btn-mode:focus-visible:not(:disabled) { color: var(--text-primary);
+    border-color: rgba(255,255,255,.065);
+    background: rgba(255,255,255,.04);
+    box-shadow: none; }
+.control-btn-mode.active { color: var(--accent);
+    border-color: rgba(110,231,183,.16);
+    background: rgba(110,231,183,.055); }
+.control-btn-mode:disabled { opacity: .28; }
+.playback-meter.is-active { opacity: .94; }
+.meter-row { display: contents; }
+.meter-row[data-channel="left"] .meter-channel { grid-column: 1; grid-row: 1; }
+.meter-row[data-channel="left"] .meter-segments { grid-column: 2; grid-row: 1; }
+.meter-row[data-channel="right"] .meter-channel { grid-column: 1; grid-row: 2; }
+.meter-row[data-channel="right"] .meter-segments { grid-column: 2; grid-row: 2; }
+.meter-channel { font-size: .54rem;
+    color: rgba(160,160,172,.68);
+    text-align: center;
+    font-weight: 760;
+    line-height: 1; }
+
+/* ============================================================
+   Playback footer refinement — consolidated desktop rules
+   (v5/v6/v7 passes merged into a single ≥1181px block)
+   ============================================================ */
+/* The volume cluster stays bounded by its own grid track: speaker left,
+   slider middle, percentage right, with constant column gaps. The slider
+   is the only flexible part and grows with the track; the percentage
+   stays anchored at the track's right edge at every desktop width. The
+   metadata caps at 430px and the footer compacts to 98px min-height at
+   a 5px bottom inset. */
+
+.transport-controls { display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    gap: .32rem; }
+.control-btn, .control-btn-secondary, .control-btn-mode, .control-btn-clear { padding: 0;
+    line-height: 1;
+    align-self: center;
+    vertical-align: middle; }
+.control-btn-secondary { width: 36px;
+    height: 36px;
+    font-size: .94rem; }
+.control-btn-mode { width: 30px;
+    height: 30px;
+    border-color: transparent;
+    background: transparent;
+    color: rgba(160,160,172,.72);
+    box-shadow: none;
+    font-size: .84rem;
+    font-weight: 700; }
+.control-btn-clear { width: 30px;
+    height: 30px;
+    font-size: .78rem;
+    margin-left: .08rem;
+    color: var(--text-muted); }
+.track-copy-main { display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto;
+    align-items: start;
+    gap: 0.55rem;
+    min-width: 0; }
+.track-favorite-btn { grid-column: 2;
+    grid-row: 1;
+    width: 34px;
+    height: 34px;
+    display: inline-grid;
+    place-items: center;
+    flex-shrink: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 1.3rem;
+    cursor: pointer;
+    transition: color .15s var(--ease), background .15s var(--ease), transform .12s var(--ease);
+    align-self: start;
+    margin-top: -.16rem; }
+.playback-meter { grid-area: meter;
+    min-width: 0;
+    display: grid;
+    gap: .28rem;
+    grid-template-columns: .65rem minmax(94px, 118px) 3.35rem;
+    grid-template-rows: 5px 5px;
+    width: max-content;
+    max-width: none;
+    min-height: 28px;
+    column-gap: .52rem;
+    row-gap: .5rem;
+    align-content: center;
+    align-items: center;
+    justify-self: center;
+    align-self: center;
+    opacity: .48;
+    transition: opacity .15s var(--ease); }
+.meter-segments { display: grid;
+    grid-template-columns: repeat(12, minmax(3px, 1fr));
+    width: 112px;
+    min-width: 94px;
+    max-width: 118px;
+    gap: 2px;
+    align-self: center; }
+.meter-segments i { display: block;
+    height: 5px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.075);
+    transition: background .08s linear, box-shadow .08s linear, opacity .08s linear; }
+.output-level-badge { display: inline-flex;
+    align-items: center;
+    grid-column: 3;
+    grid-row: 1 / 3;
+    align-self: center;
+    justify-self: start;
+    width: 2.48rem;
+    min-width: 2.48rem;
+    padding: 0;
+    margin-left: 0;
+    justify-content: flex-start;
+    text-align: left;
+    line-height: 1;
+    white-space: nowrap;
+    border: 0;
+    background: transparent;
+    color: rgba(160,160,172,.78);
+    font-size: .62rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums; }
+.output-level-badge.is-peak {
+    color: #ff5a5f;
+    text-shadow: 0 0 8px rgba(255,90,95,.48);
+}
+.volume-display { display: inline-flex;
+    position: static;
+    justify-content: flex-start;
+    min-width: 2.25rem;
+    text-align: left;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-secondary);
+    font-size: .69rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums; }
+
+/* Hidden meter segments (JS-driven via .meter-segment-hidden): must win
+   over the base .meter-segments i { display: block } row rule. */
+.meter-segments .meter-segment-hidden { display: none; }
+
+/* Tablet / compact desktop: give the transport real vertical breathing room,
+   keep the album/queue chip inside the track-copy column, and preserve a
+   compact right-side meter/volume stack. */
+
+/* Phone: keep the six-segment stereo meter, but give transport/seek/volume
+   more air. Seek and volume use identical outer gutters so both slider tracks
+   share the same center line and width. */
+
+/* ============================================================
+   Playback footer refinement v7 — desktop/tablet vertical compacting
+   ============================================================ */
+/* Preserve the four-zone layout and control sizing; only reclaim vertical
+   breathing room above and below the existing content. Desktop rules live
+   in the consolidated ≥1181px block above; this block covers tablets. */
+
+/* ============================================================
+   Playback footer refinement v8 — quieter desktop/tablet sliders
+   ============================================================ */
+/* Keep the input box unchanged for pointer/touch behavior. Only the native
+   track paint and thumb are made slightly lighter than the volume control. */
+
+/* Phone: soften only the visible range paint; the input box remains the
+   existing size so pointer and touch targeting do not change. */

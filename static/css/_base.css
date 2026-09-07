@@ -1,0 +1,258 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    /* Global dark scrollbars for the page and unscoped scroll areas. */
+    scrollbar-width: thin;
+    scrollbar-color: var(--bg-hover) transparent;
+}
+html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+*::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+    background: var(--bg-hover);
+    border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: var(--border-strong);
+}
+::selection {
+    background: rgba(110, 231, 183, 0.18);
+    color: var(--text-primary);
+}
+/* Visually hidden skip link, revealed on keyboard focus. */
+.skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0.75rem;    z-index: var(--z-skip-link);
+    padding: 0.6rem 0.9rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 0.88rem;
+    text-decoration: none;
+    box-shadow: 0 8px 24px var(--shadow);
+    transition: top 0.15s var(--ease);
+}
+.skip-link:focus-visible {
+    top: 0.75rem;
+}
+body {
+    font-family: var(--font-sans);
+    background:
+        radial-gradient(circle at 50% -20%, rgba(110,231,183,.035), transparent 34%),
+        linear-gradient(180deg, #0b0b0e 0%, #0d0d10 55%, #0b0b0e 100%);
+    color: var(--text-primary);
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding-bottom: var(--playback-footer-space);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+/* ============================================================
+   Offline / Connection banner
+   ============================================================ */
+.offline-indicator {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    /* Error stays red, but reads as part of the dark theme: translucent
+       dark-red tint instead of a full-saturation danger band. The red dot
+       and the danger border keep the disconnect meaning unambiguous. */
+    background: rgba(120, 27, 27, 0.6);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(248, 113, 113, 0.32);
+    color: #ffe9e9;
+    text-align: center;
+    padding: 0.5rem 1rem;
+    font-weight: 600;
+    font-size: 0.88rem;
+    z-index: var(--z-banner);
+    letter-spacing: 0.02em;
+    animation: bannerSlide 0.3s var(--ease);
+}
+.offline-indicator::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 0.5rem;
+    vertical-align: -1px;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.22);
+}
+.offline-indicator.hidden { display: none; }
+.hidden { display: none !important; }
+@keyframes bannerSlide {
+    from { transform: translateY(-100%); }
+    to   { transform: translateY(0); }
+}
+/* ============================================================
+   Unified primitives — single source for duplicated rows/favs
+   ============================================================ */
+.track-row-favorite,
+.track-fav,
+.streaming-fav{flex:0 0 auto;width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);font:inherit;font-size:0.95rem;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer;transition:color .12s var(--ease),border-color .12s var(--ease),background .12s var(--ease),transform .12s var(--ease);-webkit-tap-highlight-color:transparent}
+.track-row-favorite:hover,
+.track-fav:hover,
+.streaming-fav:hover,
+.track-row-favorite.active,
+.track-fav.active,
+.streaming-fav.active,
+.track-fav.is-active,
+.streaming-fav.is-active{color:var(--accent);border-color:var(--accent)}
+.track-row-favorite:active,
+.track-fav:active,
+.streaming-fav:active{transform:scale(.92)}
+.track-row-favorite:focus-visible,
+.track-fav:focus-visible,
+.streaming-fav:focus-visible{color:var(--accent);outline:2px solid var(--accent);outline-offset:-2px}
+.track-row-favorite:disabled,
+.track-fav:disabled,
+.streaming-fav:disabled{opacity:.45;cursor:wait}
+.track-row-favorite.active{ text-shadow:0 0 10px rgba(110,231,183,.18)}
+.track-add,
+.streaming-add{flex:0 0 auto;width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);font:inherit;font-size:1.05rem;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer;transition:color .12s var(--ease),border-color .12s var(--ease),background .12s var(--ease),transform .12s var(--ease);-webkit-tap-highlight-color:transparent}
+.track-add:hover,
+.streaming-add:hover{color:var(--accent);border-color:var(--accent)}
+.track-add:active,
+.streaming-add:active{transform:scale(.92)}
+.track-add:focus-visible,
+.streaming-add:focus-visible{color:var(--accent);outline:2px solid var(--accent);outline-offset:-2px}
+.track-add.is-active,
+.streaming-add.is-active{color:var(--accent);border-color:var(--accent);background:var(--accent-dim)}
+.track-row,
+.streaming-result,
+.album-detail-tracks .track-item{display:flex;align-items:center;gap:.7rem;padding:.45rem .6rem;border-radius:var(--radius-md);background:var(--bg-surface);border:1px solid var(--border);cursor:pointer;min-width:0;transition:background 0.12s,border-color 0.12s}
+.track-row:hover,
+.streaming-result:hover,
+.album-detail-tracks .track-item:hover{background:var(--bg-hover);border-color:var(--border-strong)}
+/* Selected TIDAL rows mirror the library .track-item.selected highlight. */
+.streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,255,.08)}
+.track-play{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;justify-content:center;transition:color 0.12s,border-color 0.12s,background 0.12s}
+.track-play:hover{color:var(--accent);border-color:var(--accent)}
+.track-play:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Inline SVG icons in generated markup (playlist/folder delete, compact
+   labels, streaming transport) inherit currentColor. */
+.playlist-delete-btn svg,
+.folder-action-btn svg,
+.label-compact svg,
+.streaming-btn-sm-icon svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+}
+
+/* ============================================================
+   Header
+   ============================================================ */
+
+/* Shared compact view tabs (Library Tracks/Folders/Albums + TIDAL
+   Tracks/Albums/Artists): one segmented-navigation standard instead of the
+   oversized library action buttons and the undersized TIDAL filter chips.
+   Inactive tabs are quiet (muted text, transparent); the active tab keeps the
+   mint accent. Touch height stays adequate at 38px. */
+.view-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+.view-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 0.3rem 0.9rem;
+    font-size: 0.86rem;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+.view-tab:hover {
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+}
+.view-tab.active,
+.view-tab.is-active {
+    color: var(--accent);
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.2);
+}
+
+/* Shared compact grid/list toggle (Library albums + TIDAL Albums/Artists/
+   Playlists). One segmented icon pair; the active mode keeps the same mint
+   accent language as .view-tab. Grid stays the default. */
+.view-mode-toggle {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+}
+.view-mode-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    font-size: 0.95rem;
+    line-height: 1;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+.view-mode-btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.view-mode-btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.view-mode-btn + .view-mode-btn { border-left: none; }
+.view-mode-btn:hover {
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+}
+.view-mode-btn.active {
+    color: var(--accent);
+    background: var(--accent-dim);
+    border-color: var(--accent);
+}
+
+/* Visually hidden but available to screen readers (page h1, live labels). */
+.visually-hidden {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+}

@@ -1,0 +1,1416 @@
+/* ============================================================
+   Effects tab styling
+   ============================================================ */
+#tab-effects { padding-top: 0.75rem; }
+
+.effects-shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 1rem 1rem;
+}
+.effects-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+.effects-header-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--action-gap);
+    flex: 0 0 auto;
+    margin-right: var(--control-gap, 12px);
+}
+
+.effects-header-action {
+    min-width: 112px;
+    min-height: 38px;
+    padding-inline: 0.95rem;
+}
+.effects-import-panel {
+    margin-bottom: 1rem;
+}
+
+.effects-import-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.effects-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+    align-items: stretch;
+}
+.effects-card {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    /* Neutral edge for regular cards; mint stays reserved for active or
+       selected surfaces so they read at a glance. */
+    border-top: 3px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    padding: 1rem;
+}
+
+/* The A/B compare card mirrors the active listening chain ("Listening: A ·
+   Neutral") and keeps the mint edge regular cards no longer carry. */
+.effects-card-manage {
+    border-top-color: var(--accent);
+}
+.effects-card-header {
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+.effects-card h3 {
+    margin-bottom: 0.4rem;
+    font-size: 1.15rem;
+    line-height: 1.25;
+}
+.effects-card-header p,
+.effects-info {
+    color: var(--text-secondary);
+    line-height: 1.7;
+    font-size: 0.9rem;
+}
+
+/* Preset compare A/B row */
+.effects-compare-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    padding: 1rem;
+    border: 1px solid rgba(110, 231, 183, 0.24);
+    border-radius: var(--radius-md);
+    background: linear-gradient(180deg, rgba(110, 231, 183, 0.1), rgba(255,255,255,0.02));
+}
+
+.effects-compare-fields {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+}
+
+.effects-compare-slot {
+    padding: 0.8rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+    transition: border-color 0.15s var(--ease), background 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+
+.effects-compare-slot.is-active {
+    border-color: rgba(110, 231, 183, 0.45);
+    background: rgba(110, 231, 183, 0.08);
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.16);
+}
+
+.effects-compare-slot.is-armed {
+    border-color: rgba(110, 231, 183, 0.34);
+}
+
+.effects-compare-fields .field-group {
+    margin-bottom: 0;
+}
+
+.compare-select {
+    cursor: pointer;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+/* All native select option lists follow the dark theme. color-scheme: dark
+   on :root makes Chromium render the popup dark; these tokens keep the
+   option text readable and the selected option distinct regardless. */
+select option {
+    background: var(--bg-input);
+    color: var(--text-primary);
+}
+
+select option:checked {
+    background: var(--bg-elevated);
+    color: var(--accent);
+}
+
+.effects-compare-active-badge {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 0.22rem;
+    width: 100%;
+    padding: 0.9rem 1rem;
+    background: rgba(110, 231, 183, 0.08);
+    border: 1px solid rgba(110, 231, 183, 0.26);
+    border-radius: var(--radius-md);
+    font-weight: 800;
+    font-size: 1rem;
+    color: #bff9de;
+    text-align: center;
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.08);
+}
+
+.effects-compare-active-badge span {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    color: inherit;
+}
+
+.effects-compare-chain {
+    font-size: 0.8rem;
+    font-weight: 600;
+    opacity: 0.88;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.effects-compare-active-badge.is-side-a {
+    background: rgba(110, 231, 183, 0.1);
+    border-color: rgba(110, 231, 183, 0.34);
+}
+
+.effects-compare-active-badge.is-side-b {
+    background: rgba(110, 231, 183, 0.14);
+    border-color: rgba(110, 231, 183, 0.34);
+    color: #f0fff8;
+}
+
+.effects-compare-actions {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.75rem;
+    padding-top: 0.35rem;
+    flex-wrap: wrap;
+}
+
+.effects-compare-actions .btn-primary {
+    min-width: 108px;
+}
+
+.effects-compare-active {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+}
+
+/* Dark scrollbar for dropdowns and scrollable areas */
+.compare-select,
+.url-input,
+select.url-input {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.15) rgba(255, 255, 255, 0.05);
+}
+
+.compare-select::-webkit-scrollbar,
+.url-input::-webkit-scrollbar,
+select.url-input::-webkit-scrollbar {
+    width: 6px;
+}
+
+.compare-select::-webkit-scrollbar-track,
+.url-input::-webkit-scrollbar-track,
+select.url-input::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+}
+
+.compare-select::-webkit-scrollbar-thumb,
+.url-input::-webkit-scrollbar-thumb,
+select.url-input::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+}
+
+.compare-select::-webkit-scrollbar-thumb:hover,
+.url-input::-webkit-scrollbar-thumb:hover,
+select.url-input::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.25);
+}
+
+.effects-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+}
+.field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+/* Keep checkbox label compact — don't expand click area */
+.field-group > label.checkbox-row {
+    width: fit-content;
+}
+.field-group label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+/* Scoped field styles for radio manage dialog */
+.manage-dialog .field-group {
+    gap: 0.45rem;
+}
+.manage-dialog .url-input {
+    min-height: 42px;
+    min-width: 0;
+    max-width: 100%;
+}
+#station-delete-select {
+    width: 100%;
+    text-overflow: ellipsis;
+}
+.btn-inline {
+    min-width: 0;
+    min-height: 34px;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 500;
+    border-radius: 999px;
+    color: var(--text-secondary);
+}
+.btn-inline:hover {
+    color: var(--text-primary);
+}
+.checkbox-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--text-secondary);
+    min-height: 44px;
+}
+.effects-actions-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+}
+.effects-actions-right {
+    margin-top: 0.5rem;
+}
+.effects-actions-row .btn-primary,
+.effects-actions-row .btn-danger,
+.effects-actions-row .btn-secondary {
+    min-width: 160px;
+    min-height: 44px;
+    padding: 0.7rem 1rem;
+    border-radius: var(--radius-md);
+}
+.effects-info {
+    min-height: 1.5rem;
+    margin-top: auto;
+    padding-top: 0.5rem;
+}
+
+.effects-filter-import-area {
+    min-height: 112px;
+}
+
+.effects-combine-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.effects-card-combine .effects-stack {
+    gap: 1rem;
+}
+
+.effects-combine-name-input {
+    flex: 1 1 220px;
+    max-width: 320px;
+    min-width: 0;
+    min-height: 34px;
+    padding: 0.4rem 0.65rem;
+    font-size: 0.88rem;
+}
+
+.effects-actions-combine {
+    margin-top: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+}
+
+.effects-actions-combine .btn-primary {
+    min-width: 200px;
+}
+
+.effects-label-optional {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 500;
+}
+
+.effects-card-combine .field-group {
+    min-width: 0;
+}
+
+.effects-card-combine .compare-select {
+    width: 100%;
+}
+
+.effects-card-combine .effects-card-header p {
+    max-width: 42ch;
+}
+
+.effects-card-subwoofer {
+    grid-column: 1 / -1;
+    order: 20;
+}
+
+.effects-card-subwoofer-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.effects-subwoofer-mode-badge {
+    flex: 0 0 auto;
+    padding: 0.34rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
+.effects-subwoofer-mode-badge.is-active {
+    color: #bff9de;
+    border-color: rgba(110, 231, 183, 0.42);
+    background: rgba(110, 231, 183, 0.1);
+}
+
+.effects-subwoofer-stack {
+    gap: 0.75rem;
+}
+
+.effects-subwoofer-preview-wrap {
+    width: min(100%, 1100px);
+    margin: 0 auto;
+    border: 1px solid rgba(110, 231, 183, 0.18);
+    border-radius: var(--radius-md);
+    background: #08111f;
+    overflow: hidden;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.effects-subwoofer-preview {
+    display: block;
+    width: 100%;
+    height: 136px;
+    background: #08111f;
+    touch-action: pan-y;
+    cursor: ew-resize;
+}
+
+.effects-subwoofer-controls {
+    display: grid;
+    grid-template-columns: minmax(148px, 1.08fr) minmax(112px, 0.78fr) repeat(6, minmax(92px, 1fr));
+    align-items: stretch;
+    gap: 0.75rem;
+    width: min(100%, 1100px);
+    margin: 0 auto;
+}
+
+.effects-subwoofer-control-group {
+    min-width: 0;
+    overflow: hidden;
+    padding: 0.7rem;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: var(--radius-sm);
+    background: rgba(15, 23, 42, 0.38);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.effects-subwoofer-global-group {
+    grid-column: 1 / span 2;
+    display: grid;
+    /* Same principle as the channel groups: tracks hug their content and
+       the leftover width becomes even spacing, so controls can neither
+       overlap nor clip at any card width. */
+    grid-template-columns: repeat(2, auto);
+    justify-content: space-evenly;
+    align-items: end;
+    gap: 0.7rem;
+}
+
+.effects-subwoofer-channel-group {
+    grid-column: 3 / -1;
+    display: grid;
+    /* One principle for every field: tracks hug their content (steppers and
+       selects keep their compact fixed sizes) and the leftover width becomes
+       even spacing between the columns. Nothing can overlap or clip, no
+       per-control track sizing, and Sub 1 / Sub 2 share the class and stay
+       symmetric. Headings and controls share one center axis (field-group
+       centering below). */
+    grid-template-columns: repeat(3, auto);
+    justify-content: space-evenly;
+    align-items: end;
+    gap: 0.8rem;
+    background: rgba(8, 47, 73, 0.2);
+    border-color: rgba(110, 231, 183, 0.26);
+}
+
+.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group {
+    grid-column: 3 / span 3;
+}
+
+.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
+    grid-column: 6 / span 3;
+}
+
+.effects-subwoofer-sub2-group {
+    background: rgba(30, 41, 59, 0.44);
+    border-color: rgba(147, 197, 253, 0.24);
+}
+
+.effects-subwoofer-group-label {
+    grid-column: 1 / -1;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.effects-subwoofer-control-group .field-group {
+    min-width: 0;
+    gap: 0.42rem;
+    justify-content: end;
+    /* Headings and controls share one center axis, so every box sits
+       centered under its heading at any track width. */
+    align-items: center;
+}
+
+.effects-subwoofer-control-group .field-group label {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    min-height: 2.05em;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.14;
+}
+
+.effects-subwoofer-derived-delays {
+    grid-column: 3 / -1;
+    align-self: stretch;
+    min-width: 0;
+    padding: 0.48rem 0.65rem;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    border-radius: var(--radius-sm);
+    background: rgba(15, 23, 42, 0.28);
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.74rem;
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+.effects-subwoofer-derived-delays span {
+    color: var(--text-primary);
+    font-weight: 700;
+}
+
+.effects-subwoofer-polarity-field,
+.effects-subwoofer-highpass-field {
+    min-width: 0;
+    align-self: end;
+}
+
+/* Subwoofer selects share the common #tab-effects control metrics; one
+   shared cap fits the widest option ("On") with generous room beside the
+   single-letter "N"/"I" polarity values, and centered text keeps the box
+   calm between heading and native arrow. The select type selector is
+   load-bearing: #tab-effects .url-input (equal specificity, later in the
+   file) would otherwise keep width:100% alive and stretch the selects back
+   across their grid tracks. */
+#tab-effects select.effects-subwoofer-compact-select,
+#tab-effects select.effects-subwoofer-polarity-select {
+    width: min(100%, 4.2rem);
+    min-width: 0;
+    max-width: 100%;
+    text-align: center;
+}
+
+.effects-filter-import-area.is-busy {
+    opacity: 0.75;
+    pointer-events: none;
+}
+
+.effects-filter-import-area.is-busy .upload-area-text::after {
+    content: ' · importing…';
+}
+
+.effects-filter-import-area.is-ready .upload-area-filename {
+    color: var(--accent);
+}
+
+.effects-filter-import-area.is-ready .upload-area-filename::after {
+    content: ' · imports automatically';
+}
+
+.effects-import-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.effects-import-section-title {
+    font-size: 0.84rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.effects-import-section-meta {
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.effects-import-section-head-secondary {
+    margin-top: 0.15rem;
+    padding-top: 0.2rem;
+    border-top: 1px solid rgba(255,255,255,0.05);
+}
+
+.effects-rew-dual-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.9rem;
+}
+
+.effects-rew-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
+.effects-rew-pane-header label,
+.effects-pane-title {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.effects-rew-upload-area {
+    min-height: 74px;
+}
+
+.effects-rew-upload-area .upload-area-icon {
+    font-size: 1.15rem;
+}
+
+.effects-rew-textarea {
+    min-height: 150px;
+    resize: vertical;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 0.84rem;
+    line-height: 1.45;
+    white-space: pre;
+    overflow: auto;
+}
+
+.effects-actions-rew-dual {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.9rem;
+    align-items: start;
+}
+
+.effects-rew-dual-preset-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.75rem;
+    min-width: 0;
+}
+
+.effects-rew-dual-name-input {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    min-height: 34px;
+    padding: 0.4rem 0.65rem;
+    font-size: 0.88rem;
+}
+
+.effects-peq-dual-grid {
+    gap: 0.8rem;
+}
+
+.effects-peq-pane {
+    gap: 0.5rem;
+}
+
+.effects-peq-add-row {
+    display: grid;
+    grid-template-columns: minmax(0, 220px) auto;
+    justify-content: space-between;
+    align-items: end;
+    gap: 1rem;
+    margin-bottom: 0.35rem;
+}
+
+.effects-peq-mode-field {
+    width: 100%;
+    max-width: 220px;
+    margin: 0;
+}
+
+.effects-peq-mode-field label {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.3rem;
+}
+
+.effects-peq-mode-field .url-input {
+    min-height: 40px;
+    padding-top: 0.45rem;
+    padding-bottom: 0.45rem;
+}
+
+.effects-peq-add-row .btn-inline {
+    flex: 0 0 auto;
+    justify-self: end;
+    min-width: 92px;
+    min-height: 44px;
+    padding: 0.45rem 1rem;
+}
+
+.effects-peq-pane-header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.6rem;
+    min-height: 34px;
+}
+
+.effects-actions-peq-dual {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.8rem;
+    align-items: start;
+}
+
+.effects-actions-peq-dual .effects-rew-dual-name-input {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+}
+
+.effects-actions-peq-dual .btn-primary {
+    min-width: 110px;
+}
+
+.delay-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 0;
+}
+
+.delay-field-compact {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.delay-field-compact label {
+    margin: 0;
+}
+
+.delay-field-compact .delay-input-wrap {
+    gap: 0.3rem;
+}
+
+.delay-field-compact .delay-unit {
+    font-size: 0.76rem;
+}
+
+.delay-field label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.delay-input-wrap {
+    display: flex;
+    align-items: center;
+    /* Stepper wraps hold a single child, so this gap only spaces the
+       SPL-calibration number from its unit; keep it snug like the steppers. */
+    gap: 0.2rem;
+}
+
+/* Bigger up/down arrows for number inputs */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+    opacity: 1;
+    height: 26px;
+    width: 12px;
+    margin-right: 2px;
+}
+
+.delay-unit {
+    flex-shrink: 0;
+    /* Match .stepper-unit typography so every number+unit pair reads the
+       same across the UI. */
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1;
+    user-select: none;
+}
+
+.effects-extras-feedback {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    min-height: 1.4em;
+    transition: color 0.2s ease;
+}
+
+.effects-extras-feedback.saving {
+    color: var(--accent, #6ee7b7);
+}
+
+.effects-extras-feedback.success {
+    color: var(--success, #34d399);
+}
+
+.effects-extras-feedback.error {
+    color: var(--danger, #f87171);
+}
+
+.effects-card-extras {
+    border: 1px solid var(--border);
+    /* Re-assert the shared neutral card edge after the border shorthand. */
+    border-top: 3px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    overflow: hidden;
+}
+
+.effects-card-extras .effects-card-header {
+    padding: 0 0 0.75rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1.25rem;
+}
+
+.effects-card-extras .effects-card-header h3 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+}
+
+.effects-card-extras .effects-card-header p {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.7;
+    margin: 0;
+}
+
+.effects-card-extras .effects-stack {
+    padding: 0 0 1rem;
+}
+
+.effects-extras-stack {
+    align-items: center;
+}
+
+.effects-extras-inner {
+    width: min(100%, 540px);
+    padding: 1rem 1.05rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.03);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+}
+
+.effects-extras-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    padding: 0.8rem 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.02);
+}
+
+.effects-extras-group-header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.effects-extras-group-header h4 {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.effects-extras-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+}
+
+.effects-extras-row-helpers {
+    gap: 1rem;
+}
+
+/* Loudness row wraps when the narrow two-column card cannot fit checkbox
+   + Strength + FFT on one line. The old nowrap overflowed the card in the
+   768–~880px band where the two-column grid starts but cards are small. */
+.effects-loudness-row {
+    flex-wrap: wrap;
+}
+
+.effects-loudness-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem 1rem;
+    flex-wrap: wrap;
+    max-width: 100%;
+}
+
+.effects-headroom-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+}
+
+.effects-inline-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+}
+
+.effects-headroom-select,
+.effects-compact-control {
+    width: auto;
+    min-width: 5.3rem;
+    min-height: 46px;
+    height: 46px;
+    padding: 0.7rem 2rem 0.7rem 0.85rem;
+    padding-right: 2rem;
+}
+
+.effects-inline-control-label {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.effects-bass-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.65rem 0.95rem;
+    width: 100%;
+}
+
+.effects-bass-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+    max-width: 100%;
+}
+
+.effects-bass-controls .effects-inline-control-label {
+    white-space: nowrap;
+}
+
+.effects-bass-controls .delay-input-wrap {
+    gap: 0.45rem;
+}
+
+.effects-card-peq-workshop {
+    padding-top: 1.45rem;
+}
+
+/* Collapsed PEQ card: read-only draft preview plus hint. Both hide while
+   the editor is expanded; the summary text is filled from the draft. */
+.effects-peq-summary {
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.effects-peq-summary-hint {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 0.76rem;
+    letter-spacing: 0.01em;
+    color: var(--text-muted);
+}
+
+.effects-disclosure[open] .effects-peq-summary,
+.effects-disclosure[open] .effects-peq-summary-hint {
+    display: none;
+}
+
+.effects-disclosure {
+    width: 100%;
+}
+
+.effects-disclosure-summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+    cursor: pointer;
+}
+
+.effects-disclosure-summary::-webkit-details-marker {
+    display: none;
+}
+
+.effects-disclosure-summary h3 {
+    margin: 0 0 0.4rem;
+}
+
+.effects-disclosure-summary p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.7;
+}
+
+.effects-disclosure-meta {
+    flex: 0 0 auto;
+    padding: 0.35rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.effects-disclosure[open] .effects-disclosure-meta {
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+}
+
+.effects-disclosure-body {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
+
+.effects-peq-bands {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.effects-peq-band {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.7rem 0.75rem;
+    background: rgba(255,255,255,0.02);
+}
+.effects-peq-band-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    margin-bottom: 0.55rem;
+}
+.effects-peq-band-title {
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+.effects-peq-band-subtitle {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+.effects-peq-remove-spacer,
+.effects-peq-band .btn-inline {
+    min-width: 78px;
+    min-height: 34px;
+}
+.effects-peq-band .btn-inline {
+    padding: 0.35rem 0.75rem;
+}
+.effects-peq-band-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem 0.65rem;
+}
+.effects-peq-band-fields-gain {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.effects-peq-band-fields > * {
+    min-width: 0;
+}
+.effects-peq-band-fields .field-group {
+    gap: 0.22rem;
+}
+.effects-peq-band-fields .field-group label {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+.effects-peq-band-fields .url-input,
+.effects-peq-band-fields select,
+.effects-peq-band-fields input {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    min-height: 36px;
+    padding: 0.45rem 0.6rem;
+    font-size: 0.84rem;
+}
+.effects-peq-empty {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+#tab-effects .url-input,
+#tab-effects select {
+    width: 100%;
+    min-height: 46px;
+    padding: 0.7rem 0.85rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.92rem;
+}
+/* Delay number inputs keep the shared #tab-effects control metrics
+   (46px min-height, shared padding/font) so mixed number/select rows
+   align; only the inline width stays compact. The #tab-effects prefix
+   keeps equal-specificity priority over the shared sizing rule. */
+#tab-effects .delay-number-input {
+    max-width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
+    /* Steppers override width/alignment below; outside them this class now
+       only styles the SPL-calibration field: centered value, width sized to
+       the widest entry ("130.0") so the unit sits close like in steppers. */
+    width: 4.6rem;
+    text-align: center;
+}
+#tab-effects .delay-field-compact .delay-number-input {
+    width: 4.6rem;
+}
+#tab-effects .effects-bass-controls .delay-number-input {
+    width: 4.6rem;
+    min-width: 4.6rem;
+}
+/* Compact − / value / + stepper for small-range DSP numbers. Replaces the
+   native spinners where stepping is the primary interaction; the value
+   stays directly editable and keeps its step/min/max semantics. Placed
+   after the delay-number overrides so its sizing wins the cascade. */
+.stepper-control {
+    display: inline-flex;
+    align-items: stretch;
+    height: 46px;
+    /* Never shrink inside tight grid cells: overflow clipping would hide
+       the + button. Slight overflow into the column gap is fine. */
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+
+.stepper-btn {
+    flex: 0 0 auto;
+    width: 26px;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 1.05rem;
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.12s var(--ease), background 0.12s var(--ease);
+}
+
+.stepper-btn:first-child {
+    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+.stepper-btn:last-child {
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.stepper-btn:hover {
+    color: var(--accent);
+    background: var(--accent-dim);
+}
+.stepper-btn:active {
+    color: var(--accent);
+}
+/* Keyboard focus is shown by tinting the pressed button (same colors as
+   hover); the green ring itself moves to the control outline below so no
+   indicator is drawn inside the field. */
+.stepper-btn:focus-visible {
+    outline: none;
+    color: var(--accent);
+    background: var(--accent-dim);
+}
+
+/* Focus ring on the control border, same look as .url-input:focus: the ring
+   hugs the field contour instead of floating around the inner value box,
+   where it collided with number and unit. */
+.stepper-control:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+}
+/* The embedded value field keeps .url-input focus colors off: the control
+   above carries the shared focus look. */
+.stepper-control .stepper-input:focus {
+    outline: none;
+    border-color: transparent;
+    box-shadow: none;
+}
+
+/* Display-only unit suffix inside the control (− 75 Hz +). Not part of
+   the input value; the number input keeps its own step/min/max. */
+.stepper-unit {
+    flex: 0 0 auto;
+    align-self: center;
+    padding-right: 0.15rem;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1;
+    user-select: none;
+}
+
+#tab-effects .stepper-control .stepper-input {
+    width: 3.1rem;
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    border: 0;
+    background: transparent;
+    /* Centering and readability come only from internal presentation: the
+       compact outer size is load-bearing for the 3-column sub rows (Level /
+       Alignment / Polarity share tight tracks) and must stay near the
+       original footprint. 3.1rem fits the widest alignment value ("-39.9")
+       unclipped next to its unit; the unit stays snug against the value
+       area. */
+    text-align: center;
+    padding: 0.35rem 0;
+    font-size: 0.92rem;
+}
+
+.stepper-control input[type="number"]::-webkit-inner-spin-button,
+.stepper-control input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.stepper-control input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+
+/* Stacked mobile fields have full cell width: restore comfortable touch
+   targets for the stepper buttons. */
+@media (max-width: 520px) {
+    .stepper-btn {
+        width: 34px;
+    }
+    #tab-effects .stepper-control .stepper-input {
+        width: 3.4rem;
+    }
+}
+/* ============================================================
+   Buttons
+   ============================================================ */
+.btn-primary,
+.btn-secondary,
+.btn-danger {
+    padding: 0.65rem 1.25rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-family: inherit;
+    min-height: 44px;
+    transition: transform 0.1s var(--ease), opacity 0.15s var(--ease), filter 0.15s var(--ease);
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+}
+.btn-primary:active,
+.btn-secondary:active,
+.btn-danger:active { transform: scale(0.96); }
+.btn-primary {
+    background: var(--accent);
+    color: #0d0d0f;
+}
+.btn-primary:hover { background: var(--accent-hover); filter: brightness(1.05); }
+.btn-secondary {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    min-height: 44px;
+    padding: 0.5rem 1rem;
+}
+.btn-secondary:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.btn-icon {
+    min-width: 44px;
+    width: 44px;
+    padding: 0.65rem;
+    font-size: 1.05rem;
+}
+.btn-icon svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+}
+#download-selected-tracks .btn-spinner { display: none; }
+#download-selected-tracks.is-busy .btn-spinner {
+    display: inline-block;
+    width: 0.9em;
+    height: 0.9em;
+    margin-right: 0.35rem;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    vertical-align: -0.1em;
+    animation: btn-spin 0.7s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+
+.btn-danger {
+    /* Ghost-danger: destructive actions stay quiet until hovered; the red
+       tint signals intent without competing with primary actions. */
+    background: var(--danger-dim);
+    color: var(--danger);
+    border: 1px solid rgba(248, 113, 113, 0.32);
+}
+.btn-danger:hover {
+    background: rgba(248, 113, 113, 0.2);
+    border-color: rgba(248, 113, 113, 0.52);
+    color: var(--danger);
+    opacity: 1;
+    filter: none;
+}
+.btn-primary:disabled,
+.btn-secondary:disabled,
+.btn-danger:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+}
+.btn-danger.hidden { display: none; }
+
+/* Unified upload area */
+.upload-area {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    padding: 1.2rem 1rem;
+    border: 2px dashed var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    text-align: center;
+    min-height: 80px;
+}
+.upload-area:hover,
+.upload-area.drag-over,
+.upload-area:focus-visible {
+    border-color: var(--accent);
+    background: var(--bg-elevated);
+}
+.upload-area:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.upload-area-icon {
+    display: inline-flex;
+    color: var(--text-secondary);
+}
+
+.upload-area-icon svg {
+    width: 20px;
+    height: 20px;
+}
+.upload-area-text {
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+}
+.upload-area-text u {
+    color: var(--accent);
+    cursor: pointer;
+}
+.upload-area-filename {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.upload-area-input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+}
+
+.library-header,
+.album-detail-header,
+.effects-header {
+    gap: 1rem;
+}
+
+.btn-primary,
+.btn-secondary,
+.btn-ghost {
+    border-radius: 11px;
+}
