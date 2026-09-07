@@ -56,6 +56,13 @@ The demo page carries a small notice saying the backend is simulated. A static, 
 - `GET /api/power/state` as a read-only hint for amplifier smart-plug automation
 - In-app maintenance updates, plus ready-made installers (see below)
 
+## Ready-to-use images — 1.0 Beta
+
+- x86_64 openSUSE Leap 16 ISO (via SourceForge): [fxroute-1.0-beta-x86_64-leap16.iso](https://sourceforge.net/projects/fxroute/files/1.0-beta/fxroute-1.0-beta-x86_64-leap16.iso/download)
+- Raspberry Pi 4 and Pi 5 images (`fxroute-1.0-beta-rpi4-trixie-current.img.xz`, `fxroute-1.0-beta-rpi5-trixie-current.img.xz`) from the [v1.0-beta GitHub Release](https://github.com/CobbyCode/fxroute/releases/tag/v1.0-beta)
+
+On an existing Linux system, use the regular installer below instead.
+
 ## Install
 
 **Classic install** on a Linux PC or board with PipeWire:
