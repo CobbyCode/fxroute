@@ -8718,6 +8718,15 @@ input[type="number"]::-webkit-outer-spin-button {
 
 }
 
+@media (min-width: 761px) and (max-width: 1179px) {
+    /* Tablet/medium two-row header: center the whole tab group with its
+       existing internal gaps. Auto margins on the group (not container
+       centering) keep the row left-aligned and scrollable if it ever
+       overflows; the buttons keep their size and spacing, only the group
+       moves. Mobile and desktop ranges are untouched. */
+    .tabs-list { flex: 0 1 auto; margin-inline: auto; }
+}
+
 @media (min-width: 1180px) {
     /* from _playback.css */
     .tabs {
