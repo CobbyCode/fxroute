@@ -1897,7 +1897,7 @@ class MeasurementStore:
             details["sample_rate"] = int(details["audio_rate"])
         try:
             formats = subprocess.run(
-                ["pw-cli", "enum-param", str(serial), "Format"],
+                ["pw-cli", "enum-params", str(serial), "EnumFormat"],
                 capture_output=True, text=True, timeout=3,
             )
             if formats.returncode == 0:
