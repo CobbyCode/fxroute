@@ -473,7 +473,7 @@ async def load_dsp_preset(request: Request):
         await _deps().broadcast({"type": "dsp", "data": status})
         _deps().schedule_peak_monitor_refresh("preset-load")
         return {"status": "ok", "active_preset": preset_name, "compare": status.get("compare")}
-    except (FileNotFoundError, RuntimeError) as e:
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
 
