@@ -8,7 +8,7 @@ Radio, the music library, the streaming providers, the native DSP engine, and th
 
 Try the interface without any audio hardware. The demo is the real FXRoute frontend — same checkout, same UI — with some simulated backend for playback, DSP, radio, and measurement, so every view is explorable in a normal browser.
 
-A stable demo link will be added here once the demo is published. Until then, run it locally:
+Try it live: https://cobbycode.github.io/fxroute/ — or run it locally:
 
 ```bash
 git clone https://github.com/CobbyCode/fxroute.git
