@@ -89,29 +89,29 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertIn("Playback footer refinement v8", CSS)
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 4px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 3px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 11px; height: 11px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 9px; height: 9px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 12px; height: 12px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 9px; height: 9px",
         )
         self.assertIn(".seek-slider { height: 5px; }", CSS)
         self.assertIn(".volume-slider { height: 5px; }", CSS)
-        # Chromium top-anchors the thumb when the 4px track is shorter than
+        # Chromium top-anchors the thumb when the 3px track is shorter than
         # the thumb; the geometry-derived margin re-centers it (webkit only).
         self.assertRegex(
             CSS,
             r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
-            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(4px - 11px\) / 2\)",
+            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(3px - 9px\) / 2\)",
         )
         self.assertRegex(
             CSS,
             r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
-            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(4px - 12px\) / 2\)",
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(3px - 9px\) / 2\)",
         )
 
     def test_mobile_slider_polish_preserves_input_box_and_volume_hierarchy(self):

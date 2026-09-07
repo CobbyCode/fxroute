@@ -7044,24 +7044,24 @@ input[type="number"]::-webkit-outer-spin-button {
         text-align: left;
     }
     /* Desktop slider paint and thumb geometry (also applied at ≥901px).
-       Thumbs stay deliberately small next to the 44px play button; the
-       invisible touch padding below is tightened to 8px so the slider hit
-       box keeps clear of the play button (coarse pointers keep 10px). */
+       Seek and volume share one discreet geometry: 3px track, 9px thumbs.
+       The invisible touch padding below is 6px so the slider hit box keeps
+       clear of the play button (coarse pointers keep 8px). */
     .seek-slider,
     .volume-slider {
-        padding-block: 8px;
-        margin-block: -8px;
+        padding-block: 6px;
+        margin-block: -6px;
     }
     @media (pointer: coarse) {
         .seek-slider,
         .volume-slider {
-            padding-block: 10px;
-            margin-block: -10px;
+            padding-block: 8px;
+            margin-block: -8px;
         }
     }
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
-        height: 4px;
+        height: 3px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -7071,7 +7071,7 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
-        height: 4px;
+        height: 3px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -7079,17 +7079,17 @@ input[type="number"]::-webkit-outer-spin-button {
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
-    .seek-slider::-moz-range-thumb { width: 11px; height: 11px; }
-    .volume-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
-    .volume-slider::-moz-range-thumb { width: 12px; height: 12px; }
+    .seek-slider::-webkit-slider-thumb { width: 9px; height: 9px; }
+    .seek-slider::-moz-range-thumb { width: 9px; height: 9px; }
+    .volume-slider::-webkit-slider-thumb { width: 9px; height: 9px; }
+    .volume-slider::-moz-range-thumb { width: 9px; height: 9px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
-       centered on the 4px track. Firefox centers natively (webkit only). */
-    .seek-slider::-webkit-slider-thumb { margin-top: calc((4px - 11px) / 2); }
-    .volume-slider::-webkit-slider-thumb { margin-top: calc((4px - 12px) / 2); }
-    /* Meter segments match the thinner 4px slider track. */
-    .meter-segments i { height: 4px; }
+       centered on the 3px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((3px - 9px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((3px - 9px) / 2); }
+    /* Meter segments match the thinner 3px slider track. */
+    .meter-segments i { height: 3px; }
 
     /* Small-laptop Full-HD viewports (13-14", effective CSS width up to
        1600px, e.g. 1920px at 125% OS scale): type reads slightly larger
@@ -7218,7 +7218,7 @@ input[type="number"]::-webkit-outer-spin-button {
         max-width: 82px;
         gap: 1.7px;
     }
-    .meter-segments i { height: 4px; }
+    .meter-segments i { height: 3px; }
     .playback-bar .controls {
         width: min(100%, 235px);
         max-width: 235px;
@@ -7239,10 +7239,12 @@ input[type="number"]::-webkit-outer-spin-button {
         min-width: 2.25rem;
         justify-content: flex-start;
     }
-    /* Tablet slider paint and thumb geometry (applied at ≥901px). */
+    /* Tablet slider paint and thumb geometry (applied at ≥901px).
+       Same unified 3px/9px geometry as desktop; the 10px touch padding
+       from the base rule is untouched so the tap target stays large. */
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
-        height: 4px;
+        height: 3px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -7252,7 +7254,7 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
-        height: 4px;
+        height: 3px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -7260,15 +7262,15 @@ input[type="number"]::-webkit-outer-spin-button {
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 11.5px; height: 11.5px; }
-    .seek-slider::-moz-range-thumb { width: 11.5px; height: 11.5px; }
-    .volume-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
-    .volume-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
+    .seek-slider::-webkit-slider-thumb { width: 9px; height: 9px; }
+    .seek-slider::-moz-range-thumb { width: 9px; height: 9px; }
+    .volume-slider::-webkit-slider-thumb { width: 9px; height: 9px; }
+    .volume-slider::-moz-range-thumb { width: 9px; height: 9px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
-       centered on the 4px track. Firefox centers natively (webkit only). */
-    .seek-slider::-webkit-slider-thumb { margin-top: calc((4px - 11.5px) / 2); }
-    .volume-slider::-webkit-slider-thumb { margin-top: calc((4px - 12.5px) / 2); }
+       centered on the 3px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((3px - 9px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((3px - 9px) / 2); }
 }
 
 @media (max-width: 700px) {
