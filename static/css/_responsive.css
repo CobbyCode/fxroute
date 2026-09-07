@@ -110,26 +110,34 @@
         text-align: right;
         padding: 0;
     }
-    .playback-center { gap: .56rem; }
+    .playback-center { gap: .7rem; }
     .transport-controls {
         margin-top: 1px;
-        min-height: 46px;
+        min-height: 44px;
     }
     .control-btn {
-        width: 46px;
-        height: 46px;
-        font-size: 1.04rem;
+        width: 44px;
+        height: 44px;
+        font-size: 1rem;
     }
     .control-btn-secondary {
-        width: 34px;
-        height: 34px;
+        width: 32px;
+        height: 32px;
     }
     .control-btn-mode,
     .control-btn-clear {
-        width: 28px;
-        height: 28px;
+        width: 27px;
+        height: 27px;
     }
     .track-copy { gap: .28rem; }
+    /* Re-assert the intended footer title scale on desktop: the shared
+       detail-row ".track-info .track-title" rule (same specificity, later
+       source) otherwise pins the footer title to 0.88rem and the vw clamp
+       never applies. Id selector keeps this out of the media-range count. */
+    #playback-bar .track-title,
+    #playback-bar .song-info .sc-title {
+        font-size: clamp(0.9rem, 1vw, 1.02rem);
+    }
     .playback-meta-row { min-height: 1.1rem; }
     .playback-meter {
         grid-template-columns: .62rem 112px 2.48rem;
@@ -143,10 +151,25 @@
         justify-content: flex-start;
         text-align: left;
     }
-    /* Desktop slider paint and thumb geometry (also applied at ≥901px). */
+    /* Desktop slider paint and thumb geometry (also applied at ≥901px).
+       Thumbs stay deliberately small next to the 44px play button; the
+       invisible touch padding below is tightened to 8px so the slider hit
+       box keeps clear of the play button (coarse pointers keep 10px). */
+    .seek-slider,
+    .volume-slider {
+        padding-block: 8px;
+        margin-block: -8px;
+    }
+    @media (pointer: coarse) {
+        .seek-slider,
+        .volume-slider {
+            padding-block: 10px;
+            margin-block: -10px;
+        }
+    }
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
-        height: 4.5px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -156,7 +179,7 @@
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
-        height: 4.5px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -164,15 +187,45 @@
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
-    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
-    .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
-    .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
+    .seek-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
+    .seek-slider::-moz-range-thumb { width: 11px; height: 11px; }
+    .volume-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .volume-slider::-moz-range-thumb { width: 12px; height: 12px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
-       centered on the 4.5px track. Firefox centers natively (webkit only). */
-    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
-    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
+       centered on the 4px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4px - 11px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4px - 12px) / 2); }
+    /* Meter segments match the thinner 4px slider track. */
+    .meter-segments i { height: 4px; }
+
+    /* Small-laptop Full-HD viewports (13-14", effective CSS width up to
+       1600px, e.g. 1920px at 125% OS scale): type reads slightly larger
+       while controls keep the discreet desktop sizing above. Nested inside
+       the desktop range so the 3-range playback contract (1181 / 701-1180 /
+       700) stays intact; footer selectors use the #playback-bar id so this
+       band adds no new ".playback-bar" media range. */
+    @media (max-width: 1600px) {
+        #playback-bar .track-title,
+        #playback-bar .song-info .sc-title {
+            font-size: clamp(0.96rem, 0.82rem + 0.45vw, 1.04rem);
+        }
+        #playback-bar .track-artist,
+        #playback-bar .song-info .sc-artist { font-size: 0.8rem; }
+        #playback-bar .song-info .sc-album { font-size: 0.73rem; }
+        #playback-bar .seek-time { font-size: 0.7rem; }
+        #playback-bar .volume-display { font-size: 0.73rem; }
+        #playback-bar .samplerate-status,
+        #playback-bar .queue-status { font-size: 0.67rem; }
+        #playback-bar .meter-channel { font-size: 0.57rem; }
+        #playback-bar .output-level-badge { font-size: 0.65rem; }
+        .tab-btn { font-size: 0.94rem; }
+        .section-title { font-size: 1.12rem; }
+        .section-subtitle { font-size: 0.96rem; }
+        .station-name { font-size: 1rem; }
+        .brand-text-block .brand-title { font-size: 1.12rem; }
+        .brand-text-block .brand-subtitle { font-size: 0.65rem; }
+    }
 }
 
 @media (min-width: 701px) and (max-width: 1180px) {
@@ -225,28 +278,28 @@
     }
     .playback-center {
         width: 100%;
-        gap: .56rem;
+        gap: .64rem;
         align-self: center;
     }
     .transport-controls {
-        min-height: 42px;
+        min-height: 40px;
         margin: 0;
         gap: .3rem;
     }
     .control-btn {
-        width: 42px;
-        height: 42px;
-        font-size: .96rem;
+        width: 40px;
+        height: 40px;
+        font-size: .92rem;
     }
     .control-btn-secondary {
-        width: 32px;
-        height: 32px;
+        width: 30px;
+        height: 30px;
         font-size: .86rem;
     }
     .control-btn-mode,
     .control-btn-clear {
-        width: 26px;
-        height: 26px;
+        width: 25px;
+        height: 25px;
         font-size: .76rem;
     }
     .seek-row {
@@ -297,7 +350,7 @@
     /* Tablet slider paint and thumb geometry (applied at ≥901px). */
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
-        height: 4.5px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -307,7 +360,7 @@
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
-        height: 4.5px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -315,15 +368,15 @@
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
-    .seek-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
-    .volume-slider::-webkit-slider-thumb { width: 13.5px; height: 13.5px; }
-    .volume-slider::-moz-range-thumb { width: 13.5px; height: 13.5px; }
+    .seek-slider::-webkit-slider-thumb { width: 11.5px; height: 11.5px; }
+    .seek-slider::-moz-range-thumb { width: 11.5px; height: 11.5px; }
+    .volume-slider::-webkit-slider-thumb { width: 12.5px; height: 12.5px; }
+    .volume-slider::-moz-range-thumb { width: 12.5px; height: 12.5px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
-       centered on the 4.5px track. Firefox centers natively (webkit only). */
-    .seek-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 12.5px) / 2); }
-    .volume-slider::-webkit-slider-thumb { margin-top: calc((4.5px - 13.5px) / 2); }
+       centered on the 4px track. Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((4px - 11.5px) / 2); }
+    .volume-slider::-webkit-slider-thumb { margin-top: calc((4px - 12.5px) / 2); }
 }
 
 @media (max-width: 700px) {
