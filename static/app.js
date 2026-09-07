@@ -2392,6 +2392,10 @@ async function runProviderInstall(providerId) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Installation failed');
         renderProviderOperation(providerId, data.installed ? 'Provider installed.' : 'Install finished.', data.log || '');
+        // A Settings uninstall disables the provider; a reinstall must activate
+        // it again exactly like the first install, or its checkbox and tab stay off.
+        const provider = state.settings.providers.list.find((p) => p.id === providerId);
+        if (provider && provider.enabled === false) await setProviderEnabled(providerId, true);
     } catch (error) {
         renderProviderOperation(providerId, '', error.message || 'Installation failed');
         showToast(error.message || 'Installation failed', 'error');

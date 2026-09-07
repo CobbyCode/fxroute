@@ -656,5 +656,88 @@ class TidalLoginParityTests(unittest.TestCase):
             self.assertIn(token, self.main)
 
 
+class ProviderReinstallActivationTests(unittest.TestCase):
+    """Uninstall -> reinstall must reactivate the provider like a first install.
+
+    A Settings uninstall persists enabled=false for the provider
+    (runProviderUninstall). The shared install flow must therefore turn the
+    provider back on after a successful reinstall, exactly like the absent
+    activation entry that already means "enabled" for a first install. The
+    flow is provider-agnostic, so the single fix must cover spotify, qobuz
+    and tidal alike.
+    """
+
+    PROVIDERS = ("spotify", "qobuz", "tidal")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app_js = (ROOT / "static" / "app.js").read_text()
+        cls.main = (ROOT / "main.py").read_text()
+
+    @classmethod
+    def _function_body(cls, name):
+        start = cls.app_js.index(f"async function {name}(")
+        rest = cls.app_js[start:]
+        for marker in re.finditer(r"^(async )?function \w+\(", rest, re.MULTILINE):
+            if marker.start() == 0:
+                continue
+            return rest[:marker.start()]
+        return rest
+
+    def test_uninstall_flow_disables_the_provider(self):
+        body = self._function_body("runProviderUninstall")
+        self.assertIn("await setProviderEnabled(providerId, false);", body)
+
+    def test_install_flow_reenables_a_disabled_provider(self):
+        body = self._function_body("runProviderInstall")
+        # The re-enable must follow a reported success (resp.ok) and precede
+        # the error branch: failed installs never flip the activation state.
+        self.assertIn("setProviderEnabled(providerId, true)", body)
+        self.assertLess(
+            body.index("if (!resp.ok) throw new Error"),
+            body.index("setProviderEnabled(providerId, true)"),
+        )
+        self.assertLess(
+            body.index("setProviderEnabled(providerId, true)"),
+            body.index("} catch (error) {"),
+        )
+
+    def test_reenable_acts_only_on_a_disabled_provider(self):
+        body = self._function_body("runProviderInstall")
+        # Mirror of the TIDAL login click: enable only when the uninstall flow
+        # actually left the provider disabled (first installs already default
+        # to enabled and must not round-trip an extra write).
+        self.assertIn(
+            "if (provider && provider.enabled === false) await setProviderEnabled(providerId, true);",
+            body,
+        )
+
+    def test_every_ui_provider_rides_the_shared_install_uninstall_flow(self):
+        # Both action buttons render from the same per-provider row template
+        # and are wired to the shared handlers, so the activation fix applies
+        # to every provider the UI can (re)install.
+        self.assertIn('data-provider-install="${provider.id}"', self.app_js)
+        self.assertIn('data-provider-uninstall="${provider.id}"', self.app_js)
+        self.assertIn(
+            "runProviderInstall(button.getAttribute('data-provider-install'))",
+            self.app_js,
+        )
+        self.assertIn(
+            "runProviderUninstall(button.getAttribute('data-provider-uninstall'))",
+            self.app_js,
+        )
+        self.assertIn('fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/install`', self.app_js)
+        self.assertIn('fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/uninstall`', self.app_js)
+
+    def test_backend_ui_install_and_uninstall_cover_all_three_providers(self):
+        body = self.main.split("async def api_streaming_provider_install")[1]
+        body = body.split("\n@app.post(\"/api/streaming/providers/{provider_id}/uninstall")[0]
+        for provider in self.PROVIDERS:
+            self.assertIn(f'"{provider}"', body)
+        body = self.main.split("async def api_streaming_provider_uninstall")[1]
+        body = body.split("\n@app.post(")[0]
+        self.assertIn('if provider_id not in {"spotify", "qobuz", "tidal"}:', body)
+
+
 if __name__ == "__main__":
     unittest.main()
