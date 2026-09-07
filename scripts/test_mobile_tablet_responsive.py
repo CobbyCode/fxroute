@@ -87,11 +87,11 @@ class SliderHitAreaTests(unittest.TestCase):
     def test_thumb_geometry_unified(self):
         self.assertRegex(
             CSS,
-            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
+            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 12px; height: 12px",
         )
         self.assertRegex(
             CSS,
-            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 12px; height: 12px",
         )
 
 

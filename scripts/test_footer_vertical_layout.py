@@ -97,11 +97,11 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 12px; height: 12px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 12px; height: 12px",
         )
         # One shared base input height for both sliders (integer px so OS
         # scaling cannot round them apart).
@@ -114,12 +114,12 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertRegex(
             CSS,
             r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
-            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -5px",
+            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -4px",
         )
         self.assertRegex(
             CSS,
             r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
-            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -5px",
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -4px",
         )
 
     def test_mobile_slider_polish_preserves_input_box_and_unified_geometry(self):
@@ -129,11 +129,11 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         )
         self.assertRegex(
             CSS,
-            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
+            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 12px; height: 12px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(max-width: 700px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
+            r"@media \(max-width: 700px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 12px; height: 12px",
         )
         self.assertRegex(
             CSS,
@@ -143,12 +143,12 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertRegex(
             CSS,
             r"@media \(max-width: 700px\)[\s\S]*?"
-            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -5px",
+            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -4px",
         )
         self.assertRegex(
             CSS,
             r"@media \(max-width: 700px\)[\s\S]*?"
-            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -5px",
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -4px",
         )
 
     def test_desktop_transport_nudge_is_positive_and_footer_height_unchanged(self):
