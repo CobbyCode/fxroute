@@ -472,6 +472,8 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("TryExec=firefox", script)
         # Appliance defaults written into the FXRoute user's home.
         self.assertIn("config_dir/kxkbrc", script)
+        self.assertIn("ScaleFactor", script)
+        self.assertIn("ScreenScaleFactors", script)
         self.assertIn("Enabled=false", script)
         self.assertIn("Autolock=false", script)
         self.assertIn("powerdevilrc", script)

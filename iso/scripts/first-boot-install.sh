@@ -412,6 +412,22 @@ EOF
   chown "$FXROUTE_USER:$fxroute_group" "$config_dir/kxkbrc"
   chmod 600 "$config_dir/kxkbrc"
 
+  # Display scale default: 125% is the FXRoute desktop default for better
+  # readability on typical 13-14" Full-HD laptop panels and larger displays.
+  # The global ScaleFactor covers any output; the per-output list pins the
+  # common laptop/external connectors so the default survives KScreen
+  # rewrites. kwriteconfig6 merges into kdeglobals without touching the
+  # user's other keys (whole-file overwrite would clobber them).
+  if command -v kwriteconfig6 >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then
+    runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+      kwriteconfig6 --file kdeglobals --group KScreen --key ScaleFactor 1.25
+    runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+      kwriteconfig6 --file kdeglobals --group KScreen --key ScreenScaleFactors \
+      "eDP-1=1.25;DP-1=1.25;HDMI-1=1.25;DP-2=1.25;HDMI-2=1.25;"
+    chown "$FXROUTE_USER:$fxroute_group" "$config_dir/kdeglobals"
+    chmod 600 "$config_dir/kdeglobals"
+  fi
+
   # KWallet/keyring onboarding off. The wallet is disabled so no create or
   # unlock dialog interrupts the appliance login or later app use; Spotify
   # Desktop keeps its credentials in its own profile and is unaffected.
