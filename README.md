@@ -4,6 +4,16 @@ FXRoute is a browser-based control surface for a Linux hi-fi audio box. One smal
 
 Radio, the music library, the streaming providers, the native DSP engine, and the room-measurement tools all in one interface. You browse and play from the couch; FXRoute owns the audio session, the DSP chain, and the output routing on the audio machine.
 
+## Download — FXRoute 1.0 Beta
+
+The central download and release page is [FXRoute 1.0 Beta](https://github.com/CobbyCode/fxroute/releases/tag/v1.0-beta):
+
+- Raspberry Pi 4: [fxroute-1.0-beta-rpi4-trixie-current.img.xz](https://github.com/CobbyCode/fxroute/releases/download/v1.0-beta/fxroute-1.0-beta-rpi4-trixie-current.img.xz) — write to SD card, boot, and finish the web onboarding
+- Raspberry Pi 5: [fxroute-1.0-beta-rpi5-trixie-current.img.xz](https://github.com/CobbyCode/fxroute/releases/download/v1.0-beta/fxroute-1.0-beta-rpi5-trixie-current.img.xz) — same procedure
+- x86_64 PC as openSUSE Leap 16 installer (via SourceForge): [fxroute-1.0-beta-x86_64-leap16.iso](https://sourceforge.net/projects/fxroute/files/1.0-beta/fxroute-1.0-beta-x86_64-leap16.iso/download)
+
+No new hardware? Try the [web demo](https://cobbycode.github.io/fxroute/) first. Already running Linux on the audio machine? Use the [installer below](#install) instead.
+
 ## Web demo
 
 Try the interface without any audio hardware. The demo is the real FXRoute frontend — same checkout, same UI — with some simulated backend for playback, DSP, radio, and measurement, so every view is explorable in a normal browser.
@@ -54,14 +64,7 @@ The demo page carries a small notice saying the backend is simulated. A static, 
 - Control from any browser on the LAN; SMB music shares in addition to the local folder
 - Optional local HTTPS via Caddy with a downloadable certificate
 - `GET /api/power/state` as a read-only hint for amplifier smart-plug automation
-- In-app maintenance updates, plus ready-made installers (see below)
-
-## Ready-to-use images — 1.0 Beta
-
-- x86_64 openSUSE Leap 16 ISO (via SourceForge): [fxroute-1.0-beta-x86_64-leap16.iso](https://sourceforge.net/projects/fxroute/files/1.0-beta/fxroute-1.0-beta-x86_64-leap16.iso/download)
-- Raspberry Pi 4 and Pi 5 images (`fxroute-1.0-beta-rpi4-trixie-current.img.xz`, `fxroute-1.0-beta-rpi5-trixie-current.img.xz`) from the [v1.0-beta GitHub Release](https://github.com/CobbyCode/fxroute/releases/tag/v1.0-beta)
-
-On an existing Linux system, use the regular installer below instead.
+- In-app maintenance updates, plus the downloadable images above
 
 ## Install
 
@@ -77,16 +80,11 @@ The installer prepares the system packages, builds the native DSP engine, create
 
 Supported package managers are apt, dnf, zypper, and pacman. The provider matrix, first-run authentication, and uninstall behavior are covered in [docs/INSTALLER.md](docs/INSTALLER.md).
 
-**Ready-made images**
-
-- ARM64 Armbian image with web onboarding — [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md)
-- x86_64 openSUSE Leap installation ISO — [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md)
-
 ## First start
 
 - `systemctl --user status fxroute` — the service is `fxroute.service`.
 - Open the UI from any browser on the network:
-  - `http://fxroute.local:8000` (mDNS; the name is set in **Technical settings → Device Name**; ready-made images install a unique id, e.g. `http://fxroute-ab12cd.local:8000`)
+  - `http://fxroute.local:8000` (mDNS; the name is set in **Technical settings → Device Name**; the downloadable images install a unique id, e.g. `http://fxroute-ab12cd.local:8000`)
   - `http://<host-ip>:8000`
   - `http://localhost:8000` on the audio PC itself
   - `https://<host-ip>` or `https://<device-name>.local` when the optional HTTPS proxy is enabled (HTTP stays reachable)
@@ -101,7 +99,7 @@ Supported package managers are apt, dnf, zypper, and pacman. The provider matrix
 
 - [MANUAL.md](MANUAL.md) — the short user manual
 - [docs/INSTALLER.md](docs/INSTALLER.md) — installer, providers, and uninstall details
-- [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md) and [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md) — ready-made images
+- [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md) and [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md) — building the ARM64 board images and the x86_64 installation ISO yourself
 - [CHANGELOG.md](CHANGELOG.md) — release history
 
 ## License
