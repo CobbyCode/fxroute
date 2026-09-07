@@ -48,7 +48,7 @@
     banner.className = 'demo-banner' + (bannerHidden ? ' is-hidden' : '');
     banner.setAttribute('role', 'status');
     banner.innerHTML = '<strong>FXRoute Web-Demo</strong> — simulated playback, DSP, radio & measurement · '
-        + '<a href="https://github.com/' + (window.FXROUTE_DEMO_REPO || 'fxroute/fxroute') + '" target="_blank" rel="noopener">GitHub project</a>'
+        + '<a href="https://github.com/' + (window.FXROUTE_DEMO_REPO || 'CobbyCode/fxroute') + '" target="_blank" rel="noopener">GitHub project</a>'
         + '<button type="button" class="demo-banner-close" aria-label="Hide demo notice" title="Hide demo notice">×</button>';
     banner.querySelector('.demo-banner-close').addEventListener('click', function () {
         banner.classList.add('is-hidden');
