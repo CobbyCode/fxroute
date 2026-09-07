@@ -79,7 +79,7 @@ function check(name, actual, expected) {
 
 check('null payload -> all empty', meta(null), { source: '', title: '', artist: '', album: '', tech: '' });
 check('undefined payload -> all empty', meta(undefined), { source: '', title: '', artist: '', album: '', tech: '' });
-check('empty payload -> Spotify source, resolved rate tech', meta({}), { source: 'Spotify', title: '', artist: '', album: '', tech: '44.1 kHz' });
+check('empty payload -> Spotify source, resolved rate tech', meta({}), { source: 'Spotify', title: '', artist: '', album: '', tech: '44.1kHz' });
 
 check('full payload', meta({
     title: 'Groove Is in the Heart',
@@ -87,16 +87,16 @@ check('full payload', meta({
     album: 'World Clique',
     status: 'Playing',
     artUrl: 'https://i.scdn.co/image/x',
-}), { source: 'Spotify', title: 'Groove Is in the Heart', artist: 'Deee-Lite', album: 'World Clique', tech: '44.1 kHz' });
+}), { source: 'Spotify', title: 'Groove Is in the Heart', artist: 'Deee-Lite', album: 'World Clique', tech: '44.1kHz' });
 
 check('missing album -> album empty, rest kept', meta({
     title: 'Track Without Album',
     artist: 'Some Artist',
-}), { source: 'Spotify', title: 'Track Without Album', artist: 'Some Artist', album: '', tech: '44.1 kHz' });
+}), { source: 'Spotify', title: 'Track Without Album', artist: 'Some Artist', album: '', tech: '44.1kHz' });
 
 check('missing title/artist -> empty text, Spotify kept', meta({
     album: 'Only Album',
-}), { source: 'Spotify', title: '', artist: '', album: 'Only Album', tech: '44.1 kHz' });
+}), { source: 'Spotify', title: '', artist: '', album: 'Only Album', tech: '44.1kHz' });
 
 check('spotify never invents format facts', meta({
     title: 'T',
@@ -108,7 +108,7 @@ check('spotify never invents format facts', meta({
     position: 50.155,
     duration: 231.786,
     volume: 31,
-}), { source: 'Spotify', title: 'T', artist: 'A', album: 'B', tech: '44.1 kHz' });
+}), { source: 'Spotify', title: 'T', artist: 'A', album: 'B', tech: '44.1kHz' });
 
 check('spotify without resolved rate shows no tech', (() => {
     sandbox.state.samplerate = { available: false, active_rate: null };
@@ -126,7 +126,7 @@ check('qobuz full quality facts in tech line', meta({
     audio_format: 'flac',
     bit_depth: 24,
     sample_rate: 44100,
-}, 'qobuz'), { source: 'Qobuz', title: 'T', artist: 'A', album: 'B', tech: 'FLAC · 24 bit · 44.1 kHz' });
+}, 'qobuz'), { source: 'Qobuz', title: 'T', artist: 'A', album: 'B', tech: 'FLAC · 24bit · 44.1kHz' });
 
 check('tidal-shaped full quality facts', meta({
     title: 'T',
@@ -135,7 +135,7 @@ check('tidal-shaped full quality facts', meta({
     audio_format: 'flac',
     bit_depth: 16,
     sample_rate: 48000,
-}, 'tidal'), { source: 'Tidal', title: 'T', artist: 'A', album: 'B', tech: 'FLAC · 16 bit · 48 kHz' });
+}, 'tidal'), { source: 'Tidal', title: 'T', artist: 'A', album: 'B', tech: 'FLAC · 16bit · 48kHz' });
 
 // ---- artwork resolution (mirrors footer via streamingArtworkItem) ----
 
@@ -183,7 +183,7 @@ check('coverDetailStreamingMeta labels Qobuz source', meta({ title: 'T', artist:
     title: 'T',
     artist: 'A',
     album: 'B',
-    tech: '44.1 kHz',
+    tech: '44.1kHz',
 });
 
 // artUrl alias artUrl wins over artwork_url (same as footer: artwork_url || artUrl)

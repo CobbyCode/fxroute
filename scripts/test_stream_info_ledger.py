@@ -5,7 +5,7 @@ footer quality facts complete.
 ``/api/status`` re-reads MPV telemetry on every poll; a transient read gap
 (empty ``current_file`` during a transition, a failed/bounded property read)
 used to emit ``stream_info: None``, which collapsed the footer meta-tag from
-``FLAC · 24 bit · 44.1 kHz`` to the bare rate.  The state source must keep
+``FLAC · 24bit · 44.1kHz`` to the bare rate.  The state source must keep
 the last known facts while the track identity is stable.
 """
 

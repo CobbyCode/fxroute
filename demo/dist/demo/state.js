@@ -660,7 +660,7 @@
                 footer_owner: this.playing ? 'qobuz' : null,
                 // Real qbzd stream facts (streaming/qobuz/provider.py): every
                 // Qobuz tier streams FLAC, so the footer tag renders the full
-                // 'FLAC · 16/24 bit · rate kHz' line instead of the bare
+                // 'FLAC · 16/24bit · ratekHz' line instead of the bare
                 // hardware rate fallback.
                 audio_format: 'flac',
                 bit_depth: Number(this.current?.bit_depth) || null,

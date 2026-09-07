@@ -73,7 +73,7 @@ class StreamInfoLedger:
     A transient MPV telemetry gap (empty ``current_file`` during a transition,
     a failed or bounded property read) must never degrade a complete track's
     quality facts to nothing — the footer meta-tag would collapse from
-    ``FLAC · 24 bit · 44.1 kHz`` to the bare rate. Facts are bound to the
+    ``FLAC · 24bit · 44.1kHz`` to the bare rate. Facts are bound to the
     track identity and reset when the track or source changes, so a stale
     track can never inherit another track's facts.
     """

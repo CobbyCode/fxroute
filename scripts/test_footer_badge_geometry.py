@@ -59,7 +59,7 @@ STATE_JS = """
 (() => {
     const sr = document.getElementById('samplerate-status');
     sr.classList.remove('hidden');
-    sr.textContent = '44.1 kHz';
+    sr.textContent = '44.1kHz';
     const qs = document.getElementById('queue-status');
     qs.classList.remove('hidden');
     qs.textContent = '1 / 1';

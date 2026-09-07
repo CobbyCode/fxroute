@@ -387,7 +387,7 @@ const radio = state.getPlayback();
     assert.ok(Array.isArray(state.qobuz.qlist));
     assert.ok(state.qobuz.qlist.length <= 4);
     // Real qbzd stream facts: the footer pill must render the full
-    // 'FLAC · 16/24 bit · rate kHz' line, not the bare hardware rate.
+    // 'FLAC · 16/24bit · ratekHz' line, not the bare hardware rate.
     assert.equal(qobuz.audio_format, 'flac');
     assert.equal(qobuz.bit_depth, 24);
     assert.equal(qobuz.sample_rate, 96000);
@@ -457,7 +457,7 @@ const radio = state.getPlayback();
     // ── Spotify footer parity ────────────────────────────────────────────
     // The real system pins the graph to 44.1 kHz while Spotify plays
     // (coordinator_source_rate -> SPOTIFY_PREARM_SAMPLE_RATE_HZ), so the
-    // real Spotify footer pill shows '44.1 kHz' — never the 48 kHz idle
+    // real Spotify footer pill shows '44.1kHz' — never the 48 kHz idle
     // rate. A fixed policy must pin the graph regardless of source.
     state.spotify.demoStart();
     assert.equal(state.getPlayback().playback_owner, 'spotify');

@@ -261,7 +261,7 @@ class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_facts_survive_transient_now_playing_gap(self):
         # A transient now-playing gap (pause/transition) must not degrade a
         # complete track's quality data: the footer tag would collapse from
-        # 'FLAC · 24 bit · 44.1 kHz' to the bare rate.
+        # 'FLAC · 24bit · 44.1kHz' to the bare rate.
         provider = QobuzProvider()
         first = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \

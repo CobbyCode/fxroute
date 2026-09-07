@@ -56,14 +56,14 @@ function check(label, input, expected) {
 }
 
 // Qobuz/TIDAL: real provider stream facts, same renderer as library/radio.
-check('qobuz flac 24/44.1', { audio_format: 'flac', bit_depth: 24, sample_rate: 44100 }, 'FLAC · 24 bit · 44.1 kHz');
-check('qobuz aac no depth', { audio_format: 'aac', sample_rate: 44100 }, 'AAC · 44.1 kHz');
-check('tidal-shaped flac 16/48', { audio_format: 'flac', bit_depth: 16, sample_rate: 48000 }, 'FLAC · 16 bit · 48 kHz');
-check('qobuz missing audio_format keeps known parts', { bit_depth: 24, sample_rate: 44100 }, '24 bit · 44.1 kHz');
+check('qobuz flac 24/44.1', { audio_format: 'flac', bit_depth: 24, sample_rate: 44100 }, 'FLAC · 24bit · 44.1kHz');
+check('qobuz aac no depth', { audio_format: 'aac', sample_rate: 44100 }, 'AAC · 44.1kHz');
+check('tidal-shaped flac 16/48', { audio_format: 'flac', bit_depth: 16, sample_rate: 48000 }, 'FLAC · 16bit · 48kHz');
+check('qobuz missing audio_format keeps known parts', { bit_depth: 24, sample_rate: 44100 }, '24bit · 44.1kHz');
 
 // Spotify: no format facts may be invented; only the resolved rate.
-check('spotify with resolved rate', { title: 't', status: 'Playing' }, '44.1 kHz');
-check('spotify rate only, no codec/bit depth', {}, '44.1 kHz');
+check('spotify with resolved rate', { title: 't', status: 'Playing' }, '44.1kHz');
+check('spotify rate only, no codec/bit depth', {}, '44.1kHz');
 
 // No resolved rate -> no tag at all.
 sandbox.state.samplerate = { available: false, active_rate: null };
@@ -71,11 +71,11 @@ check('spotify without resolved rate shows nothing', { title: 't' }, '');
 sandbox.state.samplerate = { available: true, active_rate: 44100 };
 
 // Provider facts win over the resolved rate (they are the real quality data).
-check('qobuz facts win over hardware rate', { audio_format: 'flac', bit_depth: 24, sample_rate: 44100 }, 'FLAC · 24 bit · 44.1 kHz');
+check('qobuz facts win over hardware rate', { audio_format: 'flac', bit_depth: 24, sample_rate: 44100 }, 'FLAC · 24bit · 44.1kHz');
 
 // Empty / absent payloads.
-check('null payload', null, '44.1 kHz');
-check('undefined payload', undefined, '44.1 kHz');
+check('null payload', null, '44.1kHz');
+check('undefined payload', undefined, '44.1kHz');
 
 // The streaming footer must reuse the library/radio renderer, not a parallel
 // formatting path, and must not cache last-rendered strings client-side: the
@@ -96,7 +96,7 @@ assert.ok(/activeSource === 'radio' \|\| activeSource === 'local' \|\| activeSou
 // A general samplerate/rate refresh must never overwrite the footer pill
 // while a streaming source owns it: renderSamplerateUI must early-return for
 // streaming footer owners (the Qobuz flicker was this path writing the bare
-// hardware rate over the full 'FLAC · 16 bit · 44.1 kHz' line).
+// hardware rate over the full 'FLAC · 16bit · 44.1kHz' line).
 assert.ok(/isStreamingFooterSource\(window\.__footerSource\)\s*\)\s*\{[\s\S]*?return;/.test(renderSamplerate),
     'renderSamplerateUI must not touch the footer pill while a streaming source owns it');
 
