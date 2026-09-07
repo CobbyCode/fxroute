@@ -93,7 +93,7 @@ Supported package managers are apt, dnf, zypper, and pacman. The provider matrix
 
 ## Home Assistant
 
-`GET /api/power/state` is a read-only amplifier power hint for external automation: `amp_should_be_on` is true while local or Spotify playback is active or the Measurement Assistant is open. FXRoute does not require MQTT and never controls the plug itself. A complete configuration example lives in the [manual](MANUAL.md#10-home-assistant--external-automation).
+`GET /api/power/state` is a read-only amplifier power hint for external automation: `amp_should_be_on` is true while local or Spotify playback is active or the Measurement Assistant is open. FXRoute does not require MQTT. A complete configuration example is in the [manual](MANUAL.md#10-home-assistant--external-automation).
 
 ## Documentation
 
