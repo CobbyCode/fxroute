@@ -89,7 +89,11 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertIn("Playback footer refinement v8", CSS)
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 3px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 2\.5px",
+        )
+        self.assertRegex(
+            CSS,
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-runnable-track[\s\S]*?height: 2\.5px",
         )
         self.assertRegex(
             CSS,
@@ -97,13 +101,12 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 9px; height: 9px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 8px; height: 8px",
         )
         self.assertIn(".seek-slider { height: 5px; }", CSS)
         self.assertIn(".volume-slider { height: 5px; }", CSS)
-        # Chromium top-anchors the thumb when the 2.5px seek line is shorter
-        # than the thumb; the geometry-derived margin re-centers it
-        # (webkit only). Volume keeps the 3px/9px reference geometry.
+        # Chromium top-anchors the thumb when the 2.5px line is shorter than
+        # the thumb; the geometry-derived margin re-centers it (webkit only).
         self.assertRegex(
             CSS,
             r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
@@ -112,12 +115,7 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertRegex(
             CSS,
             r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
-            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(3px - 9px\) / 2\)",
-        )
-        self.assertRegex(
-            CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
-            r"\.seek-slider::\-webkit-slider-runnable-track\s*\{\s*height: 2\.5px",
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(2\.5px - 8px\) / 2\)",
         )
 
     def test_mobile_slider_polish_preserves_input_box_and_volume_hierarchy(self):
