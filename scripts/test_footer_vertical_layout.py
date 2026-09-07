@@ -89,37 +89,37 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertIn("Playback footer refinement v8", CSS)
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 3px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 4px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-runnable-track[\s\S]*?height: 3px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-runnable-track[\s\S]*?height: 4px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 11px; height: 11px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 11px; height: 11px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
         )
         # One shared base input height for both sliders (integer px so OS
         # scaling cannot round them apart).
         self.assertRegex(
             CSS,
-            r"\.seek-slider,\s*\n\.volume-slider\s*\{[^}]*height: 3px",
+            r"\.seek-slider,\s*\n\.volume-slider\s*\{[^}]*height: 4px",
         )
-        # Chromium top-anchors the thumb when the 3px line is shorter than
+        # Chromium top-anchors the thumb when the 4px line is shorter than
         # the thumb; the integer margin re-centers it (webkit only).
         self.assertRegex(
             CSS,
             r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
-            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -4px",
+            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -5px",
         )
         self.assertRegex(
             CSS,
             r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
-            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -4px",
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -5px",
         )
 
     def test_mobile_slider_polish_preserves_input_box_and_unified_geometry(self):

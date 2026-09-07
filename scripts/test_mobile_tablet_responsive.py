@@ -81,17 +81,17 @@ class SliderHitAreaTests(unittest.TestCase):
         # One shared base input height for both sliders.
         self.assertRegex(
             CSS,
-            r"\.seek-slider,\s*\n\.volume-slider\s*\{[^}]*height: 3px",
+            r"\.seek-slider,\s*\n\.volume-slider\s*\{[^}]*height: 4px",
         )
 
     def test_thumb_geometry_unified(self):
         self.assertRegex(
             CSS,
-            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 11px; height: 11px",
+            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
         )
         self.assertRegex(
             CSS,
-            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 11px; height: 11px",
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
         )
 
 

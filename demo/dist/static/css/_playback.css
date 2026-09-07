@@ -269,7 +269,7 @@
     appearance: none;
     width: 100%;
     /* Touch hit area: transparent padding expands the drag target to ~25px
-       while the negative margin keeps the layout height at the 3px visual
+       while the negative margin keeps the layout height at the 4px visual
        track. background-clip keeps the gradient on the content box only. */
     margin-block: -10px;
     padding-block: 10px;
@@ -283,7 +283,7 @@
        scaling cannot round one slider up and the other down. The ranges
        below only switch the shared desktop size to the shared phone size;
        both sliders always move together. */
-    height: 3px;
+    height: 4px;
     background: linear-gradient(to right,
         var(--accent) 0%,
         var(--accent) var(--range-progress),
@@ -298,8 +298,8 @@
 .volume-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 11px;
-    height: 11px;
+    width: 14px;
+    height: 14px;
     border-radius: 50%;
     background: #ffffff;
     border: 1px solid rgba(0,0,0,0.5);
@@ -308,8 +308,8 @@
 }
 .seek-slider::-moz-range-thumb,
 .volume-slider::-moz-range-thumb {
-    width: 11px;
-    height: 11px;
+    width: 14px;
+    height: 14px;
     border-radius: 50%;
     background: #ffffff;
     border: 1px solid rgba(0,0,0,0.5);
