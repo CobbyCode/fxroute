@@ -7044,9 +7044,11 @@ input[type="number"]::-webkit-outer-spin-button {
         text-align: left;
     }
     /* Desktop slider paint and thumb geometry (also applied at ≥901px).
-       Seek and volume share one discreet geometry: 3px track, 9px thumbs.
-       The invisible touch padding below is 6px so the slider hit box keeps
-       clear of the play button (coarse pointers keep 8px). */
+       Volume keeps the 3px/9px reference geometry; the whole seek assembly
+       reads one step slimmer (2.5px line, 8px thumb, 3px paint height) so
+       the long seek bar stays light next to the compact volume control.
+       Layout and hit area stay untouched (input layout height is absorbed
+       by the time labels; only paint shrinks). */
     .seek-slider,
     .volume-slider {
         padding-block: 6px;
@@ -7079,16 +7081,22 @@ input[type="number"]::-webkit-outer-spin-button {
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 9px; height: 9px; }
-    .seek-slider::-moz-range-thumb { width: 9px; height: 9px; }
+    .seek-slider::-webkit-slider-thumb { width: 8px; height: 8px; }
+    .seek-slider::-moz-range-thumb { width: 8px; height: 8px; }
     .volume-slider::-webkit-slider-thumb { width: 9px; height: 9px; }
     .volume-slider::-moz-range-thumb { width: 9px; height: 9px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
-       centered on the 3px track. Firefox centers natively (webkit only). */
-    .seek-slider::-webkit-slider-thumb { margin-top: calc((3px - 9px) / 2); }
+       centered (seek on its 2.5px line, volume on the 3px track).
+       Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((2.5px - 8px) / 2); }
     .volume-slider::-webkit-slider-thumb { margin-top: calc((3px - 9px) / 2); }
-    /* Meter segments match the thinner 3px slider track. */
+    /* The seek line itself paints slimmer than volume (both engines); the
+       input paint height drops with it so the green fill reads 3px too. */
+    .seek-slider::-webkit-slider-runnable-track { height: 2.5px; }
+    .seek-slider::-moz-range-track { height: 2.5px; }
+    .seek-slider { height: 3px; }
+    /* Meter segments match the 3px volume track. */
     .meter-segments i { height: 3px; }
 
     /* Small-laptop Full-HD viewports (13-14", effective CSS width up to
@@ -7240,8 +7248,9 @@ input[type="number"]::-webkit-outer-spin-button {
         justify-content: flex-start;
     }
     /* Tablet slider paint and thumb geometry (applied at ≥901px).
-       Same unified 3px/9px geometry as desktop; the 10px touch padding
-       from the base rule is untouched so the tap target stays large. */
+       Volume keeps the 3px/9px reference geometry; the seek assembly reads
+       one step slimmer, mirroring desktop. The 10px touch padding from the
+       base rule is untouched so the tap target stays large. */
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
         height: 3px;
@@ -7262,15 +7271,21 @@ input[type="number"]::-webkit-outer-spin-button {
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 9px; height: 9px; }
-    .seek-slider::-moz-range-thumb { width: 9px; height: 9px; }
+    .seek-slider::-webkit-slider-thumb { width: 8px; height: 8px; }
+    .seek-slider::-moz-range-thumb { width: 8px; height: 8px; }
     .volume-slider::-webkit-slider-thumb { width: 9px; height: 9px; }
     .volume-slider::-moz-range-thumb { width: 9px; height: 9px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
-       centered on the 3px track. Firefox centers natively (webkit only). */
-    .seek-slider::-webkit-slider-thumb { margin-top: calc((3px - 9px) / 2); }
+       centered (seek on its 2.5px line, volume on the 3px track).
+       Firefox centers natively (webkit only). */
+    .seek-slider::-webkit-slider-thumb { margin-top: calc((2.5px - 8px) / 2); }
     .volume-slider::-webkit-slider-thumb { margin-top: calc((3px - 9px) / 2); }
+    /* The seek line itself paints slimmer than volume (both engines); the
+       input paint height drops with it so the green fill reads 3px too. */
+    .seek-slider::-webkit-slider-runnable-track { height: 2.5px; }
+    .seek-slider::-moz-range-track { height: 2.5px; }
+    .seek-slider { height: 3px; }
 }
 
 @media (max-width: 700px) {
