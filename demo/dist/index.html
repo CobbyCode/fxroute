@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.184">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.188">
     <link rel="stylesheet" href="./demo/demo.css?v=1">
 </head>
 <body>
@@ -141,6 +141,7 @@
                             <select id="settings-music-library-select" class="url-input" disabled>
                                 <option value="local">Loading…</option>
                             </select>
+                            <p id="settings-music-library-hint" class="settings-inline-note"></p>
                         </div>
                     </section>
 
@@ -235,7 +236,7 @@
             <button class="tab-btn" data-tab="qobuz" hidden style="display:none" role="tab" id="tab-btn-qobuz" aria-controls="tab-qobuz" aria-selected="false"><span class="tab-glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.7" cy="10.7" r="6.4"/><path d="M15.1 15.1 18.8 18.8"/><circle cx="10.7" cy="10.7" r="3"/><path d="M12.6 12.6 14.4 15.1"/></svg></span><span>Qobuz</span></button>
             <button class="tab-btn" data-tab="tidal" hidden style="display:none" role="tab" id="tab-btn-tidal" aria-controls="tab-tidal" aria-selected="false"><span class="tab-glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.2 14.6 8.9 12 11.6 9.4 8.9Z" fill="currentColor" stroke="none"/><path d="M6.4 9 9 11.6 6.4 14.3 3.8 11.6Z" fill="currentColor" stroke="none"/><path d="M17.6 9 20.2 11.6 17.6 14.3 15 11.6Z" fill="currentColor" stroke="none"/><path d="M12 11.6 14.6 14.3 12 17 9.4 14.3Z" fill="currentColor" stroke="none"/></svg></span><span>Tidal</span></button>
             <button class="tab-btn active" data-tab="radio" role="tab" id="tab-btn-radio" aria-controls="tab-radio" aria-selected="true"><span class="tab-glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><rect x="3.2" y="10" width="17.6" height="9.2" rx="2"/><circle cx="7.8" cy="14.6" r="2"/><path d="M11.6 13.1h5.6"/><path d="M11.6 16.1h5.6"/><path d="M7.6 10 10 4.6"/><circle cx="10.3" cy="3.9" r="0.9" fill="currentColor" stroke="none"/></svg></span><span>Radio</span></button>
-            <button class="tab-btn" data-tab="library" role="tab" id="tab-btn-library" aria-controls="tab-library" aria-selected="false"><span class="tab-glyph" aria-hidden="true">♫</span><span>Library</span></button>
+            <button class="tab-btn" data-tab="library" role="tab" id="tab-btn-library" aria-controls="tab-library" aria-selected="false"><span class="tab-glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span><span>Library</span></button>
             <button class="tab-btn" data-tab="effects" role="tab" id="tab-btn-effects" aria-controls="tab-effects" aria-selected="false"><span class="tab-glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><path d="M6 5.8v12.4"/><path d="M12 5.8v12.4"/><path d="M18 5.8v12.4"/><rect x="4.25" y="7.6" width="3.5" height="2.2" rx="1.1" fill="currentColor" stroke="none"/><rect x="10.25" y="11.9" width="3.5" height="2.2" rx="1.1" fill="currentColor" stroke="none"/><rect x="16.25" y="9.2" width="3.5" height="2.2" rx="1.1" fill="currentColor" stroke="none"/></svg></span><span>DSP</span></button>
             </div>
         </nav>
@@ -1515,7 +1516,7 @@
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
     <script src="/static/measurement_flows.js?v=0.9.20"></script>
     <script src="/static/radio.js?v=0.9.18"></script>
-    <script src="/static/app.js?v=0.9.113"></script>
+    <script src="/static/app.js?v=0.9.117"></script>
     <script src="/static/streaming.js?v=0.9.60"></script>
 </body>
 </html>

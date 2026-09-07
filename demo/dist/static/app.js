@@ -414,6 +414,7 @@ let libraryModeRequestInFlight = false;
 let effectsCompareLoadInFlight = false;
 let settingsStatusPollTimer = null;
 let settingsOutputScanOnFocusDone = false;
+let musicLibraryRefreshTimer = null;
 let measurementInputScanOnFocusDone = false;
 let measurementSettingsRevision = 0;
 let measurementGraphResizeObserver = null;
@@ -458,6 +459,7 @@ const elements = {
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
     settingsMusicLibrarySelect: document.getElementById('settings-music-library-select'),
+    settingsMusicLibraryHint: document.getElementById('settings-music-library-hint'),
     settingsProvidersList: document.getElementById('settings-providers-list'),
     settingsProvidersSummary: document.getElementById('settings-providers-summary'),
     settingsProviderOperation: document.getElementById('settings-provider-operation'),
@@ -1876,6 +1878,10 @@ function stopSettingsStatusPolling() {
         clearInterval(settingsStatusPollTimer);
         settingsStatusPollTimer = null;
     }
+    if (musicLibraryRefreshTimer) {
+        clearTimeout(musicLibraryRefreshTimer);
+        musicLibraryRefreshTimer = null;
+    }
 }
 
 function startSettingsStatusPolling() {
@@ -1947,8 +1953,11 @@ function formatBluetoothModeStatus(bluetooth = {}) {
 }
 
 function settingsCertificateUrl() {
-    const host = String(window.location.host || window.location.hostname || '').trim();
-    return host ? `http://${host}/api/certificate/local-root` : '/api/certificate/local-root';
+    // Same-origin relative URL: the page may be served over HTTP or HTTPS
+    // (Caddy proxies both to the backend). An absolute http:// rewrite turns
+    // the link into mixed content on HTTPS pages, where browsers silently
+    // block the insecure download and the click appears to do nothing.
+    return '/api/certificate/local-root';
 }
 
 function isSelectFocused(selectEl) {
@@ -2350,8 +2359,32 @@ function renderProviderOperation(providerId, detail, log) {
     renderProviderSettings();
 }
 
+// While one provider operation runs, every provider action button (install,
+// uninstall, service, connect/disconnect) is disabled and visibly marked
+// busy. A silent early-return on a stale pending flag reads as a dead
+// button; the disabled state makes the reason explicit.
+function isProviderOpBusy(providerId) {
+    const pending = state.settings.providers.pendingOperation;
+    return !!pending && pending !== providerId;
+}
+
+function providerBusyAttribute(providerId) {
+    return isProviderOpBusy(providerId) ? ' data-provider-busy="1"' : '';
+}
+
+function wireProviderActionButtons() {
+    if (!elements.settingsProvidersList) return;
+    elements.settingsProvidersList.querySelectorAll('[data-provider-busy="1"] button').forEach((button) => {
+        button.disabled = true;
+        button.title = 'Another provider operation is running';
+    });
+}
+
 async function runProviderInstall(providerId) {
-    if (state.settings.providers.pendingOperation) return;
+    if (state.settings.providers.pendingOperation) {
+        showToast('Another provider operation is already running. Please wait for it to finish.', 'info');
+        return;
+    }
     state.settings.providers.pendingOperation = providerId;
     renderProviderOperation(providerId, '', '');
     try {
@@ -2359,6 +2392,10 @@ async function runProviderInstall(providerId) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Installation failed');
         renderProviderOperation(providerId, data.installed ? 'Provider installed.' : 'Install finished.', data.log || '');
+        // A Settings uninstall disables the provider; a reinstall must activate
+        // it again exactly like the first install, or its checkbox and tab stay off.
+        const provider = state.settings.providers.list.find((p) => p.id === providerId);
+        if (provider && provider.enabled === false) await setProviderEnabled(providerId, true);
     } catch (error) {
         renderProviderOperation(providerId, '', error.message || 'Installation failed');
         showToast(error.message || 'Installation failed', 'error');
@@ -2371,7 +2408,10 @@ async function runProviderInstall(providerId) {
 }
 
 async function runProviderUninstall(providerId) {
-    if (state.settings.providers.pendingOperation) return;
+    if (state.settings.providers.pendingOperation) {
+        showToast('Another provider operation is already running. Please wait for it to finish.', 'info');
+        return;
+    }
     if (!confirm(PROVIDER_UNINSTALL_CONFIRM[providerId] || 'Remove this provider?')) return;
     state.settings.providers.pendingOperation = providerId;
     renderProviderOperation(providerId, '', '');
@@ -2393,7 +2433,10 @@ async function runProviderUninstall(providerId) {
 }
 
 async function runProviderServiceAction(providerId, action) {
-    if (state.settings.providers.pendingOperation) return;
+    if (state.settings.providers.pendingOperation) {
+        showToast('Another provider operation is already running. Please wait for it to finish.', 'info');
+        return;
+    }
     state.settings.providers.pendingOperation = providerId;
     renderProviderSettings();
     try {
@@ -2764,7 +2807,7 @@ function renderProviderSettings() {
                 : (provider.available ? 'Installed · ready' : 'Installed'));
         const checked = provider.enabled !== false;
         return `
-            <div class="settings-provider-row" data-provider-row="${escapeHtml(provider.id)}">
+            <div class="settings-provider-row" data-provider-row="${escapeHtml(provider.id)}"${providerBusyAttribute(provider.id)}>
                 <div class="settings-provider-info">
                     <label class="settings-provider-toggle">
                         <input type="checkbox" data-provider-enabled="${escapeHtml(provider.id)}"${checked ? ' checked' : ''} />
@@ -2805,6 +2848,7 @@ function renderProviderSettings() {
     elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-logout]').forEach((button) => {
         button.addEventListener('click', () => void tidalLogout());
     });
+    wireProviderActionButtons();
 }
 
 async function applyDeviceName(value) {
@@ -2892,7 +2936,17 @@ function renderSettingsPanel() {
             return `<option value="${escapeHtml(output.key || '')}">${escapeHtml(label)}</option>`;
         });
         elements.settingsOutputSelect.innerHTML = options.join('') || '<option value="">No outputs available</option>';
-        if (effectiveSelectedKey) elements.settingsOutputSelect.value = effectiveSelectedKey;
+        // Never leave the field blank on an unmatchable key (e.g. a stale
+        // non-selectable sink): prefer the computed key, then the PipeWire
+        // default, then the first selectable output.
+        const optionKeys = new Set(selectableOutputs.map((output) => output.key || ''));
+        let selectKey = effectiveSelectedKey && optionKeys.has(effectiveSelectedKey) ? effectiveSelectedKey : '';
+        if (!selectKey) {
+            const defaultKey = overview.default_output?.key || overview.default_output?.target_name || '';
+            selectKey = defaultKey && optionKeys.has(defaultKey) ? defaultKey : '';
+        }
+        if (!selectKey && selectableOutputs.length) selectKey = selectableOutputs[0].key || '';
+        if (selectKey) elements.settingsOutputSelect.value = selectKey;
         elements.settingsOutputSelect.disabled = !overview.available || !!pendingSelectionKey || !selectableOutputs.length;
     }
 
@@ -2992,6 +3046,11 @@ function renderSettingsPanel() {
         elements.settingsMusicLibrarySelect.value = model.value;
         elements.settingsMusicLibrarySelect.disabled = model.disabled;
     }
+    if (elements.settingsMusicLibraryHint) {
+        const cachedCount = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries.length : 0;
+        elements.settingsMusicLibraryHint.textContent =
+            musicLibrary.scanning && cachedCount > 0 ? 'Scanning…' : '';
+    }
     renderProviderSettings();
     renderDeviceNameSettings();
     renderHardwareController();
@@ -3031,10 +3090,26 @@ async function fetchMusicLibraries() {
         const resp = await fetch('/api/music-libraries');
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to discover music libraries');
-        state.settings.musicLibrary = { ...data, pending: false, loading: false };
+        state.settings.musicLibrary = { ...data, pending: false, loading: false, scanning: !!data.discovery_refreshing };
         renderSettingsPanel();
+        // Stale-while-revalidate: the response above already shows cached
+        // shares; when the backend refreshed in the background, fetch once
+        // more so new shares appear without another user action. The timer
+        // dies with the dialog (stopSettingsStatusPolling).
+        if (musicLibraryRefreshTimer) {
+            clearTimeout(musicLibraryRefreshTimer);
+            musicLibraryRefreshTimer = null;
+        }
+        if (data.discovery_refreshing) {
+            musicLibraryRefreshTimer = setTimeout(() => {
+                musicLibraryRefreshTimer = null;
+                if (elements.settingsPanel && !elements.settingsPanel.classList.contains('hidden')) {
+                    void fetchMusicLibraries();
+                }
+            }, 5000);
+        }
     } catch (error) {
-        state.settings.musicLibrary = { ...(state.settings.musicLibrary || {}), loading: false };
+        state.settings.musicLibrary = { ...(state.settings.musicLibrary || {}), loading: false, scanning: false };
         renderSettingsPanel();
         console.debug('Failed to discover music libraries', error);
     }
@@ -3042,6 +3117,10 @@ async function fetchMusicLibraries() {
 
 async function selectMusicLibrary(libraryId) {
     const previousId = state.settings.musicLibrary.active_id;
+    if (musicLibraryRefreshTimer) {
+        clearTimeout(musicLibraryRefreshTimer);
+        musicLibraryRefreshTimer = null;
+    }
     state.settings.musicLibrary.pending = true;
     renderSettingsPanel();
     try {
@@ -3073,6 +3152,10 @@ async function selectMusicLibrary(libraryId) {
 }
 
 async function addManualMusicLibrary(url) {
+    if (musicLibraryRefreshTimer) {
+        clearTimeout(musicLibraryRefreshTimer);
+        musicLibraryRefreshTimer = null;
+    }
     try {
         const resp = await fetch('/api/music-libraries/manual', {
             method: 'POST',
