@@ -431,21 +431,27 @@ EOF
   chown "$FXROUTE_USER:$fxroute_group" "$config_dir/kscreenlockerrc"
   chmod 600 "$config_dir/kscreenlockerrc"
 
-  # PowerDevil: no dimming, no screen turn-off, no suspend/hibernate on
-  # inactivity for any power state. Empty sections mean all timeouts off.
+  # PowerDevil (Plasma 6): no dimming, no screen turn-off, no automatic
+  # suspend for any power state. Settings live in the per-profile [AC]/
+  # [Battery]/[LowBattery] subgroups; an AutoSuspendAction value of 0
+  # disables auto-suspend and the idle-timeout keys are omitted so no idle
+  # timers get armed.
   cat > "$config_dir/powerdevilrc" <<'EOF'
-[AC]
-[AC][DimDisplay]
-[AC][DPMSControl]
-[AC][SuspendSession]
-[Battery]
-[Battery][DimDisplay]
-[Battery][DPMSControl]
-[Battery][SuspendSession]
-[LowBattery]
-[LowBattery][DimDisplay]
-[LowBattery][DPMSControl]
-[LowBattery][SuspendSession]
+[AC][SuspendAndShutdown]
+AutoSuspendAction=0
+[AC][Display]
+DimDisplayWhenIdle=false
+TurnOffDisplayWhenIdle=false
+[Battery][SuspendAndShutdown]
+AutoSuspendAction=0
+[Battery][Display]
+DimDisplayWhenIdle=false
+TurnOffDisplayWhenIdle=false
+[LowBattery][SuspendAndShutdown]
+AutoSuspendAction=0
+[LowBattery][Display]
+DimDisplayWhenIdle=false
+TurnOffDisplayWhenIdle=false
 EOF
   chown "$FXROUTE_USER:$fxroute_group" "$config_dir/powerdevilrc"
   chmod 600 "$config_dir/powerdevilrc"

@@ -488,6 +488,34 @@ class InstallIsoContractTests(unittest.TestCase):
         # The Plasma shell itself stays unlocked.
         self.assertIn("closing the window returns to the normal desktop", script)
 
+    def test_desktop_powerdevil_config_disables_idle_dim_off_and_suspend(self):
+        script = self.read("iso/scripts/first-boot-install.sh")
+
+        # Plasma 6 keeps the per-profile settings in [AC]/[Battery]/
+        # [LowBattery] subgroups; the empty Plasma-5-style sections were
+        # ignored and fell back to the PowerDevil defaults (dim after 5 min,
+        # display off after 10 min, suspend after 15 min on AC).
+        for profile in ("AC", "Battery", "LowBattery"):
+            self.assertIn(f"[{profile}][SuspendAndShutdown]", script)
+            self.assertIn(f"[{profile}][Display]", script)
+        # AutoSuspendAction=0 disables automatic suspend; the idle-timeout
+        # keys are deliberately not written so no idle timer is armed.
+        self.assertIn("AutoSuspendAction=0", script)
+        self.assertEqual(script.count("AutoSuspendAction=0"), 3)
+        for token in (
+            "DimDisplayWhenIdle=false",
+            "TurnOffDisplayWhenIdle=false",
+        ):
+            self.assertIn(token, script)
+            self.assertEqual(script.count(token), 3)
+        self.assertNotIn("AutoSuspendIdleTimeoutSec", script)
+        self.assertNotIn("DimDisplayIdleTimeoutSec", script)
+        self.assertNotIn("TurnOffDisplayIdleTimeoutSec", script)
+        # The ineffective empty-section variant must be gone.
+        self.assertNotIn("[AC][SuspendSession]", script)
+        self.assertNotIn("[AC][DimDisplay]", script)
+        self.assertNotIn("[AC][DPMSControl]", script)
+
     def test_first_boot_can_retry_after_a_failed_attempt(self):
         script = self.read("iso/scripts/first-boot-install.sh")
 
