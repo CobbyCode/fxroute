@@ -70,7 +70,9 @@
 }
 .effects-card h3 {
     margin-bottom: 0.4rem;
-    font-size: 1.15rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
     line-height: 1.25;
 }
 .effects-card-header p,
@@ -86,9 +88,9 @@
     flex-direction: column;
     gap: 0.9rem;
     padding: 1rem;
-    border: 1px solid rgba(110, 231, 183, 0.24);
+    border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    background: linear-gradient(180deg, rgba(110, 231, 183, 0.1), rgba(255,255,255,0.02));
+    background: rgba(255,255,255,0.015);
 }
 
 .effects-compare-fields {
@@ -108,11 +110,11 @@
 .effects-compare-slot.is-active {
     border-color: rgba(110, 231, 183, 0.45);
     background: rgba(110, 231, 183, 0.08);
-    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.16);
+    box-shadow: none;
 }
 
 .effects-compare-slot.is-armed {
-    border-color: rgba(110, 231, 183, 0.34);
+    border-color: rgba(110, 231, 183, 0.22);
 }
 
 .effects-compare-fields .field-group {
@@ -150,11 +152,11 @@ select option:checked {
     background: rgba(110, 231, 183, 0.08);
     border: 1px solid rgba(110, 231, 183, 0.26);
     border-radius: var(--radius-md);
-    font-weight: 800;
+    font-weight: 600;
     font-size: 1rem;
     color: #bff9de;
     text-align: center;
-    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.08);
+    box-shadow: none;
 }
 
 .effects-compare-active-badge span {
@@ -180,7 +182,7 @@ select option:checked {
 }
 
 .effects-compare-active-badge.is-side-b {
-    background: rgba(110, 231, 183, 0.14);
+    background: rgba(110, 231, 183, 0.1);
     border-color: rgba(110, 231, 183, 0.34);
     color: #f0fff8;
 }
@@ -810,7 +812,7 @@ input[type="number"]::-webkit-outer-spin-button {
     border: 1px solid var(--border);
     /* Re-assert the shared neutral card edge after the border shorthand. */
     border-top: 3px solid var(--border-strong);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--bg-surface);
     overflow: hidden;
 }
@@ -822,7 +824,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .effects-card-extras .effects-card-header h3 {
-    font-size: 1.15rem;
+    font-size: 1.1rem;
     font-weight: 600;
     margin-bottom: 0.4rem;
 }
@@ -845,10 +847,9 @@ input[type="number"]::-webkit-outer-spin-button {
 .effects-extras-inner {
     width: min(100%, 540px);
     padding: 1rem 1.05rem;
-    border: 1px solid var(--border);
+    border: 1px solid transparent;
     border-radius: var(--radius-md);
-    background: rgba(255,255,255,0.03);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+    background: transparent;
     display: flex;
     flex-direction: column;
     gap: 0.8rem;
@@ -872,7 +873,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .effects-extras-group-header h4 {
     font-size: 0.9rem;
-    font-weight: 700;
+    font-weight: 600;
     color: var(--text-primary);
 }
 

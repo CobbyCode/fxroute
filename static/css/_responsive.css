@@ -662,8 +662,6 @@
     .control-btn-mode,
     .control-btn-clear,
     .track-favorite-btn,
-    .album-card-fav,
-    .station-card-fav,
     .streaming-fav,
     .track-row-favorite,
     .track-fav,
@@ -673,6 +671,8 @@
     .measurement-peq-chip {
         position: relative;
     }
+    /* Cover favorites are already absolutely positioned. Keep that anchor:
+       making them relative pulls them into the card flow on touch screens. */
     .control-btn-mode::after,
     .control-btn-clear::after,
     .track-favorite-btn::after,
@@ -1844,6 +1844,12 @@
         }
         .tab-btn { pointer-events: auto; min-width: 124px; }
 
+}
+
+/* At the single-row transition, leave breathing room for the full brand and
+   all six providers even with small platform differences in font metrics. */
+@media (min-width: 1180px) and (max-width: 1279px) {
+    .tab-btn { min-width: 116px; }
 }
 
 @media (max-width: 420px) {

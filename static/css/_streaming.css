@@ -194,7 +194,6 @@
 .streaming-album {
     font-size: 0.85rem;
     color: var(--text-muted);
-    opacity: 0.85;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -306,7 +305,9 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: var(--accent);
+    background: #ececf0;
+    border: 1px solid rgba(13,13,15,0.8);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
     cursor: pointer;
 }
 .streaming-progress:focus-visible::-webkit-slider-thumb {
@@ -316,8 +317,9 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: var(--accent);
-    border: none;
+    background: #ececf0;
+    border: 1px solid rgba(13,13,15,0.8);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
     cursor: pointer;
 }
 .streaming-progress:disabled { opacity: 0.4; cursor: default; }
@@ -632,8 +634,9 @@
 #tidal-search-items > .tidal-tiles { margin-top: 1.125rem; }
 .tidal-tiles .album-card .streaming-fav {
     position: absolute;
-    top: 0.55rem;
-    right: 0.55rem;
+    /* Same cover inset as Library favorites on the shared album card. */
+    top: 1.05rem;
+    right: 1.05rem;
     z-index: var(--z-raised);
     width: 32px;
     height: 32px;

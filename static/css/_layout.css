@@ -190,7 +190,6 @@
 }
 .power-btn.is-online .power-btn-icon {
     color: var(--success);
-    filter: drop-shadow(0 0 4px rgba(52,211,153,0.35));
 }
 .power-menu {
     position: absolute;
@@ -302,8 +301,9 @@
     padding: .52rem .9rem;
     background: transparent;
     border: none;
-    color: #9999a6;
+    color: var(--text-secondary);
     cursor: pointer;
+    font-family: var(--font-sans);
     font-size: .9rem;
     font-weight: 560;
     border-radius: var(--radius-md);
@@ -324,16 +324,13 @@
     outline: 2px solid var(--accent);
     outline-offset: -2px;
 }
-/* The active accent stays inside the tab: a short centered underline and a
-   faint inner glow, with no green edge or outer glow bleeding toward the
-   brand lockup / first tab. The underline spans only the inner part of the
-   button, so the active state never reaches the edge facing the logo. */
+/* The active accent stays inside the tab: a short centered underline on a
+   quiet mint surface. No glow or edge bleeds toward the brand lockup. */
 .tab-btn.active {
     color: #f3f3f5;
     background: rgba(110, 231, 183, 0.07);
     font-weight: 600;
     position: relative;
-    box-shadow: inset 0 0 12px rgba(110, 231, 183, 0.07);
 }
 .tab-btn.active::after {
     content: '';
@@ -401,7 +398,7 @@
    ============================================================ */
 .section-title {
     font-size: 1.05rem;
-    font-weight: 700;
+    font-weight: 650;
     letter-spacing: -0.02em;
 }
 .section-subtitle {
