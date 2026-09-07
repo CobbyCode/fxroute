@@ -26,7 +26,7 @@ cd fxroute
 python3 scripts/serve_demo.py     # then open http://127.0.0.1:8765
 ```
 
-The demo page carries a small notice saying the backend is simulated. A static, publishable snapshot can be built with `python3 scripts/build_demo.py` (see `demo/README.md` for subpath hosting). The demo reuses the live frontend from this checkout, so it always reflects the current UI — there is no second UI source to keep in sync.
+The demo page carries a small notice saying the backend is simulated.
 
 <p align="center">
   <img src="media/screenshots/radio-overview.png" width="32%" alt="FXRoute radio catalog with a station playing">
