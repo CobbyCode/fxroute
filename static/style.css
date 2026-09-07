@@ -7127,8 +7127,6 @@ input[type="number"]::-webkit-outer-spin-button {
         .section-title { font-size: 1.12rem; }
         .section-subtitle { font-size: 0.96rem; }
         .station-name { font-size: 1rem; }
-        .brand-text-block .brand-title { font-size: 1.12rem; }
-        .brand-text-block .brand-subtitle { font-size: 0.65rem; }
     }
 }
 
