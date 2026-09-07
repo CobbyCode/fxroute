@@ -89,55 +89,66 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertIn("Playback footer refinement v8", CSS)
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 2\.5px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 3px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-runnable-track[\s\S]*?height: 2\.5px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-runnable-track[\s\S]*?height: 3px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 8px; height: 8px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 11px; height: 11px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 8px; height: 8px",
+            r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 11px; height: 11px",
         )
-        self.assertIn(".seek-slider { height: 5px; }", CSS)
-        self.assertIn(".volume-slider { height: 5px; }", CSS)
-        # Chromium top-anchors the thumb when the 2.5px line is shorter than
-        # the thumb; the geometry-derived margin re-centers it (webkit only).
+        # One shared base input height for both sliders (integer px so OS
+        # scaling cannot round them apart).
+        self.assertRegex(
+            CSS,
+            r"\.seek-slider,\s*\n\.volume-slider\s*\{[^}]*height: 3px",
+        )
+        # Chromium top-anchors the thumb when the 3px line is shorter than
+        # the thumb; the integer margin re-centers it (webkit only).
         self.assertRegex(
             CSS,
             r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
-            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(2\.5px - 8px\) / 2\)",
+            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -4px",
         )
         self.assertRegex(
             CSS,
             r"@media \(min-width: (?:901|1181|701)px\)[\s\S]*?"
-            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(2\.5px - 8px\) / 2\)",
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -4px",
         )
 
-    def test_mobile_slider_polish_preserves_input_box_and_volume_hierarchy(self):
+    def test_mobile_slider_polish_preserves_input_box_and_unified_geometry(self):
         self.assertRegex(
             CSS,
-            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 4\.5px",
+            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider::\-webkit-slider-runnable-track[\s\S]*?height: 4px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 12\.5px; height: 12\.5px",
+            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
         )
         self.assertRegex(
             CSS,
-            r"@media \(max-width: 700px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 15\.5px; height: 15\.5px",
+            r"@media \(max-width: 700px\)[\s\S]*?\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
         )
-        self.assertIn(".seek-slider { height: 5px; }", CSS)
-        self.assertIn(".volume-slider { height: 5px; }", CSS)
-        # Same centering correction for the phone thumb sizes (15.5px volume).
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 700px\)[\s\S]*?\.seek-slider,\s*\n\s*\.volume-slider\s*\{\s*height: 4px",
+        )
+        # Same integer centering correction for the shared phone thumb size.
         self.assertRegex(
             CSS,
             r"@media \(max-width: 700px\)[\s\S]*?"
-            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: calc\(\(4\.5px - 15\.5px\) / 2\)",
+            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -5px",
+        )
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 700px\)[\s\S]*?"
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*margin-top: -5px",
         )
 
     def test_desktop_transport_nudge_is_positive_and_footer_height_unchanged(self):

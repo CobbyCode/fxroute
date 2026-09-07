@@ -78,17 +78,20 @@ class SliderHitAreaTests(unittest.TestCase):
         )
         self.assertIn("background-clip: content-box", CSS)
         self.assertIn("box-sizing: content-box", CSS)
-        self.assertIn(".seek-slider { height: 5px; }", CSS)
-        self.assertIn(".volume-slider { height: 5px; }", CSS)
-
-    def test_thumb_geometry_unchanged(self):
+        # One shared base input height for both sliders.
         self.assertRegex(
             CSS,
-            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 13px; height: 13px",
+            r"\.seek-slider,\s*\n\.volume-slider\s*\{[^}]*height: 3px",
+        )
+
+    def test_thumb_geometry_unified(self):
+        self.assertRegex(
+            CSS,
+            r"\.seek-slider::\-webkit-slider-thumb\s*\{\s*width: 11px; height: 11px",
         )
         self.assertRegex(
             CSS,
-            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 14px; height: 14px",
+            r"\.volume-slider::\-webkit-slider-thumb\s*\{\s*width: 11px; height: 11px",
         )
 
 

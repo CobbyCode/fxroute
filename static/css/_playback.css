@@ -269,7 +269,7 @@
     appearance: none;
     width: 100%;
     /* Touch hit area: transparent padding expands the drag target to ~25px
-       while the negative margin keeps the layout height at the 5px visual
+       while the negative margin keeps the layout height at the 3px visual
        track. background-clip keeps the gradient on the content box only. */
     margin-block: -10px;
     padding-block: 10px;
@@ -278,7 +278,12 @@
     outline: none;
     cursor: pointer;
     box-sizing: content-box;
-    height: 5px;
+    /* One slider dialect for the whole footer: seek and volume share track
+       height and thumb size in every range. Integer px only, so OS display
+       scaling cannot round one slider up and the other down. The ranges
+       below only switch the shared desktop size to the shared phone size;
+       both sliders always move together. */
+    height: 3px;
     background: linear-gradient(to right,
         var(--accent) 0%,
         var(--accent) var(--range-progress),
@@ -287,29 +292,29 @@
     background-clip: content-box;
     box-shadow: none;
 }
-.seek-slider { height: 5px; }
-.volume-slider { height: 5px; }
+/* Seek and volume share one thumb in every range (single rule, no
+   per-slider sizes). */
 .seek-slider::-webkit-slider-thumb,
 .volume-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
+    width: 11px;
+    height: 11px;
     border-radius: 50%;
     background: #ffffff;
     border: 1px solid rgba(0,0,0,0.5);
     box-shadow: 0 1px 4px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.1);
     transition: transform .12s var(--ease), box-shadow .12s var(--ease);
 }
-.seek-slider::-webkit-slider-thumb { width: 13px; height: 13px; }
-.volume-slider::-webkit-slider-thumb { width: 14px; height: 14px; }
 .seek-slider::-moz-range-thumb,
 .volume-slider::-moz-range-thumb {
+    width: 11px;
+    height: 11px;
     border-radius: 50%;
     background: #ffffff;
     border: 1px solid rgba(0,0,0,0.5);
     box-shadow: 0 1px 4px rgba(0,0,0,0.6);
 }
-.seek-slider::-moz-range-thumb { width: 13px; height: 13px; }
-.volume-slider::-moz-range-thumb { width: 14px; height: 14px; }
 .seek-slider:hover::-webkit-slider-thumb,
 .volume-slider:hover::-webkit-slider-thumb {
     transform: scale(1.18);
