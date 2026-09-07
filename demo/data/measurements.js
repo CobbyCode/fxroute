@@ -1,8 +1,8 @@
-// Snapshot of real FXRoute saved measurements (exported from the
-// .104 test machine 2026-09-05). Kept as local demo fixtures so the
+// Snapshot of real FXRoute saved measurements (exported from a
+// local test setup on 2026-09-05). Kept as local demo fixtures so the
 // web demo has no runtime dependency on the measurement backend.
 //
-// Fixture roles follow the measurement names on .104:
+// Fixture roles follow the original measurement names:
 // - Sweep-L/Raw, Sweep-R-Raw, Sweep-L/R-Raw: plain single sweeps
 //   (left / right / stereo integration slot).
 // - Sweep-L/R-Convolver, Sweep-R-Convolver, Sweep-L/R-Convolver:
@@ -18,7 +18,7 @@
 //   delays, main reference). Summaries carry the real point counts and
 //   frequency ranges so the saved list shows e.g. "384 pts · 20–20000 Hz"
 //   like the real frontend, and the input labels come straight from the
-//   .104 captures.
+//   original captures.
 (function () {
     'use strict';
 

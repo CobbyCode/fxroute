@@ -43,21 +43,6 @@ for Pi 5:
   --board rpi5
 ```
 
-For Khadas VIM1S, the wrapper follows Armbian's official OOWOW target: it uses
-`BOARD=khadas-vim1s`, defaults to `BRANCH=legacy`, and passes
-`EXT=image-output-oowow`. Armbian's extension produces the OOWOW image itself;
-the wrapper does not rename a normal `.img`:
-
-```bash
-./armbian/build-image.sh \
-  --board khadas-vim1s
-```
-
-The default output is
-`dist/fxroute-armbian-khadas-vim1s-trixie-legacy.oowow.img.xz` with its
-`.sha256` checksum. A VIM1S output path must retain the `.oowow.img.xz`
-suffix.
-
 At the pinned Armbian revision, `rpi4`, `rpi4b`, `rpi5`, and `rpi5b` are
 intentional aliases for `BOARD=rpi4b`. Armbian uses the shared `bcm2711`
 configuration and identifies a Pi 5 at runtime. There is no separate current

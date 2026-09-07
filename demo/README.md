@@ -6,8 +6,7 @@ adds only a demo/simulation layer on top.
 
 ## What is in this worktree
 
-The demo layer lives in the same worktree as the product frontend
-(`feature/ui-design`):
+The demo layer lives in the same checkout as the product frontend:
 
 - `demo/` — simulation source (`state.js`, `routes.js`,
   `streaming.js`, `ws.js`, `boot.js`, `demo.css`), fixtures
