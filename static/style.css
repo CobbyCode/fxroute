@@ -363,7 +363,7 @@ body {
 .brand-lockup {
     display: flex;
     align-items: center;
-    gap: 0.39rem;
+    gap: 0.5rem;
     min-width: 0;
 }
 .brand-lockup-button {
@@ -378,8 +378,7 @@ body {
 }
 .brand-lockup-button:hover .brand-mark,
 .brand-lockup-button:focus-visible .brand-mark {
-    border-color: rgba(110, 231, 183, 0.28);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.025), 0 0 0 3px rgba(110, 231, 183, 0.08);
+    box-shadow: none;
 }
 .brand-lockup-button:focus-visible {
     /* Same visible keyboard ring as the power button next in the header. */
@@ -433,51 +432,33 @@ body {
     transform: translateY(-2px);
 }
 
-.brand-mark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 42px;
-    height: 42px;
-    border-radius: var(--radius-md);
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.008));
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
-    font-weight: 800;
-    font-size: 0.95rem;
-    letter-spacing: -0.075em;
+.brand-lockup .brand-mark {
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 0;
+    background: url('./route-mark.svg') center / contain no-repeat;
+    box-shadow: none;
     flex-shrink: 0;
 }
-.brand-mark-f {
-    color: rgba(244, 244, 245, 0.9);
-}
-.brand-mark-x {
-    color: rgba(110, 231, 183, 0.82);
-}
-.brand-text-block {
+.brand-lockup .brand-text-block {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 0.12rem;
     min-width: 0;
-    line-height: 0.98;
-    padding-top: 1px;
+    line-height: 1;
+    padding-top: 0;
 }
-.brand-title {
+.brand-lockup .brand-title {
     color: var(--text-primary);
-    font-size: 1.22rem;
+    font-size: 1.16rem;
+    font-weight: 520;
+    letter-spacing: -0.045em;
+}
+.brand-lockup .brand-title-fx {
+    color: var(--text-primary);
     font-weight: 740;
-    letter-spacing: -0.035em;
-}
-.brand-title-fx {
-    color: rgba(225, 250, 239, 0.94);
-}
-.brand-subtitle {
-    color: rgba(176, 176, 190, 0.9);
-    font-size: 0.63rem;
-    font-weight: 650;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
 }
 
 /* Header-right cluster: power button */
@@ -536,7 +517,6 @@ body {
 }
 .power-btn.is-online .power-btn-icon {
     color: var(--success);
-    filter: drop-shadow(0 0 4px rgba(52,211,153,0.35));
 }
 .power-menu {
     position: absolute;
@@ -648,8 +628,9 @@ body {
     padding: .52rem .9rem;
     background: transparent;
     border: none;
-    color: #9999a6;
+    color: var(--text-secondary);
     cursor: pointer;
+    font-family: var(--font-sans);
     font-size: .9rem;
     font-weight: 560;
     border-radius: var(--radius-md);
@@ -670,16 +651,13 @@ body {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
 }
-/* The active accent stays inside the tab: a short centered underline and a
-   faint inner glow, with no green edge or outer glow bleeding toward the
-   brand lockup / first tab. The underline spans only the inner part of the
-   button, so the active state never reaches the edge facing the logo. */
+/* The active accent stays inside the tab: a short centered underline on a
+   quiet mint surface. No glow or edge bleeds toward the brand lockup. */
 .tab-btn.active {
     color: #f3f3f5;
     background: rgba(110, 231, 183, 0.07);
     font-weight: 600;
     position: relative;
-    box-shadow: inset 0 0 12px rgba(110, 231, 183, 0.07);
 }
 .tab-btn.active::after {
     content: '';
@@ -747,7 +725,7 @@ body {
    ============================================================ */
 .section-title {
     font-size: 1.05rem;
-    font-weight: 700;
+    font-weight: 650;
     letter-spacing: -0.02em;
 }
 .section-subtitle {
@@ -1217,7 +1195,7 @@ body {
 .album-card {
     background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
     border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 18px;
+    border-radius: var(--radius-lg);
     padding: 0.82rem;
     cursor: pointer;
     transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), border-color 0.18s var(--ease), background 0.18s var(--ease);
@@ -1229,12 +1207,12 @@ body {
     gap: 0.8rem;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+    box-shadow: none;
 }
 .album-art-wrap {
     width: 100%;
     aspect-ratio: 1 / 1;
-    border-radius: 15px;
+    border-radius: var(--radius-md);
     overflow: hidden;
     background: rgba(255,255,255,0.03);
     border: 1px solid var(--border);
@@ -1253,8 +1231,8 @@ body {
     background: rgba(0,0,0,0.08);
 }
 .album-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
     border-color: rgba(255,255,255,0.14);
     background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
 }
@@ -1327,7 +1305,7 @@ body {
     backdrop-filter: none;
 }
 .album-name {
-    font-weight: 700;
+    font-weight: 600;
     font-size: 0.98rem;
     color: var(--text-primary);
     line-height: 1.3;
@@ -3102,7 +3080,7 @@ body {
 .station-card {
     background: linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.012));
     border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 17px;
+    border-radius: var(--radius-lg);
     padding: .7rem;
     cursor: pointer;
     transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), border-color 0.18s var(--ease), background 0.18s var(--ease);
@@ -3114,12 +3092,12 @@ body {
     gap: .68rem;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
-    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+    box-shadow: none;
 }
 .station-art-wrap {
     width: 100%;
     aspect-ratio: 1 / 1;
-    border-radius: 13px;
+    border-radius: var(--radius-md);
     overflow: hidden;
     background: rgba(255,255,255,0.03);
     border: 1px solid var(--border);
@@ -3162,7 +3140,7 @@ body {
 }
 .station-card:hover {
     transform: translateY(-2px);
-    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
     border-color: rgba(255,255,255,0.14);
     background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
 }
@@ -3195,7 +3173,7 @@ body {
     50% { opacity: 1; }
 }
 .station-name {
-    font-weight: 700;
+    font-weight: 600;
     font-size: .95rem;
     color: var(--text-primary);
     line-height: 1.3;
@@ -3297,9 +3275,9 @@ body {
 }
 
 .station-card.active {
-    border-color: rgba(110,231,183,.72);
-    background: linear-gradient(180deg, rgba(110,231,183,.105), rgba(255,255,255,.014));
-    box-shadow: 0 0 0 1px rgba(110,231,183,.38), 0 14px 30px rgba(0,0,0,.26);
+    border-color: rgba(110,231,183,.55);
+    background: linear-gradient(180deg, rgba(110,231,183,.07), rgba(255,255,255,.014));
+    box-shadow: inset 0 0 0 1px rgba(110,231,183,.08);
 }
 /* =========================================================================
    Responsive — consolidated (Task 4)
@@ -3497,7 +3475,6 @@ body {
 .streaming-album {
     font-size: 0.85rem;
     color: var(--text-muted);
-    opacity: 0.85;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3609,7 +3586,9 @@ body {
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: var(--accent);
+    background: #ececf0;
+    border: 1px solid rgba(13,13,15,0.8);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
     cursor: pointer;
 }
 .streaming-progress:focus-visible::-webkit-slider-thumb {
@@ -3619,8 +3598,9 @@ body {
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: var(--accent);
-    border: none;
+    background: #ececf0;
+    border: 1px solid rgba(13,13,15,0.8);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
     cursor: pointer;
 }
 .streaming-progress:disabled { opacity: 0.4; cursor: default; }
@@ -3935,8 +3915,9 @@ body {
 #tidal-search-items > .tidal-tiles { margin-top: 1.125rem; }
 .tidal-tiles .album-card .streaming-fav {
     position: absolute;
-    top: 0.55rem;
-    right: 0.55rem;
+    /* Same cover inset as Library favorites on the shared album card. */
+    top: 1.05rem;
+    right: 1.05rem;
     z-index: var(--z-raised);
     width: 32px;
     height: 32px;
@@ -5006,7 +4987,9 @@ body {
 }
 .effects-card h3 {
     margin-bottom: 0.4rem;
-    font-size: 1.15rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
     line-height: 1.25;
 }
 .effects-card-header p,
@@ -5022,9 +5005,9 @@ body {
     flex-direction: column;
     gap: 0.9rem;
     padding: 1rem;
-    border: 1px solid rgba(110, 231, 183, 0.24);
+    border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    background: linear-gradient(180deg, rgba(110, 231, 183, 0.1), rgba(255,255,255,0.02));
+    background: rgba(255,255,255,0.015);
 }
 
 .effects-compare-fields {
@@ -5044,11 +5027,11 @@ body {
 .effects-compare-slot.is-active {
     border-color: rgba(110, 231, 183, 0.45);
     background: rgba(110, 231, 183, 0.08);
-    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.16);
+    box-shadow: none;
 }
 
 .effects-compare-slot.is-armed {
-    border-color: rgba(110, 231, 183, 0.34);
+    border-color: rgba(110, 231, 183, 0.22);
 }
 
 .effects-compare-fields .field-group {
@@ -5086,11 +5069,11 @@ select option:checked {
     background: rgba(110, 231, 183, 0.08);
     border: 1px solid rgba(110, 231, 183, 0.26);
     border-radius: var(--radius-md);
-    font-weight: 800;
+    font-weight: 600;
     font-size: 1rem;
     color: #bff9de;
     text-align: center;
-    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.08);
+    box-shadow: none;
 }
 
 .effects-compare-active-badge span {
@@ -5116,7 +5099,7 @@ select option:checked {
 }
 
 .effects-compare-active-badge.is-side-b {
-    background: rgba(110, 231, 183, 0.14);
+    background: rgba(110, 231, 183, 0.1);
     border-color: rgba(110, 231, 183, 0.34);
     color: #f0fff8;
 }
@@ -5649,7 +5632,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-actions-peq-dual {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* Single action row (preset name + Create): full card width, unlike the
+       two-column REW dual import row this class is derived from. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.8rem;
     align-items: start;
 }
@@ -5746,7 +5731,7 @@ input[type="number"]::-webkit-outer-spin-button {
     border: 1px solid var(--border);
     /* Re-assert the shared neutral card edge after the border shorthand. */
     border-top: 3px solid var(--border-strong);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--bg-surface);
     overflow: hidden;
 }
@@ -5758,7 +5743,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .effects-card-extras .effects-card-header h3 {
-    font-size: 1.15rem;
+    font-size: 1.1rem;
     font-weight: 600;
     margin-bottom: 0.4rem;
 }
@@ -5781,10 +5766,9 @@ input[type="number"]::-webkit-outer-spin-button {
 .effects-extras-inner {
     width: min(100%, 540px);
     padding: 1rem 1.05rem;
-    border: 1px solid var(--border);
+    border: 1px solid transparent;
     border-radius: var(--radius-md);
-    background: rgba(255,255,255,0.03);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+    background: transparent;
     display: flex;
     flex-direction: column;
     gap: 0.8rem;
@@ -5808,7 +5792,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .effects-extras-group-header h4 {
     font-size: 0.9rem;
-    font-weight: 700;
+    font-weight: 600;
     color: var(--text-primary);
 }
 
@@ -6558,11 +6542,9 @@ input[type="number"]::-webkit-outer-spin-button {
     place-items: center;
     border-radius: 50%;
     border: 1px solid rgba(110,231,183,.38);
-    background:
-        radial-gradient(circle at 50% 35%, rgba(110,231,183,.24), rgba(110,231,183,.07) 62%, transparent 63%),
-        rgba(13,20,18,.92);
+    background: #203b32;
     color: #f0fff8;
-    box-shadow: 0 0 0 5px rgba(110,231,183,.035), 0 8px 22px rgba(0,0,0,.25);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
     cursor: pointer;
     font-size: 1.25rem;
     transition: transform .12s var(--ease), border-color .15s var(--ease), background .15s var(--ease), box-shadow .15s var(--ease);
@@ -6570,7 +6552,7 @@ input[type="number"]::-webkit-outer-spin-button {
 .control-btn:hover:not(:disabled),
 .control-btn:focus-visible:not(:disabled) {
     border-color: rgba(110,231,183,.64);
-    box-shadow: 0 0 0 5px rgba(110,231,183,.055), 0 8px 24px rgba(0,0,0,.3);
+    box-shadow: 0 0 0 3px rgba(110,231,183,.12);
     outline: none;
 }
 .control-btn:active:not(:disabled) { transform: scale(.94); }
@@ -6621,7 +6603,7 @@ input[type="number"]::-webkit-outer-spin-button {
     appearance: none;
     width: 100%;
     /* Touch hit area: transparent padding expands the drag target to ~25px
-       while the negative margin keeps the layout height at the 3px visual
+       while the negative margin keeps the layout height at the 4px visual
        track. background-clip keeps the gradient on the content box only. */
     margin-block: -10px;
     padding-block: 10px;
@@ -6635,7 +6617,7 @@ input[type="number"]::-webkit-outer-spin-button {
        scaling cannot round one slider up and the other down. The ranges
        below only switch the shared desktop size to the shared phone size;
        both sliders always move together. */
-    height: 3px;
+    height: 4px;
     background: linear-gradient(to right,
         var(--accent) 0%,
         var(--accent) var(--range-progress),
@@ -6650,37 +6632,37 @@ input[type="number"]::-webkit-outer-spin-button {
 .volume-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 11px;
-    height: 11px;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
-    background: #ffffff;
-    border: 1px solid rgba(0,0,0,0.5);
-    box-shadow: 0 1px 4px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.1);
+    background: #ececf0;
+    border: 1px solid rgba(13,13,15,0.8);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
     transition: transform .12s var(--ease), box-shadow .12s var(--ease);
 }
 .seek-slider::-moz-range-thumb,
 .volume-slider::-moz-range-thumb {
-    width: 11px;
-    height: 11px;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
-    background: #ffffff;
-    border: 1px solid rgba(0,0,0,0.5);
-    box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+    background: #ececf0;
+    border: 1px solid rgba(13,13,15,0.8);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
 }
 .seek-slider:hover::-webkit-slider-thumb,
 .volume-slider:hover::-webkit-slider-thumb {
     transform: scale(1.18);
-    box-shadow: 0 0 0 3px rgba(110,231,183,.22), 0 2px 6px rgba(0,0,0,0.6);
+    box-shadow: 0 0 0 2px rgba(110,231,183,.22), 0 2px 6px rgba(0,0,0,0.6);
 }
 .seek-slider:hover::-moz-range-thumb,
 .volume-slider:hover::-moz-range-thumb {
     transform: scale(1.18);
-    box-shadow: 0 0 0 3px rgba(110,231,183,.22), 0 2px 6px rgba(0,0,0,0.6);
+    box-shadow: 0 0 0 2px rgba(110,231,183,.22), 0 2px 6px rgba(0,0,0,0.6);
 }
 .seek-slider:focus-visible::-webkit-slider-thumb,
-.volume-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(110,231,183,.28); }
+.volume-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(110,231,183,.28); }
 .seek-slider:focus-visible::-moz-range-thumb,
-.volume-slider:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 4px rgba(110,231,183,.28); }
+.volume-slider:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px rgba(110,231,183,.28); }
 
 .meter-segments i.is-lit { background: #55d99f; }
 .meter-segments i.is-lit.is-warn { background: #e9b949; }
@@ -7049,7 +7031,7 @@ input[type="number"]::-webkit-outer-spin-button {
         text-align: left;
     }
     /* Desktop slider paint and thumb geometry (also applied at ≥901px).
-       Both sliders share one reference geometry: 3px line, 11px thumb.
+       Both sliders share one reference geometry: 4px line, 12px thumb.
        Integer px only, so fractional OS scaling cannot rasterize seek and
        volume differently. Layout and hit area stay untouched (input
        layout height is absorbed by the time labels and the icon row;
@@ -7068,7 +7050,7 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
-        height: 3px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -7078,7 +7060,7 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
-        height: 3px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -7086,22 +7068,22 @@ input[type="number"]::-webkit-outer-spin-button {
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
-    .seek-slider::-moz-range-thumb { width: 11px; height: 11px; }
-    .volume-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
-    .volume-slider::-moz-range-thumb { width: 11px; height: 11px; }
+    .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
+    .volume-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .volume-slider::-moz-range-thumb { width: 12px; height: 12px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
-       centered on the 3px line. Integer offset, no fractional rounding.
+       centered on the 4px line. Integer offset, no fractional rounding.
        Firefox centers natively (webkit only). */
     .seek-slider::-webkit-slider-thumb { margin-top: -4px; }
     .volume-slider::-webkit-slider-thumb { margin-top: -4px; }
     /* Both lines paint slimmer than the input box (both engines); the input
-       paint height drops with them so the green fill reads 3px too. */
+       paint height drops with them so the green fill reads 4px too. */
     .seek-slider,
-    .volume-slider { height: 3px; }
-    /* Meter segments match the 3px slider lines. */
-    .meter-segments i { height: 3px; }
+    .volume-slider { height: 4px; }
+    /* Meter segments match the 4px slider lines. */
+    .meter-segments i { height: 4px; }
 
     /* Small-laptop Full-HD viewports (13-14", effective CSS width up to
        1600px, e.g. 1920px at 125% OS scale): type reads slightly larger
@@ -7127,8 +7109,6 @@ input[type="number"]::-webkit-outer-spin-button {
         .section-title { font-size: 1.12rem; }
         .section-subtitle { font-size: 0.96rem; }
         .station-name { font-size: 1rem; }
-        .brand-text-block .brand-title { font-size: 1.12rem; }
-        .brand-text-block .brand-subtitle { font-size: 0.65rem; }
     }
 }
 
@@ -7230,7 +7210,7 @@ input[type="number"]::-webkit-outer-spin-button {
         max-width: 82px;
         gap: 1.7px;
     }
-    .meter-segments i { height: 3px; }
+    .meter-segments i { height: 4px; }
     .playback-bar .controls {
         width: min(100%, 235px);
         max-width: 235px;
@@ -7252,12 +7232,12 @@ input[type="number"]::-webkit-outer-spin-button {
         justify-content: flex-start;
     }
     /* Tablet slider paint and thumb geometry (applied at ≥901px).
-       Same shared 3px/11px reference geometry as desktop for both sliders.
+       Same shared 4px/12px reference geometry as desktop for both sliders.
        The 10px touch padding from the base rule is untouched so the tap
        target stays large. */
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
-        height: 3px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -7267,7 +7247,7 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
-        height: 3px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -7275,20 +7255,20 @@ input[type="number"]::-webkit-outer-spin-button {
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
-    .seek-slider::-moz-range-thumb { width: 11px; height: 11px; }
-    .volume-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
-    .volume-slider::-moz-range-thumb { width: 11px; height: 11px; }
+    .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
+    .volume-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .volume-slider::-moz-range-thumb { width: 12px; height: 12px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
-       centered on the 3px line. Integer offset, no fractional rounding.
+       centered on the 4px line. Integer offset, no fractional rounding.
        Firefox centers natively (webkit only). */
     .seek-slider::-webkit-slider-thumb { margin-top: -4px; }
     .volume-slider::-webkit-slider-thumb { margin-top: -4px; }
     /* Both lines paint slimmer than the input box (both engines); the input
-       paint height drops with them so the green fill reads 3px too. */
+       paint height drops with them so the green fill reads 4px too. */
     .seek-slider,
-    .volume-slider { height: 3px; }
+    .volume-slider { height: 4px; }
 }
 
 @media (max-width: 700px) {
@@ -7444,14 +7424,14 @@ input[type="number"]::-webkit-outer-spin-button {
         height: 18px;
     }
     /* One slider dialect on phone too: seek and volume share the 4px line
-       and the 14px thumb. Slightly bolder than desktop for small screens,
-       but both sliders always move together. */
+       and the 12px thumb, same as desktop; both sliders always move
+       together. */
     .seek-slider,
     .volume-slider { height: 4px; }
-    .seek-slider::-webkit-slider-thumb { width: 14px; height: 14px; }
-    .seek-slider::-moz-range-thumb { width: 14px; height: 14px; }
-    .volume-slider::-webkit-slider-thumb { width: 14px; height: 14px; }
-    .volume-slider::-moz-range-thumb { width: 14px; height: 14px; }
+    .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
+    .volume-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .volume-slider::-moz-range-thumb { width: 12px; height: 12px; }
     .volume-display {
         width: 2.55rem;
         min-width: 2.55rem;
@@ -7489,14 +7469,14 @@ input[type="number"]::-webkit-outer-spin-button {
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 14px; height: 14px; }
-    .seek-slider::-moz-range-thumb { width: 14px; height: 14px; }
+    .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
        centered on the 4px track. Integer offset, no fractional rounding.
        Firefox centers natively (webkit only). */
-    .seek-slider::-webkit-slider-thumb { margin-top: -5px; }
-    .volume-slider::-webkit-slider-thumb { margin-top: -5px; }
+    .seek-slider::-webkit-slider-thumb { margin-top: -4px; }
+    .volume-slider::-webkit-slider-thumb { margin-top: -4px; }
 
     @media (max-width: 360px) {
         .playback-bar .track-info {
@@ -7561,8 +7541,6 @@ input[type="number"]::-webkit-outer-spin-button {
     .control-btn-mode,
     .control-btn-clear,
     .track-favorite-btn,
-    .album-card-fav,
-    .station-card-fav,
     .streaming-fav,
     .track-row-favorite,
     .track-fav,
@@ -7572,6 +7550,8 @@ input[type="number"]::-webkit-outer-spin-button {
     .measurement-peq-chip {
         position: relative;
     }
+    /* Cover favorites are already absolutely positioned. Keep that anchor:
+       making them relative pulls them into the card flow on touch screens. */
     .control-btn-mode::after,
     .control-btn-clear::after,
     .track-favorite-btn::after,
@@ -8336,7 +8316,7 @@ input[type="number"]::-webkit-outer-spin-button {
         }
 
         #tab-effects .effects-actions-peq-dual {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: minmax(0, 1fr);
             align-items: start;
             gap: 0.8rem;
         }
@@ -8707,7 +8687,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 @media (min-width: 761px) {
     /* from _playback.css */
-    .brand-lockup { gap: 0.39rem; }
+    .brand-lockup { gap: 0.5rem; }
         .brand-mark {
             width: 37px;
             height: 37px;
@@ -8718,6 +8698,15 @@ input[type="number"]::-webkit-outer-spin-button {
         .brand-title { font-size: 1.07rem; }
         .brand-subtitle { font-size: 0.62rem; }
 
+}
+
+@media (min-width: 761px) and (max-width: 1179px) {
+    /* Tablet/medium two-row header: center the whole tab group with its
+       existing internal gaps. Auto margins on the group (not container
+       centering) keep the row left-aligned and scrollable if it ever
+       overflows; the buttons keep their size and spacing, only the group
+       moves. Mobile and desktop ranges are untouched. */
+    .tabs-list { flex: 0 1 auto; margin-inline: auto; }
 }
 
 @media (min-width: 1180px) {
@@ -8734,6 +8723,12 @@ input[type="number"]::-webkit-outer-spin-button {
         }
         .tab-btn { pointer-events: auto; min-width: 124px; }
 
+}
+
+/* At the single-row transition, leave breathing room for the full brand and
+   all six providers even with small platform differences in font metrics. */
+@media (min-width: 1180px) and (max-width: 1279px) {
+    .tab-btn { min-width: 116px; }
 }
 
 @media (max-width: 420px) {

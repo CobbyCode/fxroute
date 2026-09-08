@@ -152,7 +152,7 @@
         text-align: left;
     }
     /* Desktop slider paint and thumb geometry (also applied at ≥901px).
-       Both sliders share one reference geometry: 3px line, 11px thumb.
+       Both sliders share one reference geometry: 4px line, 12px thumb.
        Integer px only, so fractional OS scaling cannot rasterize seek and
        volume differently. Layout and hit area stay untouched (input
        layout height is absorbed by the time labels and the icon row;
@@ -171,7 +171,7 @@
     }
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
-        height: 3px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -181,7 +181,7 @@
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
-        height: 3px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -189,22 +189,22 @@
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
-    .seek-slider::-moz-range-thumb { width: 11px; height: 11px; }
-    .volume-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
-    .volume-slider::-moz-range-thumb { width: 11px; height: 11px; }
+    .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
+    .volume-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .volume-slider::-moz-range-thumb { width: 12px; height: 12px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
-       centered on the 3px line. Integer offset, no fractional rounding.
+       centered on the 4px line. Integer offset, no fractional rounding.
        Firefox centers natively (webkit only). */
     .seek-slider::-webkit-slider-thumb { margin-top: -4px; }
     .volume-slider::-webkit-slider-thumb { margin-top: -4px; }
     /* Both lines paint slimmer than the input box (both engines); the input
-       paint height drops with them so the green fill reads 3px too. */
+       paint height drops with them so the green fill reads 4px too. */
     .seek-slider,
-    .volume-slider { height: 3px; }
-    /* Meter segments match the 3px slider lines. */
-    .meter-segments i { height: 3px; }
+    .volume-slider { height: 4px; }
+    /* Meter segments match the 4px slider lines. */
+    .meter-segments i { height: 4px; }
 
     /* Small-laptop Full-HD viewports (13-14", effective CSS width up to
        1600px, e.g. 1920px at 125% OS scale): type reads slightly larger
@@ -230,8 +230,6 @@
         .section-title { font-size: 1.12rem; }
         .section-subtitle { font-size: 0.96rem; }
         .station-name { font-size: 1rem; }
-        .brand-text-block .brand-title { font-size: 1.12rem; }
-        .brand-text-block .brand-subtitle { font-size: 0.65rem; }
     }
 }
 
@@ -333,7 +331,7 @@
         max-width: 82px;
         gap: 1.7px;
     }
-    .meter-segments i { height: 3px; }
+    .meter-segments i { height: 4px; }
     .playback-bar .controls {
         width: min(100%, 235px);
         max-width: 235px;
@@ -355,12 +353,12 @@
         justify-content: flex-start;
     }
     /* Tablet slider paint and thumb geometry (applied at ≥901px).
-       Same shared 3px/11px reference geometry as desktop for both sliders.
+       Same shared 4px/12px reference geometry as desktop for both sliders.
        The 10px touch padding from the base rule is untouched so the tap
        target stays large. */
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
-        height: 3px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -370,7 +368,7 @@
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
-        height: 3px;
+        height: 4px;
         border-radius: 999px;
         background: linear-gradient(to right,
             var(--accent) 0%,
@@ -378,20 +376,20 @@
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
-    .seek-slider::-moz-range-thumb { width: 11px; height: 11px; }
-    .volume-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
-    .volume-slider::-moz-range-thumb { width: 11px; height: 11px; }
+    .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
+    .volume-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .volume-slider::-moz-range-thumb { width: 12px; height: 12px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
-       centered on the 3px line. Integer offset, no fractional rounding.
+       centered on the 4px line. Integer offset, no fractional rounding.
        Firefox centers natively (webkit only). */
     .seek-slider::-webkit-slider-thumb { margin-top: -4px; }
     .volume-slider::-webkit-slider-thumb { margin-top: -4px; }
     /* Both lines paint slimmer than the input box (both engines); the input
-       paint height drops with them so the green fill reads 3px too. */
+       paint height drops with them so the green fill reads 4px too. */
     .seek-slider,
-    .volume-slider { height: 3px; }
+    .volume-slider { height: 4px; }
 }
 
 @media (max-width: 700px) {
@@ -547,14 +545,14 @@
         height: 18px;
     }
     /* One slider dialect on phone too: seek and volume share the 4px line
-       and the 14px thumb. Slightly bolder than desktop for small screens,
-       but both sliders always move together. */
+       and the 12px thumb, same as desktop; both sliders always move
+       together. */
     .seek-slider,
     .volume-slider { height: 4px; }
-    .seek-slider::-webkit-slider-thumb { width: 14px; height: 14px; }
-    .seek-slider::-moz-range-thumb { width: 14px; height: 14px; }
-    .volume-slider::-webkit-slider-thumb { width: 14px; height: 14px; }
-    .volume-slider::-moz-range-thumb { width: 14px; height: 14px; }
+    .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
+    .volume-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .volume-slider::-moz-range-thumb { width: 12px; height: 12px; }
     .volume-display {
         width: 2.55rem;
         min-width: 2.55rem;
@@ -592,14 +590,14 @@
             rgba(255,255,255,.10) var(--range-progress),
             rgba(255,255,255,.10) 100%);
     }
-    .seek-slider::-webkit-slider-thumb { width: 14px; height: 14px; }
-    .seek-slider::-moz-range-thumb { width: 14px; height: 14px; }
+    .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
+    .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
     /* Chromium anchors the thumb to the track top when the track is shorter
        than the thumb; lift it by half the size difference so the thumb sits
        centered on the 4px track. Integer offset, no fractional rounding.
        Firefox centers natively (webkit only). */
-    .seek-slider::-webkit-slider-thumb { margin-top: -5px; }
-    .volume-slider::-webkit-slider-thumb { margin-top: -5px; }
+    .seek-slider::-webkit-slider-thumb { margin-top: -4px; }
+    .volume-slider::-webkit-slider-thumb { margin-top: -4px; }
 
     @media (max-width: 360px) {
         .playback-bar .track-info {
@@ -664,8 +662,6 @@
     .control-btn-mode,
     .control-btn-clear,
     .track-favorite-btn,
-    .album-card-fav,
-    .station-card-fav,
     .streaming-fav,
     .track-row-favorite,
     .track-fav,
@@ -675,6 +671,8 @@
     .measurement-peq-chip {
         position: relative;
     }
+    /* Cover favorites are already absolutely positioned. Keep that anchor:
+       making them relative pulls them into the card flow on touch screens. */
     .control-btn-mode::after,
     .control-btn-clear::after,
     .track-favorite-btn::after,
@@ -1439,7 +1437,7 @@
         }
 
         #tab-effects .effects-actions-peq-dual {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: minmax(0, 1fr);
             align-items: start;
             gap: 0.8rem;
         }
@@ -1810,7 +1808,7 @@
 
 @media (min-width: 761px) {
     /* from _playback.css */
-    .brand-lockup { gap: 0.39rem; }
+    .brand-lockup { gap: 0.5rem; }
         .brand-mark {
             width: 37px;
             height: 37px;
@@ -1821,6 +1819,15 @@
         .brand-title { font-size: 1.07rem; }
         .brand-subtitle { font-size: 0.62rem; }
 
+}
+
+@media (min-width: 761px) and (max-width: 1179px) {
+    /* Tablet/medium two-row header: center the whole tab group with its
+       existing internal gaps. Auto margins on the group (not container
+       centering) keep the row left-aligned and scrollable if it ever
+       overflows; the buttons keep their size and spacing, only the group
+       moves. Mobile and desktop ranges are untouched. */
+    .tabs-list { flex: 0 1 auto; margin-inline: auto; }
 }
 
 @media (min-width: 1180px) {
@@ -1837,6 +1844,12 @@
         }
         .tab-btn { pointer-events: auto; min-width: 124px; }
 
+}
+
+/* At the single-row transition, leave breathing room for the full brand and
+   all six providers even with small platform differences in font metrics. */
+@media (min-width: 1180px) and (max-width: 1279px) {
+    .tab-btn { min-width: 116px; }
 }
 
 @media (max-width: 420px) {

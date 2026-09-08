@@ -1618,24 +1618,25 @@ function formatRadioStreamLine(streamInfo, effectiveOutputRate = null) {
     const codec = streamInfo.codec ? String(streamInfo.codec) : '';
     // Lossless codecs: the decoded bitrate is content-dependent and the
     // `Lossless` profile label is redundant, so neither is shown for them —
-    // the meaningful facts are bit depth and sample rate (FLAC · 24 bit ·
-    // 44.1 kHz). Lossy codecs keep the profile/bitrate line (AAC · 320 kbps
-    // · 44.1 kHz).
+    // the meaningful facts are bit depth and sample rate (FLAC · 24bit ·
+    // 44.1kHz). Lossy codecs keep the profile/bitrate line (AAC · 320kbps
+    // · 44.1kHz). Units stay glued to their values (no inner spaces) so the
+    // footer pill needs less width.
     const lossless = !!codec && ['FLAC', 'ALAC', 'APE', 'WAVPACK', 'TTA', 'PCM'].includes(codec.toUpperCase());
     if (codec) parts.push(codec);
     if (!lossless) {
         if (streamInfo.profile) {
             parts.push(String(streamInfo.profile));
         } else if (Number.isFinite(Number(streamInfo.bitrate_kbps)) && Number(streamInfo.bitrate_kbps) > 0) {
-            parts.push(`${Math.round(Number(streamInfo.bitrate_kbps))} kbps`);
+            parts.push(`${Math.round(Number(streamInfo.bitrate_kbps))}kbps`);
         }
     }
     if (Number.isFinite(Number(streamInfo.bit_depth)) && Number(streamInfo.bit_depth) > 0) {
-        parts.push(`${Math.round(Number(streamInfo.bit_depth))} bit`);
+        parts.push(`${Math.round(Number(streamInfo.bit_depth))}bit`);
     }
     const displayedRate = Number(effectiveOutputRate) || Number(streamInfo.samplerate_hz);
     if (Number.isFinite(displayedRate) && displayedRate > 0) {
-        parts.push(`${(displayedRate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`);
+        parts.push(`${(displayedRate / 1000).toFixed(1).replace(/\.0$/, '')}kHz`);
     }
     return parts.join(' · ');
 }
@@ -1925,7 +1926,9 @@ function toggleSettingsPanel(forceOpen = null) {
 function formatRateKhz(rate) {
     const numericRate = Number(rate);
     if (!Number.isFinite(numericRate) || numericRate <= 0) return '';
-    return `${(numericRate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`;
+    // Compact unit spelling (44.1kHz): shared with the footer pill, where
+    // every saved pixel counts against badge truncation.
+    return `${(numericRate / 1000).toFixed(1).replace(/\.0$/, '')}kHz`;
 }
 
 function formatBluetoothModeStatus(bluetooth = {}) {
@@ -4230,8 +4233,8 @@ function renderSamplerateUI() {
     // updateFooterForStreamingOwner. The general samplerate poll runs
     // independently (every SAMPLERATE_POLL_INTERVAL_MS) and must never
     // overwrite the provider's quality line with the bare hardware rate — that
-    // is the Qobuz footer flicker between "FLAC · 16 bit · 44.1 kHz" and
-    // "44.1 kHz". No state is cached here: this path simply does not own the
+    // is the Qobuz footer flicker between "FLAC · 16bit · 44.1kHz" and
+    // "44.1kHz". No state is cached here: this path simply does not own the
     // pill while a streaming source does.
     if (isStreamingFooterSource(window.__footerSource)) {
         footerDebug('samplerate-ui-streaming-owner', {

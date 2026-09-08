@@ -17,7 +17,7 @@
 .brand-lockup {
     display: flex;
     align-items: center;
-    gap: 0.39rem;
+    gap: 0.5rem;
     min-width: 0;
 }
 .brand-lockup-button {
@@ -32,8 +32,7 @@
 }
 .brand-lockup-button:hover .brand-mark,
 .brand-lockup-button:focus-visible .brand-mark {
-    border-color: rgba(110, 231, 183, 0.28);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.025), 0 0 0 3px rgba(110, 231, 183, 0.08);
+    box-shadow: none;
 }
 .brand-lockup-button:focus-visible {
     /* Same visible keyboard ring as the power button next in the header. */
@@ -87,51 +86,33 @@
     transform: translateY(-2px);
 }
 
-.brand-mark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 42px;
-    height: 42px;
-    border-radius: var(--radius-md);
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.008));
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
-    font-weight: 800;
-    font-size: 0.95rem;
-    letter-spacing: -0.075em;
+.brand-lockup .brand-mark {
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 0;
+    background: url('./route-mark.svg') center / contain no-repeat;
+    box-shadow: none;
     flex-shrink: 0;
 }
-.brand-mark-f {
-    color: rgba(244, 244, 245, 0.9);
-}
-.brand-mark-x {
-    color: rgba(110, 231, 183, 0.82);
-}
-.brand-text-block {
+.brand-lockup .brand-text-block {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 0.12rem;
     min-width: 0;
-    line-height: 0.98;
-    padding-top: 1px;
+    line-height: 1;
+    padding-top: 0;
 }
-.brand-title {
+.brand-lockup .brand-title {
     color: var(--text-primary);
-    font-size: 1.22rem;
+    font-size: 1.16rem;
+    font-weight: 520;
+    letter-spacing: -0.045em;
+}
+.brand-lockup .brand-title-fx {
+    color: var(--text-primary);
     font-weight: 740;
-    letter-spacing: -0.035em;
-}
-.brand-title-fx {
-    color: rgba(225, 250, 239, 0.94);
-}
-.brand-subtitle {
-    color: rgba(176, 176, 190, 0.9);
-    font-size: 0.63rem;
-    font-weight: 650;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
 }
 
 /* Header-right cluster: power button */
@@ -190,7 +171,6 @@
 }
 .power-btn.is-online .power-btn-icon {
     color: var(--success);
-    filter: drop-shadow(0 0 4px rgba(52,211,153,0.35));
 }
 .power-menu {
     position: absolute;
@@ -302,8 +282,9 @@
     padding: .52rem .9rem;
     background: transparent;
     border: none;
-    color: #9999a6;
+    color: var(--text-secondary);
     cursor: pointer;
+    font-family: var(--font-sans);
     font-size: .9rem;
     font-weight: 560;
     border-radius: var(--radius-md);
@@ -324,16 +305,13 @@
     outline: 2px solid var(--accent);
     outline-offset: -2px;
 }
-/* The active accent stays inside the tab: a short centered underline and a
-   faint inner glow, with no green edge or outer glow bleeding toward the
-   brand lockup / first tab. The underline spans only the inner part of the
-   button, so the active state never reaches the edge facing the logo. */
+/* The active accent stays inside the tab: a short centered underline on a
+   quiet mint surface. No glow or edge bleeds toward the brand lockup. */
 .tab-btn.active {
     color: #f3f3f5;
     background: rgba(110, 231, 183, 0.07);
     font-weight: 600;
     position: relative;
-    box-shadow: inset 0 0 12px rgba(110, 231, 183, 0.07);
 }
 .tab-btn.active::after {
     content: '';
@@ -401,7 +379,7 @@
    ============================================================ */
 .section-title {
     font-size: 1.05rem;
-    font-weight: 700;
+    font-weight: 650;
     letter-spacing: -0.02em;
 }
 .section-subtitle {
