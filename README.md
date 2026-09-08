@@ -4,15 +4,11 @@ FXRoute is a browser-based control surface for a Linux hi-fi audio box. One smal
 
 Radio, the music library, the streaming providers, the native DSP engine, and the room-measurement tools all in one interface. You browse and play from the couch; FXRoute owns the audio session, the DSP chain, and the output routing on the audio machine.
 
-## Download — FXRoute 1.0 Beta
+## Download
 
-The central download and release page is [FXRoute 1.0 Beta](https://github.com/CobbyCode/fxroute/releases/tag/v1.0-beta):
+The central download and release page is [FXRoute releases](https://github.com/CobbyCode/fxroute/releases) — grab the current Raspberry Pi 4 / Pi 5 SD-card image or the x86_64 installer there, write it to disk, boot, and finish the web onboarding.
 
-- Raspberry Pi 4: [fxroute-1.0-beta-rpi4-trixie-current.img.xz](https://github.com/CobbyCode/fxroute/releases/download/v1.0-beta/fxroute-1.0-beta-rpi4-trixie-current.img.xz) — write to SD card, boot, and finish the web onboarding
-- Raspberry Pi 5: [fxroute-1.0-beta-rpi5-trixie-current.img.xz](https://github.com/CobbyCode/fxroute/releases/download/v1.0-beta/fxroute-1.0-beta-rpi5-trixie-current.img.xz) — same procedure
-- x86_64 PC as openSUSE Leap 16 installer (via SourceForge): [fxroute-1.0-beta-x86_64-leap16.iso](https://sourceforge.net/projects/fxroute/files/1.0-beta/fxroute-1.0-beta-x86_64-leap16.iso/download)
-
-No new hardware? Try the [web demo](https://cobbycode.github.io/fxroute/) first. Already running Linux on the audio machine? Use the [installer below](#install) instead.
+No new hardware? Try the [web demo](#web-demo) first. Already running Linux on the audio machine? Use the [installer below](#install) instead.
 
 ## Web demo
 
