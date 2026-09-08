@@ -794,6 +794,7 @@ verify_desktop() {
   ssh_guest "$ssh_port" bash -s -- "$AGAMA_USER" <<'EOF'
 set -Eeuo pipefail
 account="$1"
+trap 'status=$?; printf "[iso-test] verify_desktop failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; exit "$status"' ERR
 test -f /var/lib/fxroute-iso/install-complete
 test -x /usr/local/libexec/fxroute-first-boot-install.sh
 systemctl is-enabled fxroute-first-boot.service
