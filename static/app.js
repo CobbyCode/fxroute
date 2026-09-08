@@ -8411,15 +8411,66 @@ function clearMeasurementConvolverDraftForPhaseChange(previousPhaseMode = '') {
     return true;
 }
 
+function clearMeasurementConvolverDraftForSettingsChange(notice = '') {
+    const conv = ensureMeasurementConvolverState();
+    if (!conv.draft?.left && !conv.draft?.right) {
+        if (notice) conv.draft.notice = '';
+        return false;
+    }
+    conv.draft.left = null;
+    conv.draft.right = null;
+    conv.draft.presetName = '';
+    conv.draft.nameTouched = false;
+    conv.draft.notice = notice;
+    if (notice) showMeasurementConvolverFeedback(notice);
+    return true;
+}
+
 function updateMeasurementConvolverField(field, value) {
     const conv = ensureMeasurementConvolverState();
     const previousPhaseMode = conv.phaseMode;
-    if (field === 'targetCurve') conv.targetCurve = getMeasurementConvolverCurveOptions().some((curve) => curve.key === value) ? value : conv.targetCurve;
-    if (field === 'rangeStartHz') conv.rangeStartHz = Math.min(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeStartHz)), conv.rangeEndHz - 1);
-    if (field === 'rangeEndHz') conv.rangeEndHz = Math.max(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeEndHz)), conv.rangeStartHz + 1);
-    if (field === 'maxBoostDb') conv.maxBoostDb = [0, 3, 6, 9].includes(Number(value)) ? Number(value) : conv.maxBoostDb;
-    if (field === 'maxCutDb') conv.maxCutDb = [-3, -6, -9, -12, -18, -24].includes(Number(value)) ? Number(value) : conv.maxCutDb;
-    if (field === 'dipGuard') conv.dipGuard = ['off', 'gentle', 'adaptive'].includes(String(value)) ? String(value) : conv.dipGuard;
+    if (field === 'targetCurve') {
+        const nextTarget = getMeasurementConvolverCurveOptions().some((curve) => curve.key === value) ? value : conv.targetCurve;
+        if (nextTarget !== conv.targetCurve) {
+            conv.targetCurve = nextTarget;
+            clearMeasurementConvolverDraftForSettingsChange('Target curve changed. Take L/R again.');
+        }
+    }
+    if (field === 'rangeStartHz') {
+        const nextStart = Math.min(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeStartHz)), conv.rangeEndHz - 1);
+        if (nextStart !== conv.rangeStartHz) {
+            conv.rangeStartHz = nextStart;
+            clearMeasurementConvolverDraftForSettingsChange('Correction range changed. Take L/R again.');
+        }
+    }
+    if (field === 'rangeEndHz') {
+        const nextEnd = Math.max(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeEndHz)), conv.rangeStartHz + 1);
+        if (nextEnd !== conv.rangeEndHz) {
+            conv.rangeEndHz = nextEnd;
+            clearMeasurementConvolverDraftForSettingsChange('Correction range changed. Take L/R again.');
+        }
+    }
+    if (field === 'maxBoostDb') {
+        const nextBoost = [0, 3, 6, 9].includes(Number(value)) ? Number(value) : conv.maxBoostDb;
+        if (nextBoost !== conv.maxBoostDb) {
+            conv.maxBoostDb = nextBoost;
+            clearMeasurementConvolverDraftForSettingsChange('Correction limits changed. Take L/R again.');
+        }
+    }
+    if (field === 'maxCutDb') {
+        const nextCut = [-3, -6, -9, -12, -18, -24].includes(Number(value)) ? Number(value) : conv.maxCutDb;
+        if (nextCut !== conv.maxCutDb) {
+            conv.maxCutDb = nextCut;
+            clearMeasurementConvolverDraftForSettingsChange('Correction limits changed. Take L/R again.');
+        }
+    }
+    if (field === 'dipGuard') {
+        const nextDipGuard = ['off', 'gentle', 'adaptive'].includes(String(value)) ? String(value) : conv.dipGuard;
+        if (nextDipGuard !== conv.dipGuard) {
+            conv.dipGuard = nextDipGuard;
+            clearMeasurementConvolverDraftForSettingsChange('Dip guard changed. Take L/R again.');
+        }
+    }
     if (field === 'sampleRate') {
         state.measurement.measurementSampleRate = String(value || '48000');
         void saveMeasurementSetupSettings({ measurementSampleRate: Number(state.measurement.measurementSampleRate) });
