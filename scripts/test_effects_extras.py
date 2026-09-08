@@ -202,27 +202,50 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         self.assertTrue(reloaded["headroom"]["enabled"])
 
     def test_zero_headroom_via_form_path(self):
-        """Form-submit path: _effects_extras_from_form passes float(0) → normalize."""
+        """Form-submit path: call _effects_extras_from_form with gainDb=0.0."""
         from dsp.manager import DSPManager
-        import tempfile
+        from dsp.api import _effects_extras_from_form, configure_dsp_api, DspApiDeps
+        import tempfile, asyncio
         home = tempfile.mkdtemp()
         mgr = DSPManager(home=Path(home))
-        # Simulate what _effects_extras_from_form builds:
-        extras = {
-            "limiter": {"enabled": False},
-            "headroom": {"enabled": True, "params": {"gainDb": 0.0}},
-            "autogain": {"enabled": False, "params": {"targetDb": -12.0}},
-            "delay": {"enabled": False, "params": {"leftMs": 0.0, "rightMs": 0.0}},
-            "tone_effect": {"enabled": False, "mode": "crystalizer"},
-        }
-        normalized = mgr.normalize_effects_extras(extras)
-        self.assertEqual(normalized["headroom"]["params"]["gainDb"], 0.0)
-        self.assertTrue(normalized["headroom"]["enabled"])
-        # save + reload
-        mgr.save_global_extras(normalized)
-        reloaded = mgr.load_global_extras()
-        self.assertEqual(reloaded["headroom"]["params"]["gainDb"], 0.0)
-        self.assertTrue(reloaded["headroom"]["enabled"])
+        # Wire the API runtime so _effects_extras_from_form can reach the manager
+        configure_dsp_api(DspApiDeps(
+            require_dsp_manager=lambda: mgr,
+            get_dsp_manager=lambda: mgr,
+            get_dsp_runtime=lambda: None,
+            get_dsp_preset_load_lock=lambda: asyncio.Lock(),
+            dsp_mutation_lock=asyncio.Lock,
+            canonical_volume_write_lock=lambda: asyncio.Lock(),
+            drain_worker=lambda fn, *a, **kw: fn(*a, **kw),
+            run_locked_worker=lambda fn, *a, **kw: fn(*a, **kw),
+            broadcast=lambda _: asyncio.sleep(0),
+            load_dsp_preset=lambda *a, **kw: None,
+            restore_volume_state=lambda *a, **kw: None,
+            volume_state_for_manager=lambda _: {},
+            schedule_peak_monitor_refresh=lambda _: None,
+        ))
+        try:
+            extras = _effects_extras_from_form(
+                limiter_enabled=False,
+                headroom_enabled=True,
+                headroom_gain_db=0.0,
+                autogain_enabled=False,
+                autogain_target_db=-12.0,
+                delay_enabled=False,
+                delay_left_ms=0.0,
+                delay_right_ms=0.0,
+                tone_effect_enabled=False,
+                tone_effect_mode="crystalizer",
+            )
+            self.assertEqual(extras["headroom"]["params"]["gainDb"], 0.0)
+            self.assertTrue(extras["headroom"]["enabled"])
+            # save + reload (simulates restart)
+            mgr.save_global_extras(extras)
+            reloaded = mgr.load_global_extras()
+            self.assertEqual(reloaded["headroom"]["params"]["gainDb"], 0.0)
+            self.assertTrue(reloaded["headroom"]["enabled"])
+        finally:
+            configure_dsp_api(None)
 
     def test_strength_kept_as_is_no_or_fallback(self):
         # strength has NO `or` fallback: 0 stays 0
