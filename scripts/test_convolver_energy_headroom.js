@@ -65,6 +65,12 @@ const empty = Dsp.analyzeMeasurementConvolverCorrections([], [[20, 0], [20000, 0
 assert.equal(empty.energyGainDb, 0, 'empty correction carries no energy gain');
 assert.equal(empty.autoGainDb, -1, 'empty correction keeps only the fixed safety reserve');
 
+const broadCut = analyze('neutral', [[30, 6], [60, 6], [100, 6], [140, 6], [200, 6], [500, 6], [1000, 6], [2000, 6], [3000, 6]], 30, 3000);
+assert.ok(broadCut.energyGainDb < 0, `broad cut must carry negative energy gain (got ${broadCut.energyGainDb} dB)`);
+assert.equal(broadCut.autoGainDb, 0, `negative-energy FIR must never get automatic makeup gain (got ${broadCut.autoGainDb} dB)`);
+assert.ok(broadCut.autoGainDb <= 0, 'energy headroom stays at or below 0 dB');
+assert.ok(!Object.is(broadCut.autoGainDb, -0), 'clamped headroom must be +0, never -0');
+
 for (const analysis of [narrowAnalysis, broadAnalysis]) {
     assert.ok(
         analysis.autoGainDb <= -(analysis.energyGainDb + 0.75),

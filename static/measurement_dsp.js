@@ -146,7 +146,7 @@
         const minCorrection = corrections.length ? Math.min(...corrections.map((item) => item.correctionDb)) : 0;
         const energyGainDb = getMeasurementConvolverEnergyGainDb({ corrections }, rangeStartHz, rangeEndHz);
         const autoGainDb = autoGainEnabled
-            ? Math.round((-(energyGainDb + MEASUREMENT_CONVOLVER_ENERGY_SAFETY_MARGIN_DB)) * 2) / 2
+            ? Math.min(0, Math.round((-(energyGainDb + MEASUREMENT_CONVOLVER_ENERGY_SAFETY_MARGIN_DB)) * 2) / 2) + 0
             : 0;
         const lowBassBoost = corrections.some((item) => item.frequency < 40 && item.correctionDb > 0.25);
         return { corrections, maxPositive, minCorrection, energyGainDb: Math.round(energyGainDb * 100) / 100, autoGainDb, lowBassBoost, dipGuardReductionMaxDb: Math.round(dipGuardReductionMaxDb * 10) / 10 };
