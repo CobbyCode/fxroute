@@ -867,14 +867,14 @@ grep -Fxq 'Exec=/usr/local/bin/fxroute-desktop-launcher' "$HOME/.config/autostar
 grep -Fxq 'TryExec=firefox' "$HOME/.config/autostart/fxroute.desktop"
 for _ in $(seq 1 90); do
   if pgrep -u "$account" -f '(^|/)firefox( |$)' >/dev/null &&
-     pgrep -u "$account" -f '--kiosk' >/dev/null &&
+     pgrep -u "$account" -f '.*--kiosk' >/dev/null &&
      pgrep -u "$account" -f '127\.0\.0\.1:8000' >/dev/null; then
     break
   fi
   sleep 2
 done
 pgrep -u "$account" -f '(^|/)firefox( |$)' >/dev/null
-pgrep -u "$account" -f '--kiosk' >/dev/null
+pgrep -u "$account" -f '.*--kiosk' >/dev/null
 pgrep -u "$account" -f '127\.0\.0\.1:8000' >/dev/null
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 systemctl --user is-active fxroute.service

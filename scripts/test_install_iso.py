@@ -700,7 +700,7 @@ class InstallIsoContractTests(unittest.TestCase):
             runner,
         )
         self.assertIn(
-            "pgrep -u \"$account\" -f '--kiosk' >/dev/null",
+            "pgrep -u \"$account\" -f '.*--kiosk' >/dev/null",
             runner,
         )
         self.assertIn(
