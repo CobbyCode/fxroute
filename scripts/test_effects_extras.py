@@ -181,6 +181,49 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         disk = json.loads(mgr.global_extras_file.read_text())
         self.assertEqual(disk["headroom"]["params"]["gainDb"], 0.0)
 
+    def test_zero_headroom_full_restart_round_trip(self):
+        """Simulate a full restart: save 0 dB → new DSPManager instance → load."""
+        from dsp.manager import DSPManager
+        import tempfile
+        home = tempfile.mkdtemp()
+        # --- save path: JSON API merge → normalize → persist ---
+        mgr1 = DSPManager(home=Path(home))
+        previous = mgr1.load_global_extras()
+        merged = effects_extras.merge_effects_extras_from_json(
+            previous, {"headroomGainDb": 0, "headroomEnabled": True}
+        )
+        self.assertEqual(merged["headroom"]["params"]["gainDb"], 0.0)
+        self.assertTrue(merged["headroom"]["enabled"])
+        mgr1.save_global_extras(merged)
+        # --- reload path: new instance reads extras.json → normalize ---
+        mgr2 = DSPManager(home=Path(home))
+        reloaded = mgr2.load_global_extras()
+        self.assertEqual(reloaded["headroom"]["params"]["gainDb"], 0.0)
+        self.assertTrue(reloaded["headroom"]["enabled"])
+
+    def test_zero_headroom_via_form_path(self):
+        """Form-submit path: _effects_extras_from_form passes float(0) → normalize."""
+        from dsp.manager import DSPManager
+        import tempfile
+        home = tempfile.mkdtemp()
+        mgr = DSPManager(home=Path(home))
+        # Simulate what _effects_extras_from_form builds:
+        extras = {
+            "limiter": {"enabled": False},
+            "headroom": {"enabled": True, "params": {"gainDb": 0.0}},
+            "autogain": {"enabled": False, "params": {"targetDb": -12.0}},
+            "delay": {"enabled": False, "params": {"leftMs": 0.0, "rightMs": 0.0}},
+            "tone_effect": {"enabled": False, "mode": "crystalizer"},
+        }
+        normalized = mgr.normalize_effects_extras(extras)
+        self.assertEqual(normalized["headroom"]["params"]["gainDb"], 0.0)
+        self.assertTrue(normalized["headroom"]["enabled"])
+        # save + reload
+        mgr.save_global_extras(normalized)
+        reloaded = mgr.load_global_extras()
+        self.assertEqual(reloaded["headroom"]["params"]["gainDb"], 0.0)
+        self.assertTrue(reloaded["headroom"]["enabled"])
+
     def test_strength_kept_as_is_no_or_fallback(self):
         # strength has NO `or` fallback: 0 stays 0
         parsed = effects_extras.parse_effects_extras_from_json({"loudnessStrength": 0})
