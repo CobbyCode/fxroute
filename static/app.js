@@ -9264,7 +9264,7 @@ async function createMeasurementConvolverPresetFromDraft() {
                 irLength: generationOptions.irLength,
                 generatedIr: true,
             },
-            analyses: analyses.map((analysis) => ({ side: analysis.side, points: analysis.points, maxPositive: analysis.maxPositive, minCorrection: analysis.minCorrection, autoGainDb: analysis.autoGainDb, dipGuardReductionMaxDb: analysis.dipGuardReductionMaxDb })),
+            analyses: analyses.map((analysis) => ({ side: analysis.side, points: analysis.points, maxPositive: analysis.maxPositive, minCorrection: analysis.minCorrection, energyGainDb: analysis.energyGainDb, autoGainDb: analysis.autoGainDb, dipGuardReductionMaxDb: analysis.dipGuardReductionMaxDb })),
         };
         state.dsp = state.dsp || {};
         state.dsp.assistStack = state.dsp.assistStack || [];
@@ -11808,7 +11808,7 @@ function renderMeasurementPanelConvolverSection({ measurementState, current, mea
         }
         elements.measurementConvolverSummary.innerHTML = `
             <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · Max Boost +${conv.maxBoostDb} dB · Max Cut ${conv.maxCutDb} dB · Dip Guard ${escapeHtml(conv.dipGuard)}</div>
-            <div>Range data. L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)}` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)}` : 'none'}</div>
+            <div>Range data. L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)} (energy ${formatMeasurementConvolverGain(left.energyGainDb ?? 0)})` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)} (energy ${formatMeasurementConvolverGain(right.energyGainDb ?? 0)})` : 'none'}</div>
             <div>${escapeHtml(draftStatus)}</div>
             ${draftDetails.map((detail) => `<div>${escapeHtml(detail)}</div>`).join('')}
         `;
