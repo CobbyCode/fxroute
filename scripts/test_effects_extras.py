@@ -131,7 +131,8 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         self.assertEqual(parsed["tone_effect"]["mode"], "crystalizer")
 
     def test_zero_values_fall_back_to_defaults(self):
-        # 0.0 / 0 are falsy -> the existing `or` fallback applies
+        # 0.0 / 0 are falsy -> the `or` fallback applies for most fields;
+        # headroom is the exception: explicit 0 dB must be preserved.
         body = {
             "headroomGainDb": 0.0,
             "autogainTargetDb": 0,
@@ -141,12 +142,22 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
             "bassAmount": 0.0,
         }
         parsed = effects_extras.parse_effects_extras_from_json(body)
-        self.assertEqual(parsed["headroom"]["params"]["gainDb"], -3.0)
+        self.assertEqual(parsed["headroom"]["params"]["gainDb"], 0.0)
         self.assertEqual(parsed["autogain"]["params"]["targetDb"], -12.0)
         self.assertEqual(parsed["loudness"]["params"]["fftSize"], 4096)
         self.assertEqual(parsed["loudness"]["params"]["volumeDb"], 0.0)
         self.assertEqual(parsed["delay"]["params"]["leftMs"], 0.0)
         self.assertEqual(parsed["bass_enhancer"]["params"]["amount"], 0.0)
+
+    def test_explicit_zero_headroom_preserved(self):
+        """Explicit 0 dB headroom must survive parse, not become -3 dB."""
+        for key in ("headroomGainDb", "headroom_gain_db"):
+            parsed = effects_extras.parse_effects_extras_from_json({key: 0})
+            self.assertEqual(parsed["headroom"]["params"]["gainDb"], 0.0,
+                             msg=f"{key}=0 should stay 0.0, not fallback to -3.0")
+        # String "0" from a <select> must also survive
+        parsed = effects_extras.parse_effects_extras_from_json({"headroomGainDb": "0"})
+        self.assertEqual(parsed["headroom"]["params"]["gainDb"], 0.0)
 
     def test_strength_kept_as_is_no_or_fallback(self):
         # strength has NO `or` fallback: 0 stays 0

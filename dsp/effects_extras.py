@@ -19,7 +19,8 @@ from typing import Any
 def parse_effects_extras_from_json(body: dict) -> dict:
     limiter_enabled = bool(body.get("limiterEnabled", body.get("limiter_enabled", False)))
     headroom_enabled = bool(body.get("headroomEnabled", body.get("headroom_enabled", False)))
-    headroom_gain_db = float(body.get("headroomGainDb", body.get("headroom_gain_db", -3.0)) or -3.0)
+    _headroom_gain_db = body.get("headroomGainDb", body.get("headroom_gain_db"))
+    headroom_gain_db = float(_headroom_gain_db) if _headroom_gain_db not in (None, "") else -3.0
     autogain_enabled = bool(body.get("autogainEnabled", body.get("autogain_enabled", False)))
     autogain_target_db = float(body.get("autogainTargetDb", body.get("autogain_target_db", -12.0)) or -12.0)
     loudness_enabled = bool(body.get("loudnessEnabled", body.get("loudness_enabled", False)))
