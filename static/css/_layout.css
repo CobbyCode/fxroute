@@ -86,7 +86,7 @@
     transform: translateY(-2px);
 }
 
-.brand-mark {
+.brand-lockup .brand-mark {
     display: inline-block;
     width: 32px;
     height: 32px;
@@ -96,7 +96,7 @@
     box-shadow: none;
     flex-shrink: 0;
 }
-.brand-text-block {
+.brand-lockup .brand-text-block {
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -104,13 +104,13 @@
     line-height: 1;
     padding-top: 0;
 }
-.brand-title {
+.brand-lockup .brand-title {
     color: var(--text-primary);
     font-size: 1.16rem;
     font-weight: 520;
     letter-spacing: -0.045em;
 }
-.brand-title-fx {
+.brand-lockup .brand-title-fx {
     color: var(--text-primary);
     font-weight: 740;
 }

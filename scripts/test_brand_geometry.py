@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Playwright geometry contract for the brand mark responsive sizes.
+"""Playwright geometry contract for the brand mark size.
 
-The small-phone rule sets .brand-mark to 35x35px at max-width:600px; a later
-tablet rule used to set 38x38px at max-width:760px and won the cascade at
-500/520/599/600px (measured 38x38). The tablet size is now scoped to
-601-760px so the explicitly intended small-phone size wins at its breakpoint.
-
-Ladder: ≤600px -> 35x35, 601-760px -> 38x38, ≥761px -> 37x37.
-
-Runs the real rendered page (static server + stubbed audio API) in headless
-Chromium. Skips cleanly when playwright or a browser is not available.
+Approved route-mark branding: the mark is a fixed 32x32px SVG at every
+viewport (proposal composition). Earlier responsive scaling (35/38/37px
+ladder) belonged to the retired monogram branding and must not return.
 """
 
 import http.server
@@ -78,40 +72,16 @@ def _run():
             mark = page.locator(".brand-mark")
             check("brand-mark exists", mark.count() >= 1)
 
-            # Small phone: 35x35 at ≤600px (the fixed cascade).
-            for width in (600, 599, 520, 500, 390, 360, 320):
+            # Approved route-mark branding: fixed 32x32 at every width.
+            for width in (1440, 900, 761, 760, 700, 601, 600, 599, 520, 500, 390, 360, 320):
                 page.set_viewport_size({"width": width, "height": 900})
                 page.wait_for_timeout(80)
                 bb = mark.first.bounding_box()
                 check(f"[{width}px] brand-mark has box", bb is not None)
                 assert bb is not None
                 check(
-                    f"[{width}px] brand-mark is 35x35 (w={bb['width']:.2f} h={bb['height']:.2f})",
-                    abs(bb["width"] - 35) <= 1 and abs(bb["height"] - 35) <= 1,
-                )
-
-            # Tablet 601-760px: 38x38 unchanged.
-            for width in (760, 700, 601):
-                page.set_viewport_size({"width": width, "height": 900})
-                page.wait_for_timeout(80)
-                bb = mark.first.bounding_box()
-                check(f"[{width}px] brand-mark has box", bb is not None)
-                assert bb is not None
-                check(
-                    f"[{width}px] brand-mark is 38x38 (w={bb['width']:.2f} h={bb['height']:.2f})",
-                    abs(bb["width"] - 38) <= 1 and abs(bb["height"] - 38) <= 1,
-                )
-
-            # Desktop ≥761px: 37x37 unchanged.
-            for width in (761, 900, 1440):
-                page.set_viewport_size({"width": width, "height": 900})
-                page.wait_for_timeout(80)
-                bb = mark.first.bounding_box()
-                check(f"[{width}px] brand-mark has box", bb is not None)
-                assert bb is not None
-                check(
-                    f"[{width}px] brand-mark is 37x37 (w={bb['width']:.2f} h={bb['height']:.2f})",
-                    abs(bb["width"] - 37) <= 1 and abs(bb["height"] - 37) <= 1,
+                    f"[{width}px] brand-mark is 32x32 (w={bb['width']:.2f} h={bb['height']:.2f})",
+                    abs(bb["width"] - 32) <= 1 and abs(bb["height"] - 32) <= 1,
                 )
 
             page.close()

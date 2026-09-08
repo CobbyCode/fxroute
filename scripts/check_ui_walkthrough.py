@@ -156,15 +156,10 @@ def _run(shots_dir: pathlib.Path) -> int:
                     "document.documentElement.scrollWidth - document.documentElement.clientWidth"
                 )
                 check("no horizontal overflow", overflow <= 1, width)
-                # Brand mark ladder.
+                # Brand mark: approved route mark is fixed 32x32 everywhere.
                 bb = page.locator(".brand-mark").first.bounding_box()
                 if bb:
-                    if width <= 600:
-                        ok = abs(bb["width"] - 35) <= 1 and abs(bb["height"] - 35) <= 1
-                    elif width <= 760:
-                        ok = abs(bb["width"] - 38) <= 1 and abs(bb["height"] - 38) <= 1
-                    else:
-                        ok = abs(bb["width"] - 37) <= 1 and abs(bb["height"] - 37) <= 1
+                    ok = abs(bb["width"] - 32) <= 1 and abs(bb["height"] - 32) <= 1
                     check(
                         f"brand-mark ladder (w={bb['width']:.1f} h={bb['height']:.1f})",
                         ok, width,
