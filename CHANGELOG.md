@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.0-beta2 (2026-09-08)
+
+Second public beta, built from tag `v1.0-beta2` (commit `8a5db19`).
+Distribution channels unchanged: web demo on GitHub Pages, Raspberry Pi 4/5
+images via GitHub Release, x86_64 Leap 16 ISO via SourceForge. Khadas/VIM1S
+stays internal and gets no public image.
+
+### Convolver / DSP
+- Preserved dots inside convolver IR kernel names (imported kernel files keep
+  their full base name).
+- The staged convolver draft is invalidated when the correction settings
+  change, so a stale preview can no longer be applied over newer corrections.
+- Energy-based convolver auto headroom is capped at 0 dB and an explicit 0 dB
+  headroom survives save/restart instead of silently falling back to −3 dB
+  (round-trip covered for form and restart paths).
+- Preset-load validation errors are reported as 400 JSON instead of leaking
+  internal error text.
+
+### Measurement
+- Capture rate discovery now queries `pw-cli enum-params EnumFormat` instead
+  of the pactl path, so the offered rates match what PipeWire actually
+  supports.
+
+### UI / demo
+- Route-mark branding adopted in the product header and locked at every width;
+  superseded branding preview and session protocol removed.
+- Visual polish pass (typography, cards, flat transport paint), compact footer
+  quality badge (FLAC · 16bit · 44.1kHz), even 4 px seek/volume slider
+  geometry, full-width Create PEQ preset row, centered provider tab group on
+  tablet, smaller header brand on small-laptop widths.
+- Frontend asset caches busted (style.css, app.js, measurement_dsp.js).
+- The web demo pushes DSP state only on change, so open selects survive.
+
+### Docs
+- Public screenshots retaken on the approved UI/branding state; radio
+  screenshot with the expanded station catalog, measurement shot with
+  convolver curve and full graph.
+- README: single 1.0-beta download entry in user-led order, evergreen links
+  to the releases page, tightened Home Assistant wording; demo build internals
+  moved off the end-user page.
+
+### Release
+- `VERSION` set to `1.0-beta2`.
+
+Public release artifact names (built from tag `v1.0-beta2`):
+
+- `fxroute-1.0-beta2-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta2-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta2-x86_64-leap16.iso` (SourceForge, + `.sha256`)
+
 ## 1.0-beta (2026-09-07)
 
 First public beta. Distribution channels: web demo on GitHub Pages,
