@@ -831,7 +831,7 @@ grep -Fxq 'ScaleFactor=1.25' "$HOME/.config/kdeglobals"
 grep -Fxq 'ScreenScaleFactors=eDP-1=1.25;DP-1=1.25;HDMI-1=1.25;DP-2=1.25;HDMI-2=1.25;' "$HOME/.config/kdeglobals"
 test -f "$HOME/.local/share/opensuse-welcome/launched"
 grep -Fq 'firefox --kiosk http://127.0.0.1:8000/' /usr/local/bin/fxroute-desktop-launcher
-firefox_policy="$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 3 -path '*/distribution/policies.json' 2>/dev/null | head -n 1)"
+firefox_policy="$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 3 -path '*/distribution/policies.json' 2>/dev/null | head -n 1 || true)"
 test -n "$firefox_policy"
 grep -Fq 'http://127.0.0.1:8000/' "$firefox_policy"
 for _ in $(seq 1 90); do
