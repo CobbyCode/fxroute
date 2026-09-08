@@ -8,6 +8,13 @@ normalization only on full parse, merge of only explicitly supplied fields,
 deep-copy non-mutation semantics, calibration/calibrationProfiles validation
 with exact error messages, and exact change detection for strength as well as
 autogain/loudness.
+
+Deviation from the previous inline implementation: headroom gainDb parsing
+no longer uses an `or` fallback, because 0 dB is a valid whole-dB value in
+the manager contract (-9..0) and must not be silently replaced by -3 dB.
+Only the full-parse path was affected; the merge path (explicit-field
+conversion), the form path (FastAPI float conversion) and persistence
+(normalize_effects_extras validation) always preserved explicit 0.
 """
 
 from __future__ import annotations
@@ -19,6 +26,9 @@ from typing import Any
 def parse_effects_extras_from_json(body: dict) -> dict:
     limiter_enabled = bool(body.get("limiterEnabled", body.get("limiter_enabled", False)))
     headroom_enabled = bool(body.get("headroomEnabled", body.get("headroom_enabled", False)))
+    # No `or` fallback here: 0 dB is a valid whole-dB value in the manager
+    # contract (-9..0) and must survive parsing instead of becoming -3 dB.
+    # Missing key, null and empty string keep the -3 dB default.
     _headroom_gain_db = body.get("headroomGainDb", body.get("headroom_gain_db"))
     headroom_gain_db = float(_headroom_gain_db) if _headroom_gain_db not in (None, "") else -3.0
     autogain_enabled = bool(body.get("autogainEnabled", body.get("autogain_enabled", False)))

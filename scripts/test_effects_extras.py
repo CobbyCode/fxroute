@@ -131,8 +131,13 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         self.assertEqual(parsed["tone_effect"]["mode"], "crystalizer")
 
     def test_zero_values_fall_back_to_defaults(self):
-        # 0.0 / 0 are falsy -> the `or` fallback applies for most fields;
-        # headroom is the exception: explicit 0 dB must be preserved.
+        # 0.0 / 0 are falsy -> the `or` fallback applies for most fields.
+        # Headroom is the exception (see test_explicit_zero_headroom_preserved):
+        # 0 dB is a valid whole-dB value in the manager contract (-9..0),
+        # so the parser must not silently replace it with the -3 dB default.
+        # Other fields keep the `or` fallback because their 0 is either not a
+        # valid contract value (autogain target, fft size) or identical to the
+        # default (volumeDb, delay, bass amount).
         body = {
             "headroomGainDb": 0.0,
             "autogainTargetDb": 0,
@@ -150,7 +155,7 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         self.assertEqual(parsed["bass_enhancer"]["params"]["amount"], 0.0)
 
     def test_explicit_zero_headroom_preserved(self):
-        """Explicit 0 dB headroom must survive parse, not become -3 dB."""
+        """Full-parse path: explicit 0 dB must survive parsing, not become -3 dB."""
         for key in ("headroomGainDb", "headroom_gain_db"):
             parsed = effects_extras.parse_effects_extras_from_json({key: 0})
             self.assertEqual(parsed["headroom"]["params"]["gainDb"], 0.0,
@@ -160,7 +165,8 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         self.assertEqual(parsed["headroom"]["params"]["gainDb"], 0.0)
 
     def test_zero_headroom_round_trip_via_merge(self):
-        """headroomGainDb=0 must survive merge → normalize → save → load."""
+        """Merge path kept 0 before the parser fix; assert it end-to-end anyway:
+        merge → normalize → save → load → persisted JSON."""
         from dsp.manager import DSPManager
         import tempfile, json
         home = tempfile.mkdtemp()
@@ -182,11 +188,13 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         self.assertEqual(disk["headroom"]["params"]["gainDb"], 0.0)
 
     def test_zero_headroom_full_restart_round_trip(self):
-        """Simulate a full restart: save 0 dB → new DSPManager instance → load."""
+        """Persistence round-trip across manager instances: merge 0 dB → save →
+        new DSPManager instance → load. The merge/persistence path always
+        preserved explicit 0; this guards that contract going forward."""
         from dsp.manager import DSPManager
         import tempfile
         home = tempfile.mkdtemp()
-        # --- save path: JSON API merge → normalize → persist ---
+        # --- save path: merge → normalize → persist ---
         mgr1 = DSPManager(home=Path(home))
         previous = mgr1.load_global_extras()
         merged = effects_extras.merge_effects_extras_from_json(
@@ -195,14 +203,16 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         self.assertEqual(merged["headroom"]["params"]["gainDb"], 0.0)
         self.assertTrue(merged["headroom"]["enabled"])
         mgr1.save_global_extras(merged)
-        # --- reload path: new instance reads extras.json → normalize ---
+        # --- reload path: new instance reads extras.json (no re-parse) ---
         mgr2 = DSPManager(home=Path(home))
         reloaded = mgr2.load_global_extras()
         self.assertEqual(reloaded["headroom"]["params"]["gainDb"], 0.0)
         self.assertTrue(reloaded["headroom"]["enabled"])
 
     def test_zero_headroom_via_form_path(self):
-        """Form-submit path: call _effects_extras_from_form with gainDb=0.0."""
+        """Form path never had the parser bug: FastAPI converts the form field
+        directly to float, so "0" arrives as 0.0. Assert it end-to-end through
+        the real _effects_extras_from_form → normalize → save → reload."""
         from dsp.manager import DSPManager
         from dsp.api import _effects_extras_from_form, configure_dsp_api, DspApiDeps
         import tempfile, asyncio
@@ -239,7 +249,7 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
             )
             self.assertEqual(extras["headroom"]["params"]["gainDb"], 0.0)
             self.assertTrue(extras["headroom"]["enabled"])
-            # save + reload (simulates restart)
+            # save + reload (persistence round-trip)
             mgr.save_global_extras(extras)
             reloaded = mgr.load_global_extras()
             self.assertEqual(reloaded["headroom"]["params"]["gainDb"], 0.0)
