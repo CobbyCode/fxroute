@@ -363,7 +363,7 @@ body {
 .brand-lockup {
     display: flex;
     align-items: center;
-    gap: 0.39rem;
+    gap: 0.5rem;
     min-width: 0;
 }
 .brand-lockup-button {
@@ -378,8 +378,7 @@ body {
 }
 .brand-lockup-button:hover .brand-mark,
 .brand-lockup-button:focus-visible .brand-mark {
-    border-color: rgba(110, 231, 183, 0.28);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.025), 0 0 0 3px rgba(110, 231, 183, 0.08);
+    box-shadow: none;
 }
 .brand-lockup-button:focus-visible {
     /* Same visible keyboard ring as the power button next in the header. */
@@ -434,50 +433,32 @@ body {
 }
 
 .brand-mark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 42px;
-    height: 42px;
-    border-radius: var(--radius-md);
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.008));
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
-    font-weight: 800;
-    font-size: 0.95rem;
-    letter-spacing: -0.075em;
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 0;
+    background: url('./route-mark.svg') center / contain no-repeat;
+    box-shadow: none;
     flex-shrink: 0;
-}
-.brand-mark-f {
-    color: rgba(244, 244, 245, 0.9);
-}
-.brand-mark-x {
-    color: rgba(110, 231, 183, 0.82);
 }
 .brand-text-block {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 0.12rem;
     min-width: 0;
-    line-height: 0.98;
-    padding-top: 1px;
+    line-height: 1;
+    padding-top: 0;
 }
 .brand-title {
     color: var(--text-primary);
-    font-size: 1.22rem;
-    font-weight: 740;
-    letter-spacing: -0.035em;
+    font-size: 1.16rem;
+    font-weight: 520;
+    letter-spacing: -0.045em;
 }
 .brand-title-fx {
-    color: rgba(225, 250, 239, 0.94);
-}
-.brand-subtitle {
-    color: rgba(176, 176, 190, 0.9);
-    font-size: 0.63rem;
-    font-weight: 650;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    color: var(--text-primary);
+    font-weight: 740;
 }
 
 /* Header-right cluster: power button */
@@ -536,7 +517,6 @@ body {
 }
 .power-btn.is-online .power-btn-icon {
     color: var(--success);
-    filter: drop-shadow(0 0 4px rgba(52,211,153,0.35));
 }
 .power-menu {
     position: absolute;
@@ -648,8 +628,9 @@ body {
     padding: .52rem .9rem;
     background: transparent;
     border: none;
-    color: #9999a6;
+    color: var(--text-secondary);
     cursor: pointer;
+    font-family: var(--font-sans);
     font-size: .9rem;
     font-weight: 560;
     border-radius: var(--radius-md);
@@ -670,16 +651,13 @@ body {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
 }
-/* The active accent stays inside the tab: a short centered underline and a
-   faint inner glow, with no green edge or outer glow bleeding toward the
-   brand lockup / first tab. The underline spans only the inner part of the
-   button, so the active state never reaches the edge facing the logo. */
+/* The active accent stays inside the tab: a short centered underline on a
+   quiet mint surface. No glow or edge bleeds toward the brand lockup. */
 .tab-btn.active {
     color: #f3f3f5;
     background: rgba(110, 231, 183, 0.07);
     font-weight: 600;
     position: relative;
-    box-shadow: inset 0 0 12px rgba(110, 231, 183, 0.07);
 }
 .tab-btn.active::after {
     content: '';
@@ -747,7 +725,7 @@ body {
    ============================================================ */
 .section-title {
     font-size: 1.05rem;
-    font-weight: 700;
+    font-weight: 650;
     letter-spacing: -0.02em;
 }
 .section-subtitle {
@@ -1217,7 +1195,7 @@ body {
 .album-card {
     background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
     border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 18px;
+    border-radius: var(--radius-lg);
     padding: 0.82rem;
     cursor: pointer;
     transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), border-color 0.18s var(--ease), background 0.18s var(--ease);
@@ -1229,12 +1207,12 @@ body {
     gap: 0.8rem;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+    box-shadow: none;
 }
 .album-art-wrap {
     width: 100%;
     aspect-ratio: 1 / 1;
-    border-radius: 15px;
+    border-radius: var(--radius-md);
     overflow: hidden;
     background: rgba(255,255,255,0.03);
     border: 1px solid var(--border);
@@ -1253,8 +1231,8 @@ body {
     background: rgba(0,0,0,0.08);
 }
 .album-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
     border-color: rgba(255,255,255,0.14);
     background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
 }
@@ -1327,7 +1305,7 @@ body {
     backdrop-filter: none;
 }
 .album-name {
-    font-weight: 700;
+    font-weight: 600;
     font-size: 0.98rem;
     color: var(--text-primary);
     line-height: 1.3;
@@ -3102,7 +3080,7 @@ body {
 .station-card {
     background: linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.012));
     border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 17px;
+    border-radius: var(--radius-lg);
     padding: .7rem;
     cursor: pointer;
     transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), border-color 0.18s var(--ease), background 0.18s var(--ease);
@@ -3114,12 +3092,12 @@ body {
     gap: .68rem;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
-    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+    box-shadow: none;
 }
 .station-art-wrap {
     width: 100%;
     aspect-ratio: 1 / 1;
-    border-radius: 13px;
+    border-radius: var(--radius-md);
     overflow: hidden;
     background: rgba(255,255,255,0.03);
     border: 1px solid var(--border);
@@ -3162,7 +3140,7 @@ body {
 }
 .station-card:hover {
     transform: translateY(-2px);
-    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
     border-color: rgba(255,255,255,0.14);
     background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
 }
@@ -3195,7 +3173,7 @@ body {
     50% { opacity: 1; }
 }
 .station-name {
-    font-weight: 700;
+    font-weight: 600;
     font-size: .95rem;
     color: var(--text-primary);
     line-height: 1.3;
@@ -3297,9 +3275,9 @@ body {
 }
 
 .station-card.active {
-    border-color: rgba(110,231,183,.72);
-    background: linear-gradient(180deg, rgba(110,231,183,.105), rgba(255,255,255,.014));
-    box-shadow: 0 0 0 1px rgba(110,231,183,.38), 0 14px 30px rgba(0,0,0,.26);
+    border-color: rgba(110,231,183,.55);
+    background: linear-gradient(180deg, rgba(110,231,183,.07), rgba(255,255,255,.014));
+    box-shadow: inset 0 0 0 1px rgba(110,231,183,.08);
 }
 /* =========================================================================
    Responsive — consolidated (Task 4)
@@ -3497,7 +3475,6 @@ body {
 .streaming-album {
     font-size: 0.85rem;
     color: var(--text-muted);
-    opacity: 0.85;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3609,7 +3586,9 @@ body {
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: var(--accent);
+    background: #ececf0;
+    border: 1px solid rgba(13,13,15,0.8);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
     cursor: pointer;
 }
 .streaming-progress:focus-visible::-webkit-slider-thumb {
@@ -3619,8 +3598,9 @@ body {
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: var(--accent);
-    border: none;
+    background: #ececf0;
+    border: 1px solid rgba(13,13,15,0.8);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
     cursor: pointer;
 }
 .streaming-progress:disabled { opacity: 0.4; cursor: default; }
@@ -3935,8 +3915,9 @@ body {
 #tidal-search-items > .tidal-tiles { margin-top: 1.125rem; }
 .tidal-tiles .album-card .streaming-fav {
     position: absolute;
-    top: 0.55rem;
-    right: 0.55rem;
+    /* Same cover inset as Library favorites on the shared album card. */
+    top: 1.05rem;
+    right: 1.05rem;
     z-index: var(--z-raised);
     width: 32px;
     height: 32px;
@@ -5006,7 +4987,9 @@ body {
 }
 .effects-card h3 {
     margin-bottom: 0.4rem;
-    font-size: 1.15rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
     line-height: 1.25;
 }
 .effects-card-header p,
@@ -5022,9 +5005,9 @@ body {
     flex-direction: column;
     gap: 0.9rem;
     padding: 1rem;
-    border: 1px solid rgba(110, 231, 183, 0.24);
+    border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    background: linear-gradient(180deg, rgba(110, 231, 183, 0.1), rgba(255,255,255,0.02));
+    background: rgba(255,255,255,0.015);
 }
 
 .effects-compare-fields {
@@ -5044,11 +5027,11 @@ body {
 .effects-compare-slot.is-active {
     border-color: rgba(110, 231, 183, 0.45);
     background: rgba(110, 231, 183, 0.08);
-    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.16);
+    box-shadow: none;
 }
 
 .effects-compare-slot.is-armed {
-    border-color: rgba(110, 231, 183, 0.34);
+    border-color: rgba(110, 231, 183, 0.22);
 }
 
 .effects-compare-fields .field-group {
@@ -5086,11 +5069,11 @@ select option:checked {
     background: rgba(110, 231, 183, 0.08);
     border: 1px solid rgba(110, 231, 183, 0.26);
     border-radius: var(--radius-md);
-    font-weight: 800;
+    font-weight: 600;
     font-size: 1rem;
     color: #bff9de;
     text-align: center;
-    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.08);
+    box-shadow: none;
 }
 
 .effects-compare-active-badge span {
@@ -5116,7 +5099,7 @@ select option:checked {
 }
 
 .effects-compare-active-badge.is-side-b {
-    background: rgba(110, 231, 183, 0.14);
+    background: rgba(110, 231, 183, 0.1);
     border-color: rgba(110, 231, 183, 0.34);
     color: #f0fff8;
 }
@@ -5649,7 +5632,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-actions-peq-dual {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* Single action row (preset name + Create): full card width, unlike the
+       two-column REW dual import row this class is derived from. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.8rem;
     align-items: start;
 }
@@ -5746,7 +5731,7 @@ input[type="number"]::-webkit-outer-spin-button {
     border: 1px solid var(--border);
     /* Re-assert the shared neutral card edge after the border shorthand. */
     border-top: 3px solid var(--border-strong);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--bg-surface);
     overflow: hidden;
 }
@@ -5758,7 +5743,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .effects-card-extras .effects-card-header h3 {
-    font-size: 1.15rem;
+    font-size: 1.1rem;
     font-weight: 600;
     margin-bottom: 0.4rem;
 }
@@ -5781,10 +5766,9 @@ input[type="number"]::-webkit-outer-spin-button {
 .effects-extras-inner {
     width: min(100%, 540px);
     padding: 1rem 1.05rem;
-    border: 1px solid var(--border);
+    border: 1px solid transparent;
     border-radius: var(--radius-md);
-    background: rgba(255,255,255,0.03);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+    background: transparent;
     display: flex;
     flex-direction: column;
     gap: 0.8rem;
@@ -5808,7 +5792,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .effects-extras-group-header h4 {
     font-size: 0.9rem;
-    font-weight: 700;
+    font-weight: 600;
     color: var(--text-primary);
 }
 
@@ -6558,11 +6542,9 @@ input[type="number"]::-webkit-outer-spin-button {
     place-items: center;
     border-radius: 50%;
     border: 1px solid rgba(110,231,183,.38);
-    background:
-        radial-gradient(circle at 50% 35%, rgba(110,231,183,.24), rgba(110,231,183,.07) 62%, transparent 63%),
-        rgba(13,20,18,.92);
+    background: #203b32;
     color: #f0fff8;
-    box-shadow: 0 0 0 5px rgba(110,231,183,.035), 0 8px 22px rgba(0,0,0,.25);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
     cursor: pointer;
     font-size: 1.25rem;
     transition: transform .12s var(--ease), border-color .15s var(--ease), background .15s var(--ease), box-shadow .15s var(--ease);
@@ -6570,7 +6552,7 @@ input[type="number"]::-webkit-outer-spin-button {
 .control-btn:hover:not(:disabled),
 .control-btn:focus-visible:not(:disabled) {
     border-color: rgba(110,231,183,.64);
-    box-shadow: 0 0 0 5px rgba(110,231,183,.055), 0 8px 24px rgba(0,0,0,.3);
+    box-shadow: 0 0 0 3px rgba(110,231,183,.12);
     outline: none;
 }
 .control-btn:active:not(:disabled) { transform: scale(.94); }
@@ -6653,9 +6635,9 @@ input[type="number"]::-webkit-outer-spin-button {
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: #ffffff;
-    border: 1px solid rgba(0,0,0,0.5);
-    box-shadow: 0 1px 4px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.1);
+    background: #ececf0;
+    border: 1px solid rgba(13,13,15,0.8);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
     transition: transform .12s var(--ease), box-shadow .12s var(--ease);
 }
 .seek-slider::-moz-range-thumb,
@@ -6663,9 +6645,9 @@ input[type="number"]::-webkit-outer-spin-button {
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: #ffffff;
-    border: 1px solid rgba(0,0,0,0.5);
-    box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+    background: #ececf0;
+    border: 1px solid rgba(13,13,15,0.8);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
 }
 .seek-slider:hover::-webkit-slider-thumb,
 .volume-slider:hover::-webkit-slider-thumb {
@@ -7559,8 +7541,6 @@ input[type="number"]::-webkit-outer-spin-button {
     .control-btn-mode,
     .control-btn-clear,
     .track-favorite-btn,
-    .album-card-fav,
-    .station-card-fav,
     .streaming-fav,
     .track-row-favorite,
     .track-fav,
@@ -7570,6 +7550,8 @@ input[type="number"]::-webkit-outer-spin-button {
     .measurement-peq-chip {
         position: relative;
     }
+    /* Cover favorites are already absolutely positioned. Keep that anchor:
+       making them relative pulls them into the card flow on touch screens. */
     .control-btn-mode::after,
     .control-btn-clear::after,
     .track-favorite-btn::after,
@@ -8334,7 +8316,7 @@ input[type="number"]::-webkit-outer-spin-button {
         }
 
         #tab-effects .effects-actions-peq-dual {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: minmax(0, 1fr);
             align-items: start;
             gap: 0.8rem;
         }
@@ -8705,7 +8687,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 @media (min-width: 761px) {
     /* from _playback.css */
-    .brand-lockup { gap: 0.39rem; }
+    .brand-lockup { gap: 0.5rem; }
         .brand-mark {
             width: 37px;
             height: 37px;
@@ -8741,6 +8723,12 @@ input[type="number"]::-webkit-outer-spin-button {
         }
         .tab-btn { pointer-events: auto; min-width: 124px; }
 
+}
+
+/* At the single-row transition, leave breathing room for the full brand and
+   all six providers even with small platform differences in font metrics. */
+@media (min-width: 1180px) and (max-width: 1279px) {
+    .tab-btn { min-width: 116px; }
 }
 
 @media (max-width: 420px) {
