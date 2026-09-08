@@ -104,6 +104,12 @@
     }
 
     // One playback pulse per second, plus alternating provider snapshots.
+    // DSP state is pushed only when it actually changed: the product
+    // frontend rebuilds the whole DSP editor (including any open native
+    // <select> popup, e.g. the Create-PEQ type selector) on every 'dsp'
+    // message, so rebroadcasting identical state each second snaps open
+    // dropdowns shut as soon as the user scrolls or picks an option.
+    let lastDspJson = '';
     setInterval(() => {
         if (!sockets.size) return;
         const payload = S.getPlayback();
@@ -111,7 +117,13 @@
         broadcast({ type: 'playback_peak_warning', data: payload.output_peak_warning });
         broadcast({ type: 'spotify', data: S.spotify.snapshot() });
         broadcast({ type: 'qobuz', data: S.qobuz.payload() });
-        broadcast({ type: 'dsp', data: api.easyeffectsStatus() });
+        const dsp = api.easyeffectsStatus();
+        let dspJson = '';
+        try { dspJson = JSON.stringify(dsp); } catch (e) { dspJson = ''; }
+        if (!dspJson || dspJson !== lastDspJson) {
+            lastDspJson = dspJson;
+            broadcast({ type: 'dsp', data: dsp });
+        }
     }, 1000);
 
     window.DemoWebSocket = DemoWebSocket;
