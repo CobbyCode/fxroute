@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from dsp.persistence import DSPPresetStore, DSPStateStore, clean_name
+from dsp.persistence import DSPPresetStore, DSPStateStore, clean_name, kernel_name
 
 logger = logging.getLogger(__name__)
 
@@ -1038,7 +1038,7 @@ class DSPManager:
         requested = Path(ir_filename).name
         if requested not in {item["name"] for item in self.list_irs()}:
             raise FileNotFoundError(f"IR file not found: {ir_filename}")
-        kernel = Path(requested).stem
+        kernel = kernel_name(requested)
         resolved = self._resolve_kernel_path(kernel)
         if resolved.name != requested:
             raise ValueError(
@@ -1139,7 +1139,7 @@ class DSPManager:
             kernel = raw.get("kernel-name")
             if not isinstance(kernel, str) or not kernel:
                 raise ValueError("Imported convolver is missing kernel-name")
-            return {"kernel": Path(kernel).stem, "wet_db": float(raw.get("wet", 0.0)),
+            return {"kernel": kernel_name(kernel), "wet_db": float(raw.get("wet", 0.0)),
                     "dry_db": float(raw.get("dry", -100.0)),
                     "input_gain_db": float(raw.get("input-gain", 0.0)),
                     "output_gain_db": float(raw.get("output-gain", 0.0))}
@@ -1228,8 +1228,8 @@ class DSPManager:
         return self.preset_store.find_ir_paths(kernel_name)
 
     def _resolve_kernel_path(self, kernel: Any) -> Path:
-        """Resolve a convolver kernel stem to exactly one IR file."""
-        stem = Path(str(kernel or "")).stem
+        """Resolve a convolver kernel name to exactly one IR file."""
+        stem = kernel_name(kernel)
         if not stem:
             raise ValueError("Convolver kernel name is required")
         paths = self.preset_store.find_ir_paths(stem)

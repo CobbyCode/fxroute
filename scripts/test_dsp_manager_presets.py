@@ -267,6 +267,68 @@ class DSPManagerPresetTests(unittest.TestCase):
             self.assertEqual(source.readframes(2), b"\x01\x00\x03\x00\x02\x00\x04\x00")
         self.assertEqual(created["preset"]["kernel_name"], "Stereo IR")
 
+    def _write_mono_wav(self, path, frames=b"\x00\x00\x00\x00"):
+        with wave.open(str(path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(48000)
+            handle.writeframes(frames)
+
+    def test_convolver_dual_upload_with_decimal_gain_name_round_trips(self):
+        # The measurement UI generates convolver preset names that embed the
+        # auto-gain value, e.g. "... -1.5dB ...".  The dot is a plain name
+        # character, not a filename extension boundary: creating a second
+        # preset under such a name must succeed (it previously failed with
+        # "IR file not found" because Path.stem truncated the kernel at the
+        # decimal point), and the preset must then load and delete cleanly.
+        name = "Conv LR Min Neutral 30-12000Hz -1.5dB 130316"
+        left = self.home / "left.wav"
+        right = self.home / "right.wav"
+        self._write_mono_wav(left)
+        self._write_mono_wav(right)
+        created = self.manager.create_convolver_preset_with_dual_uploads(
+            name, left, left.name, right, right.name
+        )
+        ir = Path(created["ir"]["path"])
+        self.assertEqual(created["preset"]["kernel_name"], name)
+        self.assertEqual(ir.name, f"{name}.irs")
+        self.assertEqual(created["preset"]["name"], name)
+        # The engine config must resolve the dotted kernel back to the IR.
+        self.manager.load_preset(name)
+        text = self.manager.compile_engine_text(
+            [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
+            preset_name=name, sample_rate_hz=48000,
+        )
+        self.assertIn(f"param path {json.dumps(str(ir))}", text)
+        # Deleting the preset removes the now-orphaned dotted IR.
+        self.manager.delete_preset(name)
+        self.assertFalse(ir.exists())
+
+    def test_convolver_dotted_kernel_resolution_preserves_inner_dots(self):
+        # Regression for kernels that contain dots without a trailing
+        # extension (the exact form stored in preset plugins): resolution
+        # must not truncate at the first dot via pathlib stem semantics.
+        ir = self.manager.irs_dir / "Conv LR Min Harman 30-12000Hz -1.5dB 130321.irs"
+        self._write_mono_wav(ir)
+        kernel = "Conv LR Min Harman 30-12000Hz -1.5dB 130321"
+        self.assertEqual(self.manager.preset_store.find_ir_paths(kernel), [ir])
+        self.assertEqual(self.manager._resolve_kernel_path(kernel), ir)
+        created = self.manager.create_convolver_preset("Dotted kernel", ir.name)
+        payload = json.loads(Path(created["path"]).read_text())
+        self.assertEqual(payload["chain"][0]["params"]["kernel"], kernel)
+        self.assertEqual(self.manager.preset_store.kernels(payload), {kernel})
+        self.manager.delete_preset("Dotted kernel")
+        self.assertFalse(ir.exists())
+
+    def test_kernel_name_strips_only_a_real_ir_suffix(self):
+        from dsp.persistence import kernel_name
+        self.assertEqual(kernel_name("Room.irs"), "Room")
+        self.assertEqual(kernel_name("Room.WAV"), "Room")
+        self.assertEqual(kernel_name("Room.impulse.wav"), "Room.impulse")
+        self.assertEqual(kernel_name("Room.impulse"), "Room.impulse")
+        self.assertEqual(kernel_name("Conv ... -1.5dB 130316"), "Conv ... -1.5dB 130316")
+        self.assertEqual(kernel_name(""), "")
+
 
 if __name__ == "__main__":
     unittest.main()

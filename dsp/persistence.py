@@ -41,6 +41,31 @@ def clean_name(value: Any, fallback: str = "") -> str:
     return name or fallback
 
 
+# Real IR file suffixes.  A convolver *kernel name* is the IR basename with
+# exactly one of these suffixes removed.  Only these are treated as the file
+# extension: dots elsewhere in a kernel name (for example the decimal
+# auto-gain label in generated names such as "Conv LR ... -1.5dB") are plain
+# name characters and must survive resolution.  pathlib's stem/suffix logic
+# cannot be used for this because it treats the last dot of the basename as
+# the suffix boundary, silently truncating such names at the first dot.
+IR_FILE_SUFFIXES = (".irs", ".wav")
+
+
+def kernel_name(value: Any, fallback: str = "") -> str:
+    """IR basename with one trailing .irs/.wav suffix removed.
+
+    A kernel name may keep dots inside it (e.g. "-1.5dB"), so only a real IR
+    file suffix is ever stripped.  Idempotent for names without such suffix.
+    """
+    name = Path(str(value or "").strip()).name.strip()
+    if not name:
+        return fallback
+    for suffix in IR_FILE_SUFFIXES:
+        if name.lower().endswith(suffix):
+            return name[: -len(suffix)].strip() or fallback
+    return name
+
+
 class DSPPresetStore:
     """Read and write versioned native presets under one owned root."""
 
@@ -121,7 +146,7 @@ class DSPPresetStore:
             if isinstance(plugin, dict) and plugin.get("type") == "convolver":
                 kernel = plugin.get("params", {}).get("kernel")
                 if isinstance(kernel, str) and kernel:
-                    names.add(Path(kernel).stem)
+                    names.add(kernel_name(kernel))
         return names
 
     def referenced_kernels_except(self, excluded: str) -> Set[str]:
@@ -132,9 +157,11 @@ class DSPPresetStore:
         return result
 
     def find_ir_paths(self, kernel: str) -> List[Path]:
-        stem = Path(kernel).stem
+        target = kernel_name(kernel)
+        if not target:
+            return []
         return sorted(path for path in self.irs_dir.iterdir()
-                      if path.is_file() and path.stem == stem) if self.irs_dir.exists() else []
+                      if path.is_file() and kernel_name(path.name) == target) if self.irs_dir.exists() else []
 
 
 class DSPStateStore:
