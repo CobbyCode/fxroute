@@ -715,7 +715,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-actions-peq-dual {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* Single action row (preset name + Create): full card width, unlike the
+       two-column REW dual import row this class is derived from. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.8rem;
     align-items: start;
 }
