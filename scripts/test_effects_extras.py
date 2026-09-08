@@ -159,6 +159,28 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         parsed = effects_extras.parse_effects_extras_from_json({"headroomGainDb": "0"})
         self.assertEqual(parsed["headroom"]["params"]["gainDb"], 0.0)
 
+    def test_zero_headroom_round_trip_via_merge(self):
+        """headroomGainDb=0 must survive merge → normalize → save → load."""
+        from dsp.manager import DSPManager
+        import tempfile, json
+        home = tempfile.mkdtemp()
+        mgr = DSPManager(home=Path(home))
+        # 1) merge 0 into default extras
+        previous = mgr.load_global_extras()
+        merged = effects_extras.merge_effects_extras_from_json(
+            previous, {"headroomGainDb": 0}
+        )
+        self.assertEqual(merged["headroom"]["params"]["gainDb"], 0.0)
+        # 2) normalize and save
+        normalized = mgr.save_global_extras(merged)
+        self.assertEqual(normalized["headroom"]["params"]["gainDb"], 0.0)
+        # 3) reload from disk (simulates restart)
+        reloaded = mgr.load_global_extras()
+        self.assertEqual(reloaded["headroom"]["params"]["gainDb"], 0.0)
+        # 4) verify the persisted JSON on disk is also correct
+        disk = json.loads(mgr.global_extras_file.read_text())
+        self.assertEqual(disk["headroom"]["params"]["gainDb"], 0.0)
+
     def test_strength_kept_as_is_no_or_fallback(self):
         # strength has NO `or` fallback: 0 stays 0
         parsed = effects_extras.parse_effects_extras_from_json({"loudnessStrength": 0})
