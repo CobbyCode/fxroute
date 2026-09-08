@@ -34,8 +34,12 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def _basename(value: Any) -> str:
+    return Path(str(value or "").strip()).name.strip()
+
+
 def clean_name(value: Any, fallback: str = "") -> str:
-    name = Path(str(value or "").strip()).name.strip()
+    name = _basename(value)
     if name.lower().endswith(".json"):
         name = name[:-5].strip()
     return name or fallback
@@ -57,7 +61,7 @@ def kernel_name(value: Any, fallback: str = "") -> str:
     A kernel name may keep dots inside it (e.g. "-1.5dB"), so only a real IR
     file suffix is ever stripped.  Idempotent for names without such suffix.
     """
-    name = Path(str(value or "").strip()).name.strip()
+    name = _basename(value)
     if not name:
         return fallback
     for suffix in IR_FILE_SUFFIXES:

@@ -164,81 +164,57 @@ def _infer_album_from_folder_name(folder_name: str, track_artist: Optional[str])
     return (album or None), (artist or track_artist or None)
 
 
-def _probe_sample_rate_with_ffprobe(filepath: Path) -> Optional[int]:
+def _run_ffprobe(filepath: Path, args: List[str], timeout: int, label: str) -> Optional[str]:
+    """Run ffprobe with *args* and return the first stdout line."""
     try:
         completed = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-select_streams",
-                "a:0",
-                "-show_entries",
-                "stream=sample_rate",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(filepath),
-            ],
+            ["ffprobe", "-v", "error", *args, str(filepath)],
             capture_output=True,
             text=True,
             check=False,
-            timeout=3,
+            timeout=timeout,
         )
-    except Exception as e:
-        logger.debug(f"ffprobe sample-rate probe failed for {filepath}: {e}")
+    except Exception as exc:
+        logger.debug(f"ffprobe {label} probe failed for {filepath}: {exc}")
         return None
-
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
         if stderr:
-            logger.debug(f"ffprobe sample-rate probe returned {completed.returncode} for {filepath}: {stderr}")
+            logger.debug(f"ffprobe {label} probe returned {completed.returncode} for {filepath}: {stderr}")
         return None
-
-    first_line = (completed.stdout or "").strip().splitlines()
-    if not first_line:
+    lines = (completed.stdout or "").strip().splitlines()
+    if not lines:
         return None
+    return lines[0].strip()
 
+
+def _probe_sample_rate_with_ffprobe(filepath: Path) -> Optional[int]:
+    raw = _run_ffprobe(
+        filepath,
+        ["-select_streams", "a:0", "-show_entries", "stream=sample_rate", "-of", "default=noprint_wrappers=1:nokey=1"],
+        timeout=3,
+        label="sample-rate",
+    )
+    if raw is None or not raw:
+        return None
     try:
-        value = int(first_line[0].strip())
+        value = int(raw)
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
 
 
 def _probe_duration_with_ffprobe(filepath: Path) -> Optional[float]:
+    raw = _run_ffprobe(
+        filepath,
+        ["-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1"],
+        timeout=5,
+        label="duration",
+    )
+    if raw is None or not raw:
+        return None
     try:
-        completed = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(filepath),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-    except Exception as e:
-        logger.debug(f"ffprobe duration probe failed for {filepath}: {e}")
-        return None
-
-    if completed.returncode != 0:
-        stderr = (completed.stderr or "").strip()
-        if stderr:
-            logger.debug(f"ffprobe duration probe returned {completed.returncode} for {filepath}: {stderr}")
-        return None
-
-    first_line = (completed.stdout or "").strip().splitlines()
-    if not first_line:
-        return None
-
-    try:
-        value = float(first_line[0].strip())
+        value = float(raw)
     except (TypeError, ValueError):
         return None
     return value if value > 0.0 else None
@@ -737,35 +713,12 @@ class LibraryScanner:
         if not tracks:
             return []
 
-        # Pre-scan: detect compilations (same album name, different artists, no album_artist)
-        _album_artists: Dict[str, set] = {}
-        for t in tracks:
-            an = (t.album or "").strip()
-            aa = (t.album_artist or "").strip()
-            if not an or aa:
-                continue
-            _album_artists.setdefault(an.lower(), set())
-            ar = (t.artist or "").strip()
-            if ar:
-                _album_artists[an.lower()].add(ar.lower())
-
-        _compilation_albums = {name for name, artists in _album_artists.items() if len(artists) > 1}
+        compilation_albums = _compilation_albums_for_tracks(tracks)
 
         albums = OrderedDict()
 
         for track in tracks:
-            album_name = (track.album or "").strip()
-            album_artist = (track.album_artist or "").strip()
-
-            if not album_name:
-                # Loose tracks without album tag → 'Various'
-                album_name = "Various"
-                album_artist = "Various"
-            elif not album_artist:
-                if album_name.lower() in _compilation_albums:
-                    album_artist = "Various Artists"
-                else:
-                    album_artist = (track.artist or "").strip() or "Various Artists"
+            album_name, album_artist = _album_identity(track, compilation_albums)
 
             key = f"{album_artist.lower()}::{album_name.lower()}"
 
@@ -855,31 +808,11 @@ class LibraryScanner:
         """
         tracks = self.get_tracks(authoritative=authoritative)
 
-        # Same compilation detection as get_albums()
-        _album_artists: Dict[str, set] = {}
-        for t in tracks:
-            an = (t.album or "").strip()
-            aa = (t.album_artist or "").strip()
-            if not an or aa:
-                continue
-            _album_artists.setdefault(an.lower(), set())
-            ar = (t.artist or "").strip()
-            if ar:
-                _album_artists[an.lower()].add(ar.lower())
-        _compilation_albums = {name for name, artists in _album_artists.items() if len(artists) > 1}
+        compilation_albums = _compilation_albums_for_tracks(tracks)
 
         result = []
         for track in tracks:
-            album_name = (track.album or "").strip()
-            album_artist = (track.album_artist or "").strip()
-            if not album_name:
-                album_name = "Various"
-                album_artist = "Various"
-            elif not album_artist:
-                if album_name.lower() in _compilation_albums:
-                    album_artist = "Various Artists"
-                else:
-                    album_artist = (track.artist or "").strip() or "Various Artists"
+            album_name, album_artist = _album_identity(track, compilation_albums)
             if _album_id(album_artist, album_name) == album_id:
                 result.append(track)
         return sorted(result, key=_track_sort_key)
@@ -921,6 +854,34 @@ class LibraryScanner:
             payload["favorite"] = bool(stat.get("favorite"))
             result.append(payload)
         return result
+
+
+def _compilation_albums_for_tracks(tracks: List[Track]) -> set[str]:
+    """Album names that appear with >1 distinct artist and no album_artist."""
+    album_artists: Dict[str, set[str]] = {}
+    for track in tracks:
+        album_name = (track.album or "").strip()
+        album_artist_tag = (track.album_artist or "").strip()
+        if not album_name or album_artist_tag:
+            continue
+        album_artists.setdefault(album_name.lower(), set())
+        artist = (track.artist or "").strip()
+        if artist:
+            album_artists[album_name.lower()].add(artist.lower())
+    return {name for name, artists in album_artists.items() if len(artists) > 1}
+
+
+def _album_identity(track: Track, compilation_albums: set[str]) -> tuple[str, str]:
+    """Effective (album_name, album_artist) after Various/compilation rules."""
+    album_name = (track.album or "").strip()
+    album_artist = (track.album_artist or "").strip()
+    if not album_name:
+        return "Various", "Various"
+    if not album_artist:
+        if album_name.lower() in compilation_albums:
+            return album_name, "Various Artists"
+        return album_name, (track.artist or "").strip() or "Various Artists"
+    return album_name, album_artist
 
 
 def _album_id(artist: str, album: str) -> str:

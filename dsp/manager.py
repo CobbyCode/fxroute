@@ -409,10 +409,6 @@ class DSPManager:
         return self.normalize_effects_extras(sections)
 
     @staticmethod
-    def _clean_preset_name(value: Any, fallback: str = "") -> str:
-        return clean_name(value, fallback)
-
-    @staticmethod
     def _native_preset(chain: Optional[List[dict]] = None,
                        source_presets: Optional[List[str]] = None) -> Dict[str, Any]:
         metadata = {}
