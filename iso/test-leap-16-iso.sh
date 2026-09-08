@@ -804,10 +804,9 @@ rpm -q plasma6-session sddm-qt6 MozillaFirefox >/dev/null
 test ! -e /etc/zypp/repos.d/google-chrome.repo
 test -f /etc/sddm.conf.d/10-fxroute-autologin.conf
 grep -Fxq "User=$account" /etc/sddm.conf.d/10-fxroute-autologin.conf
-grep -Fxq 'Session=plasmawayland' /etc/sddm.conf.d/10-fxroute-autologin.conf
+grep -Fxq 'Session=default.desktop' /etc/sddm.conf.d/10-fxroute-autologin.conf
 systemctl is-enabled display-manager.service
-systemctl is-enabled sddm.service
-test "$(readlink -f /etc/systemd/system/display-manager.service)" = /usr/lib/systemd/system/sddm.service
+test "$(readlink -f /etc/systemd/system/display-manager.service)" = /usr/lib/systemd/system/display-manager-legacy.service
 test -f /etc/systemd/logind.conf.d/10-fxroute-appliance.conf
 grep -Fxq 'HandleLidSwitch=ignore' /etc/systemd/logind.conf.d/10-fxroute-appliance.conf
 test -f /usr/share/wallpapers/fxroute-wallpaper.png
@@ -835,11 +834,11 @@ firefox_policy="$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 3 -path '*/
 test -n "$firefox_policy"
 grep -Fq 'http://127.0.0.1:8000/' "$firefox_policy"
 for _ in $(seq 1 90); do
-  if systemctl is-active --quiet sddm.service; then
+  if systemctl is-active --quiet display-manager.service; then
     session_id=""
     while read -r candidate; do
       [[ -n "$candidate" ]] || continue
-      if [[ "$(loginctl show-session "$candidate" -p Type --value)" = wayland ]]; then
+      if [[ "$(loginctl show-session "$candidate" -p Type --value)" = x11 ]]; then
         session_id="$candidate"
         break
       fi
@@ -850,17 +849,17 @@ for _ in $(seq 1 90); do
   fi
   sleep 2
 done
-systemctl is-active sddm.service
+systemctl is-active display-manager.service
 session_id=""
 while read -r candidate; do
   [[ -n "$candidate" ]] || continue
-  if [[ "$(loginctl show-session "$candidate" -p Type --value)" = wayland ]]; then
+  if [[ "$(loginctl show-session "$candidate" -p Type --value)" = x11 ]]; then
     session_id="$candidate"
     break
   fi
 done < <(loginctl list-sessions --no-legend | awk -v user="$account" '$3 == user {print $1}')
 test -n "$session_id"
-test "$(loginctl show-session "$session_id" -p Type --value)" = wayland
+test "$(loginctl show-session "$session_id" -p Type --value)" = x11
 test -x /usr/local/bin/fxroute-desktop-launcher
 test -f "$HOME/.config/autostart/fxroute.desktop"
 grep -Fxq 'Exec=/usr/local/bin/fxroute-desktop-launcher' "$HOME/.config/autostart/fxroute.desktop"
