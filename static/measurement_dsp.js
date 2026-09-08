@@ -12,6 +12,8 @@
 
     const HYBRID_MIN_FULL_HZ = 180;
     const HYBRID_LINEAR_FULL_HZ = 550;
+    const MEASUREMENT_CONVOLVER_ENERGY_GRID_POINTS = 512;
+    const MEASUREMENT_CONVOLVER_ENERGY_SAFETY_MARGIN_DB = 1;
 
     function measurementSmoothingHalfWindowOctaves(mode = '1/6-oct') {
         switch (String(mode || '1/6-oct')) {
@@ -94,12 +96,31 @@
         };
     }
 
+    function getMeasurementConvolverEnergyGainDb(analysis, rangeStartHz = 20, rangeEndHz = 20000) {
+        // Log-weighted energy gain of the unattenuated correction shape:
+        // the fixed log-frequency grid gives every octave equal weight
+        // (equivalent to 1/f weighting per Hz), power enters via |H(f)|^2.
+        const corrections = analysis?.corrections || [];
+        if (!corrections.length) return 0;
+        const startHz = Math.min(20000, Math.max(20, Number(rangeStartHz) || 20));
+        const endHz = Math.min(20000, Math.max(20, Number(rangeEndHz) || 20000));
+        if (!(endHz > startHz)) return 0;
+        let powerSum = 0;
+        for (let index = 0; index < MEASUREMENT_CONVOLVER_ENERGY_GRID_POINTS; index += 1) {
+            const frequency = startHz * ((endHz / startHz) ** ((index + 0.5) / MEASUREMENT_CONVOLVER_ENERGY_GRID_POINTS));
+            const magnitude = 10 ** (interpolateMeasurementConvolverCorrection(analysis, frequency, 0) / 20);
+            powerSum += magnitude * magnitude;
+        }
+        if (!(powerSum > 0)) return 0;
+        return 10 * Math.log10(powerSum / MEASUREMENT_CONVOLVER_ENERGY_GRID_POINTS);
+    }
+
     function analyzeMeasurementConvolverCorrections(points = [], curvePoints = [[20, 0], [20000, 0]], settings = {}) {
         const maxBoostDb = Number(settings.maxBoostDb ?? 6);
         const maxCutDb = Number(settings.maxCutDb ?? -9);
         const dipGuard = String(settings.dipGuard || 'off');
-        const parsedSafetyMargin = settings.safetyMarginDb == null ? NaN : Number(settings.safetyMarginDb);
-        const safetyMarginDb = Math.max(0, Number.isFinite(parsedSafetyMargin) ? parsedSafetyMargin : 1);
+        const rangeStartHz = Math.min(20000, Math.max(20, Number(settings.rangeStartHz) || 20));
+        const rangeEndHz = Math.min(20000, Math.max(20, Number(settings.rangeEndHz) || 20000));
         const autoGainEnabled = settings.autoGainEnabled !== false;
         const confidencePoints = Array.isArray(settings.correctionConfidence) ? settings.correctionConfidence : [];
         const requestedCorrections = points.map(([frequency, measuredDb]) => {
@@ -123,9 +144,12 @@
         });
         const maxPositive = Math.max(0, ...corrections.map((item) => item.correctionDb));
         const minCorrection = corrections.length ? Math.min(...corrections.map((item) => item.correctionDb)) : 0;
-        const autoGainDb = autoGainEnabled ? Math.round((-(maxPositive + safetyMarginDb)) * 2) / 2 : 0;
+        const energyGainDb = getMeasurementConvolverEnergyGainDb({ corrections }, rangeStartHz, rangeEndHz);
+        const autoGainDb = autoGainEnabled
+            ? Math.min(0, Math.round((-(energyGainDb + MEASUREMENT_CONVOLVER_ENERGY_SAFETY_MARGIN_DB)) * 2) / 2) + 0
+            : 0;
         const lowBassBoost = corrections.some((item) => item.frequency < 40 && item.correctionDb > 0.25);
-        return { corrections, maxPositive, minCorrection, autoGainDb, lowBassBoost, dipGuardReductionMaxDb: Math.round(dipGuardReductionMaxDb * 10) / 10 };
+        return { corrections, maxPositive, minCorrection, energyGainDb: Math.round(energyGainDb * 100) / 100, autoGainDb, lowBassBoost, dipGuardReductionMaxDb: Math.round(dipGuardReductionMaxDb * 10) / 10 };
     }
 
     function getMeasurementCorrectionConfidence(points = [], frequencyHz = 20) {
@@ -547,6 +571,7 @@
         applyMeasurementConvolverDipGuard,
         getMeasurementCorrectionConfidence,
         analyzeMeasurementConvolverCorrections,
+        getMeasurementConvolverEnergyGainDb,
         interpolateMeasurementConvolverCorrection,
         buildMeasurementConvolverMagnitudeBins,
         buildMeasurementConvolverLinearImpulseFromMagnitudes,
