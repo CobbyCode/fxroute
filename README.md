@@ -4,6 +4,12 @@ FXRoute is a browser-based control surface for a Linux hi-fi audio box. One smal
 
 Radio, the music library, the streaming providers, the native DSP engine, and the room-measurement tools all in one interface. You browse and play from the couch; FXRoute owns the audio session, the DSP chain, and the output routing on the audio machine.
 
+## Download
+
+The central download and release page is [FXRoute releases](https://github.com/CobbyCode/fxroute/releases) — grab the current Raspberry Pi 4 / Pi 5 SD-card image or the x86_64 installer there, write it to disk, boot, and finish the web onboarding.
+
+No new hardware? Try the [web demo](#web-demo) first. Already running Linux on the audio machine? Use the [installer below](#install) instead.
+
 ## Web demo
 
 Try the interface without any audio hardware. The demo is the real FXRoute frontend — same checkout, same UI — with some simulated backend for playback, DSP, radio, and measurement, so every view is explorable in a normal browser.
