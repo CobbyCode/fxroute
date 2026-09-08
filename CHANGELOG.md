@@ -2,10 +2,30 @@
 
 ## 1.0-beta2 (2026-09-08)
 
-Second public beta, built from tag `v1.0-beta2` (commit `8a5db19`).
+Second public beta, built from tag `v1.0-beta2` (commit `2000270`).
 Distribution channels unchanged: web demo on GitHub Pages, Raspberry Pi 4/5
 images via GitHub Release, x86_64 Leap 16 ISO via SourceForge. Khadas/VIM1S
 stays internal and gets no public image.
+
+### Release provenance
+
+- Built from tag `v1.0-beta2` (commit `2000270`, `main`).
+- Verified: Pi 4/Pi 5 image reaches `basic.target` under QEMU (`raspi4b`);
+  the Leap 16 ISO installed both the headless and the desktop profile in
+  QEMU/KVM and the installed FXRoute served `/api/status` with the native
+  DSP sink active; the desktop profile also passed the reboot and
+  Plasma X11/Firefox kiosk checks.
+- SHA-256:
+  - `fxroute-1.0-beta2-rpi4-trixie-current.img.xz` —
+    `95f713bb39f10d872f3fd4e0c5064b085e37828148844e9f40dfd79a75833b0d`
+  - `fxroute-1.0-beta2-rpi5-trixie-current.img.xz` —
+    `885bd970075f12fef16e2fbe344c703d294b33b6d8b82a687176f87fae38de5a`
+  - `fxroute-1.0-beta2-x86_64-leap16.iso` —
+    `56883f7f092946e5e68a0d6b86b7abff1771ac19562c7ee42af979035a2ba3f6`
+- The desktop QEMU verifier was aligned with the shipped X11 appliance
+  (`Session=default.desktop`, `display-manager-legacy`, `x11` session type)
+  and hardened against pipefail/find edge cases; no image or ISO content
+  changed as a result (post-tag tooling fixes on `main`).
 
 ### Convolver / DSP
 - Preserved dots inside convolver IR kernel names (imported kernel files keep
