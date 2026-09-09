@@ -39,7 +39,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
             "peak_monitor", "manager",
             "playback_transition_epoch", "current_track_info",
             "dsp_manager", "player_instance", "dsp_runtime",
-            "_wait_for_player_current_file",
         )
         self.originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
         coordinator = main.peak_monitor_coordinator

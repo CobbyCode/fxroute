@@ -2655,7 +2655,9 @@
             const resp = await fetch('/api/play', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ source: 'tidal', track_id: startId, queue_track_ids: trackIds }),
+                // Carry the current shuffle intent like library plays do, so a
+                // fresh TIDAL queue does not silently clear an enabled shuffle.
+                body: JSON.stringify({ source: 'tidal', track_id: startId, queue_track_ids: trackIds, shuffle: !!(state.lastData.tidal || {}).shuffle }),
             });
             const data = await resp.json().catch(() => null);
             if (!resp.ok) {

@@ -248,14 +248,14 @@ class SystemUpdateOriginWiringTests(unittest.TestCase):
             "@app.post(\"/api/system/update\")", "\n@app.post(\"/api/system/restore\")"
         )
         restore_block = self._block(
-            "@app.post(\"/api/system/restore\")", "\n\n\n\n@app.get(\"/api/audio/samplerate\")"
+            "@app.post(\"/api/system/restore\")", "@app.get(\"/api/audio/samplerate\")"
         )
         self.assertIn("_system_update_or_restore", update_block)
         self.assertIn("_system_update_or_restore", restore_block)
 
     def test_restore_passes_the_restore_flag(self):
         restore_block = self._block(
-            "@app.post(\"/api/system/restore\")", "\n\n\n\n@app.get(\"/api/audio/samplerate\")"
+            "@app.post(\"/api/system/restore\")", "@app.get(\"/api/audio/samplerate\")"
         )
         self.assertIn('"--restore"', restore_block)
 

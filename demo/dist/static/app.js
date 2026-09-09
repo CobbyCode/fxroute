@@ -2240,7 +2240,7 @@ async function runFxrouteUpdate() {
 async function restoreFxrouteToPublic() {
     const confirmMsg = [
         'This will reset the FXRoute checkout to the current public release on GitHub. ',
-        'Local source changes will be saved as a patch file in backups/. ',
+        'Tracked source changes will be saved as a patch file and untracked files as an archive, both in backups/. ',
         'User data, music, config, and runtime cache are not affected. ',
         'The service will restart after restore.\n\nContinue?'
     ].join('');
@@ -3067,12 +3067,23 @@ function renderSettingsPanel() {
 // selector shows an explicit disabled loading state instead of a bare
 // "Local" option that reads like a finished, share-less result. A cached
 // list stays visible (stale-while-revalidate) and the select is disabled
-// until the response lands.
+// until the response lands. While a background SMB rescan is running
+// (scanning) and no SMB entry is known yet, the selector shows a disabled
+// "Scanning network shares…" placeholder instead of the local-only list;
+// already-cached SMB entries keep rendering immediately.
 function musicLibrarySelectModel(musicLibrary = {}) {
     const libraries = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries : [];
     if (libraries.length === 0 && musicLibrary.loading) {
         return {
             html: '<option value="">Discovering network shares…</option>',
+            value: '',
+            disabled: true,
+        };
+    }
+    const hasSmb = libraries.some((library) => library && library.type === 'smb');
+    if (musicLibrary.scanning && !hasSmb) {
+        return {
+            html: '<option value="">Scanning network shares…</option>',
             value: '',
             disabled: true,
         };
@@ -3762,8 +3773,9 @@ function renderFooterModeButtons() {
     const track = state.playback.current_track;
     const nativeQueueActive = !!(track && (track.source === 'local' || track.source === 'tidal'));
     const queue = state.playback.queue || {};
-    const showShuffle = nativeQueueActive && Number(queue.count || 0) > 1;
-    const showLoop = nativeQueueActive;
+    const hasActiveQueue = Number(queue.count || 0) > 1;
+    const showShuffle = nativeQueueActive && hasActiveQueue;
+    const showLoop = nativeQueueActive && hasActiveQueue;
     if (shuffleBtn) {
         shuffleBtn.classList.toggle('hidden', !showShuffle);
         shuffleBtn.classList.toggle('active', showShuffle && !!state.library.shuffle);
@@ -5199,7 +5211,7 @@ function updatePlayPauseButton(playbackState) {
 }
 function highlightActiveTrack() {
     if (window.__footerSource === 'spotify') {
-        document.querySelectorAll('.station-card.active, .track-item.active').forEach(item => item.classList.remove('active'));
+        document.querySelectorAll('.station-card.active, .track-item.active, .streaming-result.active').forEach(item => item.classList.remove('active'));
         return;
     }
     // A play request holds its optimistic target until the server confirms the
@@ -5218,8 +5230,9 @@ function highlightActiveTrack() {
             card.classList.remove('active');
         }
     });
-    // Library tracks
-    document.querySelectorAll('.track-item').forEach(item => {
+    // Library tracks (TIDAL catalog rows share the same active language
+    // and id namespace, so the running track highlights there as well).
+    document.querySelectorAll('.track-item, .streaming-result[data-track-id]').forEach(item => {
         const trackId = item.dataset.trackId;
         if (displayTrack && displayTrack.id === trackId) {
             item.classList.add('active');
@@ -7732,7 +7745,11 @@ function setupEffectsActions() {
             window.addEventListener('resize', requestSubwooferPreviewRedrawFromState);
         }
     }
-    // Track focus to avoid resetting input values while user is typing
+    // Track focus to avoid resetting input values while user is typing.
+    // SELECTs are discrete choices (no typing to protect): they save with
+    // the short toggle debounce so live A/B switching applies promptly
+    // instead of restarting the 2000 ms typing debounce on every flip.
+    // Numeric inputs keep the long typing debounce.
     [
         elements.effectsHeadroomGainDb,
         elements.effectsAutogainTargetDb,
@@ -7742,9 +7759,12 @@ function setupEffectsActions() {
         elements.effectsToneEffectMode,
     ].forEach(el => {
         if (!el) return;
+        const valueDebounceMs = el.tagName === 'SELECT'
+            ? EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS
+            : EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS;
         el.addEventListener('focus', () => _activeEditing.add(el));
-        el.addEventListener('input', () => saveEffectsExtrasDebounced(EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS));
-        el.addEventListener('change', () => saveEffectsExtrasDebounced(EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS));
+        el.addEventListener('input', () => saveEffectsExtrasDebounced(valueDebounceMs));
+        el.addEventListener('change', () => saveEffectsExtrasDebounced(valueDebounceMs));
         el.addEventListener('blur', () => {
             _activeEditing.delete(el);
             saveEffectsExtrasDebounced(0); // commit immediately on blur
@@ -10557,14 +10577,6 @@ function scheduleMeasurementGraphRenderForResize() {
     return MeasurementGraph.scheduleMeasurementGraphRenderForResize();
 }
 
-function getSortedNumericValues(values = []) {
-    return MeasurementDsp.getSortedNumericValues(values);
-}
-
-function getValueQuantile(sortedValues = [], quantile = 0.5) {
-    return MeasurementDsp.getValueQuantile(sortedValues, quantile);
-}
-
 function getMeasurementGraphRange(entries = []) {
     return MeasurementDsp.getMeasurementGraphRange(entries);
 }
@@ -10917,7 +10929,7 @@ async function closeHybridMeasurementWizard() {
 }
 
 function renderHybridRoomDiagram(step = {}, mode = 'stereo', complete = false) {
-    return MeasurementFlows.renderHybridRoomDiagram(step = {}, mode = 'stereo', complete = false);
+    return MeasurementFlows.renderHybridRoomDiagram(step, mode, complete);
 }
 
 function renderHybridMeasurementWizard() {
@@ -13298,7 +13310,7 @@ async function switchEffectsPreset() {
 
 // Track which inputs are currently being edited by the user
 const _activeEditing = new Set();
-const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-2, -3, -4, -5, -6]);
+const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-1, -2, -3, -4, -5, -6]);
 const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-12, -15, -18, -23]);
 const EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE = new Set([256, 512, 1024, 2048, 4096, 8192, 16384]);
 const EFFECTS_LOUDNESS_LEGACY_STRENGTHS = new Map([

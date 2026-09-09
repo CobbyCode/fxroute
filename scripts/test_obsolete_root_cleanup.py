@@ -28,12 +28,16 @@ HELPER = ROOT / "scripts" / "fxroute_obsolete_root_cleanup.py"
 REMAINING_ROOT_MODULES = (
     "artist_enrichment.py",
     "config.py",
+    "connection_manager.py",
     "downloader.py",
     "http_errors.py",
+    "http_origin.py",
     "install_info.py",
+    "installer_contract.py",
     "main.py",
     "models.py",
     "safe_http.py",
+    "system_update.py",
     "uploads.py",
     "zip_album.py",
 )
@@ -215,7 +219,7 @@ class ObsoleteRootManifestCompletenessTests(unittest.TestCase):
         overlap = sorted(set(cleanup.OBSOLETE_ROOT_MODULES) & set(REMAINING_ROOT_MODULES))
         self.assertEqual(overlap, [], f"manifest must not list remaining modules: {overlap}")
 
-    def test_remaining_root_modules_are_the_expected_nine(self):
+    def test_remaining_root_modules_match_the_expected_list(self):
         tracked = subprocess.run(
             ["git", "-C", str(ROOT), "ls-files", "*.py"],
             capture_output=True,

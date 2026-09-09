@@ -453,6 +453,36 @@ test ! -e "$HOME/.local/bin/spotifyd"
         self.assertIn("6bcdb2616f339b7905fc58f48edf7e3bc2e0e9eadc1ce6235b60c7fdf34b804c", self.install)
         self.assertIn("adade56509544c00187476d58acef78538d3e5d475370263d98397dc61f200c9", self.install)
 
+    def test_qobuz_install_survives_a_failed_qbzd_download(self):
+        """A transient prebuilt-download failure must not abort the installer.
+
+        install_qobuz() calls install_qbzd_binary() bare (as in production,
+        under set -Eeuo pipefail); it must tolerate the failure itself
+        instead of letting errexit kill the whole run.
+        """
+        harness = f"""
+set -Eeuo pipefail
+{extract_function(self.install, "install_qobuz")}
+qbzd_binary_path() {{ printf ''; }}
+qbzd_arch_for_host() {{ return 0; }}
+install_qbzd_binary() {{ return 1; }}
+warn() {{ :; }}
+QBZD_BINARY_IDENTITY_CHANGED=0
+QOBUZ_PROVIDER_STATUS=''
+install_qobuz
+printf 'caller-tolerated status=<%s>\\n' "$QOBUZ_PROVIDER_STATUS"
+"""
+        result = subprocess.run(
+            ["bash", "-c", harness],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "caller-tolerated status=<unavailable; prebuilt download or verification failed>",
+            result.stdout,
+        )
+
     def test_new_spotify_apt_source_refreshes_package_metadata(self):
         body = extract_function(self.install, "install_spotify_desktop_apt")
         self.assertIn("SPOTIFY_DESKTOP_REPO_INSTALLED_BY_FXROUTE=1", body)

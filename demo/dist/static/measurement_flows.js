@@ -185,8 +185,25 @@ async function cancelAutoSubOptimize() {
 }
 
 
+function isCurrentAutoSubPoll(jobId, generation) {
+    const live = deps.getState().measurement || {};
+    return Number(live.jobGeneration || 0) === Number(generation || 0)
+        && live.activeMeasurementKind === 'auto_sub'
+        && String(live.autoSubJobId || '') === String(jobId);
+}
+
+
+function isCurrentHybridPoll(jobId, generation) {
+    const live = deps.getState().measurement || {};
+    return Number(live.jobGeneration || 0) === Number(generation || 0)
+        && live.activeMeasurementKind === 'hybrid'
+        && String(live.activeJobId || '') === String(jobId);
+}
+
+
 async function pollAutoSubJob(jobId) {
     const measurementState = deps.getState().measurement || {};
+    const pollGeneration = Number(measurementState.jobGeneration || 0);
     const statusEl = deps.getElements().measurementAutoSubStatus;
     const startedAt = Date.now();
     const longRunningAfterMs = 10 * 60 * 1000;
@@ -194,6 +211,7 @@ async function pollAutoSubJob(jobId) {
     let consecutiveErrors = 0;
     const maxConsecutiveErrors = 40;
     while (true) {
+        if (!isCurrentAutoSubPoll(jobId, pollGeneration)) return;
         await deps.sleep(500);
         if (Date.now() - startedAt >= maxRunningMs) {
             measurementState.statusText = 'Auto Sub Optimize timed out while waiting for the job';
@@ -203,6 +221,7 @@ async function pollAutoSubJob(jobId) {
         try {
             const resp = await api.pollAutoSubJob(jobId);
             const data = await resp.json().catch(() => ({}));
+            if (!isCurrentAutoSubPoll(jobId, pollGeneration)) return;
             if (!resp.ok) {
                 if (resp.status === 404 || resp.status === 410) {
                     measurementState.statusText = 'Auto Sub Optimize job is no longer available';
@@ -275,6 +294,7 @@ async function pollAutoSubJob(jobId) {
                 return;
             }
         } catch (error) {
+            if (!isCurrentAutoSubPoll(jobId, pollGeneration)) return;
             consecutiveErrors += 1;
             console.warn('pollAutoSubJob error', error);
             if (consecutiveErrors >= maxConsecutiveErrors) {
@@ -697,19 +717,23 @@ async function runHybridWizardStep(step) {
     wizard.jobId = jobId;
     deps.getState().measurement.activeJobId = jobId;
     deps.getState().measurement.activeMeasurementKind = 'hybrid';
+    const pollGeneration = Number(deps.getState().measurement?.jobGeneration || 0);
     if (wizard.cancelRequested) {
         await api.cancelMeasurementJob(jobId).catch(() => null);
     }
 
     for (let attempt = 0; attempt < 360; attempt += 1) {
+        if (!isCurrentHybridPoll(jobId, pollGeneration)) return false;
         let poll;
         let payload = {};
         try {
             poll = await api.pollMeasurementJob(jobId);
             payload = await poll.json().catch(() => ({}));
         } catch (_pollError) {
+            if (!isCurrentHybridPoll(jobId, pollGeneration)) return false;
             poll = { ok: false, status: 0 };
         }
+        if (!isCurrentHybridPoll(jobId, pollGeneration)) return false;
         if (!poll.ok) {
             if (poll.status === 404 || poll.status === 410) {
                 throw new Error(deps.formatTransitionErrorDetail(payload.detail, 'Failed to fetch advanced measurement'));

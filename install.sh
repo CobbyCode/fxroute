@@ -3978,7 +3978,11 @@ install_qobuz() {
     return 0
   fi
 
-  install_qbzd_binary
+  if ! install_qbzd_binary; then
+    QOBUZ_PROVIDER_STATUS="unavailable; prebuilt download or verification failed"
+    warn "qbzd prebuilt could not be installed; leaving the provider unavailable"
+    return 0
+  fi
   if [[ $QBZD_BINARY_IDENTITY_CHANGED -eq 1 ]]; then
     QOBUZ_PROVIDER_STATUS="owned binary changed; preserved"
     return 0
