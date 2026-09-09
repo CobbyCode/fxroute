@@ -3472,6 +3472,7 @@ async def play_track(req: PlayRequest):
             loop=req.loop,
             reshuffle=not preserve_queue_order,
             tracks=tracks,
+            active_shuffle=playback_queue.queue.shuffle,
         )
         track_info = queue_candidate.track
     if not track_info or not track_info.get("url"):

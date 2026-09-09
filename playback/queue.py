@@ -260,7 +260,7 @@ class PlaybackQueue:
             "native_queue_shuffle": False,
         }
 
-    def prepare_local_queue(self, track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, reshuffle: bool = True, tracks: Optional[list] = None) -> QueueCandidate:
+    def prepare_local_queue(self, track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, reshuffle: bool = True, tracks: Optional[list] = None, active_shuffle: bool | None = None) -> QueueCandidate:
         """Build the requested queue as an uncommitted candidate.
 
         Metadata-only preparation: the committed queue state is untouched
@@ -269,6 +269,12 @@ class PlaybackQueue:
 
         ``tracks`` may be passed in from async callers that already offloaded
         the scan-capable ``library_scanner.get_tracks()`` read to a worker.
+
+        ``active_shuffle`` carries the committed shuffle state for plays that
+        keep the existing order (``reshuffle=False``): the candidate then
+        adopts it instead of the possibly stale request flag.  Shuffle on/off
+        belongs to the dedicated toggle endpoint; a same-queue play must
+        never flip it as a side effect.
         """
         if tracks is None:
             tracks = self._deps.get_tracks()
@@ -299,6 +305,8 @@ class PlaybackQueue:
 
         queue = ordered_tracks if len(ordered_tracks) > 1 else []
         original = original_tracks if len(original_tracks) > 1 else []
+        if active_shuffle is not None and not reshuffle:
+            shuffle = bool(active_shuffle)
         # A homogeneous local queue is safe to hand to MPV only after the
         # Coordinator has committed the common rate/DSP/graph/gate state.  The
         # request carries the immutable queue snapshot; the mode becomes

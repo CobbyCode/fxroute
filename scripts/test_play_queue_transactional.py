@@ -520,6 +520,93 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self._restore(originals)
 
+    async def test_same_queue_play_keeps_active_shuffle_despite_stale_ui_flag(self):
+        # Regression: a same-queue album click adopts the existing queue
+        # (preserve, no reshuffle) and must then also adopt the committed
+        # shuffle state instead of a possibly stale UI flag.  Shuffle on/off
+        # belongs to the dedicated toggle endpoint.
+        queue_a = [_track("a"), _track("b"), _track("c")]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        try:
+            main.playback_state.current_playback_owner = "local"
+            playback_queue.queue.shuffle = True
+
+            async def succeed(request):
+                main.runtime.player_instance.state.update({
+                    "current_file": request.target_url,
+                    "paused": False,
+                    "playing": True,
+                    "ended": False,
+                    "position": 1.0,
+                })
+                return SimpleNamespace(
+                    target_rate=request.target_rate,
+                    committed=True,
+                    transition_id="tr-test",
+                )
+
+            with self._patch_context(succeed):
+                # Stale UI flag off while the committed queue is shuffled.
+                result = await self._play(track_id="b", queue_track_ids=["a", "b", "c"])
+
+            self.assertEqual(result["track"]["id"], "b")
+            self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["a", "b", "c"])
+            self.assertEqual(playback_queue.queue.index, 1)
+            self.assertTrue(playback_queue.queue.shuffle)
+            self.assertEqual(main.playback_state.current_track_info["id"], "b")
+            self.assertEqual(main.playback_state.current_playback_owner, "local")
+            self.assertNotIn("playlist_pos", main.runtime.player_instance.state)
+        finally:
+            self._restore(originals)
+
+    async def test_same_queue_play_keeps_shuffle_off_despite_stale_ui_flag(self):
+        # Mirror case: a stale UI flag on must not enable shuffle on a
+        # same-queue play that keeps the existing order.
+        queue_a = [_track("a"), _track("b"), _track("c")]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        try:
+            main.playback_state.current_playback_owner = "local"
+            playback_queue.queue.shuffle = False
+
+            async def succeed(request):
+                main.runtime.player_instance.state.update({
+                    "current_file": request.target_url,
+                    "paused": False,
+                    "playing": True,
+                    "ended": False,
+                    "position": 1.0,
+                })
+                return SimpleNamespace(
+                    target_rate=request.target_rate,
+                    committed=True,
+                    transition_id="tr-test",
+                )
+
+            with self._patch_context(succeed):
+                result = await self._play(track_id="b", queue_track_ids=["a", "b", "c"], shuffle=True)
+
+            self.assertEqual(result["track"]["id"], "b")
+            self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["a", "b", "c"])
+            self.assertFalse(playback_queue.queue.shuffle)
+            self.assertEqual(main.playback_state.current_playback_owner, "local")
+        finally:
+            self._restore(originals)
+
+    def test_prepare_without_active_shuffle_keeps_requested_flag(self):
+        # Legacy contract (e.g. the selection sync path passes no active
+        # state): without active_shuffle the requested flag is honored.
+        candidate = playback_queue.queue.prepare_local_queue(
+            "a", ["a", "b", "c"], shuffle=True, loop=False, reshuffle=False,
+            tracks=_Scanner(["a", "b", "c"]).get_tracks(),
+        )
+        self.assertTrue(candidate.shuffle)
+        self.assertEqual([item["id"] for item in candidate.queue], ["a", "b", "c"])
+        candidate = playback_queue.queue.prepare_local_queue(
+            "a", ["a", "b", "c"], shuffle=False, loop=False, reshuffle=False,
+            tracks=_Scanner(["a", "b", "c"]).get_tracks(),
+        )
+        self.assertFalse(candidate.shuffle)
+
     def _patch_context(self, transition, *, radio_stations=None):
         from contextlib import ExitStack
 
