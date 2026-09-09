@@ -3067,12 +3067,23 @@ function renderSettingsPanel() {
 // selector shows an explicit disabled loading state instead of a bare
 // "Local" option that reads like a finished, share-less result. A cached
 // list stays visible (stale-while-revalidate) and the select is disabled
-// until the response lands.
+// until the response lands. While a background SMB rescan is running
+// (scanning) and no SMB entry is known yet, the selector shows a disabled
+// "Scanning network shares…" placeholder instead of the local-only list;
+// already-cached SMB entries keep rendering immediately.
 function musicLibrarySelectModel(musicLibrary = {}) {
     const libraries = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries : [];
     if (libraries.length === 0 && musicLibrary.loading) {
         return {
             html: '<option value="">Discovering network shares…</option>',
+            value: '',
+            disabled: true,
+        };
+    }
+    const hasSmb = libraries.some((library) => library && library.type === 'smb');
+    if (musicLibrary.scanning && !hasSmb) {
+        return {
+            html: '<option value="">Scanning network shares…</option>',
             value: '',
             disabled: true,
         };

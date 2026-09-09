@@ -118,6 +118,40 @@ check('pending selection disables the select', () => {
     assert.equal(m.disabled, true);
 });
 
+check('scanning without smb entry shows disabled scanning placeholder', () => {
+    const m = model({
+        active_id: 'local',
+        libraries: [
+            { id: 'local', type: 'local', label: 'Local — Music' },
+            { id: 'manual', type: 'action', label: 'Add network share manually…' },
+        ],
+        pending: false,
+        loading: false,
+        scanning: true,
+    });
+    assert.match(m.html, /Scanning network shares/);
+    assert.equal(m.value, '');
+    assert.equal(m.disabled, true);
+    assert.doesNotMatch(m.html, /value="local"/);
+});
+
+check('scanning with cached smb entry keeps the list visible', () => {
+    const m = model({
+        active_id: 'local',
+        libraries: [
+            { id: 'local', type: 'local', label: 'Local — Music' },
+            { id: 'smb:192.168.178.100:Music-Demo', type: 'smb', label: 'SMB — 192 / Music-Demo' },
+            { id: 'manual', type: 'action', label: 'Add network share manually…' },
+        ],
+        pending: false,
+        loading: false,
+        scanning: true,
+    });
+    assert.match(m.html, /Music-Demo/);
+    assert.equal(m.value, 'local');
+    assert.equal(m.disabled, false);
+});
+
 if (failures) {
     console.error(`${failures} case(s) failed`);
     process.exit(1);
