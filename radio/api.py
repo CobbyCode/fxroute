@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from safe_http import RADIO_BROWSER_FETCH_MAX_BYTES, safe_get
 
+from library.core import path_within_root
 from radio.stations import (
     add_catalog_station,
     add_station,
@@ -109,22 +110,13 @@ class StationImportItem(BaseModel):
     genre: str = ""
 
 
-def _path_within_root(path: Path, root: Path) -> bool:
-    try:
-        resolved_path = path.resolve()
-        resolved_root = root.resolve()
-    except Exception:
-        return False
-    return resolved_path == resolved_root or resolved_root in resolved_path.parents
-
-
 def _station_art_url_if_available(url: Optional[str]) -> str:
     value = str(url or "").strip()
     if not value:
         return ""
     if value.startswith("/static/station-art/"):
         art_path = (STATIC_DIR / "station-art" / Path(value).name).resolve()
-        if not _path_within_root(art_path, STATIC_DIR / "station-art") or not art_path.is_file():
+        if not path_within_root(art_path, STATIC_DIR / "station-art") or not art_path.is_file():
             return ""
     return value
 

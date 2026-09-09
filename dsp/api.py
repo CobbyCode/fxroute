@@ -101,21 +101,6 @@ def _deps() -> DspApiDeps:
     return _runtime.deps
 
 
-def _path_within_root(path: Path, root: Path) -> bool:
-    """Thin wrapper: path containment check lives in library (REFACTOR-007)."""
-    return path_within_root(path, root)
-
-
-def _dedupe_archive_name(name: str, used_names: set[str]) -> str:
-    """Thin wrapper: archive name deduplication lives in zip_album (REFACTOR-008)."""
-    return zip_album.dedupe_archive_name(name, used_names)
-
-
-def _is_safe_relative_zip_path(name: str) -> Optional[Path]:
-    """Thin wrapper: ZIP traversal protection lives in zip_album (REFACTOR-008)."""
-    return zip_album.is_safe_relative_zip_path(name)
-
-
 def _parse_effects_extras_from_json(body: dict) -> dict:
     """Thin wrapper: effects extras parsing lives in effects_extras (REFACTOR-010)."""
     return parse_effects_extras_from_json(body)
@@ -335,7 +320,7 @@ async def download_dsp_preset_file(preset_name: str):
     if not preset:
         raise HTTPException(status_code=404, detail="Preset not found")
     preset_path = Path(str(preset.get("path") or "")).resolve()
-    if not _path_within_root(preset_path, dsp_mgr.output_dir):
+    if not path_within_root(preset_path, dsp_mgr.output_dir):
         raise HTTPException(status_code=403, detail="Preset path outside DSP preset directory")
     if not preset_path.is_file():
         raise HTTPException(status_code=404, detail="Preset file missing")
@@ -355,9 +340,9 @@ async def download_dsp_preset_file(preset_name: str):
             with zipfile.ZipFile(temp_zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
                 archive.write(preset_path, arcname="preset.json")
                 for ir_path in ir_paths:
-                    if ir_path.is_file() and _path_within_root(ir_path.resolve(), dsp_mgr.irs_dir):
-                        archive.write(ir_path, arcname=_dedupe_archive_name(ir_path.name, used_names))
-                        archive.write(ir_path, arcname=_dedupe_archive_name(f"{ir_path.stem}.wav", used_names))
+                    if ir_path.is_file() and path_within_root(ir_path.resolve(), dsp_mgr.irs_dir):
+                        archive.write(ir_path, arcname=zip_album.dedupe_archive_name(ir_path.name, used_names))
+                        archive.write(ir_path, arcname=zip_album.dedupe_archive_name(f"{ir_path.stem}.wav", used_names))
                 manifest = {
                     "type": "fxroute-preset-bundle",
                     "version": 1,
@@ -627,7 +612,7 @@ async def import_dsp_preset_bundle(
             for member in archive.infolist():
                 if member.is_dir():
                     continue
-                safe_relative = _is_safe_relative_zip_path(member.filename)
+                safe_relative = zip_album.is_safe_relative_zip_path(member.filename)
                 if safe_relative is None:
                     raise zip_album.ZipLimitError(
                         f"Unsafe ZIP member path: {member.filename!r}"

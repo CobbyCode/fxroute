@@ -7,8 +7,6 @@
 - zip_album.is_safe_relative_zip_path
 - zip_album.extract_zip_album
 
-plus wrapper parity against dsp_api._dedupe_archive_name and
-dsp_api._is_safe_relative_zip_path.
 Tests use real temporary ZIP files (zipfile, tmp dirs).
 """
 import sys
@@ -20,8 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import main
-import dsp.api as dsp_api
+import main  # noqa: F401 - ensure app modules load
 from fastapi import HTTPException
 from zip_album import (
     choose_unique_dir,
@@ -269,41 +266,6 @@ class ExtractZipAlbumTests(unittest.TestCase):
                 extract_zip_album(zip_path, target)
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertEqual(ctx.exception.detail, "Invalid ZIP archive")
-
-
-class WrapperParityTests(unittest.TestCase):
-    def test_dedupe_archive_name_parity(self):
-        used_w: set[str] = set()
-        used_m: set[str] = set()
-        for name in ("track.mp3", "track.mp3", "cover.jpg", "", None):
-            self.assertEqual(
-                dsp_api._dedupe_archive_name(name, used_m),
-                dedupe_archive_name(name, used_w),
-                f"mismatch for {name!r}",
-            )
-        self.assertEqual(used_w, used_m)
-
-    def test_is_safe_relative_zip_path_parity(self):
-        cases = [
-            "album/track.mp3",
-            "album\\track.mp3",
-            "",
-            "///",
-            "../evil.mp3",
-            "a/../../evil.mp3",
-            "/etc/passwd",
-            "C:/evil.mp3",
-            "__MACOSX/x",
-            ".DS_Store",
-            "album/.ds_store",
-            "thumbs.db",
-        ]
-        for case in cases:
-            self.assertEqual(
-                dsp_api._is_safe_relative_zip_path(case),
-                is_safe_relative_zip_path(case),
-                f"mismatch for {case!r}",
-            )
 
 
 if __name__ == "__main__":
