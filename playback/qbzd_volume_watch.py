@@ -47,7 +47,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from playback.remote_volume import RemoteVolumePickupTranslator
+from playback.remote_volume import RemoteVolumePickupTranslator, drain_pending_loop
 
 logger = logging.getLogger(__name__)
 
@@ -215,24 +215,13 @@ class QobuzVolumeWatch:
 
     async def _drain_pending(self) -> None:
         try:
-            while True:
-                if self._debounce_seconds > 0:
-                    await self._sleep(self._debounce_seconds)
-                try:
-                    await self._translator.flush()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    # Keep the latest intent pending and retry after a bounded
-                    # delay; a transient master-write failure must not strand it.
-                    logger.warning("Qobuz journal volume drain failed: %s", exc)
-                    await self._sleep(max(self._debounce_seconds, 0.5))
-                    continue
-                # A journal event can arrive while the async canonical write
-                # above is still in flight. Drain that final delta before the
-                # active drain task is released.
-                if self._translator.pending is None:
-                    break
+            await drain_pending_loop(
+                translator=self._translator,
+                debounce_seconds=self._debounce_seconds,
+                sleep=self._sleep,
+                log_warning=logger.warning,
+                log_prefix="Qobuz journal",
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

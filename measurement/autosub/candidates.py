@@ -115,6 +115,33 @@ async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, 
         logger.exception("Auto-sub: failed to restore original config from snapshot")
         return False
 
+
+async def _restore_original_config_or_fail_job(
+    job: dict[str, Any],
+    original_config_snapshot: dict[str, Any],
+    message: str,
+) -> bool:
+    """Restore the start-of-run config and fail *job* when it cannot be verified.
+
+    Shared body of the runners' ``_restore_original_config`` closures: the
+    verified restore re-applies the original state and reads it back (with
+    one re-apply on a transient mismatch); a persisting mismatch means the
+    run would end with a different topology than it began with, so the job
+    is marked failed instead. *message* names the mode for the user-visible
+    job message and differs per runner by design.
+    """
+    restored = await _restore_auto_sub_original_config(original_config_snapshot)
+    if not restored:
+        prior_detail = str((job.get("error") or {}).get("detail") or "")
+        restore_detail = "original config restore verification failed"
+        job["status"] = "failed"
+        job["message"] = message
+        job["error"] = {
+            "detail": f"{prior_detail}; {restore_detail}" if prior_detail else restore_detail,
+        }
+    return restored
+
+
 async def _auto_sub_sync_dsp_runtime(
     *,
     output_mode: str,

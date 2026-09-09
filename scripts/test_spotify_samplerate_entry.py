@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import itertools
 import sys
 import unittest
 from pathlib import Path
@@ -39,10 +40,10 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 media_readiness,
                 "list_spotify_sink_inputs",
-                side_effect=[
-                    [{"sample_rate": spotify_rate}],
-                    [{"sample_rate": spotify_rate}],
-                ],
+                # Inexhaustible steady observation: the wait must keep seeing
+                # the same rate (a finite list would raise StopIteration once
+                # consumed, which is a double artifact, not a listing failure).
+                side_effect=itertools.repeat([{"sample_rate": spotify_rate}]),
             ),
             patch.object(
                 main,

@@ -154,6 +154,9 @@ class LinkWatcherRateDeferralTests(unittest.IsolatedAsyncioTestCase):
             playback_graph_diagnosis=AsyncMock(return_value=diagnosis),
             request_coordinated_recovery=recovery,
             sleep=one_tick_then_cancel,
+            # Production (main.py) always binds get_output_mode; the stereo
+            # skip added in 9623680 reads it before the overview build.
+            get_output_mode=lambda: "subwoofer-2.2",
         )
         orchestrator = DspOrchestrator(deps)
         task = asyncio.create_task(orchestrator.runtime_link_watch_loop())

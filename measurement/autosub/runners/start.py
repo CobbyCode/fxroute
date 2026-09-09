@@ -92,7 +92,7 @@ async def start_auto_sub_optimize(
         else None
     )
 
-    from audio.samplerate import _load_audio_output_mode, set_audio_output_mode
+    from audio.samplerate import _load_audio_output_mode
 
     # Reject if any measurement is already running
     if measurement_store.has_active_measurement_job():

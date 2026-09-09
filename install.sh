@@ -3688,11 +3688,23 @@ install_qbzd_binary() {
   work="$(mktemp -d -t fxroute-qbzd.XXXXXX)"
   FXROUTE_ACTIVE_TEMP_DIR="$work"
   trap 'rm -rf "${work:-}"' RETURN
-  run_cmd curl -fL --retry 3 -o "$work/$archive" "$archive_url"
-  printf '%s  %s\n' "$checksum" "$work/$archive" | sha256sum -c -
-  run_cmd tar -xzf "$work/$archive" -C "$work"
-  extracted="$(find "$work" -type f -name qbzd -perm -u+x -print -quit)"
-  [[ -n "$extracted" ]] || die "qbzd archive did not contain an executable"
+  if ! run_cmd curl -fL --retry 3 -o "$work/$archive" "$archive_url"; then
+    warn "qbzd archive could not be downloaded"
+    return 1
+  fi
+  if ! printf '%s  %s\n' "$checksum" "$work/$archive" | sha256sum -c -; then
+    warn "qbzd archive checksum mismatch"
+    return 1
+  fi
+  if ! run_cmd tar -xzf "$work/$archive" -C "$work"; then
+    warn "qbzd archive could not be extracted"
+    return 1
+  fi
+  extracted="$(find "$work" -type f -name qbzd -print -quit)"
+  if [[ -z "$extracted" ]]; then
+    warn "qbzd archive did not contain a binary"
+    return 1
+  fi
   chmod -R a+rX "$work"
   run_as_target_user mkdir -p "$HOME/.local/bin"
   run_as_target_user install -m 755 "$extracted" "$HOME/.local/bin/qbzd"

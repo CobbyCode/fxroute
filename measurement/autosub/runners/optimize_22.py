@@ -25,8 +25,8 @@ from ..candidates import (
     _auto_sub_clamped_delay,
     _auto_sub_opposite_polarity,
     _auto_sub_polarity_decision,
-    _restore_auto_sub_original_config,
     _auto_sub_snapshot_copy,
+    _restore_original_config_or_fail_job,
     _auto_sub_sweep_profile,
     _auto_sub_winner_delay_ms,
 )
@@ -46,7 +46,6 @@ from ..measurement import (
     _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
     _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
     _auto_sub_22_snapshot_with_gain,
-    _auto_sub_balance_transfer_deltas,
     _auto_sub_dip_guard_should_veto,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
@@ -54,8 +53,6 @@ from ..measurement import (
     _auto_sub_gain_response_correction,
     _auto_sub_gain_verdict,
     _auto_sub_local_dip_db,
-    _auto_sub_local_dip_gate_sides,
-    _auto_sub_target_residual_raw_db,
     _calculate_auto_sub_gain,
     _capture_auto_sub_main_references,
     _measure_auto_sub_combined_candidate,
@@ -114,16 +111,10 @@ async def _run_auto_sub_22_optimize(
         mismatch means the run would end with a different topology than it
         began with, so the job is marked failed instead.
         """
-        restored = await _restore_auto_sub_original_config(original_config_snapshot)
-        if not restored:
-            prior_detail = str((job.get("error") or {}).get("detail") or "")
-            restore_detail = "original config restore verification failed"
-            job["status"] = "failed"
-            job["message"] = "Auto Sub Optimize 2.2 failed to restore the original config"
-            job["error"] = {
-                "detail": f"{prior_detail}; {restore_detail}" if prior_detail else restore_detail,
-            }
-        return restored
+        return await _restore_original_config_or_fail_job(
+            job, original_config_snapshot,
+            "Auto Sub Optimize 2.2 failed to restore the original config",
+        )
 
     original_sub1 = _auto_sub_22_sub(original_config_snapshot, "sub1")
     original_sub2 = _auto_sub_22_sub(original_config_snapshot, "sub2")
@@ -594,16 +585,6 @@ async def _run_auto_sub_22_optimize(
             )
             if _dsp_runtime() is not None:
                 await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
-        elif (job["auto_gain"].get("configuration_transfer") or {}).get("available"):
-            # The transferred trim is the final single-stage trim for the
-            # accepted configuration; the response-correction step must not
-            # re-close the balance stage's unrealized residual on top of it.
-            correction_verdict = {
-                "accepted": False,
-                "reason": "Balance trim transferred to the accepted alignment; residual re-closure skipped",
-                "channels": {},
-                "step1_retained": True,
-            }
         else:
             correction_plan = _auto_sub_gain_response_correction(
                 job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_22,

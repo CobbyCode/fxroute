@@ -17,7 +17,6 @@ against an exact synthetic two-path room (|Main + Sub * e^{j w d}|).
 
 Same-configuration jobs keep the existing fine-trim behaviour.
 """
-import inspect
 import json
 import math
 import sys
@@ -191,66 +190,6 @@ class BalanceTransferMathTests(unittest.TestCase):
         self.assertTrue(transfer["channels"]["left"]["clamped"])
         self.assertAlmostEqual(transfer["deltas_db"]["left"], -6.0, places=3)
         self.assertAlmostEqual(transfer["channels"]["left"]["implied_total_db"], -11.8, places=3)
-
-
-class BalanceTransferWiringTests(unittest.TestCase):
-    """Runner wiring under the summation-first rule.
-
-    Delay/Polarity must see the unconditioned acoustic summation at the
-    original levels; only the single Gain step afterwards may use
-    Target/Anchor. The legacy transfer helper stays unit-covered above but
-    is no longer part of any runner path: runners must neither apply a
-    pre-alignment balance trim nor call the transfer.
-    """
-
-    def _assert_summation_first(self, fn, mode: str) -> None:
-        source = inspect.getsource(fn)
-        self.assertIn(
-            "summation-first",
-            source,
-            f"{mode} must document the summation-first order",
-        )
-        self.assertNotIn(
-            "_auto_sub_balance_transfer_deltas(",
-            source,
-            f"{mode} must not derive Gain from the legacy balance transfer",
-        )
-        self.assertNotIn(
-            "balance_deltas = _auto_sub_gain_deltas(",
-            source,
-            f"{mode} must not compute a pre-alignment Target trim",
-        )
-        self.assertNotIn(
-            "balanced_snapshot = _auto_sub_22_snapshot_with_gain(",
-            source,
-            f"{mode} must not precondition alignment scans with a gained snapshot",
-        )
-
-    def test_22_stereo_wiring(self):
-        self._assert_summation_first(
-            autosub._run_auto_sub_22_stereo_optimize, "2.2 Stereo",
-        )
-        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
-        self.assertIn(
-            "_AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS",
-            source,
-            "2.2 Stereo still guards alignment changes for Gain staging",
-        )
-
-    def test_21_wiring(self):
-        self._assert_summation_first(autosub._run_auto_sub_optimize, "2.1")
-
-    def test_22_mono_wiring(self):
-        self._assert_summation_first(autosub._run_auto_sub_22_optimize, "2.2 mono")
-
-    def test_confirmation_gate_stays_wired_after_transfer(self):
-        # The transfer changes the trim derivation, not the final diagnostic.
-        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
-        self.assertIn(
-            '"confirmation_recheck"',
-            source,
-            "the final Before/After confirmation recheck must remain",
-        )
 
 
 if __name__ == "__main__":

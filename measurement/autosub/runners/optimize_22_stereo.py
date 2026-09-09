@@ -20,7 +20,6 @@ from measurement.store import auto_sub_chain_anchor_db, score_sub_alignment_cand
 from typing import Any
 from uuid import uuid4
 from ..candidates import (
-    _AUTO_SUB_MIN_POLARITY_GATE_GAIN,
     _auto_sub_22_candidate_subwoofers,
     _auto_sub_22_global_config,
     _auto_sub_22_stereo_name,
@@ -37,7 +36,7 @@ from ..candidates import (
     _auto_sub_step_ms,
     _auto_sub_sweep_profile,
     _auto_sub_winner_delay_ms,
-    _restore_auto_sub_original_config,
+    _restore_original_config_or_fail_job,
 )
 from ..deps import (
     _AUTO_SUB_JOBS,
@@ -55,7 +54,6 @@ from ..measurement import (
     _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
     _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
     _auto_sub_22_snapshot_with_gain,
-    _auto_sub_balance_transfer_deltas,
     _auto_sub_dip_guard_should_veto,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
@@ -63,10 +61,8 @@ from ..measurement import (
     _auto_sub_gain_response_correction,
     _auto_sub_gain_verdict,
     _auto_sub_local_dip_db,
-    _auto_sub_local_dip_gate_sides,
     _auto_sub_stereo_corridor_violation,
     _auto_sub_stereo_probe_plan,
-    _auto_sub_target_residual_raw_db,
     _calculate_auto_sub_gain,
     _capture_auto_sub_main_references,
     _measure_auto_sub_candidate,
@@ -130,16 +126,10 @@ async def _run_auto_sub_22_stereo_optimize(
         # Shared verified restore: re-apply the start-of-run state and read it
         # back (with one re-apply on a transient mismatch). A persisting
         # mismatch fails the job instead of ending on a different topology.
-        restored = await _restore_auto_sub_original_config(original_config_snapshot)
-        if not restored:
-            prior_detail = str((job.get("error") or {}).get("detail") or "")
-            restore_detail = "original config restore verification failed"
-            job["status"] = "failed"
-            job["message"] = "Auto Sub Optimize failed to restore the original 2.2 Stereo config"
-            job["error"] = {
-                "detail": f"{prior_detail}; {restore_detail}" if prior_detail else restore_detail,
-            }
-        return restored
+        return await _restore_original_config_or_fail_job(
+            job, original_config_snapshot,
+            "Auto Sub Optimize failed to restore the original 2.2 Stereo config",
+        )
 
     original_left = _auto_sub_22_sub(original_config_snapshot, "sub1")
     original_right = _auto_sub_22_sub(original_config_snapshot, "sub2")

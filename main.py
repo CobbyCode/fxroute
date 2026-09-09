@@ -385,6 +385,7 @@ logger = logging.getLogger(__name__)
 
 import install_info
 import audio.power_api as power_api
+import audio.canonical_volume as canonical_volume
 import measurement.spl_calibration as spl_calibration
 import measurement.autosub as autosub
 import measurement.session as measurement_session
@@ -1367,33 +1368,39 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
     return state
 
 
+def _make_canonical_volume_deps() -> canonical_volume.CanonicalVolumeDeps:
+    """Bind the canonical master volume to the application services.
+
+    All entries resolve the current runtime state at call time, so tests that
+    patch main attributes observe the patched services through the thin
+    wrappers below (same contract as the other ``configure_*`` extractions).
+    ``get_output_volume_safe`` deliberately resolves through main so the
+    established patch seam keeps working.
+    """
+    return canonical_volume.CanonicalVolumeDeps(
+        get_player_instance=lambda: runtime.player_instance,
+        set_output_volume=lambda value: set_output_volume(value),
+        get_status_volume=lambda default=100: get_status_volume(default),
+        get_output_volume_safe=lambda default=100: get_output_volume_safe(default),
+        drain_worker=lambda *args, **kwargs: _drain_worker(*args, **kwargs),
+        canonical_volume_write_lock=lambda: _canonical_volume_write_lock(),
+        resolve_playback_owner=lambda: _resolve_playback_owner(),
+    )
+
+
 def ensure_local_source_volume() -> None:
-    if not runtime.player_instance or not runtime.player_instance._running:
-        return
-    try:
-        runtime.player_instance.set_volume(100)
-    except Exception as exc:
-        logger.warning("Failed to pin MPV source volume to 100%%: %s", exc)
+    """Thin wrapper: canonical master volume lives in audio.canonical_volume (REFACTOR-017)."""
+    return canonical_volume.ensure_local_source_volume()
 
 
 def get_output_volume_safe(default: int = 100) -> int:
-    # The global FXRoute master is the single user-facing volume.  Loudness
-    # volumeDb is only the ISO-226 work point and must never be reported as
-    # the volume.
-    return get_status_volume(default)
+    """Thin wrapper: canonical master volume lives in audio.canonical_volume (REFACTOR-017)."""
+    return canonical_volume.get_output_volume_safe(default)
 
 
 async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
-    """Apply the one global FXRoute master volume for every source.
-
-    The footer slider (and the remote Connect bridges) drives only the master.
-    Loudness volumeDb is the ISO-226 work point and is never touched here.
-    Writes are serialized against concurrent canonical volume writes.
-    """
-    async with _canonical_volume_write_lock():
-        requested = max(0, min(100, int(round(float(volume)))))
-        verified = await _drain_worker(set_output_volume, requested)
-        return {"volume": int(verified)}
+    """Thin wrapper: canonical master volume lives in audio.canonical_volume (REFACTOR-017)."""
+    return await canonical_volume._set_canonical_output_volume(volume)
 
 
 async def _apply_remote_volume_value(
@@ -1402,33 +1409,9 @@ async def _apply_remote_volume_value(
     owner: str | None = None,
     source_active: Callable[[], bool] | None = None,
 ) -> None:
-    """Apply an absolute remote Connect volume to the canonical master.
-
-    Called by the Connect bridges only after pickup (the gesture crossed the
-    current master level), so the write adopts the controller value without
-    any jump larger than the gesture step. The owner check is repeated while
-    holding the canonical write lock, and an owner transition during the
-    non-cancellable worker call restores the pre-write master.
-    """
-    owner_is_current = lambda: (
-        (owner is None or _resolve_playback_owner() == owner)
-        and (source_active is None or source_active())
-    )
-    if not owner_is_current():
-        return
-    async with _canonical_volume_write_lock():
-        if not owner_is_current():
-            return
-        current = get_output_volume_safe()
-        requested = max(0, min(100, int(round(float(volume_percent)))))
-        try:
-            await _drain_worker(set_output_volume, requested)
-        finally:
-            if owner is not None and not owner_is_current():
-                try:
-                    await _drain_worker(set_output_volume, current)
-                except Exception as exc:
-                    logger.warning("Failed to restore master after remote owner loss: %s", exc)
+    """Thin wrapper: canonical master volume lives in audio.canonical_volume (REFACTOR-017)."""
+    await canonical_volume._apply_remote_volume_value(
+        volume_percent, owner=owner, source_active=source_active)
 
 
 async def _guarded_effects_transition(previous, candidate, persist_all_presets):
@@ -2185,12 +2168,12 @@ async def pause_spotify_for_local_playback_broadcast():
             player = await spotify_mpris.resolve_player_name(await spotify_mpris.detect_backend())
             proc = await asyncio.create_subprocess_exec(pc, f"--player={player}", "pause")
             await asyncio.wait_for(proc.communicate(), timeout=3)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Spotify pause for local playback failed: %s", exc)
     try:
         await broadcast_spotify_state()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Spotify state broadcast after local pause failed: %s", exc)
 
 
 async def pause_local_playback_for_spotify_broadcast():
@@ -2202,8 +2185,8 @@ async def pause_local_playback_for_spotify_broadcast():
             released = await media_readiness.wait_for_pipewire_mpv_release()
             if not released:
                 await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Local pause for Spotify playback failed: %s", exc)
 
 
 def _overview_sample_rate(overview: dict | None) -> int | None:
@@ -3266,14 +3249,14 @@ async def stop_playback():
             playback_state.latest_spotify_state = data
             try:
                 await media_readiness.wait_for_pipewire_spotify_release()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Spotify sink release wait skipped: %s", exc)
         elif owner == "qobuz":
             await qobuz_pause()
             try:
                 await media_readiness.wait_for_pipewire_qobuz_release()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Qobuz sink release wait skipped: %s", exc)
         if playback_state.current_track_info and playback_state.current_track_info.get("source") == "radio":
             playback_state.last_radio_track_info = dict(playback_state.current_track_info)
         playback_state.current_track_info = None
@@ -3907,15 +3890,15 @@ async def _pause_all_app_playback_for_external_input() -> None:
             released = await media_readiness.wait_for_pipewire_mpv_release()
             if not released:
                 await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Local pause for external input failed: %s", exc)
     try:
         spotify_state = await get_spotify_ui_state()
         if spotify_state.get("status") == "Playing":
             data = await spotify_pause()
             await broadcast_spotify_state(data)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Spotify pause for external input failed: %s", exc)
 
 
 @app.post("/api/audio/source-mode")
@@ -4516,6 +4499,7 @@ def run_server():
 
 dsp_api.register_dsp_routes(app, _make_dsp_api_deps())
 preset_loading.configure_preset_loading(_make_preset_load_deps())
+canonical_volume.configure_canonical_volume(_make_canonical_volume_deps())
 power_api.register_power_routes(app, power_api.PowerApiDeps(
     is_origin_trusted=is_request_origin_trusted,
 ))

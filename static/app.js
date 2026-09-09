@@ -2240,7 +2240,7 @@ async function runFxrouteUpdate() {
 async function restoreFxrouteToPublic() {
     const confirmMsg = [
         'This will reset the FXRoute checkout to the current public release on GitHub. ',
-        'Local source changes will be saved as a patch file in backups/. ',
+        'Tracked source changes will be saved as a patch file and untracked files as an archive, both in backups/. ',
         'User data, music, config, and runtime cache are not affected. ',
         'The service will restart after restore.\n\nContinue?'
     ].join('');
@@ -10577,14 +10577,6 @@ function scheduleMeasurementGraphRenderForResize() {
     return MeasurementGraph.scheduleMeasurementGraphRenderForResize();
 }
 
-function getSortedNumericValues(values = []) {
-    return MeasurementDsp.getSortedNumericValues(values);
-}
-
-function getValueQuantile(sortedValues = [], quantile = 0.5) {
-    return MeasurementDsp.getValueQuantile(sortedValues, quantile);
-}
-
 function getMeasurementGraphRange(entries = []) {
     return MeasurementDsp.getMeasurementGraphRange(entries);
 }
@@ -10937,7 +10929,7 @@ async function closeHybridMeasurementWizard() {
 }
 
 function renderHybridRoomDiagram(step = {}, mode = 'stereo', complete = false) {
-    return MeasurementFlows.renderHybridRoomDiagram(step = {}, mode = 'stereo', complete = false);
+    return MeasurementFlows.renderHybridRoomDiagram(step, mode, complete);
 }
 
 function renderHybridMeasurementWizard() {

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import subprocess
 import time
 from typing import Any, Callable, Optional
 
@@ -235,7 +236,7 @@ async def wait_for_spotify_sink_input_samplerate(
                 expected_rate=expected_rate,
                 preferred_identity=(last_observation[0] if last_observation else None),
             )
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             observation = None
         if observation is not None:
             identity, rate = observation
@@ -299,7 +300,7 @@ async def wait_for_qobuz_sink_input_samplerate(
                 expected_rate=expected_rate,
                 preferred_identity=(last_observation[0] if last_observation else None),
             )
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             observation = None
         if observation is not None:
             identity, rate = observation

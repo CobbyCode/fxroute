@@ -51,8 +51,8 @@ class BluetoothInputMonitor:
             return
         try:
             await self._link_source_to_dsp(normalized, disconnect=True)
-        except Exception:
-            pass
+        except (RuntimeError, OSError) as exc:
+            logger.debug("Bluetooth source disconnect failed for %s: %s", normalized, exc)
 
     async def stop_agent(self) -> None:
         proc = self.agent_process

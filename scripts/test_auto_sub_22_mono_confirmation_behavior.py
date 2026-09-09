@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Path coverage: 2.2-mono candidate -> derived -> apply -> stored final state.
+"""Behavioral confirmation contracts for the 2.2-mono runner.
 
-Covers the bf217b7b318a regression chain under summation-first:
-- alignment runs at the original levels with level-invariant shape scoring;
-  Gain is single-stage from the accepted pair (no legacy transfer);
-- after a confirmation-gate revert the stored applied_* delays describe
-  the incumbent pair while suggested_* keeps the rejected winner.
+The After/Confirmation measurement must be built from the final measured
+sweep (here: the polarity-refined winner living outside the scanned delay
+pools) even when the gain verdict is rejected. Selecting the confirmation
+by verdict alone dropped the After curve in that case.
+
+Drives the real _run_auto_sub_22_optimize with stubbed backends: scan
+stages measure flat (valid) sweeps while only the polarity-refinement
+sweeps carry a distinctive ramp. A verdict-gated selection would therefore
+show flat consecutive diffs (or nothing); the committed behavior shows the
+winner ramp shape (anchor shifts are additive per trace, so consecutive
+differences are the robust observable).
 """
 
-import asyncio
 import copy
 import sys
 import unittest
@@ -23,19 +28,30 @@ import audio.samplerate as samplerate
 from measurement.autosub.runners import optimize_22 as runner
 
 
-def _points(value_db=0.0):
+def _flat(value_db=0.0):
     freqs = [20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0,
              125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 640.0]
     return [[f, value_db] for f in freqs]
 
 
-class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
-    async def _run_path(
-        self, *, gate_veto, verdict_accepted,
-        balance_deltas_db=None, fail_winner_apply=False, fail_restore=False,
-        recheck_dips_override=None,
-    ):
-        job_id = "auto-sub-22-mono-path"
+def _ramp():
+    freqs = [20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0,
+             125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 640.0]
+    return [[f, round(i * 0.5, 6)] for i, f in enumerate(freqs)]
+
+
+def _diffs(points):
+    levels = [float(p[1]) for p in points]
+    return [round(levels[i + 1] - levels[i], 6) for i in range(len(levels) - 1)]
+
+
+class AutoSub22MonoConfirmationBehaviorTests(unittest.IsolatedAsyncioTestCase):
+    async def _run_path(self, verdict_accepted=False,
+                                    stub_response_unavailable=False,
+                                    stub_gain_deltas="__unset__"):
+        recorded_stages: list[str] = []
+        recorded_levels: list[tuple] = []
+        job_id = "auto-sub-22m-confirmation"
         original = {
             "mode": runner.OUTPUT_MODE_SUBWOOFER_22,
             "crossover_frequency_hz": 80,
@@ -46,13 +62,12 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         state = copy.deepcopy(original)
-        measure_stages: list[str] = []
         job = {
             "id": job_id,
             "mode": runner.OUTPUT_MODE_SUBWOOFER_22,
             "status": "preparing",
             "cancel_requested": False,
-            "target_curve": {"label": "Neutral", "points": _points()},
+            "target_curve": {"label": "Neutral", "points": _flat()},
             "main_target_anchor": {"status": "ready", "target_vertical_offset_db": 0.0},
         }
         runner._AUTO_SUB_JOBS[job_id] = job
@@ -77,26 +92,22 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
 
         async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
             persist(output_mode, global_config, subwoofers_config)
-            if fail_winner_apply:
-                return False
             return bool(verify((load_overview or (lambda: copy.deepcopy(state)))()))
 
         async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
-            # The shared verified restore lives in candidates and calls
-            # candidates._auto_sub_apply_candidate; keep its state test-local.
-            if fail_restore:
-                return False
             persist(output_mode, global_config, subwoofers_config)
             return bool(verify(copy.deepcopy(state)))
 
         async def measure_candidate(**kwargs):
-            measure_stages.append(str(kwargs["stage"]))
-            # A combined candidate measures L and R, so the production sweep
-            # ledger gains one timing entry per side.
-            job.setdefault("_sweep_timings", []).extend([
-                {"channel": "left", "stage": kwargs["stage"], "durations": {"total_ms": 1.0}},
-                {"channel": "right", "stage": kwargs["stage"], "durations": {"total_ms": 1.0}},
-            ])
+            recorded_stages.append(str(kwargs.get("stage", "")))
+            recorded_levels.append((
+                str(kwargs.get("stage", "")),
+                tuple(sorted(kwargs.get("active_subs", ("sub1", "sub2")))),
+                float(state["subwoofers"]["sub1"]["level_db"]),
+                float(state["subwoofers"]["sub2"]["level_db"]),
+            ))
+            stage = str(kwargs.get("stage", ""))
+            pts = _ramp() if "polarity_refine" in stage else _flat()
             snapshot = kwargs["original_config_snapshot"]
             subwoofers = runner._auto_sub_22_candidate_subwoofers(
                 snapshot,
@@ -107,7 +118,7 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                 sub2_polarity=kwargs.get("sub2_polarity"),
             )
             persist(kwargs["output_mode"], runner._auto_sub_22_global_config(snapshot), subwoofers)
-            pts = _points()
+            p = copy.deepcopy(pts)
             return {
                 "delay_ms": float(kwargs["delay_ms"]),
                 "sub1_alignment_ms": float(kwargs.get("sub1_alignment_ms", kwargs["delay_ms"])),
@@ -115,18 +126,17 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                 "name": f"S1 {kwargs.get('sub1_alignment_ms', 0.0):.2f}",
                 "status": "completed",
                 "scan": kwargs["stage"],
-                "points": pts,
-                "points_left": copy.deepcopy(pts),
-                "points_right": copy.deepcopy(pts),
-                "calibrated_points_left": copy.deepcopy(pts),
-                "calibrated_points_right": copy.deepcopy(pts),
+                "points": copy.deepcopy(p),
+                "points_left": copy.deepcopy(p),
+                "points_right": copy.deepcopy(p),
+                "calibrated_points_left": copy.deepcopy(p),
+                "calibrated_points_right": copy.deepcopy(p),
                 "normalized_by_db_left": 0.0,
                 "normalized_by_db_right": 0.0,
                 "stage_output_peaks": {"stage": kwargs["stage"]},
             }
 
         def score_matrix(rows, **kwargs):
-            # Winner (-3.12/-0.58) beats the incumbent (0/0), as in bf217b7b318a.
             def key(row):
                 return (round(float(row.get("sub1_alignment_ms", 0.0)), 2),
                         round(float(row.get("sub2_alignment_ms", 0.0)), 2))
@@ -155,6 +165,15 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
             }
 
         def score_combined(rows, **kwargs):
+            # Polarity gate rows carry tested_polarities; rank an alternative
+            # first there so the refinement path engages. Coarse rows keep
+            # the established winner.
+            if any("tested_polarities" in row for row in rows):
+                ranked = sorted(rows, key=lambda row: 0.0 if round(float(row.get("delay_ms", 0.0)), 2) == 1.0 else 0.3)
+                first, rest = ranked[0], ranked[1:]
+                results = [{**first, "score": 0.9, "final_score": 0.9, "score_pct": 90.0}]
+                results.extend({**row, "score": 0.3, "final_score": 0.3, "score_pct": 30.0} for row in rest)
+                return {"winner": results[0], "results": results, "confidence": "clear"}
             results = []
             for row in rows:
                 delay = round(float(row.get("delay_ms", 0.0)), 2)
@@ -197,25 +216,24 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                 stack.enter_context(patch.object(runner, "_score_auto_sub_combined_candidates", side_effect=score_combined))
                 stack.enter_context(patch.object(runner, "_score_auto_sub_matrix_candidates", side_effect=score_matrix))
                 stack.enter_context(patch.object(runner, "_auto_sub_polarity_decision", return_value={
-                    "accepted": False, "score_gain": -0.1, "min_score_gain": 0.08, "reason": "incumbent_best",
+                    "accepted": True, "score_gain": 0.5, "min_score_gain": 0.03,
+                    "reason": "test-gate",
                 }))
                 stack.enter_context(patch.object(runner, "_calculate_auto_sub_gain", side_effect=[
                     gain_diagnostics(4.377), gain_diagnostics(-0.953), gain_diagnostics(0.1),
                 ]))
-                stack.enter_context(patch.object(
-                    runner, "_auto_sub_gain_deltas",
-                    return_value=balance_deltas_db or {"left": 4.377, "right": 4.377},
-                ))
+                stack.enter_context(patch.object(runner, "_auto_sub_gain_deltas",
+                    return_value={} if stub_gain_deltas == "__unset__" else stub_gain_deltas))
                 stack.enter_context(patch.object(runner, "_auto_sub_gain_verdict", return_value={
                     "accepted": verdict_accepted, "reason": "test", "channels": {},
                 }))
-                stack.enter_context(patch.object(runner, "_auto_sub_local_dip_db", side_effect=(
-                    recheck_dips_override if recheck_dips_override is not None
-                    else [8.02, 5.61, 14.81, 8.61, 9.33, 8.07] if gate_veto else [8.02, 5.61, 8.0, 5.5]
-                )))
+                if stub_response_unavailable:
+                    stack.enter_context(patch.object(runner, "_auto_sub_gain_response_correction", return_value={
+                        "available": False, "reason": "test-unavailable", "channels": {},
+                    }))
+                stack.enter_context(patch.object(runner, "_auto_sub_local_dip_db", side_effect=[8.02, 5.61, 14.81, 8.61, 9.33, 8.07]))
                 stack.enter_context(patch.object(runner, "_auto_sub_dip_guard_should_veto",
-                    return_value=(gate_veto, {"failed_sides": ["left", "right"] if gate_veto else [],
-                                              "reason": "combined_deterioration" if gate_veto else "no_per_side_trigger"})))
+                    return_value=(False, {"failed_sides": [], "reason": "no_per_side_trigger"})))
                 stack.enter_context(patch.object(runner, "_auto_sub_apply_candidate", side_effect=apply_candidate))
                 stack.enter_context(patch("measurement.autosub.candidates._auto_sub_apply_candidate", side_effect=restore_apply_candidate))
                 stack.enter_context(patch.object(runner, "_finish_auto_sub_worker", side_effect=finish_worker))
@@ -233,91 +251,75 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                 )
         finally:
             runner._AUTO_SUB_JOBS.pop(job_id, None)
-        return job, state, measure_stages
-
-    async def test_winner_path_applies_winner_pair_and_reports_derived(self):
-        job, state, _stages = await self._run_path(gate_veto=False, verdict_accepted=True)
         self.assertEqual(job["status"], "completed", job.get("error"))
+        return job, recorded_stages, recorded_levels
+
+    async def test_rejected_verdict_still_shows_final_sweep(self):
+        """The After curve comes from the refined winner, not the verdict."""
+        job, _stages, _levels = await self._run_path()
         result = job["result"]
-        # Candidate -> derived -> apply -> stored final state.
-        self.assertEqual(result["applied_sub1_alignment_ms"], -3.12)
-        self.assertEqual(result["applied_sub2_alignment_ms"], -0.58)
-        self.assertEqual(result["suggested_sub1_alignment_ms"], -3.12)
-        self.assertEqual(result["suggested_sub2_alignment_ms"], -0.58)
-        self.assertEqual(state["subwoofers"]["sub1"]["alignment_ms"], -3.12)
-        self.assertEqual(state["subwoofers"]["sub2"]["alignment_ms"], -0.58)
-        self.assertAlmostEqual(result["derived_main_delay_ms"], 3.12, places=2)
-        self.assertAlmostEqual(result["derived_sub1_delay_ms"], 0.0, places=2)
-        self.assertAlmostEqual(result["derived_sub2_delay_ms"], 2.54, places=2)
+        confirmation = result.get("confirmation_measurement")
+        self.assertIsNotNone(
+            confirmation,
+            "a rejected gain verdict must not drop the After measurement",
+        )
+        left = [trace for trace in confirmation.get("traces", []) if trace.get("role") == "left"]
+        self.assertTrue(left, "confirmation must carry a left trace")
+        self.assertEqual(
+            _diffs(left[0]["points"]),
+            [0.5] * 15,
+            "confirmation must show the refined-winner ramp, not the flat scan fallback",
+        )
 
-    async def test_gate_revert_keeps_incumbent_applied_but_winner_suggested(self):
-        job, state, _stages = await self._run_path(gate_veto=True, verdict_accepted=False)
-        self.assertEqual(job["status"], "completed", job.get("error"))
+    async def test_confirmation_payload_keeps_before_and_after(self):
+        """The result payload carries both baseline and confirmation."""
+        job, _stages, _levels = await self._run_path()
         result = job["result"]
-        self.assertEqual(result["confirmation_gate"]["action"], "alignment_reverted_balance_kept")
-        # Applied state is the incumbent pair; the rejected winner stays suggested.
-        self.assertEqual(result["applied_sub1_alignment_ms"], 0.0)
-        self.assertEqual(result["applied_sub2_alignment_ms"], 0.0)
-        self.assertEqual(result["suggested_sub1_alignment_ms"], -3.12)
-        self.assertEqual(result["suggested_sub2_alignment_ms"], -0.58)
-        self.assertEqual(state["subwoofers"]["sub1"]["alignment_ms"], 0.0)
-        self.assertEqual(state["subwoofers"]["sub2"]["alignment_ms"], 0.0)
-        self.assertEqual(result["confidence"], "gate_reverted")
-        self.assertEqual(result["reject_reason"], "final_state_regressed_incumbent_pair_kept")
-
-    async def test_restore_failure_fails_the_job_with_restore_detail(self):
-        # Finding: a restore that cannot be verified (even after the one
-        # re-apply) must fail the job instead of ending on a silently
-        # different topology.
-        job, _state, _stages = await self._run_path(
-            gate_veto=False, verdict_accepted=True,
-            fail_winner_apply=True, fail_restore=True,
+        self.assertIsNotNone(result.get("baseline_measurement"))
+        self.assertIsNotNone(result.get("confirmation_measurement"))
+        self.assertTrue(
+            str(result["confirmation_measurement"].get("name", "")).startswith("AutoSub 2.2 Optimized ("),
+            result["confirmation_measurement"].get("name"),
         )
-        self.assertEqual(job["status"], "failed")
-        self.assertIn("failed to restore the original config", job["message"])
-        self.assertIn("restore verification failed", str(job.get("error") or {}))
 
-    async def test_reverted_to_original_restores_and_completes(self):
-        # Gate veto with a failing incumbent recheck restores the original
-        # state and reports it as completed.
-        job, state, _stages = await self._run_path(
-            gate_veto=True, verdict_accepted=False,
-            recheck_dips_override=[8.02, 5.61, 14.81, 8.61, 20.0, 20.0],
+    async def test_unavailable_correction_retains_step1_without_remode(self):
+        """An unavailable correction keeps Step 1: no re-verdict, no remode."""
+        job, stages, _levels = await self._run_path(
+            verdict_accepted=True,
+            stub_response_unavailable=True,
+            stub_gain_deltas={"left": 2.0, "right": 2.0},
         )
-        self.assertEqual(job["status"], "completed", job.get("error"))
-        self.assertEqual(job["confirmation_gate"]["action"], "reverted_to_original")
-        self.assertEqual(job["result"]["applied_sub1_alignment_ms"], 0.0)
-        self.assertEqual(job["result"]["applied_sub2_alignment_ms"], 0.0)
-        self.assertEqual(state["subwoofers"]["sub1"]["alignment_ms"], 0.0)
-        self.assertEqual(state["subwoofers"]["sub2"]["alignment_ms"], 0.0)
-
-    async def test_reverted_to_original_restore_failure_aborts_before_completed(self):
-        # Parity with the 2.2-stereo gate: an unverified restore must fail
-        # the job instead of reporting "original state restored" as
-        # completed with a still-divergent topology active.
-        job, _state, _stages = await self._run_path(
-            gate_veto=True, verdict_accepted=False,
-            recheck_dips_override=[8.02, 5.61, 14.81, 8.61, 20.0, 20.0],
-            fail_restore=True,
+        auto_gain = job.get("auto_gain") or {}
+        self.assertEqual(
+            (auto_gain.get("correction_verdict") or {}).get("step1_retained"), True
         )
-        self.assertEqual(job["status"], "failed")
-        self.assertIn("failed to restore the original config", job["message"])
-        self.assertIn("restore verification failed", str(job.get("error") or {}))
-        self.assertNotEqual(job["status"], "completed")
+        self.assertNotIn("gain_correction_after", stages)
 
-    async def test_result_sweep_count_counts_executed_sweeps_from_ledger(self):
-        # The 2.2 results previously reported a static matrix-based plan that
-        # missed the polarity, gain and confirmation sweeps. The result must
-        # reflect the sweeps that actually ran (two per combined candidate).
-        job, _state, stages = await self._run_path(gate_veto=False, verdict_accepted=True)
-        ledger = len(job.get("_sweep_timings") or [])
-        self.assertGreater(ledger, 0)
-        self.assertEqual(job["result"]["sweep_count"], ledger)
-        self.assertEqual(ledger, 2 * len(stages))
-        # The late stages really are part of the run and therefore of the
-        # reported count.
-        for late_stage in ("polarity_check", "gain_after"):
-            self.assertIn(late_stage, stages)
+
+    async def test_scans_run_at_original_level_gain_runs_at_gained_level(self):
+        """Delay/Polarity scans see unconditioned levels; only Gain adapts.
+
+        Before the gain-verification stage, no scan may observe an upward
+        adapted level (the -80 dB entries are mute isolation between
+        consecutive measures, not adaptation); the gain stage itself runs
+        at the gained level.
+        """
+        _job, _stages, levels = await self._run_path(
+            verdict_accepted=True, stub_gain_deltas={"left": 3.0, "right": 3.0},
+        )
+        first_gained = next(
+            index for index, (_, _, sub1, sub2) in enumerate(levels)
+            if sub1 > 0.0 or sub2 > 0.0
+        )
+        for stage, _active, sub1, sub2 in levels[:first_gained]:
+            self.assertLessEqual(sub1, 0.0, f"{stage} must not observe adapted gain")
+            self.assertLessEqual(sub2, 0.0, f"{stage} must not observe adapted gain")
+        gained_stage = levels[first_gained][0]
+        self.assertEqual(gained_stage, "gain_after")
+        self.assertEqual(
+            (levels[first_gained][2], levels[first_gained][3]), (3.0, 3.0),
+            "gain_after must run at the gained level",
+        )
 
 
 if __name__ == "__main__":

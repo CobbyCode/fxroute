@@ -2,7 +2,6 @@
 import sys
 import types
 import unittest
-import inspect
 import math
 from pathlib import Path
 
@@ -261,16 +260,6 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         comparison = autosub._auto_sub_stage_peak_comparison(predicted, measured)
         self.assertEqual(set(comparison["measured"]["dbfs"]), {"output_1", "output_2", "output_3", "output_4"})
         self.assertFalse(comparison["relevant_mismatch"])
-
-    def test_peak_safety_failure_aborts_and_final_result_persists_peaks(self):
-        candidate_source = inspect.getsource(autosub._measure_auto_sub_candidate)
-        finalize_source = inspect.getsource(autosub._finalize_autosub_job)
-        self.assertIn("raise AutoSubPeakSafetyError", candidate_source)
-        self.assertIn("except AutoSubPeakSafetyError:", candidate_source)
-        self.assertIn('"stage_output_peaks": (final_gain_sweep or {}).get("stage_output_peaks")',
-                      inspect.getsource(autosub._run_auto_sub_optimize))
-        self.assertIn('job["result"]["auto_gain"]', finalize_source)
-
     def test_response_correction_still_rejects_values_above_six_db(self):
         correction = autosub._auto_sub_gain_response_correction(
             diagnostic(-9.0, -9.0), diagnostic(-7.0, -7.0),
@@ -288,33 +277,6 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         )
         self.assertFalse(correction["available"])
         self.assertIn("implausible", correction["reason"])
-
-    def test_22_stereo_keeps_accepted_step1_when_optional_correction_is_unavailable(self):
-        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
-        fallback = source.split('if not correction_plan.get("available"):', 1)[1].split(
-            'if any(abs(value) > 0.0005 for value in correction_deltas.values()):', 1
-        )[0]
-        self.assertIn('"step1_retained": True', fallback)
-        self.assertIn("_auto_sub_stereo_probe_plan(", fallback)
-        self.assertNotIn('gain_verdict =', fallback)
-        self.assertNotIn('set_audio_output_mode(', fallback)
-
-    def test_22_stereo_retains_only_independently_improved_step1_side(self):
-        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
-        self.assertIn('accepted_step1_sides = {', source)
-        self.assertIn('if accepted_step1_sides[side] else 0.0', source)
-        self.assertIn('elif not all(accepted_step1_sides.values()):', source)
-        self.assertIn('Retained improved Stereo side; restored regressed side', source)
-        self.assertIn('"accepted_step1" if step1_retained else "restored"', source)
-
-    def test_22_stereo_gain_rollback_preserves_selected_polarities(self):
-        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
-        rollback = source.split('if not step1_retained:', 1)[1].split(
-            'elif not all(accepted_step1_sides.values()):', 1
-        )[0]
-        self.assertIn('_auto_sub_22_global_config(polarity_snapshot)', rollback)
-        self.assertIn('_auto_sub_22_candidate_subwoofers(\n                    polarity_snapshot,', rollback)
-        self.assertNotIn('_auto_sub_22_global_config(original_config_snapshot)', rollback)
 
     def test_22_stereo_probe_requires_broad_third_octave_violation(self):
         target = {"points": self._curve(lambda _index: 0.0)}
@@ -354,31 +316,6 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertEqual(plan["deltas_db"], {"right": -1.0})
         self.assertFalse(plan["channels"]["left"]["eligible"])
         self.assertTrue(plan["channels"]["right"]["eligible"])
-
-    def test_22_stereo_probe_acceptance_is_per_side_and_requires_both_improvements(self):
-        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
-        self.assertIn("score_better = after_score < before_score", source)
-        self.assertIn('float(after_corridor.get("severity_db", 0.0)) < float(before_corridor.get("severity_db", 0.0))', source)
-        self.assertIn("correction_deltas.get(side, 0.0) if accepted_probe_sides[side] else 0.0", source)
-        self.assertIn("Stereo corridor probe rejected; Step 1 retained", source)
-
-    def test_22_mono_keeps_accepted_step1_when_optional_correction_is_unavailable(self):
-        source = inspect.getsource(autosub._run_auto_sub_22_optimize)
-        fallback = source.split('if not correction_plan.get("available"):', 1)[1].split(
-            'elif abs(correction_delta) > 0.0005:', 1
-        )[0]
-        self.assertIn('"step1_retained": True', fallback)
-        self.assertNotIn('gain_verdict =', fallback)
-        self.assertNotIn('set_audio_output_mode(', fallback)
-
-    def test_21_keeps_accepted_step1_when_optional_correction_is_unavailable(self):
-        source = inspect.getsource(autosub._run_auto_sub_optimize)
-        fallback = source.split('if not correction_plan.get("available"):', 1)[1].split(
-            'elif abs(correction_delta) > 0.0005:', 1
-        )[0]
-        self.assertIn('"step1_retained": True', fallback)
-        self.assertNotIn('gain_verdict =', fallback)
-        self.assertNotIn('set_audio_output_mode(', fallback)
 
 
 if __name__ == "__main__":

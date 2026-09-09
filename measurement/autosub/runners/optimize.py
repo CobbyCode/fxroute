@@ -22,8 +22,8 @@ from ..candidates import (
     _auto_sub_fine_trigger_reasons,
     _auto_sub_opposite_polarity,
     _auto_sub_polarity_decision,
-    _restore_auto_sub_original_config,
     _auto_sub_step_ms,
+    _restore_original_config_or_fail_job,
     _auto_sub_sweep_profile,
 )
 from ..deps import (
@@ -40,7 +40,6 @@ from ..jobs import (
 from ..measurement import (
     _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
     _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
-    _auto_sub_balance_transfer_deltas,
     _auto_sub_dip_guard_should_veto,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
@@ -48,9 +47,7 @@ from ..measurement import (
     _auto_sub_gain_response_correction,
     _auto_sub_gain_verdict,
     _auto_sub_local_dip_db,
-    _auto_sub_local_dip_gate_sides,
     _auto_sub_local_dip_recheck_decision,
-    _auto_sub_target_residual_raw_db,
     _calculate_auto_sub_gain,
     _capture_auto_sub_main_references,
     _measure_auto_sub_combined_candidate,
@@ -115,16 +112,10 @@ async def _run_auto_sub_optimize(
         mismatch means the run would end with a different topology than it
         began with, so the job is marked failed instead.
         """
-        restored = await _restore_auto_sub_original_config(original_config_snapshot)
-        if not restored:
-            prior_detail = str((job.get("error") or {}).get("detail") or "")
-            restore_detail = "original config restore verification failed"
-            job["status"] = "failed"
-            job["message"] = "Auto Sub Optimize failed to restore the original config"
-            job["error"] = {
-                "detail": f"{prior_detail}; {restore_detail}" if prior_detail else restore_detail,
-            }
-        return restored
+        return await _restore_original_config_or_fail_job(
+            job, original_config_snapshot,
+            "Auto Sub Optimize failed to restore the original config",
+        )
 
     try:
         if measurement_sr_session is not None:
@@ -192,7 +183,6 @@ async def _run_auto_sub_optimize(
             await _restore_original_config()
             return
         balance_delta = 0.0
-        balanced_level = original_level  # alias kept for snapshot compat; alignment runs at original_level
         job["balance_check"] = {
             "deltas_db": {side: 0.0 for side in ("left", "right")},
             "residuals_db": {side: None for side in ("left", "right")},

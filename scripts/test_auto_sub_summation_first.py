@@ -21,7 +21,6 @@ tweak: alignment scoring is level-invariant (shape only), and no
 pre-alignment Target trim may precondition the scans.
 """
 
-import inspect
 import math
 import sys
 import unittest
@@ -31,10 +30,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from measurement.store import score_sub_alignment_candidates
-import measurement.autosub as autosub
-import measurement.autosub.runners.optimize as runner_21
-import measurement.autosub.runners.optimize_22 as runner_22mono
-import measurement.autosub.runners.optimize_22_stereo as runner_22stereo
 
 FC = 80
 FREQS = [20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0,
@@ -89,53 +84,6 @@ class SummationFirstScorerTests(unittest.TestCase):
         notched_hot = {"delay_ms": 0.78, "points": notch_points(51.0, 80.0, 12.0)}
         scoring = score_sub_alignment_candidates([flat_cold, notched_hot], crossover_hz=FC)
         self.assertEqual(round(float(scoring["winner"]["delay_ms"]), 2), 0.0)
-
-    def test_scorer_has_no_absolute_mean_weight(self):
-        import measurement.store as store_module
-
-        source = inspect.getsource(store_module.score_sub_alignment_candidates)
-        self.assertNotIn("n_pri_mean", source)
-        self.assertNotIn("n_sec_mean", source)
-        # Diagnostics stay: mean is reported but never scored.
-        self.assertIn("mean_primary_db", source)
-
-
-class NoPreAlignmentTargetTrimTests(unittest.TestCase):
-    def _assert_runner(self, fn, mode: str) -> None:
-        source = inspect.getsource(fn)
-        self.assertIn("summation-first", source, f"{mode} must document the order")
-        self.assertNotIn(
-            "_auto_sub_balance_transfer_deltas(",
-            source,
-            f"{mode} must not use the legacy transfer path",
-        )
-        self.assertNotIn(
-            "balance_deltas = _auto_sub_gain_deltas(",
-            source,
-            f"{mode} must not compute a pre-alignment Target trim",
-        )
-
-    def test_21_has_no_pre_alignment_trim(self):
-        self._assert_runner(autosub._run_auto_sub_optimize, "2.1")
-
-    def test_22_mono_has_no_pre_alignment_trim(self):
-        self._assert_runner(autosub._run_auto_sub_22_optimize, "2.2 mono")
-
-    def test_22_stereo_has_no_pre_alignment_trim(self):
-        self._assert_runner(autosub._run_auto_sub_22_stereo_optimize, "2.2 stereo")
-
-    def test_gain_stage_still_uses_target_anchor(self):
-        # Only the Gain step may use Target/Anchor: each runner must still
-        # calculate Gain from the accepted alignment afterwards.
-        for fn, mode in (
-            (runner_21._run_auto_sub_optimize, "2.1"),
-            (runner_22mono._run_auto_sub_22_optimize, "2.2 mono"),
-            (runner_22stereo._run_auto_sub_22_stereo_optimize, "2.2 stereo"),
-        ):
-            with self.subTest(mode=mode):
-                source = inspect.getsource(fn)
-                self.assertIn("_calculate_auto_sub_gain(", source)
-                self.assertIn("_auto_sub_gain_deltas(", source)
 
 
 if __name__ == "__main__":

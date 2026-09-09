@@ -180,15 +180,6 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
                     gain_diagnostics(0.850, 0.773),
                     gain_diagnostics(0.613, 0.252),
                 ]))
-                stack.enter_context(patch.object(runner, "_auto_sub_target_residual_raw_db", side_effect=[
-                    (0.625, 0.0, []), (0.158, 0.0, []),
-                ]))
-                stack.enter_context(patch.object(runner, "_auto_sub_balance_transfer_deltas", return_value={
-                    "available": True,
-                    "deltas_db": {"left": 0.225, "right": 0.6155},
-                    "channels": {},
-                    "reason": "Balance trim transferred to the accepted configuration",
-                }))
                 stack.enter_context(patch.object(runner, "_auto_sub_local_dip_db", side_effect=[
                     11.51, 7.91, 8.26, 12.51, 10.21, 8.32,
                 ]))

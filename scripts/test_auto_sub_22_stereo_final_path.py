@@ -146,11 +146,6 @@ class AutoSub22StereoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                 stack.enter_context(patch.object(runner, "_calculate_auto_sub_gain",
                     side_effect=lambda **_k: gain_diagnostics(0.0, 0.0)))
                 stack.enter_context(patch.object(runner, "_auto_sub_gain_deltas", return_value={}))
-                stack.enter_context(patch.object(runner, "_auto_sub_target_residual_raw_db",
-                    return_value=(0.0, 0.0, [])))
-                stack.enter_context(patch.object(runner, "_auto_sub_balance_transfer_deltas", return_value={
-                    "available": False, "reason": "test-no-transfer", "alignment_changed": {},
-                }))
                 stack.enter_context(patch.object(runner, "_auto_sub_gain_verdict", return_value={
                     "accepted": True, "reason": "test-accepted", "channels": {},
                 }))

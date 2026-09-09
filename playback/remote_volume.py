@@ -203,3 +203,40 @@ class RemoteVolumePickupTranslator:
                 return False
             await asyncio.sleep(OWNER_POLL_INTERVAL_SECONDS)
         return False
+
+
+async def drain_pending_loop(
+    *,
+    translator: RemoteVolumePickupTranslator,
+    debounce_seconds: float,
+    sleep: Callable[[float], Awaitable[None]],
+    log_warning: Callable[..., None],
+    log_prefix: str,
+) -> None:
+    """Shared debounce/drain loop for the remote-volume watches (M3).
+
+    Coalesces rapid remote values behind one bounded debounce, retries a
+    failed canonical write after a bounded delay so a transient failure
+    never strands the latest intent, and drains a delta that arrives while
+    the async write is still in flight. Cancellation propagates; any other
+    error is the caller's to observe (the detached drain task must never
+    hold an unretrieved exception).
+    """
+    while True:
+        if debounce_seconds > 0:
+            await sleep(debounce_seconds)
+        try:
+            await translator.flush()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Keep the latest intent pending and retry after a bounded
+            # delay; a transient master-write failure must not strand it.
+            log_warning("%s volume drain failed: %s", log_prefix, exc)
+            await sleep(max(debounce_seconds, 0.5))
+            continue
+        # A new remote value can arrive while the async canonical write
+        # above is still in flight. Do not leave that final delta stranded
+        # behind the active drain task.
+        if translator.pending is None:
+            break

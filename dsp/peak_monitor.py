@@ -20,6 +20,7 @@ from itertools import count
 from typing import Any, Awaitable, Callable, Optional
 
 import playback.state as playback_state
+from common import process_stop
 from audio.samplerate import SOURCE_MODE_BLUETOOTH_INPUT, authoritative_sample_rate, get_samplerate_status
 
 logger = logging.getLogger(__name__)
@@ -98,58 +99,6 @@ def _resolve_capture_rate() -> int:
     return FALLBACK_CAPTURE_RATE
 
 
-async def _stop_bounded_command_child(proc) -> None:
-    """Terminate a still-running command child and drain it terminally.
-
-    terminate -> bounded communicate() (drains stdout+stderr) -> if the
-    child ignores SIGTERM: kill -> bounded communicate().  Process and both
-    pipes are thereby always worked off terminally; a final wait() guards
-    against a pathological case where even the killed child's pipes never
-    close.  Already-exited processes are handled cheaply.
-    """
-    if proc is None or proc.returncode is not None:
-        return
-    proc.terminate()
-    try:
-        await asyncio.wait_for(
-            proc.communicate(), timeout=PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        try:
-            await asyncio.wait_for(
-                proc.communicate(), timeout=PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS
-            )
-        except asyncio.TimeoutError:
-            await proc.wait()
-
-
-async def _stop_bounded_command_child_cancellation_safe(proc) -> bool:
-    """Stop and drain a command child shielded from caller cancellation.
-
-    Runs the actual stop in its own task behind ``asyncio.shield``: even a
-    second cancellation during the grace period cannot interrupt the
-    terminate/grace/kill/pipe-drain sequence, so no child can be orphaned by
-    caller cancellation.  Returns True when the caller was cancelled while
-    draining; the caller must then propagate CancelledError (it wins over
-    any timeout failure).  Cleanup errors are best-effort and swallowed.
-    """
-    if proc is None or proc.returncode is not None:
-        return False
-    cleanup_task = asyncio.create_task(_stop_bounded_command_child(proc))
-    cancelled = False
-    while not cleanup_task.done():
-        try:
-            await asyncio.shield(cleanup_task)
-        except asyncio.CancelledError:
-            cancelled = True
-    try:
-        cleanup_task.result()
-    except Exception:
-        logger.debug("Peak monitor command child cleanup failed", exc_info=True)
-    return cancelled
-
-
 async def _run_bounded_command(
     args: list[str],
     *,
@@ -172,11 +121,21 @@ async def _run_bounded_command(
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        if await _stop_bounded_command_child_cancellation_safe(proc):
+        if await process_stop.stop_command_child_cancellation_safe(
+            proc,
+            PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS,
+            cleanup_log="Peak monitor command child cleanup failed",
+            cleanup_log_exc_info=True,
+        ):
             raise asyncio.CancelledError
         raise RuntimeError(f"{' '.join(args)} timed out after {timeout:g}s")
     except asyncio.CancelledError:
-        await _stop_bounded_command_child_cancellation_safe(proc)
+        await process_stop.stop_command_child_cancellation_safe(
+            proc,
+            PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS,
+            cleanup_log="Peak monitor command child cleanup failed",
+            cleanup_log_exc_info=True,
+        )
         raise
     return proc.returncode, stdout, stderr
 

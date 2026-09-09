@@ -15,7 +15,7 @@ def list_sink_inputs() -> list[dict]:
     """Query pactl and parse all sink-input entries (REFACTOR-011-Extrakt)."""
     try:
         completed = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True, check=False, timeout=1.5, env=c_locale_env())
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return []
     if completed.returncode != 0:
         return []

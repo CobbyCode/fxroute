@@ -357,6 +357,7 @@ restore_main() {
   setup_repo
 
   local remote_ref remote_version remote_commit
+  local backup_dir patch_file untracked_archive untracked_list
   log "Restore: fetching GitHub updates."
   git fetch --prune --no-tags
 
@@ -380,6 +381,26 @@ restore_main() {
       rm -f "$patch_file"
       log "Restore: no tracked source changes to save."
     fi
+    # Untracked user files are NOT covered by the patch above, but the
+    # clean below would delete them (except the documented runtime
+    # excludes). Archive exactly the set the clean is about to remove so
+    # no user data is lost silently; the listing mirrors the clean's
+    # exclude list.
+    untracked_archive="$backup_dir/local-untracked-$(date -u +%Y%m%d-%H%M%S).tar.gz"
+    untracked_list="$(mktemp)"
+    git status --porcelain=v1 --untracked-files=all | grep -E '^\?\? ' | cut -c 4- | while IFS= read -r path; do
+      case "$path" in
+        media/cache|media/cache/*|.env|.env.local|.venv|.venv/*|backups|backups/*|BUILD_ID) ;;
+        *) printf '%s\n' "$path" ;;
+      esac
+    done > "$untracked_list"
+    if [[ -s "$untracked_list" ]]; then
+      tar -czf "$untracked_archive" -T "$untracked_list"
+      log "Restore: untracked user files saved to $untracked_archive."
+    else
+      log "Restore: no untracked user files to save."
+    fi
+    rm -f "$untracked_list"
     log "Restore: discarding local changes and resetting to ${remote_ref}."
     git reset --hard "$remote_ref"
     log "Restore: cleaning untracked files (excluding runtime cache and config)."

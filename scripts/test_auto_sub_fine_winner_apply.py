@@ -175,13 +175,6 @@ class AutoSubFineWinnerApplyTests(unittest.IsolatedAsyncioTestCase):
                 }))
                 stack.enter_context(patch.object(runner, "_calculate_auto_sub_gain", return_value=copy.deepcopy(gain_diagnostics)))
                 stack.enter_context(patch.object(runner, "_auto_sub_gain_deltas", return_value={}))
-                stack.enter_context(patch.object(runner, "_auto_sub_target_residual_raw_db", return_value=(0.0, 0.0, [])))
-                stack.enter_context(patch.object(runner, "_auto_sub_balance_transfer_deltas", return_value={
-                    "available": True,
-                    "deltas_db": {"left": 0.0, "right": 0.0},
-                    "channels": {},
-                    "reason": "Balance trim transferred to the accepted configuration",
-                }))
                 stack.enter_context(patch.object(runner, "_auto_sub_gain_verdict", return_value={
                     "accepted": True, "reason": "accepted", "channels": {},
                 }))

@@ -2,36 +2,9 @@
 """Atomic persistence for FXRoute-owned DSP presets and state."""
 
 import json
-import os
-import stat
-import tempfile
 from pathlib import Path
+from common.atomic_write import atomic_write_text
 from typing import Any, Dict, Iterable, List, Optional, Set
-
-
-def atomic_write_text(path: Path, text: str) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        try:
-            mode = os.lstat(path).st_mode
-        except OSError:
-            mode = None
-        if mode is not None and stat.S_ISREG(mode):
-            os.fchmod(fd, stat.S_IMODE(mode))
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = -1
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        if fd >= 0:
-            os.close(fd)
-        temporary.unlink(missing_ok=True)
-        raise
 
 
 def _basename(value: Any) -> str:
