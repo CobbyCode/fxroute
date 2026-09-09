@@ -3328,6 +3328,34 @@ async def _resolve_tidal_stream_url(track: dict) -> str | None:
     return track["url"] or None
 
 
+def _native_mpv_direct_selection_ready(active_queue_ids: list) -> bool:
+    """Gate for the native-MPV direct-selection fast path in /api/play.
+
+    set_playlist_pos() is fire-and-forget and reports success even against
+    an empty or stale MPV playlist (e.g. after another source stopped MPV
+    during a handoff). Only skip the coordinated transition when MPV
+    actually holds the mirrored native playlist: the committed owner is an
+    MPV source, MPV has a file loaded, and its playlist length matches the
+    active queue. Anything else falls through to the regular
+    playback/coordinator path so the track is really loaded and the owner
+    is taken over.
+    """
+    owner = playback_state.current_playback_owner
+    if owner is not None and not source_policy.is_mpv_source(owner):
+        return False
+    player = runtime.player_instance
+    if player is None or not getattr(player, "_running", False):
+        return False
+    state = getattr(player, "state", None) or {}
+    if not state.get("current_file"):
+        return False
+    try:
+        count = player.get_property("playlist-count")
+    except Exception:
+        return False
+    return isinstance(count, int) and count > 0 and count == len(active_queue_ids)
+
+
 @app.post("/api/play")
 async def play_track(req: PlayRequest):
     if not runtime.player_instance or not runtime.player_instance._running:
@@ -3352,6 +3380,7 @@ async def play_track(req: PlayRequest):
         and req.queue_track_ids
         and list(req.queue_track_ids) == active_queue_ids
         and req.track_id in active_queue_ids
+        and _native_mpv_direct_selection_ready(active_queue_ids)
     ):
         target_index = active_queue_ids.index(req.track_id)
         if not await playback_queue.queue.load_track(target_index, transition_reason="direct queue selection"):

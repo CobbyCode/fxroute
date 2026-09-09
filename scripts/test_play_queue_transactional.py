@@ -63,6 +63,14 @@ class _FakePlayer:
             "position": 0.0,
             "volume": 100,
         }
+        # Mirrors the MPV-side native playlist length for the direct-selection
+        # readiness gate (None = unknown, e.g. never probed).
+        self.playlist_count: int | None = None
+
+    def get_property(self, name):
+        if name == "playlist-count":
+            return self.playlist_count
+        return None
 
     def set_playlist_pos(self, index: int):
         self.state["playlist_pos"] = index
@@ -227,6 +235,8 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             main.runtime.player_instance.state["current_file"] = "/music/a.flac"
             main.runtime.player_instance.state["playing"] = True
             main.runtime.player_instance.state["paused"] = False
+            # Healthy MPV side: the mirrored native playlist is loaded.
+            main.runtime.player_instance.playlist_count = 3
             with self._patch_context(lambda _request: self.fail("Coordinator must not run")), patch.object(
                 main.runtime.music_library.scanner, "get_tracks"
             ) as scan:
@@ -236,6 +246,59 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["track"]["id"], "c")
             self.assertEqual(playback_queue.queue.index, 2)
             self.assertEqual(main.runtime.player_instance.state["playlist_pos"], 2)
+        finally:
+            self._restore(originals)
+
+    async def test_play_click_in_same_native_queue_after_spotify_takeover_runs_coordinator(self):
+        # Regression (.104): library queue active -> Spotify takes over and
+        # stops MPV (empty playlist) -> back to the library, starting a track
+        # from the same queue ids must take the regular coordinator path so
+        # the track is really loaded and the owner is taken over. The direct
+        # set_playlist_pos fast path against the stale/empty MPV playlist
+        # returned 200 without any playback and left the owner on spotify.
+        queue_a = [_track("a"), _track("b"), _track("c")]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        requests = []
+        try:
+            # Spotify takeover: owner moved away, MPV stopped with no file
+            # loaded and an empty playlist.
+            main.playback_state.current_playback_owner = "spotify"
+            main.runtime.player_instance.state["current_file"] = None
+            main.runtime.player_instance.state["playing"] = False
+            main.runtime.player_instance.state["paused"] = False
+            main.runtime.player_instance.playlist_count = 0
+
+            async def succeed(request):
+                requests.append(request)
+                main.runtime.player_instance.state.update({
+                    "current_file": request.target_url,
+                    "paused": False,
+                    "playing": True,
+                    "ended": False,
+                    "position": 1.0,
+                })
+                return SimpleNamespace(
+                    target_rate=request.target_rate,
+                    committed=True,
+                    transition_id="tr-test-takeover",
+                )
+
+            with self._patch_context(succeed):
+                result = await self._play(track_id="b", queue_track_ids=["a", "b", "c"])
+
+            self.assertEqual(len(requests), 1, "the coordinated transition must run")
+            self.assertEqual(requests[0].source, "local")
+            self.assertEqual(requests[0].target_url, "/music/b.flac")
+            self.assertNotIn(
+                "playlist_pos",
+                main.runtime.player_instance.state,
+                "the stale-playlist fast path must not run",
+            )
+            self.assertEqual(result["status"], "playing")
+            self.assertEqual(result["track"]["id"], "b")
+            self.assertEqual(playback_queue.queue.index, 1)
+            self.assertEqual(main.playback_state.current_track_info["id"], "b")
+            self.assertEqual(main.playback_state.current_playback_owner, "local")
         finally:
             self._restore(originals)
 
