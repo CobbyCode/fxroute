@@ -113,6 +113,41 @@ def can_use_native_local_queue(tracks: list[dict]) -> bool:
     return len(set(rates)) == 1
 
 
+def mpv_move_landing_index(old_index: int, new_index: int) -> int:
+    """Return where ``playlist-move old new`` actually puts the entry in MPV.
+
+    Verified against MPV: the moved entry lands immediately *before* the
+    entry that originally occupied ``new_index``.  For upward moves this is
+    identical to plain ``pop(old).insert(new)``; for downward moves
+    (``new > old``) it lands one slot earlier, and an adjacent ``i -> i+1``
+    move is a silent no-op.  The app-side mirror must use exactly this rule,
+    otherwise it drifts from the MPV playlist without any error.
+    """
+    return new_index - 1 if new_index > old_index else new_index
+
+
+def read_mpv_playlist_filenames(player: Any) -> list[str] | None:
+    """Read back the MPV-side playlist order (file paths), or None if unreadable."""
+    read = getattr(player, "get_property", None)
+    if not callable(read):
+        return None
+    try:
+        raw = read("playlist")
+    except Exception:
+        return None
+    if not isinstance(raw, list):
+        return None
+    filenames: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            return None
+        name = entry.get("filename")
+        if not isinstance(name, str) or not name:
+            return None
+        filenames.append(name)
+    return filenames
+
+
 def cleared_queue_candidate(track: dict | None = None) -> QueueCandidate:
     """Candidate for a play request that intentionally replaces any queue."""
     return QueueCandidate(
@@ -431,6 +466,7 @@ class PlaybackQueue:
 
         try:
             current_order = [dict(track) for track in self.tracks]
+            moves: list[tuple[int, int]] = []
             for desired_index, desired_track in enumerate(target_queue):
                 match_index = next(
                     (
@@ -448,14 +484,41 @@ class PlaybackQueue:
                     raise RuntimeError("Native MPV queue entry is missing")
                 if match_index != desired_index:
                     move_playlist_entry(match_index, desired_index)
+                    moves.append((match_index, desired_index))
                     entry = current_order.pop(match_index)
-                    current_order.insert(desired_index, entry)
+                    current_order.insert(
+                        mpv_move_landing_index(match_index, desired_index), entry
+                    )
             if callable(set_loop_playlist):
                 set_loop_playlist(bool(self.loop))
             if target_index < 0 or target_index >= len(current_order):
                 raise RuntimeError("Native MPV queue index is invalid")
             if current_order[target_index].get("url") != (player.state if player else {}).get("current_file"):
                 set_playlist_pos(target_index)
+            expected_urls = [str(track.get("url") or "") for track in current_order]
+            actual_urls = read_mpv_playlist_filenames(player)
+            if actual_urls is None:
+                logger.warning(
+                    "Native MPV reorder unverifiable; falling back to the "
+                    "coordinated rebuild path (moves=%s)",
+                    moves,
+                )
+                return False
+            if actual_urls != expected_urls:
+                # Never commit a silently diverged app/MPV order: the
+                # coordinator rebuild path below replaces the MPV playlist
+                # wholesale from the target queue instead.
+                logger.warning(
+                    "Native MPV reorder diverged from the app queue order; "
+                    "falling back to the coordinated rebuild path "
+                    "(moves=%s expected=%s actual=%s target_index=%s)",
+                    moves,
+                    expected_urls,
+                    actual_urls,
+                    target_index,
+                )
+                return False
+            logger.debug("Native MPV reorder verified (%s moves)", len(moves))
             return True
         except Exception:
             logger.warning(

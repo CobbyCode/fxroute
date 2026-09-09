@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import playback.queue as playback_queue
 import main
+from playback.queue import PlaybackQueue, mpv_move_landing_index
 from playback_queue_test_support import queue_state, restore_queue_state
 from playback.transition import PlaybackTransitionFailure
 
@@ -475,6 +476,165 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main.playback_state.current_track_info, _track("a"))
         finally:
             self._restore(originals)
+
+
+class _TrueMpvPlayer:
+    """MPV double implementing the verified playlist-move semantics.
+
+    Verified against MPV: ``playlist-move old new`` inserts the entry
+    immediately before the entry that originally occupied ``new`` (i.e.
+    ``pop(old).insert(new - 1)`` for downward moves).  ``get_property``
+    exposes the live playlist so the reorder readback can be verified.
+    """
+
+    _running = True
+
+    def __init__(self, urls: list[str]) -> None:
+        self.playlist = list(urls)
+        self.calls: list[tuple] = []
+        self.state = {
+            "current_file": urls[0] if urls else None,
+            "playing": bool(urls),
+            "paused": False,
+            "ended": False,
+        }
+
+    def get_property(self, name):
+        if name == "playlist":
+            return [{"filename": url} for url in self.playlist]
+        if name == "playlist-count":
+            return len(self.playlist)
+        return None
+
+    def set_playlist_pos(self, index: int):
+        self.calls.append(("pos", index))
+        self.state["playlist_pos"] = index
+        if 0 <= index < len(self.playlist):
+            self.state["current_file"] = self.playlist[index]
+
+    def move_playlist_entry(self, old_index: int, new_index: int):
+        self.calls.append(("move", old_index, new_index))
+        entry = self.playlist.pop(old_index)
+        self.playlist.insert(new_index - 1 if new_index > old_index else new_index, entry)
+
+    def set_loop_playlist(self, enabled):
+        self.calls.append(("loop", bool(enabled)))
+
+
+class _FrozenMpvPlayer(_TrueMpvPlayer):
+    """MPV double whose moves are silently dropped (stale playlist).
+
+    Models an MPV side that no longer applies reorder commands while still
+    reporting success: the reorder readback must detect the divergence and
+    fall back to the coordinated rebuild instead of committing it silently.
+    """
+
+    def move_playlist_entry(self, old_index: int, new_index: int):
+        self.calls.append(("move", old_index, new_index))
+
+
+def _local_queue(player, run_transition=None) -> PlaybackQueue:
+    return PlaybackQueue(SimpleNamespace(
+        player=lambda: player,
+        run_transition=run_transition,
+        commit_coordinated_track=lambda *a, **k: None,
+        get_current_track_info=lambda: None,
+        set_track_context=lambda *a, **k: None,
+        transition_is_active=lambda: False,
+        player_is_running=lambda *a, **k: True,
+        wait_for_player_current_file=None,
+        coordinator_target_rate=lambda *a, **k: 48000,
+        coordinator_rate_change=lambda *a: False,
+        sample_rate_policy_is_auto=lambda: True,
+        transition_error_http=lambda e: e,
+        get_tracks=lambda: [],
+        build_playback_payload=lambda *a, **k: {},
+        resolve_stream_url=None,
+    ))
+
+
+def _local_tracks(ids: list[str]) -> list[dict]:
+    return [_track(track_id) for track_id in ids]
+
+
+class MpvMoveSemanticsTests(unittest.TestCase):
+    """Pin the verified MPV playlist-move truth table.
+
+    ``playlist-move old new`` inserts the entry immediately before the entry
+    that originally occupied ``new``: upward moves match plain pop+insert,
+    downward moves land one slot earlier, and an adjacent ``i -> i+1`` move
+    is a silent no-op.
+    """
+
+    def test_upward_move_matches_pop_insert(self):
+        self.assertEqual(mpv_move_landing_index(4, 1), 1)
+        self.assertEqual(mpv_move_landing_index(5, 0), 0)
+        self.assertEqual(mpv_move_landing_index(5, 3), 3)
+
+    def test_downward_move_lands_one_earlier(self):
+        self.assertEqual(mpv_move_landing_index(1, 4), 3)
+        self.assertEqual(mpv_move_landing_index(0, 5), 4)
+        self.assertEqual(mpv_move_landing_index(2, 5), 4)
+
+    def test_adjacent_downward_move_is_noop_index(self):
+        self.assertEqual(mpv_move_landing_index(0, 1), 0)
+        self.assertEqual(mpv_move_landing_index(3, 4), 3)
+
+    def test_equal_indices_stay(self):
+        self.assertEqual(mpv_move_landing_index(2, 2), 2)
+
+
+class NativeReorderVerificationTests(unittest.IsolatedAsyncioTestCase):
+    """The reorder readback keeps app queue and MPV playlist identical."""
+
+    async def test_shuffle_reorder_matches_mpv_playlist_exactly(self):
+        ids = ["a", "b", "c", "d", "e", "f", "g", "h"]
+        player = _TrueMpvPlayer([f"/music/{track_id}.flac" for track_id in ids])
+        queue = _local_queue(player)
+        queue.tracks = [dict(track) for track in _local_tracks(ids)]
+        queue.original = [dict(track) for track in _local_tracks(ids)]
+        queue.index = 2
+        queue.mode = "native_mpv"
+        player.state["current_file"] = "/music/c.flac"
+        with patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()):
+            self.assertTrue(await queue.set_shuffle(True))
+        app_ids = [track["id"] for track in queue.tracks]
+        mpv_ids = [url.rsplit("/", 1)[-1].removesuffix(".flac") for url in player.playlist]
+        self.assertTrue(queue.shuffle)
+        self.assertEqual(app_ids, mpv_ids, "app queue and MPV playlist must match exactly")
+        self.assertEqual(app_ids[:3], ids[:3], "prefix including current must stay fixed")
+        self.assertEqual(queue.tracks[queue.index]["id"], "c")
+        with patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()):
+            self.assertTrue(await queue.set_shuffle(False))
+        self.assertFalse(queue.shuffle)
+        self.assertEqual([track["id"] for track in queue.tracks], ids)
+        self.assertEqual(player.playlist, [f"/music/{track_id}.flac" for track_id in ids])
+
+    async def test_diverged_mpv_playlist_falls_back_to_coordinator(self):
+        ids = ["a", "b", "c", "d", "e", "f"]
+        player = _FrozenMpvPlayer([f"/music/{track_id}.flac" for track_id in ids])
+        transitions = []
+
+        async def succeed(request):
+            transitions.append(request)
+            return SimpleNamespace(target_rate=48000, committed=True, transition_id="tr-test")
+
+        queue = _local_queue(player, run_transition=succeed)
+        queue.tracks = [dict(track) for track in _local_tracks(ids)]
+        queue.original = [dict(track) for track in _local_tracks(ids)]
+        queue.index = 1
+        queue.mode = "native_mpv"
+        player.state["current_file"] = "/music/b.flac"
+        with patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()):
+            with self.assertLogs("playback.queue", level="WARNING") as captured:
+                self.assertTrue(await queue.set_shuffle(True))
+        self.assertEqual(len(transitions), 1, "divergence must fall back to the coordinator path")
+        self.assertTrue(any("diverged" in message for message in captured.output))
+        # The committed state comes from the rebuilt candidate, never from
+        # the silently diverged MPV side.
+        self.assertEqual([track["id"] for track in queue.tracks], ["a", "b", "f", "e", "d", "c"])
+        self.assertTrue(queue.shuffle)
+        self.assertEqual(len(player.playlist), 6, "fallback must not wipe the MPV side itself")
 
 
 if __name__ == "__main__":

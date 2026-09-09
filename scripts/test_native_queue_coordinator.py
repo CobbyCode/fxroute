@@ -104,8 +104,17 @@ class _QueuePlayer:
         self.calls.append(("playlist-move", old_index, new_index))
         current_file = self.state.get("current_file")
         entry = self.playlist.pop(old_index)
-        self.playlist.insert(new_index, entry)
+        # True MPV semantics (verified): the entry lands before the entry
+        # that originally occupied new_index.
+        self.playlist.insert(new_index - 1 if new_index > old_index else new_index, entry)
         self.state["playlist_pos"] = self.playlist.index(current_file) if current_file in self.playlist else new_index
+
+    def get_property(self, name):
+        if name == "playlist":
+            return [{"filename": url} for url in self.playlist]
+        if name == "playlist-count":
+            return len(self.playlist)
+        return None
 
     def clear_playlist(self):
         self.calls.append(("playlist-clear",))

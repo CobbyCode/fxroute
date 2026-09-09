@@ -104,6 +104,8 @@ class _MpvPlaylistPlayer:
     def get_property(self, name):
         if name == "playlist-count":
             return len(self.playlist)
+        if name == "playlist":
+            return [{"filename": f"/music/{track_id}.flac"} for track_id in self.playlist]
         return None
 
     def set_playlist_pos(self, index: int):
@@ -112,7 +114,9 @@ class _MpvPlaylistPlayer:
 
     def move_playlist_entry(self, old_index: int, new_index: int):
         entry = self.playlist.pop(old_index)
-        self.playlist.insert(new_index, entry)
+        # True MPV semantics (verified): the entry lands before the entry
+        # that originally occupied new_index.
+        self.playlist.insert(new_index - 1 if new_index > old_index else new_index, entry)
 
     def set_loop_playlist(self, enabled):
         pass
