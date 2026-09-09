@@ -3762,8 +3762,9 @@ function renderFooterModeButtons() {
     const track = state.playback.current_track;
     const nativeQueueActive = !!(track && (track.source === 'local' || track.source === 'tidal'));
     const queue = state.playback.queue || {};
-    const showShuffle = nativeQueueActive && Number(queue.count || 0) > 1;
-    const showLoop = nativeQueueActive;
+    const hasActiveQueue = Number(queue.count || 0) > 1;
+    const showShuffle = nativeQueueActive && hasActiveQueue;
+    const showLoop = nativeQueueActive && hasActiveQueue;
     if (shuffleBtn) {
         shuffleBtn.classList.toggle('hidden', !showShuffle);
         shuffleBtn.classList.toggle('active', showShuffle && !!state.library.shuffle);
