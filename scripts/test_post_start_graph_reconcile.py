@@ -397,5 +397,247 @@ class OutputModePausedSourceTests(unittest.IsolatedAsyncioTestCase):
             await harness.verify_output_mode_runtime(request)
 
 
+SPOTIFY_FL = "spotify:output_FL"
+SPOTIFY_FR = "spotify:output_FR"
+SPOTIFY_SINK_FL = "fxroute_dsp_sink:playback_FL"
+SPOTIFY_SINK_FR = "fxroute_dsp_sink:playback_FR"
+
+
+def _spotify_production_links() -> dict:
+    return {
+        f"{DSP_INGRESS_LEFT} -> {HELPER_LEFT}": True,
+        f"{DSP_INGRESS_RIGHT} -> {HELPER_RIGHT}": True,
+        f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_FL": True,
+        f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_FR": True,
+    }
+
+
+def _spotify_toggle_request() -> TransitionRequest:
+    """Spotify resume after an output-device flap (live .104 shape).
+
+    No ``target_url``: the toggle carries only the source intent with
+    ``should_play=True``, so the post-start graph requires the live
+    Spotify producer ports.
+    """
+    return TransitionRequest(
+        operation="spotify-toggle",
+        source="spotify",
+        target_rate=44100,
+        should_play=True,
+        rate_change=False,
+        reload_source=True,
+        detail="api-spotify-toggle",
+    )
+
+
+def _spotify_unknown_source_diagnosis() -> dict:
+    """First readback of the .104 failure: resolver returned None.
+
+    No producer ports are resolvable yet, so the source verdict is an
+    empty mapping with ``source_links_complete=False`` while every
+    production link is already present.
+    """
+    return {
+        "mode": "stereo",
+        "output_key": OUTPUT_KEY,
+        "dsp_ports": True,
+        "helper_ports": True,
+        "helper_active": True,
+        "helper_rate": 44100,
+        "helper_rate_matches": True,
+        "source_links": {},
+        "source_links_complete": False,
+        "links": _spotify_production_links(),
+        "links_complete": False,
+        "bypass_only": False,
+        "direct_source_to_hw_present": False,
+        "port_identities": {
+            "source": (),
+            "source_target": (SPOTIFY_SINK_FL, SPOTIFY_SINK_FR),
+            "dsp": (DSP_INGRESS_LEFT, DSP_INGRESS_RIGHT),
+            "helper": (HELPER_LEFT, HELPER_RIGHT, "fxroute_dsp:output_1", "fxroute_dsp:output_2"),
+            "output": (f"{OUTPUT_KEY}:playback_FL", f"{OUTPUT_KEY}:playback_FR"),
+        },
+        "signature": "spotify-ports-absent",
+    }
+
+
+def _spotify_unlinked_source_diagnosis() -> dict:
+    """Ports visible but ingress links missing: the relinkable state."""
+    return {
+        "mode": "stereo",
+        "output_key": OUTPUT_KEY,
+        "dsp_ports": True,
+        "helper_ports": True,
+        "helper_active": True,
+        "helper_rate": 44100,
+        "helper_rate_matches": True,
+        "source_links": {
+            f"{SPOTIFY_FL} -> {SPOTIFY_SINK_FL}": False,
+            f"{SPOTIFY_FR} -> {SPOTIFY_SINK_FR}": False,
+        },
+        "source_links_complete": False,
+        "links": _spotify_production_links(),
+        "links_complete": False,
+        "bypass_only": False,
+        "direct_source_to_hw_present": False,
+        "port_identities": {
+            "source": (SPOTIFY_FL, SPOTIFY_FR),
+            "source_target": (SPOTIFY_SINK_FL, SPOTIFY_SINK_FR),
+            "dsp": (DSP_INGRESS_LEFT, DSP_INGRESS_RIGHT),
+            "helper": (HELPER_LEFT, HELPER_RIGHT, "fxroute_dsp:output_1", "fxroute_dsp:output_2"),
+            "output": (f"{OUTPUT_KEY}:playback_FL", f"{OUTPUT_KEY}:playback_FR"),
+        },
+        "signature": "spotify-links-missing",
+    }
+
+
+def _spotify_complete_diagnosis() -> dict:
+    complete_links = dict(_spotify_production_links())
+    return {
+        "mode": "stereo",
+        "output_key": OUTPUT_KEY,
+        "dsp_ports": True,
+        "helper_ports": True,
+        "helper_active": True,
+        "helper_rate": 44100,
+        "helper_rate_matches": True,
+        "source_links": {
+            f"{SPOTIFY_FL} -> {SPOTIFY_SINK_FL}": True,
+            f"{SPOTIFY_FR} -> {SPOTIFY_SINK_FR}": True,
+        },
+        "source_links_complete": True,
+        "links": complete_links,
+        "links_complete": True,
+        "bypass_only": False,
+        "direct_source_to_hw_present": False,
+        "port_identities": {
+            "source": (SPOTIFY_FL, SPOTIFY_FR),
+            "source_target": (SPOTIFY_SINK_FL, SPOTIFY_SINK_FR),
+            "dsp": (DSP_INGRESS_LEFT, DSP_INGRESS_RIGHT),
+            "helper": (HELPER_LEFT, HELPER_RIGHT, "fxroute_dsp:output_1", "fxroute_dsp:output_2"),
+            "output": (f"{OUTPUT_KEY}:playback_FL", f"{OUTPUT_KEY}:playback_FR"),
+        },
+        "signature": "spotify-complete",
+    }
+
+
+class SpotifySourceReadinessTests(unittest.IsolatedAsyncioTestCase):
+    """A source without resolvable producer ports is transient, not drift.
+
+    Regression for the live .104 failure: after the UMC→HDMI→UMC flap the
+    paused Spotify client exposed no sink input, so the first post-start
+    readback carried empty source verdicts (``source_links_complete=False``,
+    ``source_links={}``) with an intact production graph. That state was
+    reported as "incomplete without link-only drift" and latched the
+    output gate, although the ports appeared moments later and the links
+    were plain relinkable drift.
+    """
+
+    async def test_unknown_source_ports_are_awaited_then_relinked(self):
+        request = _spotify_toggle_request()
+        complete = _spotify_complete_diagnosis()
+        orchestrator = playback_orchestration.configured()
+        diagnosis = AsyncMock(
+            side_effect=[
+                _spotify_unknown_source_diagnosis(),
+                _spotify_unlinked_source_diagnosis(),
+                complete,
+                complete,
+            ]
+        )
+        relink = AsyncMock()
+        with patch.object(orchestrator, "playback_graph_diagnosis", diagnosis), patch.object(
+            pw_link_mod, "connect_ports", relink
+        ):
+            result = await orchestrator.reconcile_post_start_graph(request)
+
+        self.assertTrue(result["graph_complete"])
+        self.assertTrue(result["post_start_graph_links_relinked"])
+        self.assertEqual(
+            relink.await_args_list,
+            [
+                call((SPOTIFY_FL,), SPOTIFY_SINK_FL),
+                call((SPOTIFY_FR,), SPOTIFY_SINK_FR),
+            ],
+        )
+        self.assertGreaterEqual(diagnosis.await_count, 4)
+
+    async def test_source_readiness_timeout_reports_source_not_drift(self):
+        import dataclasses
+
+        request = _spotify_toggle_request()
+        orchestrator = playback_orchestration.configured()
+        original_deps = orchestrator._deps
+        orchestrator._deps = dataclasses.replace(
+            original_deps, source_port_readiness_timeout_ms=150
+        )
+        self.addCleanup(setattr, orchestrator, "_deps", original_deps)
+        diagnosis = AsyncMock(return_value=_spotify_unknown_source_diagnosis())
+        relink = AsyncMock()
+        with patch.object(orchestrator, "playback_graph_diagnosis", diagnosis), patch.object(
+            pw_link_mod, "connect_ports", relink
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                await orchestrator.reconcile_post_start_graph(request)
+
+        message = str(caught.exception)
+        self.assertIn("source readiness", message)
+        self.assertIn("spotify", message)
+        self.assertNotIn("without link-only drift", message)
+        relink.assert_not_awaited()
+
+    async def test_direct_to_hardware_after_source_appears_uses_existing_cleanup(self):
+        """A refreshed diagnosis must pass the direct-link cleanup again.
+
+        Timing variant: the source is initially absent, then its ports
+        appear while PipeWire has already auto-linked them straight to the
+        hardware output. The refreshed diagnosis therefore newly reports
+        ``direct_source_to_hw_present=True`` after the first cleanup branch
+        was passed, so it must go through the same existing
+        direct-source-to-hardware reconciliation before missing production
+        links are evaluated.
+        """
+        request = _spotify_toggle_request()
+        appeared_direct = {
+            **_spotify_unlinked_source_diagnosis(),
+            "direct_source_to_hw_present": True,
+            "signature": "spotify-direct-to-hw",
+        }
+        post_cleanup = {
+            **_spotify_unlinked_source_diagnosis(),
+            "signature": "spotify-post-cleanup",
+        }
+        complete = _spotify_complete_diagnosis()
+        orchestrator = playback_orchestration.configured()
+        diagnosis = AsyncMock(
+            side_effect=[
+                _spotify_unknown_source_diagnosis(),
+                appeared_direct,
+                post_cleanup,
+                complete,
+                complete,
+            ]
+        )
+        cleanup = AsyncMock()
+        relink = AsyncMock()
+        with patch.object(orchestrator, "playback_graph_diagnosis", diagnosis), patch.object(
+            orchestrator, "reconcile_subwoofer_links_only", cleanup
+        ), patch.object(pw_link_mod, "connect_ports", relink):
+            result = await orchestrator.reconcile_post_start_graph(request)
+
+        self.assertTrue(result["graph_complete"])
+        self.assertTrue(result["post_start_graph_links_relinked"])
+        cleanup.assert_awaited_once_with()
+        self.assertEqual(
+            relink.await_args_list,
+            [
+                call((SPOTIFY_FL,), SPOTIFY_SINK_FL),
+                call((SPOTIFY_FR,), SPOTIFY_SINK_FR),
+            ],
+        )
+        self.assertEqual(diagnosis.await_count, 5)
+
+
 if __name__ == "__main__":
     unittest.main()

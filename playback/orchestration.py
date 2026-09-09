@@ -451,6 +451,53 @@ class PlaybackOrchestrator:
             missing = [link for link, present in (diagnosis.get("source_links") or {}).items() if not present] + missing
         return missing
 
+    @staticmethod
+    def _post_start_source_identity_unknown(diagnosis: Mapping[str, Any]) -> bool:
+        """True when a required source has no resolvable producer ports yet.
+
+        Empty ``source_links`` with ``source_links_complete is False`` and no
+        source port identities means the resolver saw no live producer (e.g. a
+        paused external renderer re-announcing its stream after a device
+        flap), not link drift. Missing links must never be invented while the
+        concrete source identity is unknown.
+        """
+        if diagnosis.get("source_links_complete") is not False:
+            return False
+        if diagnosis.get("source_links"):
+            return False
+        identities = diagnosis.get("port_identities") or {}
+        return not identities.get("source")
+
+    async def _await_post_start_source_readiness(
+        self,
+        overview: dict | None,
+        diagnosis: Mapping[str, Any],
+        *,
+        source: str | None,
+        target_rate: int,
+        require_source: bool,
+        request: TransitionRequest,
+    ) -> Mapping[str, Any]:
+        """Re-poll a sourceless diagnosis until producer ports appear."""
+        if not self._post_start_source_identity_unknown(diagnosis):
+            return diagnosis
+        readiness_timeout = self._deps.source_port_readiness_timeout_ms
+        readiness_deadline = time.monotonic() + max(readiness_timeout, 0) / 1000
+        logger.info(
+            "Post-start graph awaiting producer ports for source '%s' (operation=%s)",
+            source,
+            request.operation,
+        )
+        while self._post_start_source_identity_unknown(diagnosis):
+            if time.monotonic() >= readiness_deadline:
+                self.log_playback_graph_diagnosis(diagnosis, target_rate=target_rate, reason=f"post-start-{request.operation}", detail=request.detail)
+                raise RuntimeError(
+                    f"post-start source readiness timed out: no producer ports for source '{source}' within {readiness_timeout} ms"
+                )
+            await self._deps.sleep(self._deps.pipewire_poll_interval_ms / 1000)
+            diagnosis = await self.playback_graph_diagnosis(overview, source=source, target_rate=target_rate, require_source=require_source)
+        return diagnosis
+
     def measurement_session_link_loss_is_repairable(self, diagnosis: Mapping[str, Any], *, target_rate: int) -> bool:
         if diagnosis.get("links_complete") or diagnosis.get("dsp_ports") is not True or diagnosis.get("measurement_rate_aligned") is not True:
             return False
@@ -526,6 +573,20 @@ class PlaybackOrchestrator:
             graph_source = None
         include_source = graph_source is not None
         diagnosis = await self.playback_graph_diagnosis(overview, source=graph_source, target_rate=target_rate, require_source=include_source)
+        if include_source:
+            # Readiness first: with no resolvable producer ports there can be
+            # no direct source-to-hardware links either, so awaiting the
+            # source identity here changes nothing for the branch below but
+            # guarantees the refreshed diagnosis passes through the same
+            # existing direct-link reconciliation.
+            diagnosis = await self._await_post_start_source_readiness(
+                overview,
+                diagnosis,
+                source=graph_source,
+                target_rate=target_rate,
+                require_source=include_source,
+                request=request,
+            )
         if diagnosis.get("direct_source_to_hw_present"):
             await self.reconcile_subwoofer_links_only()
             diagnosis = await self.playback_graph_diagnosis(overview, source=graph_source, target_rate=target_rate, require_source=include_source)
