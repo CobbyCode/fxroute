@@ -148,6 +148,20 @@ def read_mpv_playlist_filenames(player: Any) -> list[str] | None:
     return filenames
 
 
+def shuffle_around_current(tracks: list[dict], current_index: int) -> list[dict]:
+    """Return a copy with the current entry fixed and everything else permuted.
+
+    CD-player shuffle: enabling shuffle must always visibly randomize, no
+    matter where in the queue playback currently is.  Only the current entry
+    keeps its position so playback continues uninterrupted; already played
+    entries may come up again, exactly like reshuffling a CD.
+    """
+    current = dict(tracks[current_index])
+    rest = [dict(track) for index, track in enumerate(tracks) if index != current_index]
+    random.shuffle(rest)
+    return rest[:current_index] + [current] + rest[current_index:]
+
+
 def cleared_queue_candidate(track: dict | None = None) -> QueueCandidate:
     """Candidate for a play request that intentionally replaces any queue."""
     return QueueCandidate(
@@ -299,9 +313,7 @@ class PlaybackQueue:
                 (index for index, track in enumerate(ordered_tracks) if track.get("id") == track_id),
                 0,
             )
-            future = [dict(track) for track in ordered_tracks[current_index + 1:]]
-            random.shuffle(future)
-            ordered_tracks = [dict(track) for track in ordered_tracks[:current_index + 1]] + future
+            ordered_tracks = shuffle_around_current(ordered_tracks, current_index)
 
         queue = ordered_tracks if len(ordered_tracks) > 1 else []
         original = original_tracks if len(original_tracks) > 1 else []
@@ -561,10 +573,7 @@ class PlaybackQueue:
         current_track_url = current_track.get("url")
 
         if enabled:
-            target_queue = [dict(track) for track in self.tracks[:current_index + 1]]
-            future = [dict(track) for track in self.tracks[current_index + 1:]]
-            random.shuffle(future)
-            target_queue.extend(future)
+            target_queue = shuffle_around_current(self.tracks, current_index)
             target_index = current_index
         elif self.original:
             target_queue = [dict(track) for track in self.original]
@@ -589,9 +598,9 @@ class PlaybackQueue:
             target_index = current_index
 
         if self.mode == "native_mpv":
-            # Shuffle ON keeps the current entry at position zero.  Rebuild the
-            # native playlist directly so changing order does not enter the full
-            # output-graph transition path.
+            # Shuffle ON keeps only the current entry in place while the rest
+            # is permuted.  Rebuild the native playlist directly so changing
+            # order does not enter the full output-graph transition path.
             if await self._reorder_native_mpv_playlist(target_queue, target_index, enabled):
                 self.tracks = target_queue
                 self.index = target_index

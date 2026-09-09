@@ -228,7 +228,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = self._install(queue_a, index=1, mode="native_mpv")
         try:
             async def succeed(request):
-                self.assertEqual([item["id"] for item in request.native_queue], ["a", "b", "d", "c"])
+                self.assertEqual([item["id"] for item in request.native_queue], ["d", "b", "c", "a"])
                 main.runtime.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
@@ -241,7 +241,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             with self._patch_context(succeed, reverse_shuffle=True):
                 self.assertTrue(await playback_queue.queue.set_shuffle(True))
 
-            self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["a", "b", "d", "c"])
+            self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["d", "b", "c", "a"])
             self.assertEqual(playback_queue.queue.index, 1)
             self.assertTrue(playback_queue.queue.shuffle)
             self.assertEqual(main.playback_state.current_track_info["id"], "b")
@@ -602,7 +602,10 @@ class NativeReorderVerificationTests(unittest.IsolatedAsyncioTestCase):
         mpv_ids = [url.rsplit("/", 1)[-1].removesuffix(".flac") for url in player.playlist]
         self.assertTrue(queue.shuffle)
         self.assertEqual(app_ids, mpv_ids, "app queue and MPV playlist must match exactly")
-        self.assertEqual(app_ids[:3], ids[:3], "prefix including current must stay fixed")
+        self.assertEqual(
+            app_ids, ["h", "g", "c", "f", "e", "d", "b", "a"],
+            "current stays fixed, everything else is permuted (CD-player shuffle)",
+        )
         self.assertEqual(queue.tracks[queue.index]["id"], "c")
         with patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()):
             self.assertTrue(await queue.set_shuffle(False))
@@ -632,9 +635,55 @@ class NativeReorderVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("diverged" in message for message in captured.output))
         # The committed state comes from the rebuilt candidate, never from
         # the silently diverged MPV side.
-        self.assertEqual([track["id"] for track in queue.tracks], ["a", "b", "f", "e", "d", "c"])
+        self.assertEqual([track["id"] for track in queue.tracks], ["f", "b", "e", "d", "c", "a"])
         self.assertTrue(queue.shuffle)
         self.assertEqual(len(player.playlist), 6, "fallback must not wipe the MPV side itself")
+
+    async def test_late_queue_toggle_visibly_shuffles(self):
+        # Toggling shuffle near the end of the queue must still randomize:
+        # everything except the current entry is permuted (CD-player
+        # shuffle), never just the unplayed tail.
+        ids = ["a", "b", "c", "d", "e", "f", "g", "h"]
+        player = _TrueMpvPlayer([f"/music/{track_id}.flac" for track_id in ids])
+        queue = _local_queue(player)
+        queue.tracks = [dict(track) for track in _local_tracks(ids)]
+        queue.original = [dict(track) for track in _local_tracks(ids)]
+        queue.index = 6
+        queue.mode = "native_mpv"
+        player.state["current_file"] = "/music/g.flac"
+        with patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()):
+            self.assertTrue(await queue.set_shuffle(True))
+        # Rest minus current, reversed: [h,f,e,d,c,b,a]; current g stays at 6.
+        self.assertEqual(
+            [track["id"] for track in queue.tracks],
+            ["h", "f", "e", "d", "c", "b", "g", "a"],
+        )
+        self.assertEqual(queue.tracks[queue.index]["id"], "g")
+        self.assertEqual(
+            [url.rsplit("/", 1)[-1].removesuffix(".flac") for url in player.playlist],
+            ["h", "f", "e", "d", "c", "b", "g", "a"],
+        )
+
+    def test_fresh_mid_album_play_shuffles_earlier_tracks(self):
+        # A fresh play with shuffle on keeps only the selected entry fixed;
+        # entries before it are permuted as well, like the toggle path.
+        ids = ["a", "b", "c", "d", "e", "f"]
+        player = _TrueMpvPlayer([])
+        queue = _local_queue(player)
+        scanner_tracks = [SimpleNamespace(id=track_id, to_dict=lambda track_id=track_id: {
+            "id": track_id, "source": "local", "url": f"/music/{track_id}.flac",
+            "title": track_id, "sample_rate_hz": 48000,
+        }) for track_id in ids]
+        with patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()):
+            candidate = queue.prepare_local_queue(
+                "d", ids, shuffle=True, loop=False, reshuffle=True, tracks=scanner_tracks,
+            )
+        self.assertTrue(candidate.shuffle)
+        self.assertEqual(candidate.index, 3)
+        self.assertEqual(
+            [track["id"] for track in candidate.queue],
+            ["f", "e", "c", "d", "b", "a"],
+        )
 
 
 if __name__ == "__main__":

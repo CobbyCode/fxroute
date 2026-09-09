@@ -541,7 +541,7 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(await playback_queue.queue.set_shuffle(True))
 
             shuffled_ids = [track["id"] for track in playback_queue.queue.tracks]
-            self.assertEqual(shuffled_ids, ["a", "b", "d", "c"])
+            self.assertEqual(shuffled_ids, ["d", "b", "c", "a"])
             self.assertEqual(
                 fake.playlist,
                 [track["url"] for track in playback_queue.queue.tracks],
@@ -551,30 +551,30 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             # A natural native boundary is an MPV callback only.  It updates
             # the same concrete queue index that Manual Next/Previous use.
             fake.state["playlist_pos"] = 2
-            fake.state["current_file"] = "/music/d.flac"
+            fake.state["current_file"] = "/music/c.flac"
             await main.on_player_state_change({
                 "_seq": 1,
-                "current_file": "/music/d.flac",
+                "current_file": "/music/c.flac",
                 "playlist_pos": 2,
                 "paused": False,
                 "playing": True,
                 "ended": False,
             })
-            self.assertEqual(main.playback_state.current_track_info["id"], "d")
+            self.assertEqual(main.playback_state.current_track_info["id"], "c")
             self.assertEqual(playback_queue.queue.index, 2)
-            self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
+            self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/c.flac")
 
             self.assertEqual(
                 await playback_queue.queue.advance(transition_reason="manual queue next"),
                 "advanced",
             )
-            self.assertEqual(main.playback_state.current_track_info["id"], "c")
+            self.assertEqual(main.playback_state.current_track_info["id"], "a")
             self.assertEqual(playback_queue.queue.index, 3)
-            self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/c.flac")
+            self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/a.flac")
             self.assertTrue(await playback_queue.queue.rewind(transition_reason="manual queue previous"))
-            self.assertEqual(main.playback_state.current_track_info["id"], "d")
+            self.assertEqual(main.playback_state.current_track_info["id"], "c")
             self.assertEqual(playback_queue.queue.index, 2)
-            self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
+            self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/c.flac")
 
             fake.state["position"] = 37.5
             self.assertTrue(await playback_queue.queue.set_shuffle(False))
@@ -583,10 +583,10 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
                 ["a", "b", "c", "d"],
             )
             self.assertFalse(playback_queue.queue.shuffle)
-            self.assertEqual(playback_queue.queue.index, 3)
+            self.assertEqual(playback_queue.queue.index, 2)
             self.assertEqual(fake.playlist, [track["url"] for track in original_queue])
-            self.assertEqual(fake.state["playlist_pos"], 3)
-            self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
+            self.assertEqual(fake.state["playlist_pos"], 2)
+            self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/c.flac")
             self.assertEqual(fake.state["position"], 37.5)
         finally:
             main.peak_monitor_coordinator.sync_playback_state = original_sync_playback
