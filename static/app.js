@@ -7734,7 +7734,11 @@ function setupEffectsActions() {
             window.addEventListener('resize', requestSubwooferPreviewRedrawFromState);
         }
     }
-    // Track focus to avoid resetting input values while user is typing
+    // Track focus to avoid resetting input values while user is typing.
+    // SELECTs are discrete choices (no typing to protect): they save with
+    // the short toggle debounce so live A/B switching applies promptly
+    // instead of restarting the 2000 ms typing debounce on every flip.
+    // Numeric inputs keep the long typing debounce.
     [
         elements.effectsHeadroomGainDb,
         elements.effectsAutogainTargetDb,
@@ -7744,9 +7748,12 @@ function setupEffectsActions() {
         elements.effectsToneEffectMode,
     ].forEach(el => {
         if (!el) return;
+        const valueDebounceMs = el.tagName === 'SELECT'
+            ? EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS
+            : EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS;
         el.addEventListener('focus', () => _activeEditing.add(el));
-        el.addEventListener('input', () => saveEffectsExtrasDebounced(EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS));
-        el.addEventListener('change', () => saveEffectsExtrasDebounced(EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS));
+        el.addEventListener('input', () => saveEffectsExtrasDebounced(valueDebounceMs));
+        el.addEventListener('change', () => saveEffectsExtrasDebounced(valueDebounceMs));
         el.addEventListener('blur', () => {
             _activeEditing.delete(el);
             saveEffectsExtrasDebounced(0); // commit immediately on blur
