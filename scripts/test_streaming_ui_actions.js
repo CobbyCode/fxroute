@@ -448,12 +448,36 @@ async function main() {
     assert.equal(playlistPlayCalls.length, 1, 'a detail play button must dispatch exactly one playback request');
     const playlistPlayCall = playlistPlayCalls[0];
     assert.deepEqual(JSON.parse(playlistPlayCall.opts.body), {
-        source: 'tidal', track_id: 'p2', queue_track_ids: ['p1', 'p2'],
+        source: 'tidal', track_id: 'p2', queue_track_ids: ['p1', 'p2'], shuffle: false,
     }, 'playlist detail playback must keep its complete playlist queue');
 
     // Leaving the detail view restores the status line immediately.
     content.querySelector('#tidal-detail-back').click();
     assert.equal(statusLine.hidden, false, 'back navigation must restore the status line');
+}
+
+// --- 4b. TIDAL plays carry the current shuffle intent like library plays ---
+
+{
+    const { sandbox, shells, fetchCalls, createdEls } = runStreaming();
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: true, loop: 'none', position: 0, duration: 0 };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    const content = shells.tidal.querySelector('.streaming-content');
+    content.querySelectorAll('.view-tab').find((tab) => tab.dataset.browse === 'playlists').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const playlistRow = createdEls.find((el) => el.className === 'album-card');
+    assert.ok(playlistRow, 'a playlist tile must be created for the playlists tab');
+    playlistRow.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const playlistTrackRows = createdEls.filter((el) => el.className === 'streaming-result');
+    playlistTrackRows.at(-1).querySelector('.track-play').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const playlistPlayCalls = fetchCalls.filter((c) => c.url === '/api/play');
+    assert.equal(playlistPlayCalls.length, 1, 'a detail play button must dispatch exactly one playback request');
+    assert.deepEqual(JSON.parse(playlistPlayCalls[0].opts.body), {
+        source: 'tidal', track_id: 'p2', queue_track_ids: ['p1', 'p2'], shuffle: true,
+    }, 'an enabled TIDAL shuffle must ride along on the play request like library plays');
 }
 
 // --- 5. TIDAL browse: Albums default + persistent search bar --------------
@@ -516,7 +540,7 @@ async function main() {
     const playCall = fetchCalls.find((c) => c.url === '/api/play');
     assert.ok(playCall, 'clicking a search track must start playback');
     assert.deepEqual(JSON.parse(playCall.opts.body), {
-        source: 'tidal', track_id: 's2', queue_track_ids: ['s1', 's2'],
+        source: 'tidal', track_id: 's2', queue_track_ids: ['s1', 's2'], shuffle: false,
     }, 'search track playback must queue every visible search track');
 
     // The + button collects a persistent playlist selection without playing;
@@ -532,7 +556,7 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const selectionPlayCalls = fetchCalls.filter((c) => c.url === '/api/play');
     assert.deepEqual(JSON.parse(selectionPlayCalls.at(-1).opts.body), {
-        source: 'tidal', track_id: 's1', queue_track_ids: ['s1', 's2'],
+        source: 'tidal', track_id: 's1', queue_track_ids: ['s1', 's2'], shuffle: false,
     }, 'a plain row click must still play with the full visible queue');
 
     // Switching result types reuses the executed query without a second Search click.
@@ -619,7 +643,7 @@ async function main() {
     const playCalls = fetchCalls.filter((c) => c.url === '/api/play');
     assert.equal(playCalls.length, 1, 'clicking a favorite track must start playback once');
     assert.deepEqual(JSON.parse(playCalls[0].opts.body), {
-        source: 'tidal', track_id: 'f3', queue_track_ids: ['f1', 'f2', 'f3', 'f4'],
+        source: 'tidal', track_id: 'f3', queue_track_ids: ['f1', 'f2', 'f3', 'f4'], shuffle: false,
     }, 'favorite track playback must queue every visible favorite in order at the clicked track');
 }
 
@@ -661,7 +685,7 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const artistTrackPlay = fetchCalls.filter((c) => c.url === '/api/play').at(-1);
     assert.deepEqual(JSON.parse(artistTrackPlay.opts.body), {
-        source: 'tidal', track_id: 's1', queue_track_ids: ['s1'],
+        source: 'tidal', track_id: 's1', queue_track_ids: ['s1'], shuffle: false,
     }, 'artist top-track click must play through the native queue');
 
     // Album click from the artist detail opens the existing album detail.

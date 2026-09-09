@@ -5199,7 +5199,7 @@ function updatePlayPauseButton(playbackState) {
 }
 function highlightActiveTrack() {
     if (window.__footerSource === 'spotify') {
-        document.querySelectorAll('.station-card.active, .track-item.active').forEach(item => item.classList.remove('active'));
+        document.querySelectorAll('.station-card.active, .track-item.active, .streaming-result.active').forEach(item => item.classList.remove('active'));
         return;
     }
     // A play request holds its optimistic target until the server confirms the
@@ -5218,8 +5218,9 @@ function highlightActiveTrack() {
             card.classList.remove('active');
         }
     });
-    // Library tracks
-    document.querySelectorAll('.track-item').forEach(item => {
+    // Library tracks (TIDAL catalog rows share the same active language
+    // and id namespace, so the running track highlights there as well).
+    document.querySelectorAll('.track-item, .streaming-result[data-track-id]').forEach(item => {
         const trackId = item.dataset.trackId;
         if (displayTrack && displayTrack.id === trackId) {
             item.classList.add('active');
