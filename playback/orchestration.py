@@ -23,6 +23,26 @@ from playback.transition import PlaybackTransitionFailure, TransitionRequest, st
 
 logger = logging.getLogger(__name__)
 
+# Sink-input sink indexes meaning "bound to no sink" as reported by pactl.
+_WEDGED_SINK_INDEXES = frozenset({"4294967295", "-1"})
+# PipeWire sink a rebound renderer stream is moved back onto.
+_DSP_INGRESS_SINK_NAME = "fxroute_dsp_sink"
+
+
+def _sink_input_is_wedged(entry: Mapping[str, Any]) -> bool:
+    """True for a corked input with an invalid sink binding.
+
+    Such a stream was detached (e.g. by an output switch) while its client
+    still considers itself playing; the client reuses the zombie instead of
+    recreating it, so no producer ports ever resolve from it.
+    """
+    corked = entry.get("corked")
+    if isinstance(corked, str):
+        corked = corked.strip().lower() in {"1", "true", "yes", "on"}
+    if not corked:
+        return False
+    return str(entry.get("sink") or "") in _WEDGED_SINK_INDEXES
+
 
 @dataclass(frozen=True)
 class PlaybackOrchestrationDeps:
@@ -72,6 +92,10 @@ class PlaybackOrchestrationDeps:
     # (after the source has started).  For Spotify this must derive the ports
     # from the live sink-input identity, never a static desktop fallback.
     resolve_source_producer_ports: Callable[[str], tuple[str, str] | None] | None = None
+    # Lists live Spotify sink inputs for wedged-renderer detection and moves
+    # one sink input onto a target sink (used to rebind a corked stream).
+    list_spotify_sink_inputs: Callable[[], list[dict]] | None = None
+    move_sink_input: Callable[[str | int, str], Awaitable[None]] | None = None
 
 
 class PlaybackOrchestrator:
@@ -483,6 +507,31 @@ class PlaybackOrchestrator:
             return diagnosis
         readiness_timeout = self._deps.source_port_readiness_timeout_ms
         readiness_deadline = time.monotonic() + max(readiness_timeout, 0) / 1000
+        wedged_input_id = await self._wedged_spotify_sink_input_id(request)
+        if wedged_input_id is not None and self._deps.move_sink_input is not None:
+            remaining = readiness_deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "Post-start Spotify stream rebind skipped, readiness budget exhausted (operation=%s)",
+                    request.operation,
+                )
+            else:
+                logger.info(
+                    "Post-start graph rebinding wedged Spotify stream %s to DSP ingress (operation=%s)",
+                    wedged_input_id,
+                    request.operation,
+                )
+                try:
+                    await asyncio.wait_for(
+                        self._deps.move_sink_input(wedged_input_id, _DSP_INGRESS_SINK_NAME),
+                        timeout=remaining,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Post-start Spotify stream rebind failed: %s (operation=%s)",
+                        exc,
+                        request.operation,
+                    )
         logger.info(
             "Post-start graph awaiting producer ports for source '%s' (operation=%s)",
             source,
@@ -491,12 +540,43 @@ class PlaybackOrchestrator:
         while self._post_start_source_identity_unknown(diagnosis):
             if time.monotonic() >= readiness_deadline:
                 self.log_playback_graph_diagnosis(diagnosis, target_rate=target_rate, reason=f"post-start-{request.operation}", detail=request.detail)
+                suffix = "; Renderer wedged (corked)" if wedged_input_id is not None else ""
                 raise RuntimeError(
-                    f"post-start source readiness timed out: no producer ports for source '{source}' within {readiness_timeout} ms"
+                    f"post-start source readiness timed out: no producer ports for source '{source}' within {readiness_timeout} ms{suffix}"
                 )
             await self._deps.sleep(self._deps.pipewire_poll_interval_ms / 1000)
             diagnosis = await self.playback_graph_diagnosis(overview, source=source, target_rate=target_rate, require_source=require_source)
         return diagnosis
+
+    async def _wedged_spotify_sink_input_id(self, request: TransitionRequest) -> str | int | None:
+        """Return the sink-input id of a wedged Spotify renderer, if any.
+
+        Wedged means the input exists but is corked with an invalid sink
+        binding while the client still reports Playing: the stream was
+        detached (e.g. by an output switch) and the client reuses the
+        zombie instead of recreating it. Anything else returns None so the
+        caller keeps the plain readiness path.
+        """
+        if request.source != "spotify":
+            return None
+        list_fn = self._deps.list_spotify_sink_inputs
+        if list_fn is None:
+            return None
+        try:
+            entries = await asyncio.to_thread(list_fn)
+            spotify = await self._deps.get_spotify_ui_state()
+        except Exception:
+            return None
+        if not isinstance(spotify, Mapping) or spotify.get("status") != "Playing":
+            return None
+        for entry in entries or []:
+            if not isinstance(entry, Mapping):
+                continue
+            if _sink_input_is_wedged(entry):
+                entry_id = entry.get("id")
+                if isinstance(entry_id, (str, int)):
+                    return entry_id
+        return None
 
     def measurement_session_link_loss_is_repairable(self, diagnosis: Mapping[str, Any], *, target_rate: int) -> bool:
         if diagnosis.get("links_complete") or diagnosis.get("dsp_ports") is not True or diagnosis.get("measurement_rate_aligned") is not True:
