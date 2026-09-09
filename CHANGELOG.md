@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.0-beta3
+
+### Playback / queue
+- Local-library direct track selection now verifies the live MPV playlist and
+  falls back to the coordinated load/takeover path when MPV has stale or empty
+  playlist state.
+- Explicit library shuffle requests now update local queue state regardless of
+  the current provider owner; native queue reorders are checked against MPV
+  and fall back to a coordinated rebuild on mismatch.
+- Queue shuffle keeps the current track fixed while permuting the remaining
+  entries, preserves the committed shuffle state during same-queue play, and
+  restores the exact original order when disabled.
+- TIDAL track starts carry the current shuffle intent and the active catalog
+  track receives its highlight; the loop control disappears when no local
+  queue is active.
+
+### DSP
+- Fixed headroom now includes −1 dB between off (0 dB) and −2 dB.
+- Discrete controls, including headroom, now use the short toggle debounce
+  instead of the typing debounce, so pending selections are saved without the
+  long delay intended for numeric inputs.
+
+### Music library
+- During SMB discovery, the library selector shows a disabled `Scanning
+  network shares…` placeholder when no SMB entry is known yet; cached entries
+  remain available immediately while discovery refreshes in the background.
+
+### Internal maintenance
+- Consolidated duplicated library naming, album and ffprobe helpers.
+- Extracted the streaming dispatcher/provider administration and playback
+  media-readiness helpers into dedicated modules without changing their
+  established behavior or timing contracts.
+
 ## 1.0-beta2 (2026-09-08)
 
 Second public beta, built from tag `v1.0-beta2` (commit `2000270`).
