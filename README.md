@@ -22,8 +22,6 @@ cd fxroute
 python3 scripts/serve_demo.py     # then open http://127.0.0.1:8765
 ```
 
-The demo page carries a small notice saying the backend is simulated.
-
 <p align="center">
   <img src="media/screenshots/radio-overview.png" width="32%" alt="FXRoute radio catalog with a station playing">
   <img src="media/screenshots/dsp.png" width="32%" alt="FXRoute DSP page with A/B compare and subwoofer controls">
