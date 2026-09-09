@@ -12,7 +12,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -82,6 +82,40 @@ class _Station:
         self.id = station_id
         self.name = f"Station {station_id}"
         self.stream_url = f"https://stream.example/{station_id}"
+
+
+class _MpvPlaylistPlayer:
+    """MPV double with a live playlist model for native-queue reorder tests."""
+
+    _running = True
+
+    def __init__(self, playlist_ids: list[str]) -> None:
+        self.playlist = list(playlist_ids)
+        self.pos = 0
+        self.state = {
+            "current_file": f"/music/{playlist_ids[0]}.flac" if playlist_ids else None,
+            "paused": False,
+            "playing": bool(playlist_ids),
+            "ended": False,
+            "position": 1.0,
+            "volume": 100,
+        }
+
+    def get_property(self, name):
+        if name == "playlist-count":
+            return len(self.playlist)
+        return None
+
+    def set_playlist_pos(self, index: int):
+        self.pos = index
+        self.state["playlist_pos"] = index
+
+    def move_playlist_entry(self, old_index: int, new_index: int):
+        entry = self.playlist.pop(old_index)
+        self.playlist.insert(new_index, entry)
+
+    def set_loop_playlist(self, enabled):
+        pass
 
 
 class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
@@ -489,6 +523,70 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         for patcher in self._patches(transition, radio_stations=radio_stations):
             stack.enter_context(patcher)
         return stack
+
+    async def test_library_shuffle_with_spotify_owner_sets_local_queue_only(self):
+        # Regression: an explicit library shuffle request must set the local
+        # queue state even while Spotify owns playback. Routing it to the
+        # owner toggled Spotify shuffle instead (ignoring `enabled`) while
+        # the local queue and its footer display stayed untouched.
+        queue_a = [_track("a"), _track("b"), _track("c")]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        try:
+            player = _MpvPlaylistPlayer(["a", "b", "c"])
+            main.runtime.player_instance = player
+            main.playback_state.current_playback_owner = "spotify"
+            main.playback_state.current_track_info = None
+            main.playback_state.last_track_info = None
+
+            def _shuffle_request(enabled):
+                request = SimpleNamespace()
+
+                async def _json():
+                    return {"enabled": enabled}
+
+                request.json = _json
+                return request
+
+            with patch.object(
+                main, "spotify_shuffle_toggle",
+                new=AsyncMock(side_effect=AssertionError("must not route to Spotify")),
+            ), patch.object(
+                main, "broadcast_spotify_state",
+                new=AsyncMock(side_effect=AssertionError("must not broadcast Spotify state")),
+            ), patch.object(main, "get_output_volume_safe", return_value=100):
+                result = await main.set_playback_shuffle(_shuffle_request(True))
+
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(result["shuffle"])
+            self.assertTrue(result["playback"]["queue"]["shuffle"])
+            self.assertTrue(playback_queue.queue.shuffle)
+            self.assertEqual(playback_queue.queue.tracks[0]["id"], "a")
+            self.assertEqual(
+                sorted(item["id"] for item in playback_queue.queue.tracks), ["a", "b", "c"]
+            )
+            self.assertEqual(
+                player.playlist, [item["id"] for item in playback_queue.queue.tracks]
+            )
+
+            with patch.object(
+                main, "spotify_shuffle_toggle",
+                new=AsyncMock(side_effect=AssertionError("must not route to Spotify")),
+            ), patch.object(
+                main, "broadcast_spotify_state",
+                new=AsyncMock(side_effect=AssertionError("must not broadcast Spotify state")),
+            ), patch.object(main, "get_output_volume_safe", return_value=100):
+                result = await main.set_playback_shuffle(_shuffle_request(False))
+
+            self.assertEqual(result["status"], "ok")
+            self.assertFalse(result["shuffle"])
+            self.assertFalse(result["playback"]["queue"]["shuffle"])
+            self.assertFalse(playback_queue.queue.shuffle)
+            self.assertEqual(
+                [item["id"] for item in playback_queue.queue.tracks], ["a", "b", "c"]
+            )
+            self.assertEqual(player.playlist, ["a", "b", "c"])
+        finally:
+            self._restore(originals)
 
 
 class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):

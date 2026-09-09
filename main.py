@@ -3890,16 +3890,25 @@ async def sync_playback_selection(request: Request):
 
 @app.post("/api/playback/shuffle")
 async def set_playback_shuffle(request: Request):
-    routed = await _route_global_control("shuffle", request)
-    if routed is not None:
-        return routed
-    if not runtime.player_instance or not runtime.player_instance._running:
-        raise HTTPException(status_code=503, detail="Player not available")
     try:
         body = await request.json()
-        enabled = bool(body.get("enabled", False))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"enabled\": <bool>}")
+    if not isinstance(body.get("enabled"), bool):
+        # No explicit target state: legacy global behavior, route to the
+        # current playback owner (e.g. Spotify/Qobuz toggle).
+        routed = await _route_global_control("shuffle", request)
+        if routed is not None:
+            return routed
+        raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"enabled\": <bool>}")
+    # An explicit enabled value is always a library intent: set the local
+    # queue shuffle directly, regardless of which provider currently owns
+    # playback. Routing it to the owner would adopt the toggle on the wrong
+    # backend (ignoring `enabled`) while the UI keeps showing the local
+    # queue state.
+    enabled = bool(body["enabled"])
+    if not runtime.player_instance or not runtime.player_instance._running:
+        raise HTTPException(status_code=503, detail="Player not available")
 
     try:
         if not await playback_queue.queue.set_shuffle(enabled):
