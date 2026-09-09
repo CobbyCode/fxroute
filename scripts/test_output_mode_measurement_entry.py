@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
+import playback.media_readiness as media_readiness
 import playback.orchestration as playback_orchestration
 import audio.pw_link as pw_link_mod
 import audio.samplerate as samplerate
@@ -791,8 +792,7 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "get_qobuz_ui_state", new=AsyncMock(return_value={"status": "Playing"})
         ), patch.object(
-            main,
-            "_wait_for_qobuz_sink_input_samplerate",
+            media_readiness, "wait_for_qobuz_sink_input_samplerate",
             new=AsyncMock(return_value=None),
         ) as wait_rate:
             with self.assertRaisesRegex(RuntimeError, "Qobuz stream rate mismatch"):

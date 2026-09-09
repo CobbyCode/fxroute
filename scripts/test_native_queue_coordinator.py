@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import playback.queue as playback_queue
 import main
+import playback.media_readiness as media_readiness
 import playback.orchestration as playback_orchestration
 import audio.system_volume as system_volume
 from playback_queue_test_support import queue_state, restore_queue_state
@@ -236,7 +237,7 @@ class NativeQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
             reload_source=True,
         )
         with patch.object(main.runtime, "player_instance", fake), patch.object(
-            main, "_wait_for_player_audio_samplerate", new=AsyncMock(return_value=None)
+            media_readiness, "wait_for_player_audio_samplerate", new=AsyncMock(return_value=None)
         ):
             runtime = make_transition_runtime()
             with self.assertRaisesRegex(RuntimeError, "audio-params"):

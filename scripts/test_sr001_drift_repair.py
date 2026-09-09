@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import audio.samplerate as samplerate
 import main
+import playback.media_readiness as media_readiness
 import playback.orchestration as playback_orchestration
 
 
@@ -92,8 +93,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
             {"status": "Playing", "trackId": "spotify:track:1", "title": "Track", "artist": "Artist"},
         ))
         with patch.object(
-            main,
-            "_list_spotify_sink_inputs",
+            media_readiness, "list_spotify_sink_inputs",
             side_effect=(
                 [{"id": 11, "sample_rate": 48000}],
                 [{"id": 11, "sample_rate": 48000}],
@@ -119,8 +119,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
             {"status": "Playing", "trackId": "spotify:track:1", "title": "Track", "artist": "Artist"},
         ))
         with patch.object(
-            main,
-            "_list_spotify_sink_inputs",
+            media_readiness, "list_spotify_sink_inputs",
             side_effect=(
                 [{"id": 11, "sample_rate": 48000}],
                 [{"id": 11, "sample_rate": 48000}],
@@ -146,8 +145,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
             {"status": "Playing", "trackId": "spotify:track:1", "title": "Track", "artist": "Artist"},
         ))
         with patch.object(
-            main,
-            "_list_spotify_sink_inputs",
+            media_readiness, "list_spotify_sink_inputs",
             side_effect=(
                 [{"id": 11, "sample_rate": 44100}],
                 [{"id": 11, "sample_rate": 44100}],
@@ -173,8 +171,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
             {"status": "Playing", "trackId": "spotify:track:1", "title": "Track", "artist": "Artist"},
         ))
         with patch.object(
-            main,
-            "_list_spotify_sink_inputs",
+            media_readiness, "list_spotify_sink_inputs",
             side_effect=(
                 [{"id": 11, "sample_rate": 44100}],
                 [{"id": 11, "sample_rate": 44100}],

@@ -3,7 +3,7 @@
 
 - sink_inputs.list_sink_inputs (pactl sink-inputs parser)
 
-plus wrapper parity against main._list_sink_inputs including error
+plus wrapper parity against playback.media_readiness.list_sink_inputs including error
 paths. All tests mock subprocess.run with realistic pactl output.
 """
 import sys
@@ -220,13 +220,13 @@ Sink Input #4
 
 class WrapperParityTests(unittest.TestCase):
     def setUp(self):
-        import main
-        self.main = main
+        import playback.media_readiness as media_readiness
+        self.media_readiness = media_readiness
 
     def _parity(self, stdout: str, returncode: int = 0):
         with patch("audio.sink_inputs.subprocess.run", return_value=_completed(returncode, stdout)):
             return (
-                self.main._list_sink_inputs(),
+                self.media_readiness.list_sink_inputs(),
                 sink_inputs.list_sink_inputs(),
             )
 
@@ -252,11 +252,11 @@ class WrapperParityTests(unittest.TestCase):
 
     def test_parity_subprocess_exception(self):
         with patch("audio.sink_inputs.subprocess.run", side_effect=OSError("boom")):
-            self.assertEqual(self.main._list_sink_inputs(), sink_inputs.list_sink_inputs())
-            self.assertEqual(self.main._list_sink_inputs(), [])
+            self.assertEqual(self.media_readiness.list_sink_inputs(), sink_inputs.list_sink_inputs())
+            self.assertEqual(self.media_readiness.list_sink_inputs(), [])
         with patch("audio.sink_inputs.subprocess.run", side_effect=TimeoutError("timeout")):
-            self.assertEqual(self.main._list_sink_inputs(), sink_inputs.list_sink_inputs())
-            self.assertEqual(self.main._list_sink_inputs(), [])
+            self.assertEqual(self.media_readiness.list_sink_inputs(), sink_inputs.list_sink_inputs())
+            self.assertEqual(self.media_readiness.list_sink_inputs(), [])
 
     def test_parity_odd_lines(self):
         odd = """Sink Input #1

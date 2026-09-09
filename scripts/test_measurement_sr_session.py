@@ -19,6 +19,7 @@ _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 import audio.samplerate as samplerate
 import measurement.session as measurement_session
+import playback.media_readiness as media_readiness
 from playback_transition_test_support import make_transition_runtime
 
 
@@ -42,7 +43,7 @@ class _TestSession:
         self._orig_is_measurement_window_open = main._is_measurement_window_open
         self._orig_playback_state_before_measurement = measurement_session._playback_state_before_measurement
         self._orig_last_measurement_window_seen_at = main.last_measurement_window_seen_at
-        self._orig_get_player_audio_samplerate = main._get_player_audio_samplerate
+        self._orig_get_player_audio_samplerate = media_readiness.get_player_audio_samplerate
         self._orig_get_spotify_ui_state = main.get_spotify_ui_state
         self._orig_latest_spotify_state = main.playback_state.latest_spotify_state
         self._orig_current_playback_owner = main.playback_state.current_playback_owner
@@ -69,7 +70,7 @@ class _TestSession:
         samplerate.set_pipewire_force_rate = self._mock_set_pipewire_force_rate
         samplerate.get_current_pipewire_force_rate = self._mock_get_current_pipewire_force_rate
         main._is_measurement_window_open = self._mock_is_measurement_window_open
-        main._get_player_audio_samplerate = self._mock_get_player_audio_samplerate
+        media_readiness.get_player_audio_samplerate = self._mock_get_player_audio_samplerate
         main.get_spotify_ui_state = self._mock_get_spotify_ui_state
         main.playback_state.latest_spotify_state = None
         main.playback_state.playback_intent_generation = 0
@@ -90,7 +91,7 @@ class _TestSession:
     def _mock_get_current_pipewire_force_rate(self) -> int | None:
         return self._force_rate
 
-    def _mock_get_player_audio_samplerate(self) -> int | None:
+    def _mock_get_player_audio_samplerate(self, player=None) -> int | None:
         return self._force_rate
 
     async def _mock_run_coordinated_transition(self, request):
@@ -201,7 +202,7 @@ class _TestSession:
         main._is_measurement_window_open = self._orig_is_measurement_window_open
         measurement_session._playback_state_before_measurement = self._orig_playback_state_before_measurement
         main.last_measurement_window_seen_at = self._orig_last_measurement_window_seen_at
-        main._get_player_audio_samplerate = self._orig_get_player_audio_samplerate
+        media_readiness.get_player_audio_samplerate = self._orig_get_player_audio_samplerate
         main.get_spotify_ui_state = self._orig_get_spotify_ui_state
         main.playback_state.latest_spotify_state = self._orig_latest_spotify_state
         main.playback_state.current_playback_owner = self._orig_current_playback_owner

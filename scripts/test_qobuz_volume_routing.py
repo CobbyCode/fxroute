@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+import streaming as streaming_module
+import streaming.api as streaming_api
 
 
 def _qobuz_state(**overrides):
@@ -57,6 +59,30 @@ class QobuzUIVolumeStateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QobuzVolumeRouteTests(unittest.IsolatedAsyncioTestCase):
+    def _deps(self, **overrides):
+        base = dict(
+            get_qobuz_ui_state=mock.AsyncMock(return_value={}),
+            is_qobuz_playback_active=lambda state: False,
+            qobuz_pause=mock.AsyncMock(),
+            broadcast_qobuz_state=mock.AsyncMock(),
+            qobuz_target_track_from_state=lambda state: {},
+            qobuz_target_rate=lambda state: 44100,
+            qobuz_pin_unity=mock.AsyncMock(),
+            qobuz_volume_action=mock.AsyncMock(),
+            spotify_volume_action=mock.AsyncMock(),
+            publish_committed_playback_owner=mock.AsyncMock(),
+            transition_error_http=lambda exc: exc,
+            request_origin_is_trusted=lambda req: True,
+            coordinator_rate_change=lambda rate: None,
+            run_coordinated_transition=mock.AsyncMock(),
+            get_current_playback_owner=lambda: None,
+            spotify_playerctl_watch=mock.Mock(),
+            api_spotify_play=mock.AsyncMock(),
+            api_spotify_toggle=mock.AsyncMock(),
+        )
+        base.update(overrides)
+        return streaming_api.StreamingApiDeps(**base)
+
     async def test_qobuz_volume_routes_to_canonical_master(self):
         provider = mock.Mock()
         provider.set_volume = mock.AsyncMock(return_value={"volume": 60})
@@ -66,12 +92,15 @@ class QobuzVolumeRouteTests(unittest.IsolatedAsyncioTestCase):
             async def json(self):
                 return {"volume": 60}
 
-        volume_result = {"volume": 60, "loudness_enabled": False}
-        with mock.patch.object(main.streaming, "get_provider", return_value=provider), \
-             mock.patch.object(main, "_set_canonical_output_volume",
-                               new=mock.AsyncMock(return_value=volume_result)) as canon, \
-             mock.patch.object(main, "_resolve_playback_owner", return_value="qobuz"):
-            result = await main.api_streaming_provider_action("qobuz", "volume", _Request())
+        canon = mock.AsyncMock(return_value={"volume": 60, "loudness_enabled": False})
+        deps = self._deps(qobuz_volume_action=canon)
+        orig = streaming_api._runtime.deps
+        streaming_api.configure_streaming_api(deps)
+        try:
+            with mock.patch.object(streaming_module, "get_provider", return_value=provider):
+                result = await streaming_api.api_streaming_provider_action("qobuz", "volume", _Request())
+        finally:
+            streaming_api.configure_streaming_api(orig)
 
         canon.assert_awaited_once_with(60)
         provider.set_volume.assert_not_awaited()
@@ -88,18 +117,15 @@ class QobuzVolumeRouteTests(unittest.IsolatedAsyncioTestCase):
             async def json(self):
                 return {"volume": 70}
 
-        spotify_state = {"source": "spotify", "status": "Paused", "source_volume": 55}
-        volume_result = {"volume": 70}
-        with mock.patch.object(main.streaming, "get_provider", return_value=provider), \
-             mock.patch.object(main, "_set_canonical_output_volume",
-                               new=mock.AsyncMock(return_value=volume_result)) as canon, \
-             mock.patch.object(main, "get_spotify_ui_state",
-                               new=mock.AsyncMock(return_value=dict(spotify_state))), \
-             mock.patch.object(main, "broadcast_spotify_state",
-                               new=mock.AsyncMock(side_effect=lambda data: data)), \
-             mock.patch.object(main.peak_monitor_coordinator, "sync_spotify_state",
-                               new=mock.AsyncMock()):
-            result = await main.api_streaming_provider_action("spotify", "volume", _Request())
+        canon = mock.AsyncMock(return_value={"volume": 70, "source_volume": 55})
+        deps = self._deps(spotify_volume_action=canon)
+        orig = streaming_api._runtime.deps
+        streaming_api.configure_streaming_api(deps)
+        try:
+            with mock.patch.object(streaming_module, "get_provider", return_value=provider):
+                result = await streaming_api.api_streaming_provider_action("spotify", "volume", _Request())
+        finally:
+            streaming_api.configure_streaming_api(orig)
 
         canon.assert_awaited_once_with(70)
         provider.set_volume.assert_not_awaited()
@@ -194,14 +220,37 @@ class QobuzUnityPinTests(unittest.IsolatedAsyncioTestCase):
     async def test_ui_start_pins_unity_after_commit(self):
         playing = _qobuz_state(status="Paused", trackId="42")
         committed = type("Result", (), {"committed": True, "transition_id": "t2"})()
-        with mock.patch.object(main, "get_qobuz_ui_state", new=mock.AsyncMock(return_value=playing)), \
-             mock.patch.object(main, "_run_coordinated_transition",
-                               new=mock.AsyncMock(return_value=committed)), \
-             mock.patch.object(main, "broadcast_qobuz_state",
-                               new=mock.AsyncMock(return_value=playing)), \
-             mock.patch.object(main, "_qobuz_pin_unity", new=mock.AsyncMock()) as pin:
-            main.playback_state.current_playback_owner = None
-            await main._qobuz_ui_start_action("play")
+        pin = mock.AsyncMock()
+        deps = streaming_api.StreamingApiDeps(
+            get_qobuz_ui_state=mock.AsyncMock(return_value=playing),
+            is_qobuz_playback_active=lambda state: False,
+            qobuz_pause=mock.AsyncMock(),
+            broadcast_qobuz_state=mock.AsyncMock(return_value=playing),
+            qobuz_target_track_from_state=lambda state: {"id": "42"},
+            qobuz_target_rate=lambda state: 44100,
+            qobuz_pin_unity=pin,
+            qobuz_volume_action=mock.AsyncMock(),
+            spotify_volume_action=mock.AsyncMock(),
+            publish_committed_playback_owner=mock.AsyncMock(),
+            transition_error_http=lambda exc: exc,
+            request_origin_is_trusted=lambda req: True,
+            coordinator_rate_change=lambda rate: None,
+            run_coordinated_transition=mock.AsyncMock(return_value=committed),
+            get_current_playback_owner=lambda: None,
+            spotify_playerctl_watch=mock.Mock(),
+            api_spotify_play=mock.AsyncMock(),
+            api_spotify_toggle=mock.AsyncMock(),
+        )
+        orig = streaming_api._runtime.deps
+        streaming_api.configure_streaming_api(deps)
+        try:
+            from streaming.qobuz import connect_state as qobuz_connect_state
+
+            qobuz_connect_state.reset()
+            await streaming_api._qobuz_ui_start_action("play")
+            qobuz_connect_state.reset()
+        finally:
+            streaming_api.configure_streaming_api(orig)
         pin.assert_awaited_once()
 
 

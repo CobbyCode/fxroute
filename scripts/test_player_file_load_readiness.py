@@ -17,13 +17,16 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import playback.media_readiness as media_readiness
 from playback.player import MPVWrapper
 
 
 async def _wait(expected_url, state, timeout_ms=60):
-    with patch.object(main.runtime, "player_instance", SimpleNamespace(state=state)), \
-         patch.object(main, "PIPEWIRE_HANDOFF_POLL_INTERVAL_MS", 10):
-        return await main._wait_for_player_current_file(expected_url, timeout_ms=timeout_ms)
+    player = SimpleNamespace(state=state)
+    with patch.object(media_readiness, "PIPEWIRE_HANDOFF_POLL_INTERVAL_MS", 10):
+        return await media_readiness.wait_for_player_current_file(
+            expected_url, timeout_ms=timeout_ms, get_player=lambda: player
+        )
 
 
 class WaitForPlayerCurrentFileTests(unittest.IsolatedAsyncioTestCase):

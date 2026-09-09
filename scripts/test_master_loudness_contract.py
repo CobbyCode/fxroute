@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+import playback.media_readiness as media_readiness
 from streaming.spotify import mpris
 
 
@@ -62,7 +63,7 @@ class SpotifyProducerResolutionTests(unittest.TestCase):
         return {"id": "1", "sample_rate": rate, "corked": False, "properties": props}
 
     def test_spotifyd_producer_derived_from_node_name(self):
-        with mock.patch.object(main, "_list_spotify_sink_inputs", return_value=[
+        with mock.patch.object(media_readiness, "list_spotify_sink_inputs", return_value=[
             self._entry(node_name="spotifyd", binary="spotifyd"),
         ]):
             self.assertEqual(
@@ -71,7 +72,7 @@ class SpotifyProducerResolutionTests(unittest.TestCase):
             )
 
     def test_desktop_producer_derived_from_node_name(self):
-        with mock.patch.object(main, "_list_spotify_sink_inputs", return_value=[
+        with mock.patch.object(media_readiness, "list_spotify_sink_inputs", return_value=[
             self._entry(node_name="spotify", media="Spotify"),
         ]):
             self.assertEqual(
@@ -80,7 +81,7 @@ class SpotifyProducerResolutionTests(unittest.TestCase):
             )
 
     def test_anonymous_spotifyd_producer_uses_empty_node_ports(self):
-        with mock.patch.object(main, "_list_spotify_sink_inputs", return_value=[
+        with mock.patch.object(media_readiness, "list_spotify_sink_inputs", return_value=[
             self._entry(binary="spotifyd"),
         ]):
             self.assertEqual(
@@ -89,7 +90,7 @@ class SpotifyProducerResolutionTests(unittest.TestCase):
             )
 
     def test_anonymous_unknown_producer_is_not_guessed(self):
-        with mock.patch.object(main, "_list_spotify_sink_inputs", return_value=[
+        with mock.patch.object(media_readiness, "list_spotify_sink_inputs", return_value=[
             self._entry(),
         ]):
             self.assertIsNone(main._spotify_producer_for_coordinator())
@@ -109,7 +110,7 @@ class SpotifyProducerResolutionTests(unittest.TestCase):
         ))
 
     def test_no_sink_input_returns_none(self):
-        with mock.patch.object(main, "_list_spotify_sink_inputs", return_value=[]):
+        with mock.patch.object(media_readiness, "list_spotify_sink_inputs", return_value=[]):
             self.assertIsNone(main._spotify_producer_for_coordinator())
 
     def test_resolver_falls_back_to_static_for_non_spotify(self):

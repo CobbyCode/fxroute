@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import playback.queue as playback_queue
 import main
+import playback.media_readiness as media_readiness
 from fastapi import HTTPException
 from playback_queue_test_support import queue_state, restore_queue_state
 
@@ -397,7 +398,7 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
             ), patch.object(
                 main, "spotify_pause", new=AsyncMock(side_effect=pause_spotify)
             ) as pause, patch.object(
-                main, "_wait_for_pipewire_spotify_release", release
+                media_readiness, "wait_for_pipewire_spotify_release", release
             ), patch.object(
                 main, "_mark_player_state_authoritative"
             ), patch.object(
@@ -439,7 +440,7 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "qobuz_pause", new=AsyncMock(side_effect=pause_qobuz)
         ) as pause, patch.object(
-            main, "_wait_for_pipewire_qobuz_release", release
+            media_readiness, "wait_for_pipewire_qobuz_release", release
         ), patch.object(
             main, "_mark_player_state_authoritative"
         ), patch.object(

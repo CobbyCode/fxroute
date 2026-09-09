@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import playback.queue as playback_queue
 import main
+import playback.media_readiness as media_readiness
 from playback_queue_test_support import queue_state, restore_queue_state
 from playback_transition_test_support import make_transition_runtime
 from playback.transition import TransitionRequest
@@ -273,7 +274,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(return_value={"status": "Paused"})), patch.object(
             main, "pause_spotify_for_local_playback_broadcast", pause_spotify
         ), patch.object(main, "_player_is_running", return_value=True), patch.object(
-            main, "_wait_for_pipewire_mpv_release", new=AsyncMock(return_value=True)
+            media_readiness, "wait_for_pipewire_mpv_release", new=AsyncMock(return_value=True)
         ):
             await make_transition_runtime().quiet_old_source(request)
 
@@ -302,7 +303,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(return_value={
             "available": True, "status": "Playing"
         })), patch.object(main, "pause_spotify_for_local_playback_broadcast", pause_spotify), patch.object(
-            main, "_wait_for_pipewire_spotify_release", new=AsyncMock(return_value=True)
+            media_readiness, "wait_for_pipewire_spotify_release", new=AsyncMock(return_value=True)
         ) as release, patch.object(main, "_player_is_running", return_value=True
         ):
             await make_transition_runtime().quiet_old_source(request)
@@ -330,10 +331,10 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
                 "volume_percent": 100,
             }],
         ))
-        with patch.object(main, "_list_spotify_sink_inputs", side_effect=lambda: next(entries)), patch.object(
+        with patch.object(media_readiness, "list_spotify_sink_inputs", side_effect=lambda: next(entries)), patch.object(
             main.asyncio, "sleep", new=AsyncMock()
         ):
-            released = await main._wait_for_pipewire_spotify_release(timeout_ms=100)
+            released = await media_readiness.wait_for_pipewire_spotify_release(timeout_ms=100)
 
         self.assertTrue(released)
 
@@ -358,7 +359,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(return_value={
             "available": True, "status": "Playing"
         })), patch.object(main, "pause_spotify_for_local_playback_broadcast", pause_spotify), patch.object(
-            main, "_wait_for_pipewire_spotify_release", new=AsyncMock(return_value=False)
+            media_readiness, "wait_for_pipewire_spotify_release", new=AsyncMock(return_value=False)
         ), patch.object(main, "_player_is_running", return_value=True
         ):
             with self.assertRaisesRegex(RuntimeError, "did not quiesce"):
@@ -386,7 +387,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         })), patch.object(main, "_is_spotify_playback_active", return_value=True), patch.object(
             main, "pause_spotify_for_local_playback_broadcast", pause_spotify
         ), patch.object(
-            main, "_wait_for_pipewire_spotify_release", new=AsyncMock(return_value=True)
+            media_readiness, "wait_for_pipewire_spotify_release", new=AsyncMock(return_value=True)
         ) as release:
             await make_transition_runtime().quiet_old_source(request)
 
@@ -411,7 +412,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         })), patch.object(main, "_is_qobuz_playback_active", return_value=True), patch.object(
             main, "qobuz_pause", qobuz_pause
         ), patch.object(
-            main, "_wait_for_pipewire_qobuz_release", new=AsyncMock(return_value=True)
+            media_readiness, "wait_for_pipewire_qobuz_release", new=AsyncMock(return_value=True)
         ) as release:
             await make_transition_runtime().quiet_old_source(request)
 
@@ -436,7 +437,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         })), patch.object(main, "_is_qobuz_playback_active", return_value=True), patch.object(
             main, "qobuz_pause", qobuz_pause
         ), patch.object(
-            main, "_wait_for_pipewire_qobuz_release", new=AsyncMock(return_value=False)
+            media_readiness, "wait_for_pipewire_qobuz_release", new=AsyncMock(return_value=False)
         ):
             with self.assertRaisesRegex(RuntimeError, "did not quiesce before Spotify handoff"):
                 await make_transition_runtime().quiet_old_source(request)
@@ -461,7 +462,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         })), patch.object(main, "_is_qobuz_playback_active", return_value=False), patch.object(
             main, "qobuz_pause", qobuz_pause
         ), patch.object(
-            main, "_wait_for_pipewire_qobuz_release", new=AsyncMock(return_value=True)
+            media_readiness, "wait_for_pipewire_qobuz_release", new=AsyncMock(return_value=True)
         ) as release:
             await make_transition_runtime().quiet_old_source(request)
 

@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main
 import audio.samplerate.overview as overview_module
+import playback.media_readiness as media_readiness
 
 MAIN_THREAD = threading.current_thread()
 
@@ -88,7 +89,7 @@ class WaitForSinkInputReleaseOffLoopTest(unittest.IsolatedAsyncioTestCase):
             threads.append(threading.current_thread() is MAIN_THREAD)
             return len(threads) < 2  # busy once, released on second poll
 
-        released = await main._wait_for_sink_input_release(probe, timeout_ms=2000)
+        released = await media_readiness.wait_for_sink_input_release(probe, timeout_ms=2000)
         self.assertTrue(released)
         self.assertEqual(len(threads), 2)
         self.assertFalse(

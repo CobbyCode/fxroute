@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import playback.media_readiness as media_readiness
 import playback.orchestration as playback_orchestration
 from playback_transition_test_support import make_transition_runtime
 from playback.transition import TransitionRequest
@@ -36,8 +37,8 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value={"status": "Playing", "available": True}),
             ),
             patch.object(
-                main,
-                "_list_spotify_sink_inputs",
+                media_readiness,
+                "list_spotify_sink_inputs",
                 side_effect=[
                     [{"sample_rate": spotify_rate}],
                     [{"sample_rate": spotify_rate}],
@@ -104,8 +105,8 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
             [{"id": 7, "sample_rate": 44100}],
             [{"id": 7, "sample_rate": 44100}],
         ))
-        with patch.object(main, "_list_spotify_sink_inputs", side_effect=lambda: next(observations)):
-            result = await main._wait_for_spotify_sink_input_samplerate(
+        with patch.object(media_readiness, "list_spotify_sink_inputs", side_effect=lambda: next(observations)):
+            result = await media_readiness.wait_for_spotify_sink_input_samplerate(
                 expected_rate=44100,
                 timeout_ms=250,
             )
@@ -124,8 +125,8 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
                 {"id": 9, "sample_rate": 44100},
             ],
         ))
-        with patch.object(main, "_list_spotify_sink_inputs", side_effect=lambda: next(observations)):
-            result = await main._wait_for_spotify_sink_input_samplerate(
+        with patch.object(media_readiness, "list_spotify_sink_inputs", side_effect=lambda: next(observations)):
+            result = await media_readiness.wait_for_spotify_sink_input_samplerate(
                 expected_rate=44100,
                 timeout_ms=150,
             )
@@ -138,8 +139,8 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
             [{"id": 8, "sample_rate": 44100}],
             [{"id": 8, "sample_rate": 44100}],
         ))
-        with patch.object(main, "_list_spotify_sink_inputs", side_effect=lambda: next(observations)):
-            result = await main._wait_for_spotify_sink_input_samplerate(
+        with patch.object(media_readiness, "list_spotify_sink_inputs", side_effect=lambda: next(observations)):
+            result = await media_readiness.wait_for_spotify_sink_input_samplerate(
                 expected_rate=44100,
                 timeout_ms=150,
             )
@@ -153,8 +154,8 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
             [{"id": 7, "sample_rate": 44100}],
             [{"id": 7, "sample_rate": 44100}],
         ))
-        with patch.object(main, "_list_spotify_sink_inputs", side_effect=lambda: next(observations)):
-            result = await main._wait_for_spotify_sink_input_samplerate(
+        with patch.object(media_readiness, "list_spotify_sink_inputs", side_effect=lambda: next(observations)):
+            result = await media_readiness.wait_for_spotify_sink_input_samplerate(
                 expected_rate=44100,
                 timeout_ms=200,
             )
@@ -163,12 +164,12 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_persistent_wrong_rate_times_out_without_accepting_it(self):
         with patch.object(
-            main,
-            "_list_spotify_sink_inputs",
+            media_readiness,
+            "list_spotify_sink_inputs",
             return_value=[{"id": 7, "sample_rate": 48000}],
         ):
             with self.assertRaisesRegex(RuntimeError, "at the expected rate"):
-                await main._wait_for_spotify_sink_input_samplerate(
+                await media_readiness.wait_for_spotify_sink_input_samplerate(
                     expected_rate=44100,
                     timeout_ms=0,
                 )
@@ -178,15 +179,15 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         # stream is the only playable candidate and is currently wrong, so an
         # entry readback must not succeed from the old identity.
         with patch.object(
-            main,
-            "_list_spotify_sink_inputs",
+            media_readiness,
+            "list_spotify_sink_inputs",
             return_value=[
                 {"id": "old", "sample_rate": 44100, "corked": True},
                 {"id": "active", "sample_rate": 48000, "corked": False},
             ],
         ):
             with self.assertRaisesRegex(RuntimeError, "at the expected rate"):
-                await main._wait_for_spotify_sink_input_samplerate(
+                await media_readiness.wait_for_spotify_sink_input_samplerate(
                     expected_rate=44100,
                     timeout_ms=0,
                 )
@@ -211,11 +212,11 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
             ],
         ))
         with patch.object(
-            main,
-            "_list_spotify_sink_inputs",
+            media_readiness,
+            "list_spotify_sink_inputs",
             side_effect=lambda: next(observations),
         ) as list_inputs:
-            result = await main._wait_for_spotify_sink_input_samplerate(
+            result = await media_readiness.wait_for_spotify_sink_input_samplerate(
                 expected_rate=44100,
                 timeout_ms=250,
             )
@@ -239,9 +240,9 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
                 )
 
     async def test_unreadable_spotify_stream_fails_entry_readback(self):
-        with patch.object(main, "_list_spotify_sink_inputs", return_value=[]):
+        with patch.object(media_readiness, "list_spotify_sink_inputs", return_value=[]):
             with self.assertRaisesRegex(RuntimeError, "samplerate did not become readable"):
-                await main._wait_for_spotify_sink_input_samplerate(
+                await media_readiness.wait_for_spotify_sink_input_samplerate(
                     expected_rate=44100,
                     timeout_ms=0,
                 )
@@ -260,7 +261,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(main.runtime, "player_instance", SimpleNamespace(state={})), patch.object(
             main, "spotify_pause", pause
-        ), patch.object(main, "_wait_for_pipewire_spotify_release", release):
+        ), patch.object(media_readiness, "wait_for_pipewire_spotify_release", release):
             await runtime.quiet_old_source(request)
 
         pause.assert_awaited_once()

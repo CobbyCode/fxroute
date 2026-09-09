@@ -27,21 +27,6 @@ from streaming.tidal import auth as tidal_auth
 from streaming.tidal import playback as tidal_playback
 from streaming.tidal.cache import library_cache as tidal_library_cache
 
-# Helpers to honour test patches that target ``main.*`` (the historic
-# location before the streaming extraction).  Handlers live in this module
-# now, so ``mock.patch.object(main, "tidal_library_cache", store)`` would
-# otherwise have no effect.  Resolve via ``sys.modules["main"]`` at call
-# time when main is loaded.
-def _resolve_tidal_cache():
-    try:
-        import sys
-
-        main_mod = sys.modules.get("main")
-        if main_mod is not None and hasattr(main_mod, "tidal_library_cache"):
-            return getattr(main_mod, "tidal_library_cache")
-    except Exception:
-        pass
-    return tidal_library_cache
 import installer_contract as provider_contract
 from http_errors import bad_request, internal_error
 from audio import pw_link
@@ -276,20 +261,6 @@ async def api_streaming_provider_action(provider_id: str, action: str, request: 
 
 
 def _streaming_provider(provider_id: str):
-    # Honour ``mock.patch.object(main, "_streaming_provider", ...)`` used by
-    # ``scripts/test_tidal_library_cache.py``.  The extraction moved the
-    # real provider lookup here; tests still patch ``main``.
-    try:
-        import sys
-        import unittest.mock as _mock
-
-        main_mod = sys.modules.get("main")
-        if main_mod is not None:
-            cand = getattr(main_mod, "_streaming_provider", None)
-            if cand is not None and isinstance(cand, _mock.Mock):
-                return cand(provider_id)
-    except Exception:
-        pass
     provider = streaming.get_provider(provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
@@ -437,8 +408,7 @@ async def api_tidal_library_snapshot(user: str = ""):
     }
     if not user_id:
         return empty
-    cache = _resolve_tidal_cache()
-    snapshot = cache.snapshot(user_id)
+    snapshot = tidal_library_cache.snapshot(user_id)
     return snapshot if snapshot is not None else empty
 
 

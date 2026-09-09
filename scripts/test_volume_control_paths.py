@@ -15,6 +15,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
 import dsp.api as dsp_api
+import playback.media_readiness as media_readiness
 
 dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 import audio.system_volume as system_volume
@@ -53,7 +54,7 @@ class SilentActiveLiveVolumeTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(main.runtime, "peak_monitor", _FakePeakMonitor()),
             mock.patch.object(main.runtime, "player_instance", _FakePlayer()),
             mock.patch.object(main, "_current_track_matches", return_value=True),
-            mock.patch.object(main, "_list_mpv_sink_inputs", return_value=[{"muted": False}]),
+            mock.patch.object(media_readiness, "list_mpv_sink_inputs", return_value=[{"muted": False}]),
         ]
 
     async def test_status_cache_says_100_but_live_volume_is_zero_blocks_recovery(self):

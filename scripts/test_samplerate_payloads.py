@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+import playback.media_readiness as media_readiness
 import measurement.session as measurement_session
 import audio.samplerate as samplerate
 import playback.orchestration as playback_orchestration
@@ -443,7 +444,7 @@ class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             playback_orchestration.configured(), "current_playback_context", new=AsyncMock(return_value=context)
         ), patch.object(
-            main, "_get_player_audio_samplerate", return_value=active_rate
+            media_readiness, "get_player_audio_samplerate", return_value=active_rate
         ), patch.object(
             main, "get_samplerate_status", return_value={
                 "active_rate": active_rate,

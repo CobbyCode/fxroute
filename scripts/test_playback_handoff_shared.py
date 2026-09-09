@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 import audio.pw_link as pw_link_mod
 import audio.samplerate as samplerate
+import playback.media_readiness as media_readiness
 import playback.orchestration as playback_orchestration
 from dsp.runtime import CommandResult, PipeWireLink
 from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
@@ -1246,7 +1247,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
                     main, "get_spotify_ui_state",
                     new=AsyncMock(return_value={"available": True, "status": "Paused"}),
                 ), patch.object(
-                    main, "_wait_for_pipewire_mpv_release", release
+                    media_readiness, "wait_for_pipewire_mpv_release", release
                 ):
                     await make_transition_runtime().quiet_old_source(request)
 

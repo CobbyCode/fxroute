@@ -21,6 +21,8 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main as main_module
+import streaming as streaming_module
+import streaming.api as streaming_api
 from streaming.tidal import auth, catalog
 from streaming.tidal.cache import TidalLibraryCache
 from fastapi.testclient import TestClient
@@ -428,7 +430,7 @@ class SnapshotEndpointTests(unittest.TestCase):
         store = TidalLibraryCache(db_path=pathlib.Path(tempfile.mkdtemp()) / "cache.sqlite")
         store.put("42", "ids", {"tracks": ["1"]})
         store.put("42", "albums", [{"id": "a1"}])
-        with mock.patch.object(main_module, "tidal_library_cache", store):
+        with mock.patch.object(streaming_api, "tidal_library_cache", store):
             resp = self.client.get("/api/streaming/tidal/library/snapshot?user=42")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -439,7 +441,7 @@ class SnapshotEndpointTests(unittest.TestCase):
 
     def test_snapshot_empty_payload_without_user(self):
         store = TidalLibraryCache(db_path=pathlib.Path(tempfile.mkdtemp()) / "cache.sqlite")
-        with mock.patch.object(main_module, "tidal_library_cache", store):
+        with mock.patch.object(streaming_api, "tidal_library_cache", store):
             resp = self.client.get("/api/streaming/tidal/library/snapshot")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -449,7 +451,7 @@ class SnapshotEndpointTests(unittest.TestCase):
 
     def test_snapshot_unknown_user_is_empty_not_error(self):
         store = TidalLibraryCache(db_path=pathlib.Path(tempfile.mkdtemp()) / "cache.sqlite")
-        with mock.patch.object(main_module, "tidal_library_cache", store):
+        with mock.patch.object(streaming_api, "tidal_library_cache", store):
             resp = self.client.get("/api/streaming/tidal/library/snapshot?user=99")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["user_id"], "99")
@@ -733,7 +735,7 @@ class PlaylistWriteEndpointTests(unittest.TestCase):
 
     def test_create_playlist_endpoint(self):
         provider = self.FakeWriteProvider()
-        with mock.patch.object(main_module, "_streaming_provider", return_value=provider):
+        with mock.patch.object(streaming_module, "get_provider", return_value=provider):
             resp = self.client.post(
                 "/api/streaming/tidal/playlists/create",
                 json={"name": "My Mix", "track_ids": ["1", "2"]},
@@ -744,14 +746,14 @@ class PlaylistWriteEndpointTests(unittest.TestCase):
 
     def test_create_playlist_requires_name(self):
         provider = self.FakeWriteProvider()
-        with mock.patch.object(main_module, "_streaming_provider", return_value=provider):
+        with mock.patch.object(streaming_module, "get_provider", return_value=provider):
             resp = self.client.post("/api/streaming/tidal/playlists/create", json={"track_ids": ["1"]})
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(provider.calls, [])
 
     def test_add_tracks_endpoint(self):
         provider = self.FakeWriteProvider()
-        with mock.patch.object(main_module, "_streaming_provider", return_value=provider):
+        with mock.patch.object(streaming_module, "get_provider", return_value=provider):
             resp = self.client.post(
                 "/api/streaming/tidal/playlists/pl9/tracks",
                 json={"track_ids": ["1", "2"]},
@@ -761,7 +763,7 @@ class PlaylistWriteEndpointTests(unittest.TestCase):
 
     def test_add_tracks_requires_ids(self):
         provider = self.FakeWriteProvider()
-        with mock.patch.object(main_module, "_streaming_provider", return_value=provider):
+        with mock.patch.object(streaming_module, "get_provider", return_value=provider):
             resp = self.client.post("/api/streaming/tidal/playlists/pl9/tracks", json={"track_ids": []})
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(provider.calls, [])
@@ -771,7 +773,7 @@ class PlaylistWriteEndpointTests(unittest.TestCase):
             async def create_playlist(self, *args, **kwargs):
                 raise auth.TidalAuthError("TIDAL playlist creation failed: boom")
 
-        with mock.patch.object(main_module, "_streaming_provider", return_value=FailingProvider()):
+        with mock.patch.object(streaming_module, "get_provider", return_value=FailingProvider()):
             resp = self.client.post("/api/streaming/tidal/playlists/create", json={"name": "X"})
         self.assertEqual(resp.status_code, 401)
 

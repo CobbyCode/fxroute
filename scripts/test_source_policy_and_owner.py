@@ -56,24 +56,24 @@ class SourcePolicyTests(unittest.TestCase):
 
 class QobuzReleaseBudgetTests(unittest.TestCase):
     def test_qobuz_release_timeout_exceeds_generic_handoff_timeout(self):
-        import main
+        import playback.media_readiness as media_readiness
         # qbzd fully disconnects its ALSA stream on pause instead of corking
         # it like Spotify Desktop (live-measured ~2.2 s), so it needs a
         # dedicated, longer bounded release budget than the 1800 ms Spotify
         # handoff timeout.
         self.assertGreater(
-            main.PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS,
-            main.PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS,
+            media_readiness.PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS,
+            media_readiness.PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS,
         )
-        self.assertGreaterEqual(main.PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS, 4000)
+        self.assertGreaterEqual(media_readiness.PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS, 4000)
 
     def test_qobuz_release_wait_uses_qobuz_timeout_by_default(self):
         import inspect
-        import main
-        signature = inspect.signature(main._wait_for_pipewire_qobuz_release)
+        import playback.media_readiness as media_readiness
+        signature = inspect.signature(media_readiness.wait_for_pipewire_qobuz_release)
         self.assertEqual(
             signature.parameters["timeout_ms"].default,
-            main.PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS,
+            media_readiness.PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS,
         )
 
 

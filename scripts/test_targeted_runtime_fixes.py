@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import playback.queue as playback_queue
 import main
+import playback.media_readiness as media_readiness
 import measurement.session as measurement_session
 import playback.player as player
 from playback_queue_test_support import queue_state, restore_queue_state
@@ -630,11 +631,12 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
                 "peak_monitor", "player_instance", "current_track_info",
                 "current_playback_owner", "silent_active_recovery",
                 "dsp_preset_load_lock", "_current_track_matches",
-                "_list_mpv_sink_inputs", "get_output_volume_safe",
+                "get_output_volume_safe",
                 "_run_debug_command", "_is_measurement_window_open",
-                "_list_sink_inputs",
             )
         }
+        originals["media_readiness.list_mpv_sink_inputs"] = media_readiness.list_mpv_sink_inputs
+        originals["media_readiness.list_sink_inputs"] = media_readiness.list_sink_inputs
         main.runtime.peak_monitor = SimpleNamespace()
         main.runtime.player_instance = SimpleNamespace(
             _running=True,
@@ -646,7 +648,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
         main.silent_active_recovery.watch_tasks.clear()
         main.runtime.dsp_preset_load_lock = None
         main._current_track_matches = lambda track: True
-        main._list_mpv_sink_inputs = lambda: [
+        media_readiness.list_mpv_sink_inputs = lambda: [
             {"id": "si1", "volume_percent": 100, "muted": False, "corked": False},
         ]
         main.get_output_volume_safe = lambda default: 100
@@ -654,12 +656,15 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
             "stdout": "mpv:output_FL -> fxroute_dsp_sink:playback_FL\n",
         }
         main._is_measurement_window_open = lambda: False
-        main._list_sink_inputs = lambda: []
+        media_readiness.list_sink_inputs = lambda: []
         return originals
 
     def _restore(self, originals):
         for name, value in originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
+            if name.startswith("media_readiness."):
+                setattr(media_readiness, name.split(".", 1)[1], value)
+            else:
+                setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     async def test_fresh_samples_reach_diagnosis_and_recovery_stays_suppressed(self):
         originals = self._install()

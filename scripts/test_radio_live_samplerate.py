@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import playback.media_readiness as media_readiness
 import playback.orchestration as playback_orchestration
 import audio.pw_link as pw_link_mod
 import audio.samplerate as samplerate
@@ -63,7 +64,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_two_matching_mismatch_readbacks_request_one_recovery(self):
         """MPV/track 44.1 with hardware at 48 kHz requests repair at 44.1."""
         recovery = AsyncMock()
-        with patch.object(main, "_get_player_audio_samplerate", return_value=44100), patch.object(
+        with patch.object(media_readiness, "get_player_audio_samplerate", return_value=44100), patch.object(
             main,
             "get_samplerate_status",
             return_value={"active_rate": 48000, "force_rate": 48000},
@@ -84,7 +85,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_mpvliverate_is_authoritative_when_track_rate_is_stale(self):
         """MPV 48 kHz / track 44.1 / hardware 44.1 repairs to 48 kHz."""
         recovery = AsyncMock()
-        with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
+        with patch.object(media_readiness, "get_player_audio_samplerate", return_value=48000), patch.object(
             main,
             "get_samplerate_status",
             return_value={"active_rate": 44100, "force_rate": 44100},
@@ -100,7 +101,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_matching_mpv_track_and_hardware_rates_are_healthy(self):
         recovery = AsyncMock()
-        with patch.object(main, "_get_player_audio_samplerate", return_value=44100), patch.object(
+        with patch.object(media_readiness, "get_player_audio_samplerate", return_value=44100), patch.object(
             main,
             "get_samplerate_status",
             return_value={"active_rate": 44100, "force_rate": None},
@@ -112,7 +113,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stable_mismatch_resets_when_source_changes(self):
         recovery = AsyncMock()
-        with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
+        with patch.object(media_readiness, "get_player_audio_samplerate", return_value=48000), patch.object(
             playback_orchestration.configured(), "request_coordinated_recovery", recovery
         ):
             await main.samplerate_drift.observe()
@@ -129,7 +130,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_active_transition_or_measurement_never_requests_recovery(self):
         recovery = AsyncMock()
-        with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
+        with patch.object(media_readiness, "get_player_audio_samplerate", return_value=48000), patch.object(
             playback_orchestration.configured(), "request_coordinated_recovery", recovery
         ):
             main.playback_transition_coordinator.transition_active = True
@@ -226,27 +227,37 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
                 "fxroute_dsp:output_2 -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FR\n"
             )
 
-        rate_mock = (
-            patch.object(main, "_get_player_audio_samplerate", side_effect=live_rates)
-            if isinstance(live_rates, list)
-            else patch.object(main, "_get_player_audio_samplerate", return_value=live_rates)
-        )
+        if isinstance(live_rates, list):
+            rate_iter = iter(list(live_rates))
+
+            async def fake_drain(func, *args, **kwargs):
+                try:
+                    return next(rate_iter)
+                except StopIteration:
+                    return live_rates[-1] if live_rates else None
+        else:
+
+            async def fake_drain(func, *args, **kwargs):
+                return live_rates
 
         async def resolve_live_rate(_request):
             if live_rates is None:
                 live_rate = None
             else:
-                live_rate = await main._wait_for_radio_live_rate_after_load(
+                live_rate = await media_readiness.wait_for_radio_live_rate_after_load(
                     previous_rate,
                     transition_generation=generation,
                     timeout_ms=timeout_ms,
+                    get_epoch=lambda: generation,
+                    drain_worker=fake_drain,
+                    get_player=lambda: None,
                 )
             if not isinstance(live_rate, int) or live_rate <= 0:
                 logs.append(("error", ("radio live rate unavailable",)))
                 return main.RADIO_EXPECTED_SAMPLE_RATE_HZ
             return live_rate
 
-        with rate_mock, patch.object(
+        with patch.object(
             main, "get_samplerate_status", side_effect=lambda: dict(status)
         ), patch.object(samplerate, "ensure_playback_samplerate_force", force), patch.object(
             main.dsp_orchestrator, "sync_preset_for_playback_samplerate", preset_sync
@@ -263,8 +274,8 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
             main, "get_audio_output_overview",
             return_value={"output_mode": {"mode": "stereo", "effective_output_key": "alsa_output.pci-0000_00_1f.3.analog-stereo"}},
         ), patch.object(
-            main.asyncio, "sleep", noop_sleep
-        ), patch.object(main, "logger", type("L", (), {"info": lambda *a, **k: logs.append(("info", a)), "warning": lambda *a, **k: logs.append(("warning", a)), "error": lambda *a, **k: logs.append(("error", a)), "debug": lambda *a, **k: None})()):
+            media_readiness.asyncio, "sleep", noop_sleep
+        ), patch.object(media_readiness, "logger", type("L", (), {"info": lambda *a, **k: logs.append(("info", a)), "warning": lambda *a, **k: logs.append(("warning", a)), "error": lambda *a, **k: logs.append(("error", a)), "debug": lambda *a, **k: None})()):
             result, _runtime = await run_main_handoff_through_coordinator(
                 target_rate=main.RADIO_EXPECTED_SAMPLE_RATE_HZ,
                 generation=generation,
@@ -279,7 +290,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         track = {"id": "radio_48b", "source": "radio", "url": "https://radio.example/48b"}
         # Same rate: the live rate needs RADIO_POST_LOAD_RATE_STABILITY_POLLS
         # stable polls before it is accepted, then no switch may happen.
-        stable = [48000] * main.RADIO_POST_LOAD_RATE_STABILITY_POLLS
+        stable = [48000] * media_readiness.RADIO_POST_LOAD_RATE_STABILITY_POLLS
         result, calls, logs = await self._run_handoff(
             track, 48000, live_rates=stable, active_rate=48000,
         )
@@ -290,7 +301,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_44_to_44_no_rate_switch(self):
         track = {"id": "radio_44b", "source": "radio", "url": "https://radio.example/44b"}
-        stable = [44100] * main.RADIO_POST_LOAD_RATE_STABILITY_POLLS
+        stable = [44100] * media_readiness.RADIO_POST_LOAD_RATE_STABILITY_POLLS
         result, calls, logs = await self._run_handoff(
             track, 44100, live_rates=stable, active_rate=44100,
         )
@@ -349,11 +360,15 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         def bump_during_sleep(_delay):
             main.playback_state.playback_transition_epoch += 1
 
-        with patch.object(
-            main, "_get_player_audio_samplerate", return_value=44100
-        ), patch.object(main.asyncio, "sleep", side_effect=bump_during_sleep):
-            rate = await main._wait_for_radio_live_rate_after_load(
+        async def fake_drain(func, *args, **kwargs):
+            return 44100
+
+        with patch.object(media_readiness.asyncio, "sleep", side_effect=bump_during_sleep):
+            rate = await media_readiness.wait_for_radio_live_rate_after_load(
                 44100, transition_generation=100, timeout_ms=1000,
+                get_epoch=lambda: main.playback_state.playback_transition_epoch,
+                drain_worker=fake_drain,
+                get_player=lambda: None,
             )
         self.assertIsNone(rate, "stale generation must abort, not return a rate")
 
@@ -369,16 +384,20 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         # Same-rate poll: only accepted after stability polls, so the sleep
         # (and the generation bump inside it) runs before a rate is returned.
         async def resolver(_request):
-            rate = await main._wait_for_radio_live_rate_after_load(
+            async def fake_drain(func, *args, **kwargs):
+                return 44100
+
+            rate = await media_readiness.wait_for_radio_live_rate_after_load(
                 44100, transition_generation=100, timeout_ms=1000,
+                get_epoch=lambda: main.playback_state.playback_transition_epoch,
+                drain_worker=fake_drain,
+                get_player=lambda: None,
             )
             if rate is None:
                 raise RuntimeError("stale transition generation")
             return rate
 
-        with patch.object(
-            main, "_get_player_audio_samplerate", return_value=44100
-        ), patch.object(main.asyncio, "sleep", side_effect=bump_during_sleep):
+        with patch.object(media_readiness.asyncio, "sleep", side_effect=bump_during_sleep):
             with self.assertRaises(RuntimeError) as ctx:
                 await run_main_handoff_through_coordinator(
                     target_rate=44100,

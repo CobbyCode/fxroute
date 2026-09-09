@@ -4,7 +4,7 @@
 - audio/sink_inputs.brief_sink_inputs
 - audio/sink_inputs.active_unmuted_sink_inputs
 
-plus wrapper parity against main._active_unmuted_sink_inputs.
+plus wrapper parity against playback.media_readiness.active_unmuted_sink_inputs.
 """
 import copy
 import sys
@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import main
+import playback.media_readiness as media_readiness
 from audio.sink_inputs import active_unmuted_sink_inputs, brief_sink_inputs
 
 
@@ -122,11 +122,11 @@ class WrapperParityTests(unittest.TestCase):
             {"id": 6, "volume_percent": "0"},
             {"id": 7, "volume_percent": -1},
         ]
-        self.assertEqual(main._active_unmuted_sink_inputs(entries), active_unmuted_sink_inputs(entries))
+        self.assertEqual(media_readiness.active_unmuted_sink_inputs(entries), active_unmuted_sink_inputs(entries))
 
     def test_active_wrapper_raises_like_module(self):
         with self.assertRaises(ValueError):
-            main._active_unmuted_sink_inputs([{"volume_percent": "abc"}])
+            media_readiness.active_unmuted_sink_inputs([{"volume_percent": "abc"}])
 
 
 if __name__ == "__main__":

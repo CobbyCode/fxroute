@@ -34,6 +34,7 @@ ARMBIAN_FIRST_BOOT = ROOT / "armbian" / "first-boot-install.sh"
 
 import installer_contract as provider_contract  # noqa: E402
 import streaming.activation as activation  # noqa: E402
+import streaming.api as streaming_api  # noqa: E402
 
 
 class ActivationStoreTests(unittest.TestCase):
@@ -110,10 +111,10 @@ class ProviderAdminEndpointTests(_AdminClientBase):
         data = self.client.get("/api/streaming/providers/admin").json()
         self.assertIn("device_name_can_change", data)
         self.assertIsInstance(data["device_name_can_change"], bool)
-        with mock.patch.object(self.main.shutil, "which", return_value=None):
+        with mock.patch.object(streaming_api.shutil, "which", return_value=None):
             data = self.client.get("/api/streaming/providers/admin").json()
             self.assertFalse(data["device_name_can_change"])
-        with mock.patch.object(self.main.shutil, "which", return_value="/usr/bin/hostnamectl"):
+        with mock.patch.object(streaming_api.shutil, "which", return_value="/usr/bin/hostnamectl"):
             data = self.client.get("/api/streaming/providers/admin").json()
             self.assertTrue(data["device_name_can_change"])
 
@@ -195,7 +196,7 @@ class ProviderEndpointOriginGuardTests(_AdminClientBase):
 
     def test_cross_site_install_never_spawns_the_installer(self):
         with mock.patch.object(
-            self.main, "_run_provider_installer_op", new_callable=mock.AsyncMock
+            streaming_api, "_run_provider_installer_op", new_callable=mock.AsyncMock
         ) as op_mock:
             resp = self.client.post(
                 "/api/streaming/providers/qobuz/install",
@@ -206,7 +207,7 @@ class ProviderEndpointOriginGuardTests(_AdminClientBase):
         op_mock.assert_not_called()
 
     def test_cross_site_service_action_never_spawns_systemctl(self):
-        with mock.patch.object(self.main.asyncio, "create_subprocess_exec") as exec_mock:
+        with mock.patch.object(streaming_api.asyncio, "create_subprocess_exec") as exec_mock:
             resp = self.client.post(
                 "/api/streaming/providers/qobuz/service/restart",
                 json={},
@@ -256,7 +257,7 @@ class DeviceNameEndpointTests(_AdminClientBase):
             # hostnamectl missing would 503; keep it available but verify no
             # subprocess runs for a no-op rename.
             shutil_mock.which.return_value = "/usr/bin/hostnamectl"
-            with mock.patch.object(self.main, "_mdns_device_name", return_value="fxroute"):
+            with mock.patch.object(streaming_api, "_mdns_device_name", return_value="fxroute"):
                 with mock.patch.object(self.main.asyncio, "create_subprocess_exec") as exec_mock:
                     resp = self.client.post("/api/system/device-name", json={"hostname": "fxroute"})
         self.assertEqual(resp.status_code, 200)
@@ -309,7 +310,7 @@ class InstallerProviderOnlyTests(unittest.TestCase):
 
     def test_provider_contract_module_is_the_single_source(self):
         # The shell-side markers must equal the Python contract module, so
-        # the 503 path cannot drift between install.sh and main.py.
+        # the 503 path cannot drift between install.sh and streaming/api.py.
         self.assertEqual(provider_contract.MARKER_PREFIX, "PROVIDER_CONTRACT=")
         self.assertEqual(
             provider_contract.MARKER_HELPER_MISSING,
@@ -319,10 +320,10 @@ class InstallerProviderOnlyTests(unittest.TestCase):
         self.assertIn(f'PROVIDER_CONTRACT_PREFIX="{provider_contract.MARKER_PREFIX}"', shell)
         self.assertIn(f'PROVIDER_CONTRACT_HELPER_MISSING="${{PROVIDER_CONTRACT_PREFIX}}helper-missing"', shell)
         self.assertIn("verify_provider_contract_literals", shell)
-        main_text = (ROOT / "main.py").read_text()
-        self.assertIn("import installer_contract as provider_contract", main_text)
+        streaming_text = (ROOT / "streaming" / "api.py").read_text()
+        self.assertIn("import installer_contract as provider_contract", streaming_text)
         # Prose must not be load-bearing anywhere: no side may grep for it.
-        for text in (shell, main_text):
+        for text in (shell, streaming_text):
             self.assertNotIn('"Provider privilege helper unavailable"', text)
 
     def test_provider_contract_marker_shape(self):
@@ -404,9 +405,9 @@ class InstallerProviderOnlyTests(unittest.TestCase):
         )
 
     def test_provider_install_endpoint_runs_unprivileged(self):
-        main_text = (ROOT / "main.py").read_text()
-        body = main_text.split("async def _run_provider_installer_op")[1]
-        body = body.split("\n@app.")[0]
+        streaming_text = (ROOT / "streaming" / "api.py").read_text()
+        body = streaming_text.split("async def _run_provider_installer_op")[1]
+        body = body.split("\n@router.")[0]
         self.assertNotIn('"sudo", "-n"', body)
         # The 503 mapping keys on the contract marker + machine detail only;
         # the trailing prose hint is free-form.
@@ -422,12 +423,12 @@ class InstallerProviderOnlyTests(unittest.TestCase):
             f";{provider_contract.DETAILS_KEY_RERUN_INSTALL}="
             f"{provider_contract.DETAILS_VALUE_RERUN_INSTALL}"
         )
-        main_text = (ROOT / "main.py").read_text()
-        self.assertIn("_PROVIDER_HELPER_MISSING_CONTRACT = (", main_text)
+        streaming_text = (ROOT / "streaming" / "api.py").read_text()
+        self.assertIn("_PROVIDER_HELPER_MISSING_CONTRACT = (", streaming_text)
         # The source must build the contract value from the constants (no
         # raw duplicated literals), and the constants must equal the pinned
         # machine values below.
-        block = main_text[main_text.index("_PROVIDER_HELPER_MISSING_CONTRACT = ("):]
+        block = streaming_text[streaming_text.index("_PROVIDER_HELPER_MISSING_CONTRACT = ("):]
         block = block[:block.index(")")]
         for name in (
             "DETAILS_KEY_HELPER_MISSING",
@@ -534,7 +535,7 @@ class QobuzSetupCompletionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app_js = (ROOT / "static" / "app.js").read_text()
-        cls.main = (ROOT / "main.py").read_text()
+        cls.streaming_api_text = (ROOT / "streaming" / "api.py").read_text()
 
     def test_qobuz_offers_complete_setup_while_daemon_down(self):
         match = re.search(
@@ -553,8 +554,8 @@ class QobuzSetupCompletionTests(unittest.TestCase):
         self.assertIn("runProviderInstall(button.getAttribute(", self.app_js)
 
     def test_install_endpoint_allows_completing_run_when_installed(self):
-        body = self.main.split("async def api_streaming_provider_install")[1]
-        body = body.split("\n@app.")[0]
+        body = self.streaming_api_text.split("async def api_streaming_provider_install")[1]
+        body = body.split("\n@router.")[0]
         self.assertIn('"--providers-only"', body)
         self.assertIn('"qobuz": "--qobuz"', body)
         self.assertNotIn("already installed", body)
@@ -573,7 +574,7 @@ class TidalLoginParityTests(unittest.TestCase):
         cls.index = (ROOT / "static" / "index.html").read_text()
         cls.app_js = (ROOT / "static" / "app.js").read_text()
         cls.streaming_js = (ROOT / "static" / "streaming.js").read_text()
-        cls.main = (ROOT / "main.py").read_text()
+        cls.streaming_api_text = (ROOT / "streaming" / "api.py").read_text()
 
     def _panel(self, provider):
         match = re.search(
@@ -653,7 +654,7 @@ class TidalLoginParityTests(unittest.TestCase):
             "async def api_tidal_logout",
             "finish_pkce_login(redirect_url)",
         ):
-            self.assertIn(token, self.main)
+            self.assertIn(token, self.streaming_api_text)
 
 
 class ProviderReinstallActivationTests(unittest.TestCase):
@@ -672,7 +673,7 @@ class ProviderReinstallActivationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app_js = (ROOT / "static" / "app.js").read_text()
-        cls.main = (ROOT / "main.py").read_text()
+        cls.streaming_api_text = (ROOT / "streaming" / "api.py").read_text()
 
     @classmethod
     def _function_body(cls, name):
@@ -730,12 +731,12 @@ class ProviderReinstallActivationTests(unittest.TestCase):
         self.assertIn('fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/uninstall`', self.app_js)
 
     def test_backend_ui_install_and_uninstall_cover_all_three_providers(self):
-        body = self.main.split("async def api_streaming_provider_install")[1]
-        body = body.split("\n@app.post(\"/api/streaming/providers/{provider_id}/uninstall")[0]
+        body = self.streaming_api_text.split("async def api_streaming_provider_install")[1]
+        body = body.split('\n@router.post("/api/streaming/providers/{provider_id}/uninstall')[0]
         for provider in self.PROVIDERS:
             self.assertIn(f'"{provider}"', body)
-        body = self.main.split("async def api_streaming_provider_uninstall")[1]
-        body = body.split("\n@app.post(")[0]
+        body = self.streaming_api_text.split("async def api_streaming_provider_uninstall")[1]
+        body = body.split("\n@router.post(")[0]
         self.assertIn('if provider_id not in {"spotify", "qobuz", "tidal"}:', body)
 
 

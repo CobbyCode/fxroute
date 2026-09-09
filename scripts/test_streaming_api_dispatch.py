@@ -19,6 +19,8 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main as main_module
+import streaming as streaming_module
+import streaming.api as streaming_api
 from fastapi.testclient import TestClient
 
 
@@ -107,10 +109,10 @@ class _NoTransportProvider(_FakeProvider):
     (``StreamingProvider.seek``/``set_volume`` raise ProviderNotImplemented)."""
 
     async def seek(self, position_sec):
-        raise main_module.streaming.ProviderNotImplemented("tidal", "seek")
+        raise streaming_module.ProviderNotImplemented("tidal", "seek")
 
     async def set_volume(self, percent):
-        raise main_module.streaming.ProviderNotImplemented("tidal", "set_volume")
+        raise streaming_module.ProviderNotImplemented("tidal", "set_volume")
 
 
 class StreamingApiDispatchTests(unittest.TestCase):
@@ -119,11 +121,11 @@ class StreamingApiDispatchTests(unittest.TestCase):
         cls.client = TestClient(main_module.app)
 
     def _patch(self, provider):
-        return mock.patch.object(main_module.streaming, "get_provider", return_value=provider)
+        return mock.patch.object(streaming_module, "get_provider", return_value=provider)
 
     def test_provider_discovery_uses_lightweight_registry_contract(self):
         payload = [{"id": "tidal", "name": "TIDAL", "implemented": True, "installed": True, "capabilities": {}}]
-        with mock.patch.object(main_module.streaming, "discover_providers", new=mock.AsyncMock(return_value=payload)):
+        with mock.patch.object(streaming_module, "discover_providers", new=mock.AsyncMock(return_value=payload)):
             resp = self.client.get("/api/streaming/providers/discovery")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"providers": payload})
@@ -276,14 +278,14 @@ class GenericTransportActionTests(unittest.TestCase):
         provider.toggle = lambda: self._status()
         # A non-Qobuz provider id exercises the generic capability dispatch;
         # qobuz play/toggle is routed through the source handoff instead.
-        with mock.patch.object(main_module.streaming, "get_provider", return_value=provider):
+        with mock.patch.object(streaming_module, "get_provider", return_value=provider):
             resp = self.client.post("/api/streaming/fake/toggle")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "Paused")
 
     def test_unknown_action_is_404(self):
         provider = _FakeProvider()
-        with mock.patch.object(main_module.streaming, "get_provider", return_value=provider):
+        with mock.patch.object(streaming_module, "get_provider", return_value=provider):
             resp = self.client.post("/api/streaming/qobuz/bogus")
         self.assertEqual(resp.status_code, 404)
 
@@ -292,32 +294,49 @@ class GenericTransportActionTests(unittest.TestCase):
         # FXRoute owner) must surface 501 like the other transport actions, not
         # an unhandled 500.
         provider = _NoTransportProvider()
-        with mock.patch.object(main_module.streaming, "get_provider", return_value=provider):
+        with mock.patch.object(streaming_module, "get_provider", return_value=provider):
             resp = self.client.post("/api/streaming/tidal/seek", json={"position": 30})
         self.assertEqual(resp.status_code, 501)
 
     def test_volume_unimplemented_maps_to_501(self):
         provider = _NoTransportProvider()
-        with mock.patch.object(main_module.streaming, "get_provider", return_value=provider):
+        with mock.patch.object(streaming_module, "get_provider", return_value=provider):
             resp = self.client.post("/api/streaming/tidal/volume", json={"volume": 50})
         self.assertEqual(resp.status_code, 501)
 
     def test_qobuz_toggle_playing_is_transport_only(self):
         playing = {"available": True, "status": "Playing", "trackId": "7"}
-        with mock.patch.object(
-            main_module.streaming, "get_provider", return_value=_FakeProvider()
-        ), mock.patch.object(
-            main_module, "get_qobuz_ui_state", new=mock.AsyncMock(return_value=playing)
-        ), mock.patch.object(
-            main_module, "_is_qobuz_playback_active", return_value=True
-        ), mock.patch.object(
-            main_module, "qobuz_pause", new=mock.AsyncMock(return_value={"status": "Paused"})
-        ) as pause, mock.patch.object(
-            main_module, "broadcast_qobuz_state", new=mock.AsyncMock(side_effect=lambda d: d)
-        ), mock.patch.object(
-            main_module, "_run_coordinated_transition", new=mock.AsyncMock()
-        ) as run:
-            resp = self.client.post("/api/streaming/qobuz/toggle")
+        pause = mock.AsyncMock(return_value={"status": "Paused"})
+        run = mock.AsyncMock()
+        deps = streaming_api.StreamingApiDeps(
+            get_qobuz_ui_state=mock.AsyncMock(return_value=playing),
+            is_qobuz_playback_active=lambda state: True,
+            qobuz_pause=pause,
+            broadcast_qobuz_state=mock.AsyncMock(side_effect=lambda d: d),
+            qobuz_target_track_from_state=lambda state: {"id": "7"},
+            qobuz_target_rate=lambda state: 44100,
+            qobuz_pin_unity=mock.AsyncMock(),
+            qobuz_volume_action=mock.AsyncMock(),
+            spotify_volume_action=mock.AsyncMock(),
+            publish_committed_playback_owner=mock.AsyncMock(),
+            transition_error_http=lambda exc: exc,
+            request_origin_is_trusted=lambda req: True,
+            coordinator_rate_change=lambda rate: None,
+            run_coordinated_transition=run,
+            get_current_playback_owner=lambda: None,
+            spotify_playerctl_watch=mock.Mock(),
+            api_spotify_play=mock.AsyncMock(),
+            api_spotify_toggle=mock.AsyncMock(),
+        )
+        orig = streaming_api._runtime.deps
+        streaming_api.configure_streaming_api(deps)
+        try:
+            with mock.patch.object(
+                streaming_module, "get_provider", return_value=_FakeProvider()
+            ):
+                resp = self.client.post("/api/streaming/qobuz/toggle")
+        finally:
+            streaming_api.configure_streaming_api(orig)
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "Paused")
         pause.assert_awaited_once()
@@ -325,12 +344,36 @@ class GenericTransportActionTests(unittest.TestCase):
 
     def test_generic_spotify_play_uses_authoritative_handoff(self):
         provider = mock.Mock(play=mock.AsyncMock(return_value={"status": "Playing"}))
-        with mock.patch.object(
-            main_module.streaming, "get_provider", return_value=provider
-        ), mock.patch.object(
-            main_module, "api_spotify_play", new=mock.AsyncMock(return_value={"status": "Playing"})
-        ) as handoff:
-            resp = self.client.post("/api/streaming/spotify/play")
+        handoff = mock.AsyncMock(return_value={"status": "Playing"})
+        deps = streaming_api.StreamingApiDeps(
+            get_qobuz_ui_state=mock.AsyncMock(return_value={}),
+            is_qobuz_playback_active=lambda state: False,
+            qobuz_pause=mock.AsyncMock(),
+            broadcast_qobuz_state=mock.AsyncMock(),
+            qobuz_target_track_from_state=lambda state: {},
+            qobuz_target_rate=lambda state: 44100,
+            qobuz_pin_unity=mock.AsyncMock(),
+            qobuz_volume_action=mock.AsyncMock(),
+            spotify_volume_action=mock.AsyncMock(),
+            publish_committed_playback_owner=mock.AsyncMock(),
+            transition_error_http=lambda exc: exc,
+            request_origin_is_trusted=lambda req: True,
+            coordinator_rate_change=lambda rate: None,
+            run_coordinated_transition=mock.AsyncMock(),
+            get_current_playback_owner=lambda: None,
+            spotify_playerctl_watch=mock.Mock(),
+            api_spotify_play=handoff,
+            api_spotify_toggle=mock.AsyncMock(),
+        )
+        orig = streaming_api._runtime.deps
+        streaming_api.configure_streaming_api(deps)
+        try:
+            with mock.patch.object(
+                streaming_module, "get_provider", return_value=provider
+            ):
+                resp = self.client.post("/api/streaming/spotify/play")
+        finally:
+            streaming_api.configure_streaming_api(orig)
 
         self.assertEqual(resp.status_code, 200)
         handoff.assert_awaited_once_with()
@@ -338,12 +381,36 @@ class GenericTransportActionTests(unittest.TestCase):
 
     def test_generic_spotify_toggle_uses_authoritative_handoff(self):
         provider = mock.Mock(toggle=mock.AsyncMock(return_value={"status": "Playing"}))
-        with mock.patch.object(
-            main_module.streaming, "get_provider", return_value=provider
-        ), mock.patch.object(
-            main_module, "api_spotify_toggle", new=mock.AsyncMock(return_value={"status": "Playing"})
-        ) as handoff:
-            resp = self.client.post("/api/streaming/spotify/toggle")
+        handoff = mock.AsyncMock(return_value={"status": "Playing"})
+        deps = streaming_api.StreamingApiDeps(
+            get_qobuz_ui_state=mock.AsyncMock(return_value={}),
+            is_qobuz_playback_active=lambda state: False,
+            qobuz_pause=mock.AsyncMock(),
+            broadcast_qobuz_state=mock.AsyncMock(),
+            qobuz_target_track_from_state=lambda state: {},
+            qobuz_target_rate=lambda state: 44100,
+            qobuz_pin_unity=mock.AsyncMock(),
+            qobuz_volume_action=mock.AsyncMock(),
+            spotify_volume_action=mock.AsyncMock(),
+            publish_committed_playback_owner=mock.AsyncMock(),
+            transition_error_http=lambda exc: exc,
+            request_origin_is_trusted=lambda req: True,
+            coordinator_rate_change=lambda rate: None,
+            run_coordinated_transition=mock.AsyncMock(),
+            get_current_playback_owner=lambda: None,
+            spotify_playerctl_watch=mock.Mock(),
+            api_spotify_play=mock.AsyncMock(),
+            api_spotify_toggle=handoff,
+        )
+        orig = streaming_api._runtime.deps
+        streaming_api.configure_streaming_api(deps)
+        try:
+            with mock.patch.object(
+                streaming_module, "get_provider", return_value=provider
+            ):
+                resp = self.client.post("/api/streaming/spotify/toggle")
+        finally:
+            streaming_api.configure_streaming_api(orig)
 
         self.assertEqual(resp.status_code, 200)
         handoff.assert_awaited_once_with()
@@ -353,18 +420,27 @@ class GenericTransportActionTests(unittest.TestCase):
 class QobuzUiStartHandoffTests(unittest.IsolatedAsyncioTestCase):
     """Qobuz UI play/toggle must ride the authoritative source handoff and
     publish the committed owner on the playback broadcast, mirroring the
-    Spotify endpoints instead of the raw provider transport."""
+    Spotify endpoints instead of the raw provider transport.
+
+    Exercises the real ``streaming.api`` implementation with explicitly
+    configured deps (no ``main.*`` mocks, no compatibility shims).
+    """
 
     async def asyncSetUp(self):
-        self._orig_owner = main_module.playback_state.current_playback_owner
-        main_module.playback_state.current_playback_owner = None
+        from streaming.qobuz import connect_state as qobuz_connect_state
+
+        self._connect_state = qobuz_connect_state
+        self._connect_state.reset()
+        self._orig_deps = streaming_api._runtime.deps
+        self._owner = {"current": None}
         self.committed = type(
             "Result", (),
             {"committed": True, "transition_id": "tr-qobuz-1"},
         )()
 
     async def asyncTearDown(self):
-        main_module.playback_state.current_playback_owner = self._orig_owner
+        streaming_api.configure_streaming_api(self._orig_deps)
+        self._connect_state.reset()
 
     def _paused_state(self):
         return {
@@ -373,115 +449,97 @@ class QobuzUiStartHandoffTests(unittest.IsolatedAsyncioTestCase):
             "sample_rate": 88200,
         }
 
-    def _patches(self, action, state):
-        return [
-            mock.patch.object(
-                main_module, "get_qobuz_ui_state", new=mock.AsyncMock(return_value=state)
-            ),
-            mock.patch.object(
-                main_module, "_is_qobuz_playback_active",
-                return_value=state.get("status") == "Playing",
-            ),
-            mock.patch.object(
-                main_module, "qobuz_pause", new=mock.AsyncMock(return_value={"status": "Paused"})
-            ),
-            mock.patch.object(
-                main_module, "broadcast_qobuz_state",
-                new=mock.AsyncMock(
-                    side_effect=lambda *a, **k: a[0] if a else state
-                ),
-            ),
-            mock.patch.object(
-                main_module, "_run_coordinated_transition",
-                new=mock.AsyncMock(return_value=self.committed),
-            ),
-            mock.patch.object(
-                main_module.manager, "broadcast", new=mock.AsyncMock(),
-            ),
-            mock.patch.object(
-                main_module, "build_playback_payload",
-                return_value={"playback_owner": "qobuz"},
-            ),
-        ]
+    def _configure(self, state):
+        run = mock.AsyncMock(return_value=self.committed)
+        pause = mock.AsyncMock(return_value={"status": "Paused"})
+        publish = mock.AsyncMock()
+        broadcast = mock.AsyncMock(
+            side_effect=lambda *a, **k: a[0] if a else state
+        )
+        pin = mock.AsyncMock()
+        deps = streaming_api.StreamingApiDeps(
+            get_qobuz_ui_state=mock.AsyncMock(return_value=state),
+            is_qobuz_playback_active=lambda s: s.get("status") == "Playing",
+            qobuz_pause=pause,
+            broadcast_qobuz_state=broadcast,
+            qobuz_target_track_from_state=lambda s: {"id": str(s.get("trackId") or "")},
+            qobuz_target_rate=lambda s: int(s.get("sample_rate") or 44100),
+            qobuz_pin_unity=pin,
+            qobuz_volume_action=mock.AsyncMock(),
+            spotify_volume_action=mock.AsyncMock(),
+            publish_committed_playback_owner=publish,
+            transition_error_http=lambda exc: exc,
+            request_origin_is_trusted=lambda req: True,
+            coordinator_rate_change=lambda rate: f"rate-{rate}",
+            run_coordinated_transition=run,
+            get_current_playback_owner=lambda: self._owner["current"],
+            spotify_playerctl_watch=mock.Mock(),
+            api_spotify_play=mock.AsyncMock(),
+            api_spotify_toggle=mock.AsyncMock(),
+        )
+        streaming_api.configure_streaming_api(deps)
+        return {"run": run, "pause": pause, "publish": publish,
+                "broadcast": broadcast, "pin": pin}
 
     async def test_toggle_from_paused_commits_qobuz_through_coordinator(self):
         state = self._paused_state()
-        patches = self._patches("toggle", state)
-        with patches[0], patches[1], patches[2], patches[3], patches[4] as run, \
-                patches[5] as manager, patches[6]:
-            result = await main_module._qobuz_ui_start_action("toggle")
-        run.assert_awaited_once()
-        request = run.await_args.args[0]
+        self._owner["current"] = None
+        mocks = self._configure(state)
+        result = await streaming_api._qobuz_ui_start_action("toggle")
+        mocks["run"].assert_awaited_once()
+        request = mocks["run"].await_args.args[0]
         self.assertEqual(request.source, "qobuz")
         self.assertEqual(request.operation, "qobuz-toggle")
         self.assertTrue(request.should_play)
         self.assertTrue(request.reload_source)
         self.assertEqual(request.target_rate, 88200)
-        self.assertEqual(main_module.playback_state.current_playback_owner, "qobuz")
-        playback_call = next(
-            c for c in manager.await_args_list
-            if c.args[0].get("type") == "playback"
-        )
-        self.assertEqual(
-            playback_call.args[0]["data"]["playback_owner"], "qobuz"
-        )
+        mocks["publish"].assert_awaited_once_with("qobuz", "tr-qobuz-1")
+        mocks["pin"].assert_awaited_once()
+        mocks["broadcast"].assert_awaited()
         self.assertEqual(result["status"], "Paused")
 
     async def test_play_from_paused_commits_qobuz_through_coordinator(self):
         state = self._paused_state()
-        patches = self._patches("play", state)
-        with patches[0], patches[1], patches[2], patches[3], patches[4] as run, \
-                patches[5] as manager, patches[6]:
-            await main_module._qobuz_ui_start_action("play")
-        run.assert_awaited_once()
-        request = run.await_args.args[0]
+        self._owner["current"] = None
+        mocks = self._configure(state)
+        await streaming_api._qobuz_ui_start_action("play")
+        mocks["run"].assert_awaited_once()
+        request = mocks["run"].await_args.args[0]
         self.assertEqual(request.operation, "qobuz-play")
-        self.assertEqual(main_module.playback_state.current_playback_owner, "qobuz")
-        playback_call = next(
-            c for c in manager.await_args_list
-            if c.args[0].get("type") == "playback"
-        )
-        self.assertEqual(
-            playback_call.args[0]["data"]["playback_owner"], "qobuz"
-        )
+        mocks["publish"].assert_awaited_once_with("qobuz", "tr-qobuz-1")
 
     async def test_toggle_from_playing_never_runs_coordinator(self):
         state = dict(self._paused_state(), status="Playing")
-        patches = self._patches("toggle", state)
-        with patches[0], patches[1], patches[2] as pause, patches[3], \
-                patches[4] as run, patches[5], patches[6]:
-            await main_module._qobuz_ui_start_action("toggle")
-        pause.assert_awaited_once()
-        run.assert_not_awaited()
-        self.assertIsNone(main_module.playback_state.current_playback_owner)
+        self._owner["current"] = None
+        mocks = self._configure(state)
+        await streaming_api._qobuz_ui_start_action("toggle")
+        mocks["pause"].assert_awaited_once()
+        mocks["run"].assert_not_awaited()
+        mocks["publish"].assert_not_awaited()
 
     async def test_play_while_qobuz_owner_active_is_noop(self):
         # A repeated play for the committed, already-playing Qobuz owner must
         # be idempotent: no source handoff, no coordinator transition, no
         # pause, no playback re-broadcast.
         state = dict(self._paused_state(), status="Playing")
-        main_module.playback_state.current_playback_owner = "qobuz"
-        patches = self._patches("play", state)
-        with patches[0], patches[1], patches[2] as pause, patches[3], \
-                patches[4] as run, patches[5] as manager, patches[6]:
-            result = await main_module._qobuz_ui_start_action("play")
-        run.assert_not_awaited()
-        pause.assert_not_awaited()
-        manager.assert_not_awaited()
+        self._owner["current"] = "qobuz"
+        mocks = self._configure(state)
+        result = await streaming_api._qobuz_ui_start_action("play")
+        mocks["run"].assert_not_awaited()
+        mocks["pause"].assert_not_awaited()
+        mocks["publish"].assert_not_awaited()
+        mocks["broadcast"].assert_not_awaited()
         self.assertEqual(result["status"], "Playing")
-        self.assertEqual(main_module.playback_state.current_playback_owner, "qobuz")
 
     async def test_play_after_pause_still_resumes_through_coordinator(self):
         # Idempotency applies only to an already active Qobuz owner: a paused
         # committed owner must still resume through the authoritative handoff.
         state = self._paused_state()
-        main_module.playback_state.current_playback_owner = "qobuz"
-        patches = self._patches("play", state)
-        with patches[0], patches[1], patches[2], patches[3], patches[4] as run, \
-                patches[5] as manager, patches[6]:
-            await main_module._qobuz_ui_start_action("play")
-        run.assert_awaited_once()
-        request = run.await_args.args[0]
+        self._owner["current"] = "qobuz"
+        mocks = self._configure(state)
+        await streaming_api._qobuz_ui_start_action("play")
+        mocks["run"].assert_awaited_once()
+        request = mocks["run"].await_args.args[0]
         self.assertEqual(request.operation, "qobuz-play")
         self.assertTrue(request.should_play)
 

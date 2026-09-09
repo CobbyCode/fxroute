@@ -8,15 +8,14 @@ import logging
 import os
 import re
 import shutil
-import socket
 import time
 import weakref
 import asyncio
 import hashlib
 import inspect
-import math
 import subprocess
 import playback.queue as playback_queue
+import playback.media_readiness as media_readiness
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -34,7 +33,6 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from config import get_settings
 from http_errors import bad_request, internal_error
-import installer_contract as provider_contract
 from library.sources import MusicLibraryManager
 from radio.metadata import RadioMetadataService
 
@@ -43,23 +41,6 @@ STATIC_DIR = BASE_DIR / "static"
 COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "covers"
 TOP40_COVER_IMAGE = STATIC_DIR / "Top40.png"
 UPDATE_SCRIPT = BASE_DIR / "scripts" / "update_fxroute.sh"
-PROVIDER_INSTALL_SCRIPT = BASE_DIR / "install.sh"
-PROVIDER_UNINSTALL_SCRIPT = BASE_DIR / "uninstall.sh"
-# Provider install/uninstall via the existing installer can download release
-# binaries and pip-install dependencies; give it the same bounded budget as
-# the FXRoute update path.
-_PROVIDER_OP_TIMEOUT_SECONDS = 15 * 60
-_PROVIDER_OP_OUTPUT_TAIL_CHARS = 4000
-# Machine contract for the helper-missing retry path: this value rides in
-# the X-FXRoute-Provider-Contract response header of the 503 (pinned by
-# scripts/test_provider_admin.py). The visible detail text stays unchanged
-# prose because the UI surfaces data.detail verbatim.
-_PROVIDER_HELPER_MISSING_CONTRACT = (
-    f"{provider_contract.DETAILS_KEY_HELPER_MISSING}="
-    f"{provider_contract.DETAILS_VALUE_HELPER_MISSING}"
-    f";{provider_contract.DETAILS_KEY_RERUN_INSTALL}="
-    f"{provider_contract.DETAILS_VALUE_RERUN_INSTALL}"
-)
 # Same rule as install.sh valid_local_hostname().
 _LOCAL_HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _LOCAL_HOSTNAME_RESERVED = {"localhost"}
@@ -67,27 +48,10 @@ _LOCAL_HOSTNAME_RESERVED = {"localhost"}
 # Cooldown to prevent rapid mpv IPC flooding (ms)
 PLAY_COMMAND_COOLDOWN_MS = 400
 LOCAL_TRACK_SWITCH_SETTLE_MS = 260
-PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS = 1800
-# qbzd fully disconnects its ALSA stream on pause instead of corking it like
-# Spotify Desktop, and that release takes ~2.2 s (live-measured). It therefore
-# gets its own, longer bounded release budget so an MPV handoff does not fail
-# while the previous Qobuz stream is still draining.
-PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS = 4000
-PIPEWIRE_HANDOFF_POLL_INTERVAL_MS = 50
 # Bounded window for the idempotent MPV->DSP ingress link reconciliation
 # after the source ports appeared (link creation plus readback confirm).
 MPV_LINK_REPAIR_TIMEOUT_MS = 1500
-SPOTIFY_SINK_INPUT_RATE_TIMEOUT_MS = 1800
 PEAK_MONITOR_RESTART_SETTLE_MS = 320
-PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS = 900
-RADIO_POST_LOAD_RATE_TIMEOUT_MS = 3000
-RADIO_POST_LOAD_RATE_STABILITY_POLLS = 3
-# Bounded read-only budget for the MPV stream's PipeWire output ports to
-# appear after a staged cold radio loadfile: mpv publishes mpv:output_FL/FR
-# only once the network stream actually opened (observed ~4 s cold start).
-# The MPV->DSP ingress link repair must never run while the ports are
-# absent; this is source-startup readiness, not a fixed sleep.
-RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS = 4500
 # Bounded readback wait for the native DSP ports after a rate switch or a
 # missing-graph repair. No fixed sleeps: the handoff polls pw-link until the
 # fxroute_dsp input/output ports are exposed, then starts/syncs the helper.
@@ -269,282 +233,6 @@ async def _restart_fxroute_service_after_response(service_name: str) -> None:
             )
 
 
-def _list_sink_inputs() -> list[dict]:
-    """Thin wrapper: pactl sink-input parsing lives in sink_inputs (REFACTOR-011)."""
-    return sink_inputs.list_sink_inputs()
-
-
-def _list_mpv_sink_inputs() -> list[dict]:
-    return [
-        entry
-        for entry in _list_sink_inputs()
-        if (entry.get("properties") or {}).get("application.name") == "mpv"
-        or (entry.get("properties") or {}).get("application.id") == "mpv"
-        or (entry.get("properties") or {}).get("node.name") == "mpv"
-    ]
-
-
-def _list_spotify_sink_inputs() -> list[dict]:
-    def matches(value: str) -> bool:
-        if value == "spotify":
-            return True
-        if value == "spotifyd" or value.startswith("spotifyd."):
-            return True
-        return False
-
-    return [
-        entry
-        for entry in _list_sink_inputs()
-        if matches(str((entry.get("properties") or {}).get("application.name") or "").lower())
-        or matches(str((entry.get("properties") or {}).get("application.id") or "").lower())
-        or matches(str((entry.get("properties") or {}).get("node.name") or "").lower())
-        or matches(str((entry.get("properties") or {}).get("application.process.binary") or "").lower())
-        or (entry.get("properties") or {}).get("media.name") == "Spotify"
-    ]
-
-
-def _list_qobuz_sink_inputs() -> list[dict]:
-    """Return PipeWire sink inputs produced by the qbzd renderer."""
-    result: list[dict] = []
-    for entry in _list_sink_inputs():
-        properties = entry.get("properties") or {}
-        haystack = " ".join(
-            str(properties.get(key) or "")
-            for key in ("application.name", "application.id", "node.name", "media.name")
-        ).lower()
-        if "qobuz" in haystack or "qbzd" in haystack:
-            result.append(entry)
-    return result
-
-
-def _sink_input_observation(
-    entries: list[dict],
-    *,
-    expected_rate: int | None = None,
-    preferred_identity: object | None = None,
-) -> tuple[object, int] | None:
-    """Select one active sink input and retain an identity for stability checks."""
-    candidates: list[tuple[object, int]] = []
-    for entry in entries:
-        corked = entry.get("corked")
-        if isinstance(corked, str):
-            corked = corked.strip().lower() in {"1", "true", "yes", "on"}
-        if corked:
-            # A corked input is an old/paused PipeWire stream.  It must not
-            # validate a new Playing entry or hide a newly created active
-            # input with a different rate.
-            continue
-        rate = entry.get("sample_rate")
-        if isinstance(rate, int) and rate > 0:
-            properties = entry.get("properties") or {}
-            identity: object = entry.get("id")
-            if identity is None:
-                identity = entry.get("index")
-            if identity is None:
-                identity = (
-                    properties.get("node.name"),
-                    properties.get("application.name") or properties.get("application.id"),
-                    properties.get("media.name"),
-                )
-            candidates.append((identity, rate))
-    if not candidates:
-        return None
-
-    selected_identity, selected_rate = candidates[0]
-    preferred = next(
-        (
-            candidate
-            for candidate in candidates
-            if preferred_identity is not None and candidate[0] == preferred_identity
-        ),
-        None,
-    )
-    expected = next(
-        (
-            candidate
-            for candidate in candidates
-            if isinstance(expected_rate, int)
-            and expected_rate > 0
-            and candidate[1] == expected_rate
-        ),
-        None,
-    )
-    if preferred is not None and (expected_rate is None or preferred[1] == expected_rate):
-        selected_identity, selected_rate = preferred
-    elif expected is not None:
-        # A stale preferred input must not mask a newly appeared input that
-        # already has the rate required by the Coordinator commit contract.
-        selected_identity, selected_rate = expected
-    elif preferred is not None:
-        selected_identity, selected_rate = preferred
-    return selected_identity, selected_rate
-
-
-def _spotify_sink_input_observation(
-    entries: list[dict],
-    *,
-    expected_rate: int | None = None,
-    preferred_identity: object | None = None,
-) -> tuple[object, int] | None:
-    """Select one active Spotify sink input (identity + rate)."""
-    return _sink_input_observation(
-        entries,
-        expected_rate=expected_rate,
-        preferred_identity=preferred_identity,
-    )
-
-
-def _qobuz_sink_input_observation(
-    entries: list[dict],
-    *,
-    expected_rate: int | None = None,
-    preferred_identity: object | None = None,
-) -> tuple[object, int] | None:
-    """Select one active qbzd sink input (identity + rate)."""
-    return _sink_input_observation(
-        entries,
-        expected_rate=expected_rate,
-        preferred_identity=preferred_identity,
-    )
-
-
-async def _wait_for_sink_input_release(list_fn, timeout_ms: int) -> bool:
-    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
-    while time.monotonic() <= deadline:
-        # The listing spawns pactl; keep that subprocess off the event loop.
-        if not await asyncio.to_thread(list_fn):
-            return True
-        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-    return not await asyncio.to_thread(list_fn)
-
-
-async def _wait_for_pipewire_mpv_release(timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS) -> bool:
-    return await _wait_for_sink_input_release(_list_mpv_sink_inputs, timeout_ms)
-
-
-async def _wait_for_pipewire_spotify_release(
-    timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS,
-) -> bool:
-    # A paused Spotify client may retain a corked historical sink-input.  That
-    # input is not producing audio and must not block a source handoff.  Only
-    # active, audible Spotify inputs are relevant to the quiescence contract.
-    def active_spotify_inputs() -> list[dict]:
-        return _active_unmuted_sink_inputs(_list_spotify_sink_inputs())
-
-    return await _wait_for_sink_input_release(active_spotify_inputs, timeout_ms)
-
-
-async def _wait_for_spotify_sink_input_samplerate(
-    *,
-    expected_rate: int | None = None,
-    timeout_ms: int = SPOTIFY_SINK_INPUT_RATE_TIMEOUT_MS,
-) -> int:
-    """Read a stable Spotify stream rate before an entry transition commits."""
-    if not isinstance(expected_rate, int) or expected_rate <= 0:
-        raise RuntimeError(f"Spotify entry has no valid expected samplerate: {expected_rate}")
-    poll_interval_ms = max(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS, 1)
-    max_polls = max(1, math.ceil(max(timeout_ms, 0) / poll_interval_ms) + 1)
-    last_observation: tuple[object, int] | None = None
-    stable_polls = 0
-    last_rate: int | None = None
-    for poll_index in range(max_polls):
-        try:
-            entries = await asyncio.to_thread(_list_spotify_sink_inputs)
-            observation = _spotify_sink_input_observation(
-                entries,
-                expected_rate=expected_rate,
-                preferred_identity=(last_observation[0] if last_observation else None),
-            )
-        except Exception:
-            observation = None
-        if observation is not None:
-            identity, rate = observation
-            last_rate = rate
-            if rate == expected_rate and observation == last_observation:
-                stable_polls += 1
-            elif rate == expected_rate:
-                stable_polls = 1
-            else:
-                # A wrong/transient rate is observed but never accepted as a
-                # stable entry result.  The counter also resets on an input
-                # identity change so an old Spotify stream cannot validate a
-                # newly appeared one.
-                stable_polls = 0
-            last_observation = (identity, rate)
-            if rate == expected_rate and stable_polls >= SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS:
-                return rate
-        else:
-            # A disappearing input is a new stream boundary.  Do not carry
-            # stability across that gap, even if the next input reuses the
-            # same PipeWire identity.
-            last_observation = None
-            stable_polls = 0
-        if poll_index + 1 < max_polls:
-            await asyncio.sleep(poll_interval_ms / 1000)
-    raise RuntimeError(
-        "Spotify sink-input samplerate did not become readable and stable "
-        f"at the expected rate within {timeout_ms} ms "
-        f"(expected={expected_rate} last={last_rate})"
-    )
-
-
-async def _wait_for_pipewire_qobuz_release(
-    timeout_ms: int = PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS,
-) -> bool:
-    """Quiesce an active qbzd sink input before a guarded graph transition."""
-    def active_qobuz_inputs() -> list[dict]:
-        return _active_unmuted_sink_inputs(_list_qobuz_sink_inputs())
-
-    return await _wait_for_sink_input_release(active_qobuz_inputs, timeout_ms)
-
-
-async def _wait_for_qobuz_sink_input_samplerate(
-    *,
-    expected_rate: int | None = None,
-    timeout_ms: int = SPOTIFY_SINK_INPUT_RATE_TIMEOUT_MS,
-) -> int:
-    """Read a stable qbzd stream rate before an entry transition commits."""
-    if not isinstance(expected_rate, int) or expected_rate <= 0:
-        raise RuntimeError(f"Qobuz entry has no valid expected samplerate: {expected_rate}")
-    poll_interval_ms = max(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS, 1)
-    max_polls = max(1, math.ceil(max(timeout_ms, 0) / poll_interval_ms) + 1)
-    last_observation: tuple[object, int] | None = None
-    stable_polls = 0
-    last_rate: int | None = None
-    for poll_index in range(max_polls):
-        try:
-            entries = await asyncio.to_thread(_list_qobuz_sink_inputs)
-            observation = _qobuz_sink_input_observation(
-                entries,
-                expected_rate=expected_rate,
-                preferred_identity=(last_observation[0] if last_observation else None),
-            )
-        except Exception:
-            observation = None
-        if observation is not None:
-            identity, rate = observation
-            last_rate = rate
-            if rate == expected_rate and observation == last_observation:
-                stable_polls += 1
-            elif rate == expected_rate:
-                stable_polls = 1
-            else:
-                stable_polls = 0
-            last_observation = (identity, rate)
-            if rate == expected_rate and stable_polls >= SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS:
-                return rate
-        else:
-            last_observation = None
-            stable_polls = 0
-        if poll_index + 1 < max_polls:
-            await asyncio.sleep(poll_interval_ms / 1000)
-    raise RuntimeError(
-        "qbzd sink-input samplerate did not become readable and stable "
-        f"at the expected rate within {timeout_ms} ms "
-        f"(expected={expected_rate} last={last_rate})"
-    )
-
-
 def _measurement_blocks_playback_rate(expected_rate: Optional[int]) -> Optional[int]:
     """Resolve the session-owned playback-rate block decision for samplerate deps.
 
@@ -555,8 +243,6 @@ def _measurement_blocks_playback_rate(expected_rate: Optional[int]) -> Optional[
     if measurement_sr_session is None:
         return None
     return measurement_sr_session.blocks_playback_rate(expected_rate)
-
-
 
 
 def _is_local_playback_active(state: dict | None) -> bool:
@@ -658,8 +344,6 @@ def _set_playback_owner(source: str | None) -> None:
     playback_state.current_playback_owner = source
 
 
-
-
 from models import (
     PlayRequest,
 )
@@ -667,7 +351,6 @@ from playback.player import get_player, MPVNotInstalledError
 from playback.stream_info import StreamInfoLedger
 from radio.api import _station_api_payload, router as radio_api_router
 from radio.stations import get_stations
-import audio.sink_inputs as sink_inputs
 import playback.state as playback_state_helpers
 from playback.state import PlaybackState
 import playback.source_policy as source_policy
@@ -688,7 +371,6 @@ from audio.external_input import ExternalInputRouting, ExternalInputRoutingDepen
 from playback.radio_reconnect import RadioReconnect, RadioReconnectDependencies
 from playback.silent_active import SilentActiveDependencies, SilentActiveRecovery
 from playback.spotify_watch import (
-    SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS,
     SpotifyPlayerctlWatch,
     SpotifyWatchDependencies,
 )
@@ -760,9 +442,7 @@ from audio.samplerate import (
 import streaming
 from streaming.tidal import auth as tidal_auth
 from streaming.tidal import playback as tidal_playback
-from streaming.tidal.cache import library_cache as tidal_library_cache
 from streaming.qobuz import connect_state
-from streaming.spotify import connect_name as spotify_connect_name
 from streaming.spotify import mpris as spotify_mpris
 from streaming.spotify.mpris import playerctl_available, spotify_installed
 from streaming.spotify.provider import (
@@ -975,9 +655,9 @@ silent_active_recovery = SilentActiveRecovery(SilentActiveDependencies(
     get_current_track_info=lambda: playback_state.current_track_info,
     get_current_playback_owner=lambda: _resolve_playback_owner(),
     get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
-    list_mpv_sink_inputs=lambda: _list_mpv_sink_inputs(),
-    list_spotify_sink_inputs=lambda: _list_spotify_sink_inputs(),
-    list_all_sink_inputs=lambda: _list_sink_inputs(),
+    list_mpv_sink_inputs=lambda: media_readiness.list_mpv_sink_inputs(),
+    list_spotify_sink_inputs=lambda: media_readiness.list_spotify_sink_inputs(),
+    list_all_sink_inputs=lambda: media_readiness.list_sink_inputs(),
     get_output_volume_safe=lambda default=100: get_output_volume_safe(default),
     run_debug_command=lambda args, timeout=2.0: _run_debug_command(args, timeout),
     is_measurement_window_open=lambda: _is_measurement_window_open(),
@@ -1014,7 +694,7 @@ samplerate_drift = SamplerateDriftObserver(SamplerateDriftDependencies(
     get_current_track_info=lambda: playback_state.current_track_info,
     get_player_instance=lambda: runtime.player_instance,
     coordinator_source_rate=lambda *args, **kwargs: playback_orchestration.configured().coordinator_source_rate(*args, **kwargs),
-    get_player_audio_samplerate=lambda: _get_player_audio_samplerate(),
+    get_player_audio_samplerate=lambda: media_readiness.get_player_audio_samplerate(runtime.player_instance),
     get_samplerate_status=lambda: get_samplerate_status(),
     playback_transition_is_active=lambda: _playback_transition_is_active(),
     is_measurement_window_open=lambda: _is_measurement_window_open(),
@@ -1026,8 +706,8 @@ samplerate_drift = SamplerateDriftObserver(SamplerateDriftDependencies(
 spotify_playerctl_watch = SpotifyPlayerctlWatch(SpotifyWatchDependencies(
     get_playback_state=lambda: playback_state,
     get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
-    list_spotify_sink_inputs=lambda: _list_spotify_sink_inputs(),
-    spotify_sink_input_observation=lambda *args, **kwargs: _spotify_sink_input_observation(*args, **kwargs),
+    list_spotify_sink_inputs=lambda: media_readiness.list_spotify_sink_inputs(),
+    spotify_sink_input_observation=lambda *args, **kwargs: media_readiness.spotify_sink_input_observation(*args, **kwargs),
     request_coordinated_recovery=lambda *args, **kwargs: playback_orchestration.configured().request_coordinated_recovery(*args, **kwargs),
     schedule_spotify_state_refresh=lambda reason: _schedule_spotify_state_refresh(reason),
     claim_spotify_playback=lambda *args, **kwargs: _claim_spotify_playback(*args, **kwargs),
@@ -1133,11 +813,11 @@ def _make_measurement_services() -> MeasurementServices:
         measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
         spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
         spotify_target_track_from_state=lambda *a, **k: _spotify_target_track_from_state(*a, **k),
-        get_player_audio_samplerate=lambda *a, **k: _get_player_audio_samplerate(*a, **k),
+        get_player_audio_samplerate=lambda *a, **k: media_readiness.get_player_audio_samplerate(runtime.player_instance),
         pulse_suspend_sink_for_samplerate=lambda *a, **k: samplerate.pulse_suspend_sink_for_samplerate(*a, **k),
         audio_output_overview_with_effective_rate=lambda *a, **k: samplerate.audio_output_overview_with_effective_rate(*a, **k),
         spotify_prearm_sample_rate_hz=SPOTIFY_PREARM_SAMPLE_RATE_HZ,
-        pipewire_handoff_poll_interval_ms=PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
+        pipewire_handoff_poll_interval_ms=media_readiness.PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
     )
 
 
@@ -1180,13 +860,13 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         queue=lambda: playback_queue.queue,
         player_is_running=lambda *a, **k: _player_is_running(*a, **k),
         load_player_paused=lambda *a, **k: _load_player_paused(*a, **k),
-        wait_for_player_current_file=lambda *a, **k: _wait_for_player_current_file(*a, **k),
-        wait_for_player_audio_samplerate=lambda *a, **k: _wait_for_player_audio_samplerate(*a, **k),
-        get_player_audio_samplerate=lambda *a, **k: _get_player_audio_samplerate(*a, **k),
-        wait_for_radio_live_rate_after_load=lambda *a, **k: _wait_for_radio_live_rate_after_load(*a, **k),
-        wait_for_pipewire_mpv_release=lambda *a, **k: _wait_for_pipewire_mpv_release(*a, **k),
-        wait_for_pipewire_spotify_release=lambda *a, **k: _wait_for_pipewire_spotify_release(*a, **k),
-        wait_for_spotify_sink_input_samplerate=lambda *a, **k: _wait_for_spotify_sink_input_samplerate(*a, **k),
+        wait_for_player_current_file=lambda *a, **k: media_readiness.wait_for_player_current_file(*a, get_player=lambda: runtime.player_instance, **k),
+        wait_for_player_audio_samplerate=lambda *a, **k: media_readiness.wait_for_player_audio_samplerate(*a, get_player=lambda: runtime.player_instance, drain_worker=_drain_worker, **k),
+        get_player_audio_samplerate=lambda *a, **k: media_readiness.get_player_audio_samplerate(runtime.player_instance),
+        wait_for_radio_live_rate_after_load=lambda *a, **k: media_readiness.wait_for_radio_live_rate_after_load(*a, get_epoch=lambda: playback_state.playback_transition_epoch, drain_worker=_drain_worker, get_player=lambda: runtime.player_instance, **k),
+        wait_for_pipewire_mpv_release=lambda *a, **k: media_readiness.wait_for_pipewire_mpv_release(*a, **k),
+        wait_for_pipewire_spotify_release=lambda *a, **k: media_readiness.wait_for_pipewire_spotify_release(*a, **k),
+        wait_for_spotify_sink_input_samplerate=lambda *a, **k: media_readiness.wait_for_spotify_sink_input_samplerate(*a, **k),
         get_samplerate_status=lambda *a, **k: get_samplerate_status(*a, **k),
         get_audio_output_overview=lambda *a, **k: get_audio_output_overview(*a, **k),
         ensure_playback_samplerate_force=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.ensure_playback_samplerate_force(
@@ -1209,8 +889,8 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         is_qobuz_playback_active=lambda *a, **k: _is_qobuz_playback_active(*a, **k),
         qobuz_play=lambda *a, **k: qobuz_play(*a, **k),
         qobuz_pause=lambda *a, **k: qobuz_pause(*a, **k),
-        wait_for_pipewire_qobuz_release=lambda *a, **k: _wait_for_pipewire_qobuz_release(*a, **k),
-        wait_for_qobuz_sink_input_samplerate=lambda *a, **k: _wait_for_qobuz_sink_input_samplerate(*a, **k),
+        wait_for_pipewire_qobuz_release=lambda *a, **k: media_readiness.wait_for_pipewire_qobuz_release(*a, **k),
+        wait_for_qobuz_sink_input_samplerate=lambda *a, **k: media_readiness.wait_for_qobuz_sink_input_samplerate(*a, **k),
         mark_player_state_authoritative=lambda *a, **k: _mark_player_state_authoritative(*a, **k),
         spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
         measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
@@ -1240,7 +920,7 @@ playback_queue.configure_playback_queue(playback_queue.PlaybackQueueDependencies
     set_track_context=_set_runtime_track_context,
     transition_is_active=lambda: _playback_transition_is_active(),
     player_is_running=lambda *a, **k: _player_is_running(*a, **k),
-    wait_for_player_current_file=lambda *a, **k: _wait_for_player_current_file(*a, **k),
+    wait_for_player_current_file=lambda *a, **k: media_readiness.wait_for_player_current_file(*a, get_player=lambda: runtime.player_instance, **k),
     coordinator_target_rate=lambda *a, **k: _coordinator_target_rate(*a, **k),
     coordinator_rate_change=lambda *a, **k: _coordinator_rate_change(*a, **k),
     sample_rate_policy_is_auto=lambda: _sample_rate_policy_is_auto(),
@@ -1376,8 +1056,6 @@ async def _wait_playback_transition_settled() -> None:
             # Defensive yield: a set event with pending attempts violates the
             # begin/end invariant; re-check after yielding instead of spinning.
             await asyncio.sleep(0)
-
-
 
 
 def _player_is_running(player=None) -> bool:
@@ -1808,32 +1486,6 @@ def _playback_state_matches_track(state: dict | None, track: dict | None) -> boo
     return playback_state_helpers.playback_state_matches_track(state, track)
 
 
-async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: int = 1600) -> bool:
-    if not expected_url or not runtime.player_instance:
-        return False
-    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
-    while time.monotonic() <= deadline:
-        state = runtime.player_instance.state
-        # ``loadfile`` sets ``current_file`` optimistically before mpv has
-        # actually opened the file, so the file path alone is not enough: a
-        # follow-up seek (or other mutation) would race the load and mpv
-        # rejects it with "error running command".  The source is ready once
-        # mpv reports a positive ``duration`` (known-length files/streams) or
-        # fires the ``file-loaded`` event (live/unknown-length streams that
-        # never report a duration).
-        if state.get("current_file") == expected_url and (
-            float(state.get("duration") or 0.0) > 0.0
-            or bool(state.get("file_loaded"))
-        ):
-            return True
-        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-    return False
-
-
-def _active_unmuted_sink_inputs(entries: list[dict]) -> list[dict]:
-    return sink_inputs.active_unmuted_sink_inputs(entries)
-
-
 def _create_lifecycle_background_task(coro, *, name: str) -> asyncio.Task:
     task = asyncio.create_task(coro, name=name)
     runtime.lifecycle_background_tasks.add(task)
@@ -1940,14 +1592,6 @@ async def _measurement_restore_intent_matches_live_state(
     )
 
 
-
-
-
-
-
-
-
-
 def _run_debug_command(args: list[str], timeout: float = 2.0) -> dict:
     try:
         completed = subprocess.run(
@@ -1964,29 +1608,6 @@ def _run_debug_command(args: list[str], timeout: float = 2.0) -> dict:
         }
     except Exception as exc:
         return {"returncode": -1, "stdout": "", "stderr": str(exc)}
-
-
-async def _mpv_source_ports_present() -> bool:
-    """Read-only check: are the MPV stream ports and DSP sink ports exposed?
-
-    The mpv PipeWire stream (and with it mpv:output_FL/FR) is published only
-    once the stream actually opened after a staged ``loadfile``.  This check
-    is the source-startup readiness predicate: while it is false, no link
-    mutation may run.
-    """
-    try:
-        links_text = await pw_link.run_pw_link_command("-io")
-    except Exception:
-        return False
-    return all(
-        port in links_text
-        for port in (
-            "mpv:output_FL",
-            "mpv:output_FR",
-            "fxroute_dsp_sink:playback_FL",
-            "fxroute_dsp_sink:playback_FR",
-        )
-    )
 
 
 async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> dict:
@@ -2061,87 +1682,6 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
     }
     logger.info("Subwoofer UI path state dump [%s]: %s", label, json.dumps(state, sort_keys=True))
     return state
-
-
-def _get_player_audio_samplerate() -> Optional[int]:
-    if not runtime.player_instance or not runtime.player_instance._running:
-        return None
-    try:
-        audio_params = runtime.player_instance.get_property("audio-params")
-    except Exception as exc:
-        logger.debug("Failed to read mpv audio-params: %s", exc)
-        return None
-    if not isinstance(audio_params, dict):
-        return None
-    rate = audio_params.get("samplerate")
-    return rate if isinstance(rate, int) and rate > 0 else None
-
-
-async def _wait_for_player_audio_samplerate(
-    timeout_ms: int = PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS,
-    *,
-    expected_url: str | None = None,
-) -> Optional[int]:
-    rate = await _drain_worker(_get_player_audio_samplerate)
-    state = runtime.player_instance.state if runtime.player_instance else {}
-    if rate and (not expected_url or state.get("current_file") == expected_url):
-        return rate
-    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
-    while time.monotonic() <= deadline:
-        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-        state = runtime.player_instance.state if runtime.player_instance else {}
-        if expected_url and state.get("current_file") != expected_url:
-            continue
-        rate = await _drain_worker(_get_player_audio_samplerate)
-        if rate:
-            return rate
-    return None
-
-
-async def _wait_for_radio_live_rate_after_load(
-    previous_rate: Optional[int],
-    transition_generation: int,
-    *,
-    timeout_ms: int = RADIO_POST_LOAD_RATE_TIMEOUT_MS,
-) -> Optional[int]:
-    """Wait for the newly loaded station's decoded rate while mpv is paused.
-
-    Accepts a rate that differs from the pre-loadfile rate immediately (the
-    new stream's rate), or a rate equal to the pre-loadfile rate once it
-    stayed stable across RADIO_POST_LOAD_RATE_STABILITY_POLLS consecutive
-    polls (same-rate station switch). Aborts on a stale transition
-    generation and on timeout without a valid rate (caller falls back
-    safely; no stale pre-loadfile params are used as evidence).
-    """
-    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
-    stable_same = 0
-    while time.monotonic() <= deadline:
-        if transition_generation != playback_state.playback_transition_epoch:
-            logger.info(
-                "Radio post-load rate wait aborted: stale transition "
-                "generation=%s current=%s",
-                transition_generation,
-                playback_state.playback_transition_epoch,
-            )
-            return None
-        rate = await _drain_worker(_get_player_audio_samplerate)
-        if isinstance(rate, int) and rate > 0:
-            if previous_rate is None or rate != previous_rate:
-                return rate
-            stable_same += 1
-            if stable_same >= RADIO_POST_LOAD_RATE_STABILITY_POLLS:
-                return rate
-        else:
-            stable_same = 0
-        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-    logger.warning(
-        "Radio post-load rate wait timed out after %sms: previous_rate=%s",
-        timeout_ms,
-        previous_rate,
-    )
-    return None
-
-
 
 
 def ensure_local_source_volume() -> None:
@@ -3009,7 +2549,7 @@ async def pause_local_playback_for_spotify_broadcast():
             await _drain_worker(runtime.player_instance.stop_playback)
             playback_state.current_track_info = None
             await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
-            released = await _wait_for_pipewire_mpv_release()
+            released = await media_readiness.wait_for_pipewire_mpv_release()
             if not released:
                 await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
     except Exception:
@@ -3220,7 +2760,7 @@ async def lifespan(app: FastAPI):
         runtime.player_instance.register_callbacks(_dispatch_player_state_change)
         downloader.register_callback(on_download_progress, asyncio.get_running_loop())
         try:
-            await _sync_spotify_connect_name_best_effort()
+            await streaming_api._sync_spotify_connect_name_best_effort()
         except Exception as exc:
             logger.warning("Spotify Connect name sync failed: %s", exc)
         logger.info("Application startup complete build_id=%s", _read_build_id())
@@ -3459,7 +2999,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         get_samplerate_status=lambda: get_samplerate_status(),
         get_audio_output_overview=lambda *args, **kwargs: get_audio_output_overview(*args, **kwargs),
         get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
-        get_player_audio_samplerate=_get_player_audio_samplerate,
+        get_player_audio_samplerate=lambda: media_readiness.get_player_audio_samplerate(runtime.player_instance),
         is_local_playback_active=_is_local_playback_active,
         is_spotify_playback_active=_is_spotify_playback_active,
         spotify_target_track=_spotify_target_track_from_state,
@@ -3476,15 +3016,15 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         ),
         load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
         sleep=lambda delay: asyncio.sleep(delay),
-        pipewire_poll_interval_ms=PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
+        pipewire_poll_interval_ms=media_readiness.PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
         dsp_port_timeout_ms=PLAYBACK_HANDOFF_DSP_PORT_TIMEOUT_MS,
         post_start_readbacks=POST_START_GRAPH_STABILITY_READBACKS,
         output_mode_subwoofer_modes=frozenset(OUTPUT_MODE_SUBWOOFER_MODES),
         output_mode_stereo=OUTPUT_MODE_STEREO,
         get_dsp_snapshot=lambda: runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {},
-        mpv_source_ports_present=lambda: _mpv_source_ports_present(),
+        mpv_source_ports_present=lambda: media_readiness.mpv_source_ports_present(),
         mpv_link_repair_timeout_ms=MPV_LINK_REPAIR_TIMEOUT_MS,
-        source_port_readiness_timeout_ms=RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS,
+        source_port_readiness_timeout_ms=media_readiness.RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS,
         # Let the extracted owner use the supplied low-level PipeWire
         # primitives; do not route this dependency through its public wrapper.
         repair_stereo_output_links=None,
@@ -3732,7 +3272,7 @@ async def _resolve_tidal_track(track_id: str) -> dict:
     except HTTPException:
         raise
     except (tidal_auth.TidalAuthError, tidal_playback.TidalStreamError) as exc:
-        raise _tidal_http_error(exc) from exc
+        raise streaming_api._tidal_http_error(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"TIDAL track unavailable: {exc}") from exc
     return {
@@ -4188,13 +3728,13 @@ async def stop_playback():
             data = await spotify_pause()
             playback_state.latest_spotify_state = data
             try:
-                await _wait_for_pipewire_spotify_release()
+                await media_readiness.wait_for_pipewire_spotify_release()
             except Exception:
                 pass
         elif owner == "qobuz":
             await qobuz_pause()
             try:
-                await _wait_for_pipewire_qobuz_release()
+                await media_readiness.wait_for_pipewire_qobuz_release()
             except Exception:
                 pass
         if playback_state.current_track_info and playback_state.current_track_info.get("source") == "radio":
@@ -4697,9 +4237,6 @@ async def system_restore(request: Request):
     return await _system_update_or_restore(request, "--restore", "--defer-restart")
 
 
-
-
-
 # INFO only on state change; unchanged readback polls and transition bursts stay silent.
 _last_logged_samplerate_signature = None
 
@@ -4962,7 +4499,7 @@ async def _pause_all_app_playback_for_external_input() -> None:
         if runtime.player_instance and runtime.player_instance._running:
             await _drain_worker(runtime.player_instance.stop_playback)
             await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
-            released = await _wait_for_pipewire_mpv_release()
+            released = await media_readiness.wait_for_pipewire_mpv_release()
             if not released:
                 await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
     except Exception:
@@ -5027,8 +4564,6 @@ async def save_audio_source_selection_route(request: Request):
         raise bad_request(exc)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save source mode: {exc}")
-
-
 
 
 def _require_dsp_manager():
@@ -5120,7 +4655,6 @@ async def _load_preset_locked(
         except Exception:
             logger.exception("Failed to restore previous preset after preset load failure")
         raise
-
 
 
 @app.get("/api/library/status")
@@ -5278,8 +4812,7 @@ import streaming.api as streaming_api
 def _make_streaming_api_deps() -> streaming_api.StreamingApiDeps:
     """Bind the streaming provider API to the application services.
 
-    All entries resolve the current runtime state at call time, so tests that
-    patch main.* attributes observe the patched services.
+    All entries resolve the current runtime state at call time.
     """
     return streaming_api.StreamingApiDeps(
         get_qobuz_ui_state=lambda *a, **k: get_qobuz_ui_state(*a, **k),
@@ -5303,195 +4836,15 @@ def _make_streaming_api_deps() -> streaming_api.StreamingApiDeps:
     )
 
 
-# Register streaming/provider-admin routes; keep shims for tests that patch main.*
+# Register streaming/provider-admin routes (real implementation in streaming/api.py).
 streaming_api.register_streaming_routes(app, _make_streaming_api_deps())
-
-# Compatibility shims: tests patch main.* and inspect main.py text; keep the
-# symbols and the contract strings in main.py while the real implementation
-# lives in streaming/api.py.
-_PROVIDER_OP_TIMEOUT_SECONDS = streaming_api._PROVIDER_OP_TIMEOUT_SECONDS  # noqa: F811
-_PROVIDER_OP_OUTPUT_TAIL_CHARS = streaming_api._PROVIDER_OP_OUTPUT_TAIL_CHARS  # noqa: F811
-_PROVIDER_HELPER_MISSING_CONTRACT = streaming_api._PROVIDER_HELPER_MISSING_CONTRACT  # noqa: F811
-_PROVIDER_HELPER_MISSING_CONTRACT_TEXT = _PROVIDER_HELPER_MISSING_CONTRACT  # keep name for grep
-# Keep the contract construction visible for test_provider_admin's text check
-# (the real definition lives in streaming/api.py).
-_PROVIDER_HELPER_MISSING_CONTRACT_DEF = (
-    f"{provider_contract.DETAILS_KEY_HELPER_MISSING}="
-    f"{provider_contract.DETAILS_VALUE_HELPER_MISSING}"
-    f";{provider_contract.DETAILS_KEY_RERUN_INSTALL}="
-    f"{provider_contract.DETAILS_VALUE_RERUN_INSTALL}"
-)
-
-def _provider_op_log_tail(result: dict) -> str:  # noqa: D401
-    # provider_contract.MARKER_HELPER_MISSING
-    # _PROVIDER_HELPER_MISSING_CONTRACT
-    # X-FXRoute-Provider-Contract
-    # 503
-    return streaming_api._provider_op_log_tail(result)
-
-async def _run_provider_installer_op(script: Path, label: str, *args: str) -> dict:  # noqa: D401
-    # provider_contract.MARKER_HELPER_MISSING
-    # _PROVIDER_HELPER_MISSING_CONTRACT
-    # X-FXRoute-Provider-Contract
-    # 503
-    # no sudo
-    return await streaming_api._run_provider_installer_op(script, label, *args)
-
-def _refresh_tidalapi_import_verdict() -> None:  # noqa: D401
-    return streaming_api._refresh_tidalapi_import_verdict()
-
-def _mdns_device_name() -> str:  # noqa: D401
-    return streaming_api._mdns_device_name()
-
-async def _restart_spotifyd_best_effort() -> bool:  # noqa: D401
-    return await streaming_api._restart_spotifyd_best_effort()
-
-async def _sync_spotify_connect_name_best_effort() -> dict:  # noqa: D401
-    return await streaming_api._sync_spotify_connect_name_best_effort()
-
-def _streaming_provider(provider_id: str):  # noqa: D401
-    return streaming_api._streaming_provider(provider_id)
-
-def _tidal_http_error(exc: Exception) -> HTTPException:  # noqa: D401
-    return streaming_api._tidal_http_error(exc)
-
-def _provider_catalog_method(provider_id: str, name: str):  # noqa: D401
-    return streaming_api._provider_catalog_method(provider_id, name)
-
-def _qobuz_provider_or_404():  # noqa: D401
-    return streaming_api._qobuz_provider_or_404()
-
-async def _qobuz_ui_start_action(action: str) -> dict:  # noqa: D401
-    return await streaming_api._qobuz_ui_start_action(action)
-
-# Keep route names visible for TIDAL/Qobuz text checks (forwarders)
-# The real FastAPI routes live in streaming/api.py; these shims keep the
-# names and required strings in main.py for tests that grep main.py text.
-async def api_streaming_providers(*a, **k):  # noqa: D401
-    # providers
-    return await streaming_api.api_streaming_providers(*a, **k)
-
-async def api_streaming_provider_discovery(*a, **k):
-    return await streaming_api.api_streaming_provider_discovery(*a, **k)
-
-async def api_streaming_provider_status(*a, **k):
-    return await streaming_api.api_streaming_provider_status(*a, **k)
-
-async def api_streaming_provider_action(*a, **k):
-    return await streaming_api.api_streaming_provider_action(*a, **k)
-
-async def api_streaming_provider_search(*a, **k):
-    return await streaming_api.api_streaming_provider_search(*a, **k)
-
-async def api_streaming_provider_favorites(*a, **k):
-    return await streaming_api.api_streaming_provider_favorites(*a, **k)
-
-async def api_streaming_provider_playlists(*a, **k):
-    return await streaming_api.api_streaming_provider_playlists(*a, **k)
-
-async def api_streaming_provider_playlist_tracks(*a, **k):
-    return await streaming_api.api_streaming_provider_playlist_tracks(*a, **k)
-
-async def api_streaming_provider_playlist(*a, **k):
-    return await streaming_api.api_streaming_provider_playlist(*a, **k)
-
-async def api_streaming_provider_album_tracks(*a, **k):
-    return await streaming_api.api_streaming_provider_album_tracks(*a, **k)
-
-async def api_streaming_provider_album(*a, **k):
-    return await streaming_api.api_streaming_provider_album(*a, **k)
-
-async def api_streaming_provider_artist(*a, **k):
-    return await streaming_api.api_streaming_provider_artist(*a, **k)
-
-async def api_streaming_provider_favorite_ids(*a, **k):
-    return await streaming_api.api_streaming_provider_favorite_ids(*a, **k)
-
-async def api_tidal_library_snapshot(*a, **k):
-    return await streaming_api.api_tidal_library_snapshot(*a, **k)
-
-async def api_streaming_provider_track_favorite(*a, **k):
-    return await streaming_api.api_streaming_provider_track_favorite(*a, **k)
-
-async def api_streaming_provider_album_favorite(*a, **k):
-    return await streaming_api.api_streaming_provider_album_favorite(*a, **k)
-
-async def api_streaming_provider_artist_favorite(*a, **k):
-    return await streaming_api.api_streaming_provider_artist_favorite(*a, **k)
-
-async def api_streaming_provider_playlist_favorite(*a, **k):
-    return await streaming_api.api_streaming_provider_playlist_favorite(*a, **k)
-
-async def api_streaming_provider_create_playlist(*a, **k):
-    # "--providers-only"
-    # "qobuz": "--qobuz"
-    # "spotify": "--spotifyd"
-    # "tidal": "--tidal"
-    return await streaming_api.api_streaming_provider_create_playlist(*a, **k)
-
-async def api_streaming_provider_add_playlist_tracks(*a, **k):
-    return await streaming_api.api_streaming_provider_add_playlist_tracks(*a, **k)
-
-async def api_tidal_start_device_login(*a, **k):
-    return await streaming_api.api_tidal_start_device_login(*a, **k)
-
-async def api_tidal_finish_device_login(*a, **k):
-    return await streaming_api.api_tidal_finish_device_login(*a, **k)
-
-async def api_tidal_pkce_login_url(*a, **k):
-    # finish_pkce_login(redirect_url)
-    return await streaming_api.api_tidal_pkce_login_url(*a, **k)
-
-async def api_tidal_finish_pkce_login(*a, **k):
-    # finish_pkce_login(redirect_url)
-    return await streaming_api.api_tidal_finish_pkce_login(*a, **k)
-
-async def api_tidal_logout(*a, **k):
-    # finish_pkce_login(redirect_url)
-    return await streaming_api.api_tidal_logout(*a, **k)
-
-async def api_qobuz_auth_state(*a, **k):
-    return await streaming_api.api_qobuz_auth_state(*a, **k)
-
-async def api_qobuz_auth_login(*a, **k):
-    return await streaming_api.api_qobuz_auth_login(*a, **k)
-
-async def api_qobuz_auth_login_finish(*a, **k):
-    return await streaming_api.api_qobuz_auth_login_finish(*a, **k)
-
-async def api_qobuz_auth_login_cancel(*a, **k):
-    return await streaming_api.api_qobuz_auth_login_cancel(*a, **k)
-
-async def api_qobuz_auth_logout(*a, **k):
-    return await streaming_api.api_qobuz_auth_logout(*a, **k)
-
-async def api_streaming_providers_admin(*a, **k):
-    return await streaming_api.api_streaming_providers_admin(*a, **k)
-
-async def api_streaming_provider_set_enabled(*a, **k):
-    return await streaming_api.api_streaming_provider_set_enabled(*a, **k)
-
-async def api_streaming_provider_install(*a, **k):
-    # "--providers-only"
-    # "qobuz": "--qobuz"
-    # "spotify": "--spotifyd"
-    # "tidal": "--tidal"
-    # provider_id not in {"spotify", "qobuz", "tidal"}
-    return await streaming_api.api_streaming_provider_install(*a, **k)
-
-async def api_streaming_provider_uninstall(*a, **k):
-    # if provider_id not in {"spotify", "qobuz", "tidal"}:
-    return await streaming_api.api_streaming_provider_uninstall(*a, **k)
-
-async def api_streaming_provider_service_action(*a, **k):
-    return await streaming_api.api_streaming_provider_service_action(*a, **k)
 
 
 @app.get("/api/system/device-name")
 async def api_get_device_name():
     """Current LAN device name (*.local) with change capability info."""
     return {
-        "hostname": _mdns_device_name(),
+        "hostname": streaming_api._mdns_device_name(),
         "can_change": shutil.which("hostnamectl") is not None,
     }
 
@@ -5515,7 +4868,7 @@ async def api_set_device_name(request: Request):
     value = str(body.get("hostname") or "").strip().strip(".")
     if not _LOCAL_HOSTNAME_PATTERN.fullmatch(value) or value in _LOCAL_HOSTNAME_RESERVED:
         raise HTTPException(status_code=400, detail="Use only lowercase letters, digits and hyphens (no leading/trailing hyphen)")
-    current = _mdns_device_name()
+    current = streaming_api._mdns_device_name()
     if value == current:
         return {"hostname": current, "changed": False}
     proc = await asyncio.create_subprocess_exec(
@@ -5565,14 +4918,13 @@ async def api_set_device_name(request: Request):
         raise
     response: dict = {"hostname": value, "changed": True}
     try:
-        sync_result = await _sync_spotify_connect_name_best_effort()
+        sync_result = await streaming_api._sync_spotify_connect_name_best_effort()
         if sync_result.get("desired"):
             response["spotify_connect_name"] = sync_result.get("desired")
             response["spotify_device_updated"] = bool(sync_result.get("changed"))
     except Exception as exc:
         logger.warning("Spotify Connect name sync after hostname change failed: %s", exc)
     return response
-
 
 
 # ---------------------------------------------------------------------------
@@ -5597,10 +4949,10 @@ def _spotify_producer_for_coordinator(relax_to_any: bool = False) -> tuple[str, 
     as ``:output_FL/FR``.  That anonymous form is accepted only after the
     sink input was identified as spotifyd, never as a generic fallback.
     """
-    entries = _list_spotify_sink_inputs()
+    entries = media_readiness.list_spotify_sink_inputs()
     if not entries:
         return None
-    obs = _spotify_sink_input_observation(entries)
+    obs = media_readiness.spotify_sink_input_observation(entries)
     if obs is None and not relax_to_any:
         return None
     candidate = None

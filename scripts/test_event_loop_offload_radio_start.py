@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import audio.bluetooth as bluetooth_module
 import main
+import playback.media_readiness as media_readiness
 from audio.bluetooth import BluetoothInputMonitor
 from dsp.orchestration import DspOrchestrationDeps, DspOrchestrator
 from playback_transition_test_support import make_transition_runtime
@@ -117,10 +118,11 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
 
         player = Player()
         player.assertEqual = self.assertEqual
-        with patch.object(main.runtime, "player_instance", player):
-            rate = await main._wait_for_player_audio_samplerate(
-                expected_url="/music/current.flac"
-            )
+        rate = await media_readiness.wait_for_player_audio_samplerate(
+            expected_url="/music/current.flac",
+            get_player=lambda: player,
+            drain_worker=main._drain_worker,
+        )
 
         self.assertEqual(rate, 48000)
         self.assertEqual(seen, [False])
