@@ -45,6 +45,7 @@ AUDIT_FILES = (
     "measurement/autosub/runners/optimize.py",
     "measurement/session.py",
     "dsp/api.py",
+    "dsp/preset_loading.py",
 )
 SOURCES = {name: (ROOT / name).read_text() for name in AUDIT_FILES}
 TREES = {name: ast.parse(source) for name, source in SOURCES.items()}
@@ -209,7 +210,7 @@ def _calls() -> list[tuple[str, int, str, str]]:
 
 def _reason(context: str, name: str) -> str | None:
     leaf = context.rsplit("/", 1)[-1]
-    if leaf in {"make_playback_runtime_deps", "_make_dsp_orchestration_deps", "_make_measurement_services", "_make_playback_orchestration_deps"}:
+    if leaf in {"make_playback_runtime_deps", "_make_dsp_orchestration_deps", "_make_measurement_services", "_make_playback_orchestration_deps", "_make_preset_load_deps"}:
         return "late-bound runtime wiring factory; the referenced mutations are never executed here"
     if leaf in {"_request_coordinated_recovery", "request_coordinated_recovery"}:
         return "Coordinator recovery request and validation"

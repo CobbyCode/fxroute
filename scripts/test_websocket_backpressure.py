@@ -103,8 +103,8 @@ class ConnectionManagerBackpressureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hanging.sent, [], "nothing was delivered to the stuck client")
         closed = await _wait_until(lambda: hanging.close_calls == 1)
         self.assertTrue(closed, "a server-dropped client must have its transport closed")
-        await _wait_until(lambda: not manager._worker_tasks)
-        self.assertEqual(manager._worker_tasks, set(), "no unowned worker/cleanup tasks may remain")
+        drained = await _wait_until(lambda: manager.is_idle)
+        self.assertTrue(drained, "no unowned worker/cleanup tasks may remain")
 
     async def test_send_exception_removes_client(self):
         manager = ConnectionManager()
@@ -204,14 +204,13 @@ class ConnectionManagerBackpressureTests(unittest.IsolatedAsyncioTestCase):
         await manager.broadcast({"type": "first"})
         in_send = await _wait_until(lambda: hanging.active_sends == 1)
         self.assertTrue(in_send, "worker is blocked inside the hanging send")
-        sender = manager._senders[hanging]
-        self.assertEqual(sender.queue.qsize(), 0)
+        self.assertEqual(manager.pending_count(hanging), 0)
 
         # The bounded queue (capacity 1) is now filled with a held message.
-        self.assertTrue(sender.enqueue(json.dumps({"type": "held"})))
-        self.assertEqual(sender.queue.qsize(), 1)
+        self.assertTrue(await manager.send_to_client(hanging, json.dumps({"type": "held"})))
+        self.assertEqual(manager.pending_count(hanging), 1)
 
-        with self.assertLogs("main", level="INFO") as captured:
+        with self.assertLogs("connection_manager", level="INFO") as captured:
             await manager.broadcast({"type": "second"})
         removed = await _wait_until(lambda: hanging not in manager.active_connections, timeout=3.0)
         self.assertTrue(
@@ -236,7 +235,7 @@ class ConnectionManagerBackpressureTests(unittest.IsolatedAsyncioTestCase):
             await manager.broadcast({"type": "playback", "n": index})
 
         self.assertIn(slow, manager.active_connections)
-        self.assertEqual(manager._senders[slow].queue.qsize(), 1)
+        self.assertEqual(manager.pending_count(slow), 1)
         slow.hang = False
         slow.release()
         delivered = await _wait_until(lambda: len(slow.sent) == 2)
@@ -271,8 +270,8 @@ class ConnectionManagerBackpressureTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(peer, manager.active_connections)
         closed = await _wait_until(lambda: peer.close_calls == 1)
         self.assertTrue(closed, "the transport close runs exactly once")
-        await _wait_until(lambda: not manager._worker_tasks)
-        self.assertEqual(manager._worker_tasks, set())
+        drained = await _wait_until(lambda: manager.is_idle)
+        self.assertTrue(drained, "no unowned worker/cleanup tasks may remain")
 
     async def test_hanging_close_does_not_block_healthy_client(self):
         manager = ConnectionManager(send_timeout=0.3)

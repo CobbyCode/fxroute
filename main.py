@@ -19,7 +19,7 @@ import playback.media_readiness as media_readiness
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, List, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
 
 import uvicorn
@@ -33,6 +33,9 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from config import get_settings
 from http_errors import bad_request, internal_error
+from http_origin import effective_request_scheme, is_request_origin_trusted
+from connection_manager import ConnectionManager
+import system_update as update_lifecycle
 from library.sources import MusicLibraryManager
 from radio.metadata import RadioMetadataService
 
@@ -100,137 +103,56 @@ _SERVICE_RESTART_TIMEOUT_SECONDS = 15
 _SERVICE_RESTART_TERMINATE_GRACE_SECONDS = 3
 
 
-async def _run_update_script(timeout: float, *args: str) -> dict:
-    """Run scripts/update_fxroute.sh in its own process group, bounded.
+def _make_system_update_deps() -> update_lifecycle.SystemUpdateDeps:
+    """Bind the update orchestration to the application services.
 
-    The script and every git/pip/npm child it spawns live in a dedicated
-    session (start_new_session=True), so the whole child tree can be
-    signalled as a group via killpg(proc.pid).  stdout/stderr are drained
-    by exactly one communicate() task; on timeout the group is
-    TERM->grace->KILLed and that same task is drained terminally.  Caller
-    cancellation runs the identical cleanup and re-raises CancelledError
-    afterwards.  A timeout is reported through the existing result shape
-    (returncode -1 plus a stderr note), never as a new exception.
+    Resolved at call time, so tests that patch main attributes (UPDATE_SCRIPT,
+    timeout constants, logger) observe the patched values through the thin
+    wrappers below (same contract as the ``configure_*`` pattern used by the
+    extracted routers).
     """
-    if not UPDATE_SCRIPT.exists():
-        raise HTTPException(status_code=500, detail=f"Update script missing: {UPDATE_SCRIPT}")
-    proc = await asyncio.create_subprocess_exec(
-        str(UPDATE_SCRIPT),
-        *args,
-        cwd=str(BASE_DIR),
-        start_new_session=True,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    return update_lifecycle.SystemUpdateDeps(
+        stop_process_group=pw_link.stop_process_group_cancellation_safe,
+        stop_command_child=pw_link.stop_command_child_cancellation_safe,
+        log_warning=logger.warning,
     )
-    communicate_task = asyncio.create_task(proc.communicate())
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            asyncio.shield(communicate_task), timeout=timeout
-        )
-    except asyncio.TimeoutError:
-        if await pw_link.stop_process_group_cancellation_safe(
-            proc, communicate_task, grace_seconds=_UPDATE_TERMINATE_GRACE_SECONDS
-        ):
-            raise asyncio.CancelledError
-        try:
-            stdout, stderr = communicate_task.result()
-        except Exception:
-            stdout, stderr = b"", b""
-        return {
-            "returncode": -1,
-            "stdout": stdout.decode(errors="replace"),
-            "stderr": stderr.decode(errors="replace")
-            + f"\nUpdate command timed out after {int(timeout)} seconds",
-        }
-    except asyncio.CancelledError:
-        await pw_link.stop_process_group_cancellation_safe(
-            proc, communicate_task, grace_seconds=_UPDATE_TERMINATE_GRACE_SECONDS
-        )
-        raise
-    return {
-        "returncode": proc.returncode,
-        "stdout": stdout.decode(errors="replace"),
-        "stderr": stderr.decode(errors="replace"),
-    }
 
 
-_update_operation_lock: Optional[asyncio.Lock] = None
+async def _run_update_script(timeout: float, *args: str) -> dict:
+    """Thin wrapper: update-script lifecycle lives in system_update (REFACTOR-012)."""
+    return await update_lifecycle.run_update_script(
+        UPDATE_SCRIPT,
+        timeout,
+        *args,
+        terminate_grace_seconds=_UPDATE_TERMINATE_GRACE_SECONDS,
+        deps=_make_system_update_deps(),
+    )
 
 
 def _get_update_operation_lock() -> asyncio.Lock:
-    global _update_operation_lock
-    if _update_operation_lock is None:
-        _update_operation_lock = asyncio.Lock()
-    return _update_operation_lock
+    """Thin wrapper: the exclusive update guard lives in system_update (REFACTOR-012)."""
+    return update_lifecycle.get_update_operation_lock()
 
 
 async def _run_update_operation(timeout: float, *args: str) -> dict:
-    """Run an update-script invocation under the exclusive update guard.
-
-    Only one update/check/restore may use update_fxroute.sh at a time; a
-    second operation is rejected immediately with HTTP 409 instead of
-    silently waiting behind the first one.  The guard is released in a
-    finally, so success, timeout, cancellation and ordinary exceptions all
-    free it again.
-    """
-    lock = _get_update_operation_lock()
-    if lock.locked():
-        raise HTTPException(
-            status_code=409, detail="An update operation is already in progress"
-        )
-    async with lock:
-        return await _run_update_script(timeout, *args)
+    """Thin wrapper: exclusive update guard lives in system_update (REFACTOR-012)."""
+    return await update_lifecycle.run_update_operation(
+        timeout,
+        *args,
+        script_path=UPDATE_SCRIPT,
+        terminate_grace_seconds=_UPDATE_TERMINATE_GRACE_SECONDS,
+        deps=_make_system_update_deps(),
+    )
 
 
 async def _restart_fxroute_service_after_response(service_name: str) -> None:
-    """Hand the FXRoute service restart to systemd, bounded.
-
-    The restart job itself is executed by systemd --user; this process only
-    enqueues it (--no-block) and must not wait for its own stop+start,
-    because the response was already sent and this process is expected to be
-    stopped by systemd as part of the job.  The systemctl client is bounded:
-    a timeout means "restart outcome unknown" and is only logged; the
-    already sent update/restore response stays unchanged.  Cancellation runs
-    the same shielded terminal cleanup (no orphan even under a second
-    cancellation) and re-raises CancelledError afterwards.  A nonzero
-    systemctl exit already proves the job enqueue failed and is logged.
-    """
-    await asyncio.sleep(0.8)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "systemctl",
-            "--user",
-            "--no-block",
-            "restart",
-            f"{service_name}.service",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-    except Exception as exc:
-        logger.warning("Deferred FXRoute service restart failed: %s", exc)
-        return
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=_SERVICE_RESTART_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        if await pw_link.stop_command_child_cancellation_safe(
-            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
-        ):
-            raise asyncio.CancelledError
-        logger.warning(
-            "Deferred FXRoute service restart timed out after %s s; restart outcome unknown",
-            _SERVICE_RESTART_TIMEOUT_SECONDS,
-        )
-    except asyncio.CancelledError:
-        await pw_link.stop_command_child_cancellation_safe(
-            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
-        )
-        raise
-    else:
-        if proc.returncode != 0:
-            logger.warning(
-                "Deferred FXRoute service restart exited with code %s",
-                proc.returncode,
-            )
+    """Thin wrapper: deferred service restart lives in system_update (REFACTOR-012)."""
+    await update_lifecycle.restart_service_after_response(
+        service_name,
+        restart_timeout_seconds=_SERVICE_RESTART_TIMEOUT_SECONDS,
+        restart_terminate_grace_seconds=_SERVICE_RESTART_TERMINATE_GRACE_SECONDS,
+        deps=_make_system_update_deps(),
+    )
 
 
 def _measurement_blocks_playback_rate(expected_rate: Optional[int]) -> Optional[int]:
@@ -363,6 +285,7 @@ from dsp.manager import DSPManager
 from dsp.runtime import DSPRuntime, DSPRuntimeConfig, _contains_link
 import dsp.api as dsp_api
 import dsp.orchestration as dsp_orchestration
+import dsp.preset_loading as preset_loading
 import playback.orchestration as playback_orchestration
 from audio import pw_link
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
@@ -461,7 +384,7 @@ import audio.volume_contract as volume_contract
 logger = logging.getLogger(__name__)
 
 import install_info
-import audio.power as system_power
+import audio.power_api as power_api
 import measurement.spl_calibration as spl_calibration
 import measurement.autosub as autosub
 import measurement.session as measurement_session
@@ -1222,246 +1145,6 @@ def _commit_coordinated_track(
 
 
 # WebSocket connection manager
-class _ClientSender:
-    """Bounded per-client delivery queue with exactly one send worker.
-
-    One worker per client serializes all sends (FIFO by construction) and
-    every send is bounded by a timeout.  When the bounded queue is full the
-    caller treats the client as too slow; the worker failing (timeout, send
-    error, vanished socket) marks the client for removal.
-    """
-
-    def __init__(
-        self,
-        websocket: WebSocket,
-        *,
-        timeout: float,
-        max_pending: int,
-    ) -> None:
-        self.websocket = websocket
-        self.timeout = timeout
-        self.queue: "asyncio.Queue[tuple[str | None, str | None]]" = asyncio.Queue(maxsize=max_pending)
-        self._coalesced: dict[str, str] = {}
-        self.ready = False
-        self.failed = False
-        self.failure_reason = "send-worker-failed"
-        self._task: "asyncio.Task | None" = None
-
-    def enqueue(self, data: str, *, coalesce_key: str | None = None) -> bool:
-        """Queue one payload; False when the bounded queue is full."""
-        if coalesce_key is not None and coalesce_key in self._coalesced:
-            self._coalesced[coalesce_key] = data
-            return True
-        try:
-            self.queue.put_nowait((coalesce_key, None if coalesce_key else data))
-        except asyncio.QueueFull:
-            return False
-        if coalesce_key is not None:
-            self._coalesced[coalesce_key] = data
-        return True
-
-    async def close(self) -> None:
-        """Cancel the worker and drain any queued payloads."""
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
-        while True:
-            try:
-                self.queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            self.queue.task_done()
-        self._coalesced.clear()
-
-    async def run(self) -> None:
-        while True:
-            coalesce_key, data = await self.queue.get()
-            try:
-                if coalesce_key is not None:
-                    data = self._coalesced.pop(coalesce_key)
-                if data is None:
-                    continue
-                if self.websocket.client_state.name != "CONNECTED":
-                    raise RuntimeError("websocket is no longer CONNECTED")
-                await asyncio.wait_for(
-                    self.websocket.send_text(data), timeout=self.timeout
-                )
-            except asyncio.TimeoutError:
-                self.failed = True
-                self.failure_reason = f"send-timeout:{self.timeout:.1f}s"
-                return
-            except Exception as exc:
-                self.failed = True
-                self.failure_reason = f"send-error:{exc}"
-                return
-            finally:
-                self.queue.task_done()
-
-
-class ConnectionManager:
-    """Fan-out broadcasts without letting one slow client stall the others.
-
-    Every connected client owns one bounded delivery queue and exactly one
-    send worker; all sends for a socket (broadcasts, init, pong) go through
-    that worker, so per-client ordering is FIFO and concurrent ``send_text``
-    calls are impossible.  A stuck client only delays its own queue; a
-    timeout or send error removes the client. Repeated state snapshots share
-    one pending slot per type; a full queue of distinct events disconnects the
-    overloaded client instead of silently dropping events.
-    """
-
-    def __init__(self, send_timeout: float = 5.0, max_pending_sends: int = 8):
-        self.active_connections: List[WebSocket] = []
-        self._list_lock = asyncio.Lock()
-        self._senders: dict[WebSocket, _ClientSender] = {}
-        self._worker_tasks: set[asyncio.Task] = set()
-        self._send_timeout = max(0.05, send_timeout)
-        self._max_pending_sends = max(1, max_pending_sends)
-        self._coalesced_message_types = {
-            "playback",
-            "spotify",
-            "dsp",
-            "playback_peak_warning",
-        }
-
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
-        sender = _ClientSender(
-            websocket,
-            timeout=self._send_timeout,
-            max_pending=self._max_pending_sends,
-        )
-        async with self._list_lock:
-            self.active_connections.append(websocket)
-            self._senders[websocket] = sender
-        self._spawn_worker(websocket, sender)
-        logger.info(f"WebSocket connected: {len(self.active_connections)} active")
-
-    async def _unregister(self, websocket: WebSocket) -> _ClientSender | None:
-        async with self._list_lock:
-            sender = self._senders.pop(websocket, None)
-            if sender is not None:
-                try:
-                    self.active_connections.remove(websocket)
-                except ValueError:
-                    pass
-        return sender
-
-    async def disconnect(self, websocket: WebSocket, *, reason: str = "unspecified") -> bool:
-        """Remove a client from the manager (idempotent).
-
-        The WebSocket transport close runs in an owned, bounded background
-        task so a slow or stuck close can never block producers or the
-        broadcast hotpath.  Normal peer disconnects are unaffected: the close
-        on an already-closed transport is a no-op.
-        """
-        sender = await self._unregister(websocket)
-        if sender is None:
-            return False
-        await sender.close()
-        self._schedule_transport_close(websocket)
-        logger.info(
-            "WebSocket disconnected: reason=%s active=%s",
-            reason,
-            len(self.active_connections),
-        )
-        return True
-
-    def _schedule_transport_close(self, websocket: WebSocket) -> None:
-        """Close the transport in a bounded owned task, never awaited inline."""
-
-        async def close_transport() -> None:
-            try:
-                await asyncio.wait_for(
-                    websocket.close(), timeout=self._send_timeout
-                )
-            except asyncio.TimeoutError:
-                logger.debug(
-                    f"WebSocket close timed out after {self._send_timeout:.1f}s"
-                )
-            except Exception as exc:
-                logger.debug(f"WebSocket close failed: {exc}")
-
-        task = asyncio.create_task(close_transport(), name="ws-client-close")
-        self._worker_tasks.add(task)
-        task.add_done_callback(self._worker_tasks.discard)
-
-    async def send_to_client(
-        self,
-        websocket: WebSocket,
-        data: str,
-        *,
-        coalesce_key: str | None = None,
-    ) -> bool:
-        """Queue one payload for a client's send worker.
-
-        Returns False when the client is gone, its worker already failed, or
-        its bounded queue is full; the full-queue case disconnects the client
-        as too slow.
-        """
-        sender = self._senders.get(websocket)
-        if sender is None or sender.failed:
-            return False
-        if not sender.enqueue(data, coalesce_key=coalesce_key):
-            await self.disconnect(websocket, reason="send-queue-full")
-            return False
-        return True
-
-    def mark_ready(self, websocket: WebSocket) -> bool:
-        """Unlock normal broadcasts for a client whose init is queued first."""
-        sender = self._senders.get(websocket)
-        if sender is None:
-            return False
-        sender.ready = True
-        return True
-
-    def _spawn_worker(self, websocket: WebSocket, sender: _ClientSender) -> None:
-        task = asyncio.create_task(sender.run(), name="ws-client-sender")
-        sender._task = task
-        self._worker_tasks.add(task)
-
-        def finished(_task: asyncio.Task) -> None:
-            self._worker_tasks.discard(_task)
-            if _task.cancelled() or not sender.failed:
-                return
-            cleanup = asyncio.create_task(
-                self.disconnect(
-                    websocket,
-                    reason=getattr(sender, "failure_reason", "send-worker-failed"),
-                ),
-                name="ws-client-failure-cleanup",
-            )
-            self._worker_tasks.add(cleanup)
-            cleanup.add_done_callback(self._worker_tasks.discard)
-
-        task.add_done_callback(finished)
-
-    async def broadcast(self, message: dict) -> None:
-        data = json.dumps(message)
-        message_type = message.get("type")
-        coalesce_key = (
-            str(message_type)
-            if message_type in self._coalesced_message_types
-            else None
-        )
-        async with self._list_lock:
-            connections = list(self.active_connections)
-        for connection in connections:
-            if connection.client_state.name != "CONNECTED":
-                await self.disconnect(connection, reason="transport-not-connected")
-                continue
-            sender = self._senders.get(connection)
-            if sender is None or not sender.ready:
-                continue
-            await self.send_to_client(
-                connection,
-                data,
-                coalesce_key=coalesce_key,
-            )
-
 manager = ConnectionManager()
 
 
@@ -1698,39 +1381,6 @@ def get_output_volume_safe(default: int = 100) -> int:
     # volumeDb is only the ISO-226 work point and must never be reported as
     # the volume.
     return get_status_volume(default)
-
-
-async def _volume_state_for_manager(
-    manager, *, live_master: int | None = None
-) -> volume_contract.VolumeState:
-    extras = {}
-    preset = ""
-    if manager:
-        load_extras = getattr(manager, "load_global_extras", None)
-        if callable(load_extras):
-            extras = load_extras() or {}
-        get_active = getattr(manager, "get_active_preset", None)
-        if callable(get_active):
-            preset = get_active() or ""
-    loudness = extras.get("loudness") if isinstance(extras, dict) else {}
-    loudness = loudness if isinstance(loudness, dict) else {}
-    params = loudness.get("params") if isinstance(loudness.get("params"), dict) else {}
-    enabled = bool(loudness.get("enabled"))
-    if live_master is None:
-        live_master = int(await _drain_worker(get_output_volume))
-    guard = 0.0
-    if runtime.dsp_runtime is not None:
-        try:
-            guard = float(runtime.dsp_runtime.snapshot().get("output_gain_db") or 0.0)
-        except Exception:
-            guard = 0.0
-    return volume_contract.VolumeState(
-        preset=preset,
-        loudness_enabled=enabled,
-        volume_db=float(params.get("volumeDb") or 0.0),
-        master_percent=int(live_master),
-        dsp_guard_db=guard,
-    )
 
 
 async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
@@ -2875,19 +2525,8 @@ async def _shutdown_lifespan_resources() -> None:
     if hardware_controller is not None:
         await cleanup("hardware-controller", lambda: asyncio.to_thread(hardware_controller.close))
 
-    async def _disconnect_all_websockets() -> None:
-        connections = list(manager.active_connections)
-        for connection in connections:
-            try:
-                await manager.disconnect(connection, reason="server-shutdown")
-            except Exception:
-                logger.exception("Failed to disconnect websocket client during shutdown")
-        pending = [task for task in set(manager._worker_tasks) if not task.done()]
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-
-    if manager.active_connections or manager._worker_tasks:
-        await cleanup("websocket-clients", _disconnect_all_websockets)
+    if not manager.is_idle:
+        await cleanup("websocket-clients", manager.shutdown)
 
     runtime.reset()
     settings = None
@@ -2917,7 +2556,7 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         run_locked_worker=lambda *args, **kwargs: _run_locked_worker(*args, **kwargs),
         broadcast=lambda message: manager.broadcast(message),
         load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
-        restore_volume_state=lambda *args, **kwargs: _restore_volume_state(*args, **kwargs),
+        restore_volume_state=lambda *args, **kwargs: preset_loading._restore_volume_state(*args, **kwargs),
         volume_state_for_manager=lambda *args, **kwargs: _volume_state_for_manager(*args, **kwargs),
         schedule_peak_monitor_refresh=lambda reason: dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason),
     )
@@ -3094,142 +2733,10 @@ app.include_router(measurement_session.router)
 # Static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-def _effective_request_scheme(request: Request) -> str:
-    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
-    if forwarded_proto:
-        return forwarded_proto
-    return (request.url.scheme or "http").lower()
-
-
-def _effective_request_host(request: Request) -> str:
-    """Resolve the host the client *thinks* it is talking to.
-
-    Honors ``X-Forwarded-Host`` when the install is behind a reverse proxy
-    (FXRoute only ever trusts a single hop here, matching the project's
-    trust assumptions for the optional Caddy reverse proxy on the LAN).
-    The value is lower-cased and stripped of optional ``:port`` so it can
-    be compared against ``Origin`` / ``Referer`` headers verbatim.
-    """
-
-    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip().lower()
-    if forwarded_host:
-        # Hostname only -- the matching port lives in X-Forwarded-Port.
-        return forwarded_host.split(":", 1)[0]
-    return (request.url.hostname or "").lower()
-
-
-def _effective_request_port(request: Request) -> Optional[int]:
-    """Resolve the frontend port the client believes it is talking to.
-
-    Honors ``X-Forwarded-Port`` so the optional Caddy reverse proxy on
-    the LAN is supported without losing the same-origin defence.  When no
-    forward headers are set, the request's actual URL port is used.
-    """
-
-    raw = (request.headers.get("x-forwarded-port") or "").split(",", 1)[0].strip()
-    if raw.isdigit():
-        return int(raw)
-    try:
-        return request.url.port
-    except ValueError:
-        # Malformed Host port: return a sentinel that can never equal a
-        # parsed header port (those are 0-65535 or None) and never passes
-        # the default-port rules, so the origin comparison fails closed
-        # instead of raising.
-        return -1
-
-
-def _request_origin_is_trusted(request: Request) -> bool:
-    """Cross-site defence for state-changing endpoints.
-
-    FXRoute's LAN security baseline is "trusted LAN, no auth, no cookies"
-    (see ``AGENTS.md``).  Within that baseline, requests originating from
-    a foreign web page in the same browser are *not* a trusted caller, so
-    we cannot rely solely on the LAN assumption.
-
-    The routine therefore refuses a POST whose ``Origin`` or ``Referer``
-    header points to a different scheme + host + port than the one the
-    request is actually reaching -- the cheap, no-cookie CSRF defence
-    recommended when an application cannot introduce a new auth surface.
-    Requests without either header (the legitimate CLI / curl / systemd
-    path) are allowed so existing LAN operators do not lose their
-    workflows.
-
-    Returns ``True`` when the call is allowed, ``False`` when it must be
-    rejected as a cross-site POST.
-    """
-
-    trusted_host = _effective_request_host(request)
-    if not trusted_host:
-        # No host to compare against: the request is malformed enough that
-        # we refuse to make a decision and let the caller choose.
-        return False
-
-    trusted_scheme = _effective_request_scheme(request)
-    # If the request did not run on a known port (httpx test client with
-    # weird hosts) the comparison falls back to comparing host only.
-    trusted_port = _effective_request_port(request)
-
-    def _netloc_matches(parsed) -> bool:
-        if not parsed.hostname:
-            return False
-        if parsed.hostname.lower() != trusted_host:
-            return False
-        try:
-            header_port = parsed.port
-        except ValueError:
-            # Malformed header port (out of range / non-numeric): refuse the
-            # request instead of letting the comparison raise a 500.
-            return False
-        if header_port is None and trusted_port in (None, 80, 443):
-            return True
-        if header_port is None:
-            # Header did not include a port; fall back to comparing
-            # against the request's effective default.
-            if (trusted_scheme == "https" and trusted_port == 443) or (
-                trusted_scheme == "http" and trusted_port in (None, 80)
-            ):
-                return True
-            return False
-        return header_port == trusted_port
-
-    origin = (request.headers.get("origin") or "").strip().lower()
-    if origin:
-        if origin == "null":
-            # Browsers emit Origin: null for sandboxed documents and
-            # cross-origin redirects under specific referrer policies.  We
-            # cannot confirm the caller's site, so refuse.
-            return False
-        try:
-            parsed = urlparse(origin)
-        except ValueError:
-            return False
-        if parsed.scheme and parsed.scheme.lower() != trusted_scheme:
-            return False
-        return _netloc_matches(parsed)
-
-    referer = (
-        request.headers.get("referer")
-        or request.headers.get("referrer")
-        or ""
-    ).strip()
-    if referer:
-        try:
-            parsed = urlparse(referer)
-        except ValueError:
-            return False
-        if parsed.scheme and parsed.scheme.lower() != trusted_scheme:
-            return False
-        return _netloc_matches(parsed)
-
-    # No Origin AND no Referer: a CLI / systemd caller.  Allowed because
-    # the LAN security baseline treats direct callers as trusted.
-    return True
-
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     html = (STATIC_DIR / "index.html").read_text()
-    if _effective_request_scheme(request) != "https":
+    if effective_request_scheme(request) != "https":
         html = re.sub(r'\s*<link rel="manifest" href="/static/site\.webmanifest\?v=[^"]+">\n?', '', html, count=1)
     # The shell carries the versioned asset URLs: it must never be served
     # from the browser cache, or clients keep booting stale JS/CSS after a
@@ -4075,138 +3582,6 @@ async def measurement_window_heartbeat(request: Request):
     }
 
 
-async def _resolve_system_power_capabilities() -> system_power.PowerCapabilities:
-    """Thin alias for :func:`power.get_capabilities` kept for readability.
-
-    All capability translation, the strict-yes gate, the timeout, and the
-    ``unavailable`` fall-through live in ``power.py``.  The handler here
-    only routes the result into the HTTP envelope.
-    """
-
-    return await system_power.get_capabilities()
-
-
-@app.get("/api/system/power")
-async def system_power_capabilities():
-    """Report suspend/power-off capability of systemd-logind.
-
-    A 503 is returned only when the dbus-send binary itself is missing
-    (then no capability probe can succeed at all); every other failure is
-    reported through the textual ``unavailable`` value so the UI keeps
-    working even on a host without a running logind.  The body shape --
-    including the strict-yes ``suspend_supported`` / ``power_off_supported``
-    conveniences -- and the full logind vocabulary are documented on
-    :func:`power.is_logind_call_executable`.
-    """
-
-    try:
-        caps = await _resolve_system_power_capabilities()
-    except asyncio.TimeoutError:
-        logger.warning("system power capabilities timed out")
-        raise HTTPException(
-            status_code=503,
-            detail="systemd-logind not reachable via dbus",
-        )
-
-    return {
-        "available": caps.available,
-        "suspend": caps.suspend,
-        "power_off": caps.power_off,
-        "suspend_supported": system_power.is_logind_call_executable(caps.suspend),
-        "power_off_supported": system_power.is_logind_call_executable(caps.power_off),
-        "unavailable_reason": caps.unavailable_reason,
-    }
-
-
-def _system_power_error_to_http(result: system_power.PowerCallResult):
-    """Map a failed :class:`PowerCallResult` to the right HTTP code.
-
-    * ``"denied"``     -> 403 (polkit refused; the user-facing message is
-      carried by the body).
-    * ``"unavailable"`` -> 503 (dbus-send or login1 missing).
-    """
-
-    if result.status == "denied":
-        return HTTPException(status_code=403, detail=result.error or "denied")
-    return HTTPException(status_code=503, detail=result.error or "unavailable")
-
-
-@app.post("/api/system/power/suspend")
-async def system_power_suspend(request: Request):
-    """Trigger ``Manager.Suspend`` via systemd-logind.
-
-    Returns ``200 OK`` when the suspend request was dispatched
-    successfully.  The HTTP response must be sent before the system
-    actually suspends; the frontend uses this signal to switch the
-    connection badge into the ``"Suspending…"`` state.
-
-    Two gates run before the action:
-
-    * :func:`_request_origin_is_trusted` rejects cross-site POSTs so a
-      foreign web page in the user's browser cannot trivially shut the
-      host down.  This is the standard CSRF mitigation when the
-      application deliberately has no session cookies.
-    * :func:`system_power.is_now_supported` re-probes ``CanSuspend`` so
-      a stale UI snapshot, an inhibitor lock that engaged after the
-      page loaded, or a CLI caller hitting the endpoint directly will
-      all fail cleanly with HTTP 409 if logind now reports anything
-      other than ``"yes"``.  This prevents FXRoute from dispatching the
-      action under a different capability than the one the menu
-      advertises -- which would either touch auth or inhibitor blocks
-      the polkit rule does not cover, i.e. exactly the "additional
-      privilege" we must not acquire.
-    """
-
-    if not _request_origin_is_trusted(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Cross-site request rejected: open FXRoute on this host before using the power menu.",
-        )
-    supported, raw = await system_power.is_now_supported("suspend")
-    if not supported:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Suspend is not directly executable right now (logind CanSuspend={raw!r}).",
-        )
-    result = await system_power.request_suspend()
-    if result.ok:
-        return {"ok": True, "status": "suspended", "action": result.action}
-    raise _system_power_error_to_http(result)
-
-
-@app.post("/api/system/power/power-off")
-async def system_power_power_off(request: Request):
-    """Trigger ``Manager.PowerOff`` via systemd-logind.
-
-    Returns ``200 OK`` when the shutdown request was dispatched.
-    Like :func:`system_power_suspend`, this responds before logind has
-    actually powered the machine off; the frontend shows
-    ``"Shutting down…"`` until the websocket drops.
-
-    The same two gates apply: cross-origin rejection through
-    :func:`_request_origin_is_trusted`, plus a fresh ``CanPowerOff``
-    re-probe through :func:`system_power.is_now_supported` so any
-    non-``"yes"`` logind answer (``"challenge"``, ``"inhibited"`` ...)
-    fails cleanly with HTTP 409 instead of bypassing the polkit rule.
-    """
-
-    if not _request_origin_is_trusted(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Cross-site request rejected: open FXRoute on this host before using the power menu.",
-        )
-    supported, raw = await system_power.is_now_supported("power_off")
-    if not supported:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Shutdown is not directly executable right now (logind CanPowerOff={raw!r}).",
-        )
-    result = await system_power.request_power_off()
-    if result.ok:
-        return {"ok": True, "status": "shutting_down", "action": result.action}
-    raise _system_power_error_to_http(result)
-
-
 @app.get("/api/system/update")
 async def system_update_status():
     result = await _run_update_operation(_UPDATE_CHECK_TIMEOUT_SECONDS, "--check")
@@ -4227,25 +3602,16 @@ async def _system_update_or_restore(request: Request, *script_args: str) -> dict
     ``script_args`` are forwarded to update_fxroute.sh (update:
     ``--defer-restart``, restore: ``--restore --defer-restart``).
     """
-    if not _request_origin_is_trusted(request):
+    if not is_request_origin_trusted(request):
         raise HTTPException(status_code=403, detail="cross-site request rejected")
     restore = "--restore" in script_args
     service_name = _configured_service_name()
     result = await _run_update_operation(_UPDATE_APPLY_TIMEOUT_SECONDS, *script_args)
     ok = result["returncode"] == 0
     stdout = result.get("stdout", "")
-    if restore:
-        # The restore script always reconciles the checkout; a successful
-        # run therefore always needs the deferred service restart.
-        update_applied = ok
-    else:
-        update_applied = ok and any(
-            marker in stdout
-            for marker in (
-                "Pulling updates with fast-forward only.",
-                "Checkout is current, but the deployment was not completed; retrying reconciliation.",
-            )
-        )
+    update_applied = update_lifecycle.should_schedule_restart(
+        returncode=result["returncode"], stdout=stdout, restore=restore
+    )
     if update_applied:
         asyncio.create_task(_restart_fxroute_service_after_response(service_name))
     return {
@@ -4605,7 +3971,33 @@ async def save_audio_source_selection_route(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to save source mode: {exc}")
 
 
+def _make_preset_load_deps() -> preset_loading.PresetLoadDeps:
+    """Bind the DSP preset-load coordination to the application services.
+
+    All entries resolve the current runtime state at call time, so tests that
+    patch main attributes observe the patched services through the thin
+    wrappers below (same contract as the other ``configure_*`` extractions).
+    """
+    return preset_loading.PresetLoadDeps(
+        require_dsp_manager=lambda: _require_dsp_manager(),
+        get_dsp_runtime=lambda: runtime.dsp_runtime,
+        get_output_volume=lambda: get_output_volume(),
+        set_output_volume=lambda value: set_output_volume(value),
+        drain_worker=lambda *args, **kwargs: _drain_worker(*args, **kwargs),
+        dsp_mutation_lock=lambda: _dsp_mutation_lock(),
+        canonical_volume_write_lock=lambda: _canonical_volume_write_lock(),
+        sync_runtime=lambda *args, **kwargs: dsp_orchestrator.sync_runtime(*args, **kwargs),
+    )
+
+
 def _require_dsp_manager():
+    """Composition-root guard for the DSP manager singleton (stays in main).
+
+    Kept here (not in dsp.preset_loading) because it guards main's own
+    global and is an established patch seam: the preset-loading module
+    resolves the manager through the injected ``require_dsp_manager``
+    dependency, which delegates to this guard.
+    """
     global dsp_manager
     if not dsp_manager:
         raise HTTPException(status_code=503, detail="DSP manager not available")
@@ -4616,84 +4008,17 @@ async def _load_dsp_preset(
     preset_name: str, *, convolver_sample_rate_hz: int | None = None,
     _locks_held: bool = False, _rate_lock_held: bool = False,
 ) -> None:
-    """Serialize preset loads against threaded DSP mutations.
-
-    load_preset() also synchronizes global extras into the preset and is
-    therefore not read-only: it must never run concurrently with a threaded
-    IR/preset mutation.  Lock order: the canonical volume write lock is
-    acquired first, then the DSP mutation lock.  Callers that already hold
-    both locks pass ``_locks_held=True``.
-    ``_rate_lock_held`` is forwarded to the runtime sync so a caller that
-    already owns the measurement sample-rate session lock (the measurement
-    entry) does not re-enter it.
-    """
-    volume_lock = None
-    if not _locks_held:
-        volume_lock = _canonical_volume_write_lock()
-        await volume_lock.acquire()
-    try:
-        if _locks_held:
-            await _load_preset_locked(preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz,
-                                      _rate_lock_held=_rate_lock_held)
-        else:
-            async with _dsp_mutation_lock():
-                await _load_preset_locked(preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz,
-                                          _rate_lock_held=_rate_lock_held)
-    finally:
-        if volume_lock is not None:
-            volume_lock.release()
+    """Thin wrapper: DSP preset loading lives in dsp.preset_loading (REFACTOR-016)."""
+    await preset_loading._load_dsp_preset(
+        preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz,
+        _locks_held=_locks_held, _rate_lock_held=_rate_lock_held)
 
 
-async def _restore_volume_state(manager, start: volume_contract.VolumeState) -> None:
-    await _drain_worker(set_output_volume, int(start.master_percent))
-    if runtime.dsp_runtime is not None and runtime.dsp_runtime.snapshot().get("active"):
-        await runtime.dsp_runtime.set_output_gain_db(float(start.dsp_guard_db))
-    if not manager:
-        return
-    extras = copy.deepcopy(manager.load_global_extras())
-    extras.setdefault("loudness", {}).setdefault("params", {})["volumeDb"] = float(start.volume_db)
-    extras.setdefault("loudness", {})["enabled"] = bool(start.loudness_enabled)
-    save = getattr(manager, "save_global_extras", None)
-    if callable(save):
-        save(extras)
-    if (manager.get_active_preset() or "") != start.preset:
-        if hasattr(manager, "active_preset"):
-            manager.active_preset = start.preset
-        elif getattr(manager, "state_store", None) is not None:
-            manager.state_store.write(
-                "active.json",
-                {"schema": "fxroute.dsp.active", "version": 1, "preset": start.preset},
-            )
-
-
-async def _load_preset_locked(
-    preset_name: str, *, convolver_sample_rate_hz: int | None = None,
-    _rate_lock_held: bool = False,
-) -> None:
-    manager = _require_dsp_manager()
-    start = await _volume_state_for_manager(manager)
-    try:
-        await _drain_worker(
-            manager.load_preset,
-            preset_name,
-            convolver_sample_rate_hz=convolver_sample_rate_hz,
-        )
-        await dsp_orchestrator.sync_runtime(reason="native-dsp-preset-load",
-                                            _rate_lock_held=_rate_lock_held)
-    except Exception:
-        try:
-            if (manager.get_active_preset() or "") != start.preset:
-                try:
-                    await _drain_worker(manager.load_preset, start.preset)
-                except Exception:
-                    logger.exception("Failed to reload previous preset after preset load failure")
-                    if hasattr(manager, "active_preset"):
-                        manager.active_preset = start.preset
-            await dsp_orchestrator.sync_runtime(reason="native-dsp-preset-load-rollback",
-                                                _rate_lock_held=_rate_lock_held)
-        except Exception:
-            logger.exception("Failed to restore previous preset after preset load failure")
-        raise
+async def _volume_state_for_manager(
+    manager, *, live_master: int | None = None
+) -> volume_contract.VolumeState:
+    """Thin wrapper: DSP preset loading lives in dsp.preset_loading (REFACTOR-016)."""
+    return await preset_loading._volume_state_for_manager(manager, live_master=live_master)
 
 
 @app.get("/api/library/status")
@@ -4865,7 +4190,7 @@ def _make_streaming_api_deps() -> streaming_api.StreamingApiDeps:
         spotify_volume_action=lambda percent: _spotify_volume_action(percent),
         publish_committed_playback_owner=lambda owner, tid: _publish_committed_playback_owner(owner, tid),
         transition_error_http=lambda exc: _transition_error_http(exc),
-        request_origin_is_trusted=lambda req: _request_origin_is_trusted(req),
+        request_origin_is_trusted=lambda req: is_request_origin_trusted(req),
         coordinator_rate_change=lambda rate: _coordinator_rate_change(rate),
         run_coordinated_transition=lambda req: _run_coordinated_transition(req),
         get_current_playback_owner=lambda: playback_state.current_playback_owner,
@@ -4896,7 +4221,7 @@ async def api_set_device_name(request: Request):
     hyphens, no leading/trailing hyphen, plus the reserved ``localhost``.
     Avahi is restarted (when present) so the new name is advertised immediately.
     """
-    if not _request_origin_is_trusted(request):
+    if not is_request_origin_trusted(request):
         raise HTTPException(status_code=403, detail="cross-site request rejected")
     try:
         body = await request.json()
@@ -5190,6 +4515,10 @@ def run_server():
 
 
 dsp_api.register_dsp_routes(app, _make_dsp_api_deps())
+preset_loading.configure_preset_loading(_make_preset_load_deps())
+power_api.register_power_routes(app, power_api.PowerApiDeps(
+    is_origin_trusted=is_request_origin_trusted,
+))
 dsp_orchestrator = DspOrchestrator(_make_dsp_orchestration_deps())
 
 if __name__ == "__main__":

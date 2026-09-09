@@ -257,27 +257,31 @@ class CrossSiteWiringTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.main_text = (ROOT / "main.py").read_text()
+        cls.power_api_text = (ROOT / "audio" / "power_api.py").read_text()
+        cls.origin_text = (ROOT / "http_origin.py").read_text()
 
     def test_main_has_origin_helper(self):
-        # Helper that decides the same-origin gate.
+        # Helpers that decide the same-origin gate live in the dedicated
+        # http_origin module; main.py routes share them via import.
         for needle in (
-            "_request_origin_is_trusted",
-            "_effective_request_host",
-            "_effective_request_port",
+            "def is_request_origin_trusted",
+            "def effective_request_host",
+            "def effective_request_port",
         ):
-            self.assertIn(needle, self.main_text)
+            self.assertIn(needle, self.origin_text)
+        self.assertIn("from http_origin import", self.main_text)
 
     def test_suspend_endpoint_enforces_origin_gate(self):
         # Find the suspend endpoint block and verify it calls the helper
         # BEFORE the action.  The block is bounded by the next two
         # endpoint decorators so future insertions do not shift the search.
-        suspend_idx = self.main_text.index("/api/system/power/suspend")
-        next_endpoint_idx = self.main_text.index(
+        suspend_idx = self.power_api_text.index("/api/system/power/suspend")
+        next_endpoint_idx = self.power_api_text.index(
             '"/api/system/power/power-off"', suspend_idx
         )
-        suspend_block = self.main_text[suspend_idx:next_endpoint_idx]
-        self.assertIn("_request_origin_is_trusted", suspend_block)
-        gate_idx = suspend_block.index("_request_origin_is_trusted")
+        suspend_block = self.power_api_text[suspend_idx:next_endpoint_idx]
+        self.assertIn("is_origin_trusted", suspend_block)
+        gate_idx = suspend_block.index("is_origin_trusted")
         action_idx = suspend_block.index("system_power.request_suspend")
         self.assertLess(gate_idx, action_idx)
         self.assertIn('status_code=403', suspend_block)
@@ -290,16 +294,16 @@ class CrossSiteWiringTests(unittest.TestCase):
         self.assertIn('status_code=409', suspend_block)
 
     def test_power_off_endpoint_enforces_origin_gate(self):
-        poff_idx = self.main_text.index("/api/system/power/power-off")
+        poff_idx = self.power_api_text.index("/api/system/power/power-off")
         # Stop the block at the next decorator or end of file.
         tail_start = poff_idx + 100
-        tail = self.main_text[tail_start:tail_start + 4000]
+        tail = self.power_api_text[tail_start:tail_start + 4000]
         next_marker = tail.find("\n@app.")
         poff_block = (
-            self.main_text[poff_idx : tail_start + (next_marker if next_marker != -1 else len(tail))]
+            self.power_api_text[poff_idx : tail_start + (next_marker if next_marker != -1 else len(tail))]
         )
-        self.assertIn("_request_origin_is_trusted", poff_block)
-        gate_idx = poff_block.index("_request_origin_is_trusted")
+        self.assertIn("is_origin_trusted", poff_block)
+        gate_idx = poff_block.index("is_origin_trusted")
         action_idx = poff_block.index("system_power.request_power_off")
         self.assertLess(gate_idx, action_idx)
         self.assertIn('status_code=403', poff_block)
@@ -327,12 +331,12 @@ class CrossSiteWiringTests(unittest.TestCase):
     def test_read_capability_endpoint_is_not_origin_gated(self):
         # GET endpoints stay reachable from anywhere on the LAN; the
         # origin gate applies only to the destructive POSTs.
-        capabilities_idx = self.main_text.index("/api/system/power\"")
-        capabilities_block = self.main_text[
+        capabilities_idx = self.power_api_text.index("/api/system/power\"")
+        capabilities_block = self.power_api_text[
             capabilities_idx : capabilities_idx + 1200
         ]
         self.assertIn("system_power_capabilities", capabilities_block)
-        self.assertNotIn("_request_origin_is_trusted", capabilities_block)
+        self.assertNotIn("is_origin_trusted", capabilities_block)
 
 
 class PolkitRuleStrictnessTests(unittest.TestCase):

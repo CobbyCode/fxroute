@@ -28,6 +28,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import http_origin  # noqa: E402
 import main  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -64,21 +65,21 @@ class MalformedOriginPortTests(unittest.TestCase):
 
     def test_out_of_range_origin_port_is_untrusted(self):
         request = _scope_request({"host": "testserver", "origin": "http://testserver:99999"})
-        self.assertFalse(main._request_origin_is_trusted(request))
+        self.assertFalse(http_origin.is_request_origin_trusted(request))
 
     def test_out_of_range_referer_port_is_untrusted(self):
         request = _scope_request({"host": "testserver", "referer": "http://testserver:99999/x"})
-        self.assertFalse(main._request_origin_is_trusted(request))
+        self.assertFalse(http_origin.is_request_origin_trusted(request))
 
     def test_non_numeric_origin_port_is_untrusted(self):
         request = _scope_request({"host": "testserver", "origin": "http://testserver:abc"})
-        self.assertFalse(main._request_origin_is_trusted(request))
+        self.assertFalse(http_origin.is_request_origin_trusted(request))
 
     def test_out_of_range_port_does_not_raise(self):
         # The designed outcome is a clean False (-> HTTP 403), not a 500.
         request = _scope_request({"host": "testserver", "origin": "http://testserver:99999"})
         try:
-            result = main._request_origin_is_trusted(request)
+            result = http_origin.is_request_origin_trusted(request)
         except ValueError as exc:  # pragma: no cover - failure path
             self.fail(f"origin helper raised ValueError instead of rejecting: {exc}")
         self.assertFalse(result)
@@ -89,28 +90,28 @@ class MalformedOriginPortTests(unittest.TestCase):
         request = _scope_request(
             {"host": "testserver:abc", "origin": "http://testserver"}
         )
-        self.assertEqual(main._effective_request_port(request), -1)
-        self.assertFalse(main._request_origin_is_trusted(request))
+        self.assertEqual(http_origin.effective_request_port(request), -1)
+        self.assertFalse(http_origin.is_request_origin_trusted(request))
 
     def test_same_origin_without_port_is_trusted(self):
         request = _scope_request({"host": "testserver", "origin": "http://testserver"})
-        self.assertTrue(main._request_origin_is_trusted(request))
+        self.assertTrue(http_origin.is_request_origin_trusted(request))
 
     def test_same_origin_with_matching_explicit_port_is_trusted(self):
         # Scope without a host header: the effective port comes from the
         # server tuple (8080), matching the Origin's explicit port.
         request = _scope_request({"origin": "http://testserver:8080"}, port=8080)
-        self.assertTrue(main._request_origin_is_trusted(request))
+        self.assertTrue(http_origin.is_request_origin_trusted(request))
 
     def test_headerless_caller_stays_trusted(self):
         request = _scope_request({"host": "testserver"})
-        self.assertTrue(main._request_origin_is_trusted(request))
+        self.assertTrue(http_origin.is_request_origin_trusted(request))
 
     def test_foreign_origin_stays_untrusted(self):
         request = _scope_request(
             {"host": "testserver", "origin": "https://evil.example.com"}
         )
-        self.assertFalse(main._request_origin_is_trusted(request))
+        self.assertFalse(http_origin.is_request_origin_trusted(request))
 
 
 def _update_result(returncode: int = 1, stdout: str = "", stderr: str = "") -> dict:
@@ -233,10 +234,10 @@ class SystemUpdateOriginWiringTests(unittest.TestCase):
         block = self._block(
             "async def _system_update_or_restore", "\n@app.post(\"/api/system/update\")"
         )
-        self.assertIn("_request_origin_is_trusted", block)
+        self.assertIn("is_request_origin_trusted", block)
         self.assertIn("_run_update_operation", block)
         self.assertLess(
-            block.index("_request_origin_is_trusted"),
+            block.index("is_request_origin_trusted"),
             block.index("_run_update_operation"),
             "the origin gate must run before any update-script side effect",
         )
