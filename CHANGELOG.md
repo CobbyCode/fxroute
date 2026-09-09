@@ -1,6 +1,28 @@
 # Changelog
 
-## 1.0-beta3
+## 1.0-beta3 (2026-09-09)
+
+Third public beta, built from tag `v1.0-beta3` (commit `93af4d9`).
+Distribution channels unchanged: web demo on GitHub Pages, Raspberry Pi 4/5
+images via GitHub Release, x86_64 Leap 16 ISO via SourceForge. Khadas/VIM1S
+stays internal and gets no public image.
+
+### Release provenance
+
+- Built from tag `v1.0-beta3` (commit `93af4d9`, `main`).
+- Build, installer and first-boot logic unchanged since Beta 2; no new
+  QEMU/installer verification matrix was run for this release (per scope).
+  The x86_64 Leap 16 ISO was rebuilt from `93af4d9`; the Pi 4/Pi 5 images
+  are byte-identical to Beta 2 as the Armbian build inputs
+  (`armbian/build-image.sh`, `armbian/customize-image.sh`,
+  `armbian/first-boot-install.sh`) are unchanged since `2000270`.
+- SHA-256:
+  - `fxroute-1.0-beta3-rpi4-trixie-current.img.xz` —
+    `95f713bb39f10d872f3fd4e0c5064b085e37828148844e9f40dfd79a75833b0d`
+  - `fxroute-1.0-beta3-rpi5-trixie-current.img.xz` —
+    `885bd970075f12fef16e2fbe344c703d294b33b6d8b82a687176f87fae38de5a`
+  - `fxroute-1.0-beta3-x86_64-leap16.iso` —
+    `00cb81df036adb001fc866f0726407edcbf15756c381bcb2e99cf543eb3057fa`
 
 ### Playback / queue
 - Local-library direct track selection now verifies the live MPV playlist and
@@ -32,6 +54,12 @@
 - Extracted the streaming dispatcher/provider administration and playback
   media-readiness helpers into dedicated modules without changing their
   established behavior or timing contracts.
+
+Public release artifact names (built from tag `v1.0-beta3`):
+
+- `fxroute-1.0-beta3-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta3-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta3-x86_64-leap16.iso` (SourceForge, + `.sha256`)
 
 ## 1.0-beta2 (2026-09-08)
 
