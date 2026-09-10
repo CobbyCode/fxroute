@@ -1981,6 +1981,17 @@ body {
     padding-right: 2.1rem;
     font-size: 0.86rem;
 }
+/* One shared search-field tone for Radio, TIDAL and Library: the same
+   opaque background and border on all three inputs, so they render the
+   identical gray on every backdrop. The ID selectors (and the doubled
+   library class) beat the translucent radio .url-input override by
+   specificity, regardless of file load order. */
+#station-search,
+#tidal-search-input,
+.library-search-field .library-search-input {
+    background: var(--bg-input);
+    border-color: var(--border);
+}
 .library-search-input::-webkit-search-cancel-button,
 .library-search-input::-webkit-search-decoration {
     appearance: none;
