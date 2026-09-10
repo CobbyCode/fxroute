@@ -59,9 +59,11 @@
     };
     let dspCompare = { presetA: 'Neutral', presetB: 'Conv LR MinAlign Harman 30-300Hz -7dB', activeSide: 'B' };
 
-    // Audible preset gain for the meter sim: only the +3/+6 dB filter
+    // Audible offset for the meter sim: only the +3/+6 dB filter
     // presets lift the visible level (their real chains hold a broadband
-    // gain stage); every other preset is level-neutral in the demo.
+    // gain stage); headroom cuts it 1:1 (the real headroom stage sits
+    // before the monitor tap, the limiter after it — so the limiter never
+    // appears here). Every other preset is level-neutral in the demo.
     function presetMeterGainDb(name) {
         if (name === '+3') return 3;
         if (name === '+6') return 6;
@@ -71,6 +73,9 @@
     function demoMeterOffsetDb() {
         let offset = presetMeterGainDb(dspActivePreset);
         const extras = dspExtras || {};
+        if (extras.headroom && extras.headroom.enabled) {
+            offset += Number(extras.headroom.params && extras.headroom.params.gainDb) || 0;
+        }
         if (extras.autogain && extras.autogain.enabled) offset += 2;
         if (extras.loudness && extras.loudness.enabled) {
             offset += 0.4 * Math.max(1, Math.min(10, Number(extras.loudness.params && extras.loudness.params.strength) || 0));

@@ -57,8 +57,10 @@
 
     // ── Shared mutable DSP hooks (set by routes.js) ─────────────────────
     // The meter sim applies a single audible offset (dB): preset gain plus
-    // the enabled tone extras. The protection limiter never raises the
-    // level; it only clamps peaks that would exceed its threshold.
+    // the enabled tone extras. The monitor tap sits before the protection
+    // limiter (and the master volume), exactly like the real post-effect
+    // tap — so the limiter threshold is synced for parity but never moves
+    // the metered level.
     let dspMeterOffsetDb = 0;
     let dspLimiterThresholdDb = -1;
     let dspLimiterEnabled = true;
@@ -111,28 +113,64 @@
     const now = () => Date.now() / 1000;
 
     const meter = { vu_db_l: -60, vu_db_r: -60, vu_fresh: false };
+    // Independent fast peak path (real DSPPeakMonitor): raw instantaneous
+    // peaks against 0 dBFS latch a hold after two consecutive hits. It
+    // never derives from the smoothed VU and never sees the limiter.
+    // The hold is scaled to the demo tick (500 ms broadcasts) instead of
+    // the real 30 ms, so a latched peak stays visible for one broadcast.
+    const PEAK_THRESHOLD_DB = 1.0;
+    const PEAK_HOLD_MS = 600;
+    const PEAK_CREST_DB = 8;
+    const PEAK_CREST_SPREAD_DB = 6;
+    const peakDet = {
+        l: { hits: 0, holdUntil: 0, lastOverAt: null },
+        r: { hits: 0, holdUntil: 0, lastOverAt: null },
+    };
+    let peakTickNow = 0;
+    function peakDetect(nowTs, rawPeakDb, isLeft) {
+        const det = isLeft ? peakDet.l : peakDet.r;
+        if (rawPeakDb >= PEAK_THRESHOLD_DB) {
+            det.hits += 1;
+            if (det.hits >= 2) {
+                det.holdUntil = nowTs + PEAK_HOLD_MS;
+                det.lastOverAt = new Date(nowTs).toISOString();
+            }
+        } else {
+            det.hits = 0;
+        }
+    }
+    function peakReset() {
+        for (const det of [peakDet.l, peakDet.r]) {
+            det.hits = 0;
+            det.holdUntil = 0;
+        }
+    }
     function peakSnapshot() {
-        const limiting = dspLimiterEnabled && (meter.vu_db_l >= dspLimiterThresholdDb || meter.vu_db_r >= dspLimiterThresholdDb);
-        const over = meter.vu_db_l > 0 || meter.vu_db_r > 0;
-        const detected = !!(meter.vu_fresh && (limiting || over));
+        const activeL = peakTickNow < peakDet.l.holdUntil;
+        const activeR = peakTickNow < peakDet.r.holdUntil;
+        const active = activeL || activeR;
         return {
             available: true,
-            detected,
-            hold_ms: detected ? 500 : 0,
+            detected: active,
+            hold_ms: active ? Math.max(peakDet.l.holdUntil, peakDet.r.holdUntil) - peakTickNow : 0,
             threshold: 1.0,
             vu_db: (meter.vu_db_l + meter.vu_db_r) / 2,
             vu_db_l: meter.vu_db_l,
             vu_db_r: meter.vu_db_r,
-            detected_l: !!(meter.vu_fresh && (over || (dspLimiterEnabled && meter.vu_db_l >= dspLimiterThresholdDb))),
-            detected_r: !!(meter.vu_fresh && (over || (dspLimiterEnabled && meter.vu_db_r >= dspLimiterThresholdDb))),
-            hold_ms_l: detected ? 500 : 0,
-            hold_ms_r: detected ? 500 : 0,
+            detected_l: activeL,
+            detected_r: activeR,
+            hold_ms_l: activeL ? peakDet.l.holdUntil - peakTickNow : 0,
+            hold_ms_r: activeR ? peakDet.r.holdUntil - peakTickNow : 0,
             vu_fresh: !!meter.vu_fresh,
             vu_age_ms: 200,
             target: { description: 'DSP output monitor' },
-            last_over_at: detected ? new Date().toISOString() : null,
-            last_over_at_l: detected ? new Date().toISOString() : null,
-            last_over_at_r: detected ? new Date().toISOString() : null,
+            last_over_at: active
+                ? (peakDet.l.lastOverAt && peakDet.r.lastOverAt
+                    ? (peakDet.l.lastOverAt > peakDet.r.lastOverAt ? peakDet.l.lastOverAt : peakDet.r.lastOverAt)
+                    : (peakDet.l.lastOverAt || peakDet.r.lastOverAt))
+                : null,
+            last_over_at_l: activeL ? peakDet.l.lastOverAt : null,
+            last_over_at_r: activeR ? peakDet.r.lastOverAt : null,
             last_error: null,
         };
     }
@@ -180,15 +218,14 @@
             const fR = targetR >= meterEnv.r ? (spiking ? 0.6 : 0.35) : 0.2;
             meterEnv.l += (targetL - meterEnv.l) * fL;
             meterEnv.r += (targetR - meterEnv.r) * fR;
-            let levelL = meterEnv.l + dspMeterOffsetDb;
-            let levelR = meterEnv.r + dspMeterOffsetDb;
-            if (dspLimiterEnabled && Number.isFinite(dspLimiterThresholdDb)) {
-                levelL = Math.min(levelL, dspLimiterThresholdDb + 1.2);
-                levelR = Math.min(levelR, dspLimiterThresholdDb + 1.2);
-            } else {
-                levelL = Math.min(levelL, 3);
-                levelR = Math.min(levelR, 3);
-            }
+            // Pre-limiter tap: only the display ceiling applies. Raw peaks
+            // ride the instantaneous program plus a music-like crest factor
+            // on top, feeding the independent peak detector below.
+            peakTickNow = nowTs;
+            peakDetect(nowTs, targetL + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, true);
+            peakDetect(nowTs, targetR + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, false);
+            const levelL = Math.min(meterEnv.l + dspMeterOffsetDb, 3);
+            const levelR = Math.min(meterEnv.r + dspMeterOffsetDb, 3);
             meter.vu_db_l = Math.round(levelL * 10) / 10;
             meter.vu_db_r = Math.round(levelR * 10) / 10;
             meter.vu_fresh = true;
@@ -196,6 +233,7 @@
             meter.vu_db_l = -60;
             meter.vu_db_r = -60;
             meter.vu_fresh = false;
+            peakReset();
             meterEnv.l = -30; meterEnv.r = -30;
             meterEnv.tL = -30; meterEnv.tR = -30;
             meterEnv.transientTs = 0;

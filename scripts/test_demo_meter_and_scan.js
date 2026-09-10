@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Demo realism contracts:
 // 1. The meter simulation follows a program envelope (correlated L/R,
-//    smoothed attack/release, limiter clamp) instead of jumping to
-//    uncorrelated random values every tick.
+//    smoothed attack/release) with a real-analog monitor tap: pre-limiter
+//    (limiter/volume never move the meter), post-headroom, plus an
+//    independent fast peak path (raw overs latch a hold, never derived
+//    from the smoothed VU).
 // 2. The library scan/share-discovery cycle: a boot-armed scan reports
 //    `scanning: true` with ramping counts and then settles, and POST
 //    /api/library/refresh arms the same cycle on demand. The share
@@ -65,8 +67,8 @@ function makeDemoContext(bootArmed) {
     for (const s of samples) {
         assert.ok(Number.isFinite(s.vu_db_l) && Number.isFinite(s.vu_db_r), 'meter levels must be finite');
         assert.ok(s.vu_db_l >= -60 && s.vu_db_r >= -60, 'meter levels must not go below the floor');
-        assert.ok(s.vu_db_l <= 0.5 && s.vu_db_r <= 0.5,
-            'levels must stay inside the limiter clamp (threshold -1 dB + headroom)');
+        assert.ok(s.vu_db_l <= 3 && s.vu_db_r <= 3,
+            'levels must stay inside the display ceiling (the tap is pre-limiter)');
         assert.ok(Math.abs(s.vu_db_l - s.vu_db_r) <= 4.5,
             'L/R must stay correlated (program spread + transient decorrelation)');
         assert.equal(s.vu_fresh, true, 'fresh flag must stay set while playing');
@@ -86,6 +88,77 @@ function makeDemoContext(bootArmed) {
     assert.equal(idle.vu_db_l, -60);
     assert.equal(idle.vu_db_r, -60);
     assert.equal(idle.vu_fresh, false);
+
+    // ── Settings response + independent peak path ─────────────────────
+    // Seeded PRNG + fresh contexts make the program/transient schedule
+    // identical across scenarios, so mean-level deltas isolate the DSP
+    // setting under test.
+    const realRandom = Math.random;
+    function seededRandom(seed) {
+        let a = seed >>> 0;
+        return function () {
+            a |= 0; a = (a + 0x6D2B79F5) | 0;
+            let tt = Math.imul(a ^ (a >>> 15), 1 | a);
+            tt = (tt + Math.imul(tt ^ (tt >>> 7), 61 | tt)) ^ tt;
+            return ((tt ^ (tt >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+    async function meterMean(setup, ticks = 120) {
+        Math.random = seededRandom(7);
+        try {
+            const c = makeDemoContext(false);
+            const st = c.window.FXROUTE_DEMO_STATE;
+            const post = (url, body) => c.fetch(url, { method: 'POST', body: JSON.stringify(body || {}) });
+            await post('/api/play', { track_id: 'd2-midnight-relay_01' });
+            if (setup) await setup(post);
+            let sum = 0, n = 0, tt = 0;
+            for (let i = 0; i < ticks + 20; i += 1) {
+                st.demoMeterTick(tt); tt += 500;
+                if (i >= 20) { sum += st.getMeter().vu_db_l; n += 1; }
+            }
+            return sum / n;
+        } finally { Math.random = realRandom; }
+    }
+    const baseMean = await meterMean(null);
+    const hrMean = await meterMean((post) => post('/api/dsp/extras', { headroom_enabled: true, headroom_gain_db: -6 }));
+    assert.ok(hrMean - baseMean < -3, `headroom -6 dB must move the VU (delta ${hrMean - baseMean})`);
+    const limMean = await meterMean((post) => post('/api/dsp/extras', { limiter_enabled: false }));
+    assert.ok(Math.abs(limMean - baseMean) < 2, `limiter toggle must not move the VU (delta ${limMean - baseMean})`);
+    const plusMean = await meterMean((post) => post('/api/dsp/presets/load', { preset_name: '+6' }));
+    assert.ok(plusMean - baseMean > 3, '+6 preset must lift the VU');
+
+    // Hand-set VU levels alone must never trip the peak detector: holds
+    // latch only from raw overs on the fast path.
+    const peakCtx = makeDemoContext(false);
+    const peakState = peakCtx.window.FXROUTE_DEMO_STATE;
+    peakState.playLocal(peakState.localTracks[0].id);
+    peakState.getMeter().vu_db_l = 0.5; peakState.getMeter().vu_db_r = 0.5; peakState.getMeter().vu_fresh = true;
+    assert.equal(peakState.getPeak().detected, false, 'smoothed VU levels must not latch peaks');
+
+    // A hot program latches peak holds with the limiter on and off alike.
+    async function peakHits(setup, ticks = 200) {
+        Math.random = seededRandom(11);
+        try {
+            const c = makeDemoContext(false);
+            const st = c.window.FXROUTE_DEMO_STATE;
+            const post = (url, body) => c.fetch(url, { method: 'POST', body: JSON.stringify(body || {}) });
+            await post('/api/play', { track_id: 'd2-midnight-relay_01' });
+            if (setup) await setup(post);
+            let hits = 0, tt = 0;
+            for (let i = 0; i < ticks + 20; i += 1) {
+                st.demoMeterTick(tt); tt += 500;
+                if (i >= 20 && st.getPeak().detected) hits += 1;
+            }
+            return hits;
+        } finally { Math.random = realRandom; }
+    }
+    const hotOn = await peakHits((post) => post('/api/dsp/presets/load', { preset_name: '+6' }));
+    assert.ok(hotOn > 0, 'a hot program must latch peak holds');
+    const hotOff = await peakHits(async (post) => {
+        await post('/api/dsp/presets/load', { preset_name: '+6' });
+        await post('/api/dsp/extras', { limiter_enabled: false });
+    });
+    assert.equal(hotOff, hotOn, 'peak detection must be limiter-independent');
 
     // ── Refresh cycle (POST /api/library/refresh) ───────────────────────
     // A manual refresh arms a short scan: the response reports scanning and

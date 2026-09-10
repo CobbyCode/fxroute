@@ -617,22 +617,19 @@ const radio = state.getPlayback();
     assert.match(lrPoll.message, /L\/R repeat/);
 
     // ── Playback meter simulation contract ──────────────────────────────
-    // Only the audible chain moves the visible level: +3/+6 dB filter
-    // presets (real presets, no headroom), autogain, loudness, bass
-    // enhancer; the protection limiter only clamps into limiting. The
-    // snapshot flags limiting (level at/above the -1 dB threshold) and
-    // clipping (above 0 dB), so Direct at -13 dB stays clean while a hot
-    // +6 dB program into the limiter trips detection.
+    // Real-analog monitor tap: the VU follows the audible pre-limiter
+    // chain (preset gain, headroom cut, autogain/loudness/bass); the
+    // protection limiter sits after the tap and never moves the meter.
+    // Peak detection is an independent fast path (raw overs latch a
+    // hold), so hand-set VU levels alone never trip detection.
     state.playLocal(state.localTracks[0].id);
     const meterOf = () => state.getPeak();
     await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: 'Direct' }) })).json();
     state.getMeter().vu_db_l = -13; state.getMeter().vu_db_r = -13; state.getMeter().vu_fresh = true;
     assert.equal(meterOf().detected, false);
-    await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: '+6' }) })).json();
     state.getMeter().vu_db_l = 0.5; state.getMeter().vu_db_r = 0.5; state.getMeter().vu_fresh = true;
-    assert.equal(meterOf().detected, true);
-    state.getMeter().vu_db_l = -0.5; state.getMeter().vu_db_r = -0.5; state.getMeter().vu_fresh = true;
-    assert.equal(meterOf().detected, true);
+    assert.equal(meterOf().detected, false, 'smoothed VU levels must not latch peaks');
+    await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: '+6' }) })).json();
     await (await demoFetch('/api/dsp/extras', { method: 'POST', body: JSON.stringify({ loudnessEnabled: true, loudnessStrength: 10 }) })).json();
     const loudExtras = await (await demoFetch('/api/dsp/presets')).json();
     assert.equal(loudExtras.global_extras.loudness.enabled, true);
