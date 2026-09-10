@@ -55,7 +55,7 @@
     banner.setAttribute('role', 'status');
     const tourDisabled = typeof window.location !== 'undefined'
         && /(?:^|[?&])notour(?:&|$)/.test(window.location.search || '');
-    banner.innerHTML = '<strong>FXRoute Web-Demo</strong> — simulation, no audio playback · '
+    banner.innerHTML = '<strong>FXRoute Web-Demo</strong> — simulation, no real audio playback · '
         + (tourDisabled ? '' : '<a href="#" id="demo-tour-start" class="demo-banner-tour">Take the tour</a> · ')
         + '<a href="https://github.com/' + (window.FXROUTE_DEMO_REPO || 'CobbyCode/fxroute') + '" target="_blank" rel="noopener">GitHub project</a>'
         + '<button type="button" class="demo-banner-close" aria-label="Hide demo notice" title="Hide demo notice">×</button>';
