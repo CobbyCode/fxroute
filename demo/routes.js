@@ -341,20 +341,21 @@
     }
 
     // ── Music libraries ─────────────────────────────────────────────────
-    // The demo presents "Demo Library 2" as its active library (like a box
-    // with the second demo share selected); Local and NAS stay selectable
-    // under Settings and serve the main catalog.
+    // The demo presents "NAS Library 1" (the second demo share) as its
+    // active library, like a box with that share selected; Local and
+    // "NAS Library 2" stay selectable under Settings and serve the main
+    // catalog.
     const musicLibraries = {
         active_id: 'demo-library-2',
         active_type: 'smb',
         libraries: [
             { id: 'local', label: 'Local', type: 'local' },
-            { id: 'demo-nas', label: 'NAS Music', type: 'smb' },
-            { id: 'demo-library-2', label: 'Demo Library 2', type: 'smb' },
+            { id: 'demo-library-2', label: 'NAS Library 1', type: 'smb' },
+            { id: 'demo-nas', label: 'NAS Library 2', type: 'smb' },
         ],
     };
 
-    // Second demo catalog (demo/data/library2.js): the "Demo Library 2"
+    // Second demo catalog (demo/data/library2.js): the "NAS Library 1"
     // SMB share. Only the selected library serves the browse surfaces —
     // local and NAS keep serving the main catalog exactly as before.
     const lib2 = window.FXROUTE_DEMO_LIBRARY2 || { tracks: [], albums: [] };

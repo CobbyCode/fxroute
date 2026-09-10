@@ -650,7 +650,7 @@ const radio = state.getPlayback();
     // Discover reuses the demo library itself (same genre/decade first),
     // max 6 items, never the album itself, 404 for unknown ids.
     // This section covers the main catalog, so select Local first (the
-    // demo presents Demo Library 2 by default).
+    // demo presents NAS Library 1 by default).
     await demoFetch('/api/music-libraries/select', { method: 'POST', body: JSON.stringify({ id: 'local' }) });
     const demoAlbums = await (await demoFetch('/api/albums')).json();
     const neonRain = demoAlbums.find(a => a.id === 'neon-rain');
@@ -867,7 +867,7 @@ const radio = state.getPlayback();
     // the full initial stock from the fixtures. Runs in its own isolated
     // session so it is independent of the mutations above.
     const session = makeDemoContext();
-    // The demo presents Demo Library 2 by default; pin the stock
+    // The demo presents NAS Library 1 by default; pin the stock
     // reset/restore contract to the main catalog (Local) so the fixtures
     // that ship the product demo keep being exercised.
     await session.fetch('/api/music-libraries/select', { method: 'POST', body: JSON.stringify({ id: 'local' }) });

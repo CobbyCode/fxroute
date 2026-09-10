@@ -81,9 +81,10 @@
 
     // ── Playback engine ─────────────────────────────────────────────────
     let currentSource = 'local';
-    // The demo presents "Demo Library 2" as its active library (selectable
-    // under Settings like on a real box); local playback resolves against
-    // the active catalog, routes.js keeps this in sync on selection.
+    // The demo presents "NAS Library 1" (the second demo share) as its
+    // active library (selectable under Settings like on a real box); local
+    // playback resolves against the active catalog, routes.js keeps this
+    // in sync on selection.
     let activeLibraryId = 'demo-library-2';
     function activeLibraryTracks() {
         return activeLibraryId === 'demo-library-2' ? (lib2.tracks || []) : localTracks;

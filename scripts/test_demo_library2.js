@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Demo Library 2 contract: the web demo presents "Demo Library 2" as its
+// Demo Library 2 contract: the web demo presents "NAS Library 1" as its
 // active library (selectable under Settings like on a real box). Each
 // library serves its own albums, tracks, covers and playlists; switching
 // restores the other catalog untouched.
@@ -47,17 +47,21 @@ function post(fetch, url, body) {
     const ctx = makeDemoContext();
     const fetch = ctx.fetch;
 
-    // Demo Library 2 is the presented default.
+    // NAS Library 1 (the second demo share) is the presented default,
+    // NAS Library 2 second for switching.
     const libraries = await (await fetch('/api/music-libraries')).json();
     assert.equal(libraries.active_id, 'demo-library-2');
     assert.equal(libraries.active_type, 'smb');
     const ids = libraries.libraries.map(l => l.id);
     assert.ok(ids.includes('local'), 'local library listed');
-    assert.ok(ids.includes('demo-nas'), 'existing NAS library untouched');
-    const second = libraries.libraries.find(l => l.id === 'demo-library-2');
-    assert.ok(second, 'Demo Library 2 listed');
-    assert.equal(second.label, 'Demo Library 2');
-    assert.equal(second.type, 'smb');
+    const nas1 = libraries.libraries.find(l => l.id === 'demo-library-2');
+    assert.ok(nas1, 'NAS Library 1 listed');
+    assert.equal(nas1.label, 'NAS Library 1');
+    assert.equal(nas1.type, 'smb');
+    const nas2 = libraries.libraries.find(l => l.id === 'demo-nas');
+    assert.ok(nas2, 'existing NAS library untouched');
+    assert.equal(nas2.label, 'NAS Library 2');
+    assert.equal(nas2.type, 'smb');
 
     const albums2 = await (await fetch('/api/albums')).json();
     const tracks2 = await (await fetch('/api/tracks')).json();
