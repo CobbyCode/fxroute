@@ -14,13 +14,98 @@
         'peaceful', 'raimbow', 'risky', 'stoplght', 'sunflower', 'ufo',
     ];
 
-    function hashCode(text) {
-        let h = 0;
-        for (let i = 0; i < String(text).length; i += 1) {
-            h = ((h << 5) - h + String(text).charCodeAt(i)) | 0;
-        }
-        return h & 0x7fffffff;
-    }
+    // Deterministic favorites, baked at authoring time: every flag is the
+    // value the favorites hash formula produced (tracks and provider
+    // tracks % 4, albums % 3), stored as literal data so the fixture is
+    // the single source of truth. scripts/test_library_fixture_favorites.js
+    // pins these flags to the formula.
+    const FAVORITES = {
+      "fav-album:aether-drift": true,
+      "fav-album:analog-dreams": false,
+      "fav-album:bass-garden": true,
+      "fav-album:concrete-bloom": false,
+      "fav-album:cover-art": true,
+      "fav-album:dust-bowl-hymns": false,
+      "fav-album:gravity-well": true,
+      "fav-album:harbor-lights": false,
+      "fav-album:mississippi-notes": true,
+      "fav-album:neon-rain": false,
+      "fav-album:old-town-sessions": false,
+      "fav-album:overpass": true,
+      "fav-album:polar-circle": true,
+      "fav-album:vantage-point": false,
+      "fav-album:woodland-sketches": true,
+      "fav-qobuz:Aurora Borealis": false,
+      "fav-qobuz:Midnight Glacier": false,
+      "fav-qobuz:Rainy Shinjuku": false,
+      "fav-qobuz:Velvet Circuit": true,
+      "fav-spotify:Electric Bloom": false,
+      "fav-spotify:Golden Gate Lights": false,
+      "fav-spotify:Night Service": false,
+      "fav-spotify:Paper Satellites": false,
+      "fav-track:local_demo_aether-drift_1": false,
+      "fav-track:local_demo_aether-drift_2": false,
+      "fav-track:local_demo_aether-drift_3": true,
+      "fav-track:local_demo_aether-drift_4": false,
+      "fav-track:local_demo_aether-drift_5": false,
+      "fav-track:local_demo_analog-dreams_1": true,
+      "fav-track:local_demo_bass-garden_1": false,
+      "fav-track:local_demo_bass-garden_2": false,
+      "fav-track:local_demo_bass-garden_3": true,
+      "fav-track:local_demo_bass-garden_4": false,
+      "fav-track:local_demo_concrete-bloom_1": true,
+      "fav-track:local_demo_concrete-bloom_2": false,
+      "fav-track:local_demo_concrete-bloom_3": false,
+      "fav-track:local_demo_concrete-bloom_4": false,
+      "fav-track:local_demo_concrete-bloom_5": true,
+      "fav-track:local_demo_cover-art_1": true,
+      "fav-track:local_demo_dust-bowl-hymns_1": true,
+      "fav-track:local_demo_gravity-well_1": false,
+      "fav-track:local_demo_gravity-well_2": false,
+      "fav-track:local_demo_gravity-well_3": true,
+      "fav-track:local_demo_gravity-well_4": false,
+      "fav-track:local_demo_gravity-well_5": false,
+      "fav-track:local_demo_harbor-lights_1": false,
+      "fav-track:local_demo_harbor-lights_2": false,
+      "fav-track:local_demo_harbor-lights_3": false,
+      "fav-track:local_demo_harbor-lights_4": true,
+      "fav-track:local_demo_harbor-lights_5": false,
+      "fav-track:local_demo_mississippi-notes_1": true,
+      "fav-track:local_demo_mississippi-notes_2": false,
+      "fav-track:local_demo_mississippi-notes_3": false,
+      "fav-track:local_demo_mississippi-notes_4": false,
+      "fav-track:local_demo_mississippi-notes_5": true,
+      "fav-track:local_demo_neon-rain_1": false,
+      "fav-track:local_demo_neon-rain_2": false,
+      "fav-track:local_demo_neon-rain_3": true,
+      "fav-track:local_demo_neon-rain_4": false,
+      "fav-track:local_demo_neon-rain_5": false,
+      "fav-track:local_demo_old-town-sessions_1": false,
+      "fav-track:local_demo_old-town-sessions_2": false,
+      "fav-track:local_demo_old-town-sessions_3": false,
+      "fav-track:local_demo_old-town-sessions_4": true,
+      "fav-track:local_demo_old-town-sessions_5": false,
+      "fav-track:local_demo_overpass_1": false,
+      "fav-track:local_demo_overpass_2": false,
+      "fav-track:local_demo_overpass_3": true,
+      "fav-track:local_demo_overpass_4": false,
+      "fav-track:local_demo_overpass_5": false,
+      "fav-track:local_demo_polar-circle_1": true,
+      "fav-track:local_demo_polar-circle_2": false,
+      "fav-track:local_demo_polar-circle_3": false,
+      "fav-track:local_demo_polar-circle_4": false,
+      "fav-track:local_demo_polar-circle_5": true,
+      "fav-track:local_demo_vantage-point_1": true,
+      "fav-track:local_demo_vantage-point_2": false,
+      "fav-track:local_demo_vantage-point_3": false,
+      "fav-track:local_demo_vantage-point_4": false,
+      "fav-track:local_demo_vantage-point_5": true,
+      "fav-track:local_demo_woodland-sketches_1": false,
+      "fav-track:local_demo_woodland-sketches_2": false,
+      "fav-track:local_demo_woodland-sketches_3": true,
+      "fav-track:local_demo_woodland-sketches_4": false,
+      "fav-track:local_demo_woodland-sketches_5": false
+    };
 
     // Deterministic, deduplicated cover assignment: every distinct key gets
     // its own slot in the artwork pool (round-robin per key namespace), so
@@ -198,7 +283,7 @@
             artwork_available: true,
             artwork_url: cover,
             artwork_source: 'library',
-            favorite: hashCode('fav-track:' + id) % 4 === 0,
+            favorite: FAVORITES['fav-track:' + id],
         });
     });
     byAlbum.forEach((_, albumKey) => {
@@ -213,7 +298,7 @@
             years: [first.year],
             year: first.year,
             release_type: (first.sample_rate_hz >= 96000) ? 'Album (Hi-Res)' : 'Album',
-            favorite: hashCode('fav-album:' + albumKey) % 3 === 0,
+            favorite: FAVORITES['fav-album:' + albumKey],
             cover_source: 'folder',
             has_external_cover: true,
             coverUrl: demoImage('album:' + first.album),
@@ -494,7 +579,7 @@
                 artwork_available: true,
                 artwork_url: art,
                 artwork_source: provider,
-                favorite: hashCode('fav-' + provider + ':' + title) % 4 === 0,
+                favorite: FAVORITES['fav-' + provider + ':' + title],
             };
         });
     }

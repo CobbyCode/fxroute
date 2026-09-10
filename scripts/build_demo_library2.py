@@ -163,7 +163,7 @@ def track_titles(genre: str, album: str, count: int, seed_extra: str = "") -> li
 
 
 def hash_code(text: str) -> int:
-    """Mirror the demo fixture hashCode() (library.js) used for favorites."""
+    """Mirror the main catalog's favorites hash formula."""
     h = 0
     for ch in str(text):
         h = ((h << 5) - h + ord(ch)) & 0xFFFFFFFF
@@ -175,9 +175,10 @@ def hash_code(text: str) -> int:
 def favorite_flags(albums: list[dict]) -> dict[str, bool]:
     """Deterministic favorite flags for every track/album id.
 
-    Mirrors the main demo catalog's hashCode() favorites (library.js):
-    tracks are favored when ``hashCode('fav-track:' + id) % 4 == 0``, albums
-    when ``hashCode('fav-album:' + key) % 3 == 0``. Computed here in Python
+    Mirrors the main demo catalog's favorites formula (library.js bakes
+    these flags; the generated library2.js fixture carries them): tracks
+    are favored when ``hashCode('fav-track:' + id) % 4 == 0``, albums when
+    ``hashCode('fav-album:' + key) % 3 == 0``. Computed here in Python
     and emitted literally into the fixture, so the webdemo data carries the
     favorites instead of re-deriving them at page load.
     """

@@ -8,9 +8,10 @@ a change to the builder (album list, track titles, favorites hash, template)
 without regenerating the fixture fails here instead of drifting in the demo.
 
 Also pins the fixture's favorites to the builder's hash_code() mirror of the
-main catalog's hashCode(): the emitted FAVORITES map must be exactly what
-hash_code predicts, and must keep a genuine mix of favored and non-favored
-items for the UI contract (favorites exist, but are not all-or-nothing).
+main catalog's favorites hash formula: the emitted FAVORITES map must be
+exactly what hash_code predicts, and must keep a genuine mix of favored and
+non-favored items for the UI contract (favorites exist, but are not
+all-or-nothing).
 """
 
 import importlib.util
