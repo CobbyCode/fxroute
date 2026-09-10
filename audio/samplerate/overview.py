@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Mapping
 
@@ -70,17 +71,126 @@ def _parse_default_source_name(output: str) -> str | None:
             return value or None
     return None
 
-def _build_source_selection_key(source_name: str, port_key: str | None = None) -> str:
-    return f"{source_name}::{port_key}" if port_key else source_name
+def _build_source_selection_key(
+    source_name: str,
+    port_key: str | None = None,
+    pair: tuple[int, int] | None = None,
+) -> str:
+    key = (source_name or "").strip()
+    if port_key:
+        key = f"{key}::{port_key}"
+    if pair is not None:
+        key = f"{key}::pair:{pair[0]}-{pair[1]}"
+    return key
 
-def _split_source_selection_key(selection_key: str | None) -> tuple[str | None, str | None]:
+
+def _split_source_selection_key(selection_key: str | None) -> tuple[str | None, str | None, tuple[int, int] | None]:
     normalized = (selection_key or '').strip()
     if not normalized:
-        return None, None
-    if '::' in normalized:
-        source_name, port_key = normalized.split('::', 1)
-        return source_name or None, port_key or None
-    return normalized, None
+        return None, None, None
+    segments = normalized.split('::')
+    source_name = segments[0].strip() or None
+    port_key: str | None = None
+    pair: tuple[int, int] | None = None
+    for segment in segments[1:]:
+        pair_match = re.match(r"^pair:(\d+)-(\d+)$", segment.strip())
+        if pair_match:
+            left, right = int(pair_match.group(1)), int(pair_match.group(2))
+            if left >= 1 and right >= 1 and left != right:
+                pair = (left, right)
+        elif port_key is None and segment.strip():
+            port_key = segment.strip()
+    return source_name, port_key, pair
+
+
+# PipeWire channel designations (``audio.channel`` / ``Channel Map``) mapped
+# to the ``capture_<SUFFIX>`` port names external-input routing links.  The
+# live channel map of a source node always wins over positional guessing by
+# channel count; the positional table below is only the fallback when a node
+# reports no usable designations.
+_PIPEWIRE_CHANNEL_SUFFIX_BY_POSITION = {
+    "front-left": "FL",
+    "front-right": "FR",
+    "rear-left": "RL",
+    "rear-right": "RR",
+    "front-center": "FC",
+    "lfe": "LFE",
+    "side-left": "SL",
+    "side-right": "SR",
+    "mono": "MONO",
+}
+
+_POSITIONAL_CHANNEL_SUFFIXES = (
+    "FL", "FR", "RL", "RR", "FC", "LFE", "SL", "SR",
+    "AUX0", "AUX1", "AUX2", "AUX3", "AUX4", "AUX5",
+)
+
+
+def _parse_channel_map_positions(channel_map: str | None) -> list[str]:
+    tokens: list[str] = []
+    for raw_token in (channel_map or "").split(","):
+        token = raw_token.strip().lower()
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _channel_suffix_for_position(token: str, index: int) -> str:
+    mapped = _PIPEWIRE_CHANNEL_SUFFIX_BY_POSITION.get(token)
+    if mapped:
+        return mapped
+    aux_match = re.match(r"^aux(\d+)$", token)
+    if aux_match:
+        return f"AUX{int(aux_match.group(1))}"
+    if 0 <= index < len(_POSITIONAL_CHANNEL_SUFFIXES):
+        return _POSITIONAL_CHANNEL_SUFFIXES[index]
+    return f"AUX{index}"
+
+
+def _ordered_capture_channel_suffixes(channel_map: str | None, channels: int | None) -> list[str]:
+    """Ordered PipeWire channel suffixes a capture node offers.
+
+    Real channel designations from the node's channel map win; missing or
+    surplus positions fall back to the positional sequence.  When neither a
+    map nor a count is known, assume one plain stereo pair (legacy
+    availability) instead of hiding the source.
+    """
+    positions = _parse_channel_map_positions(channel_map)
+    suffixes = [_channel_suffix_for_position(token, index) for index, token in enumerate(positions)]
+    if channels is None:
+        return suffixes or ["FL", "FR"]
+    try:
+        count = int(channels)
+    except (TypeError, ValueError):
+        return suffixes or ["FL", "FR"]
+    if count <= 0:
+        return []
+    if len(suffixes) >= count:
+        return suffixes[:count]
+    return suffixes + [
+        _channel_suffix_for_position("", index)
+        for index in range(len(suffixes), count)
+    ]
+
+
+def _stereo_pairs_for_suffixes(suffixes: list[str]) -> list[dict[str, Any]]:
+    """Adjacent stereo pairs for ordered channel suffixes.
+
+    Pairs are (1, 2), (3, 4), ...  A trailing lone channel never forms a
+    pair: a single mono channel must not appear as a full stereo input or be
+    duplicated onto both sides.
+    """
+    pairs: list[dict[str, Any]] = []
+    for start in range(0, len(suffixes) - 1, 2):
+        left_index = start + 1
+        right_index = start + 2
+        pairs.append({
+            "left_channel": suffixes[start],
+            "right_channel": suffixes[start + 1],
+            "channels": (left_index, right_index),
+            "label": f"Input {left_index}\u2013{right_index}",
+        })
+    return pairs
 
 def _set_source_port(source_name: str, port_key: str) -> None:
     _run_command(["pactl", "set-source-port", source_name, port_key])
@@ -339,8 +449,9 @@ def get_audio_source_overview() -> dict[str, Any]:
         notes.append(f"Input details unavailable: {exc}")
 
     selected_input_key = selection_state.get("selected_input_key")
-    selected_source_name, selected_port_key = _split_source_selection_key(selected_input_key)
+    selected_source_name, selected_port_key, selected_pair = _split_source_selection_key(selected_input_key)
     inputs = []
+    skipped_single_channel: list[str] = []
     for source in sources:
         name = source.get("name")
         details = source_details.get(name or "", {})
@@ -351,55 +462,117 @@ def get_audio_source_overview() -> dict[str, Any]:
             or details.get("device_description")
             or _humanize_source_name(name)
         )
+        sample_spec = details.get("sample_spec") or source.get("sample_spec")
+        channels = _parse_sample_spec_channels(sample_spec)
+        suffixes = _ordered_capture_channel_suffixes(details.get("channel_map"), channels)
+        pairs = _stereo_pairs_for_suffixes(suffixes)
+        if not pairs:
+            # A lone mono channel is never a complete stereo input: offering
+            # it would duplicate one channel onto both sides.  Measurement
+            # keeps its own per-channel selection, so nothing else loses
+            # access to this source.
+            skipped_single_channel.append(device_label or name or "Unknown input")
+            continue
+        resolved_channels = len(suffixes) if suffixes else channels
+        channel_positions = _parse_channel_map_positions(details.get("channel_map")) or None
         ports = [port for port in (details.get("ports") or []) if port.get("available", True)]
         active_port_key = details.get("active_port")
         base_payload = {
             "id": source.get("id"),
             "name": name,
             "device_label": device_label,
-            "sample_spec": details.get("sample_spec") or source.get("sample_spec"),
+            "sample_spec": sample_spec,
+            "channels": resolved_channels,
+            "channel_map": channel_positions,
             "active_rate": source.get("active_rate"),
             "state": details.get("state") or source.get("state"),
             "is_default": name == default_source_name,
             "selectable": True,
         }
+
+        def _pair_entry(
+            pair: dict[str, Any],
+            pair_index: int,
+            *,
+            port_key: str | None,
+            port_label: str | None,
+            label: str,
+            is_active_port: bool,
+        ) -> dict[str, Any]:
+            pair_channels = pair["channels"]
+            key_pair = pair_channels if len(pairs) > 1 else None
+            return {
+                **base_payload,
+                "key": _build_source_selection_key(name or '', port_key, key_pair),
+                "source_key": name,
+                "port_key": port_key,
+                "port_label": port_label,
+                "label": label if len(pairs) == 1 else f"{label} \u2014 {pair['label']}",
+                "is_active_port": is_active_port,
+                "is_selected": (
+                    name == selected_source_name
+                    and port_key == selected_port_key
+                    and (
+                        tuple(pair_channels) == selected_pair
+                        or (selected_pair is None and pair_index == 0)
+                    )
+                ),
+                "pair_index": pair_index,
+                "pair_count": len(pairs),
+                "pair_label": pair["label"],
+                "pair_channels": list(pair_channels),
+                "left_channel": pair["left_channel"],
+                "right_channel": pair["right_channel"],
+            }
         if ports:
             for port in ports:
                 port_key = port.get("key")
                 port_label = port.get("label") or device_label
                 label = f"{port_label} — {device_label}" if port_label and port_label != device_label else device_label
-                inputs.append({
-                    **base_payload,
-                    "key": _build_source_selection_key(name or '', port_key),
-                    "source_key": name,
-                    "port_key": port_key,
-                    "port_label": port_label,
-                    "label": label,
-                    "is_active_port": port_key == active_port_key,
-                    "is_selected": name == selected_source_name and port_key == selected_port_key,
-                })
+                for pair_index, pair in enumerate(pairs):
+                    inputs.append(_pair_entry(
+                        pair, pair_index,
+                        port_key=port_key,
+                        port_label=port_label,
+                        label=label,
+                        is_active_port=port_key == active_port_key,
+                    ))
         else:
-            inputs.append({
-                **base_payload,
-                "key": name,
-                "source_key": name,
-                "port_key": None,
-                "port_label": None,
-                "label": device_label,
-                "is_active_port": True,
-                "is_selected": name == selected_source_name and not selected_port_key,
-            })
+            for pair_index, pair in enumerate(pairs):
+                inputs.append(_pair_entry(
+                    pair, pair_index,
+                    port_key=None,
+                    port_label=None,
+                    label=device_label,
+                    is_active_port=True,
+                ))
+
+    if skipped_single_channel:
+        skipped_names = ", ".join(skipped_single_channel[:3])
+        if len(skipped_single_channel) > 3:
+            skipped_names += f", +{len(skipped_single_channel) - 3} more"
+        notes.append(
+            f"Mono capture without a stereo pair is not offered as external input: {skipped_names}."
+        )
 
     if selected_input_key and not any(item.get("key") == selected_input_key for item in inputs):
-        migrated_input = next((item for item in inputs if item.get("source_key") == selected_source_name), None)
+        migrated_input = next(
+            (item for item in inputs
+             if item.get("source_key") == selected_source_name
+             and (selected_port_key is None or item.get("port_key") == selected_port_key)),
+            None,
+        ) or next((item for item in inputs if item.get("source_key") == selected_source_name), None)
         if migrated_input:
             selected_input_key = migrated_input.get("key")
-            selected_source_name, selected_port_key = _split_source_selection_key(selected_input_key)
+            selected_source_name, selected_port_key, selected_pair = _split_source_selection_key(selected_input_key)
+            for item in inputs:
+                item["is_selected"] = item.get("key") == selected_input_key
         else:
             notes.append(f"Saved input selection {selected_input_key} is not currently available.")
             selected_input_key = None
             selected_source_name = None
             selected_port_key = None
+            selected_pair = None
 
     default_input = next((item for item in inputs if item.get("is_default") and item.get("is_active_port")), None)
     selected_input = next((item for item in inputs if item.get("key") == selected_input_key), None)
