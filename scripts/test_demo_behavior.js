@@ -715,6 +715,12 @@ const radio = state.getPlayback();
     }
     const unknownTidalArtist = await demoFetch('/api/streaming/tidal/artists/does-not-exist');
     assert.equal(unknownTidalArtist.status, 404);
+    // Playlist covers mirror the local collage: a montage of the member
+    // album covers, not a random pool image.
+    for (const pid of ['t_playlist_01', 't_playlist_03']) {
+        const pl = await (await demoFetch('/api/streaming/tidal/playlists/' + pid)).json();
+        assert.match(pl.art_url, new RegExp('^/static/demo/tpl-' + pid + '\\.jpg$'), 'playlist shows its album montage: ' + pid);
+    }
 
     const splGet = await (await demoFetch('/api/measurements/spl-calibration')).json();
     assert.equal(splGet.automatic.available, true);

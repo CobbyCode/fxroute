@@ -1301,7 +1301,10 @@
             const trackIds = Array.isArray(body.track_ids) ? body.track_ids : [];
             const id = 't_playlist_' + Date.now();
             const tracks = trackIds.map(tid => tidalTracks().find(t => t.id === tid)).filter(Boolean).map(t => ({ ...t }));
-            const pl = { id, name, description: 'Demo playlist', track_count: tracks.length, art_url: lib.demoImage('playlist:' + id), cover_url: lib.demoImage('playlist:' + id), owner: 'fxroute-demo', is_public: true, tracks };
+            // New playlists show their content like the local collage does:
+            // the first track's album cover, pool fallback when empty.
+            const firstArt = tracks.length && tracks[0].art_url ? tracks[0].art_url : lib.demoImage('playlist:' + id);
+            const pl = { id, name, description: 'Demo playlist', track_count: tracks.length, art_url: firstArt, cover_url: firstArt, owner: 'fxroute-demo', is_public: true, tracks };
             tidalPlaylists().push(pl);
             tidalFavs.playlists.add(id);
             return j({ id, name, owner: 'fxroute-demo', track_count: tracks.length });

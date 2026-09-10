@@ -121,6 +121,17 @@ class CatalogTest(unittest.TestCase):
             for cover in covers:
                 self.assertTrue((POOL / cover).is_file(), f"missing pool cover {cover}")
 
+    def test_tidal_playlist_montages(self):
+        from PIL import Image
+        playlists = extract_const(DATA / "library.js", "TIDAL_PLAYLIST_SEEDS")
+        for seed in playlists:
+            pid = seed[0]
+            name = f"tpl-{pid}.jpg"
+            art = POOL / name
+            self.assertTrue(art.is_file(), f"missing playlist montage {name}")
+            with Image.open(art) as im:
+                self.assertEqual(im.size, (500, 500), name)
+
 
 if __name__ == "__main__":
     unittest.main()

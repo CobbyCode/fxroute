@@ -219,13 +219,17 @@
                 art_url: album.cover_url,
             })) : [];
         });
+        // Playlist cover mirrors the local collage: a pre-rendered montage
+        // of the member album covers (see build_demo_catalogs.py), not a
+        // random pool image.
+        const montage = '/static/demo/tpl-' + id + '.jpg';
         return {
             id,
             name,
             description,
             track_count: tracks.length,
-            art_url: demoImage('playlist:' + id),
-            cover_url: demoImage('playlist:' + id),
+            art_url: montage,
+            cover_url: montage,
             owner: 'fxroute-demo',
             is_public: true,
             tracks,
