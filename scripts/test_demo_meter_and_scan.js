@@ -112,6 +112,30 @@ function makeDemoContext(bootArmed) {
     assert.equal(idleStatus.scanning, false);
     assert.equal(idleStatus.tracks_found, activeTracks);
 
+    // ── Switch cycle (POST /api/music-libraries/select) ─────────────────
+    // Switching to another share arms a short scan for the newly selected
+    // catalog, so the UI shows "Scanning…" before the new tracks land.
+    const switched = await (await ctx.fetch('/api/music-libraries/select', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'local' }),
+    })).json();
+    assert.equal(switched.active_id, 'local');
+    assert.ok(state.demoScan && state.demoScan.active,
+        'library switch must arm a scan for the new catalog');
+    assert.equal(state.demoScan.target, state.localTracks.length,
+        'switch scan target must be the newly selected catalog');
+    state.demoScan.durationMs = 0;
+    const switchDone = await (await ctx.fetch('/api/library/status')).json();
+    assert.equal(switchDone.scanning, false);
+    assert.equal(switchDone.tracks_found, state.localTracks.length);
+    // Selecting the already-active library is a no-op: no rescan.
+    await ctx.fetch('/api/music-libraries/select', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'local' }),
+    });
+    assert.equal(state.demoScan, null,
+        'selecting the active library again must not re-arm a scan');
+
     // ── Boot-armed scan + share discovery ───────────────────────────────
     // boot.js arms the cycle before the frontend's first poll; the first
     // library-status call reports scanning and the first music-libraries

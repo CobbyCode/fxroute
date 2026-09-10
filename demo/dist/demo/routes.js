@@ -1454,11 +1454,16 @@
             const id = String(body.id || '');
             const entry = musicLibraries.libraries.find(l => l.id === id);
             if (entry) {
+                const changed = entry.id !== musicLibraries.active_id;
                 musicLibraries.active_id = entry.id;
                 musicLibraries.active_type = entry.type;
                 // Local playback + queue fallbacks in state.js resolve
                 // against the active catalog.
                 if (typeof S.setActiveLibraryId === 'function') S.setActiveLibraryId(entry.id);
+                // A real box rescans the freshly selected share; arm a short
+                // scan (the frontend polls /api/library/status right after
+                // the switch, so the new catalog visibly settles).
+                if (changed) armLibraryScan(1100 + Math.random() * 800);
             }
             return j(musicLibraries);
         }
