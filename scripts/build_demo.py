@@ -54,7 +54,7 @@ DEMO_PRE_SCRIPTS = """    <!-- Demo transport: must load before the real app scr
     <script src="./demo/streaming.js?v=1"></script>
     <script src="./demo/ws.js?v=1"></script>
     <script src="./demo/boot.js?v=8"></script>
-    <script src="./demo/tour.js?v=2"></script>
+    <script src="./demo/tour.js?v=3"></script>
 """
 
 # Files in the canonical static/ tree that are deliberately NOT mirrored

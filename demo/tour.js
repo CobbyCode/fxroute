@@ -19,7 +19,7 @@
             tab: null,
             target: '#playback-bar',
             title: 'Playback & live meter',
-            text: 'The footer controls playback: transport, track info and the live output meter of the DSP chain. A track is starting right now — the segments move like real audio levels, including the occasional peak near 0 dB.',
+            text: 'The footer controls playback: transport, track info and the live output meter of the DSP chain.',
             action: 'play-track',
         },
         {
@@ -27,7 +27,7 @@
             tab: '#tab-btn-radio',
             target: '#tab-radio',
             title: 'Radio',
-            text: '100+ internet radio stations, from jazz to classical streams. Find a station in the search box, tap it and listen instantly — with live metadata (title & artist) in the now-playing area.',
+            text: '100+ internet radio stations. Find a station in the search box, tap it and listen instantly — with live metadata (title & artist).',
         },
         {
             id: 'library',
@@ -41,7 +41,7 @@
             tab: '#tab-btn-effects',
             target: '#tab-effects',
             title: 'DSP & audio processing',
-            text: 'Ten presets from Direct to the convolver kernels, plus PEQ, limiter, loudness and more. The “+6” preset is loading right now — watch the output meter in the footer climb and the limiter engage.',
+            text: 'Ten presets from Direct to the convolver kernels, plus PEQ, limiter, loudness and more. The “+6” preset is loading right now — watch the output meter climb and the limiter engage.',
             action: 'preset-plus6',
         },
         {
@@ -49,7 +49,7 @@
             tab: '#tab-btn-qobuz',
             target: '#tab-qobuz',
             title: 'Streaming providers',
-            text: 'Spotify, Qobuz and TIDAL as real remote transports: their own catalogs with cover artwork, playback and quality facts — Qobuz streams FLAC up to 24 bit / 96 kHz, for example.',
+            text: 'Spotify, Qobuz and TIDAL as real remote transports with their own catalogs, cover artwork and quality facts — Qobuz streams FLAC up to 24 bit / 96 kHz.',
         },
         {
             id: 'settings',
@@ -64,7 +64,7 @@
             tab: null,
             target: null,
             title: 'What fxroute can do',
-            text: 'fxroute bundles simulated playback with a live meter, DSP chain, radio, streaming providers, measurement & room correction — all in a web demo. Have fun exploring!',
+            text: 'fxroute bundles simulated playback with a live meter, DSP chain, radio, streaming providers, measurement & room correction — all in a web demo.',
         },
     ];
 
