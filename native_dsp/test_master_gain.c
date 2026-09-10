@@ -9,14 +9,13 @@
 
 /* Master gain stage contract:
  *
- * The canonical listening volume is split off the old loudness wrapper gain:
- * the loudness stage keeps the LSP work point p with the inverse host
- * compensation (-p), and the canonical volume (volumeDb) is applied by a
- * dedicated master_gain stage.  The post_effect meter tap must be written
- * BEFORE the master gain (pre-master tap), so Peak/VU stays independent of
- * the listening volume; the master gain then feeds the protection limiter
- * with exactly the pre-migration level.  Without a master_gain stage the tap
- * falls back to the post-all-stages position.
+ * The visible UI meter (post_effect_FL/FR) is tapped post-all-stages,
+ * behind the final protection limiter (pre-matrix full-band stereo).  Both
+ * VU and Peak are derived from this post-limiter signal, so limited peaks
+ * are shown as limited.  The graph master position is 0 dB level-neutral
+ * and the system master is applied after the whole chain, so Peak/VU stays
+ * independent of the listening volume either way.  The master_gain stage
+ * itself is just another stage gain in the post-limiter tap path.
  */
 
 #define BLOCK 512U
@@ -114,10 +113,9 @@ static void run_tap_case(const char *config, float expected_tap,
 }
 
 int main(void) {
-    float pre = 0.25f * powf(10.0f, -6.0f / 20.0f);
-    float post = pre * powf(10.0f, -20.0f / 20.0f) * powf(10.0f, -3.0f / 20.0f);
+    float post = 0.25f * powf(10.0f, -6.0f / 20.0f) * powf(10.0f, -20.0f / 20.0f) * powf(10.0f, -3.0f / 20.0f);
     float no_master_out = 0.25f * powf(10.0f, -6.0f / 20.0f) * powf(10.0f, -3.0f / 20.0f);
-    run_tap_case(config_with_master, pre, post, "master gain tap");
+    run_tap_case(config_with_master, post, post, "master gain tap");
     run_tap_case(config_without_master, no_master_out, no_master_out, "fallback tap position");
     if (failures) {
         fprintf(stderr, "master gain test failed: %d\n", failures);

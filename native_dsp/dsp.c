@@ -670,7 +670,8 @@ int fxdsp_live_output(fxdsp *d, unsigned output, float gain_db, float delay_ms, 
  * component g) from g_old to g_new over one frame with the squared cosine
  * overlap weight sin^2(pi*d/buf_size); the compensation applies the
  * reciprocal so the Loudness+trim pair stays level-neutral at the
- * pre-master meter tap on every sample of the transition. */
+ * post-limiter meter tap on every sample of the transition (except for
+ * genuine limiter capping, which is the visible post-limiter level). */
 static float lv2_comp_gain(const dsp_stage *stage, size_t sample, unsigned channel) {
     size_t boundary = channel ? stage->lv2_comp_boundary_r : stage->lv2_comp_boundary_l;
     if (sample < boundary) return 1.0f / stage->lv2_comp_old_g;
@@ -771,17 +772,10 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
         uint32_t mute_mask=atomic_load_explicit(&d->mute_mask,memory_order_relaxed);
         for(unsigned channel=0;channel<d->inputs;channel++)
             memcpy(d->scratch[0][channel],input[channel]+offset,count*sizeof(float));
-        unsigned source=0, tap_written=0;
+        unsigned source=0;
         if(!atomic_load_explicit(&d->effect_bypass,memory_order_relaxed)) {
             for(unsigned index=0;index<d->stage_count;index++) {
                 dsp_stage *stage=&d->stages[index]; unsigned target=1U-source;
-                if(stage->kind==STAGE_MASTER_GAIN && post_effect) {
-                    /* The canonical listening volume sits after the pre-master
-                     * meter tap and before the protection limiter; write the
-                     * tap before applying the master gain. */
-                    write_post_effect_taps(post_effect,d->inputs,d->scratch[source],offset,count);
-                    tap_written=1;
-                }
                 if(stage->kind==STAGE_AUTOGAIN || stage->kind==STAGE_LV2) {
                     for(unsigned pair=0;pair<d->inputs/2U;pair++) {
                         unsigned left=pair*2U,right=left+1U;
@@ -846,7 +840,13 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
                 source=target;
             }
         }
-        if(post_effect && !tap_written) {
+        /* Visible UI meter tap: post-all-stages (behind the final
+         * protection limiter), pre-matrix full-band stereo.  Both VU and
+         * Peak are derived from this post-limiter signal, so limited peaks
+         * are shown as limited.  The tap stays independent of the system
+         * master (applied after the whole chain) and of the per-output
+         * crossover/trim (applied after the matrix). */
+        if(post_effect) {
             write_post_effect_taps(post_effect,d->inputs,d->scratch[source],offset,count);
         }
         unsigned routed=1U-source;

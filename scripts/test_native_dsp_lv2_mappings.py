@@ -137,9 +137,10 @@ def test_loudness_volume_clamp_moves_remainder_to_output_gain_param(tmp_path):
 def test_loudness_work_point_follows_volume_and_stage_is_level_neutral(tmp_path):
     # The LSP work point must keep following the canonical volume
     # (volumeDb - calibration + strength + AutoGain), while the stage stays
-    # level-neutral at the pre-master meter tap via the inverse output
-    # compensation.  The canonical listening attenuation is applied by the
-    # master gain stage right after the tap, before the protection limiter.
+    # level-neutral at the post-limiter meter tap via the inverse output
+    # compensation (genuine limiter capping excepted).  The graph master
+    # position is 0 dB level-neutral; the system master applies after the
+    # whole chain.
     quiet = compile_loudness(tmp_path, {"volumeDb": -37.19, "strength": 7})
     loud = compile_loudness(tmp_path, {"volumeDb": 0.0, "strength": 7})
 
@@ -178,14 +179,15 @@ def _block_value(block, prefix):
     return None
 
 
-def test_limiter_input_is_level_neutral_pre_master_level(tmp_path):
+def test_limiter_input_is_level_neutral_post_limiter_level(tmp_path):
     # The loudness stage keeps work point p with the inverse host
-    # compensation (-p) and the graph master position between the pre-master
-    # meter tap and the protection limiter is 0 dB: the stage net is 0 dB, so
-    # the Limiter input is the unattenuated pre-master level.  The single
+    # compensation (-p) and the graph master position between the loudness
+    # stage and the protection limiter is 0 dB: the stage net is 0 dB, so
+    # the Limiter input is the unattenuated level.  The single
     # global FXRoute master is the system volume applied after the whole DSP
     # chain; Loudness volumeDb is only the ISO-226 work point and never owns
-    # a gain stage.
+    # a gain stage.  The visible meter tap sits behind the limiter, so the
+    # same level is shown post-limiter (capped when the limiter engages).
     cases = (
         (0.0, 10, 0.0, -23.0, False),
         (-37.19, 10, 0.0, -23.0, False),
@@ -223,7 +225,7 @@ def test_limiter_input_is_level_neutral_pre_master_level(tmp_path):
         # The graph master gain sits right after the loudness stage and
         # before the protection limiter.  It is level-neutral (0 dB): the
         # stage net (p - p) plus the 0 dB master equals the unattenuated
-        # pre-master Limiter input.
+        # Limiter input (also the post-limiter meter level when uncapped).
         master = blocks[loudness_index + 1]
         assert master["header"].split()[4] == "master_gain"
         assert abs(_block_value(master, "param gain_db ")) < 1e-6

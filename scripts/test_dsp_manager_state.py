@@ -107,7 +107,8 @@ class DSPManagerStateTests(unittest.TestCase):
         # The LSP work point follows the canonical volume exactly as before
         # the native-DSP migration...
         self.assertNotEqual(quiet_payload["volume"], loud_payload["volume"])
-        # ...while the stage stays level-neutral at the pre-master meter tap.
+        # ...while the stage stays level-neutral at the post-limiter meter
+        # tap (genuine limiter capping excepted).
         for payload in (quiet_payload, loud_payload):
             self.assertTrue(math.isclose(
                 payload["volume"] + payload["output-gain"], 0.0, abs_tol=1e-9))

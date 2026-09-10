@@ -313,11 +313,12 @@ class DSPManager:
         plugin (``output-gain = -volume``); the native engine matches the
         plugin's FFT/OLA latency so the trim switches on the same frame
         boundary as the work-point curve, keeping the stage level-neutral at
-        the pre-master post_effect meter tap.  The single global FXRoute
-        master is the system volume applied after the whole DSP chain, so the
-        graph master position right after the tap is 0 dB: Peak/VU stays
-        independent of the master, and volumeDb is only the ISO-226 work
-        point, never a gain.
+        the post-limiter post_effect meter tap (except for genuine limiter
+        capping, which is the visible post-limiter level).  The single
+        global FXRoute master is the system volume applied after the whole
+        DSP chain, so the graph master position right after the tap is 0 dB:
+        Peak/VU stays independent of the master, and volumeDb is only the
+        ISO-226 work point, never a gain.
         """
         params = definition["params"]
         calibration = params.get("calibration")
@@ -835,12 +836,14 @@ class DSPManager:
                 control("hclip", 0)
                 control("hcrange", 6)
                 lines.append(f"param output_gain_db {number(payload['output-gain'])}")
-                # The stage is level-neutral at the pre-master meter tap: the
-                # work point p is compensated by -p and the master position is
-                # 0 dB.  The single global FXRoute master is the system volume
-                # applied after the whole DSP chain (wpctl sink volume);
-                # Loudness volumeDb is only the ISO-226 work point of the
-                # curve and never owns a gain stage.
+                # The stage is level-neutral at the post-limiter meter tap:
+                # the work point p is compensated by -p and the master
+                # position is 0 dB.  The single global FXRoute master is the
+                # system volume applied after the whole DSP chain (wpctl sink
+                # volume); Loudness volumeDb is only the ISO-226 work point
+                # of the curve and never owns a gain stage.  The visible
+                # meter sits behind the final protection limiter, so genuine
+                # limiter capping is shown as limited.
                 master_gain_db = 0.0
             elif plugin_type == "limiter":
                 # Control values verified against the installed lsp-plugins
