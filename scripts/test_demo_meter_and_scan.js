@@ -173,7 +173,7 @@ function makeDemoContext(bootArmed) {
     // unprotected, but never with the limiter engaged: capped raw peaks
     // stay under 0 dBFS by construction.
     const calmOff = await peakRun((post) => post('/api/dsp/extras', { limiter_enabled: false }));
-    assert.ok(calmOff.hits <= 8, `default program must stay out of the red except for rare flashes (got ${calmOff.hits})`);
+    assert.ok(calmOff.hits <= 15, `default program must stay out of the red except for rare flashes (got ${calmOff.hits})`);
     // Gain staging gradient (limiter disengaged): default spars, +3 dB
     // clearly busier, +6 dB saturated.
     const midOff = await peakRun(async (post) => {
@@ -182,10 +182,17 @@ function makeDemoContext(bootArmed) {
     });
     assert.ok(midOff.hits > calmOff.hits, `+3 dB must peak clearly more than default (${midOff.hits} vs ${calmOff.hits})`);
     assert.ok(midOff.hits < hotOff.hits, `+6 dB must peak clearly more than +3 dB (${hotOff.hits} vs ${midOff.hits})`);
+    // Stock-limiter contract, deliberately here as documentation: with the
+    // limiter engaged the cap sits below the detection threshold, so even a
+    // default program cannot red. This is not a gain-staging assertion.
     const calmOn = await peakRun(null);
     assert.equal(calmOn.hits, 0, 'engaged limiter keeps a default program out of the red');
     for (const gain of [-3, -6]) {
-        const hrHits = await peakRun((post) => post('/api/dsp/extras', { headroom_enabled: true, headroom_gain_db: gain }));
+        // Headroom must be judged with the limiter disengaged; with the
+        // stock limiter engaged the cap alone would force hits to zero.
+        const hrHits = await peakRun((post) => post('/api/dsp/extras', {
+            headroom_enabled: true, headroom_gain_db: gain, limiter_enabled: false,
+        }));
         assert.equal(hrHits.hits, 0, `headroom ${gain} dB must keep the meter out of the red`);
     }
 

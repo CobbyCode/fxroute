@@ -119,14 +119,20 @@
     // peaks of the tapped (post-limiter) signal against 0 dBFS latch a
     // hold after two consecutive hits. It never derives from the smoothed
     // VU — but it does see the limiter, so capped peaks never reach it.
+    // The detector compares in dB; the snapshot reports the live monitor's
+    // linear threshold (1.0 == 0 dBFS) on the wire, so the two domains use
+    // separate constants instead of one shared value.
     // The hold is scaled to the demo tick (500 ms broadcasts) instead of
     // the real 30 ms, so a latched peak stays visible for one broadcast.
-    const PEAK_THRESHOLD_DB = 1.0;
+    const PEAK_THRESHOLD_DB = 0;          // 0 dBFS, the detector's dB domain
+    const PEAK_THRESHOLD_LINEAR = 1.0;    // live DSPPeakMonitor wire value
     const PEAK_HOLD_MS = 600;
-    // Music-like crest factor above the instantaneous program. Bounded so
-    // headroom always clears the red zone: transient max (-4 dB) + crest
-    // max (6 dB) stays under 0 dBFS down to -3 dB headroom, while hot hits
-    // flash red occasionally at default level and a hot master clearly does.
+    // Music-like crest factor above the instantaneous program. With the
+    // limiter disengaged, bounded so headroom always clears the red zone:
+    // transient max (-4 dB) + crest max (6 dB) stays under 0 dBFS down to
+    // -3 dB headroom, while hot hits flash red occasionally at default
+    // level and a hot master does clearly. With the stock limiter engaged
+    // the cap sits below the threshold, so nothing reaches the red.
     const PEAK_CREST_DB = 3;
     const PEAK_CREST_SPREAD_DB = 3;
     const peakDet = {
@@ -160,7 +166,7 @@
             available: true,
             detected: active,
             hold_ms: active ? Math.max(peakDet.l.holdUntil, peakDet.r.holdUntil) - peakTickNow : 0,
-            threshold: 1.0,
+            threshold: PEAK_THRESHOLD_LINEAR,
             vu_db: (meter.vu_db_l + meter.vu_db_r) / 2,
             vu_db_l: meter.vu_db_l,
             vu_db_r: meter.vu_db_r,
@@ -171,13 +177,14 @@
             vu_fresh: !!meter.vu_fresh,
             vu_age_ms: 200,
             target: { description: 'DSP output monitor' },
-            last_over_at: active
-                ? (peakDet.l.lastOverAt && peakDet.r.lastOverAt
-                    ? (peakDet.l.lastOverAt > peakDet.r.lastOverAt ? peakDet.l.lastOverAt : peakDet.r.lastOverAt)
-                    : (peakDet.l.lastOverAt || peakDet.r.lastOverAt))
-                : null,
-            last_over_at_l: activeL ? peakDet.l.lastOverAt : null,
-            last_over_at_r: activeR ? peakDet.r.lastOverAt : null,
+            // Live DSPPeakMonitor.snapshot() returns the last-over stamps
+            // independently of the current hold, so consumers keep the
+            // "last clipped at …" time after the indicator clears.
+            last_over_at: peakDet.l.lastOverAt && peakDet.r.lastOverAt
+                ? (peakDet.l.lastOverAt > peakDet.r.lastOverAt ? peakDet.l.lastOverAt : peakDet.r.lastOverAt)
+                : (peakDet.l.lastOverAt || peakDet.r.lastOverAt),
+            last_over_at_l: peakDet.l.lastOverAt,
+            last_over_at_r: peakDet.r.lastOverAt,
             last_error: null,
         };
     }
@@ -226,8 +233,8 @@
                     meterEnv.transientTs = nowTs + 800 + Math.random() * 800;
                     // Louder passages, still below full scale on their own:
                     // with the music-like crest below, raw peaks reach the
-                    // red zone on hot hits at default level, never with
-                    // headroom engaged, always on a hot master.
+                    // red zone on hot hits while the limiter is disengaged
+                    // (a hot master always, default level occasionally).
                     meterEnv.transientL = -6 + Math.random() * 2;
                     meterEnv.transientR = meterEnv.transientL + (Math.random() - 0.5) * 2;
                 }
