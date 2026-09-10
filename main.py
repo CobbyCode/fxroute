@@ -4131,8 +4131,11 @@ async def start_download(request: Request):
         url = body.get("url")
         if not url:
             raise HTTPException(status_code=400, detail="URL is required")
-        filename = downloader.download(url)
-        return {"status": "started", "filename": filename}
+        # No fabricated name up front: the real saved filename is only known
+        # once yt-dlp reports it, and /api/download/status serves it as it
+        # becomes available (active_download["filename"]).
+        downloader.download(url)
+        return {"status": "started", "filename": None}
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:

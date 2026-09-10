@@ -76,10 +76,12 @@ class Downloader:
                 "Install with: pip install yt-dlp (or apt install yt-dlp)"
             ) from e
 
-    def download(self, url: str) -> str:
+    def download(self, url: str) -> None:
         """
         Start download of a YouTube URL.
-        Returns the expected output filename.
+        Returns None: the real saved filename is only known once yt-dlp
+        reports it during the run and is exposed through the status payload
+        (``active_download["filename"]``), never guessed up front.
         Raises RuntimeError if another download is active or yt-dlp missing.
         """
         with self._lock:
@@ -106,9 +108,6 @@ class Downloader:
             self._worker_thread = thread
             thread.start()
 
-            filename = self._get_output_filename(url)
-            return filename
-
     def _clean_youtube_url(self, url: str) -> str:
         """Remove playlist/queue params from YouTube URLs to get single video."""
         import urllib.parse
@@ -121,12 +120,6 @@ class Downloader:
             if "youtu.be" in url:
                 return urllib.parse.urlunparse(parsed._replace(query="", fragment=""))
         return url
-
-    def _get_output_filename(self, url: str) -> str:
-        """Generate expected output filename."""
-        # Use yt-dlp's default template: %(title)s.%(ext)s
-        # We'll get the actual filename from yt-dlp output
-        return f"download_{int(time.time())}"
 
     def _download_thread(self, url: str):
         """Background thread executing yt-dlp."""
