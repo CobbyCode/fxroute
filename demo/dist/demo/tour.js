@@ -47,6 +47,14 @@
             action: 'dsp-demo',
         },
         {
+            id: 'measurement',
+            tab: '#tab-btn-effects',
+            target: '.measurement-card-controls',
+            title: 'Measurement & room correction',
+            text: 'Measure your room to correct it: run a single or repeated L/R sweep, combine speaker and room captures in Advanced mode, then save what you want to keep. From a measurement the assistant builds PEQ bands or a full convolution filter — Create Convolver Preset turns it into a correction kernel. SPL Calibration pins the loudness reference to your target level.',
+            action: 'measurement-demo',
+        },
+        {
             id: 'qobuz',
             tab: null,
             target: '.tabs',
@@ -192,6 +200,25 @@
         return btn;
     }
 
+    // Brief attention pulse used by the demo actions; a no-op on hidden or
+    // missing elements so steps never depend on panel visibility.
+    function pulse(node, ms) {
+        if (!node) return;
+        node.classList.add('demo-tour-pulse');
+        setTimeout(function () { node.classList.remove('demo-tour-pulse'); }, ms || 900);
+    }
+
+    // Close the Measurement assistant overlay if the tour opened it. The
+    // overlay sits above the tabs, so a step that navigates elsewhere must
+    // close it first or its backdrop swallows every click.
+    function closeMeasurementPanel() {
+        var panel = document.getElementById('measurement-panel');
+        if (panel && !panel.classList.contains('hidden')) {
+            var closeBtn = document.getElementById('measurement-close');
+            if (closeBtn) closeBtn.click();
+        }
+    }
+
     function positionCard(target) {
         if (!card) return;
         var pad = 14;
@@ -328,7 +355,45 @@
                         else post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'B' });
                     }, 650);
                 }, 750);
+            } else if (action === 'measurement-demo') {
+                var mPanel = document.getElementById('measurement-panel');
+                if (mPanel && mPanel.classList.contains('hidden')) {
+                    var measureBtn = document.getElementById('effects-measure-open');
+                    if (measureBtn && typeof measureBtn.click === 'function') measureBtn.click();
+                }
+                // Pulse the workflow entries so the step shows what lives
+                // here: Start Sweep (single / LR repeat / Advanced), Auto
+                // Sub Optimize and SPL Calibration. Opening the sweep menu
+                // briefly reveals the repeat + advanced choices, then closes
+                // it again so the panel stays in its resting state.
+                setTimeout(function () {
+                    var sweep = document.getElementById('measurement-sweep-toggle');
+                    if (sweep) pulse(sweep);
+                    setTimeout(function () {
+                        if (sweep && sweep.getAttribute('aria-expanded') !== 'true'
+                            && typeof sweep.click === 'function') sweep.click();
+                        setTimeout(function () {
+                            var rep = document.getElementById('measurement-repeat-start');
+                            var adv = document.getElementById('measurement-hybrid-open');
+                            if (rep) pulse(rep);
+                            if (adv) pulse(adv);
+                            setTimeout(function () {
+                                if (sweep && sweep.getAttribute('aria-expanded') === 'true'
+                                    && typeof sweep.click === 'function') sweep.click();
+                                var sub = document.getElementById('measurement-auto-sub-start');
+                                var spl = document.getElementById('measurement-spl-calibration-open');
+                                // The auto-sub group only shows in subwoofer
+                                // output modes; skip it when hidden.
+                                if (sub && sub.offsetParent !== null) pulse(sub);
+                                if (spl) pulse(spl);
+                            }, 700);
+                        }, 550);
+                    }, 450);
+                }, 350);
             } else if (action === 'cycle-providers') {
+                // Never leave the Measurement assistant overlay open: its
+                // backdrop would block the provider tab clicks below.
+                closeMeasurementPanel();
                 var spBtn = document.getElementById('tab-btn-spotify');
                 var qbBtn = document.getElementById('tab-btn-qobuz');
                 var tdBtn = document.getElementById('tab-btn-tidal');
@@ -381,8 +446,9 @@
 
     function finish() {
         // Leave the demo in a neutral state: restore the Direct preset and
-        // close the settings dialog if the tour opened it.
+        // close any dialog the tour opened (settings or measurement).
         post('/api/dsp/presets/load', { preset_name: 'Direct' });
+        closeMeasurementPanel();
         var panel = document.querySelector('#settings-panel');
         if (panel && !panel.classList.contains('hidden')) {
             var closeBtn = document.querySelector('#close-settings');

@@ -19,7 +19,7 @@ const tourSource = fs.readFileSync(path.join(root, 'demo', 'tour.js'), 'utf8');
 const bootSource = fs.readFileSync(path.join(root, 'demo', 'boot.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 
-const KNOWN_ACTIONS = ['play-track', 'play-radio', 'search-radio-groove', 'refresh-library', 'search-library-jazz', 'play-qobuz', 'preset-plus6', 'dsp-demo', 'cycle-providers', 'open-settings'];
+const KNOWN_ACTIONS = ['play-track', 'play-radio', 'search-radio-groove', 'refresh-library', 'search-library-jazz', 'play-qobuz', 'preset-plus6', 'dsp-demo', 'measurement-demo', 'cycle-providers', 'open-settings'];
 
 function selectorExistsIn(selector, html) {
     const sel = String(selector || '').trim();
@@ -66,6 +66,13 @@ function selectorExistsIn(selector, html) {
                 `step ${step.id}: unknown action ${step.action}`);
         }
     }
+    // The measurement step must come before the providers step so the
+    // overlay is closed before the tour navigates back to the tabs.
+    const measurementIndex = tour.steps.findIndex((s) => s.id === 'measurement');
+    const providerIndex = tour.steps.findIndex((s) => s.id === 'qobuz');
+    assert.ok(measurementIndex >= 0 && providerIndex > measurementIndex,
+        'measurement step must precede the providers step (overlay is closed there)');
+
     // The tour must end on a full-card summary (no element highlight).
     const last = tour.steps[tour.steps.length - 1];
     assert.equal(last.target, null, 'the final step must be a summary card without a target');
@@ -88,6 +95,22 @@ function selectorExistsIn(selector, html) {
     const dspStep = tour.steps.find((s) => s.id === 'dsp');
     assert.equal(dspStep.action, 'dsp-demo', 'DSP step must demo A/B compare + output extras');
     assert.ok(tourSource.includes("action === 'dsp-demo'"), 'dsp-demo action must be implemented');
+
+    // Measurement: opens the real Measurement assistant overlay and covers
+    // sweeps, advanced measurements, convolver creation and SPL calibration.
+    const measurementStep = tour.steps.find((s) => s.id === 'measurement');
+    assert.ok(measurementStep, 'tour must have a measurement step');
+    assert.equal(measurementStep.action, 'measurement-demo', 'measurement step must demo the measurement workflow');
+    assert.ok(tourSource.includes("action === 'measurement-demo'"), 'measurement-demo action must be implemented');
+    assert.ok(tourSource.includes('effects-measure-open'), 'measurement-demo must open the panel via the Measure button');
+    assert.ok(tourSource.includes('measurement-sweep-toggle'), 'measurement-demo must pulse the Start Sweep entry');
+    assert.ok(tourSource.includes('measurement-spl-calibration-open'), 'measurement-demo must pulse the SPL Calibration entry');
+    assert.ok(tourSource.includes('closeMeasurementPanel'), 'tour must close the measurement overlay between steps');
+    const measurementCopy = `${measurementStep.title} ${measurementStep.text}`;
+    assert.ok(/sweep/i.test(measurementCopy), 'measurement step must mention sweeps');
+    assert.ok(/convolver/i.test(measurementCopy), 'measurement step must mention convolver creation');
+    assert.ok(/spl/i.test(measurementCopy), 'measurement step must mention SPL calibration');
+    assert.ok(/advanced/i.test(measurementCopy), 'measurement step must mention advanced measurements');
 
     // Providers step: cycle through Spotify/Qobuz/TIDAL so the multi-provider
     // claim is visible in the tabs/footer instead of only stated.
