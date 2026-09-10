@@ -97,8 +97,23 @@
         card.setAttribute('role', 'dialog');
         card.setAttribute('aria-modal', 'true');
         card.setAttribute('aria-labelledby', 'demo-tour-title');
-        backdrop.appendChild(card);
+        // The card is a sibling of the backdrop, not a child: the backdrop's
+        // z-index would otherwise cap the whole subtree, letting a huge
+        // highlighted panel (z 1200) paint over the card and swallow every
+        // button click (seen on the library step).
         document.body.appendChild(backdrop);
+        document.body.appendChild(card);
+    }
+
+    // The frontend's overlay manager marks every body-level sibling of an
+    // opened dialog as inert (focus trap). That sweeps up the tour overlay
+    // whenever a step opens a real dialog (settings), killing all clicks.
+    // The tour is not part of the app's background, so re-assert it after
+    // every step render (and once more after the 80 ms layout timer, when
+    // the dialog's own open handler has definitely run).
+    function ensureInteractive() {
+        if (backdrop) backdrop.inert = false;
+        if (card) card.inert = false;
     }
 
     function renderStep(index) {
@@ -123,7 +138,9 @@
 
         card.textContent = '';
         card.appendChild(el('div', 'demo-tour-progress', 'Step ' + (index + 1) + ' / ' + STEPS.length));
-        card.appendChild(el('h3', 'demo-tour-title', step.title));
+        var titleEl = el('h3', 'demo-tour-title', step.title);
+        titleEl.id = 'demo-tour-title'; // aria-labelledby on the card references this id
+        card.appendChild(titleEl);
         card.appendChild(el('p', 'demo-tour-text', step.text));
 
         var actions = el('div', 'demo-tour-actions');
@@ -146,8 +163,13 @@
         });
         card.appendChild(dots);
 
+        ensureInteractive();
+
         // Let the tab switch / action render, then anchor the card.
-        setTimeout(function () { positionCard(target); }, 80);
+        setTimeout(function () {
+            ensureInteractive();
+            positionCard(target);
+        }, 80);
         var nextBtn = card.querySelector('.demo-tour-next');
         if (nextBtn) nextBtn.focus();
     }
@@ -258,6 +280,7 @@
         }
         unhighlight();
         if (backdrop && backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+        if (card && card.parentNode) card.parentNode.removeChild(card);
         backdrop = null;
         card = null;
         currentIndex = -1;

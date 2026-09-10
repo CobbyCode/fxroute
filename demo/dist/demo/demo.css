@@ -85,9 +85,12 @@
     border-radius: 10px;
     box-shadow: 0 0 0 4px rgba(110, 231, 183, 0.28), 0 0 26px rgba(110, 231, 183, 0.45);
 }
+/* Card is a sibling of the backdrop (appended to body directly) so its
+   z-index outranks highlighted targets instead of being capped by the
+   backdrop's own stacking context. */
 .demo-tour-card {
     position: fixed;
-    z-index: 1150;
+    z-index: 1250;
     pointer-events: auto;   /* the card must not inherit the backdrop's none */
     width: min(360px, calc(100vw - 28px));
     padding: 16px 18px 14px;
