@@ -41,7 +41,7 @@ DEFAULT_DIST = DEMO_ROOT / "demo" / "dist"
 
 DEMO_TITLE = "FXRoute Web-Demo (simulated)"
 
-DEMO_STYLES = """    <link rel="stylesheet" href="./demo/demo.css?v=5">
+DEMO_STYLES = """    <link rel="stylesheet" href="./demo/demo.css?v=6">
 """
 
 DEMO_PRE_SCRIPTS = """    <!-- Demo transport: must load before the real app scripts -->
