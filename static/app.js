@@ -539,7 +539,7 @@ const elements = {
     playlistDetailCount: document.getElementById('playlist-detail-count'),
     playlistDetailInfo: document.getElementById('playlist-detail-info'),
     playlistDetailTracks: document.getElementById('playlist-detail-tracks'),
-    playlistDetailFavorite: document.getElementById('playlist-detail-favorite'),
+    deletePlaylistBtn: document.getElementById('delete-playlist'),
     albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
@@ -6553,13 +6553,6 @@ function openPlaylistDetail(playlistId) {
         elements.playlistDetailCover.innerHTML = playlistCoverHtml(playlist);
     }
     if (elements.playlistDetailName) elements.playlistDetailName.textContent = playlist.name;
-    // Own local playlists always show an active heart (delete on click).
-    if (elements.playlistDetailFavorite) {
-        elements.playlistDetailFavorite.classList.add('active');
-        elements.playlistDetailFavorite.textContent = '♥';
-        elements.playlistDetailFavorite.setAttribute('aria-label', 'Delete playlist');
-        elements.playlistDetailFavorite.title = 'Delete playlist';
-    }
     setPlaylistDetailBackdrop(playlist);
     renderPlaylistDetailInfo(playlist, tracks);
     renderPlaylistDetailTracks();
@@ -6822,10 +6815,18 @@ function updatePlaylistSaveRowVisibility() {
     // as at least one track is consciously added via the + action (never via
     // playback), the save-playlist row is reachable. Playback never touches
     // selectedTrackIds, so this trigger stays exclusive to the + selection.
+    // The row also stays open while a playlist detail is edited so Delete
+    // remains reachable without a selection.
     const hasPlaylistSelection = count >= 1;
-    elements.playlistSaveRow.classList.toggle('hidden', !hasPlaylistSelection);
+    const isEditingPlaylist = !!state.library.playlistDetail;
+    const showRow = hasPlaylistSelection || isEditingPlaylist;
+    elements.playlistSaveRow.classList.toggle('hidden', !showRow);
     if (elements.playlistSaveControls) {
-        elements.playlistSaveControls.classList.toggle('hidden', !hasPlaylistSelection);
+        elements.playlistSaveControls.classList.toggle('hidden', !showRow);
+    }
+    // Delete belongs to the edit flow only: hidden while merely creating.
+    if (elements.deletePlaylistBtn) {
+        elements.deletePlaylistBtn.classList.toggle('hidden', !isEditingPlaylist);
     }
 }
 function updateLibrarySelectionUI() {
@@ -14384,8 +14385,8 @@ function setupLibraryActions() {
     if (elements.playlistDetailBack) {
         elements.playlistDetailBack.addEventListener('click', () => closePlaylistDetail());
     }
-    if (elements.playlistDetailFavorite) {
-        elements.playlistDetailFavorite.addEventListener('click', async () => {
+    if (elements.deletePlaylistBtn) {
+        elements.deletePlaylistBtn.addEventListener('click', async () => {
             const detail = state.library.playlistDetail;
             if (!detail || !detail.playlist) return;
             if (!confirm(`Delete playlist "${detail.playlist.name}"?`)) return;

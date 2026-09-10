@@ -1126,8 +1126,8 @@
                         '</div>' +
                     '</div>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml() +
                 '<div class="streaming-browse-body" id="tidal-browse-body"></div>' +
+                tidalPlaylistSaveRowHtml() +
             '</div>';
         const actions = content.querySelector('.tidal-toolbar-actions');
         if (actions && entry.els.statusLine) actions.prepend(entry.els.statusLine);

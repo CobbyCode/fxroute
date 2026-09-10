@@ -132,7 +132,7 @@ class LibraryPhoneLayoutTests(unittest.TestCase):
         self.assertRegex(phone, r"\.playlist-save-row \.url-input\s*\{[^}]*grid-column: 1 / -1")
         self.assertIn("#cancel-playlist-selection", phone)
 
-    def test_playlist_markup_still_has_three_controls(self):
+    def test_playlist_markup_has_editor_controls(self):
         match = re.search(
             r'<div class="playlist-save-controls">.*?</div>', HTML, re.DOTALL
         )
@@ -141,7 +141,22 @@ class LibraryPhoneLayoutTests(unittest.TestCase):
         controls = match.group(0)
         self.assertIn('id="playlist-name"', controls)
         self.assertIn('id="save-playlist"', controls)
+        self.assertIn('id="delete-playlist"', controls)
         self.assertIn('id="cancel-playlist-selection"', controls)
+        # One shared editor row below the detail card: name, save, delete,
+        # cancel in that order.
+        order = ['id="playlist-name"', 'id="save-playlist"',
+                 'id="delete-playlist"', 'id="cancel-playlist-selection"']
+        positions = [controls.index(marker) for marker in order]
+        self.assertEqual(positions, sorted(positions),
+                         "editor row must read name | save | delete | cancel")
+
+    def test_playlist_editor_sits_below_the_detail_card(self):
+        self.assertLess(HTML.index('id="playlist-detail"'),
+                        HTML.index('id="playlist-save-row"'),
+                        "editor panel must open below the detail card, not above it")
+        self.assertNotIn('id="playlist-detail-favorite"', HTML,
+                         "the separate top delete button must be gone (moved into the editor row)")
 
 
 class GraphScrollTests(unittest.TestCase):
