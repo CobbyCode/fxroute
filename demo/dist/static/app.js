@@ -11543,7 +11543,7 @@ function renderMeasurementPanelInputsSection({ measurementState, current, measur
     if (elements.measurementConvolverSampleRate && !isSelectFocused(elements.measurementConvolverSampleRate)) {
         const selectedInput = getSelectedMeasurementInput();
         const rates = selectedInput?.supportedRates?.length ? selectedInput.supportedRates : [48000];
-        elements.measurementConvolverSampleRate.innerHTML = rates.map(rate => `<option value="${rate}">${formatRateKhz(rate)}</option>`).join('');
+        elements.measurementConvolverSampleRate.innerHTML = rates.map(rate => `<option value="${escapeHtml(rate)}">${formatRateKhz(rate)}</option>`).join('');
         elements.measurementConvolverSampleRate.value = String(measurementState.measurementSampleRate || 48000);
         elements.measurementConvolverSampleRate.disabled = measurementState.startInFlight || !measurementModeReady();
     }
@@ -14616,8 +14616,9 @@ function apiPostJson(url, body) {
 }
 
 function escapeHtml(text) {
-    if (!text) return '';
+    if (text === null || text === undefined) return '';
     // Escapes quotes too so the result is safe inside double-quoted attributes.
+    // Any other value (including numeric 0) is stringified as-is.
     return String(text)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
