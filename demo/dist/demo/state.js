@@ -31,11 +31,10 @@
         saved_station_id: stations.find((saved) => saved.id === station.id)?.id || null,
     }));
 
-    // Provider tabs use a deliberately small queue, but each provider gets
-    // its own tracks from distinct albums/artists (demo/data/library.js), so
-    // switching tracks changes title, artist, album and cover together and
-    // Spotify never shows Qobuz content (and vice versa). Each provider has
-    // its own artwork key space.
+    // Provider tabs draw from the provider catalogs (demo/data/library.js):
+    // distinct albums/artists per provider, so switching tracks changes
+    // title, artist, album and cover together and Spotify never shows Qobuz
+    // content (and vice versa). Each provider has its own artwork key space.
     const spotifyProviderTracks = (lib.spotifyTracks && lib.spotifyTracks.length)
         ? lib.spotifyTracks.map((track) => ({ ...track, source: 'spotify' }))
         : localTracks.slice(0, 4).map((track) => ({
@@ -135,16 +134,54 @@
         };
     }
 
-    setInterval(() => {
+    // Program-envelope meter: instead of uncorrelated random values every
+    // tick, the level chases a slowly-moving program target (correlated L/R
+    // with a small stereo spread) and occasionally a fast near-0 dB
+    // transient that decays back into the program. Attack is fast, release
+    // slower, so the segments move like real audio. The audible offset and
+    // the protection limiter clamp behave exactly as before.
+    const meterEnv = {
+        l: -30, r: -30,          // current smoothed level per channel
+        tL: -30, tR: -30,        // target program level per channel
+        nextPickTs: 0,           // when the program target is re-picked
+        transientTs: 0,          // while nowTs < this, chase the transient
+        transientL: -30,
+        transientR: -30,
+        startTransient: true,    // play start always opens with a hit
+    };
+    function meterTick(nowTs) {
         if (playing && !paused && currentTrack) {
-            // Audible chain, deliberately small and clamped: the base program
-            // sits around -13 dB so Direct stays green, +3 dB approaches the
-            // limiter threshold and +6 dB regularly exceeds it.
-            let levelL = -20 + Math.random() * 14 + dspMeterOffsetDb;
-            let levelR = -20 + Math.random() * 14 + dspMeterOffsetDb;
+            if (nowTs >= meterEnv.nextPickTs) {
+                // New program segment: correlated base level plus a small
+                // stereo spread; occasionally a transient toward 0 dB that
+                // decays over the next tick or two. Playback always starts
+                // with one so the meter comes alive immediately.
+                const base = -23 + Math.random() * 9;      // -23..-14 dB program
+                const spread = (Math.random() - 0.5) * 3;  // +/- 1.5 dB
+                meterEnv.tL = base + spread;
+                meterEnv.tR = base - spread;
+                meterEnv.nextPickTs = nowTs + 1200 + Math.random() * 2200;
+                if (meterEnv.startTransient || Math.random() < 0.22) {
+                    meterEnv.startTransient = false;
+                    meterEnv.transientTs = nowTs + 800 + Math.random() * 800;
+                    meterEnv.transientL = -1 + Math.random() * 3.5;   // -1..+2.5 dB
+                    meterEnv.transientR = meterEnv.transientL + (Math.random() - 0.5) * 2;
+                }
+            }
+            const spiking = nowTs < meterEnv.transientTs;
+            const targetL = spiking ? meterEnv.transientL : meterEnv.tL;
+            const targetR = spiking ? meterEnv.transientR : meterEnv.tR;
+            // Fast attack on transients, gentler attack on program moves,
+            // slow release on the way down.
+            const fL = targetL >= meterEnv.l ? (spiking ? 0.6 : 0.35) : 0.2;
+            const fR = targetR >= meterEnv.r ? (spiking ? 0.6 : 0.35) : 0.2;
+            meterEnv.l += (targetL - meterEnv.l) * fL;
+            meterEnv.r += (targetR - meterEnv.r) * fR;
+            let levelL = meterEnv.l + dspMeterOffsetDb;
+            let levelR = meterEnv.r + dspMeterOffsetDb;
             if (dspLimiterEnabled && Number.isFinite(dspLimiterThresholdDb)) {
-                levelL = Math.min(levelL, dspLimiterThresholdDb + Math.random() * 1.5);
-                levelR = Math.min(levelR, dspLimiterThresholdDb + Math.random() * 1.5);
+                levelL = Math.min(levelL, dspLimiterThresholdDb + 1.2);
+                levelR = Math.min(levelR, dspLimiterThresholdDb + 1.2);
             } else {
                 levelL = Math.min(levelL, 3);
                 levelR = Math.min(levelR, 3);
@@ -156,7 +193,15 @@
             meter.vu_db_l = -60;
             meter.vu_db_r = -60;
             meter.vu_fresh = false;
+            meterEnv.l = -30; meterEnv.r = -30;
+            meterEnv.tL = -30; meterEnv.tR = -30;
+            meterEnv.transientTs = 0;
+            meterEnv.nextPickTs = 0;
+            meterEnv.startTransient = true;
         }
+    }
+    setInterval(() => {
+        meterTick(Date.now());
         window.__demoBroadcast && window.__demoBroadcast('playback_peak_warning', peakSnapshot());
     }, 500);
 
@@ -1362,6 +1407,9 @@
         getMeter() { return meter; },
         getPeak: peakSnapshot,
         peakSnapshot,
+        // Simulation hook: one meter envelope step. The 500 ms interval calls
+        // this in the browser; tests drive it directly.
+        demoMeterTick: meterTick,
         setDspSnapshot,
         // measurement helpers (consumed by routes.js)
         startMeasurement,

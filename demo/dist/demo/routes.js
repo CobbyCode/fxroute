@@ -355,6 +355,61 @@
         ],
     };
 
+    // ── Library scan / share-discovery simulation ───────────────────────
+    // A real box rescans after boot and on refresh; the frontend polls
+    // /api/library/status while `scanning` is true and re-fetches tracks
+    // when it flips to false. The demo replays that cycle: a short scan
+    // with ramping counts, then the settled totals. boot.js arms the scan
+    // lazily (it loads after this file) so the very first status poll after
+    // page load reports scanning; POST /api/library/refresh arms it on
+    // demand. Tests can fast-forward by overriding S.demoScan.durationMs.
+    function armLibraryScan(durationMs) {
+        S.demoScan = {
+            active: true,
+            startedTs: Date.now(),
+            durationMs: Number.isFinite(durationMs) ? durationMs : 1600 + Math.random() * 900,
+            target: activeLib().tracks.length,
+        };
+    }
+    function libraryScanStatus() {
+        const scan = S.demoScan;
+        if (!scan || !scan.active) {
+            return { scanning: false, tracks_found: activeLib().tracks.length, files_seen: 0 };
+        }
+        const elapsed = Date.now() - scan.startedTs;
+        if (elapsed >= scan.durationMs) {
+            S.demoScan = null;
+            return { scanning: false, tracks_found: scan.target, files_seen: Math.round(scan.target * 1.7) };
+        }
+        const progress = Math.min(1, elapsed / scan.durationMs);
+        return {
+            scanning: true,
+            tracks_found: Math.min(scan.target, Math.floor(scan.target * progress)),
+            files_seen: Math.floor(scan.target * progress * 1.7),
+        };
+    }
+    function maybeArmBootScan() {
+        if (window.__demoArmBootScan) {
+            // Latch the boot flag once (boot.js runs after this file, so it
+            // is read lazily on the first API call) and arm the scan.
+            window.__demoArmBootScan = false;
+            S.demoBootArmed = true;
+            if (!S.demoScan) armLibraryScan();
+        }
+    }
+    // The share-discovery flag rides /api/music-libraries: the first call
+    // after boot reports a background rescan (the Settings selector shows
+    // the cached shares and re-fetches once), then it settles.
+    function musicLibrariesPayload() {
+        maybeArmBootScan();
+        let refreshing = false;
+        if (S.demoBootArmed && !S.demoDiscoverySettled) {
+            refreshing = true;
+            S.demoDiscoverySettled = true;
+        }
+        return refreshing ? { ...musicLibraries, discovery_refreshing: true } : musicLibraries;
+    }
+
     // Second demo catalog (demo/data/library2.js): the "NAS Library 1"
     // SMB share. Only the selected library serves the browse surfaces —
     // local and NAS keep serving the main catalog exactly as before.
@@ -1061,8 +1116,14 @@
             return j({ album_id: album.id, items: scored.slice(0, 6).map(s => s.album), source: 'demo', cached: true, error: '' });
         }
         if (p === '/api/smart/top-tracks') return j(activeLib().tracks.slice(0, 40));
-        if (p === '/api/library/status') return j({ scanning: false, tracks_found: activeLib().tracks.length, files_seen: 0 });
-        if (p === '/api/library/refresh' && post) return j({ status: 'ok' });
+        if (p === '/api/library/status') {
+            maybeArmBootScan();
+            return j(libraryScanStatus());
+        }
+        if (p === '/api/library/refresh' && post) {
+            armLibraryScan();
+            return j({ status: 'ok', ...libraryScanStatus() });
+        }
         if (p === '/api/library/folders/delete' && post) return j({ status: 'ok' });
         if (p === '/api/tracks/delete' && post) return j({ status: 'ok' });
         if (p === '/api/tracks/download' && post) {
@@ -1382,7 +1443,7 @@
             }
             return j(sourceOverview());
         }
-        if (p === '/api/music-libraries') return j(musicLibraries);
+        if (p === '/api/music-libraries') return j(musicLibrariesPayload());
         if (p === '/api/music-libraries/manual' && post) {
             const url = String(body.url || '');
             const entry = { id: 'demo-nas-' + Date.now(), label: url.split('/').filter(Boolean).pop() || 'NAS', type: 'smb' };

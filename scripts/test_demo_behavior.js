@@ -412,7 +412,7 @@ const radio = state.getPlayback();
     assert.equal(state.getPlayback().playback_owner, 'spotify');
     assert.ok(spotify.duration > 0);
     assert.ok(Array.isArray(state.spotify.list));
-    assert.ok(state.spotify.list.length <= 4);
+    assert.ok(state.spotify.list.length >= 12, 'Spotify catalog must be stocked (not a 4-track stub)');
     state.spotify.toggleShuffle();
     assert.equal(state.spotify.snapshot().shuffle, true);
     state.spotify.cycleLoop();
@@ -435,7 +435,7 @@ const radio = state.getPlayback();
     assert.equal(state.getPlayback().playback_owner, 'qobuz');
     assert.ok(qobuz.duration > 0);
     assert.ok(Array.isArray(state.qobuz.qlist));
-    assert.ok(state.qobuz.qlist.length <= 4);
+    assert.ok(state.qobuz.qlist.length >= 12, 'Qobuz catalog must be stocked (not a 4-track stub)');
     // Real qbzd stream facts: the footer pill must render the full
     // 'FLAC · 16/24bit · ratekHz' line, not the bare hardware rate.
     assert.equal(qobuz.audio_format, 'flac');

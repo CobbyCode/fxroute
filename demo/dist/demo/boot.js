@@ -8,6 +8,12 @@
 
     window.WebSocket = window.DemoWebSocket;
 
+    // Arm the boot realism cycle: the first /api/library/status and
+    // /api/music-libraries calls after page load replay a short library
+    // scan and a share-discovery rescan (routes.js consumes this flag
+    // lazily, since this file loads after it).
+    window.__demoArmBootScan = true;
+
     // Bridge used by the real frontend: measurement_graph.js calls
     // ui.smoothMeasurementTracePoints on the MeasurementUI module, but the
     // implementation lives in MeasurementDsp. The real frontend modules are
