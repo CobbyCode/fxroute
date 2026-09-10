@@ -704,6 +704,15 @@ const radio = state.getPlayback();
         && tidalAlbum.enrichment.artist.about.length > 40);
     assert.ok(Array.isArray(tidalAlbum.enrichment.similar) && tidalAlbum.enrichment.similar.length === 6);
     assert.ok(tidalAlbum.enrichment.similar.every(item => tidalArtists.some(a => a.id === item.provider_artist_id)));
+    // Album track rows render thumb + subtitle from the track dict itself
+    // (same normalized shape as the real provider boundary:
+    // id/title/artist/album/art_url/duration) — no placeholders.
+    const tidalAlbumTracks = await (await demoFetch('/api/streaming/tidal/albums/t_album_01/tracks')).json();
+    assert.ok(tidalAlbumTracks.length > 0, 'tidal album serves its tracks');
+    for (const track of tidalAlbumTracks) {
+        assert.ok(track.artist && track.album, 'album track carries artist + album');
+        assert.ok(track.art_url && track.art_url.endsWith('.jpg'), 'album track carries its cover: ' + track.title);
+    }
     const unknownTidalArtist = await demoFetch('/api/streaming/tidal/artists/does-not-exist');
     assert.equal(unknownTidalArtist.status, 404);
 

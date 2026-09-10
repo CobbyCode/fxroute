@@ -1344,7 +1344,19 @@
         const tidalAlbumTracks = p.match(/^\/api\/streaming\/tidal\/albums\/([^/]+)\/tracks$/);
         if (tidalAlbumTracks) {
             const album = tidalAlbums().find(a => a.id === tidalAlbumTracks[1]);
-            return j(album ? album.tracks : []);
+            if (!album) return j([]);
+            // Normalized track dicts like the real provider boundary
+            // (id/title/artist/album/art_url/duration): the album track
+            // rows render thumb + subtitle from the track itself.
+            return j(album.tracks.map(t => ({
+                id: t.id,
+                title: t.title,
+                artist: album.artist,
+                album: album.title,
+                duration: t.duration,
+                track_number: t.trackNumber,
+                art_url: album.cover_url,
+            })));
         }
         const tidalArtistDetail = p.match(/^\/api\/streaming\/tidal\/artists\/([^/]+)$/);
         if (tidalArtistDetail) {

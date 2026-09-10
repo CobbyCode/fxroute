@@ -57,10 +57,10 @@
 
     // ── Shared mutable DSP hooks (set by routes.js) ─────────────────────
     // The meter sim applies a single audible offset (dB): preset gain plus
-    // the enabled tone extras. The monitor tap sits before the protection
-    // limiter (and the master volume), exactly like the real post-effect
-    // tap — so the limiter threshold is synced for parity but never moves
-    // the metered level.
+    // the enabled tone extras. The monitor tap sits after the whole chain
+    // including the protection limiter (no master_gain stage exists unless
+    // loudness inserts one) — so an engaged limiter caps the metered level
+    // at its threshold, exactly like the real post-chain tap.
     let dspMeterOffsetDb = 0;
     let dspLimiterThresholdDb = -1;
     let dspLimiterEnabled = true;
