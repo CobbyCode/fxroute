@@ -3731,7 +3731,7 @@ body {
     border-radius: var(--radius-sm);
     padding: 0.6rem;
 }
-.streaming-auth-error { color: var(--error, #f87171); font-size: 0.82rem; margin: 0; }
+.streaming-auth-error { color: var(--danger); font-size: 0.82rem; margin: 0; }
 
 /* Browse (categories / search). Spans the full content column — the same
    width the album/playlist detail header uses — so the toolbar actions and
@@ -8192,9 +8192,6 @@ input[type="number"]::-webkit-outer-spin-button {
             display: none;
         }
 
-        .brand-subtitle {
-            display: none;
-        }
         .track-artist {
             display: block;
             min-width: 0;
@@ -8711,7 +8708,6 @@ input[type="number"]::-webkit-outer-spin-button {
 
 @media (min-width: 601px) and (max-width: 760px) {
     .brand-title { font-size: 1.08rem; }
-    .brand-subtitle { font-size: .62rem; }
 }
 
 @media (max-width: 767px) {
@@ -8824,7 +8820,6 @@ input[type="number"]::-webkit-outer-spin-button {
     .brand-lockup { gap: 0.5rem; }
         .brand-text-block { gap: 0.1rem; }
         .brand-title { font-size: 1.07rem; }
-        .brand-subtitle { font-size: 0.62rem; }
 
 }
 

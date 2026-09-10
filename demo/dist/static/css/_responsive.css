@@ -1189,9 +1189,6 @@
             display: none;
         }
 
-        .brand-subtitle {
-            display: none;
-        }
         .track-artist {
             display: block;
             min-width: 0;
@@ -1708,7 +1705,6 @@
 
 @media (min-width: 601px) and (max-width: 760px) {
     .brand-title { font-size: 1.08rem; }
-    .brand-subtitle { font-size: .62rem; }
 }
 
 @media (max-width: 767px) {
@@ -1821,7 +1817,6 @@
     .brand-lockup { gap: 0.5rem; }
         .brand-text-block { gap: 0.1rem; }
         .brand-title { font-size: 1.07rem; }
-        .brand-subtitle { font-size: 0.62rem; }
 
 }
 

@@ -372,7 +372,7 @@
     border-radius: var(--radius-sm);
     padding: 0.6rem;
 }
-.streaming-auth-error { color: var(--error, #f87171); font-size: 0.82rem; margin: 0; }
+.streaming-auth-error { color: var(--danger); font-size: 0.82rem; margin: 0; }
 
 /* Browse (categories / search). Spans the full content column — the same
    width the album/playlist detail header uses — so the toolbar actions and
