@@ -18,8 +18,8 @@
             id: 'playback',
             tab: null,
             target: '#playback-bar',
-            title: 'Wiedergabe & Live-Meter',
-            text: 'Der Fußbereich steuert die Wiedergabe: Transport, Titel-Info und das Live-Ausgangs-Meter der DSP-Kette. Ein Titel startet gerade mit — die Segmente bewegen sich wie echtes Audiopegel, inklusive gelegentlicher Peaks nahe 0 dB.',
+            title: 'Playback & live meter',
+            text: 'The footer controls playback: transport, track info and the live output meter of the DSP chain. A track is starting right now — the segments move like real audio levels, including the occasional peak near 0 dB.',
             action: 'play-track',
         },
         {
@@ -27,44 +27,44 @@
             tab: '#tab-btn-radio',
             target: '#tab-radio',
             title: 'Radio',
-            text: 'Über 100 Internet-Radiostationen, vom Jazz-Sender bis zur Klassik-Stream. Station im Suchfeld finden, antippen und sofort hören — mit Live-Metadaten (Titel & Interpret) im Now-Playing.',
+            text: '100+ internet radio stations, from jazz to classical streams. Find a station in the search box, tap it and listen instantly — with live metadata (title & artist) in the now-playing area.',
         },
         {
             id: 'library',
             tab: '#tab-btn-library',
             target: '#tab-library',
-            title: 'Musikbibliothek',
-            text: 'Der lokale Katalog — hier „NAS Library 1" — mit Alben, Titeln und Favoriten. Beim Wechsel oder Refresh läuft ein kurzer Scan mit hochlaufenden Zählern, genau wie auf dem echten Gerät.',
+            title: 'Music library',
+            text: 'Your local catalog — “NAS Library 1” here — with albums, tracks and favorites. Switching shares or refreshing runs a short scan with ramping counters, just like on the real device.',
         },
         {
             id: 'dsp',
             tab: '#tab-btn-effects',
             target: '#tab-effects',
-            title: 'DSP & Klangbearbeitung',
-            text: 'Zehn Presets von Direct bis zu den Convolver-Kernels, dazu PEQ, Limiter, Loudness und mehr. Gerade wird der Preset „+6" geladen — beobachte, wie das Ausgangs-Meter im Fußbereich ansteigt und der Limiter greift.',
+            title: 'DSP & audio processing',
+            text: 'Ten presets from Direct to the convolver kernels, plus PEQ, limiter, loudness and more. The “+6” preset is loading right now — watch the output meter in the footer climb and the limiter engage.',
             action: 'preset-plus6',
         },
         {
             id: 'qobuz',
             tab: '#tab-btn-qobuz',
             target: '#tab-qobuz',
-            title: 'Streaming-Provider',
-            text: 'Spotify, Qobuz und TIDAL als echte Remote-Transporte: eigene Kataloge mit Cover-Artwork, Wiedergabe und Qualitäts-Facts — Qobuz streamt zum Beispiel FLAC bis 24 bit / 96 kHz.',
+            title: 'Streaming providers',
+            text: 'Spotify, Qobuz and TIDAL as real remote transports: their own catalogs with cover artwork, playback and quality facts — Qobuz streams FLAC up to 24 bit / 96 kHz, for example.',
         },
         {
             id: 'settings',
             tab: null,
             target: '#settings-panel',
-            title: 'Technische Einstellungen',
-            text: 'Hier verwaltet fxroute die Musikbibliotheken (Lokal, NAS Library 1 & 2 — Wechsel per Dropdown), die Streaming-Provider, Messung, Subwoofer und mehr. Alles ist simuliert, aber der komplette Funktionsumfang ist bedienbar.',
+            title: 'Technical settings',
+            text: 'This is where fxroute manages the music libraries (Local, NAS Library 1 & 2 — switch via the dropdown), streaming providers, measurement, subwoofer and more. Everything is simulated, but the full feature set is usable.',
             action: 'open-settings',
         },
         {
             id: 'summary',
             tab: null,
             target: null,
-            title: 'Das kann fxroute',
-            text: 'fxroute bündelt simulierte Wiedergabe mit Live-Meter, DSP-Kette, Radio, Streaming-Provider, Messung & Raumkorrektur — alles in einer Web-Demo. Viel Spaß beim Ausprobieren!',
+            title: 'What fxroute can do',
+            text: 'fxroute bundles simulated playback with a live meter, DSP chain, radio, streaming providers, measurement & room correction — all in a web demo. Have fun exploring!',
         },
     ];
 
@@ -82,6 +82,7 @@
     var backdrop = null;
     var card = null;
     var highlight = null;
+    var savedTargetStyle = null;
 
     function el(tag, className, text) {
         var node = document.createElement(tag);
@@ -105,10 +106,7 @@
         currentIndex = index;
 
         // Clean up the previous highlight.
-        if (highlight) {
-            highlight.classList.remove('demo-tour-target');
-            highlight = null;
-        }
+        unhighlight();
         if (step.tab) {
             var tabBtn = document.querySelector(step.tab);
             if (tabBtn && typeof tabBtn.click === 'function') tabBtn.click();
@@ -117,26 +115,25 @@
 
         var target = step.target ? document.querySelector(step.target) : null;
         if (target) {
-            target.classList.add('demo-tour-target');
-            highlight = target;
+            highlightTarget(target);
             if (typeof target.scrollIntoView === 'function') {
                 target.scrollIntoView({ block: 'center', behavior: 'smooth' });
             }
         }
 
         card.textContent = '';
-        card.appendChild(el('div', 'demo-tour-progress', 'Schritt ' + (index + 1) + ' / ' + STEPS.length));
+        card.appendChild(el('div', 'demo-tour-progress', 'Step ' + (index + 1) + ' / ' + STEPS.length));
         card.appendChild(el('h3', 'demo-tour-title', step.title));
         card.appendChild(el('p', 'demo-tour-text', step.text));
 
         var actions = el('div', 'demo-tour-actions');
         if (index > 0) {
-            actions.appendChild(button('Zurück', 'demo-tour-btn demo-tour-back', function () {
+            actions.appendChild(button('Back', 'demo-tour-btn demo-tour-back', function () {
                 renderStep(index - 1);
             }));
         }
-        actions.appendChild(button('Überspringen', 'demo-tour-btn demo-tour-skip', finish));
-        var nextLabel = index === STEPS.length - 1 ? 'Fertig' : 'Weiter';
+        actions.appendChild(button('Skip', 'demo-tour-btn demo-tour-skip', finish));
+        var nextLabel = index === STEPS.length - 1 ? 'Done' : 'Next';
         actions.appendChild(button(nextLabel, 'demo-tour-btn demo-tour-next', function () {
             if (index + 1 < STEPS.length) renderStep(index + 1);
             else finish();
@@ -186,24 +183,58 @@
         card.style.top = Math.round(Math.max(pad, top)) + 'px';
     }
 
+    // The highlight must never change the element's layout: raise only the
+    // stacking order, and only position elements that are not positioned
+    // already (the playback footer is position: fixed and must stay so).
+    function highlightTarget(target) {
+        savedTargetStyle = {
+            position: target.style.position,
+            zIndex: target.style.zIndex,
+        };
+        var computed = (typeof window.getComputedStyle === 'function')
+            ? window.getComputedStyle(target) : null;
+        var pos = computed ? computed.position : '';
+        if (!pos || pos === 'static') target.style.position = 'relative';
+        target.style.zIndex = '1200';
+        target.classList.add('demo-tour-target');
+        highlight = target;
+    }
+    function unhighlight() {
+        if (!highlight) return;
+        highlight.classList.remove('demo-tour-target');
+        if (savedTargetStyle) {
+            highlight.style.position = savedTargetStyle.position;
+            highlight.style.zIndex = savedTargetStyle.zIndex;
+            savedTargetStyle = null;
+        }
+        highlight = null;
+    }
+
+    // Demo actions must never be able to break the tour: a failing action
+    // (e.g. a broadcast error while starting a track) is swallowed so the
+    // step still renders.
     function runAction(action) {
-        var S = window.FXROUTE_DEMO_STATE;
-        if (action === 'play-track') {
-            // Only start if nothing is playing yet, so an already live demo
-            // is not disturbed; the meter animates either way.
-            if (S && typeof S.getPlayback === 'function' && !S.getPlayback().playing
-                && typeof S.playLocal === 'function' && S.localTracks && S.localTracks.length) {
-                S.playLocal(S.localTracks[0].id);
+        try {
+            var S = window.FXROUTE_DEMO_STATE;
+            if (action === 'play-track') {
+                // Only start if nothing is playing yet, so an already live
+                // demo is not disturbed; the meter animates either way.
+                if (S && typeof S.getPlayback === 'function' && !S.getPlayback().playing
+                    && typeof S.playLocal === 'function' && S.localTracks && S.localTracks.length) {
+                    S.playLocal(S.localTracks[0].id);
+                }
+            } else if (action === 'preset-plus6') {
+                // Moves the audible level so the meter visibly jumps.
+                post('/api/dsp/presets/load', { preset_name: '+6' });
+            } else if (action === 'open-settings') {
+                var panel = document.querySelector('#settings-panel');
+                if (panel && panel.classList.contains('hidden')) {
+                    var openBtn = document.querySelector('#open-settings');
+                    if (openBtn) openBtn.click();
+                }
             }
-        } else if (action === 'preset-plus6') {
-            // Moves the audible level so the meter visibly jumps.
-            post('/api/dsp/presets/load', { preset_name: '+6' });
-        } else if (action === 'open-settings') {
-            var panel = document.querySelector('#settings-panel');
-            if (panel && panel.classList.contains('hidden')) {
-                var openBtn = document.querySelector('#open-settings');
-                if (openBtn) openBtn.click();
-            }
+        } catch (err) {
+            // Swallow: the tour itself must stay usable.
         }
     }
 
@@ -225,10 +256,7 @@
             var closeBtn = document.querySelector('#close-settings');
             if (closeBtn) closeBtn.click();
         }
-        if (highlight) {
-            highlight.classList.remove('demo-tour-target');
-            highlight = null;
-        }
+        unhighlight();
         if (backdrop && backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
         backdrop = null;
         card = null;

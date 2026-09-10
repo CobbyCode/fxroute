@@ -41,7 +41,7 @@ DEFAULT_DIST = DEMO_ROOT / "demo" / "dist"
 
 DEMO_TITLE = "FXRoute Web-Demo (simulated)"
 
-DEMO_STYLES = """    <link rel="stylesheet" href="./demo/demo.css?v=2">
+DEMO_STYLES = """    <link rel="stylesheet" href="./demo/demo.css?v=3">
 """
 
 DEMO_PRE_SCRIPTS = """    <!-- Demo transport: must load before the real app scripts -->
@@ -53,8 +53,8 @@ DEMO_PRE_SCRIPTS = """    <!-- Demo transport: must load before the real app scr
     <script src="./demo/routes.js?v=15"></script>
     <script src="./demo/streaming.js?v=1"></script>
     <script src="./demo/ws.js?v=1"></script>
-    <script src="./demo/boot.js?v=3"></script>
-    <script src="./demo/tour.js?v=1"></script>
+    <script src="./demo/boot.js?v=4"></script>
+    <script src="./demo/tour.js?v=2"></script>
 """
 
 # Files in the canonical static/ tree that are deliberately NOT mirrored

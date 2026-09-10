@@ -77,9 +77,9 @@
     backdrop-filter: blur(2px);
     pointer-events: none;   /* the tour only interacts through its card */
 }
+/* Visual highlight only: stacking order is applied inline so the tour
+   never changes the target's layout (e.g. the fixed playback footer). */
 .demo-tour-target {
-    position: relative;
-    z-index: 1200;
     outline: 2px solid var(--accent, #6ee7b7);
     outline-offset: 3px;
     border-radius: 10px;
@@ -88,6 +88,7 @@
 .demo-tour-card {
     position: fixed;
     z-index: 1150;
+    pointer-events: auto;   /* the card must not inherit the backdrop's none */
     width: min(360px, calc(100vw - 28px));
     padding: 16px 18px 14px;
     border-radius: 14px;

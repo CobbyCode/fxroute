@@ -75,6 +75,20 @@ function selectorExistsIn(selector, html) {
     assert.ok(!tourSource.includes('innerHTML'), 'tour must not build DOM via innerHTML');
     assert.ok(tourSource.includes('notour'), 'tour must honor the ?notour opt-out');
 
+    // The whole demo UI is English — the tour copy must be too (the card
+    // labels as well as every step text).
+    const tourCopy = tour.steps.map((s) => `${s.title} ${s.text}`).join(' ') + ' ' + tourSource;
+    for (const german of ['Wiedergabe', 'Schritt', 'Zurück', 'Überspringen', 'Fertig', 'Weiter', 'Musikbibliothek', 'Einstellungen']) {
+        assert.ok(!tourCopy.includes(german), `tour must not contain German copy: ${german}`);
+    }
+
+    // Card buttons must stay clickable: the card is a child of the backdrop
+    // (pointer-events: none) and must opt back in explicitly.
+    const cssSource = fs.readFileSync(path.join(root, 'demo', 'demo.css'), 'utf8');
+    const cardRule = cssSource.split('.demo-tour-card')[1] || '';
+    assert.ok(cardRule.includes('pointer-events: auto'),
+        'demo-tour-card must re-enable pointer events (buttons unclickable otherwise)');
+
     // Actions must reach the real demo hooks: state API for playback and
     // the interceptor for the DSP preset switch.
     const actionLines = [tourSource, bootSource].join('\n');
