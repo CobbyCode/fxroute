@@ -62,18 +62,19 @@
     // pre-matrix, full-band stereo — system master and crossover never
     // appear here. An engaged limiter therefore caps the metered level at
     // its threshold; disengaged, hot peaks pass unclipped.
+    // The demo exposes no control for the limiter threshold, so the cap
+    // uses the stock value. With the limiter disengaged, hot peaks pass
+    // unclipped and only the display ceiling bounds them.
+    const STOCK_LIMITER_THRESHOLD_DB = -1;
+    const DISPLAY_CEILING_DB = 3;
     let dspMeterOffsetDb = 0;
-    let dspLimiterThresholdDb = -1;
     let dspLimiterEnabled = true;
     let dspExtras = {};
     let dspPresets = [];
     let dspActivePreset = 'Direct';
 
-    function setDspSnapshot({ meterOffsetDb, limiterThresholdDb, limiterEnabled, extras, presets, activePreset }) {
+    function setDspSnapshot({ meterOffsetDb, limiterEnabled, extras, presets, activePreset }) {
         dspMeterOffsetDb = Number(meterOffsetDb || 0);
-        if (limiterThresholdDb !== undefined && limiterThresholdDb !== null) {
-            dspLimiterThresholdDb = Number(limiterThresholdDb);
-        }
         if (limiterEnabled !== undefined && limiterEnabled !== null) {
             dspLimiterEnabled = !!limiterEnabled;
         }
@@ -245,8 +246,7 @@
             // The display ceiling only binds with the limiter disengaged.
             // Raw peaks ride the instantaneous program plus a music-like
             // crest factor, feeding the independent peak detector below.
-            const capDb = (dspLimiterEnabled && Number.isFinite(dspLimiterThresholdDb))
-                ? dspLimiterThresholdDb : 3;
+            const capDb = dspLimiterEnabled ? STOCK_LIMITER_THRESHOLD_DB : DISPLAY_CEILING_DB;
             peakTickNow = nowTs;
             peakDetect(nowTs, Math.min(targetL + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, capDb), true);
             peakDetect(nowTs, Math.min(targetR + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, capDb), false);

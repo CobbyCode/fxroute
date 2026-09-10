@@ -625,12 +625,11 @@ const radio = state.getPlayback();
     assert.match(lrPoll.message, /L\/R repeat/);
 
     // ── Playback meter simulation contract ──────────────────────────────
-    // Post-limiter monitor tap like the live system: the VU follows the
-    // audible chain (preset gain, headroom cut, autogain/loudness/bass)
-    // through the protection limiter, so an engaged limiter caps the
-    // visible level at its threshold and raw overs never reach 0 dBFS.
-    // Peak detection is an independent fast path (raw overs latch a
-    // hold), so hand-set VU levels alone never trip detection.
+    // Here: hand-set VU levels alone never trip the peak detector (holds
+    // latch only from the independent raw-peak path), and preset/loudness
+    // changes round-trip through the demo DSP API. The post-limiter tap
+    // itself (an engaged limiter caps the visible level) is covered by
+    // scripts/test_demo_meter_and_scan.js.
     state.playLocal(state.localTracks[0].id);
     const meterOf = () => state.getPeak();
     await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: 'Direct' }) })).json();

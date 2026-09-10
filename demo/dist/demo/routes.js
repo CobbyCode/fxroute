@@ -87,11 +87,9 @@
     }
 
     function syncDspToState() {
-        const limiter = dspExtras.limiter || {};
         S.setDspSnapshot({
             meterOffsetDb: demoMeterOffsetDb(),
-            limiterThresholdDb: Number(limiter.params && limiter.params.thresholdDb) || -1,
-            limiterEnabled: !!limiter.enabled,
+            limiterEnabled: !!(dspExtras.limiter && dspExtras.limiter.enabled),
             extras: dspExtras,
             presets: dspPresets,
             activePreset: dspActivePreset,

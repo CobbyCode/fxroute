@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Demo realism contracts:
 // 1. The meter simulation follows a program envelope (correlated L/R,
-//    smoothed attack/release) with a real-analog monitor tap: pre-limiter
-//    (limiter/volume never move the meter), post-headroom, plus an
-//    independent fast peak path (raw overs latch a hold, never derived
-//    from the smoothed VU).
+//    smoothed attack/release) with a real-analog monitor tap: post-chain
+//    behind the protection limiter (the live post-limiter tap), so an
+//    engaged limiter caps the visible level while volume never moves the
+//    meter, plus an independent fast peak path fed by the same tapped
+//    signal (raw overs latch a hold, never derived from the smoothed VU).
 // 2. The library scan/share-discovery cycle: a boot-armed scan reports
 //    `scanning: true` with ramping counts and then settles, and POST
 //    /api/library/refresh arms the same cycle on demand. The share
@@ -68,7 +69,7 @@ function makeDemoContext(bootArmed) {
         assert.ok(Number.isFinite(s.vu_db_l) && Number.isFinite(s.vu_db_r), 'meter levels must be finite');
         assert.ok(s.vu_db_l >= -60 && s.vu_db_r >= -60, 'meter levels must not go below the floor');
         assert.ok(s.vu_db_l <= 3 && s.vu_db_r <= 3,
-            'levels must stay inside the display ceiling (the tap is pre-limiter)');
+            'levels must stay inside the display bounds');
         assert.ok(Math.abs(s.vu_db_l - s.vu_db_r) <= 4.5,
             'L/R must stay correlated (program spread + transient decorrelation)');
         assert.equal(s.vu_fresh, true, 'fresh flag must stay set while playing');
@@ -122,8 +123,12 @@ function makeDemoContext(bootArmed) {
     const baseMean = await meterMean(null);
     const hrMean = await meterMean((post) => post('/api/dsp/extras', { headroom_enabled: true, headroom_gain_db: -6 }));
     assert.ok(hrMean - baseMean < -3, `headroom -6 dB must move the VU (delta ${hrMean - baseMean})`);
+    // The default program never reaches the stock limiter threshold, so
+    // toggling the limiter leaves the mean unchanged; the cap itself is
+    // asserted on a hot master below.
     const limMean = await meterMean((post) => post('/api/dsp/extras', { limiter_enabled: false }));
-    assert.ok(Math.abs(limMean - baseMean) < 2, `limiter toggle must not move the VU (delta ${limMean - baseMean})`);
+    assert.ok(Math.abs(limMean - baseMean) < 2,
+        `default program stays below the limiter threshold (delta ${limMean - baseMean})`);
     const plusMean = await meterMean((post) => post('/api/dsp/presets/load', { preset_name: '+6' }));
     assert.ok(plusMean - baseMean > 3, '+6 preset must lift the VU');
 
