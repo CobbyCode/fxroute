@@ -55,6 +55,7 @@ function makeEl() {
                 stopPropagation() {},
             });
         },
+        focus() {},
         setAttribute(name, value) { el[name] = value; },
         getAttribute(name) { return el[name] != null ? String(el[name]) : null; },
         querySelector(sel) {
@@ -599,6 +600,25 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-results'),
         'Escape must clear the search back to the browse section');
+
+    // The clear X mirrors the local library field: always rendered, dimmed
+    // while empty, clearing back to browse on click.
+    assert.ok(content.innerHTML.includes('id="tidal-search-clear"'),
+        'search bar must render the always-visible clear button');
+    const clear = content.querySelector('#tidal-search-clear');
+    input.value = '';
+    input.dispatch('input');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(clear.disabled, true, 'clear must be dimmed while the field is empty');
+    input.value = 'daft punk';
+    input.dispatch('input');
+    assert.equal(clear.disabled, false, 'clear must enable once text is entered');
+    clear.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(input.value, '', 'clear click must empty the field');
+    assert.equal(clear.disabled, true, 'clear must dim again after clearing');
+    assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-results'),
+        'clear click must return to the browse section');
 
     // Browse category switching works across all four tabs.
     const tabs = content.querySelectorAll('.view-tab');

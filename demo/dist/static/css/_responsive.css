@@ -1502,7 +1502,8 @@
         .tidal-subbar { gap: 0.35rem; }
         .tidal-subbar .streaming-search { width: 100%; }
         .streaming-search-row { flex-wrap: nowrap; }
-        .streaming-search-row .streaming-search-input { flex: 1 1 0; width: 100%; }
+        .streaming-search-row .streaming-search-field { flex: 1 1 0; width: 100%; }
+        .streaming-search-row .streaming-search-field .streaming-search-input { width: 100%; }
         .album-detail-header,
         .streaming-detail-header {
             grid-template-columns: auto minmax(0, 1fr);

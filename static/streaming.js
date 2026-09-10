@@ -1119,7 +1119,10 @@
                     '</div>' +
                     '<div class="streaming-search">' +
                         '<div class="streaming-search-row">' +
-                            '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search albums, tracks, artists, playlists…" data-placeholder-full="Search albums, tracks, artists, playlists…" data-placeholder-compact="Search…" autocomplete="off" />' +
+                            '<div class="streaming-search-field">' +
+                                '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search albums, tracks, artists, playlists…" data-placeholder-full="Search albums, tracks, artists, playlists…" data-placeholder-compact="Search…" autocomplete="off" />' +
+                                '<button type="button" class="streaming-search-clear" id="tidal-search-clear" aria-label="Clear TIDAL search" disabled>×</button>' +
+                            '</div>' +
                         '</div>' +
                     '</div>' +
                 '</div>' +
@@ -1136,6 +1139,7 @@
         updateTidalPlaylistSaveRow();
         const input = content.querySelector('#tidal-search-input');
         if (input && state.tidal.searchExecuted) input.value = state.tidal.searchQuery;
+        setTidalSearchClearDisabled(input, content.querySelector('#tidal-search-clear'));
         const tabs = content.querySelectorAll('.tidal-subbar .view-tab[data-browse]');
         tabs.forEach((tab) => tab.addEventListener('click', () => {
             tabs.forEach((t) => t.classList.toggle('is-active', t === tab));
@@ -1183,6 +1187,8 @@
 
     function bindTidalSearchBar(root) {
         const input = root.querySelector('#tidal-search-input');
+        const clear = root.querySelector('#tidal-search-clear');
+        const syncClear = () => setTidalSearchClearDisabled(input, clear);
         const updatePlaceholder = () => {
             const compact = window.matchMedia && window.matchMedia('(max-width: 600px)').matches;
             input.placeholder = compact
@@ -1224,7 +1230,7 @@
                 void executeTidalSearch(state.tidal.searchResultType);
             }, TIDAL_SEARCH_DEBOUNCE_MS);
         };
-        input.addEventListener('input', () => startSearch(false));
+        input.addEventListener('input', () => { syncClear(); startSearch(false); });
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -1234,6 +1240,21 @@
                 clearTidalSearch();
             }
         });
+        if (clear) clear.addEventListener('click', () => {
+            input.value = '';
+            syncClear();
+            clearTidalSearch();
+            input.focus();
+        });
+        syncClear();
+    }
+
+    // Clear affordance mirrors the local library search field: the X is
+    // always rendered and only dimmed while the field is empty, instead of
+    // appearing on first input like the native search cancel button
+    // (which stays hidden so there is exactly one clear control).
+    function setTidalSearchClearDisabled(input, clear) {
+        if (clear) clear.disabled = !((input && input.value || '').trim());
     }
 
     function resetTidalSearch() {
@@ -1246,6 +1267,7 @@
         state.tidal.searchInFlight = false;
         const input = document.getElementById('tidal-search-input');
         if (input) input.value = '';
+        setTidalSearchClearDisabled(input, document.getElementById('tidal-search-clear'));
     }
 
     function clearTidalSearch() {
