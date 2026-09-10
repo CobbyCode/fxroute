@@ -46,10 +46,11 @@ DEMO_STYLES = """    <link rel="stylesheet" href="./demo/demo.css?v=1">
 
 DEMO_PRE_SCRIPTS = """    <!-- Demo transport: must load before the real app scripts -->
     <script src="./demo/data/library.js?v=4"></script>
+    <script src="./demo/data/library2.js?v=1"></script>
     <script src="./demo/data/radio.js?v=1"></script>
     <script src="./demo/data/measurements.js?v=1"></script>
     <script src="./demo/state.js?v=12"></script>
-    <script src="./demo/routes.js?v=10"></script>
+    <script src="./demo/routes.js?v=11"></script>
     <script src="./demo/streaming.js?v=1"></script>
     <script src="./demo/ws.js?v=1"></script>
     <script src="./demo/boot.js?v=1"></script>
@@ -76,7 +77,7 @@ APP_SCRIPT_RE = re.compile(
     re.MULTILINE,
 )
 DEMO_SCRIPT_RE = re.compile(
-    r'^\s*<script src="/demo/(?:data/library|data/radio|data/measurements|state|routes|streaming|ws|boot)\.js\?v=[^"]*"></script>\s*$',
+    r'^\s*<script src="/demo/(?:data/library2?|data/radio|data/measurements|state|routes|streaming|ws|boot)\.js\?v=[^"]*"></script>\s*$',
     re.MULTILINE,
 )
 

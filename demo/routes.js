@@ -344,8 +344,27 @@
         libraries: [
             { id: 'local', label: 'Local', type: 'local' },
             { id: 'demo-nas', label: 'NAS Music', type: 'smb' },
+            { id: 'demo-library-2', label: 'Demo Library 2', type: 'smb' },
         ],
     };
+
+    // Second demo catalog (demo/data/library2.js): the "Demo Library 2"
+    // SMB share. Only the selected library serves the browse surfaces —
+    // local and NAS keep serving the main catalog exactly as before.
+    const lib2 = window.FXROUTE_DEMO_LIBRARY2 || { tracks: [], albums: [] };
+    function activeLib() {
+        return musicLibraries.active_id === 'demo-library-2' ? lib2 : lib;
+    }
+    function findAlbum(id) {
+        const active = activeLib();
+        const other = active === lib ? lib2 : lib;
+        return active.albums.find(a => a.id === id) || other.albums.find(a => a.id === id);
+    }
+    function findTrack(id) {
+        const active = activeLib();
+        const other = active === lib ? lib2 : lib;
+        return active.tracks.find(t => t.id === id) || other.tracks.find(t => t.id === id);
+    }
 
     // ── Measurements (saved list seeded with real fixtures) ─────────────
     const savedMeasurements = S.getSavedMeasurements().slice();
@@ -848,11 +867,12 @@
             return j({ station: { id, title: (cat && cat.title) || uuid } });
         }
 
-        // ── Library ─────────────────────────────────────────────────────
-        if (p === '/api/tracks') return j(lib.tracks);
+        // ── Library (served from the selected library catalog) ──────────
+        if (p === '/api/tracks') return j(activeLib().tracks);
         if (p === '/api/albums') {
+            const catalog = activeLib().albums;
             const q = String(query.get('query') || '').toLowerCase();
-            return j(q ? lib.albums.filter(a => (a.name + ' ' + a.artist + ' ' + (a.genres || []).join(' ')).toLowerCase().includes(q)) : lib.albums);
+            return j(q ? catalog.filter(a => (a.name + ' ' + a.artist + ' ' + (a.genres || []).join(' ')).toLowerCase().includes(q)) : catalog);
         }
         if (p === '/api/playlists') {
             if (post) {
@@ -878,52 +898,53 @@
         }
         const albumTracksMatch = p.match(/^\/api\/albums\/([^/]+)\/tracks$/);
         if (albumTracksMatch) {
-            const album = lib.albums.find(a => a.id === albumTracksMatch[1]);
+            const album = findAlbum(albumTracksMatch[1]);
             if (!album) return err('Album not found');
-            return j(lib.tracks.filter(t => t.album === album.name));
+            return j(activeLib().tracks.filter(t => t.album === album.name && (t.artist === album.artist || t.album_artist === album.artist)));
         }
         const albumFavMatch = p.match(/^\/api\/albums\/([^/]+)\/favorite$/);
         if (albumFavMatch) {
-            const album = lib.albums.find(a => a.id === albumFavMatch[1]);
+            const album = findAlbum(albumFavMatch[1]);
             if (!album) return err('Album not found');
             album.favorite = !!body.favorite;
             return j({ status: 'ok', album_id: album.id, favorite: album.favorite });
         }
         const trackFavMatch = p.match(/^\/api\/tracks\/([^/]+)\/favorite$/);
         if (trackFavMatch) {
-            const track = lib.tracks.find(t => t.id === trackFavMatch[1]);
+            const track = findTrack(trackFavMatch[1]);
             if (!track) return err('Track not found');
             track.favorite = !!body.favorite;
             return j({ status: 'ok', track_id: track.id, favorite: track.favorite });
         }
         const albumCoverMatch = p.match(/^\/api\/albums\/([^/]+)\/cover$/);
         if (albumCoverMatch) {
-            const album = lib.albums.find(a => a.id === albumCoverMatch[1]);
+            const album = findAlbum(albumCoverMatch[1]);
             const redirect = album ? album.coverUrl : lib.demoImage('album:' + (albumCoverMatch[1] || 'x'));
             return j({ redirect });
         }
         const trackCoverMatch = p.match(/^\/api\/tracks\/cover\/([^/]+)$/);
         if (trackCoverMatch) {
-            const track = lib.tracks.find(t => t.id === trackCoverMatch[1]);
+            const track = findTrack(trackCoverMatch[1]);
             return j({ redirect: track ? track.cover_url : lib.demoImage('track:' + (trackCoverMatch[1] || 'x')) });
         }
         const trackCoverInfoMatch = p.match(/^\/api\/tracks\/cover-info\/([^/]+)$/);
         if (trackCoverInfoMatch) {
-            const track = lib.tracks.find(t => t.id === trackCoverInfoMatch[1]);
+            const track = findTrack(trackCoverInfoMatch[1]);
             return j({ cover_url: track ? track.cover_url : '', cover_available: !!track });
         }
         const albumDiscover = p.match(/^\/api\/albums\/([^/]+)\/discover$/);
         if (albumDiscover) {
             // Same contract as the backend (ListenBrainz artist-seeded
-            // suggestions, max 6): reuse the demo library itself — same
+            // suggestions, max 6): reuse the active demo catalog — same
             // genre first, then same decade, then the rest in catalog
             // order. Returns full album entries so the real UI renders
             // identical tiles, no demo-only recommendation logic.
-            const album = lib.albums.find(a => a.id === albumDiscover[1]);
+            const catalog = activeLib().albums;
+            const album = catalog.find(a => a.id === albumDiscover[1]);
             if (!album) return err('Album not found');
             const genre = (album.genres || [])[0] || '';
             const decade = Math.floor(Number(album.year || 0) / 10);
-            const scored = lib.albums
+            const scored = catalog
                 .filter(a => a.id !== album.id)
                 .map(a => {
                     const sameGenre = genre && (a.genres || []).includes(genre) ? 0 : 1;
@@ -934,8 +955,8 @@
                 .sort((x, y) => x.score - y.score);
             return j({ album_id: album.id, items: scored.slice(0, 6).map(s => s.album), source: 'demo', cached: true, error: '' });
         }
-        if (p === '/api/smart/top-tracks') return j(lib.tracks.slice(0, 40));
-        if (p === '/api/library/status') return j({ scanning: false, tracks_found: lib.tracks.length, files_seen: 0 });
+        if (p === '/api/smart/top-tracks') return j(activeLib().tracks.slice(0, 40));
+        if (p === '/api/library/status') return j({ scanning: false, tracks_found: activeLib().tracks.length, files_seen: 0 });
         if (p === '/api/library/refresh' && post) return j({ status: 'ok' });
         if (p === '/api/library/folders/delete' && post) return j({ status: 'ok' });
         if (p === '/api/tracks/delete' && post) return j({ status: 'ok' });
