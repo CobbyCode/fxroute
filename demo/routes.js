@@ -214,6 +214,129 @@
     }
     S.onSourceChanged = followSourceGraphRate;
 
+    // ── Audio source model ──────────────────────────────────────────
+    // Mirrors the real stereo-pair abstraction
+    // (audio/samplerate/overview.py + audio/external_input.py):
+    // multichannel capture interfaces are offered as adjacent stereo
+    // pairs (Input 1-2, Input 3-4, ...), never as single mono channels
+    // and never duplicated onto both sides. Single-pair devices keep
+    // the plain device label, exactly like the real overview.
+    // Module scope: the fetch handler below must observe mutations
+    // across requests (selected pair, active mode).
+    const SOURCE_INPUTS = [
+        {
+            id: 101,
+            key: 'alsa_input.usb-MOTU_M4-00.analog-surround-40::pair:1-2',
+            source_key: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+            name: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+            device_label: 'MOTU M4',
+            port_key: null,
+            port_label: null,
+            label: 'MOTU M4 · Input 1–2',
+            sample_spec: 's32le 4ch 48000Hz',
+            channels: 4,
+            channel_map: ['front-left', 'front-right', 'rear-left', 'rear-right'],
+            active_rate: 48000,
+            state: 'RUNNING',
+            is_default: true,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 0,
+            pair_count: 2,
+            pair_label: 'Input 1–2',
+            pair_channels: [1, 2],
+            left_channel: 'FL',
+            right_channel: 'FR',
+        },
+        {
+            id: 102,
+            key: 'alsa_input.usb-MOTU_M4-00.analog-surround-40::pair:3-4',
+            source_key: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+            name: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+            device_label: 'MOTU M4',
+            port_key: null,
+            port_label: null,
+            label: 'MOTU M4 · Input 3–4',
+            sample_spec: 's32le 4ch 48000Hz',
+            channels: 4,
+            channel_map: ['front-left', 'front-right', 'rear-left', 'rear-right'],
+            active_rate: 48000,
+            state: 'RUNNING',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 1,
+            pair_count: 2,
+            pair_label: 'Input 3–4',
+            pair_channels: [3, 4],
+            left_channel: 'RL',
+            right_channel: 'RR',
+        },
+        {
+            id: 103,
+            key: 'alsa_input.usb-DemoSPDIF-00.iec958-stereo',
+            source_key: 'alsa_input.usb-DemoSPDIF-00.iec958-stereo',
+            name: 'alsa_input.usb-DemoSPDIF-00.iec958-stereo',
+            device_label: 'USB S/PDIF',
+            port_key: null,
+            port_label: null,
+            label: 'USB S/PDIF · Input',
+            sample_spec: 's32le 2ch 48000Hz',
+            channels: 2,
+            channel_map: ['front-left', 'front-right'],
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 0,
+            pair_count: 1,
+            pair_label: 'Input 1–2',
+            pair_channels: [1, 2],
+            left_channel: 'FL',
+            right_channel: 'FR',
+        },
+    ];
+    // A connected phone streaming over A2DP: selecting bluetooth-input
+    // in the demo lands on a genuinely active source (streaming state,
+    // connected device, codec), not just a bare mode name.
+    const BLUETOOTH_SOURCE = {
+        available: true,
+        selectable: true,
+        state: 'streaming',
+        receiver_enabled: true,
+        discoverable: true,
+        pairable: true,
+        connected_device: 'Demo Phone',
+        active_codec: 'aac',
+        active_rate: 48000,
+        notes: [],
+    };
+    let sourceMode = 'app-playback';
+    let selectedSourceInputKey = SOURCE_INPUTS[0].key;
+    function sourceInputByKey(key) {
+        return SOURCE_INPUTS.find((item) => item.key === String(key || '')) || null;
+    }
+    function sourceOverview() {
+        const selected = sourceInputByKey(selectedSourceInputKey) || SOURCE_INPUTS[0];
+        const withSelected = (item) => ({ ...item, is_selected: item.key === selected.key });
+        return {
+            mode: sourceMode,
+            modes: [
+                { key: 'app-playback', label: 'App playback', selectable: true },
+                { key: 'external-input', label: 'External input', selectable: true },
+                { key: 'bluetooth-input', label: 'Bluetooth input', selectable: true },
+            ],
+            default_input: withSelected(SOURCE_INPUTS[0]),
+            selected_input: withSelected(selected),
+            current_input: withSelected(selected),
+            inputs: SOURCE_INPUTS.map(withSelected),
+            bluetooth: { ...BLUETOOTH_SOURCE },
+            notes: [],
+            pending: false,
+        };
+    }
+
     // ── Music libraries ─────────────────────────────────────────────────
     const musicLibraries = {
         active_id: 'local',
@@ -1096,8 +1219,33 @@
             return j(samplerate);
         }
         if (p === '/api/audio/source-mode') {
-            if (post) return j({ mode: 'app-playback', modes: [{ key: 'app-playback', label: 'App playback', selectable: true }], default_input: null, selected_input: null, current_input: null, inputs: [], bluetooth: {}, notes: [], pending: false });
-            return j({ mode: 'app-playback', modes: [{ key: 'app-playback', label: 'App playback', selectable: true }], default_input: null, selected_input: null, current_input: null, inputs: [], bluetooth: {}, notes: [], pending: false });
+            if (post) {
+                const mode = String(body.mode || '');
+                const inputKey = body.inputKey != null && body.inputKey !== ''
+                    ? String(body.inputKey)
+                    : (body.input_key != null ? String(body.input_key) : '');
+                if (mode === 'bluetooth-input') {
+                    // Switching sources stops app playback, like the real
+                    // backend pausing every app renderer for external input.
+                    S.stop();
+                    sourceMode = mode;
+                    return j(sourceOverview());
+                }
+                if (mode === 'external-input') {
+                    const input = (inputKey && sourceInputByKey(inputKey))
+                        || sourceInputByKey(selectedSourceInputKey)
+                        || SOURCE_INPUTS[0];
+                    if (inputKey && !sourceInputByKey(inputKey)) return err('Unknown input: ' + inputKey, 400);
+                    selectedSourceInputKey = input.key;
+                    S.stop();
+                    sourceMode = mode;
+                    return j(sourceOverview());
+                }
+                sourceMode = 'app-playback';
+                if (inputKey && sourceInputByKey(inputKey)) selectedSourceInputKey = inputKey;
+                return j(sourceOverview());
+            }
+            return j(sourceOverview());
         }
         if (p === '/api/music-libraries') return j(musicLibraries);
         if (p === '/api/music-libraries/manual' && post) {

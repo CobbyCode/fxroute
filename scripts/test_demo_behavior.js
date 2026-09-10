@@ -273,6 +273,54 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     assert.equal(JSON.stringify(suspend), JSON.stringify({ ok: true, status: 'simulated', action: 'suspend' }));
     assert.equal(JSON.stringify(powerOff), JSON.stringify({ ok: true, status: 'simulated', action: 'power-off' }));
 
+    // ── Source mode: stereo-pair input simulation ────────────────────
+    // Mirrors the real stereo-pair abstraction: the MOTU M4 multichannel
+    // interface is offered as adjacent stereo pairs (never mono channels),
+    // bluetooth-input lands on a genuinely active streaming source, and
+    // switching modes/inputs keeps the overview consistent.
+    const sourceGet = () => demoFetch('/api/audio/source-mode').then((r) => r.json());
+    const sourcePost = (payload) => demoFetch('/api/audio/source-mode',
+        { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.json().then((d) => ({ status: r.status, ok: r.ok, data: d })));
+    const initialSource = await sourceGet();
+    assert.equal(initialSource.mode, 'app-playback');
+    // JSON-stringify for cross-realm comparison: the demo VM hands back
+    // live objects whose Array prototype differs from this realm's.
+    assert.equal(JSON.stringify(initialSource.inputs.map((i) => i.label)),
+        JSON.stringify(['MOTU M4 · Input 1–2', 'MOTU M4 · Input 3–4', 'USB S/PDIF · Input']));
+    assert.ok(initialSource.inputs.every((i) => Array.isArray(i.pair_channels) && i.pair_channels.length === 2));
+    assert.ok(!initialSource.inputs.some((i) => /Input [12]$/.test(i.label)),
+        'no single mono channel may appear as a stereo source');
+    assert.equal(JSON.stringify(initialSource.inputs.map((i) => [i.left_channel, i.right_channel])),
+        JSON.stringify([['FL', 'FR'], ['RL', 'RR'], ['FL', 'FR']]));
+    assert.equal(initialSource.bluetooth.selectable, true);
+    assert.equal(initialSource.bluetooth.state, 'streaming');
+    assert.equal(initialSource.bluetooth.connected_device, 'Demo Phone');
+
+    const ext34 = await sourcePost({ mode: 'external-input', inputKey: 'alsa_input.usb-MOTU_M4-00.analog-surround-40::pair:3-4' });
+    assert.equal(ext34.status, 200);
+    assert.equal(ext34.data.mode, 'external-input');
+    assert.equal(ext34.data.selected_input.key, 'alsa_input.usb-MOTU_M4-00.analog-surround-40::pair:3-4');
+    assert.equal(ext34.data.selected_input.label, 'MOTU M4 · Input 3–4');
+    assert.equal(JSON.stringify(ext34.data.selected_input.pair_channels), JSON.stringify([3, 4]));
+    assert.equal(ext34.data.current_input.key, ext34.data.selected_input.key);
+    assert.ok(ext34.data.inputs.find((i) => i.key === ext34.data.selected_input.key).is_selected);
+
+    const extUnknown = await sourcePost({ mode: 'external-input', inputKey: 'no-such-input' });
+    assert.equal(extUnknown.status, 400);
+
+    const bt = await sourcePost({ mode: 'bluetooth-input' });
+    assert.equal(bt.status, 200);
+    assert.equal(bt.data.mode, 'bluetooth-input');
+    assert.equal(bt.data.bluetooth.state, 'streaming');
+    assert.equal(bt.data.bluetooth.connected_device, 'Demo Phone');
+    assert.ok(bt.data.bluetooth.active_codec);
+
+    const back = await sourcePost({ mode: 'app-playback' });
+    assert.equal(back.data.mode, 'app-playback');
+    assert.equal(back.data.selected_input.key, 'alsa_input.usb-MOTU_M4-00.analog-surround-40::pair:3-4');
+    const freshSource = await sourceGet();
+    assert.equal(freshSource.mode, 'app-playback');
+
     assert.ok(state.stations.some((station) => station.id === 'groovesalad'));
 assert.ok(state.catalogStations.some((station) => station.id === 'rp-main'));
     assert.equal(state.catalogStations.some((station) => station.id === 'drumandbass'), false);
