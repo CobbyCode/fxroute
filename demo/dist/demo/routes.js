@@ -380,11 +380,76 @@
         return track ? { track, catalog: active.tracks.includes(track) ? active : other } : null;
     }
 
+    // ── Demo download bodies ────────────────────────────────────────────
+    // Mirrors the real M3U8 export (library/playlist_io.build_m3u_for_playlist):
+    // an #EXTM3U header plus one #EXTINF line and the track path per entry.
+    // Tracks resolve cross-catalog, like the cover endpoints.
+    function demoPlaylistM3u(playlist) {
+        const lines = ['#EXTM3U'];
+        for (const trackId of (playlist.track_ids || [])) {
+            const track = findTrack(trackId)?.track;
+            if (!track) continue;
+            const duration = Number(track.duration) > 0 ? Math.round(Number(track.duration)) : -1;
+            const label = track.artist ? `${track.artist} - ${track.title}` : (track.title || trackId);
+            lines.push(`#EXTINF:${duration},${label}`);
+            lines.push(String(track.url || track.path || trackId));
+        }
+        return lines.join('\n') + '\n';
+    }
+
+    // Selection download stands in for the real ZIP: the frontend only needs
+    // a downloadable body, so this lists the requested tracks (title, artist,
+    // source path) in a clearly-labeled demo manifest.
+    function demoDownloadManifest(trackIds) {
+        const lines = [
+            'FXRoute web-demo selection download — the simulated box transfers no real files.',
+            '',
+        ];
+        for (const id of (trackIds || [])) {
+            const track = findTrack(id)?.track;
+            lines.push(track
+                ? `${track.artist} - ${track.title} :: ${track.url || track.path || id}`
+                : `${id} (not found)`);
+        }
+        return lines.join('\n') + '\n';
+    }
+
+    // Demo stand-in for the real root CA bundle: the simulated box serves no
+    // HTTPS, so the Settings certificate link downloads this clearly-labeled
+    // placeholder instead of 404ing.
+    const DEMO_CERT_PEM = [
+        '-----BEGIN CERTIFICATE-----',
+        'FXRoute web-demo placeholder certificate. This is not a real TLS',
+        'certificate; the simulated box serves no HTTPS in the demo.',
+        '-----END CERTIFICATE-----',
+    ].join('\n') + '\n';
+
     // ── Measurements (saved list seeded with real fixtures) ─────────────
     const savedMeasurements = S.getSavedMeasurements().slice();
 
     // ── Helpers ─────────────────────────────────────────────────────────
-    function j(data, status = 200) {
+    function makeDemoBlob(text, type) {
+        // Real Blob in the browser so URL.createObjectURL works; a plain
+        // text-bearing stand-in in test contexts without a Blob global.
+        const content = String(text || '');
+        if (typeof Blob !== 'undefined') {
+            return new Blob([content], type ? { type } : undefined);
+        }
+        return {
+            size: content.length,
+            type: type || '',
+            text: () => Promise.resolve(content),
+            arrayBuffer: () => Promise.resolve(new Uint8Array(0).buffer),
+        };
+    }
+
+    function j(data, status = 200, headers = {}) {
+        // headers + blob(): the real frontend download paths read
+        // Content-Disposition and consume resp.blob() (see
+        // getDownloadFilenameFromResponse / triggerBlobDownload).
+        const headerMap = { get: (name) => String(headers[name] || '') };
+        const bodyText = (status === 302 || typeof data !== 'string') ? JSON.stringify(data) : data;
+        const mime = String(headers['Content-Type'] || '').split(';')[0].trim();
         if (status === 302) {
             // Image-like redirect endpoints: the browser follows the Location
             // header only when the response really redirects; the demo serves
@@ -393,15 +458,19 @@
                 ok: true,
                 status: 200,
                 url: data.redirect,
+                headers: headerMap,
                 json: () => Promise.resolve({}),
                 text: () => Promise.resolve(''),
+                blob: () => Promise.resolve(makeDemoBlob('', mime)),
             });
         }
         return Promise.resolve({
             ok: status >= 200 && status < 300,
             status,
+            headers: headerMap,
             json: () => Promise.resolve(data),
-            text: () => Promise.resolve(JSON.stringify(data)),
+            text: () => Promise.resolve(bodyText),
+            blob: () => Promise.resolve(makeDemoBlob(bodyText, mime)),
         });
     }
 
@@ -902,10 +971,24 @@
             }
             return j(catalogPlaylists);
         }
-        const playlistCrud = p.match(/^\/api\/playlists\/([^/]+)(\/export)?$/);
+        const playlistExportMatch = p.match(/^\/api\/playlists\/([^/]+)\/export$/);
+        if (playlistExportMatch) {
+            // Mirror the real backend (library/api.py export_playlist): an
+            // M3U8 attachment with one EXTINF line + path per track. Handled
+            // before the generic CRUD route so export is not swallowed.
+            const id = playlistExportMatch[1];
+            const catalogPlaylists = activeLib().playlists || [];
+            const playlist = catalogPlaylists.find(pl => pl.id === id);
+            if (!playlist) return err('Playlist not found', 404);
+            const safeName = String(playlist.name || 'playlist').replace(/["\r\n]/g, '');
+            return j(demoPlaylistM3u(playlist), 200, {
+                'Content-Type': 'audio/x-mpegurl; charset=utf-8',
+                'Content-Disposition': `attachment; filename="${safeName}.m3u8"`,
+            });
+        }
+        const playlistCrud = p.match(/^\/api\/playlists\/([^/]+)$/);
         if (playlistCrud) {
             const id = playlistCrud[1];
-            if (playlistCrud[2]) return err('Not found', 404);
             if (method === 'DELETE') {
                 const catalogPlaylists = activeLib().playlists || [];
                 const idx = catalogPlaylists.findIndex(pl => pl.id === id);
@@ -982,7 +1065,16 @@
         if (p === '/api/library/refresh' && post) return j({ status: 'ok' });
         if (p === '/api/library/folders/delete' && post) return j({ status: 'ok' });
         if (p === '/api/tracks/delete' && post) return j({ status: 'ok' });
-        if (p === '/api/tracks/download' && post) return j({ status: 'ok' });
+        if (p === '/api/tracks/download' && post) {
+            // Selection download: a downloadable body for the POSTed ids so
+            // the frontend blob path works (see downloadSelectedTracks).
+            const trackIds = Array.isArray(body.track_ids) ? body.track_ids : [];
+            const single = trackIds.length === 1;
+            return j(demoDownloadManifest(trackIds), 200, {
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="${single ? 'track' : 'fxroute-library-selection.zip'}"`,
+            });
+        }
 
         // ── Streaming providers ─────────────────────────────────────────
         if (p === '/api/streaming/providers') {
@@ -1067,7 +1159,7 @@
         }
         if (p === '/api/streaming/spotify/status') return j(S.spotify.snapshot());
         if (p === '/api/streaming/qobuz/status') return j(S.qobuz.payload());
-        const qobuzCmd = p.match(/^\/api\/streaming\/qobuz\/([a-z]+)$/);
+        const qobuzCmd = p.match(/^\/api\/streaming\/qobuz\/([a-z_]+)$/);
         if (qobuzCmd && post) {
             const cmd = qobuzCmd[1];
             const q = S.qobuz;
@@ -1674,7 +1766,14 @@
         if (p === '/api/download' || p === '/api/download/status') return j({ status: 'idle' });
         if (p === '/api/download/cancel' && post) return j({ ok: true });
         if (p === '/api/stream/info') return j({ codec: 'FLAC', bitrate_kbps: 1411, sample_rate: 48000 });
-        if (p === '/api/certificate/local-root') return j({}, 404);
+        if (p === '/api/certificate/local-root') {
+            // The demo box has no real TLS certificate; serve the clearly
+            // labeled placeholder so the Settings download link works.
+            return j(DEMO_CERT_PEM, 200, {
+                'Content-Type': 'application/x-pem-file',
+                'Content-Disposition': 'attachment; filename="fxroute-demo-certificate.crt"',
+            });
+        }
 
         // ── fallthrough ─────────────────────────────────────────────────
         if (p.startsWith('/api/')) console.warn('[demo] unmapped API call:', method, p);

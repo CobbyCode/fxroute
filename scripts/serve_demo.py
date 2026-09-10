@@ -50,6 +50,11 @@ class DemoMuxHandler(http.server.SimpleHTTPRequestHandler):
                 self._serve_file(DEMO_STATIC_ART / path[len("/static/demo/"):])
             elif path.startswith("/static/"):
                 self._serve_file(FRONTEND_STATIC / path[len("/static/"):])
+            elif path == "/api/certificate/local-root":
+                # The Settings certificate link is a plain anchor navigation
+                # (no fetch), so the demo server must serve the placeholder
+                # PEM itself — same body the in-page routes.js returns.
+                self._serve_demo_certificate()
             else:
                 self.send_error(404, "Not Found")
         except IsADirectoryError:
@@ -88,6 +93,21 @@ class DemoMuxHandler(http.server.SimpleHTTPRequestHandler):
         self._no_cache()
         self.end_headers()
         self.wfile.write(payload)
+
+    def _serve_demo_certificate(self):
+        pem = (
+            "-----BEGIN CERTIFICATE-----\n"
+            "FXRoute web-demo placeholder certificate. This is not a real TLS\n"
+            "certificate; the simulated box serves no HTTPS in the demo.\n"
+            "-----END CERTIFICATE-----\n"
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-pem-file")
+        self.send_header("Content-Disposition", 'attachment; filename="fxroute-demo-certificate.crt"')
+        self.send_header("Content-Length", str(len(pem)))
+        self._no_cache()
+        self.end_headers()
+        self.wfile.write(pem)
 
     def _no_cache(self):
         self.send_header("Cache-Control", "no-store, must-revalidate")

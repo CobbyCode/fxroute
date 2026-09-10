@@ -197,12 +197,16 @@
     // (formatRadioStreamLine). Spotify/Qobuz do not come through here; they
     // are remote-renderer owners with their own payload facts.
     function streamInfoFor(src, track = null) {
-        if (src === 'local') return { codec: 'FLAC', bitrate_kbps: 1411, sample_rate: 48000 };
+        // samplerate_hz everywhere, matching the real normalization
+        // (playback/stream_info.py) and the shared footer renderer; local
+        // and Qobuz derive the rate from the actual track, never a fixed
+        // 48/96 kHz.
+        if (src === 'local') return { codec: 'FLAC', bitrate_kbps: 1411, samplerate_hz: Number(track?.sample_rate_hz) || 48000 };
         if (src === 'tidal') return tidalStreamInfo(track);
-        if (src === 'radio') return { codec: 'MP3', bitrate_kbps: 192, sample_rate: 44100 };
-        if (src === 'spotify') return { codec: 'Ogg', bitrate_kbps: 320, sample_rate: 44100 };
-        if (src === 'qobuz') return { codec: 'FLAC', bitrate_kbps: 1411, sample_rate: 96000 };
-        return { codec: '', bitrate_kbps: 0, sample_rate: 0 };
+        if (src === 'radio') return { codec: 'MP3', bitrate_kbps: 192, samplerate_hz: 44100 };
+        if (src === 'spotify') return { codec: 'Ogg', bitrate_kbps: 320, samplerate_hz: 44100 };
+        if (src === 'qobuz') return { codec: 'FLAC', bitrate_kbps: 1411, samplerate_hz: Number(track?.sample_rate_hz) || 96000 };
+        return { codec: '', bitrate_kbps: 0, samplerate_hz: 0 };
     }
 
     // TIDAL facts per track, derived from the album's quality tier exactly
