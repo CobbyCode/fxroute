@@ -625,9 +625,10 @@ const radio = state.getPlayback();
     assert.match(lrPoll.message, /L\/R repeat/);
 
     // ── Playback meter simulation contract ──────────────────────────────
-    // Real-analog monitor tap: the VU follows the audible pre-limiter
-    // chain (preset gain, headroom cut, autogain/loudness/bass); the
-    // protection limiter sits after the tap and never moves the meter.
+    // Post-limiter monitor tap like the live system: the VU follows the
+    // audible chain (preset gain, headroom cut, autogain/loudness/bass)
+    // through the protection limiter, so an engaged limiter caps the
+    // visible level at its threshold and raw overs never reach 0 dBFS.
     // Peak detection is an independent fast path (raw overs latch a
     // hold), so hand-set VU levels alone never trip detection.
     state.playLocal(state.localTracks[0].id);

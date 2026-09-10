@@ -135,8 +135,9 @@ function makeDemoContext(bootArmed) {
     peakState.getMeter().vu_db_l = 0.5; peakState.getMeter().vu_db_r = 0.5; peakState.getMeter().vu_fresh = true;
     assert.equal(peakState.getPeak().detected, false, 'smoothed VU levels must not latch peaks');
 
-    // A hot program latches peak holds with the limiter on and off alike.
-    async function peakHits(setup, ticks = 200) {
+    // A hot program latches peak holds only when unprotected: engaged
+    // limiter caps raw peaks below 0 dBFS (reference: post-limiter tap).
+    async function peakRun(setup, ticks = 200) {
         Math.random = seededRandom(11);
         try {
             const c = makeDemoContext(false);
@@ -144,29 +145,35 @@ function makeDemoContext(bootArmed) {
             const post = (url, body) => c.fetch(url, { method: 'POST', body: JSON.stringify(body || {}) });
             await post('/api/play', { track_id: 'd2-midnight-relay_01' });
             if (setup) await setup(post);
-            let hits = 0, tt = 0;
+            let hits = 0, max = -60, tt = 0;
             for (let i = 0; i < ticks + 20; i += 1) {
                 st.demoMeterTick(tt); tt += 500;
-                if (i >= 20 && st.getPeak().detected) hits += 1;
+                if (i >= 20) {
+                    if (st.getPeak().detected) hits += 1;
+                    max = Math.max(max, st.getMeter().vu_db_l);
+                }
             }
-            return hits;
+            return { hits, max };
         } finally { Math.random = realRandom; }
     }
-    const hotOn = await peakHits((post) => post('/api/dsp/presets/load', { preset_name: '+6' }));
-    assert.ok(hotOn > 0, 'a hot program must latch peak holds');
-    const hotOff = await peakHits(async (post) => {
+    const hotOn = await peakRun((post) => post('/api/dsp/presets/load', { preset_name: '+6' }));
+    assert.equal(hotOn.hits, 0, 'engaged limiter caps peaks below 0 dBFS even on a hot master');
+    assert.ok(hotOn.max <= -1, `engaged limiter caps the visible level at its threshold (max ${hotOn.max})`);
+    const hotOff = await peakRun(async (post) => {
         await post('/api/dsp/presets/load', { preset_name: '+6' });
         await post('/api/dsp/extras', { limiter_enabled: false });
     });
-    assert.equal(hotOff, hotOn, 'peak detection must be limiter-independent');
-    // A default-level program may flash red once in a while, but never
-    // with headroom engaged: transient max (-7 dB) + crest max (10 dB)
-    // stays under 0 dBFS down to -3 dB headroom, by construction.
-    const calmHits = await peakHits(null);
-    assert.ok(calmHits <= 8, `default program must stay out of the red except for rare flashes (got ${calmHits})`);
+    assert.ok(hotOff.hits > 0, 'unprotected hot program overs');
+    // A default-level program may flash red once in a while when
+    // unprotected, but never with the limiter engaged: capped raw peaks
+    // stay under 0 dBFS by construction.
+    const calmOff = await peakRun((post) => post('/api/dsp/extras', { limiter_enabled: false }));
+    assert.ok(calmOff.hits <= 8, `default program must stay out of the red except for rare flashes (got ${calmOff.hits})`);
+    const calmOn = await peakRun(null);
+    assert.equal(calmOn.hits, 0, 'engaged limiter keeps a default program out of the red');
     for (const gain of [-3, -6]) {
-        const hrHits = await peakHits((post) => post('/api/dsp/extras', { headroom_enabled: true, headroom_gain_db: gain }));
-        assert.equal(hrHits, 0, `headroom ${gain} dB must keep the meter out of the red`);
+        const hrHits = await peakRun((post) => post('/api/dsp/extras', { headroom_enabled: true, headroom_gain_db: gain }));
+        assert.equal(hrHits.hits, 0, `headroom ${gain} dB must keep the meter out of the red`);
     }
 
     // ── Refresh cycle (POST /api/library/refresh) ───────────────────────

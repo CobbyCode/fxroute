@@ -57,10 +57,11 @@
 
     // ── Shared mutable DSP hooks (set by routes.js) ─────────────────────
     // The meter sim applies a single audible offset (dB): preset gain plus
-    // the enabled tone extras. The monitor tap sits after the whole chain
-    // including the protection limiter (no master_gain stage exists unless
-    // loudness inserts one) — so an engaged limiter caps the metered level
-    // at its threshold, exactly like the real post-chain tap.
+    // the enabled tone extras. The simulated tap reads post-all-stages
+    // including the protection limiter (reference: live post-limiter tap),
+    // pre-matrix, full-band stereo — system master and crossover never
+    // appear here. An engaged limiter therefore caps the metered level at
+    // its threshold; disengaged, hot peaks pass unclipped.
     let dspMeterOffsetDb = 0;
     let dspLimiterThresholdDb = -1;
     let dspLimiterEnabled = true;
@@ -114,8 +115,9 @@
 
     const meter = { vu_db_l: -60, vu_db_r: -60, vu_fresh: false };
     // Independent fast peak path (real DSPPeakMonitor): raw instantaneous
-    // peaks against 0 dBFS latch a hold after two consecutive hits. It
-    // never derives from the smoothed VU and never sees the limiter.
+    // peaks of the tapped (post-limiter) signal against 0 dBFS latch a
+    // hold after two consecutive hits. It never derives from the smoothed
+    // VU — but it does see the limiter, so capped peaks never reach it.
     // The hold is scaled to the demo tick (500 ms broadcasts) instead of
     // the real 30 ms, so a latched peak stays visible for one broadcast.
     const PEAK_THRESHOLD_DB = 1.0;
@@ -238,14 +240,18 @@
             const fR = targetR >= meterEnv.r ? (spiking ? 0.6 : 0.35) : 0.2;
             meterEnv.l += (targetL - meterEnv.l) * fL;
             meterEnv.r += (targetR - meterEnv.r) * fR;
-            // Pre-limiter tap: only the display ceiling applies. Raw peaks
-            // ride the instantaneous program plus a music-like crest factor
-            // on top, feeding the independent peak detector below.
+            // Post-chain tap: gains ride the signal into the protection
+            // limiter, which caps what VU and peak detector can ever see.
+            // The display ceiling only binds with the limiter disengaged.
+            // Raw peaks ride the instantaneous program plus a music-like
+            // crest factor, feeding the independent peak detector below.
+            const capDb = (dspLimiterEnabled && Number.isFinite(dspLimiterThresholdDb))
+                ? dspLimiterThresholdDb : 3;
             peakTickNow = nowTs;
-            peakDetect(nowTs, targetL + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, true);
-            peakDetect(nowTs, targetR + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, false);
-            const levelL = Math.min(meterEnv.l + dspMeterOffsetDb, 3);
-            const levelR = Math.min(meterEnv.r + dspMeterOffsetDb, 3);
+            peakDetect(nowTs, Math.min(targetL + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, capDb), true);
+            peakDetect(nowTs, Math.min(targetR + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, capDb), false);
+            const levelL = Math.min(meterEnv.l + dspMeterOffsetDb, capDb);
+            const levelR = Math.min(meterEnv.r + dspMeterOffsetDb, capDb);
             meter.vu_db_l = Math.round(levelL * 10) / 10;
             meter.vu_db_r = Math.round(levelR * 10) / 10;
             meter.vu_fresh = true;

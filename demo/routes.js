@@ -62,8 +62,8 @@
     // Audible offset for the meter sim: only the +3/+6 dB filter
     // presets lift the visible level (their real chains hold a broadband
     // gain stage); headroom cuts it 1:1 (the real headroom stage sits
-    // before the monitor tap, the limiter after it — so the limiter never
-    // appears here). Every other preset is level-neutral in the demo.
+    // before the monitor tap). The limiter needs no offset entry: it caps
+    // the tapped signal at its threshold instead of shifting it.
     function presetMeterGainDb(name) {
         if (name === '+3') return 3;
         if (name === '+6') return 6;
