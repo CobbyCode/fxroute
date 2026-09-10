@@ -867,6 +867,10 @@ const radio = state.getPlayback();
     // the full initial stock from the fixtures. Runs in its own isolated
     // session so it is independent of the mutations above.
     const session = makeDemoContext();
+    // The demo presents Demo Library 2 by default; pin the stock
+    // reset/restore contract to the main catalog (Local) so the fixtures
+    // that ship the product demo keep being exercised.
+    await session.fetch('/api/music-libraries/select', { method: 'POST', body: JSON.stringify({ id: 'local' }) });
     const baselineStock = await demoStock(session);
     const sessionAlbums = await (await session.fetch('/api/albums')).json();
     const sessionTracks = await (await session.fetch('/api/tracks')).json();
@@ -893,7 +897,9 @@ const radio = state.getPlayback();
     }
     const mutatedStock = await demoStock(session);
     assert.notDeepEqual(mutatedStock, baselineStock, 'reset-test mutations must change demo state');
-    const restoredStock = await demoStock(makeDemoContext());
+    const restoredCtx = makeDemoContext();
+    await restoredCtx.fetch('/api/music-libraries/select', { method: 'POST', body: JSON.stringify({ id: 'local' }) });
+    const restoredStock = await demoStock(restoredCtx);
     assert.deepEqual(restoredStock, baselineStock, 'fresh reload must restore the full initial demo stock');
 
     console.log('ok demo behavior contract');

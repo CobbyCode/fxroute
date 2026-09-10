@@ -114,6 +114,68 @@ function post(fetch, url, body) {
     assert.deepEqual(restoredAlbums.map(a => a.id), albums2.map(a => a.id), 'switching back restores library 2 albums');
     assert.deepEqual(restoredTracks.map(t => t.id), tracks2.map(t => t.id), 'switching back restores library 2 tracks');
 
+    // ── Cross-catalog resolution while a library is inactive ───────────
+    // Ids from the inactive catalog must keep resolving to their owning
+    // catalog: a track that keeps playing after a library switch stays
+    // fully resolvable (playback state, cover, graph rate, album tracks),
+    // and endpoints must not re-filter through the active catalog.
+    const playingTrack = albumTracks[0];
+    await post(fetch, '/api/play', { track_id: playingTrack.id });
+    await post(fetch, '/api/music-libraries/select', { id: 'local' });
+
+    const statusAfterSwitch = await (await fetch('/api/status')).json();
+    assert.equal(statusAfterSwitch.current_track.id, playingTrack.id,
+        'still-playing library-2 track survives the switch');
+
+    const coverInfoAfterSwitch = await (await fetch('/api/tracks/cover-info/' + playingTrack.id)).json();
+    assert.equal(coverInfoAfterSwitch.cover_available, true, 'cover info resolves after the switch');
+    assert.match(coverInfoAfterSwitch.cover_url, /^\/static\/demo\/d2-/, 'cover url still from library 2');
+    const coverAfterSwitch = await (await fetch('/api/tracks/cover/' + playingTrack.id)).json();
+    assert.match(coverAfterSwitch.redirect, /^\/static\/demo\/d2-/, 'cover redirect still from library 2');
+
+    const samplerate = await (await fetch('/api/audio/samplerate')).json();
+    assert.equal(samplerate.active_rate, playingTrack.sample_rate_hz,
+        'graph rate follows the playing library-2 track after the switch');
+
+    const staleAlbumTracks = await (await fetch('/api/albums/' + sample.id + '/tracks')).json();
+    assert.equal(staleAlbumTracks.length, albumTracks.length,
+        'inactive-catalog album tracks resolve from their owning catalog');
+    assert.ok(staleAlbumTracks.every(t => t.album === sample.name), '…and belong to the album');
+
+    // ── Playlist mutations land in the active catalog only ─────────────
+    await post(fetch, '/api/music-libraries/select', { id: 'demo-library-2' });
+    const created2 = await (await post(fetch, '/api/playlists',
+        { name: 'Switch Contract', track_ids: [playingTrack.id] })).json();
+    assert.equal(created2.status, 'ok');
+    const playlistsWithNew = await (await fetch('/api/playlists')).json();
+    assert.ok(playlistsWithNew.some(pl => pl.id === created2.playlist.id),
+        'created playlist appears in the active (library-2) catalog');
+    await post(fetch, '/api/music-libraries/select', { id: 'local' });
+    const localPlaylistsWithNew = await (await fetch('/api/playlists')).json();
+    assert.ok(!localPlaylistsWithNew.some(pl => pl.id === created2.playlist.id),
+        'library-2 playlist invisible in the local catalog');
+    await post(fetch, '/api/music-libraries/select', { id: 'demo-library-2' });
+    const stillThere = await (await fetch('/api/playlists')).json();
+    assert.ok(stillThere.some(pl => pl.id === created2.playlist.id),
+        'library-2 playlist survives a round trip');
+    await fetch('/api/playlists/' + created2.playlist.id, { method: 'DELETE' });
+    const afterDelete2 = await (await fetch('/api/playlists')).json();
+    assert.ok(!afterDelete2.some(pl => pl.id === created2.playlist.id),
+        'deleted playlist disappears from the active catalog');
+
+    // The local catalog accepts its own playlist mutations.
+    await post(fetch, '/api/music-libraries/select', { id: 'local' });
+    const createdLocal = await (await post(fetch, '/api/playlists',
+        { name: 'Switch Contract Local', track_ids: [localTracks[0].id] })).json();
+    assert.equal(createdLocal.status, 'ok');
+    const localAfterCreate = await (await fetch('/api/playlists')).json();
+    assert.ok(localAfterCreate.some(pl => pl.id === createdLocal.playlist.id),
+        'created playlist appears in the local catalog');
+    await fetch('/api/playlists/' + createdLocal.playlist.id, { method: 'DELETE' });
+    const localAfterDelete = await (await fetch('/api/playlists')).json();
+    assert.ok(!localAfterDelete.some(pl => pl.id === createdLocal.playlist.id),
+        'deleted playlist disappears from the local catalog');
+
     console.log('ok demo library 2 contract');
 })().catch((err) => {
     console.error(err);

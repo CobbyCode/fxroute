@@ -203,14 +203,16 @@
         }
         const owner = playback.playback_owner;
         const trackId = playback.current_track?.id;
-        const findTrack = (list) => (list || []).find(t => String(t.id) === String(trackId));
+        const inList = (list) => (list || []).find(t => String(t.id) === String(trackId));
         let rate = 48000;
         if (owner === 'spotify') rate = 44100;
         else if (owner === 'qobuz') rate = Number(S.qobuz.current?.sample_rate_hz) || 44100;
         else if (owner === 'radio') rate = 44100;
-        else if (owner === 'local') rate = Number(findTrack(S.localTracks)?.sample_rate_hz
-            || (S.lib2?.tracks || []).find(t => String(t.id) === String(trackId))?.sample_rate_hz) || 48000;
-        else if (owner === 'tidal') rate = TIDAL_TIER_GRAPH_RATE[findTrack(S.tidalTracks())?.audio_quality] || 48000;
+        // Local tracks resolve through the same cross-catalog lookup as the
+        // other endpoints (active catalog first): a track still playing from
+        // a library that is no longer active keeps its real rate.
+        else if (owner === 'local') rate = Number(findTrack(trackId)?.track.sample_rate_hz) || 48000;
+        else if (owner === 'tidal') rate = TIDAL_TIER_GRAPH_RATE[inList(S.tidalTracks())?.audio_quality] || 48000;
         samplerate.active_rate = rate;
     }
     S.onSourceChanged = followSourceGraphRate;
@@ -359,15 +361,22 @@
     function activeLib() {
         return musicLibraries.active_id === 'demo-library-2' ? lib2 : lib;
     }
+    // Cross-catalog lookup: the active catalog wins, the other one is a
+    // fallback so ids referenced by live state (a track still playing from
+    // the library that was just switched away) keep resolving. Returns the
+    // owning catalog alongside the item, so dependent endpoints serve or
+    // mutate the right catalog instead of re-filtering through activeLib().
     function findAlbum(id) {
         const active = activeLib();
         const other = active === lib ? lib2 : lib;
-        return active.albums.find(a => a.id === id) || other.albums.find(a => a.id === id);
+        const album = active.albums.find(a => a.id === id) || other.albums.find(a => a.id === id);
+        return album ? { album, catalog: active.albums.includes(album) ? active : other } : null;
     }
     function findTrack(id) {
         const active = activeLib();
         const other = active === lib ? lib2 : lib;
-        return active.tracks.find(t => t.id === id) || other.tracks.find(t => t.id === id);
+        const track = active.tracks.find(t => t.id === id) || other.tracks.find(t => t.id === id);
+        return track ? { track, catalog: active.tracks.includes(track) ? active : other } : null;
     }
 
     // ── Measurements (saved list seeded with real fixtures) ─────────────
@@ -906,39 +915,43 @@
         }
         const albumTracksMatch = p.match(/^\/api\/albums\/([^/]+)\/tracks$/);
         if (albumTracksMatch) {
-            const album = findAlbum(albumTracksMatch[1]);
-            if (!album) return err('Album not found');
-            return j(activeLib().tracks.filter(t => t.album === album.name && (t.artist === album.artist || t.album_artist === album.artist)));
+            // Tracks come from the album's owning catalog: an id from the
+            // inactive library (e.g. a still-playing track) must not be
+            // filtered against the active catalog.
+            const resolved = findAlbum(albumTracksMatch[1]);
+            if (!resolved) return err('Album not found');
+            const { album, catalog } = resolved;
+            return j(catalog.tracks.filter(t => t.album === album.name && (t.artist === album.artist || t.album_artist === album.artist)));
         }
         const albumFavMatch = p.match(/^\/api\/albums\/([^/]+)\/favorite$/);
         if (albumFavMatch) {
-            const album = findAlbum(albumFavMatch[1]);
-            if (!album) return err('Album not found');
-            album.favorite = !!body.favorite;
-            return j({ status: 'ok', album_id: album.id, favorite: album.favorite });
+            const resolved = findAlbum(albumFavMatch[1]);
+            if (!resolved) return err('Album not found');
+            resolved.album.favorite = !!body.favorite;
+            return j({ status: 'ok', album_id: resolved.album.id, favorite: resolved.album.favorite });
         }
         const trackFavMatch = p.match(/^\/api\/tracks\/([^/]+)\/favorite$/);
         if (trackFavMatch) {
-            const track = findTrack(trackFavMatch[1]);
-            if (!track) return err('Track not found');
-            track.favorite = !!body.favorite;
-            return j({ status: 'ok', track_id: track.id, favorite: track.favorite });
+            const resolved = findTrack(trackFavMatch[1]);
+            if (!resolved) return err('Track not found');
+            resolved.track.favorite = !!body.favorite;
+            return j({ status: 'ok', track_id: resolved.track.id, favorite: resolved.track.favorite });
         }
         const albumCoverMatch = p.match(/^\/api\/albums\/([^/]+)\/cover$/);
         if (albumCoverMatch) {
-            const album = findAlbum(albumCoverMatch[1]);
-            const redirect = album ? album.coverUrl : lib.demoImage('album:' + (albumCoverMatch[1] || 'x'));
+            const resolved = findAlbum(albumCoverMatch[1]);
+            const redirect = resolved ? resolved.album.coverUrl : lib.demoImage('album:' + (albumCoverMatch[1] || 'x'));
             return j({ redirect });
         }
         const trackCoverMatch = p.match(/^\/api\/tracks\/cover\/([^/]+)$/);
         if (trackCoverMatch) {
-            const track = findTrack(trackCoverMatch[1]);
-            return j({ redirect: track ? track.cover_url : lib.demoImage('track:' + (trackCoverMatch[1] || 'x')) });
+            const resolved = findTrack(trackCoverMatch[1]);
+            return j({ redirect: resolved ? resolved.track.cover_url : lib.demoImage('track:' + (trackCoverMatch[1] || 'x')) });
         }
         const trackCoverInfoMatch = p.match(/^\/api\/tracks\/cover-info\/([^/]+)$/);
         if (trackCoverInfoMatch) {
-            const track = findTrack(trackCoverInfoMatch[1]);
-            return j({ cover_url: track ? track.cover_url : '', cover_available: !!track });
+            const resolved = findTrack(trackCoverInfoMatch[1]);
+            return j({ cover_url: resolved ? resolved.track.cover_url : '', cover_available: !!resolved });
         }
         const albumDiscover = p.match(/^\/api\/albums\/([^/]+)\/discover$/);
         if (albumDiscover) {
