@@ -104,9 +104,9 @@
     }));
 
     const bbcStations = [
-        ['bbc-radio-1', 'BBC Radio 1', 'https://stream.live.vc.bbcmedia.co.uk/bbc_radio_one', 'https://www.bbc.co.uk/radio1/favicon.ico'],
-        ['bbc-radio-2', 'BBC Radio 2', 'https://stream.live.vc.bbcmedia.co.uk/bbc_radio_two', 'https://www.bbc.co.uk/radio2/favicon.ico'],
-        ['bbc-radio-4', 'BBC Radio 4', 'https://stream.live.vc.bbcmedia.co.uk/bbc_radio_fourfm', 'https://www.bbc.co.uk/radio4/favicon.ico'],
+        ['bbc-radio-1', 'BBC Radio 1', 'https://stream.live.vc.bbcmedia.co.uk/bbc_radio_one', '/static/station-art/bbc-radio-1.svg'],
+        ['bbc-radio-2', 'BBC Radio 2', 'https://stream.live.vc.bbcmedia.co.uk/bbc_radio_two', '/static/station-art/bbc-radio-2.svg'],
+        ['bbc-radio-4', 'BBC Radio 4', 'https://stream.live.vc.bbcmedia.co.uk/bbc_radio_fourfm', '/static/station-art/bbc-radio-4.svg'],
     ].map(([id, name, stream_url, image_url]) => ({ id, name, input_url: stream_url, stream_url, image_url, provider: 'BBC' }));
 
     const otherStations = [

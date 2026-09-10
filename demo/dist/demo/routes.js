@@ -983,7 +983,7 @@
                     url: s.input_url || s.stream_url,
                     url_resolved: s.stream_url,
                     homepage: 'https://example.invalid/' + s.id,
-                    favicon: '',
+                    favicon: s.image_url || '',
                     tags: (s.genres || []).join(','),
                     country: 'Demo',
                     language: 'EN',

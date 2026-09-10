@@ -308,13 +308,26 @@
                 post('/api/dsp/presets/load', { preset_name: '+6' });
                 post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'B' });
                 post('/api/dsp/extras', { headroomEnabled: true, headroomGainDb: -3, loudnessEnabled: true, loudnessStrength: 5 });
-                // Nudge the A/B toggle after a moment so the badge visibly flips.
+                // Animate the Compare A/B control so the filter switch is
+                // visible: pulse the button, then actually click it to flip
+                // the badge (A -> B -> A) like a user would.
+                function pulseCompareBtn() {
+                    var btn = document.getElementById('effects-compare-toggle');
+                    if (!btn) return null;
+                    btn.classList.add('demo-tour-pulse');
+                    setTimeout(function () { btn.classList.remove('demo-tour-pulse'); }, 900);
+                    return btn;
+                }
                 setTimeout(function () {
-                    post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'A' });
+                    var btn = pulseCompareBtn();
+                    if (btn && typeof btn.click === 'function') try { btn.click(); } catch (eA) {}
+                    else post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'A' });
                     setTimeout(function () {
-                        post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'B' });
-                    }, 450);
-                }, 600);
+                        var btn2 = pulseCompareBtn();
+                        if (btn2 && typeof btn2.click === 'function') try { btn2.click(); } catch (eB) {}
+                        else post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'B' });
+                    }, 650);
+                }, 750);
             } else if (action === 'cycle-providers') {
                 var spBtn = document.getElementById('tab-btn-spotify');
                 var qbBtn = document.getElementById('tab-btn-qobuz');

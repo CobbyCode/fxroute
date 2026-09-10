@@ -641,7 +641,7 @@
             return;
         }
         window.FXRouteContentState.hide(elements.stationCatalogEmptySearch);
-        const providerOrder = ['Radio Paradise', 'SomaFM', 'FIP', 'Other Stations'];
+        const providerOrder = ['Radio Paradise', 'SomaFM', 'FIP', 'BBC', 'Other Stations'];
         const renderCard = station => {
             const artCandidates = stationArtCandidates(station);
             const artSrc = artCandidates[0] || stationArtFallbackSvg(station);
