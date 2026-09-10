@@ -1502,8 +1502,9 @@
         syncTidalTrackSelection();
     }
 
-    function tidalPlaylistSaveRowHtml() {
-        return '<div class="playlist-save-row tidal-playlist-save-row hidden" id="tidal-playlist-save-row">' +
+    function tidalPlaylistSaveRowHtml(variant) {
+        const modifier = variant === 'album' ? ' tidal-playlist-save-row--album' : '';
+        return '<div class="playlist-save-row tidal-playlist-save-row' + modifier + ' hidden" id="tidal-playlist-save-row">' +
             '<div class="playlist-save-controls">' +
                 '<input type="text" id="tidal-playlist-name" class="url-input" placeholder="New playlist name…" aria-label="New TIDAL playlist name" autocomplete="off" />' +
                 '<button id="tidal-save-playlist" class="btn-secondary" type="button">Save as new</button>' +
@@ -2132,7 +2133,7 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml() +
+                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);

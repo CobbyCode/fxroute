@@ -2083,6 +2083,33 @@ body {
 .tidal-playlist-save-row select.url-input {
     flex: 0 1 200px;
 }
+/* Album detail: the playlist action row uses the full content width. The two
+   text/select fields absorb the extra space (existing target slightly wider);
+   Save as new, Add and Cancel keep their compact natural button widths. */
+.playlist-save-row.tidal-playlist-save-row--album {
+    width: 100%;
+    max-width: none;
+    flex: 1 1 auto;
+}
+.tidal-playlist-save-row--album .playlist-save-controls {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: none;
+    flex-wrap: nowrap;
+    align-items: center;
+}
+.tidal-playlist-save-row--album #tidal-playlist-name {
+    flex: 1 1 0;
+    min-width: 140px;
+}
+.tidal-playlist-save-row--album #tidal-playlist-target {
+    flex: 1.25 1 0;
+    min-width: 170px;
+}
+.tidal-playlist-save-row--album .btn-secondary {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
 .tidal-playlist-save-error {
     flex: 0 0 100%;
     color: var(--danger);
@@ -8104,6 +8131,24 @@ input[type="number"]::-webkit-outer-spin-button {
     .library-actions-row {
             margin-bottom: var(--action-gap);
         }
+    /* Album detail keeps a single continuous action line on tablet: the row
+       stays horizontal and the fields shrink before anything wraps. Only the
+       phone layout below switches to a stacked grid. */
+    .playlist-save-row.tidal-playlist-save-row--album {
+        flex-direction: row;
+        align-items: center;
+        width: 100%;
+    }
+    .tidal-playlist-save-row--album .playlist-save-controls {
+        flex-wrap: nowrap;
+        width: 100%;
+    }
+    .tidal-playlist-save-row--album #tidal-playlist-name {
+        min-width: 120px;
+    }
+    .tidal-playlist-save-row--album #tidal-playlist-target {
+        min-width: 140px;
+    }
 
 }
 

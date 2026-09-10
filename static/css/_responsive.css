@@ -1152,6 +1152,24 @@
     .library-actions-row {
             margin-bottom: var(--action-gap);
         }
+    /* Album detail keeps a single continuous action line on tablet: the row
+       stays horizontal and the fields shrink before anything wraps. Only the
+       phone layout below switches to a stacked grid. */
+    .playlist-save-row.tidal-playlist-save-row--album {
+        flex-direction: row;
+        align-items: center;
+        width: 100%;
+    }
+    .tidal-playlist-save-row--album .playlist-save-controls {
+        flex-wrap: nowrap;
+        width: 100%;
+    }
+    .tidal-playlist-save-row--album #tidal-playlist-name {
+        min-width: 120px;
+    }
+    .tidal-playlist-save-row--album #tidal-playlist-target {
+        min-width: 140px;
+    }
 
 }
 

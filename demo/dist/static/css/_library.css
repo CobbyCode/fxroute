@@ -392,31 +392,35 @@
     font-size: 0.86rem;
     line-height: 1.38;
 }
-.album-detail-about summary {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.32rem;
-    width: fit-content;
-    color: var(--text-primary);
-    cursor: pointer;
-    font-weight: 650;
-    list-style: none;
-}
-.album-detail-about summary::-webkit-details-marker {
-    display: none;
-}
-.album-detail-about summary::before {
-    content: "▸";
-    font-size: 0.78rem;
-    line-height: 1;
-    color: var(--text-secondary);
-}
-.album-detail-about[open] summary::before {
-    content: "▾";
-}
 .album-detail-about p {
     margin: 0.35rem 0 0;
     max-width: 64ch;
+}
+.detail-fact-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.75rem;
+    min-width: 0;
+}
+.detail-fact-row > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.detail-fact-row > span + span {
+    border-inline-start: 1px solid var(--border-strong);
+    padding-inline-start: 0.75rem;
+}
+.album-detail-about.detail-description {
+    width: 100%;
+    max-width: 76ch;
+    margin-top: 0.35rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--border-strong);
+}
+.detail-description p {
+    max-width: none;
+    margin: 0;
+    overflow-wrap: anywhere;
 }
 
 /* Artwork-led detail heroes: the local album and playlist details and the
@@ -892,6 +896,33 @@
 }
 .tidal-playlist-save-row select.url-input {
     flex: 0 1 200px;
+}
+/* Album detail: the playlist action row uses the full content width. The two
+   text/select fields absorb the extra space (existing target slightly wider);
+   Save as new, Add and Cancel keep their compact natural button widths. */
+.playlist-save-row.tidal-playlist-save-row--album {
+    width: 100%;
+    max-width: none;
+    flex: 1 1 auto;
+}
+.tidal-playlist-save-row--album .playlist-save-controls {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: none;
+    flex-wrap: nowrap;
+    align-items: center;
+}
+.tidal-playlist-save-row--album #tidal-playlist-name {
+    flex: 1 1 0;
+    min-width: 140px;
+}
+.tidal-playlist-save-row--album #tidal-playlist-target {
+    flex: 1.25 1 0;
+    min-width: 170px;
+}
+.tidal-playlist-save-row--album .btn-secondary {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 .tidal-playlist-save-error {
     flex: 0 0 100%;
