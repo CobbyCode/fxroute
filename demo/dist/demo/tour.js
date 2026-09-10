@@ -186,6 +186,9 @@
         var pad = 14;
         var vw = document.documentElement.clientWidth;
         var vh = document.documentElement.clientHeight;
+        // Small screens: keep the controls clear of the home-indicator
+        // safe area (matches the demo.css compact-card breakpoint).
+        var padBottom = (vw <= 480 || vh <= 500) ? 30 : pad;
         var cardW = card.offsetWidth;
         var cardH = card.offsetHeight;
         if (!target) {
@@ -199,7 +202,7 @@
         if (r.top > cardH + pad + 60) {
             top = r.top - cardH - pad;      // above the target
         } else {
-            top = Math.min(vh - cardH - pad, r.bottom + pad);   // below
+            top = Math.min(vh - cardH - padBottom, r.bottom + pad);   // below
         }
         card.style.left = Math.round(Math.max(pad, left)) + 'px';
         card.style.top = Math.round(Math.max(pad, top)) + 'px';

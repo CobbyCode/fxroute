@@ -161,3 +161,14 @@
     background: rgba(255, 255, 255, 0.22);
 }
 .demo-tour-dot.is-active { background: var(--accent, #6ee7b7); }
+/* Small screens: slimmer paddings/font so the card stays compact, and a
+   larger bottom margin so buttons clear the home-indicator safe area. */
+@media (max-width: 480px), (max-height: 500px) {
+    .demo-tour-card {
+        padding: 12px 14px 12px;
+        margin-bottom: 16px;
+        font-size: 0.86rem;
+    }
+    .demo-tour-title { font-size: 1rem; }
+    .demo-tour-actions { margin-top: 10px; }
+}
