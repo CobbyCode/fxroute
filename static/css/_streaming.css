@@ -398,7 +398,8 @@
     justify-self: end;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    /* Same control rhythm as the local library toolbar. */
+    gap: var(--action-gap);
     min-width: 0;
 }
 /* Second row: the single Tracks/Albums/Artists/Playlists navigation left,

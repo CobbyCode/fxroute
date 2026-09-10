@@ -1912,6 +1912,14 @@ body {
     --control-gap: 12px;
     padding-top: 0.55rem;
 }
+/* TIDAL shares the library panel top rhythm (0.55rem) so both views start
+   at the same height; the provider shell keeps only its bottom spacing. */
+#tab-tidal {
+    padding-top: 0.55rem;
+}
+#tab-tidal .streaming-shell {
+    padding-top: 0;
+}
 .library-header {
     display: flex;
     justify-content: space-between;
@@ -1941,7 +1949,10 @@ body {
 .library-view-toggle {
     display: flex;
     align-items: center;
-    flex: 0 0 auto;
+    /* Shrinkable like the TIDAL tabs row so the four tabs wrap instead of
+       pushing past the panel edge on narrow screens. */
+    flex: 0 1 auto;
+    min-width: 0;
 }
 .library-search-wrap {
     display: flex;
@@ -3691,7 +3702,8 @@ body {
     justify-self: end;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    /* Same control rhythm as the local library toolbar. */
+    gap: var(--action-gap);
     min-width: 0;
 }
 /* Second row: the single Tracks/Albums/Artists/Playlists navigation left,

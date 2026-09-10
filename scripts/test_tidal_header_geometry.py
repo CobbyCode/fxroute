@@ -155,6 +155,41 @@ def _run():
                       page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
                 check(f"[{width}px] footer present", page.locator("#playback-bar").count() == 1)
 
+            # Library <-> TIDAL cross-view alignment: switching tabs must
+            # not move the shared header rhythm (gap, top, toggle center
+            # and right edge), so neither edges nor controls visibly jump.
+            page.evaluate("document.querySelector('.tab-btn[data-tab=\"library\"]').click()")
+            page.wait_for_timeout(400)
+            lib = page.evaluate("""(() => {
+                const gapOf = (rs, ts) => {
+                    const r = document.querySelector(rs).getBoundingClientRect();
+                    const t = document.querySelector(ts).getBoundingClientRect();
+                    return (t.x) - (r.x + r.width);
+                };
+                const row = document.querySelector('.library-header').getBoundingClientRect();
+                const tog = document.querySelector('#library-view-mode-toggle').getBoundingClientRect();
+                return { gap: gapOf('#refresh-library', '#library-view-mode-toggle'),
+                         rowTop: row.y, togCy: tog.y + tog.height / 2,
+                         togRight: tog.x + tog.width };
+            })()""")
+            activate()
+            tid = page.evaluate("""(() => {
+                const gapOf = (rs, ts) => {
+                    const r = document.querySelector(rs).getBoundingClientRect();
+                    const t = document.querySelector(ts).getBoundingClientRect();
+                    return (t.x) - (r.x + r.width);
+                };
+                const row = document.querySelector('.tidal-toolbar').getBoundingClientRect();
+                const tog = document.querySelector('#tidal-view-mode-toggle').getBoundingClientRect();
+                return { gap: gapOf('#tidal-refresh-btn', '#tidal-view-mode-toggle'),
+                         rowTop: row.y, togCy: tog.y + tog.height / 2,
+                         togRight: tog.x + tog.width };
+            })()""")
+            check("[align] refresh/toggle gaps match", abs(lib["gap"] - tid["gap"]) <= 0.5)
+            check("[align] header rows share one top", abs(lib["rowTop"] - tid["rowTop"]) <= 1)
+            check("[align] toggles share one center", abs(lib["togCy"] - tid["togCy"]) <= 1)
+            check("[align] toggles share one right edge", abs(lib["togRight"] - tid["togRight"]) <= 1)
+
             # Enter still executes the current query immediately.
             activate()
             page.fill("#tidal-search-input", "daft punk")
@@ -201,6 +236,17 @@ def _run():
                   page.locator("#tidal-refresh-btn").is_visible())
             check("[390px] no horizontal overflow on mobile",
                   page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
+            # The four library tabs wrap inside the panel instead of pushing
+            # past its right edge (same as the TIDAL tabs row).
+            page.evaluate("document.querySelector('.tab-btn[data-tab=\"library\"]').click()")
+            page.wait_for_timeout(300)
+            check("[390px] library tabs stay inside the panel", page.evaluate("""(() => {
+                const pr = document.querySelector('#tab-library').getBoundingClientRect();
+                return [...document.querySelectorAll('#tab-library *')].every((e) => {
+                    const r = e.getBoundingClientRect();
+                    return r.width < 5 || r.height < 5 || r.x + r.width <= pr.x + pr.width + 1.5;
+                });
+            })()"""))
             check("[390px] footer present on mobile", page.locator("#playback-bar").count() == 1)
 
             browser.close()
