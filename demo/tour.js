@@ -27,7 +27,7 @@
             tab: '#tab-btn-radio',
             target: '#tab-radio',
             title: 'Radio',
-            text: 'Search internet radio — type “Groove Salad” in the search box to find SomaFM stations from the online catalog, then tap any result to play it instantly.',
+            text: 'One search covers it all — type “Groove Salad” to filter your stations, the curated catalog and the web at the same time, then tap any result to play it instantly.',
             action: 'search-radio-groove',
         },
         {
