@@ -92,7 +92,7 @@
    never changes the target's layout (e.g. the fixed playback footer). */
 .demo-tour-target {
     outline: 2px solid var(--accent, #6ee7b7);
-    outline-offset: 3px;
+    outline-offset: 2px;
     border-radius: 10px;
     box-shadow: 0 0 0 4px rgba(110, 231, 183, 0.28), 0 0 26px rgba(110, 231, 183, 0.45);
 }
