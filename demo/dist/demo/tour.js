@@ -27,7 +27,7 @@
             tab: '#tab-btn-radio',
             target: '#tab-radio',
             title: 'Radio',
-            text: '100+ internet radio stations. Find a station in the search box, tap it and listen instantly — with live metadata (title & artist).',
+            text: '100+ internet radio stations. Find a station in the search box, tap it and listen instantly.',
         },
         {
             id: 'library',
