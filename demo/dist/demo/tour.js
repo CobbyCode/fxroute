@@ -41,7 +41,7 @@
             tab: '#tab-btn-effects',
             target: '#tab-effects',
             title: 'DSP & audio processing',
-            text: 'Filter presets, PEQ, limiter, loudness and more. The “+6” preset is loading right now — watch the output meter climb and the limiter engage.',
+            text: 'Filter presets with PEQ bands and convolver kernels, A/B-compare two of them with one click, and global helpers — protection limiter, autogain, loudness, bass enhancer — that apply automatically on top. The “+6” preset is loading as an example.',
             action: 'preset-plus6',
         },
         {
@@ -49,14 +49,14 @@
             tab: '#tab-btn-qobuz',
             target: '#tab-qobuz',
             title: 'Streaming providers',
-            text: 'Spotify, Qobuz and TIDAL with their own catalogs, cover artwork and quality facts — Qobuz tracks show FLAC up to 24 bit / 96 kHz.',
+            text: 'Spotify, Qobuz and TIDAL, each with its own catalog, cover artwork and search.',
         },
         {
             id: 'settings',
             tab: null,
             target: '#settings-panel',
             title: 'Technical settings',
-            text: 'This is where fxroute manages the music libraries (Local, NAS Library 1 & 2 — switch via the dropdown), streaming providers, measurement, subwoofer and more. Everything is simulated, but the full feature set is usable.',
+            text: 'The system setup: audio output device and mode (stereo, 2.1 or 2.2), streaming providers, amplifier controller and maintenance. Music libraries — Local, NAS Library 1 & 2 — are switched via the dropdown here. Everything is simulated, but fully usable.',
             action: 'open-settings',
         },
         {
@@ -64,7 +64,7 @@
             tab: null,
             target: null,
             title: 'What fxroute can do',
-            text: 'fxroute bundles simulated playback with a live meter, DSP chain, radio, streaming providers, measurement & room correction — all in a web demo.',
+            text: 'fxroute plays from the local library, radio and streaming providers, applies a full DSP chain with presets, PEQ and subwoofer integration — and measurement & room correction, all controlled from the browser.',
         },
     ];
 
