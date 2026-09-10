@@ -49,7 +49,7 @@ function post(fetch, url, body) {
 
     // ── Playlist export (M3U8), active catalog ─────────────────────────
     const pl2 = await (await fetch('/api/playlists')).json();
-    const sampler = pl2.find(p => p.id === 'playlist_d2_sampler');
+    const sampler = pl2.find(p => p.id === 'playlist_d2-sampler');
     assert.ok(sampler, 'library-2 sampler playlist present');
     const exp = await fetch('/api/playlists/' + sampler.id + '/export');
     assert.equal(exp.status, 200, 'playlist export is not swallowed by the CRUD regex');
@@ -94,10 +94,10 @@ function post(fetch, url, body) {
     assert.equal(qStatus.status, 'Playing', 'qobuz demo_start starts playback');
 
     // ── Local stream facts: real per-track samplerate_hz ───────────────
-    await post(fetch, '/api/play', { track_id: 'local_demo_aether-drift_1' });
+    await post(fetch, '/api/play', { track_id: 'local_demo_summer-on-the-block_1' });
     let st = (await (await fetch('/api/status')).json()).stream_info;
     assert.equal(st.samplerate_hz, 96000, 'hi-res local track reports 96 kHz');
-    await post(fetch, '/api/play', { track_id: 'local_demo_cover-art_1' });
+    await post(fetch, '/api/play', { track_id: 'local_demo_color-radio_1' });
     st = (await (await fetch('/api/status')).json()).stream_info;
     assert.equal(st.samplerate_hz, 48000, '48 kHz local track reports 48 kHz');
     assert.equal(st.sample_rate, undefined, 'stream_info no longer carries the wrong field name');

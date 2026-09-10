@@ -6,6 +6,7 @@
 
     const lib = window.FXROUTE_DEMO_LIBRARY;
     const lib2 = window.FXROUTE_DEMO_LIBRARY2 || { tracks: [], albums: [], playlists: [] };
+    const lib3 = window.FXROUTE_DEMO_LIBRARY3 || { tracks: [], albums: [], playlists: [] };
     const localTracks = lib.tracks;
     const tidalTracksLib = lib.tidalTracks;
     const tidalAlbumsLib = lib.tidalAlbums;
@@ -80,13 +81,15 @@
 
     // ── Playback engine ─────────────────────────────────────────────────
     let currentSource = 'local';
-    // The demo presents "NAS Library 1" (the second demo share) as its
+    // The demo presents "SMB_Demo_Library-1" (the first demo share) as its
     // active library (selectable under Settings like on a real box); local
     // playback resolves against the active catalog, routes.js keeps this
     // in sync on selection.
     let activeLibraryId = 'demo-library-2';
     function activeLibraryTracks() {
-        return activeLibraryId === 'demo-library-2' ? (lib2.tracks || []) : localTracks;
+        if (activeLibraryId === 'demo-library-2') return (lib2.tracks || []);
+        if (activeLibraryId === 'demo-nas') return (lib3.tracks || []);
+        return localTracks;
     }
     function setActiveLibraryId(id) {
         activeLibraryId = String(id || 'local');
@@ -1369,6 +1372,7 @@
     window.FXROUTE_DEMO_STATE = {
         lib,
         lib2,
+        lib3,
         localTracks,
         activeLibraryTracks,
         setActiveLibraryId,

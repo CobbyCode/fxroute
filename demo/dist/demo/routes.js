@@ -20,10 +20,10 @@
     // Pre-filled generously so the browse surfaces look like a real library
     // instead of three lonely entries.
     const tidalFavs = {
-        tracks: new Set(['t_album_01_t1', 't_album_01_t2', 't_album_02_t1', 't_album_03_t1', 't_album_04_t1', 't_album_06_t2', 't_album_08_t1', 't_album_11_t1', 't_album_13_t2', 't_album_16_t1', 't_album_18_t1', 't_album_20_t1']),
-        albums: new Set(['t_album_01', 't_album_02', 't_album_04', 't_album_06', 't_album_08', 't_album_11', 't_album_13', 't_album_16', 't_album_18', 't_album_20']),
-        artists: new Set(['t_artist_01', 't_artist_03', 't_artist_04', 't_artist_06', 't_artist_07', 't_artist_09', 't_artist_11', 't_artist_14', 't_artist_17', 't_artist_20']),
-        playlists: new Set(['t_playlist_01', 't_playlist_03', 't_playlist_04', 't_playlist_06', 't_playlist_08', 't_playlist_10', 't_playlist_12', 't_playlist_15', 't_playlist_16', 't_playlist_20']),
+        tracks: new Set(['t_album_01_t1', 't_album_01_t2', 't_album_02_t1', 't_album_03_t1', 't_album_04_t1', 't_album_05_t2', 't_album_07_t1', 't_album_09_t1', 't_album_12_t2', 't_album_14_t1', 't_album_16_t1', 't_album_18_t1']),
+        albums: new Set(['t_album_01', 't_album_02', 't_album_04', 't_album_05', 't_album_07', 't_album_09', 't_album_12', 't_album_14', 't_album_16', 't_album_18']),
+        artists: new Set(['t_artist_01', 't_artist_03', 't_artist_04', 't_artist_05', 't_artist_07', 't_artist_09', 't_artist_12', 't_artist_14', 't_artist_16', 't_artist_18']),
+        playlists: new Set(['t_playlist_01', 't_playlist_03', 't_playlist_04', 't_playlist_05', 't_playlist_06', 't_playlist_07', 't_playlist_08']),
     };
 
     // ── DSP state ───────────────────────────────────────────────────────
@@ -341,17 +341,17 @@
     }
 
     // ── Music libraries ─────────────────────────────────────────────────
-    // The demo presents "NAS Library 1" (the second demo share) as its
+    // The demo presents "SMB_Demo_Library-1" (the first demo share) as its
     // active library, like a box with that share selected; Local and
-    // "NAS Library 2" stay selectable under Settings and serve the main
-    // catalog.
+    // "SMB_Demo_Library-2" stay selectable under Settings. Each share serves
+    // its own catalog (local main, demo-library-2 SMB-1, demo-nas SMB-2).
     const musicLibraries = {
         active_id: 'demo-library-2',
         active_type: 'smb',
         libraries: [
             { id: 'local', label: 'Local', type: 'local' },
-            { id: 'demo-library-2', label: 'NAS Library 1', type: 'smb' },
-            { id: 'demo-nas', label: 'NAS Library 2', type: 'smb' },
+            { id: 'demo-library-2', label: 'SMB_Demo_Library-1', type: 'smb' },
+            { id: 'demo-nas', label: 'SMB_Demo_Library-2', type: 'smb' },
         ],
     };
 
@@ -410,29 +410,36 @@
         return refreshing ? { ...musicLibraries, discovery_refreshing: true } : musicLibraries;
     }
 
-    // Second demo catalog (demo/data/library2.js): the "NAS Library 1"
-    // SMB share. Only the selected library serves the browse surfaces —
-    // local and NAS keep serving the main catalog exactly as before.
+    // Second/third demo catalogs (demo/data/library2.js = SMB_Demo_Library-1,
+    // demo/data/library3.js = SMB_Demo_Library-2). Only the selected library
+    // serves the browse surfaces; manually added shares fall back to local.
     const lib2 = window.FXROUTE_DEMO_LIBRARY2 || { tracks: [], albums: [] };
+    const lib3 = window.FXROUTE_DEMO_LIBRARY3 || { tracks: [], albums: [] };
     function activeLib() {
-        return musicLibraries.active_id === 'demo-library-2' ? lib2 : lib;
+        if (musicLibraries.active_id === 'demo-library-2') return lib2;
+        if (musicLibraries.active_id === 'demo-nas') return lib3;
+        return lib;
     }
-    // Cross-catalog lookup: the active catalog wins, the other one is a
-    // fallback so ids referenced by live state (a track still playing from
-    // the library that was just switched away) keep resolving. Returns the
+    // Cross-catalog lookup: the active catalog wins, the others are
+    // fallbacks so ids referenced by live state (a track still playing from
+    // a library that was just switched away) keep resolving. Returns the
     // owning catalog alongside the item, so dependent endpoints serve or
     // mutate the right catalog instead of re-filtering through activeLib().
+    const allCatalogs = () => [activeLib(), lib, lib2, lib3]
+        .filter((cat, idx, arr) => cat && arr.indexOf(cat) === idx);
     function findAlbum(id) {
-        const active = activeLib();
-        const other = active === lib ? lib2 : lib;
-        const album = active.albums.find(a => a.id === id) || other.albums.find(a => a.id === id);
-        return album ? { album, catalog: active.albums.includes(album) ? active : other } : null;
+        for (const catalog of allCatalogs()) {
+            const album = catalog.albums.find(a => a.id === id);
+            if (album) return { album, catalog };
+        }
+        return null;
     }
     function findTrack(id) {
-        const active = activeLib();
-        const other = active === lib ? lib2 : lib;
-        const track = active.tracks.find(t => t.id === id) || other.tracks.find(t => t.id === id);
-        return track ? { track, catalog: active.tracks.includes(track) ? active : other } : null;
+        for (const catalog of allCatalogs()) {
+            const track = catalog.tracks.find(t => t.id === id);
+            if (track) return { track, catalog };
+        }
+        return null;
     }
 
     // ── Demo download bodies ────────────────────────────────────────────

@@ -9,6 +9,7 @@ const os = require('node:os');
 const root = path.join(__dirname, '..');
 const librarySource = fs.readFileSync(path.join(root, 'demo', 'data', 'library.js'), 'utf8');
 const library2Source = fs.readFileSync(path.join(root, 'demo', 'data', 'library2.js'), 'utf8');
+const library3Source = fs.readFileSync(path.join(root, 'demo', 'data', 'library3.js'), 'utf8');
 const radioSource = fs.readFileSync(path.join(root, 'demo', 'data', 'radio.js'), 'utf8');
 const measurementsSource = fs.readFileSync(path.join(root, 'demo', 'data', 'measurements.js'), 'utf8');
 const stateSource = fs.readFileSync(path.join(root, 'demo', 'state.js'), 'utf8');
@@ -37,6 +38,7 @@ function makeDemoContext() {
     vm.createContext(ctx);
     vm.runInContext(librarySource, ctx);
     vm.runInContext(library2Source, ctx);
+    vm.runInContext(library3Source, ctx);
     vm.runInContext(radioSource, ctx);
     vm.runInContext(measurementsSource, ctx);
     vm.runInContext(stateSource, ctx);
@@ -117,8 +119,8 @@ const serveSource = fs.readFileSync(path.join(root, 'scripts', 'serve_demo.py'),
 assert.match(serveSource, /from urllib\.parse import unquote, urlsplit/);
 assert.match(serveSource, /path = unquote\(urlsplit\(self\.path\)\.path\)/);
 assert.match(buildSource, /static_src\s*\/\s*['"]demo['"]|demo_art/);
-assert.ok(fs.existsSync(path.join(root, 'static', 'demo', '1800ECLIPSE.jpg')));
-assert.ok(fs.existsSync(path.join(root, 'demo', 'dist', 'static', 'demo', '1800ECLIPSE.jpg')));
+assert.ok(fs.existsSync(path.join(root, 'static', 'demo', 's1-nova-static-midnight-relay.jpg')));
+assert.ok(fs.existsSync(path.join(root, 'demo', 'dist', 'static', 'demo', 's1-nova-static-midnight-relay.jpg')));
 // Web fonts referenced by style.css must also be copied into the dist snapshot.
 assert.ok(fs.existsSync(path.join(root, 'demo', 'dist', 'static', 'fonts', 'Geist.woff2')));
 assert.ok(fs.existsSync(path.join(root, 'demo', 'dist', 'static', 'fonts', 'GeistMono.woff2')));
@@ -204,8 +206,7 @@ try {
 }
 const firstLibraryAlbum = context.FXROUTE_DEMO_LIBRARY.albums[0];
 assert.match(firstLibraryAlbum.demo_cover_url, /^\/static\/demo\/.*\.jpg$/);
-// Every demo cover URL must resolve to a real pooled file: file names with
-// spaces (e.g. "USER GUIDE.jpg") are served unencoded, so no cover URL may
+// Every demo cover URL must resolve to a real pooled file, so no cover URL may
 // carry percent-encoding (it 404s on the live demo route).
 const demoArtFiles = new Set(fs.readdirSync(path.join(root, 'static', 'demo')));
 for (const artist of context.FXROUTE_DEMO_LIBRARY.tidalArtists) {
@@ -214,9 +215,9 @@ for (const artist of context.FXROUTE_DEMO_LIBRARY.tidalArtists) {
     assert.ok(demoArtFiles.has(decodeURIComponent(artist.image_url.split('/').pop().replace(/\.jpg$/, '')) + '.jpg'),
         `cover file missing for ${artist.name}: ${artist.image_url}`);
 }
-const opalVanguard = context.FXROUTE_DEMO_LIBRARY.tidalArtists.find(a => a.id === 't_artist_07');
-assert.ok(opalVanguard && opalVanguard.image_url === '/static/demo/USER GUIDE.jpg');
-assert.ok(fs.existsSync(path.join(root, 'static', 'demo', 'USER GUIDE.jpg')));
+const marlowe = context.FXROUTE_DEMO_LIBRARY.tidalArtists.find(a => a.id === 't_artist_01');
+assert.ok(marlowe && marlowe.image_url === '/static/demo/t-the-marlowe-ensemble-velvet-skyline.jpg');
+assert.ok(fs.existsSync(path.join(root, 'static', 'demo', 't-the-marlowe-ensemble-velvet-skyline.jpg')));
 assert.match(appSource, /album\.demo_cover_url/);
 assert.match(buildSource, /static_src\s*\/\s*['"]demo['"]|demo_art/);
 assert.match(routesSource, /suspend_supported: true/);
@@ -650,24 +651,24 @@ const radio = state.getPlayback();
     // Discover reuses the demo library itself (same genre/decade first),
     // max 6 items, never the album itself, 404 for unknown ids.
     // This section covers the main catalog, so select Local first (the
-    // demo presents NAS Library 1 by default).
+    // demo presents SMB_Demo_Library-1 by default).
     await demoFetch('/api/music-libraries/select', { method: 'POST', body: JSON.stringify({ id: 'local' }) });
     const demoAlbums = await (await demoFetch('/api/albums')).json();
-    const neonRain = demoAlbums.find(a => a.id === 'neon-rain');
-    assert.ok(neonRain && neonRain.artist_description && neonRain.artist_description.includes('Alistair Kade'));
-    assert.equal(neonRain.album_description || '', '');
-    const oldTown = demoAlbums.find(a => a.name === 'Old Town Sessions');
-    assert.ok(oldTown && oldTown.album_description && oldTown.album_description.length > 40);
-    assert.ok(oldTown.artist_description && oldTown.artist_description.length > 40);
-    for (const album of [neonRain, oldTown]) {
+    const afterRain = demoAlbums.find(a => a.id === 'after-the-rain');
+    assert.ok(afterRain && afterRain.artist_description && afterRain.artist_description.includes('Blue Meridian'));
+    assert.equal(afterRain.album_description || '', '');
+    const colorRadio = demoAlbums.find(a => a.name === 'Color Radio');
+    assert.ok(colorRadio && colorRadio.album_description && colorRadio.album_description.length > 40);
+    assert.ok(colorRadio.artist_description && colorRadio.artist_description.length > 40);
+    for (const album of [afterRain, colorRadio]) {
         const disc = await (await demoFetch('/api/albums/' + encodeURIComponent(album.id) + '/discover')).json();
         assert.equal(disc.album_id, album.id);
         assert.ok(Array.isArray(disc.items) && disc.items.length > 0 && disc.items.length <= 6);
         assert.ok(disc.items.every(item => item.id !== album.id), 'discover must not suggest the album itself');
         assert.ok(disc.items.every(item => item.name && item.artist && item.coverUrl));
     }
-    const neonDisc = await (await demoFetch('/api/albums/neon-rain/discover')).json();
-    assert.ok(neonDisc.items.some(item => item.artist !== 'Alistair Kade'), 'discover must reach beyond the same artist');
+    const afterRainDisc = await (await demoFetch('/api/albums/after-the-rain/discover')).json();
+    assert.ok(afterRainDisc.items.some(item => item.artist !== 'Blue Meridian'), 'discover must reach beyond the same artist');
     const unknownDisc = await demoFetch('/api/albums/does-not-exist/discover');
     assert.equal(unknownDisc.status, 404);
 
@@ -682,7 +683,7 @@ const radio = state.getPlayback();
     assert.ok(tidalArtists.length >= 10);
     assert.ok(tidalArtists.every(a => context.FXROUTE_DEMO_LIBRARY.tidalArtistAbout[a.name]
         && context.FXROUTE_DEMO_LIBRARY.tidalArtistAbout[a.name].length > 40));
-    for (const artistId of ['t_artist_01', 't_artist_11', 't_artist_16']) {
+    for (const artistId of ['t_artist_01', 't_artist_05', 't_artist_14']) {
         const detail = await (await demoFetch('/api/streaming/tidal/artists/' + artistId)).json();
         assert.ok(detail.enrichment && detail.enrichment.about && detail.enrichment.about.length > 40);
         assert.ok(Array.isArray(detail.enrichment.similar) && detail.enrichment.similar.length === 6);
@@ -867,7 +868,7 @@ const radio = state.getPlayback();
     // the full initial stock from the fixtures. Runs in its own isolated
     // session so it is independent of the mutations above.
     const session = makeDemoContext();
-    // The demo presents NAS Library 1 by default; pin the stock
+    // The demo presents SMB_Demo_Library-1 by default; pin the stock
     // reset/restore contract to the main catalog (Local) so the fixtures
     // that ship the product demo keep being exercised.
     await session.fetch('/api/music-libraries/select', { method: 'POST', body: JSON.stringify({ id: 'local' }) });
