@@ -163,13 +163,32 @@ def track_titles(genre: str, album: str, count: int, seed_extra: str = "") -> li
 
 
 def hash_code(text: str) -> int:
-    """Mirror the demo fixture hashCode() (library.js) for favorites."""
+    """Mirror the demo fixture hashCode() (library.js) used for favorites."""
     h = 0
     for ch in str(text):
         h = ((h << 5) - h + ord(ch)) & 0xFFFFFFFF
     if h >= 0x80000000:
         h -= 0x100000000
     return h & 0x7FFFFFFF
+
+
+def favorite_flags(albums: list[dict]) -> dict[str, bool]:
+    """Deterministic favorite flags for every track/album id.
+
+    Mirrors the main demo catalog's hashCode() favorites (library.js):
+    tracks are favored when ``hashCode('fav-track:' + id) % 4 == 0``, albums
+    when ``hashCode('fav-album:' + key) % 3 == 0``. Computed here in Python
+    and emitted literally into the fixture, so the webdemo data carries the
+    favorites instead of re-deriving them at page load.
+    """
+    flags: dict[str, bool] = {}
+    for entry in albums:
+        album_key = entry["album_key"]
+        flags[f"album:{album_key}"] = hash_code("fav-album:" + album_key) % 3 == 0
+        for index, _ in enumerate(entry["tracks"], start=1):
+            track_id = f"{album_key}_{index:02d}"
+            flags[f"track:{track_id}"] = hash_code("fav-track:" + track_id) % 4 == 0
+    return flags
 
 
 def build_playlists(manifest_albums: list[dict]) -> list[dict]:
@@ -238,10 +257,46 @@ def tag_flac(path: Path, *, artist: str, album: str, title: str, track_no: int, 
     audio.save()
 
 
+def album_seed_entries() -> list[dict]:
+    """Pure per-album manifest entries (no file I/O).
+
+    Everything the builder and the webdemo fixture share — track titles,
+    counts, durations and the tone RNG draws — is derived deterministically
+    from ALBUMS, so the fixture can be re-rendered without the source
+    covers. ``root_hz`` is carried along to keep the tone RNG sequence
+    identical to the file-writing build(); it is stripped from the emitted
+    manifest.
+    """
+    entries = []
+    for png_name, artist, album, genre, year in ALBUMS:
+        album_slug = slug(f"{artist}-{album}")
+        album_key = "d2-" + slug(album)
+        titles = track_titles(genre, album, track_count_for(album))
+        rng = random.Random(f"fxroute-demo2-tones:{album}")
+        tracks = []
+        for index, title in enumerate(titles, start=1):
+            root_hz = rng.choice(TONE_LADDER)
+            duration_s = round(8.0 + rng.random() * 12.0, 1)
+            tracks.append({
+                "file": f"{index:02d} - {sanitize_filename(title)}.flac",
+                "title": title,
+                "duration": duration_s,
+                "sample_rate_hz": SAMPLE_RATE,
+                "root_hz": root_hz,
+            })
+        entries.append({
+            "artist": artist, "album": album, "genre": genre, "year": year,
+            "slug": album_slug, "album_key": album_key, "cover": "folder.jpg",
+            "pool_image": f"d2-{album_slug}.jpg",
+            "tracks": tracks,
+        })
+    return entries
+
+
 def build(src_dir: Path, out_dir: Path, pool_dir: Path | None) -> dict:
     manifest: dict = {"library": "Demo Library 2", "albums": []}
     total_tracks = 0
-    for png_name, artist, album, genre, year in ALBUMS:
+    for entry, (png_name, artist, album, genre, year) in zip(album_seed_entries(), ALBUMS):
         src = src_dir / png_name
         if not src.is_file():
             raise FileNotFoundError(f"missing source cover: {src}")
@@ -251,34 +306,21 @@ def build(src_dir: Path, out_dir: Path, pool_dir: Path | None) -> dict:
         cover = square_cover(src, COVER_SIZE, COVER_QUALITY)
         cover.save(album_dir / "folder.jpg", quality=COVER_QUALITY)
 
-        album_slug = slug(f"{artist}-{album}")
-        album_key = "d2-" + slug(album)
         if pool_dir is not None:
             pool = square_cover(src, POOL_SIZE, POOL_QUALITY)
-            pool.save(pool_dir / f"d2-{album_slug}.jpg", quality=POOL_QUALITY)
+            pool.save(pool_dir / entry["pool_image"], quality=POOL_QUALITY)
 
-        count = track_count_for(album)
-        titles = track_titles(genre, album, count)
-        rng = random.Random(f"fxroute-demo2-tones:{album}")
-        tracks = []
-        for index, title in enumerate(titles, start=1):
-            filename = f"{index:02d} - {sanitize_filename(title)}.flac"
-            track_path = album_dir / filename
-            root_hz = rng.choice(TONE_LADDER)
-            duration_s = round(8.0 + rng.random() * 12.0, 1)
-            synth_track(track_path, root_hz, duration_s)
-            tag_flac(track_path, artist=artist, album=album, title=title,
+        for index, track in enumerate(entry["tracks"], start=1):
+            track_path = album_dir / track["file"]
+            synth_track(track_path, track["root_hz"], track["duration"])
+            tag_flac(track_path, artist=artist, album=album, title=track["title"],
                      track_no=index, genre=genre, year=year)
-            tracks.append({"file": filename, "title": title,
-                           "duration": duration_s, "sample_rate_hz": SAMPLE_RATE})
-            total_tracks += 1
-        manifest["albums"].append({
-            "artist": artist, "album": album, "genre": genre, "year": year,
-            "slug": album_slug, "album_key": album_key, "cover": "folder.jpg",
-            "pool_image": f"d2-{album_slug}.jpg",
-            "tracks": tracks,
-        })
-        print(f"{artist} — {album}: {len(tracks)} tracks")
+
+        manifest_tracks = [{k: v for k, v in t.items() if k != "root_hz"}
+                           for t in entry["tracks"]]
+        manifest["albums"].append({**entry, "tracks": manifest_tracks})
+        total_tracks += len(entry["tracks"])
+        print(f"{artist} — {album}: {len(entry['tracks'])} tracks")
     manifest["album_count"] = len(manifest["albums"])
     manifest["track_count"] = total_tracks
     manifest["playlists"] = build_playlists(manifest["albums"])
@@ -299,14 +341,9 @@ JS_PREAMBLE = """// Demo Library 2 catalog fixture (generated by scripts/build_d
 
     const SEEDS = %s;
     const PLAYLISTS = %s;
-
-    function hashCode(text) {
-        let h = 0;
-        for (let i = 0; i < String(text).length; i += 1) {
-            h = ((h << 5) - h + String(text).charCodeAt(i)) | 0;
-        }
-        return h & 0x7fffffff;
-    }
+    // Deterministic favorites, computed in Python (favorite_flags) so the
+    // fixture carries the flags instead of re-deriving them at page load.
+    const FAVORITES = %s;
 
     const tracks = [];
     const albums = [];
@@ -337,7 +374,7 @@ JS_PREAMBLE = """// Demo Library 2 catalog fixture (generated by scripts/build_d
                 artwork_available: true,
                 artwork_url: cover,
                 artwork_source: 'library',
-                favorite: hashCode('fav-track:' + id) %% 4 === 0,
+                favorite: FAVORITES['track:' + id],
             });
         });
         albums.push({
@@ -349,7 +386,7 @@ JS_PREAMBLE = """// Demo Library 2 catalog fixture (generated by scripts/build_d
             years: [year],
             year,
             release_type: 'Album',
-            favorite: hashCode('fav-album:' + albumKey) %% 3 === 0,
+            favorite: FAVORITES['album:' + albumKey],
             cover_source: 'folder',
             has_external_cover: false,
             coverUrl: cover,
@@ -364,17 +401,22 @@ JS_PREAMBLE = """// Demo Library 2 catalog fixture (generated by scripts/build_d
 """
 
 
-def emit_webdemo_js(manifest: dict, dest: Path) -> None:
+def render_webdemo_js(manifest: dict) -> str:
+    """Render the library2.js fixture text from a manifest (pure)."""
     seeds = [
         [entry["artist"], entry["album"], entry["genre"], entry["year"],
          entry["pool_image"], [[t["title"], t["duration"]] for t in entry["tracks"]]]
         for entry in manifest["albums"]
     ]
-    dest.write_text(
-        JS_PREAMBLE % (json.dumps(seeds, ensure_ascii=False),
-                       json.dumps(manifest["playlists"], ensure_ascii=False)),
-        encoding="utf-8",
+    return JS_PREAMBLE % (
+        json.dumps(seeds, ensure_ascii=False),
+        json.dumps(manifest["playlists"], ensure_ascii=False),
+        json.dumps(favorite_flags(manifest["albums"]), ensure_ascii=False, sort_keys=True),
     )
+
+
+def emit_webdemo_js(manifest: dict, dest: Path) -> None:
+    dest.write_text(render_webdemo_js(manifest), encoding="utf-8")
     print(f"webdemo fixture: {dest} ({len(manifest['playlists'])} playlists)")
 
 
