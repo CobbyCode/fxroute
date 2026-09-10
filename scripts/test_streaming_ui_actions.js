@@ -210,6 +210,8 @@ function runStreaming(options = {}) {
             clearInterval: () => {},
             setTimeout,
             clearTimeout,
+            // Detail opens reset the window scroll; the shim has no viewport.
+            scrollTo() {},
         },
         setInterval: () => 0,
         clearInterval: () => {},

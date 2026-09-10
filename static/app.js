@@ -6128,11 +6128,11 @@ function playlistFallbackMarkSvg() {
 }
 
 // The library tab has no inner scroll container (neither #tab-library nor
-// #tab-content nor their ancestors set an overflow), so the album grid and
-// the album detail share the window scroll. Opening an album must reset it,
+// #tab-content nor their ancestors set an overflow), so the grids and the
+// detail views share the window scroll. Opening a detail must reset it,
 // otherwise the detail inherits the grid position and starts mid-page at
 // the tracks instead of at the cover/title hero.
-function scrollAlbumDetailToTop() {
+function scrollLibraryDetailToTop() {
     window.scrollTo(0, 0);
 }
 
@@ -6174,7 +6174,7 @@ async function openAlbumDetail(albumId) {
         if (elements.playlistDetail) elements.playlistDetail.classList.add('hidden');
         elements.albumDetail.classList.remove('hidden');
         updatePlaylistSaveRowVisibility();
-        scrollAlbumDetailToTop();
+        scrollLibraryDetailToTop();
     } catch (e) {
         console.warn('Failed to load album tracks', e);
     }
@@ -6222,7 +6222,7 @@ async function openSmartTopTracks() {
         if (elements.playlistDetail) elements.playlistDetail.classList.add('hidden');
         elements.albumDetail.classList.remove('hidden');
         updatePlaylistSaveRowVisibility();
-        scrollAlbumDetailToTop();
+        scrollLibraryDetailToTop();
     } catch (e) {
         console.warn('Failed to load Top 40', e);
         showToast('Failed to load Top 40', 'error');
@@ -6574,6 +6574,7 @@ function openPlaylistDetail(playlistId) {
     elements.albumDetail.classList.add('hidden');
     if (elements.playlistDetail) elements.playlistDetail.classList.remove('hidden');
     updatePlaylistSaveRowVisibility();
+    scrollLibraryDetailToTop();
 }
 
 function renderPlaylistDetailTracks() {
@@ -6821,6 +6822,25 @@ function syncRenderedTrackSelection() {
         });
     });
 }
+// The save row is a single shared node. Its home is below the detail cards
+// (right before #library-info), but while an album detail is open it docks
+// inside the detail between header and tracks — like the TIDAL save row —
+// instead of sitting misplaced under the track list. Placement is
+// idempotent, so typing in the name field never moves the focused input.
+function dockPlaylistSaveRow() {
+    const row = elements.playlistSaveRow;
+    if (!row || !elements.albumDetail || !elements.albumDetailTracks || !elements.libraryInfo) return;
+    if (!elements.albumDetail.classList.contains('hidden')) {
+        if (row.parentElement !== elements.albumDetail || row.nextSibling !== elements.albumDetailTracks) {
+            elements.albumDetail.insertBefore(row, elements.albumDetailTracks);
+        }
+        return;
+    }
+    const home = elements.libraryInfo;
+    if (row.parentElement !== home.parentElement || row.nextSibling !== home) {
+        home.parentElement.insertBefore(row, home);
+    }
+}
 function updatePlaylistSaveRowVisibility() {
     if (!elements.playlistSaveRow) return;
     const count = state.library.selectedTrackIds.length;
@@ -6841,6 +6861,7 @@ function updatePlaylistSaveRowVisibility() {
     if (elements.deletePlaylistBtn) {
         elements.deletePlaylistBtn.classList.toggle('hidden', !isEditingPlaylist);
     }
+    dockPlaylistSaveRow();
 }
 function updateLibrarySelectionUI() {
     const allTracks = state.library.tracks || [];

@@ -52,17 +52,24 @@ assert.ok(openAlbum.includes('setAlbumDetailBackdrop('),
 assert.ok(openTopTracks.includes('setAlbumDetailBackdrop('),
     'Top 40 album detail must synchronize the artwork backdrop');
 // The library tab shares the window scroll (no inner scroll container), so
-// opening an album must reset it after showing the detail — otherwise the
+// opening a detail must reset it after showing the detail — otherwise the
 // detail inherits the grid position and starts mid-page at the tracks.
-const scrollReset = extractFunction(appJs, 'scrollAlbumDetailToTop');
+const scrollReset = extractFunction(appJs, 'scrollLibraryDetailToTop');
 assert.ok(scrollReset.includes('window.scrollTo(0, 0)'),
-    'the album scroll reset must return the window scroll to exactly the top');
-for (const [fn, label] of [[openAlbum, 'openAlbumDetail'], [openTopTracks, 'openSmartTopTracks']]) {
-    assert.ok(fn.includes('scrollAlbumDetailToTop()'),
-        `${label} must reset the scroll when opening the album detail`);
-    assert.ok(fn.indexOf('scrollAlbumDetailToTop()') > fn.indexOf("albumDetail.classList.remove('hidden')"),
+    'the detail scroll reset must return the window scroll to exactly the top');
+const openPlaylist = extractFunction(appJs, 'openPlaylistDetail');
+for (const [fn, label] of [[openAlbum, 'openAlbumDetail'], [openTopTracks, 'openSmartTopTracks'], [openPlaylist, 'openPlaylistDetail']]) {
+    assert.ok(fn.includes('scrollLibraryDetailToTop()'),
+        `${label} must reset the scroll when opening the detail view`);
+    assert.ok(fn.indexOf('scrollLibraryDetailToTop()') > fn.indexOf("classList.remove('hidden')"),
         `${label} must reset the scroll after showing the detail, not during loading`);
 }
+// TIDAL details replace the browse content in place through one funnel and
+// share the window scroll, so the funnel resets it for album, artist and
+// playlist details alike.
+const openTidalDetail = extractFunction(streamingJs, 'openTidalDetail');
+assert.ok(openTidalDetail.includes('window.scrollTo(0, 0)'),
+    'openTidalDetail must reset the scroll for every TIDAL detail view');
 assert.ok(appJs.includes('albumDetailBackdrop:'),
     'app.js must retain a dedicated local album backdrop element');
 assert.ok(appJs.includes('playlistDetailBackdrop:'),

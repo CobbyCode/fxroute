@@ -2046,6 +2046,9 @@
     }
 
     // -- album / playlist detail ----------------------------------------------
+    // Detail views replace the browse content in place and share the window
+    // scroll (no inner scroll container), so every detail open resets it to
+    // the top instead of inheriting the browse position.
     function openTidalDetail(view, id, title, artUrl) {
         // Push the full current detail state so Back returns exactly through
         // nested details (browse -> artist -> album) with the previous view's
@@ -2063,6 +2066,7 @@
         state.tidal.detailArt = artUrl || '';
         const entry = entryFor('tidal');
         if (entry) renderTidalBrowse(entry);
+        window.scrollTo(0, 0);
     }
 
     function openTidalAlbum(id, title, artUrl) {
