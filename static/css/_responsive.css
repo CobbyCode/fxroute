@@ -1399,7 +1399,7 @@
 
     /* iOS auto-zoom guard: text inputs stay at 16px on phones. */
     .station-search-input,
-    .library-search-input,
+    .library-search-field .library-search-input,
     .streaming-search-input,
     .playlist-save-row .url-input {
         font-size: 16px;
@@ -1417,7 +1417,7 @@
     /* iOS auto-zoom guard for the remaining form controls (library, radio,
        streaming, settings, measurement). Desktop keeps the compact sizes. */
     .station-search-input,
-        .library-search-input,
+        .library-search-field .library-search-input,
         .streaming-search-input,
         .url-input,
         select.url-input,

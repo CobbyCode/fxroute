@@ -1952,12 +1952,16 @@ body {
     min-width: 0;
 }
 .library-search-field {
-    flex: 0 1 clamp(400px, 36vw, 700px);
-    width: clamp(400px, 36vw, 700px);
+    /* Same width language as the TIDAL search (430px, right-flush via the
+       wrap). Definite flex-basis: the wrap shrink-fits its content, so a
+       percentage width would have no definite base to resolve against. */
+    flex: 0 1 430px;
+    width: 430px;
+    max-width: 100%;
     min-width: 0;
     position: relative;
 }
-.library-search-input {
+.library-search-field .library-search-input {
     width: 100%;
     padding-right: 2.1rem;
     font-size: 0.86rem;
@@ -2007,6 +2011,11 @@ body {
     gap: var(--action-gap);
     flex-wrap: nowrap;
     flex: 0 0 auto;
+}
+/* An emptied toolbar (every action hidden, e.g. Select-all in albums
+   mode) collapses so the wrap gap cannot indent the search field. */
+.library-selection-toolbar:not(:has(> :not(.hidden))) {
+    display: none;
 }
 .library-selection-toolbar .btn-secondary {
     min-width: 118px;
@@ -8326,7 +8335,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
     /* iOS auto-zoom guard: text inputs stay at 16px on phones. */
     .station-search-input,
-    .library-search-input,
+    .library-search-field .library-search-input,
     .streaming-search-input,
     .playlist-save-row .url-input {
         font-size: 16px;
@@ -8344,7 +8353,7 @@ input[type="number"]::-webkit-outer-spin-button {
     /* iOS auto-zoom guard for the remaining form controls (library, radio,
        streaming, settings, measurement). Desktop keeps the compact sizes. */
     .station-search-input,
-        .library-search-input,
+        .library-search-field .library-search-input,
         .streaming-search-input,
         .url-input,
         select.url-input,
