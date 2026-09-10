@@ -121,11 +121,11 @@
     const PEAK_THRESHOLD_DB = 1.0;
     const PEAK_HOLD_MS = 600;
     // Music-like crest factor above the instantaneous program. Bounded so
-    // headroom always clears the red zone: transient max (-7 dB) + crest
-    // max (10 dB) stays under 0 dBFS down to -3 dB headroom, while a hot
-    // master (+3/+6 presets, loudness) still gets there.
-    const PEAK_CREST_DB = 6;
-    const PEAK_CREST_SPREAD_DB = 4;
+    // headroom always clears the red zone: transient max (-4 dB) + crest
+    // max (6 dB) stays under 0 dBFS down to -3 dB headroom, while hot hits
+    // flash red occasionally at default level and a hot master clearly does.
+    const PEAK_CREST_DB = 3;
+    const PEAK_CREST_SPREAD_DB = 3;
     const peakDet = {
         l: { hits: 0, holdUntil: 0, lastOverAt: null },
         r: { hits: 0, holdUntil: 0, lastOverAt: null },
@@ -198,7 +198,7 @@
         const active = !!(playing && !paused && currentTrack);
         if (active && !meterWasActive) {
             // Fresh signal: start on the program, not on the floor.
-            const base = -23 + Math.random() * 9;
+            const base = -17 + Math.random() * 9;      // -17..-8 dB program
             const spread = (Math.random() - 0.5) * 3;
             meterEnv.tL = base + spread;
             meterEnv.tR = base - spread;
@@ -214,18 +214,18 @@
                 // stereo spread; occasionally a transient into the upper VU
                 // that decays over the next tick or two. Playback always starts
                 // with one so the meter comes alive immediately.
-                const base = -23 + Math.random() * 9;      // -23..-14 dB program
+                const base = -17 + Math.random() * 9;      // -17..-8 dB program
                 const spread = (Math.random() - 0.5) * 3;  // +/- 1.5 dB
                 meterEnv.tL = base + spread;
                 meterEnv.tR = base - spread;
                 meterEnv.nextPickTs = nowTs + 1200 + Math.random() * 2200;
                 if (Math.random() < 0.22) {
                     meterEnv.transientTs = nowTs + 800 + Math.random() * 800;
-                    // Upper-VU events, never near full scale on their own:
-                    // with the music-like crest below, raw peaks stay under
-                    // 0 dBFS at default level, so headroom always clears the
-                    // red zone while a hot master still gets there.
-                    meterEnv.transientL = -10 + Math.random() * 3;
+                    // Louder passages, still below full scale on their own:
+                    // with the music-like crest below, raw peaks reach the
+                    // red zone on hot hits at default level, never with
+                    // headroom engaged, always on a hot master.
+                    meterEnv.transientL = -6 + Math.random() * 2;
                     meterEnv.transientR = meterEnv.transientL + (Math.random() - 0.5) * 2;
                 }
             }

@@ -163,7 +163,7 @@ function makeDemoContext(bootArmed) {
     // with headroom engaged: transient max (-7 dB) + crest max (10 dB)
     // stays under 0 dBFS down to -3 dB headroom, by construction.
     const calmHits = await peakHits(null);
-    assert.ok(calmHits <= 5, `default program must stay out of the red except for rare flashes (got ${calmHits})`);
+    assert.ok(calmHits <= 8, `default program must stay out of the red except for rare flashes (got ${calmHits})`);
     for (const gain of [-3, -6]) {
         const hrHits = await peakHits((post) => post('/api/dsp/extras', { headroom_enabled: true, headroom_gain_db: gain }));
         assert.equal(hrHits, 0, `headroom ${gain} dB must keep the meter out of the red`);
