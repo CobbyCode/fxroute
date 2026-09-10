@@ -8,6 +8,7 @@ const os = require('node:os');
 
 const root = path.join(__dirname, '..');
 const librarySource = fs.readFileSync(path.join(root, 'demo', 'data', 'library.js'), 'utf8');
+const library2Source = fs.readFileSync(path.join(root, 'demo', 'data', 'library2.js'), 'utf8');
 const radioSource = fs.readFileSync(path.join(root, 'demo', 'data', 'radio.js'), 'utf8');
 const measurementsSource = fs.readFileSync(path.join(root, 'demo', 'data', 'measurements.js'), 'utf8');
 const stateSource = fs.readFileSync(path.join(root, 'demo', 'state.js'), 'utf8');
@@ -35,6 +36,7 @@ function makeDemoContext() {
     ctx.window = ctx;
     vm.createContext(ctx);
     vm.runInContext(librarySource, ctx);
+    vm.runInContext(library2Source, ctx);
     vm.runInContext(radioSource, ctx);
     vm.runInContext(measurementsSource, ctx);
     vm.runInContext(stateSource, ctx);
@@ -647,6 +649,9 @@ const radio = state.getPlayback();
     // album_description) the real UI renders as collapsible <details>;
     // Discover reuses the demo library itself (same genre/decade first),
     // max 6 items, never the album itself, 404 for unknown ids.
+    // This section covers the main catalog, so select Local first (the
+    // demo presents Demo Library 2 by default).
+    await demoFetch('/api/music-libraries/select', { method: 'POST', body: JSON.stringify({ id: 'local' }) });
     const demoAlbums = await (await demoFetch('/api/albums')).json();
     const neonRain = demoAlbums.find(a => a.id === 'neon-rain');
     assert.ok(neonRain && neonRain.artist_description && neonRain.artist_description.includes('Alistair Kade'));

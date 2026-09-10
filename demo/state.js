@@ -5,6 +5,7 @@
     'use strict';
 
     const lib = window.FXROUTE_DEMO_LIBRARY;
+    const lib2 = window.FXROUTE_DEMO_LIBRARY2 || { tracks: [], albums: [], playlists: [] };
     const localTracks = lib.tracks;
     const tidalTracksLib = lib.tidalTracks;
     const tidalAlbumsLib = lib.tidalAlbums;
@@ -80,6 +81,16 @@
 
     // ── Playback engine ─────────────────────────────────────────────────
     let currentSource = 'local';
+    // The demo presents "Demo Library 2" as its active library (selectable
+    // under Settings like on a real box); local playback resolves against
+    // the active catalog, routes.js keeps this in sync on selection.
+    let activeLibraryId = 'demo-library-2';
+    function activeLibraryTracks() {
+        return activeLibraryId === 'demo-library-2' ? (lib2.tracks || []) : localTracks;
+    }
+    function setActiveLibraryId(id) {
+        activeLibraryId = String(id || 'local');
+    }
     let currentTrack = null;
     let queue = [];
     let queueIndex = -1;
@@ -451,7 +462,7 @@
     }
 
     function playNext() {
-        if (!queue.length) { playLocal(localTracks[0]?.id); return; }
+        if (!queue.length) { playLocal(activeLibraryTracks()[0]?.id); return; }
         if (currentSource === 'spotify') { spotify.next(); return; }
         if (currentSource === 'qobuz') { qobuz.next(); return; }
         const nextIndex = (queueIndex + 1) % queue.length;
@@ -469,7 +480,7 @@
 
     function togglePause() {
         if (!currentTrack) {
-            playLocal(localTracks[0]?.id);
+            playLocal(activeLibraryTracks()[0]?.id);
             return;
         }
         if (currentSource === 'spotify') { spotify.toggle(); return; }
@@ -482,10 +493,11 @@
 
     // ── Play entry points (used by routes.js) ───────────────────────────
     function playLocal(trackId, queueIds) {
-        const chosen = localTracks.find(t => t.id === trackId) || localTracks[0];
-        let tracks = localTracks;
+        const pool = activeLibraryTracks();
+        const chosen = pool.find(t => t.id === trackId) || pool[0];
+        let tracks = pool;
         if (Array.isArray(queueIds)) {
-            const byId = new Map(localTracks.map(t => [t.id, t]));
+            const byId = new Map(pool.map(t => [t.id, t]));
             tracks = queueIds.map(id => byId.get(id)).filter(Boolean);
         }
         let idx = Math.max(0, tracks.findIndex(t => t.id === chosen.id));
@@ -1306,7 +1318,10 @@
 
     window.FXROUTE_DEMO_STATE = {
         lib,
+        lib2,
         localTracks,
+        activeLibraryTracks,
+        setActiveLibraryId,
         tidalTracks: () => tidalTracksLib || [],
         tidalAlbums: () => tidalAlbumsLib || [],
         tidalArtists: () => tidalArtistsLib || [],

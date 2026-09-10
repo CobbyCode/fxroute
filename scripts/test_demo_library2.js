@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Demo Library 2 contract: the web demo exposes the main catalog and the
-// "Demo Library 2" SMB catalog as separately selectable libraries, each
-// with its own albums, tracks and covers.
+// Demo Library 2 contract: the web demo presents "Demo Library 2" as its
+// active library (selectable under Settings like on a real box). Each
+// library serves its own albums, tracks, covers and playlists; switching
+// restores the other catalog untouched.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -46,8 +47,10 @@ function post(fetch, url, body) {
     const ctx = makeDemoContext();
     const fetch = ctx.fetch;
 
+    // Demo Library 2 is the presented default.
     const libraries = await (await fetch('/api/music-libraries')).json();
-    assert.equal(libraries.active_id, 'local');
+    assert.equal(libraries.active_id, 'demo-library-2');
+    assert.equal(libraries.active_type, 'smb');
     const ids = libraries.libraries.map(l => l.id);
     assert.ok(ids.includes('local'), 'local library listed');
     assert.ok(ids.includes('demo-nas'), 'existing NAS library untouched');
@@ -56,20 +59,17 @@ function post(fetch, url, body) {
     assert.equal(second.label, 'Demo Library 2');
     assert.equal(second.type, 'smb');
 
-    const localAlbums = await (await fetch('/api/albums')).json();
-    const localTracks = await (await fetch('/api/tracks')).json();
-    assert.ok(localAlbums.length > 0 && localTracks.length > 0, 'main catalog non-empty');
-
-    await post(fetch, '/api/music-libraries/select', { id: 'demo-library-2' });
-    const switched = await (await fetch('/api/music-libraries')).json();
-    assert.equal(switched.active_id, 'demo-library-2');
-
     const albums2 = await (await fetch('/api/albums')).json();
     const tracks2 = await (await fetch('/api/tracks')).json();
     assert.equal(albums2.length, 23, 'library 2 serves 23 albums, got ' + albums2.length);
     assert.equal(tracks2.length, 257, 'library 2 serves 257 tracks, got ' + tracks2.length);
-    assert.ok(!albums2.some(a => localAlbums.some(b => b.id === a.id)), 'catalogs do not share album ids');
-    assert.ok(!tracks2.some(t => localTracks.some(u => u.id === t.id)), 'catalogs do not share track ids');
+
+    const playlists2 = await (await fetch('/api/playlists')).json();
+    assert.ok(playlists2.length >= 2, 'library 2 has playlists');
+    for (const pl of playlists2) {
+        const missing = pl.track_ids.filter(id => !tracks2.some(t => t.id === id));
+        assert.equal(missing.length, 0, 'playlist tracks resolve in library 2: ' + pl.name);
+    }
 
     const sample = albums2[0];
     const albumTracks = await (await fetch('/api/albums/' + sample.id + '/tracks')).json();
@@ -91,11 +91,28 @@ function post(fetch, url, body) {
     assert.ok(search.length > 0, 'search within library 2 finds jazz albums');
     assert.ok(search.every(a => albums2.some(b => b.id === a.id)), 'search stays inside library 2');
 
+    // Local playback resolves against the active catalog.
+    const play = await (await post(fetch, '/api/play', { track_id: albumTracks[0].id })).json();
+    assert.equal(play.track.id, albumTracks[0].id, 'played the requested library-2 track');
+    assert.equal(play.playback.current_track.id, albumTracks[0].id, 'playback state follows library 2');
+    assert.match(play.playback.current_track.cover_url, /^\/static\/demo\/d2-/, 'playback cover from library 2');
+
+    // Switching to local serves the main catalog (with its own playlists),
+    // switching back restores library 2 untouched.
     await post(fetch, '/api/music-libraries/select', { id: 'local' });
+    const localAlbums = await (await fetch('/api/albums')).json();
+    const localTracks = await (await fetch('/api/tracks')).json();
+    assert.ok(localAlbums.length > 0 && localTracks.length > 0, 'main catalog non-empty');
+    assert.ok(!localAlbums.some(a => albums2.some(b => b.id === a.id)), 'catalogs do not share album ids');
+    const localPlaylists = await (await fetch('/api/playlists')).json();
+    assert.ok(localPlaylists.length >= 2, 'main catalog keeps its playlists');
+    assert.ok(!localPlaylists.some(p => playlists2.some(q => q.id === p.id)), 'playlists are per catalog');
+
+    await post(fetch, '/api/music-libraries/select', { id: 'demo-library-2' });
     const restoredAlbums = await (await fetch('/api/albums')).json();
     const restoredTracks = await (await fetch('/api/tracks')).json();
-    assert.deepEqual(restoredAlbums.map(a => a.id), localAlbums.map(a => a.id), 'switching back restores the main catalog');
-    assert.deepEqual(restoredTracks.map(t => t.id), localTracks.map(t => t.id), 'switching back restores main tracks');
+    assert.deepEqual(restoredAlbums.map(a => a.id), albums2.map(a => a.id), 'switching back restores library 2 albums');
+    assert.deepEqual(restoredTracks.map(t => t.id), tracks2.map(t => t.id), 'switching back restores library 2 tracks');
 
     console.log('ok demo library 2 contract');
 })().catch((err) => {

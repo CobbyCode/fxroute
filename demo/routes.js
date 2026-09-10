@@ -208,7 +208,8 @@
         if (owner === 'spotify') rate = 44100;
         else if (owner === 'qobuz') rate = Number(S.qobuz.current?.sample_rate_hz) || 44100;
         else if (owner === 'radio') rate = 44100;
-        else if (owner === 'local') rate = Number(findTrack(S.localTracks)?.sample_rate_hz) || 48000;
+        else if (owner === 'local') rate = Number(findTrack(S.localTracks)?.sample_rate_hz
+            || (S.lib2?.tracks || []).find(t => String(t.id) === String(trackId))?.sample_rate_hz) || 48000;
         else if (owner === 'tidal') rate = TIDAL_TIER_GRAPH_RATE[findTrack(S.tidalTracks())?.audio_quality] || 48000;
         samplerate.active_rate = rate;
     }
@@ -338,9 +339,12 @@
     }
 
     // ── Music libraries ─────────────────────────────────────────────────
+    // The demo presents "Demo Library 2" as its active library (like a box
+    // with the second demo share selected); Local and NAS stay selectable
+    // under Settings and serve the main catalog.
     const musicLibraries = {
-        active_id: 'local',
-        active_type: 'local',
+        active_id: 'demo-library-2',
+        active_type: 'smb',
         libraries: [
             { id: 'local', label: 'Local', type: 'local' },
             { id: 'demo-nas', label: 'NAS Music', type: 'smb' },
@@ -875,23 +879,27 @@
             return j(q ? catalog.filter(a => (a.name + ' ' + a.artist + ' ' + (a.genres || []).join(' ')).toLowerCase().includes(q)) : catalog);
         }
         if (p === '/api/playlists') {
+            // Playlists live per library catalog, like separate shares on a
+            // real box: selecting a library switches the playlist set too.
+            const catalogPlaylists = activeLib().playlists || [];
             if (post) {
                 const name = String(body.name || '').trim();
                 const trackIds = Array.isArray(body.track_ids) ? body.track_ids : [];
                 if (!name) return err('Playlist name required', 400);
                 const id = 'playlist_' + Date.now();
-                lib.playlists.push({ id, name, track_ids: trackIds, track_count: trackIds.length });
+                catalogPlaylists.push({ id, name, track_ids: trackIds, track_count: trackIds.length });
                 return j({ status: 'ok', playlist: { id, name, track_ids: trackIds, track_count: trackIds.length } });
             }
-            return j(lib.playlists);
+            return j(catalogPlaylists);
         }
         const playlistCrud = p.match(/^\/api\/playlists\/([^/]+)(\/export)?$/);
         if (playlistCrud) {
             const id = playlistCrud[1];
             if (playlistCrud[2]) return err('Not found', 404);
             if (method === 'DELETE') {
-                const idx = lib.playlists.findIndex(pl => pl.id === id);
-                if (idx >= 0) lib.playlists.splice(idx, 1);
+                const catalogPlaylists = activeLib().playlists || [];
+                const idx = catalogPlaylists.findIndex(pl => pl.id === id);
+                if (idx >= 0) catalogPlaylists.splice(idx, 1);
                 return j({ status: 'ok', deleted: id });
             }
             return err('Playlist not found');
@@ -1278,7 +1286,13 @@
         if (p === '/api/music-libraries/select' && post) {
             const id = String(body.id || '');
             const entry = musicLibraries.libraries.find(l => l.id === id);
-            if (entry) { musicLibraries.active_id = entry.id; musicLibraries.active_type = entry.type; }
+            if (entry) {
+                musicLibraries.active_id = entry.id;
+                musicLibraries.active_type = entry.type;
+                // Local playback + queue fallbacks in state.js resolve
+                // against the active catalog.
+                if (typeof S.setActiveLibraryId === 'function') S.setActiveLibraryId(entry.id);
+            }
             return j(musicLibraries);
         }
         if (p === '/api/system/update') {
