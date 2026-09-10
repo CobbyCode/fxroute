@@ -57,6 +57,10 @@ function selectorExistsIn(selector, html) {
             assert.ok(selectorExistsIn(step.target, indexHtml),
                 `step ${step.id}: target ${step.target} must exist in static/index.html`);
         }
+        if (step.targetMobile) {
+            assert.ok(selectorExistsIn(step.targetMobile, indexHtml),
+                `step ${step.id}: mobile target ${step.targetMobile} must exist in static/index.html`);
+        }
         if (step.tab) {
             assert.ok(selectorExistsIn(step.tab, indexHtml),
                 `step ${step.id}: tab ${step.tab} must exist in static/index.html`);
@@ -101,6 +105,10 @@ function selectorExistsIn(selector, html) {
     const measurementStep = tour.steps.find((s) => s.id === 'measurement');
     assert.ok(measurementStep, 'tour must have a measurement step');
     assert.equal(measurementStep.action, 'measurement-demo', 'measurement step must demo the measurement workflow');
+    assert.equal(measurementStep.targetMobile, '#measurement-sweep-toggle',
+        'measurement step must highlight the sweep toggle on narrow screens');
+    assert.equal(dspStep.targetMobile, '#effects-compare-toggle',
+        'DSP step must highlight the A/B toggle on narrow screens');
     assert.ok(tourSource.includes("action === 'measurement-demo'"), 'measurement-demo action must be implemented');
     assert.ok(tourSource.includes('effects-measure-open'), 'measurement-demo must open the panel via the Measure button');
     assert.ok(tourSource.includes('measurement-sweep-toggle'), 'measurement-demo must pulse the Start Sweep entry');

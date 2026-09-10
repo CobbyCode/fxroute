@@ -42,6 +42,10 @@
             id: 'dsp',
             tab: '#tab-btn-effects',
             target: '#tab-effects',
+            // The A/B control sits deep inside the DSP panel; on phones the
+            // bottom-pinned tour card would cover it, so highlight the
+            // toggle itself (the exact control the step pulses).
+            targetMobile: '#effects-compare-toggle',
             title: 'DSP & audio processing',
             text: 'Compare two filter presets with A/B — pick A and B, then switch instantly. Output extras — protection limiter with headroom, autogain, loudness and tone controls — run globally on top of every preset. Loudness is calibrated to your playback level.',
             action: 'dsp-demo',
@@ -50,6 +54,9 @@
             id: 'measurement',
             tab: '#tab-btn-effects',
             target: '.measurement-card-controls',
+            // On phones the controls card is taller than the viewport; the
+            // sweep toggle is the compact entry point the step describes.
+            targetMobile: '#measurement-sweep-toggle',
             title: 'Measurement & room correction',
             text: 'Measure your room to correct it: run a single or repeated L/R sweep, combine speaker and room captures in Advanced mode, then save what you want to keep. From a measurement the assistant builds PEQ bands or a full convolution filter — Create Convolver Preset turns it into a correction kernel. SPL Calibration pins the loudness reference to your target level.',
             action: 'measurement-demo',
@@ -139,11 +146,21 @@
         }
         if (step.action) runAction(step.action);
 
-        var target = step.target ? document.querySelector(step.target) : null;
+        // Wide screens can highlight the whole panel; narrow screens switch
+        // to a compact target (the primary control) so the highlight and the
+        // tour card fit without scrolling the described area away.
+        var sel = step.target;
+        if (step.targetMobile && document.documentElement.clientWidth <= 640) sel = step.targetMobile;
+        var target = sel ? document.querySelector(sel) : null;
         if (target) {
             highlightTarget(target);
             if (typeof target.scrollIntoView === 'function') {
-                target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                // Centering a tall panel pushes its described top out of
+                // view; align tall targets to their start instead so the
+                // controls the step talks about are actually on screen.
+                var rect = target.getBoundingClientRect();
+                var block = (rect.height > (document.documentElement.clientHeight || 600) * 0.6) ? 'start' : 'center';
+                target.scrollIntoView({ block: block, behavior: 'smooth' });
             }
         }
 
@@ -184,11 +201,25 @@
 
         ensureInteractive();
 
-        // Let the tab switch / action render, then anchor the card.
+        // The tab switch / action render first, then the card anchors.
+        // The smooth scroll is async, so re-position a few times instead of
+        // measuring a mid-animation rect and never correcting it.
         setTimeout(function () {
             ensureInteractive();
             positionCard(target);
-        }, 80);
+        }, 120);
+        setTimeout(function () {
+            ensureInteractive();
+            positionCard(target);
+        }, 320);
+        setTimeout(function () {
+            ensureInteractive();
+            positionCard(target);
+        }, 560);
+        setTimeout(function () {
+            ensureInteractive();
+            positionCard(target);
+        }, 900);
         var nextBtn = card.querySelector('.demo-tour-next');
         if (nextBtn) nextBtn.focus();
     }
@@ -201,11 +232,12 @@
     }
 
     // Brief attention pulse used by the demo actions; a no-op on hidden or
-    // missing elements so steps never depend on panel visibility.
+    // missing elements so steps never depend on panel visibility. Pulses
+    // stay visible long enough to read while the choreography advances.
     function pulse(node, ms) {
         if (!node) return;
         node.classList.add('demo-tour-pulse');
-        setTimeout(function () { node.classList.remove('demo-tour-pulse'); }, ms || 900);
+        setTimeout(function () { node.classList.remove('demo-tour-pulse'); }, ms || 1300);
     }
 
     // Close the Measurement assistant overlay if the tour opened it. The
@@ -237,10 +269,23 @@
         var r = target.getBoundingClientRect();
         var left = Math.max(pad, Math.min(vw - cardW - pad, r.left + (r.width - cardW) / 2));
         var top;
-        if (r.top > cardH + pad + 60) {
-            top = r.top - cardH - pad;      // above the target
+        if (r.bottom + pad + cardH <= vh - padBottom) {
+            top = r.bottom + pad;                       // below the target
+        } else if (r.top - pad - cardH >= pad) {
+            // Above the target, clamped so the card itself stays in view
+            // (the target can still be scrolled into view below it).
+            top = Math.max(pad, Math.min(r.top - pad - cardH, vh - cardH - padBottom));
+        } else if (r.top <= pad && r.bottom >= vh - padBottom) {
+            // Full-height modal: pin the card to the bottom so the dialog
+            // header (close button) stays reachable above it.
+            top = vh - cardH - padBottom;
         } else {
-            top = Math.min(vh - cardH - padBottom, r.bottom + pad);   // below
+            // No clean spot: keep the target's visible mass on the opposite
+            // side of the card instead of covering it blindly.
+            var vTop = Math.max(r.top, pad);
+            var vBottom = Math.min(r.bottom, vh - padBottom);
+            var vCenter = vTop < vBottom ? (vTop + vBottom) / 2 : (r.top + r.bottom) / 2;
+            top = (vCenter < vh / 2) ? vh - cardH - padBottom : pad;
         }
         card.style.left = Math.round(Math.max(pad, left)) + 'px';
         card.style.top = Math.round(Math.max(pad, top)) + 'px';
@@ -313,19 +358,18 @@
                     setTimeout(function () {
                         if (viewFolders && typeof viewFolders.click === 'function') viewFolders.click();
                         setTimeout(function () {
-                            if (viewAlbums && typeof viewAlbums.click === 'function') viewAlbums.click();
-                            setTimeout(function () {
-                                var curInp = document.getElementById('library-search');
-                                if (!curInp) return;
-                                curInp.value = 'Jazz';
-                                curInp.dispatchEvent(new Event('input', { bubbles: true }));
-                                curInp.dispatchEvent(new Event('search', { bubbles: true }));
-                                var clr2 = document.getElementById('library-search-clear');
-                                if (clr2) clr2.disabled = false;
-                                if (typeof curInp.focus === 'function') try { curInp.focus(); } catch (e2) {}
-                            }, 180);
-                        }, 280);
-                    }, 260);
+                            if (viewAlbums && typeof viewAlbums.click === 'function') viewAlbums.click();                                    setTimeout(function () {
+                                        var curInp = document.getElementById('library-search');
+                                        if (!curInp) return;
+                                        curInp.value = 'Jazz';
+                                        curInp.dispatchEvent(new Event('input', { bubbles: true }));
+                                        curInp.dispatchEvent(new Event('search', { bubbles: true }));
+                                        var clr2 = document.getElementById('library-search-clear');
+                                        if (clr2) clr2.disabled = false;
+                                        if (typeof curInp.focus === 'function') try { curInp.focus(); } catch (e2) {}
+                                    }, 320);
+                                }, 450);
+                            }, 420);
                 }
             } else if (action === 'play-qobuz') {
                 post('/api/streaming/qobuz/demo_start', {});
@@ -342,7 +386,7 @@
                     var btn = document.getElementById('effects-compare-toggle');
                     if (!btn) return null;
                     btn.classList.add('demo-tour-pulse');
-                    setTimeout(function () { btn.classList.remove('demo-tour-pulse'); }, 900);
+                    setTimeout(function () { btn.classList.remove('demo-tour-pulse'); }, 1300);
                     return btn;
                 }
                 setTimeout(function () {
@@ -353,8 +397,8 @@
                         var btn2 = pulseCompareBtn();
                         if (btn2 && typeof btn2.click === 'function') try { btn2.click(); } catch (eB) {}
                         else post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'B' });
-                    }, 650);
-                }, 750);
+                    }, 950);
+                }, 1100);
             } else if (action === 'measurement-demo') {
                 var mPanel = document.getElementById('measurement-panel');
                 if (mPanel && mPanel.classList.contains('hidden')) {
@@ -363,12 +407,16 @@
                 }
                 // Pulse the workflow entries so the step shows what lives
                 // here: Start Sweep (single / LR repeat / Advanced), Auto
-                // Sub Optimize and SPL Calibration. Opening the sweep menu
-                // briefly reveals the repeat + advanced choices, then closes
-                // it again so the panel stays in its resting state.
+                // Sub Optimize and SPL Calibration. On wide screens the
+                // sweep menu opens to reveal the repeat + advanced choices,
+                // then closes again; on narrow screens the tour card sits
+                // right below the sweep toggle, so the menu and the lower
+                // buttons would be hidden behind it — keep it to the entry.
+                var wide = document.documentElement.clientWidth > 640;
                 setTimeout(function () {
                     var sweep = document.getElementById('measurement-sweep-toggle');
                     if (sweep) pulse(sweep);
+                    if (!wide) return;
                     setTimeout(function () {
                         if (sweep && sweep.getAttribute('aria-expanded') !== 'true'
                             && typeof sweep.click === 'function') sweep.click();
@@ -386,10 +434,10 @@
                                 // output modes; skip it when hidden.
                                 if (sub && sub.offsetParent !== null) pulse(sub);
                                 if (spl) pulse(spl);
-                            }, 700);
-                        }, 550);
-                    }, 450);
-                }, 350);
+                            }, 900);
+                        }, 800);
+                    }, 700);
+                }, 400);
             } else if (action === 'cycle-providers') {
                 // Never leave the Measurement assistant overlay open: its
                 // backdrop would block the provider tab clicks below.
@@ -406,14 +454,14 @@
                 setTimeout(function () {
                     post('/api/streaming/qobuz/demo_start', {});
                     if (qbBtn && typeof qbBtn.click === 'function') qbBtn.click();
-                }, 700);
+                }, 1000);
                 setTimeout(function () {
                     if (tdBtn && typeof tdBtn.click === 'function') tdBtn.click();
-                }, 1200);
+                }, 1800);
                 setTimeout(function () {
                     post('/api/streaming/qobuz/demo_start', {});
                     if (qbBtn && typeof qbBtn.click === 'function') qbBtn.click();
-                }, 1650);
+                }, 2400);
             } else if (action === 'open-settings') {
                 var panel = document.querySelector('#settings-panel');
                 if (panel && panel.classList.contains('hidden')) {
@@ -425,10 +473,10 @@
                     rows.forEach(function (row, idx) {
                         setTimeout(function () {
                             row.classList.add('demo-tour-pulse');
-                            setTimeout(function () { row.classList.remove('demo-tour-pulse'); }, 900);
-                        }, idx * 180);
+                            setTimeout(function () { row.classList.remove('demo-tour-pulse'); }, 1300);
+                        }, idx * 320);
                     });
-                }, 350);
+                }, 400);
             }
         } catch (err) {
             // Swallow: the tour itself must stay usable.
