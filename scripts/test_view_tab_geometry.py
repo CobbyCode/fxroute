@@ -83,8 +83,8 @@ def _run():
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             page.add_init_script(STUB)
-            # Only static/index.html is served in production; the repository-
-            # root index.html is stale and does not load the streaming module.
+            # Only static/index.html is served in production (the canonical
+            # shell that loads the streaming module).
             page.goto(f"http://127.0.0.1:{PORT}/static/index.html")
             page.wait_for_function("typeof window.FXRouteStreaming === 'object'", timeout=15000)
             page.wait_for_timeout(300)

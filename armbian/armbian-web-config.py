@@ -802,6 +802,68 @@ def announce_console(
             continue
 
 
+# Completion-area styling for the setup completion fragments. Scoped to
+# .completion so it cannot leak into the "Applying…" content that precedes
+# it in the same streaming document. Mirrors the setup page's type rhythm
+# (shell width, intro heading tracking, card-heading scale) and palette.
+_COMPLETION_STYLE = """<style>
+.completion {
+  --ink: #10161d;
+  --muted: #5a6b73;
+  --line: #d3dbde;
+  --signal-soft: #e4f3ee;
+  --teal: #0c6b5c;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 20px 56px;
+  color: var(--ink);
+}
+.completion h2 {
+  font-size: clamp(1.8rem, 5vw, 2.4rem);
+  letter-spacing: -.05em;
+  line-height: 1.05;
+  margin: 0 0 8px;
+}
+.completion p {
+  color: var(--muted);
+  margin: 0;
+  max-width: 34rem;
+}
+.completion section {
+  margin-top: 20px;
+}
+.completion section + section {
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+  margin-top: 18px;
+}
+.completion h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  margin: 0 0 8px;
+}
+.completion a {
+  color: var(--teal);
+}
+.completion ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.completion li {
+  color: var(--muted);
+  margin: 4px 0;
+}
+.completion code {
+  background: var(--signal-soft);
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .9em;
+}
+</style>"""
+
+
 def setup_completion_html(
     device_name: str, addresses: list[str], username: str
 ) -> str:
@@ -812,12 +874,15 @@ def setup_completion_html(
     escaped_text = html.escape(url)
     escaped_device = html.escape(f"{username}@{device_name}.local")
     parts = [
+        '<main class="completion">',
+        _COMPLETION_STYLE,
         "<h2>Setup complete</h2>",
-        "<p>Your future FXRoute address:</p>",
+        "<p>Installation runs in the background.</p>",
+        "<section><h3>Address</h3>",
         f'<p><strong><a href="{escaped_url}">{escaped_text}</a></strong></p>',
         f'<p><a href="{escaped_url}">Open FXRoute</a> '
         f'<button type="button" id="copy-address" '
-        f'data-address="{escaped_url}">Copy address</button></p>',
+        f'data-address="{escaped_url}">Copy address</button></p></section>',
         "<script>"
         "(function(){var button=document.getElementById('copy-address');"
         "if(!button)return;"
@@ -835,9 +900,6 @@ def setup_completion_html(
         "}"
         "});})();"
         "</script>",
-        "<p>FXRoute is being installed. The web interface will be "
-        "available at the address above once first-boot installation "
-        "finishes.</p>",
     ]
     if addresses:
         links = "".join(
@@ -846,19 +908,23 @@ def setup_completion_html(
             for address in addresses
         )
         parts.append(
-            "<p>While the device keeps its current network address, "
-            f"it is also reachable at:</p><ul>{links}</ul>".format(links=links)
+            "<section><h3>Network</h3>"
+            "<p>Also reachable at:</p>"
+            f"<ul>{links}</ul></section>"
         )
     else:
         parts.append(
+            "<section><h3>Network</h3>"
             "<p>If the .local name does not resolve yet, find the device "
             "address on your router; FXRoute will be at "
-            "http://&lt;address&gt;:8000.</p>"
+            "http://&lt;address&gt;:8000.</p></section>"
         )
     parts.append(
-        f"<p>SSH will be available as {escaped_device} once the device "
-        f"is reachable on your normal network. If the temporary "
-        f"setup network disappeared, reconnect your computer first.</p>"
+        f"<section><h3>SSH</h3>"
+        f"<p><code>{escaped_device}</code></p>"
+        f"<p>Available once the device "
+        f"is reachable on your normal network.</p></section>"
+        f"</main>"
         f"</body></html>"
     )
     return "".join(parts)
@@ -871,13 +937,15 @@ def preview_completion_html(device_name: str) -> str:
     escaped_url = html.escape(url, quote=True)
     escaped_text = html.escape(url)
     return (
-        "<h2>Preview accepted</h2>"
+        '<main class="completion">'
+        + _COMPLETION_STYLE
+        + "<h2>Preview accepted</h2>"
         "<p>No system changes were made.</p>"
-        "<p>Your future FXRoute address (preview):</p>"
+        "<section><h3>Address</h3>"
         f'<p><strong><a href="{escaped_url}">{escaped_text}</a></strong></p>'
         f'<p><a href="{escaped_url}">Open FXRoute</a> '
         f'<button type="button" id="copy-address" '
-        f'data-address="{escaped_url}">Copy address</button></p>'
+        f'data-address="{escaped_url}">Copy address</button></p></section>'
         "<script>"
         "(function(){var button=document.getElementById('copy-address');"
         "if(!button)return;"
@@ -895,6 +963,7 @@ def preview_completion_html(device_name: str) -> str:
         "}"
         "});})();"
         "</script>"
+        "</main>"
         "</body></html>"
     )
 
@@ -1451,19 +1520,21 @@ def setup_page(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Configure your FXRoute administrator account and network.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2317232d'/%3E%3Cpath d='M8 16h16' stroke='%23b9472f' stroke-width='4'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2310161d'/%3E%3Cpath d='M8 22V13a3 3 0 0 1 3-3h11' stroke='%236ee7b7' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M11 22h11a3 3 0 0 0 3-3v-9' stroke='%23ececf0' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='8' cy='22' r='2.6' fill='%236ee7b7'/%3E%3Ccircle cx='25' cy='10' r='2.6' fill='%23ececf0'/%3E%3C/svg%3E">
 <title>FXRoute setup</title>
 <style>
 :root {{
   color-scheme: light;
-  --ink: #17232d;
-  --muted: #53636b;
-  --line: #849399;
-  --paper: #eef2f1;
+  --ink: #10161d;
+  --muted: #5a6b73;
+  --line: #d3dbde;
+  --paper: #f4f6f5;
   --card: #ffffff;
-  --signal: #b9472f;
-  --signal-soft: #fff0eb;
-  --teal: #126b78;
+  --signal: #0c6b5c;
+  --signal-soft: #e4f3ee;
+  --error: #b9472f;
+  --error-soft: #fff0eb;
+  --teal: #0c6b5c;
 }}
 * {{ box-sizing: border-box; }}
 body {{
@@ -1479,36 +1550,36 @@ body {{
   border-bottom: 1px solid var(--line);
   display: flex;
   justify-content: space-between;
-  padding-bottom: 18px;
+  padding-bottom: 16px;
 }}
-.brand {{ align-items: center; display: flex; font-weight: 800; letter-spacing: -.03em; }}
+.brand {{ align-items: center; display: flex; font-weight: 700; letter-spacing: -.02em; }}
 .brand-mark {{
   align-items: center;
   background: var(--ink);
-  color: #fff;
+  border-radius: 8px;
   display: inline-flex;
-  font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   height: 28px;
   justify-content: center;
-  margin-right: 9px;
+  margin-right: 10px;
   width: 28px;
 }}
+.brand-mark svg {{ display: block; height: 20px; width: 20px; }}
 .eyebrow, .section-kicker {{
   color: var(--teal);
   font: 700 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: .12em;
   text-transform: uppercase;
 }}
-.intro {{ padding: 42px 4px 28px; }}
-.intro h1 {{ font-size: clamp(2rem, 7vw, 3.2rem); letter-spacing: -.06em; line-height: 1; margin: 0 0 12px; }}
-.intro p {{ color: var(--muted); margin: 0; max-width: 36rem; }}
+.intro {{ padding: 32px 4px 24px; }}
+.intro h1 {{ font-size: clamp(1.9rem, 5vw, 2.6rem); letter-spacing: -.05em; line-height: 1.05; margin: 0 0 10px; }}
+.intro p {{ color: var(--muted); margin: 0; max-width: 34rem; }}
 .card {{
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: 0 12px 30px rgba(23, 35, 45, .05);
+  border-radius: 16px;
+  box-shadow: 0 10px 28px rgba(16, 22, 29, .06);
   margin-top: 16px;
-  padding: clamp(20px, 5vw, 30px);
+  padding: clamp(20px, 4vw, 28px);
 }}
 .section-kicker {{ margin: 0 0 5px; }}
 .card h2 {{ font-size: 1.25rem; letter-spacing: -.025em; margin: 0; }}
@@ -1586,7 +1657,7 @@ button:disabled {{ cursor: wait; opacity: .6; }}
 .signal-bars i:nth-child(4) {{ height: 17px; }}
 .signal-bars i.active {{ background: var(--signal); }}
 .network-state {{ color: var(--muted); font-size: .9rem; margin: 2px 0 10px; }}
-.network-error {{ background: var(--signal-soft); border-left: 4px solid var(--signal); color: #8c2f1b; padding: 10px 12px; }}
+.network-error {{ background: var(--error-soft); border-left: 4px solid var(--error); color: #8c2f1b; padding: 10px 12px; }}
 .selection {{ color: var(--muted); font-size: .84rem; margin: 14px 0 0; }}
 .advanced {{ border-top: 1px solid var(--line); margin-top: 24px; padding-top: 18px; }}
 .advanced summary {{ align-items: center; cursor: pointer; display: flex; font-weight: 700; list-style: none; min-height: 44px; }}
@@ -1595,7 +1666,7 @@ button:disabled {{ cursor: wait; opacity: .6; }}
 .advanced summary::before {{ color: var(--signal); content: "+"; display: inline-block; font-size: 1.2rem; margin-right: 8px; vertical-align: -1px; }}
 .advanced[open] summary::before {{ content: "-"; }}
 .advanced-body {{ padding-top: 16px; }}
-.error {{ background: #fff0eb; border-left: 4px solid var(--signal); color: #8c2f1b; margin: 0 0 16px; padding: 12px 14px; }}
+.error {{ background: var(--error-soft); border-left: 4px solid var(--error); color: #8c2f1b; margin: 0 0 16px; padding: 12px 14px; }}
 @media (max-width: 560px) {{
   .shell {{ padding-left: 14px; padding-right: 14px; }}
   .field-grid {{ grid-template-columns: 1fr; }}
@@ -1611,7 +1682,7 @@ button:disabled {{ cursor: wait; opacity: .6; }}
 <body>
 <main class="shell">
   <header class="masthead">
-    <div class="brand"><span class="brand-mark">FX</span><span>FXRoute</span></div>
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 22V13a3 3 0 0 1 3-3h11" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 22h11a3 3 0 0 0 3-3v-9" stroke="#ececf0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="22" r="2.6" fill="#6ee7b7"/><circle cx="25" cy="10" r="2.6" fill="#ececf0"/></svg></span><span>FXRoute</span></div>
     <span class="eyebrow">Admin console</span>
   </header>
   <section class="intro">

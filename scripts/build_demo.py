@@ -61,14 +61,9 @@ DEMO_PRE_SCRIPTS = """    <!-- Demo transport: must load before the real app scr
 # Files in the canonical static/ tree that are deliberately NOT mirrored
 # into the public demo snapshot:
 # - index.html: the page shell; transformed and written separately.
-# - fxroute-logo.jpg/png + branding/: unreferenced design/logo sources (no
-#   src/href anywhere in the served frontend); kept out so the snapshot does
-#   not ship design files. Everything else is mirrored automatically.
+#   Everything else is mirrored automatically.
 STATIC_EXCLUDE = {
     "index.html",
-    "fxroute-logo.jpg",
-    "fxroute-logo.png",
-    "branding",
 }
 
 # Any real product script referenced from the canonical page. Names and

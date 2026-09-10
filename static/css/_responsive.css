@@ -1403,10 +1403,6 @@
             text-align: center;
         }
 
-    /* from _playback.css */
-    .brand-mark { width: 35px; height: 35px; border-radius: 10px; font-size: 0.84rem; }
-        .brand-title { font-size: 0.98rem; }
-
     /* Touch targets that can grow without moving surrounding layout. */
     .catalog-station-action { min-height: 44px; }
     .dialog-header-corner-close .btn-close-manage { width: 44px; height: 44px; min-height: 44px; }
@@ -1711,10 +1707,6 @@
 }
 
 @media (min-width: 601px) and (max-width: 760px) {
-    /* Brand tablet size (38px) scoped to 601-760px. The 600px small-phone
-       block above must win at ≤600px; the 760px tablet size used to be
-       declared later in the cascade and overrode it. */
-    .brand-mark { width: 38px; height: 38px; }
     .brand-title { font-size: 1.08rem; }
     .brand-subtitle { font-size: .62rem; }
 }
@@ -1826,14 +1818,7 @@
 }
 
 @media (min-width: 761px) {
-    /* from _playback.css */
     .brand-lockup { gap: 0.5rem; }
-        .brand-mark {
-            width: 37px;
-            height: 37px;
-            border-radius: 10px;
-            font-size: 0.84rem;
-        }
         .brand-text-block { gap: 0.1rem; }
         .brand-title { font-size: 1.07rem; }
         .brand-subtitle { font-size: 0.62rem; }

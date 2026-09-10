@@ -30,10 +30,8 @@ current frontend changes appear in the demo automatically. Set
   layer + the demo artwork pool). This snapshot is the commit-able,
   publishable build. New product JS/CSS/font/image assets land in the
   snapshot without touching the build script. The only deliberate
-  exclusions (`STATIC_EXCLUDE` in `build_demo.py`): the page shell
-  `index.html`, which is transformed and written separately, and the
-  unreferenced logo/branding design sources (`fxroute-logo.*`,
-  `branding/`), which the served UI never loads.
+  exclusion (`STATIC_EXCLUDE` in `build_demo.py`): the page shell
+  `index.html`, which is transformed and written separately.
 - `scripts/test_demo_behavior.js` — Node behavior test asserting the demo
   contract (simulation intercepts the backend, power menu is simulated,
   transport/VU/radio/measurement render, current frontend wording).

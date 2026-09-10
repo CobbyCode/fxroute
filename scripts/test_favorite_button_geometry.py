@@ -91,8 +91,7 @@ def _run():
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 700, "height": 900})
             page.add_init_script(STUB)
-            # Only static/index.html is served in production; the
-            # repository-root index.html is stale.
+            # Only static/index.html is served in production.
             page.goto(f"http://127.0.0.1:{PORT}/static/index.html")
             page.wait_for_selector("#playback-bar", state="visible")
             page.wait_for_timeout(300)

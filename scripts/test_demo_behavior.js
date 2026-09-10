@@ -128,11 +128,10 @@ assert.ok(fs.existsSync(path.join(root, 'demo', 'dist', 'static', 'fonts', 'Geis
 // ── Asset mirror regression ────────────────────────────────────────────
 // The demo must mirror the canonical product frontend, not a hand-maintained
 // per-asset list: every file in main/static has to be present in
-// demo/dist/static, except the small deliberate exclusion set (page shell,
-// unreferenced logo/branding design sources — see STATIC_EXCLUDE in
-// build_demo.py). Otherwise a newly added product asset silently 404s in the
-// published demo, as the web fonts did once.
-const excludedProductAssets = new Set(['index.html', 'fxroute-logo.jpg', 'fxroute-logo.png', 'branding']);
+// demo/dist/static, except the small deliberate exclusion set (page shell
+// — see STATIC_EXCLUDE in build_demo.py). Otherwise a newly added product
+// asset silently 404s in the published demo, as the web fonts did once.
+const excludedProductAssets = new Set(['index.html']);
 const frontendRoot = process.env.FXROUTE_FRONTEND_ROOT || root;
 const mainStaticRoot = path.join(frontendRoot, 'static');
 function collectFiles(dir, base) {
