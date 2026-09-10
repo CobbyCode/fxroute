@@ -327,6 +327,14 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     assert.ok(state.stations.some((station) => station.id === 'groovesalad'));
 assert.ok(state.catalogStations.some((station) => station.id === 'rp-main'));
     assert.equal(state.catalogStations.some((station) => station.id === 'drumandbass'), false);
+    // The demo catalog mirrors the real curated catalog (radio/stations.py
+    // STATION_CATALOG): 4 Radio Paradise + 38 SomaFM + 11 FIP + 8 Other,
+    // no demo-only providers.
+    assert.equal(state.catalogStations.length, 61);
+    assert.equal(state.catalogStations.some((station) => station.provider === 'BBC'), false);
+    for (const id of ['groovesalad', 'groovesalad2', 'gsclassic']) {
+        assert.ok(state.catalogStations.some((station) => station.id === id), 'tour search target present: ' + id);
+    }
 
 const radioTrack = state.playRadio('groovesalad');
 const radio = state.getPlayback();

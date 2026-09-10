@@ -27,8 +27,8 @@
             tab: '#tab-btn-radio',
             target: '#tab-radio',
             title: 'Radio',
-            text: 'Search internet radio — type “BBC” in the search box to find BBC stations from the online catalog, then tap any result to play it instantly.',
-            action: 'search-radio-bbc',
+            text: 'Search internet radio — type “Groove Salad” in the search box to find SomaFM stations from the online catalog, then tap any result to play it instantly.',
+            action: 'search-radio-groove',
         },
         {
             id: 'library',
@@ -263,10 +263,10 @@
                 // Legacy: switch the footer to a curated station.
                 var stationId = S && S.catalogStations && S.catalogStations[0] && S.catalogStations[0].id;
                 if (stationId && typeof S.playRadio === 'function') S.playRadio(stationId);
-            } else if (action === 'search-radio-bbc') {
+            } else if (action === 'search-radio-groove') {
                 var inp = document.getElementById('station-search');
                 if (inp) {
-                    inp.value = 'BBC';
+                    inp.value = 'Groove Salad';
                     inp.dispatchEvent(new Event('input', { bubbles: true }));
                     inp.dispatchEvent(new Event('search', { bubbles: true }));
                     var clr = document.getElementById('station-search-clear');

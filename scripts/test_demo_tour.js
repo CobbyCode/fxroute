@@ -19,7 +19,7 @@ const tourSource = fs.readFileSync(path.join(root, 'demo', 'tour.js'), 'utf8');
 const bootSource = fs.readFileSync(path.join(root, 'demo', 'boot.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 
-const KNOWN_ACTIONS = ['play-track', 'play-radio', 'search-radio-bbc', 'refresh-library', 'search-library-jazz', 'play-qobuz', 'preset-plus6', 'dsp-demo', 'cycle-providers', 'open-settings'];
+const KNOWN_ACTIONS = ['play-track', 'play-radio', 'search-radio-groove', 'refresh-library', 'search-library-jazz', 'play-qobuz', 'preset-plus6', 'dsp-demo', 'cycle-providers', 'open-settings'];
 
 function selectorExistsIn(selector, html) {
     const sel = String(selector || '').trim();
@@ -76,12 +76,12 @@ function selectorExistsIn(selector, html) {
     assert.ok(tourSource.includes('notour'), 'tour must honor the ?notour opt-out');
 
     // "Lightly active" tour: radio and library steps demonstrate what
-    // their text describes (BBC search, Jazz filter).
+    // their text describes (Groove Salad search, Jazz filter).
     const radioStep = tour.steps.find((s) => s.id === 'radio');
     const libraryStep = tour.steps.find((s) => s.id === 'library');
-    assert.equal(radioStep.action, 'search-radio-bbc', 'radio step must demo the BBC search it describes');
+    assert.equal(radioStep.action, 'search-radio-groove', 'radio step must demo the Groove Salad search it describes');
     assert.equal(libraryStep.action, 'search-library-jazz', 'library step must demo the Jazz search/view cycle it describes');
-    assert.ok(tourSource.includes("action === 'search-radio-bbc'"), 'search-radio-bbc action must be implemented');
+    assert.ok(tourSource.includes("action === 'search-radio-groove'"), 'search-radio-groove action must be implemented');
     assert.ok(tourSource.includes("action === 'search-library-jazz'"), 'search-library-jazz action must be implemented');
 
     // DSP: A/B compare + output extras (limiter/headroom/loudness).
