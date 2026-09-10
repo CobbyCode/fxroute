@@ -574,7 +574,6 @@ class SpotifySourceReadinessTests(unittest.IsolatedAsyncioTestCase):
             source_port_readiness_timeout_ms=150,
             list_spotify_sink_inputs=lambda: [],
             get_spotify_ui_state=AsyncMock(return_value={"status": "Paused"}),
-            move_sink_input=AsyncMock(),
         )
         self.addCleanup(setattr, orchestrator, "_deps", original_deps)
         diagnosis = AsyncMock(return_value=_spotify_unknown_source_diagnosis())
@@ -659,38 +658,52 @@ def _wedged_spotify_sink_input() -> dict:
 
 
 class SpotifyWedgedStreamRepairTests(unittest.IsolatedAsyncioTestCase):
-    """A corked Spotify stream with an invalid sink binding is rebound.
+    """A corked Spotify stream with an invalid sink binding is relinked.
 
     Live .104 finding: after an output switch the same sink input can be
     left behind corked with an invalid sink while MPRIS still reports
-    Playing. Pause/Play never recreates the stream, but moving the
-    existing input back onto the DSP ingress rebinds and uncorks it, so
-    the normal missing-link relink path can proceed.
+    Playing. Pause/Play never recreates the stream. Recreating its
+    source→DSP links rebinds and uncorks it (a move alone binds nothing),
+    so the normal missing-link relink path can proceed.
     """
 
     def _deps_with_spotify_stubs(
-        self, orchestrator, *, sink_inputs, spotify_status="Playing", timeout_ms=None
+        self, orchestrator, *, sink_inputs, spotify_status="Playing", timeout_ms=None,
+        io_text="", link_text="",
     ):
         import dataclasses
+
+        async def fake_pw_link(*args):
+            joined = " ".join(str(a) for a in args)
+            return io_text if "-io" in joined else link_text
+
+        async def fake_connect(source, target):
+            return await pw_link_mod.connect_ports(source, target)
 
         original_deps = orchestrator._deps
         replacements = {
             "list_spotify_sink_inputs": lambda: sink_inputs,
             "get_spotify_ui_state": AsyncMock(return_value={"status": spotify_status}),
-            "move_sink_input": AsyncMock(),
+            "run_pw_link_command": fake_pw_link,
+            "connect_ports": fake_connect,
         }
         if timeout_ms is not None:
             replacements["source_port_readiness_timeout_ms"] = timeout_ms
         orchestrator._deps = dataclasses.replace(original_deps, **replacements)
         self.addCleanup(setattr, orchestrator, "_deps", original_deps)
-        return orchestrator._deps.move_sink_input
 
-    async def test_wedged_spotify_stream_is_moved_then_relinked(self):
+    async def test_wedged_spotify_stream_is_relinked_then_commits(self):
         request = _spotify_toggle_request()
         complete = _spotify_complete_diagnosis()
         orchestrator = playback_orchestration.configured()
-        move = self._deps_with_spotify_stubs(
-            orchestrator, sink_inputs=[_wedged_spotify_sink_input()]
+        self._deps_with_spotify_stubs(
+            orchestrator,
+            sink_inputs=[_wedged_spotify_sink_input()],
+            io_text=(
+                "spotify:output_FL\nspotify:output_FR\n"
+                "fxroute_dsp_sink:playback_FL\nfxroute_dsp_sink:playback_FR\n"
+            ),
+            link_text="",
         )
         diagnosis = AsyncMock(
             side_effect=[
@@ -708,9 +721,11 @@ class SpotifyWedgedStreamRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["graph_complete"])
         self.assertTrue(result["post_start_graph_links_relinked"])
-        move.assert_awaited_once_with("588752", "fxroute_dsp_sink")
+        # Repair links come first; the trailing pair is the normal
+        # missing-link path re-running against the scripted diagnosis (live
+        # it re-reads the repaired graph instead).
         self.assertEqual(
-            relink.await_args_list,
+            relink.await_args_list[:2],
             [
                 call((SPOTIFY_FL,), SPOTIFY_SINK_FL),
                 call((SPOTIFY_FR,), SPOTIFY_SINK_FR),
@@ -720,7 +735,7 @@ class SpotifyWedgedStreamRepairTests(unittest.IsolatedAsyncioTestCase):
     async def test_wedged_timeout_mentions_corked_renderer(self):
         request = _spotify_toggle_request()
         orchestrator = playback_orchestration.configured()
-        move = self._deps_with_spotify_stubs(
+        self._deps_with_spotify_stubs(
             orchestrator,
             sink_inputs=[_wedged_spotify_sink_input()],
             timeout_ms=150,
@@ -736,13 +751,12 @@ class SpotifyWedgedStreamRepairTests(unittest.IsolatedAsyncioTestCase):
         message = str(caught.exception)
         self.assertIn("source readiness", message)
         self.assertIn("Renderer wedged (corked)", message)
-        move.assert_awaited_once_with("588752", "fxroute_dsp_sink")
         relink.assert_not_awaited()
 
     async def test_no_repair_without_wedged_stream(self):
         request = _spotify_toggle_request()
         orchestrator = playback_orchestration.configured()
-        move = self._deps_with_spotify_stubs(
+        self._deps_with_spotify_stubs(
             orchestrator, sink_inputs=[], timeout_ms=150
         )
         diagnosis = AsyncMock(return_value=_spotify_unknown_source_diagnosis())
@@ -754,13 +768,12 @@ class SpotifyWedgedStreamRepairTests(unittest.IsolatedAsyncioTestCase):
                 await orchestrator.reconcile_post_start_graph(request)
 
         self.assertNotIn("Renderer wedged (corked)", str(caught.exception))
-        move.assert_not_awaited()
         relink.assert_not_awaited()
 
     async def test_no_repair_when_paused(self):
         request = _spotify_toggle_request()
         orchestrator = playback_orchestration.configured()
-        move = self._deps_with_spotify_stubs(
+        self._deps_with_spotify_stubs(
             orchestrator,
             sink_inputs=[_wedged_spotify_sink_input()],
             spotify_status="Paused",
@@ -772,14 +785,13 @@ class SpotifyWedgedStreamRepairTests(unittest.IsolatedAsyncioTestCase):
                 await orchestrator.reconcile_post_start_graph(request)
 
         self.assertNotIn("Renderer wedged (corked)", str(caught.exception))
-        move.assert_not_awaited()
 
-    async def test_hanging_move_does_not_extend_reconcile_budget(self):
-        """A wedged rebind that never returns still times out in budget.
+    async def test_hanging_relink_does_not_extend_reconcile_budget(self):
+        """A wedged relink that never returns still times out in budget.
 
-        The move gets at most the remaining post-start readiness budget:
-        exactly one repair attempt, then the normal readiness timeout
-        (and downstream latch) well before any move-level timeout.
+        The repair gets at most the remaining post-start readiness budget:
+        one attempted link, then the normal readiness timeout (and
+        downstream latch) well before anything else.
         """
         import asyncio
         import dataclasses
@@ -789,19 +801,24 @@ class SpotifyWedgedStreamRepairTests(unittest.IsolatedAsyncioTestCase):
         orchestrator = playback_orchestration.configured()
         calls: list[tuple] = []
 
-        async def hanging_move(input_id, target):
-            calls.append((input_id, target))
+        async def hanging_connect(source, target):
+            calls.append((source, target))
             await asyncio.sleep(15)
 
+        self._deps_with_spotify_stubs(
+            orchestrator,
+            sink_inputs=[_wedged_spotify_sink_input()],
+            timeout_ms=300,
+            io_text=(
+                "spotify:output_FL\nspotify:output_FR\n"
+                "fxroute_dsp_sink:playback_FL\nfxroute_dsp_sink:playback_FR\n"
+            ),
+            link_text="",
+        )
         original_deps = orchestrator._deps
         orchestrator._deps = dataclasses.replace(
-            original_deps,
-            source_port_readiness_timeout_ms=300,
-            list_spotify_sink_inputs=lambda: [_wedged_spotify_sink_input()],
-            get_spotify_ui_state=AsyncMock(return_value={"status": "Playing"}),
-            move_sink_input=hanging_move,
+            original_deps, connect_ports=hanging_connect
         )
-        self.addCleanup(setattr, orchestrator, "_deps", original_deps)
         diagnosis = AsyncMock(return_value=_spotify_unknown_source_diagnosis())
         with patch.object(orchestrator, "playback_graph_diagnosis", diagnosis):
             started = time.monotonic()
@@ -810,8 +827,7 @@ class SpotifyWedgedStreamRepairTests(unittest.IsolatedAsyncioTestCase):
             elapsed = time.monotonic() - started
 
         self.assertIn("source readiness", str(caught.exception))
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0], ("588752", "fxroute_dsp_sink"))
+        self.assertEqual(calls, [((SPOTIFY_FL,), SPOTIFY_SINK_FL)])
         self.assertLess(elapsed, 5.0)
 
 

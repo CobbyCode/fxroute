@@ -2652,7 +2652,6 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         repair_stereo_output_links=None,
         resolve_source_producer_ports=lambda source: _resolve_playback_source_producer_ports(source),
         list_spotify_sink_inputs=lambda: media_readiness.list_spotify_sink_inputs(),
-        move_sink_input=lambda input_id, target: _move_playback_sink_input(input_id, target),
     )
 
 
@@ -4343,34 +4342,6 @@ def _resolve_playback_source_producer_ports(source: str | None) -> tuple[str, st
     if source == "spotify":
         return _spotify_producer_for_coordinator()
     return source_policy.graph_port_names(source)
-
-
-async def _move_playback_sink_input(input_id: str | int, target: str) -> None:
-    """Move one sink input onto a target sink (wedged-renderer rebind)."""
-    proc: asyncio.subprocess.Process | None = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "pactl",
-            "move-sink-input",
-            str(input_id),
-            str(target),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-    except (asyncio.TimeoutError, OSError) as exc:
-        if proc is not None:
-            proc.kill()
-        raise RuntimeError(f"move-sink-input timed out: {exc}") from exc
-    except BaseException:
-        # A caller-side cancellation (e.g. a tighter reconcile budget) must
-        # not leave the pactl child behind.
-        if proc is not None:
-            proc.kill()
-        raise
-    if proc.returncode != 0:
-        detail = (stderr or b"").decode(errors="ignore").strip()
-        raise RuntimeError(detail or f"move-sink-input failed for {input_id} -> {target}")
 
 
 @app.post("/api/spotify/play")
