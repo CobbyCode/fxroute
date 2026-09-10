@@ -95,6 +95,19 @@ function post(fetch, url, body) {
     assert.ok(search.length > 0, 'search within library 2 finds jazz albums');
     assert.ok(search.every(a => albums2.some(b => b.id === a.id)), 'search stays inside library 2');
 
+    // About texts + discover similar, same contract as the main catalog.
+    assert.ok(albums2.every(a => a.artist_description && a.artist_description.trim()),
+        'every library-2 album carries an artist about text');
+    const albumAbout = albums2.find(a => a.album_description);
+    assert.ok(albumAbout && albumAbout.album_description.trim(),
+        'at least one library-2 album carries an album-level about text');
+    const discover = await (await fetch('/api/albums/' + sample.id + '/discover')).json();
+    assert.ok(discover.items.length > 0 && discover.items.length <= 6,
+        'discover returns 1..6 similar albums, got ' + discover.items.length);
+    assert.ok(discover.items.every(a => albums2.some(b => b.id === a.id)),
+        'discover stays inside library 2');
+    assert.ok(!discover.items.some(a => a.id === sample.id), 'discover excludes the album itself');
+
     // Local playback resolves against the active catalog.
     const play = await (await post(fetch, '/api/play', { track_id: albumTracks[0].id })).json();
     assert.equal(play.track.id, albumTracks[0].id, 'played the requested library-2 track');

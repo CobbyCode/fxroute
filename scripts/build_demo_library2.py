@@ -99,6 +99,41 @@ SMOKE_AND_SATIN_TRACKS = [
     "Brighter Tomorrow",
 ]
 
+# Artist -> short fictional bio, same contract as the main catalog's
+# ARTIST_ABOUT: the real UI renders it as a collapsible "About this artist"
+# block in the album detail (two sentences are enough).
+ARTIST_ABOUT: dict[str, str] = {
+    "Nova Static": "Nova Static builds neon-lit synthwave from analog arpeggios and night-drive drum machines. Midnight Relay was recorded in one long session under a ceiling of blinking sequencer lights.",
+    "Elara North": "Elara North writes quiet indie folk about harbors, ferries and slow tides. Her songs are recorded in a single take with the windows open to the water.",
+    "Mason Vale": "Mason Vale is a highway-born Americana songwriter who writes about dust, diners and the long way home. Copper Sky was tracked live in a desert chapel with a ribbon mic on everything.",
+    "Kira Atlas": "Kira Atlas makes dream pop from layered vocal loops and soft-focus synth beds. Parallel Bloom folds field recordings of rain and glass into every chorus.",
+    "Blue Meridian": "Blue Meridian is a jazz trio that plays unhurried, rain-washed standards and originals. After the Rain captures one late set where the band let every tune breathe.",
+    "Luma District": "Luma District shapes dense electronic music from modular sketches and city ambience. Vector Heart maps a night walk through neon districts, block by block.",
+    "Saffron Tide": "Saffron Tide plays sun-bleached indie rock with room-sized guitars and close harmonies. Golden Static was cut live at golden hour on a beach-house porch.",
+    "The Velvet Arcade": "The Velvet Arcade pairs bright synthpop hooks with restless sequencers and confetti-tight drums. Neon Weekend is a love letter to arcades, cassettes and staying out too late.",
+    "North Cascade": "North Cascade composes slow ambient pieces from bowed strings, tape loops and shortwave static. Silent Orbit follows a full night from blue hour to a weightless dawn.",
+    "Ruby Comet": "Ruby Comet is a funk outfit built on slap bass, horn stabs and hand-wired effects. Electric Honey was tracked in two takes with the whole band in one room.",
+    "Static Parade": "Static Parade makes bright, hooky pop with dayglo synths and giant choruses. Color Radio is built for open windows and full-volume car stereos.",
+    "Aural Grid": "Aural Grid makes ambient music from filtered noise, tape hiss and slow-moving chords. Signal Bloom grew out of hours of field recordings of dawn in the city.",
+    "Neon Vale": "Neon Vale explores the seam between IDM and synthwave, pairing crisp machine rhythms with weightless pads. Drift Circuit is a nocturnal drive soundtrack.",
+    "Vector Isles": "Vector Isles builds precise electronic music from interlocking arpeggios and grid-locked drums. Pulse Theory was assembled from a single afternoon of modular jams.",
+    "Static Coast": "Static Coast runs a hand-built rig of tape echoes and modular voices. Modular Hearts is four long takes with the patch cables left in place.",
+    "The Alder Quartet": "The Alder Quartet is a working jazz combo with decades of club dates behind it. Midnight Session captures their last set of the night: brushed drums and unhurried piano.",
+    "Iris Vale Trio": "Iris Vale Trio plays intimate jazz with a warm, close-miked upright bass. Copper Moon documents one long evening at a neighborhood residency.",
+    "June Meridian": "June Meridian sings velvet-voiced vocal jazz with smoky phrasing and midnight romance. Smoke & Satin was arranged around a single candlelit piano.",
+    "Velvet Brass Union": "Velvet Brass Union blends jazz with brass-band swagger and late-night soul. After Hours Mosaic stitches three club sets into one seamless evening.",
+    "Harbor Swing": "Harbor Swing keeps the swing tradition alive with driving rhythm and dancing horns. Blue Avenue is a love letter to neon signs, slow dances and empty streets.",
+    "Nocturne Harbor": "Nocturne Harbor writes ambient nocturnes from piano, tape and ocean sound. Golden Tides follows the tide from dusk to a glowing horizon.",
+    "The Marlowe Ensemble": "The Marlowe Ensemble is a modern jazz collective with lush arrangements and long improvisations. Velvet Skyline paints the city at dusk in brushed cymbals and low brass.",
+    "Aural Vector": "Aural Vector fuses modular synthesis with film-score drama. Prism Engine runs a full analog rig without a laptop in sight.",
+}
+
+# Album-level about overrides, analog to the main catalog's ALBUM_ABOUT: an
+# album here renders as "About this album" instead of "About this artist".
+ALBUM_ABOUT: dict[str, str] = {
+    "Smoke & Satin": "Smoke & Satin is built around June Meridian's own printed track list: six songs arranged for voice, piano and a three-piece horn section, recorded in one candlelit night.",
+}
+
 # Genre -> evocative title words for plausible generated track names.
 TITLE_WORDS: dict[str, list[str]] = {
     "Synthwave": ["Midnight", "Neon", "Chrome", "Ultraviolet", "Afterglow", "Nightdrive", "Laser", "Mirage", "Overdrive", "Nightcall", "Glasshouse", "Runaway", "Skyline", "Relay", "Palm", "Static", "Voltage", "Sunset", "Horizon", "Interceptor", "Cassette", "Dayglow"],
@@ -346,6 +381,11 @@ JS_PREAMBLE = """// NAS Library 1 catalog fixture (generated by scripts/build_de
     // Deterministic favorites, computed in Python (favorite_flags) so the
     // fixture carries the flags instead of re-deriving them at page load.
     const FAVORITES = %s;
+    // About texts (demo stand-ins for the enriched MusicBrainz artist/album
+    // descriptions), same contract as the main catalog: the album detail
+    // renders them as collapsible About blocks.
+    const ARTIST_ABOUT = %s;
+    const ALBUM_ABOUT = %s;
 
     const tracks = [];
     const albums = [];
@@ -393,6 +433,10 @@ JS_PREAMBLE = """// NAS Library 1 catalog fixture (generated by scripts/build_de
             has_external_cover: false,
             coverUrl: cover,
             demo_cover_url: cover,
+            // Same fields the enriched backend serves: the album detail
+            // renders them as collapsible About blocks, no demo-only UI.
+            ...(ARTIST_ABOUT[artist] ? { artist_description: ARTIST_ABOUT[artist] } : {}),
+            ...(ALBUM_ABOUT[album] ? { album_description: ALBUM_ABOUT[album] } : {}),
         });
     });
 
@@ -414,6 +458,8 @@ def render_webdemo_js(manifest: dict) -> str:
         json.dumps(seeds, ensure_ascii=False),
         json.dumps(manifest["playlists"], ensure_ascii=False),
         json.dumps(favorite_flags(manifest["albums"]), ensure_ascii=False, sort_keys=True),
+        json.dumps(ARTIST_ABOUT, ensure_ascii=False, sort_keys=True),
+        json.dumps(ALBUM_ABOUT, ensure_ascii=False, sort_keys=True),
     )
 
 
