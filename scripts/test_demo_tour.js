@@ -19,7 +19,7 @@ const tourSource = fs.readFileSync(path.join(root, 'demo', 'tour.js'), 'utf8');
 const bootSource = fs.readFileSync(path.join(root, 'demo', 'boot.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 
-const KNOWN_ACTIONS = ['play-track', 'preset-plus6', 'open-settings'];
+const KNOWN_ACTIONS = ['play-track', 'play-radio', 'refresh-library', 'preset-plus6', 'open-settings'];
 
 function selectorExistsIn(selector, html) {
     const sel = String(selector || '').trim();
@@ -74,6 +74,15 @@ function selectorExistsIn(selector, html) {
     // The tour is a walkthrough, not an app: no dynamic DOM building.
     assert.ok(!tourSource.includes('innerHTML'), 'tour must not build DOM via innerHTML');
     assert.ok(tourSource.includes('notour'), 'tour must honor the ?notour opt-out');
+
+    // "Lightly active" tour: radio and library steps must demonstrate what
+    // their text describes (station starts, scan runs), not just talk.
+    const radioStep = tour.steps.find((s) => s.id === 'radio');
+    const libraryStep = tour.steps.find((s) => s.id === 'library');
+    assert.equal(radioStep.action, 'play-radio', 'radio step must start a station');
+    assert.equal(libraryStep.action, 'refresh-library', 'library step must run the scan it describes');
+    assert.ok(tourSource.includes("action === 'play-radio'"), 'play-radio action must be implemented');
+    assert.ok(tourSource.includes("action === 'refresh-library'"), 'refresh-library action must be implemented');
 
     // The whole demo UI is English — the tour copy must be too (the card
     // labels as well as every step text).

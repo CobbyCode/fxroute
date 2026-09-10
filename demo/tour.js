@@ -27,14 +27,16 @@
             tab: '#tab-btn-radio',
             target: '#tab-radio',
             title: 'Radio',
-            text: '60+ internet radio stations. Find a station in the search box, tap it and playback starts right away.',
+            text: '60+ internet radio stations. Find a station in the search box, tap it and playback starts right away — one is starting now.',
+            action: 'play-radio',
         },
         {
             id: 'library',
             tab: '#tab-btn-library',
             target: '#tab-library',
             title: 'Music library',
-            text: 'Browse albums, tracks and favorites — search the catalog and mark favorites. A refresh runs a short scan with progress counters.',
+            text: 'Browse albums, tracks and favorites — search the catalog and mark favorites. A refresh is running right now — watch the progress counters.',
+            action: 'refresh-library',
         },
         {
             id: 'dsp',
@@ -248,6 +250,15 @@
                     && typeof S.playLocal === 'function' && S.localTracks && S.localTracks.length) {
                     S.playLocal(S.localTracks[0].id);
                 }
+            } else if (action === 'play-radio') {
+                // Switch the footer to a curated station: the radio step's
+                // text promises "tap it and playback starts".
+                var stationId = S && S.catalogStations && S.catalogStations[0] && S.catalogStations[0].id;
+                if (stationId && typeof S.playRadio === 'function') S.playRadio(stationId);
+            } else if (action === 'refresh-library') {
+                // Arms the demo scan cycle; the status poll then shows the
+                // progress counters the library step's text points at.
+                post('/api/library/refresh', {});
             } else if (action === 'preset-plus6') {
                 // Moves the audible level so the meter visibly jumps.
                 post('/api/dsp/presets/load', { preset_name: '+6' });
