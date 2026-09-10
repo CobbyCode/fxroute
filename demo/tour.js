@@ -19,7 +19,7 @@
             tab: null,
             target: '#playback-bar',
             title: 'Playback & live meter',
-            text: 'The footer controls playback: transport, track info and the live output meter of the DSP chain.',
+            text: 'The footer controls playback: transport, track info, and the live output meter of the DSP chain — a combo meter with slow VU for level and a fast peak-hold that catches clipping.',
             action: 'play-track',
         },
         {
