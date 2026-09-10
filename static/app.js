@@ -8751,6 +8751,17 @@ function takeMeasurementPeqToPreset(mode = 'both') {
     showToast(successMessage, 'success');
 }
 
+function resolveMeasurementPeqPresetName(peq, fieldValue, mode) {
+    // Mirrors the convolver field: the visible input is authoritative, so
+    // the stored preset can never diverge from what the user saw. An
+    // untouched field still holds the staged auto name.
+    const fieldName = String(fieldValue ?? '').trim();
+    if (fieldName) return fieldName;
+    const draftName = String(peq?.draft?.presetName || '').trim();
+    if (draftName) return draftName;
+    return getMeasurementPeqPresetName(mode || 'both', { unique: true });
+}
+
 async function createMeasurementPeqPresetFromDraft() {
     if (peqCreateInFlight) {
         showToast('PEQ preset creation already in progress', 'warning');
@@ -8769,7 +8780,7 @@ async function createMeasurementPeqPresetFromDraft() {
         showToast(validationError, 'error');
         return;
     }
-    const presetName = String(peq.draft?.presetName || '').trim() || getMeasurementPeqPresetName(getMeasurementPeqDraftMode(peq) || 'both', { unique: true });
+    const presetName = resolveMeasurementPeqPresetName(peq, elements.measurementPeqPresetName?.value, getMeasurementPeqDraftMode(peq) || 'both');
     peq.draft.presetName = presetName;
     const eqMode = normalizePeqEqMode(state.dsp?.peqDraft?.eqMode || elements.effectsPeqModeSelect?.value || 'IIR');
     peqCreateInFlight = true;
@@ -11801,11 +11812,16 @@ function renderMeasurementPanelEditorsSection({ measurementState, current, measu
     }
     if (elements.measurementPeqPresetName) {
         const hasDraft = !!peqDraftLeftCount || !!peqDraftRightCount;
+        // Like the convolver field: show the stable auto suggestion even
+        // before Take, and keep it editable from the moment a name stands
+        // in the field. A typed name is stored touched, so a later Take
+        // never overwrites it; Create still requires a staged draft.
+        const nameValue = peq.draft?.presetName || getMeasurementPeqPresetName(getMeasurementPeqDraftMode(peq) || 'both');
         if (document.activeElement !== elements.measurementPeqPresetName) {
-            elements.measurementPeqPresetName.value = peq.draft?.presetName || '';
+            elements.measurementPeqPresetName.value = nameValue;
         }
-        elements.measurementPeqPresetName.disabled = !hasDraft;
-        elements.measurementPeqPresetName.placeholder = hasDraft ? 'Preset name' : 'Take L/R/Both to generate a name';
+        elements.measurementPeqPresetName.disabled = peqCreateInFlight;
+        elements.measurementPeqPresetName.placeholder = hasDraft ? 'Preset name' : 'Type a name, or Take L/R/Both to stage';
     }
     if (elements.measurementPeqTakeLeftBtn) elements.measurementPeqTakeLeftBtn.disabled = !peq.filters.length;
     if (elements.measurementPeqTakeRightBtn) elements.measurementPeqTakeRightBtn.disabled = !peq.filters.length;
