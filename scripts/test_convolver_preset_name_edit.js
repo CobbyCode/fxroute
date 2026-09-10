@@ -152,3 +152,23 @@ const AUTO = 'Conv LR Min Neutral 20-250Hz -4dB 043055';
 }
 
 console.log('convolver preset name edit tests: ok');
+
+// Source contract: like the PEQ field, the convolver name input must be
+// editable whenever it shows a name (staged auto name or pre-take
+// preview) — the disabled gate may only cover phase mismatch and the
+// in-flight creation, never the missing draft. Typed text still marks
+// the draft touched so Take keeps it.
+{
+    const renderSection = extractFunction('renderMeasurementPanelConvolverSection');
+    assert.match(
+        renderSection,
+        /measurementConvolverPresetName\.disabled\s*=\s*!!draftPhaseMismatch\s*\|\|\s*isCreatingConvolverPreset/,
+    );
+    assert.doesNotMatch(
+        renderSection,
+        /measurementConvolverPresetName\.disabled\s*=\s*!hasConvolverDraft/,
+    );
+    const takeFn = extractFunction('takeMeasurementConvolverToDraft');
+    assert.match(takeFn, /if\s*\(!conv\.draft\.nameTouched\)\s*conv\.draft\.presetName\s*=/);
+    console.log('convolver preset name field-availability contract: ok');
+}

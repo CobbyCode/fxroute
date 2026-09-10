@@ -11899,8 +11899,8 @@ function renderMeasurementPanelConvolverSection({ measurementState, current, mea
         if (document.activeElement !== elements.measurementConvolverPresetName) {
             elements.measurementConvolverPresetName.value = nameValue;
         }
-        elements.measurementConvolverPresetName.disabled = !hasConvolverDraft || !!draftPhaseMismatch || isCreatingConvolverPreset;
-        elements.measurementConvolverPresetName.placeholder = hasConvolverDraft ? 'Preset name' : 'Preview. Take L/R/Both to stage';
+        elements.measurementConvolverPresetName.disabled = !!draftPhaseMismatch || isCreatingConvolverPreset;
+        elements.measurementConvolverPresetName.placeholder = hasConvolverDraft ? 'Preset name' : 'Type a name, or Take L/R/Both to stage';
     }
     if (elements.measurementConvolverWarnings) {
         const warnings = buildMeasurementConvolverWarnings(convAnalyses);
