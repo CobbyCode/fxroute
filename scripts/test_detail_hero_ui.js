@@ -51,6 +51,18 @@ assert.ok(openAlbum.includes('setAlbumDetailBackdrop('),
     'local album open must synchronize the artwork backdrop');
 assert.ok(openTopTracks.includes('setAlbumDetailBackdrop('),
     'Top 40 album detail must synchronize the artwork backdrop');
+// The library tab shares the window scroll (no inner scroll container), so
+// opening an album must reset it after showing the detail — otherwise the
+// detail inherits the grid position and starts mid-page at the tracks.
+const scrollReset = extractFunction(appJs, 'scrollAlbumDetailToTop');
+assert.ok(scrollReset.includes('window.scrollTo(0, 0)'),
+    'the album scroll reset must return the window scroll to exactly the top');
+for (const [fn, label] of [[openAlbum, 'openAlbumDetail'], [openTopTracks, 'openSmartTopTracks']]) {
+    assert.ok(fn.includes('scrollAlbumDetailToTop()'),
+        `${label} must reset the scroll when opening the album detail`);
+    assert.ok(fn.indexOf('scrollAlbumDetailToTop()') > fn.indexOf("albumDetail.classList.remove('hidden')"),
+        `${label} must reset the scroll after showing the detail, not during loading`);
+}
 assert.ok(appJs.includes('albumDetailBackdrop:'),
     'app.js must retain a dedicated local album backdrop element');
 assert.ok(appJs.includes('playlistDetailBackdrop:'),

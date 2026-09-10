@@ -6127,6 +6127,15 @@ function playlistFallbackMarkSvg() {
     return `<img class="playlist-collage-fallback-mark" src="${escapeHtml(artworkPlaceholderUrl())}" alt="" />`;
 }
 
+// The library tab has no inner scroll container (neither #tab-library nor
+// #tab-content nor their ancestors set an overflow), so the album grid and
+// the album detail share the window scroll. Opening an album must reset it,
+// otherwise the detail inherits the grid position and starts mid-page at
+// the tracks instead of at the cover/title hero.
+function scrollAlbumDetailToTop() {
+    window.scrollTo(0, 0);
+}
+
 async function openAlbumDetail(albumId) {
     const album = (state.library.albums || []).find(a => a.id === albumId);
     if (!album) return;
@@ -6165,6 +6174,7 @@ async function openAlbumDetail(albumId) {
         if (elements.playlistDetail) elements.playlistDetail.classList.add('hidden');
         elements.albumDetail.classList.remove('hidden');
         updatePlaylistSaveRowVisibility();
+        scrollAlbumDetailToTop();
     } catch (e) {
         console.warn('Failed to load album tracks', e);
     }
@@ -6212,6 +6222,7 @@ async function openSmartTopTracks() {
         if (elements.playlistDetail) elements.playlistDetail.classList.add('hidden');
         elements.albumDetail.classList.remove('hidden');
         updatePlaylistSaveRowVisibility();
+        scrollAlbumDetailToTop();
     } catch (e) {
         console.warn('Failed to load Top 40', e);
         showToast('Failed to load Top 40', 'error');
