@@ -9242,6 +9242,19 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
     showToast(`Convolver draft updated: ${label}`, 'success');
 }
 
+function resolveMeasurementConvolverItemName(conv, fieldValue, mode, sharedAutoGainDb) {
+    // The visible field is authoritative: whatever stands in the Preset
+    // Name input at click time is saved, so the stored preset can never
+    // diverge from what the user saw (e.g. a render between the last
+    // keystroke and the click, or an in-flight draft reset). An untouched
+    // field still holds the staged auto name, preserving the default flow.
+    const fieldName = String(fieldValue ?? '').trim();
+    if (fieldName) return fieldName;
+    const draftName = String(conv?.draft?.presetName || '').trim();
+    if (draftName) return draftName;
+    return getMeasurementConvolverItemName(mode, sharedAutoGainDb, { unique: true });
+}
+
 async function createMeasurementConvolverPresetFromDraft() {
     if (convolverCreateInFlight) {
         showToast('Convolver preset creation already in progress', 'warning');
@@ -9292,7 +9305,7 @@ async function createMeasurementConvolverPresetFromDraft() {
     }
     const analyses = drafts.map((draft) => draft.analysis);
     const sharedAutoGainDb = Math.min(...analyses.map((analysis) => analysis.autoGainDb));
-    const itemName = String(conv.draft?.presetName || '').trim() || getMeasurementConvolverItemName(mode, sharedAutoGainDb, { unique: true });
+    const itemName = resolveMeasurementConvolverItemName(conv, elements.measurementConvolverPresetName?.value, mode, sharedAutoGainDb);
     conv.draft.presetName = itemName;
     convolverCreateInFlight = true;
     conv.creatingPreset = true;
@@ -11886,7 +11899,7 @@ function renderMeasurementPanelConvolverSection({ measurementState, current, mea
         if (document.activeElement !== elements.measurementConvolverPresetName) {
             elements.measurementConvolverPresetName.value = nameValue;
         }
-        elements.measurementConvolverPresetName.disabled = !hasConvolverDraft || !!draftPhaseMismatch;
+        elements.measurementConvolverPresetName.disabled = !hasConvolverDraft || !!draftPhaseMismatch || isCreatingConvolverPreset;
         elements.measurementConvolverPresetName.placeholder = hasConvolverDraft ? 'Preset name' : 'Preview. Take L/R/Both to stage';
     }
     if (elements.measurementConvolverWarnings) {
