@@ -27,39 +27,39 @@
             tab: '#tab-btn-radio',
             target: '#tab-radio',
             title: 'Radio',
-            text: '60+ internet radio stations. Find a station in the search box, tap it and playback starts right away — one is starting now.',
-            action: 'play-radio',
+            text: 'Search internet radio — type “BBC” in the search box to find BBC stations from the online catalog, then tap any result to play it instantly.',
+            action: 'search-radio-bbc',
         },
         {
             id: 'library',
             tab: '#tab-btn-library',
             target: '#tab-library',
             title: 'Music library',
-            text: 'Browse albums, tracks and favorites — search the catalog and mark favorites. A refresh is running right now — watch the progress counters.',
-            action: 'refresh-library',
+            text: 'Browse albums, tracks and folders — switch views or type “Jazz” to filter the catalog and see several Jazz albums appear. Mark favorites with the heart icon.',
+            action: 'search-library-jazz',
         },
         {
             id: 'dsp',
             tab: '#tab-btn-effects',
             target: '#tab-effects',
             title: 'DSP & audio processing',
-            text: 'Filter presets with PEQ bands and convolver kernels, A/B-compare two of them with one click, and global helpers — protection limiter, autogain, loudness, bass enhancer — that apply automatically on top. The “+6” preset is loading as an example.',
-            action: 'preset-plus6',
+            text: 'Compare two filter presets with A/B — pick A and B, then switch instantly. Output extras — protection limiter with headroom, autogain, loudness and tone controls — run globally on top of every preset. Loudness is calibrated to your playback level.',
+            action: 'dsp-demo',
         },
         {
             id: 'qobuz',
-            tab: '#tab-btn-qobuz',
-            target: '#tab-qobuz',
+            tab: null,
+            target: '.tabs',
             title: 'Streaming providers',
-            text: 'Spotify, Qobuz and TIDAL, each with its own catalog, cover artwork and search. A Qobuz track is starting now — the footer shows the active source and its stream facts.',
-            action: 'play-qobuz',
+            text: 'Spotify, Qobuz and TIDAL each bring their own catalog and cover artwork — open any tab to browse albums, tracks and playlists, then play directly. The footer shows the active source.',
+            action: 'cycle-providers',
         },
         {
             id: 'settings',
             tab: null,
             target: '#settings-panel',
             title: 'Technical settings',
-            text: 'The system setup: audio output device and mode (stereo, 2.1 or 2.2), streaming providers, amplifier controller and maintenance. Music libraries — Local, NAS Library 1 & 2 — are switched via the dropdown here. Everything is simulated, but fully usable.',
+            text: 'This is where fxroute is configured: audio output, providers, source inputs, device name and maintenance. Providers are managed here — install, hide or remove them. The buttons pulse briefly as a demo.',
             action: 'open-settings',
         },
         {
@@ -67,7 +67,7 @@
             tab: null,
             target: null,
             title: 'What fxroute can do',
-            text: 'fxroute plays from the local library, radio and streaming providers, applies a full DSP chain with presets, PEQ and subwoofer integration — and measurement & room correction, all controlled from the browser.',
+            text: 'fxroute plays from the local library, radio and streaming providers and shapes the sound with a full DSP chain — filter presets, convolver, PEQ, subwoofer integration and output extras — plus advanced measurement and room correction, all from the browser. Have fun exploring!',
         },
     ];
 
@@ -140,7 +140,15 @@
         }
 
         card.textContent = '';
-        card.appendChild(el('div', 'demo-tour-progress', 'Step ' + (index + 1) + ' / ' + STEPS.length));
+        var header = el('div', 'demo-tour-header');
+        header.appendChild(el('div', 'demo-tour-progress', 'Step ' + (index + 1) + ' / ' + STEPS.length));
+        var closeBtn = el('button', 'demo-tour-close', '✕');
+        closeBtn.type = 'button';
+        closeBtn.setAttribute('aria-label', 'Close tour');
+        closeBtn.title = 'Close tour';
+        closeBtn.addEventListener('click', finish);
+        header.appendChild(closeBtn);
+        card.appendChild(header);
         var titleEl = el('h3', 'demo-tour-title', step.title);
         titleEl.id = 'demo-tour-title'; // aria-labelledby on the card references this id
         card.appendChild(titleEl);
@@ -252,27 +260,97 @@
                     S.playLocal(S.localTracks[0].id);
                 }
             } else if (action === 'play-radio') {
-                // Switch the footer to a curated station: the radio step's
-                // text promises "tap it and playback starts".
+                // Legacy: switch the footer to a curated station.
                 var stationId = S && S.catalogStations && S.catalogStations[0] && S.catalogStations[0].id;
                 if (stationId && typeof S.playRadio === 'function') S.playRadio(stationId);
+            } else if (action === 'search-radio-bbc') {
+                var inp = document.getElementById('station-search');
+                if (inp) {
+                    inp.value = 'BBC';
+                    inp.dispatchEvent(new Event('input', { bubbles: true }));
+                    inp.dispatchEvent(new Event('search', { bubbles: true }));
+                    var clr = document.getElementById('station-search-clear');
+                    if (clr) clr.disabled = false;
+                    if (typeof inp.focus === 'function') try { inp.focus(); } catch (e) {}
+                }
             } else if (action === 'refresh-library') {
-                // Arms the demo scan cycle; the status poll then shows the
-                // progress counters the library step's text points at.
                 post('/api/library/refresh', {});
+            } else if (action === 'search-library-jazz') {
+                var libInp = document.getElementById('library-search');
+                if (libInp) {
+                    var viewAlbums = document.getElementById('library-view-albums');
+                    var viewTracks = document.getElementById('library-view-tracks');
+                    var viewFolders = document.getElementById('library-view-folders');
+                    // Brief view cycle: Tracks -> Folders -> Albums, then filter Jazz.
+                    if (viewTracks && typeof viewTracks.click === 'function') viewTracks.click();
+                    setTimeout(function () {
+                        if (viewFolders && typeof viewFolders.click === 'function') viewFolders.click();
+                        setTimeout(function () {
+                            if (viewAlbums && typeof viewAlbums.click === 'function') viewAlbums.click();
+                            setTimeout(function () {
+                                var curInp = document.getElementById('library-search');
+                                if (!curInp) return;
+                                curInp.value = 'Jazz';
+                                curInp.dispatchEvent(new Event('input', { bubbles: true }));
+                                curInp.dispatchEvent(new Event('search', { bubbles: true }));
+                                var clr2 = document.getElementById('library-search-clear');
+                                if (clr2) clr2.disabled = false;
+                                if (typeof curInp.focus === 'function') try { curInp.focus(); } catch (e2) {}
+                            }, 180);
+                        }, 280);
+                    }, 260);
+                }
             } else if (action === 'play-qobuz') {
-                // Switch the player to the Qobuz transport so the footer
-                // shows a remote source with its own stream facts.
                 post('/api/streaming/qobuz/demo_start', {});
             } else if (action === 'preset-plus6') {
-                // Moves the audible level so the meter visibly jumps.
                 post('/api/dsp/presets/load', { preset_name: '+6' });
+            } else if (action === 'dsp-demo') {
+                post('/api/dsp/presets/load', { preset_name: '+6' });
+                post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'B' });
+                post('/api/dsp/extras', { headroomEnabled: true, headroomGainDb: -3, loudnessEnabled: true, loudnessStrength: 5 });
+                // Nudge the A/B toggle after a moment so the badge visibly flips.
+                setTimeout(function () {
+                    post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'A' });
+                    setTimeout(function () {
+                        post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'B' });
+                    }, 450);
+                }, 600);
+            } else if (action === 'cycle-providers') {
+                var spBtn = document.getElementById('tab-btn-spotify');
+                var qbBtn = document.getElementById('tab-btn-qobuz');
+                var tdBtn = document.getElementById('tab-btn-tidal');
+                // Make hidden provider tabs reachable in the demo even before discovery.
+                [spBtn, qbBtn, tdBtn].forEach(function (btn) {
+                    if (btn) { btn.hidden = false; btn.style.display = ''; }
+                });
+                post('/api/spotify/demo_start', {});
+                if (spBtn && typeof spBtn.click === 'function') spBtn.click();
+                setTimeout(function () {
+                    post('/api/streaming/qobuz/demo_start', {});
+                    if (qbBtn && typeof qbBtn.click === 'function') qbBtn.click();
+                }, 700);
+                setTimeout(function () {
+                    if (tdBtn && typeof tdBtn.click === 'function') tdBtn.click();
+                }, 1200);
+                setTimeout(function () {
+                    post('/api/streaming/qobuz/demo_start', {});
+                    if (qbBtn && typeof qbBtn.click === 'function') qbBtn.click();
+                }, 1650);
             } else if (action === 'open-settings') {
                 var panel = document.querySelector('#settings-panel');
                 if (panel && panel.classList.contains('hidden')) {
                     var openBtn = document.querySelector('#open-settings');
                     if (openBtn) openBtn.click();
                 }
+                setTimeout(function () {
+                    var rows = document.querySelectorAll('#settings-providers-list .settings-provider-row');
+                    rows.forEach(function (row, idx) {
+                        setTimeout(function () {
+                            row.classList.add('demo-tour-pulse');
+                            setTimeout(function () { row.classList.remove('demo-tour-pulse'); }, 900);
+                        }, idx * 180);
+                    });
+                }, 350);
             }
         } catch (err) {
             // Swallow: the tour itself must stay usable.

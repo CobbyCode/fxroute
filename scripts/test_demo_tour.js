@@ -19,7 +19,7 @@ const tourSource = fs.readFileSync(path.join(root, 'demo', 'tour.js'), 'utf8');
 const bootSource = fs.readFileSync(path.join(root, 'demo', 'boot.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 
-const KNOWN_ACTIONS = ['play-track', 'play-radio', 'refresh-library', 'play-qobuz', 'preset-plus6', 'open-settings'];
+const KNOWN_ACTIONS = ['play-track', 'play-radio', 'search-radio-bbc', 'refresh-library', 'search-library-jazz', 'play-qobuz', 'preset-plus6', 'dsp-demo', 'cycle-providers', 'open-settings'];
 
 function selectorExistsIn(selector, html) {
     const sel = String(selector || '').trim();
@@ -75,20 +75,27 @@ function selectorExistsIn(selector, html) {
     assert.ok(!tourSource.includes('innerHTML'), 'tour must not build DOM via innerHTML');
     assert.ok(tourSource.includes('notour'), 'tour must honor the ?notour opt-out');
 
-    // "Lightly active" tour: radio and library steps must demonstrate what
-    // their text describes (station starts, scan runs), not just talk.
+    // "Lightly active" tour: radio and library steps demonstrate what
+    // their text describes (BBC search, Jazz filter).
     const radioStep = tour.steps.find((s) => s.id === 'radio');
     const libraryStep = tour.steps.find((s) => s.id === 'library');
-    assert.equal(radioStep.action, 'play-radio', 'radio step must start a station');
-    assert.equal(libraryStep.action, 'refresh-library', 'library step must run the scan it describes');
-    assert.ok(tourSource.includes("action === 'play-radio'"), 'play-radio action must be implemented');
-    assert.ok(tourSource.includes("action === 'refresh-library'"), 'refresh-library action must be implemented');
+    assert.equal(radioStep.action, 'search-radio-bbc', 'radio step must demo the BBC search it describes');
+    assert.equal(libraryStep.action, 'search-library-jazz', 'library step must demo the Jazz search/view cycle it describes');
+    assert.ok(tourSource.includes("action === 'search-radio-bbc'"), 'search-radio-bbc action must be implemented');
+    assert.ok(tourSource.includes("action === 'search-library-jazz'"), 'search-library-jazz action must be implemented');
 
-    // Providers step: switch the player to Qobuz so the multi-provider
-    // claim is visible in the footer instead of only stated.
+    // DSP: A/B compare + output extras (limiter/headroom/loudness).
+    const dspStep = tour.steps.find((s) => s.id === 'dsp');
+    assert.equal(dspStep.action, 'dsp-demo', 'DSP step must demo A/B compare + output extras');
+    assert.ok(tourSource.includes("action === 'dsp-demo'"), 'dsp-demo action must be implemented');
+
+    // Providers step: cycle through Spotify/Qobuz/TIDAL so the multi-provider
+    // claim is visible in the tabs/footer instead of only stated.
     const providerStep = tour.steps.find((s) => s.id === 'qobuz');
-    assert.equal(providerStep.action, 'play-qobuz', 'providers step must switch the player to Qobuz');
-    assert.ok(tourSource.includes("action === 'play-qobuz'"), 'play-qobuz action must be implemented');
+    assert.equal(providerStep.action, 'cycle-providers', 'providers step must cycle through the provider tabs');
+    assert.ok(tourSource.includes("action === 'cycle-providers'"), 'cycle-providers action must be implemented');
+    // Keep legacy qobuz action available for direct playback switching.
+    assert.ok(tourSource.includes("action === 'play-qobuz'") || tourSource.includes('play-qobuz'), 'demo must still support qobuz playback');
 
     // The whole demo UI is English — the tour copy must be too (the card
     // labels as well as every step text).
@@ -103,6 +110,22 @@ function selectorExistsIn(selector, html) {
     const cardRule = cssSource.split('.demo-tour-card')[1] || '';
     assert.ok(cardRule.includes('pointer-events: auto'),
         'demo-tour-card must re-enable pointer events (buttons unclickable otherwise)');
+    // Tour must offer an explicit Close affordance (X button), not only Next/Skip.
+    assert.ok(tourSource.includes('demo-tour-close'), 'tour card must have a Close/X button');
+    assert.ok(cssSource.includes('demo-tour-close'), 'tour Close button must be styled');
+
+    // Provider highlight pulse used by the settings step animation.
+    assert.ok(cssSource.includes('demo-tour-pulse'), 'settings provider pulse animation must be styled');
+
+    // English copy checks: new texts must keep claims accurate.
+    assert.ok(!tourSource.includes('100+'), 'tour must not claim 100+ stations (demo has ~65)');
+    assert.ok(!indexHtml.includes('id="station-search"') || tourSource.includes('station-search'),
+        'radio step action must target the real station search input');
+
+    // Summary must mention the key DSP strengths (convolver + measurement).
+    assert.ok(/convolver/i.test(last.text) || /PEQ/i.test(last.text),
+        'summary must mention convolver/PEQ as DSP strength');
+    assert.ok(/measurement/i.test(last.text), 'summary must mention measurement');
 
     // Actions must reach the real demo hooks: state API for playback and
     // the interceptor for the DSP preset switch.

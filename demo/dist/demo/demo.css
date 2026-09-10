@@ -120,6 +120,32 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
 }
+.demo-tour-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+.demo-tour-close {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    margin: -2px -4px 0 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted, #848490);
+    font: inherit;
+    font-size: 0.95rem;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.demo-tour-close:hover,
+.demo-tour-close:focus-visible { color: var(--text-primary, #ececf0); background: rgba(255,255,255,.08); }
+.demo-tour-close:focus-visible { outline: 2px solid var(--accent, #6ee7b7); outline-offset: 2px; }
 .demo-tour-title {
     margin: 0 0 6px;
     color: #8dd7bf;
@@ -172,6 +198,17 @@
     background: rgba(255, 255, 255, 0.22);
 }
 .demo-tour-dot.is-active { background: var(--accent, #6ee7b7); }
+@keyframes demo-tour-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(110,231,183,0.0); outline-color: rgba(110,231,183,0.0); }
+    35% { box-shadow: 0 0 0 4px rgba(110,231,183,0.22), 0 0 16px rgba(110,231,183,0.28); outline-color: rgba(110,231,183,0.75); }
+    100% { box-shadow: 0 0 0 0 rgba(110,231,183,0.0); outline-color: rgba(110,231,183,0.0); }
+}
+.demo-tour-pulse {
+    outline: 1.5px solid rgba(110,231,183,0.75);
+    outline-offset: 2px;
+    border-radius: 10px;
+    animation: demo-tour-pulse 900ms ease;
+}
 /* Small screens: slimmer paddings/font so the card stays compact, a
    larger bottom margin so buttons clear the home-indicator safe area,
    and a slightly stronger backdrop dim/blur to keep the card readable

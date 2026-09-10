@@ -103,6 +103,12 @@
         provider: 'FIP',
     }));
 
+    const bbcStations = [
+        ['bbc-radio-1', 'BBC Radio 1', 'https://stream.live.vc.bbcmedia.co.uk/bbc_radio_one', 'https://www.bbc.co.uk/radio1/favicon.ico'],
+        ['bbc-radio-2', 'BBC Radio 2', 'https://stream.live.vc.bbcmedia.co.uk/bbc_radio_two', 'https://www.bbc.co.uk/radio2/favicon.ico'],
+        ['bbc-radio-4', 'BBC Radio 4', 'https://stream.live.vc.bbcmedia.co.uk/bbc_radio_fourfm', 'https://www.bbc.co.uk/radio4/favicon.ico'],
+    ].map(([id, name, stream_url, image_url]) => ({ id, name, input_url: stream_url, stream_url, image_url, provider: 'BBC' }));
+
     const otherStations = [
         ['kexp-main', 'KEXP Main', 'https://kexp.streamguys1.com/kexp160.aac', 'https://www.kexp.org/static/assets/img/logo-header.svg'],
         ['wfmu-main', 'WFMU Main', 'http://stream0.wfmu.org/freeform-128k.mp3', 'https://wfmu.org/images/wfmu-logo.svg'],
@@ -121,7 +127,7 @@
         ['rp-global', 'Radio Paradise Global Mix', 'https://stream.radioparadise.com/global-320', 'https://img.radioparadise.com/channels/0/3/cover_512x512/0.jpg'],
     ].map(([id, name, stream_url, image_url]) => ({ id, name, input_url: stream_url, stream_url, image_url, provider: 'Radio Paradise' }));
 
-    const catalogStations = [...radioParadise, ...somaStations, ...fipStations, ...otherStations];
+    const catalogStations = [...radioParadise, ...somaStations, ...fipStations, ...bbcStations, ...otherStations];
 
     window.FXROUTE_DEMO_RADIO = {
         savedStations,
