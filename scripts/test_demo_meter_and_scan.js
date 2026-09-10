@@ -76,10 +76,10 @@ function makeDemoContext(bootArmed) {
     const lVals = samples.map((s) => s.vu_db_l);
     assert.ok(new Set(lVals).size > 5, 'meter must animate instead of sitting on one value');
     assert.ok(lVals.some((v) => v < -6), 'program level must breathe below the transient zone');
-    // Playback always opens with a transient, so the meter reaches the upper
-    // range within the first ticks (deterministic, not probabilistic).
-    assert.ok(samples.slice(0, 5).some((s) => s.vu_db_l > -10),
-        'start transient must push the level toward the top of the scale');
+    // Playback start shows the program level immediately: no forced
+    // spike, no climb from the floor — signal is simply present.
+    assert.ok(samples[0].vu_db_l > -26, 'meter shows program level on the first tick');
+    assert.equal(samples[0].vu_db_l, samples[1].vu_db_l, 'no attack ramp on start: already on program');
 
     // Paused playback resets the meter to the floor and drops freshness.
     state.togglePause();
@@ -159,6 +159,15 @@ function makeDemoContext(bootArmed) {
         await post('/api/dsp/extras', { limiter_enabled: false });
     });
     assert.equal(hotOff, hotOn, 'peak detection must be limiter-independent');
+    // A default-level program may flash red once in a while, but never
+    // with headroom engaged: transient max (-7 dB) + crest max (10 dB)
+    // stays under 0 dBFS down to -3 dB headroom, by construction.
+    const calmHits = await peakHits(null);
+    assert.ok(calmHits <= 5, `default program must stay out of the red except for rare flashes (got ${calmHits})`);
+    for (const gain of [-3, -6]) {
+        const hrHits = await peakHits((post) => post('/api/dsp/extras', { headroom_enabled: true, headroom_gain_db: gain }));
+        assert.equal(hrHits, 0, `headroom ${gain} dB must keep the meter out of the red`);
+    }
 
     // ── Refresh cycle (POST /api/library/refresh) ───────────────────────
     // A manual refresh arms a short scan: the response reports scanning and

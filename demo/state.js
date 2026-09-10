@@ -120,8 +120,12 @@
     // the real 30 ms, so a latched peak stays visible for one broadcast.
     const PEAK_THRESHOLD_DB = 1.0;
     const PEAK_HOLD_MS = 600;
-    const PEAK_CREST_DB = 8;
-    const PEAK_CREST_SPREAD_DB = 6;
+    // Music-like crest factor above the instantaneous program. Bounded so
+    // headroom always clears the red zone: transient max (-7 dB) + crest
+    // max (10 dB) stays under 0 dBFS down to -3 dB headroom, while a hot
+    // master (+3/+6 presets, loudness) still gets there.
+    const PEAK_CREST_DB = 6;
+    const PEAK_CREST_SPREAD_DB = 4;
     const peakDet = {
         l: { hits: 0, holdUntil: 0, lastOverAt: null },
         r: { hits: 0, holdUntil: 0, lastOverAt: null },
@@ -177,10 +181,10 @@
 
     // Program-envelope meter: instead of uncorrelated random values every
     // tick, the level chases a slowly-moving program target (correlated L/R
-    // with a small stereo spread) and occasionally a fast near-0 dB
-    // transient that decays back into the program. Attack is fast, release
-    // slower, so the segments move like real audio. The audible offset and
-    // the protection limiter clamp behave exactly as before.
+    // with a small stereo spread) with occasional louder passages that
+    // decay back into the program. Attack is fast, release slower, so the
+    // segments move like real audio. Playback start seeds the program
+    // level directly — signal is present immediately, no forced spike.
     const meterEnv = {
         l: -30, r: -30,          // current smoothed level per channel
         tL: -30, tR: -30,        // target program level per channel
@@ -188,24 +192,40 @@
         transientTs: 0,          // while nowTs < this, chase the transient
         transientL: -30,
         transientR: -30,
-        startTransient: true,    // play start always opens with a hit
     };
+    let meterWasActive = false;
     function meterTick(nowTs) {
-        if (playing && !paused && currentTrack) {
+        const active = !!(playing && !paused && currentTrack);
+        if (active && !meterWasActive) {
+            // Fresh signal: start on the program, not on the floor.
+            const base = -23 + Math.random() * 9;
+            const spread = (Math.random() - 0.5) * 3;
+            meterEnv.tL = base + spread;
+            meterEnv.tR = base - spread;
+            meterEnv.l = meterEnv.tL;
+            meterEnv.r = meterEnv.tR;
+            meterEnv.nextPickTs = nowTs + 1200 + Math.random() * 2200;
+            meterEnv.transientTs = 0;
+        }
+        meterWasActive = active;
+        if (active) {
             if (nowTs >= meterEnv.nextPickTs) {
                 // New program segment: correlated base level plus a small
-                // stereo spread; occasionally a transient toward 0 dB that
-                // decays over the next tick or two. Playback always starts
+                // stereo spread; occasionally a transient into the upper VU
+                // that decays over the next tick or two. Playback always starts
                 // with one so the meter comes alive immediately.
                 const base = -23 + Math.random() * 9;      // -23..-14 dB program
                 const spread = (Math.random() - 0.5) * 3;  // +/- 1.5 dB
                 meterEnv.tL = base + spread;
                 meterEnv.tR = base - spread;
                 meterEnv.nextPickTs = nowTs + 1200 + Math.random() * 2200;
-                if (meterEnv.startTransient || Math.random() < 0.22) {
-                    meterEnv.startTransient = false;
+                if (Math.random() < 0.22) {
                     meterEnv.transientTs = nowTs + 800 + Math.random() * 800;
-                    meterEnv.transientL = -1 + Math.random() * 3.5;   // -1..+2.5 dB
+                    // Upper-VU events, never near full scale on their own:
+                    // with the music-like crest below, raw peaks stay under
+                    // 0 dBFS at default level, so headroom always clears the
+                    // red zone while a hot master still gets there.
+                    meterEnv.transientL = -10 + Math.random() * 3;
                     meterEnv.transientR = meterEnv.transientL + (Math.random() - 0.5) * 2;
                 }
             }
@@ -238,7 +258,6 @@
             meterEnv.tL = -30; meterEnv.tR = -30;
             meterEnv.transientTs = 0;
             meterEnv.nextPickTs = 0;
-            meterEnv.startTransient = true;
         }
     }
     setInterval(() => {
