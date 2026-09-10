@@ -512,6 +512,7 @@ const elements = {
     refreshLibraryBtn: document.getElementById('refresh-library'),
     libraryViewTracksBtn: document.getElementById('library-view-tracks'),
     libraryViewFoldersBtn: document.getElementById('library-view-folders'),
+    libraryViewFavoritesBtn: document.getElementById('library-view-favorites'),
     libraryViewAlbumsBtn: document.getElementById('library-view-albums'),
     libraryFolderPath: document.getElementById('library-folder-path'),
     librarySearchInput: document.getElementById('library-search'),
@@ -5475,6 +5476,7 @@ function renderLibraryView() {
 
 function renderLibraryViewButtons() {
     const mode = state.library.viewMode;
+    const favActive = mode === 'albums' && !!state.library.showFavoriteAlbums;
     if (elements.libraryViewTracksBtn) {
         const active = mode === 'tracks';
         elements.libraryViewTracksBtn.classList.toggle('active', active);
@@ -5485,8 +5487,12 @@ function renderLibraryViewButtons() {
         elements.libraryViewFoldersBtn.classList.toggle('active', active);
         elements.libraryViewFoldersBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
+    if (elements.libraryViewFavoritesBtn) {
+        elements.libraryViewFavoritesBtn.classList.toggle('active', favActive);
+        elements.libraryViewFavoritesBtn.setAttribute('aria-pressed', favActive ? 'true' : 'false');
+    }
     if (elements.libraryViewAlbumsBtn) {
-        const active = mode === 'albums';
+        const active = mode === 'albums' && !state.library.showFavoriteAlbums;
         elements.libraryViewAlbumsBtn.classList.toggle('active', active);
         elements.libraryViewAlbumsBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
@@ -5718,7 +5724,15 @@ function renderTracks() {
     updateLibrarySelectionUI();
 }
 function setLibraryViewMode(mode) {
-    state.library.viewMode = mode === 'folders' ? 'folders' : mode === 'albums' ? 'albums' : 'tracks';
+    // Favorites is a tab but reuses the albums view with the existing
+    // favorites filter (same position as the Playlists tab in TIDAL: fourth tab).
+    if (mode === 'favorites') {
+        state.library.viewMode = 'albums';
+        state.library.showFavoriteAlbums = true;
+    } else {
+        state.library.viewMode = mode === 'folders' ? 'folders' : mode === 'albums' ? 'albums' : 'tracks';
+        if (mode === 'albums') state.library.showFavoriteAlbums = false;
+    }
     if (state.library.viewMode === 'tracks') state.library.currentFolder = '';
     if (state.library.viewMode === 'albums') {
         state.library.albumDetail = null;
@@ -14351,6 +14365,9 @@ function setupLibraryActions() {
     }
     if (elements.libraryViewFoldersBtn) {
         elements.libraryViewFoldersBtn.addEventListener('click', () => setLibraryViewMode('folders'));
+    }
+    if (elements.libraryViewFavoritesBtn) {
+        elements.libraryViewFavoritesBtn.addEventListener('click', () => setLibraryViewMode('favorites'));
     }
     if (elements.libraryViewAlbumsBtn) {
         elements.libraryViewAlbumsBtn.addEventListener('click', () => setLibraryViewMode('albums'));

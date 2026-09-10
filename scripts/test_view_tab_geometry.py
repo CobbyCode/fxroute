@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Playwright geometry contract for the shared compact view tabs.
 
-Library ``Albums / Tracks / Folders`` and the TIDAL browse navigation
+Library ``Albums / Tracks / Folders / Favorites`` and the TIDAL browse navigation
 ``Albums / Tracks / Artists / Playlists`` (one shared row) plus the search
 result types must render through one shared ``.view-tab`` component: equal
 visible height, equal horizontal padding and one identical mint active
@@ -116,7 +116,7 @@ def _run():
                 # Library view tabs.
                 activate("library")
                 lib_heights = heights("#tab-library .view-tab")
-                check(f"[{width}px] library renders three view tabs", len(lib_heights) == 3)
+                check(f"[{width}px] library renders four view tabs", len(lib_heights) == 4)
                 check(f"[{width}px] library view tabs share one height",
                       max(lib_heights) - min(lib_heights) <= 0.5)
                 check(f"[{width}px] library view tabs keep a touchable height (>=36px)",
