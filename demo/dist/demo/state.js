@@ -114,7 +114,7 @@
 
     const now = () => Date.now() / 1000;
 
-    const meter = { vu_db_l: -60, vu_db_r: -60, vu_fresh: false };
+    const meter = { vu_db_l: -60, vu_db_r: -60, vu_fresh: false, vu_age_ms: null };
     // Independent fast peak path (real DSPPeakMonitor): raw instantaneous
     // peaks of the tapped (post-limiter) signal against 0 dBFS latch a
     // hold after two consecutive hits. It never derives from the smoothed
@@ -127,6 +127,9 @@
     const PEAK_THRESHOLD_DB = 0;          // 0 dBFS, the detector's dB domain
     const PEAK_THRESHOLD_LINEAR = 1.0;    // live DSPPeakMonitor wire value
     const PEAK_HOLD_MS = 600;
+    // Live monitor no-data timeout: the VU stays "fresh" for this long after
+    // the last audio sample (dsp/peak_monitor.py CAPTURE_NO_DATA_TIMEOUT).
+    const VU_NO_DATA_TIMEOUT_MS = 3000;
     // Music-like crest factor above the instantaneous program. With the
     // limiter disengaged, bounded so headroom always clears the red zone:
     // transient max (-4 dB) + crest max (6 dB) stays under 0 dBFS down to
@@ -175,7 +178,7 @@
             hold_ms_l: activeL ? peakDet.l.holdUntil - peakTickNow : 0,
             hold_ms_r: activeR ? peakDet.r.holdUntil - peakTickNow : 0,
             vu_fresh: !!meter.vu_fresh,
-            vu_age_ms: 200,
+            vu_age_ms: meter.vu_age_ms,
             target: { description: 'DSP output monitor' },
             // Live DSPPeakMonitor.snapshot() returns the last-over stamps
             // independently of the current hold, so consumers keep the
@@ -204,7 +207,13 @@
         transientR: -30,
     };
     let meterWasActive = false;
+    // Tick-clock stamp of the last tick that carried audio; the snapshot
+    // reports the sample age against it, mirroring the live age contract.
+    let lastAudioSampleAt = null;
     function meterTick(nowTs) {
+        // The tick clock advances even while idle so vu_age_ms keeps growing
+        // through the no-data window.
+        peakTickNow = nowTs;
         const active = !!(playing && !paused && currentTrack);
         if (active && !meterWasActive) {
             // Fresh signal: start on the program, not on the floor.
@@ -254,18 +263,23 @@
             // Raw peaks ride the instantaneous program plus a music-like
             // crest factor, feeding the independent peak detector below.
             const capDb = dspLimiterEnabled ? STOCK_LIMITER_THRESHOLD_DB : DISPLAY_CEILING_DB;
-            peakTickNow = nowTs;
             peakDetect(nowTs, Math.min(targetL + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, capDb), true);
             peakDetect(nowTs, Math.min(targetR + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, capDb), false);
             const levelL = Math.min(meterEnv.l + dspMeterOffsetDb, capDb);
             const levelR = Math.min(meterEnv.r + dspMeterOffsetDb, capDb);
             meter.vu_db_l = Math.round(levelL * 10) / 10;
             meter.vu_db_r = Math.round(levelR * 10) / 10;
+            lastAudioSampleAt = nowTs;
+            meter.vu_age_ms = 0;
             meter.vu_fresh = true;
         } else {
+            // No audio this tick: floor the VU, but keep it fresh through the
+            // live monitor's no-data window before the sample age goes stale.
+            const ageMs = lastAudioSampleAt === null ? null : Math.max(0, nowTs - lastAudioSampleAt);
             meter.vu_db_l = -60;
             meter.vu_db_r = -60;
-            meter.vu_fresh = false;
+            meter.vu_age_ms = ageMs;
+            meter.vu_fresh = ageMs !== null && ageMs <= VU_NO_DATA_TIMEOUT_MS;
             peakReset();
             meterEnv.l = -30; meterEnv.r = -30;
             meterEnv.tL = -30; meterEnv.tR = -30;

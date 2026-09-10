@@ -82,13 +82,20 @@ function makeDemoContext(bootArmed) {
     assert.ok(samples[0].vu_db_l > -26, 'meter shows program level on the first tick');
     assert.equal(samples[0].vu_db_l, samples[1].vu_db_l, 'no attack ramp on start: already on program');
 
-    // Paused playback resets the meter to the floor and drops freshness.
+    // Paused playback floors the VU at once, but freshness follows the live
+    // monitor's no-data window: audio just stopped, so the meter stays fresh
+    // until 3 s pass without samples, then goes stale.
     state.togglePause();
-    meterTick(t);
+    meterTick(t); t += 500;
     const idle = state.getPeak();
     assert.equal(idle.vu_db_l, -60);
     assert.equal(idle.vu_db_r, -60);
-    assert.equal(idle.vu_fresh, false);
+    assert.equal(idle.vu_fresh, true, 'fresh within the no-data grace');
+    assert.equal(idle.vu_age_ms, 500);
+    for (let i = 0; i < 6; i += 1) { meterTick(t); t += 500; }
+    const stale = state.getPeak();
+    assert.equal(stale.vu_fresh, false, 'stale after the no-data timeout');
+    assert.ok(stale.vu_age_ms > 3000, `sample age must exceed the timeout (${stale.vu_age_ms})`);
 
     // ── Settings response + independent peak path ─────────────────────
     // Seeded PRNG + fresh contexts make the program/transient schedule
@@ -174,6 +181,7 @@ function makeDemoContext(bootArmed) {
     // stay under 0 dBFS by construction.
     const calmOff = await peakRun((post) => post('/api/dsp/extras', { limiter_enabled: false }));
     assert.ok(calmOff.hits <= 15, `default program must stay out of the red except for rare flashes (got ${calmOff.hits})`);
+    assert.ok(calmOff.hits > 0, 'a default program does flash once unprotected, unlike the stock-limiter calmOn run');
     // Gain staging gradient (limiter disengaged): default spars, +3 dB
     // clearly busier, +6 dB saturated.
     const midOff = await peakRun(async (post) => {
@@ -194,6 +202,39 @@ function makeDemoContext(bootArmed) {
             headroom_enabled: true, headroom_gain_db: gain, limiter_enabled: false,
         }));
         assert.equal(hrHits.hits, 0, `headroom ${gain} dB must keep the meter out of the red`);
+    }
+
+    // Last-over stamps follow DSPPeakMonitor.snapshot(): the live monitor
+    // never nulls them when the hold expires, so a consumer keeps the
+    // "last clipped at …" time after the indicator clears.
+    {
+        Math.random = seededRandom(11);
+        try {
+            const c = makeDemoContext(false);
+            const st = c.window.FXROUTE_DEMO_STATE;
+            const post = (url, body) => c.fetch(url, { method: 'POST', body: JSON.stringify(body || {}) });
+            await post('/api/play', { track_id: 'd2-midnight-relay_01' });
+            await post('/api/dsp/presets/load', { preset_name: '+6' });
+            await post('/api/dsp/extras', { limiter_enabled: false });
+            let tt = 0, hit = null;
+            for (let i = 0; i < 260 && !hit; i += 1) {
+                st.demoMeterTick(tt); tt += 500;
+                const snap = st.getPeak();
+                if (snap.detected) hit = snap;
+            }
+            assert.ok(hit, 'a hot unprotected program must latch a peak hold');
+            assert.ok(hit.last_over_at, 'a detected snapshot carries last_over_at');
+            // Re-engage the limiter: capped peaks stay below 0 dBFS, so the
+            // detector stops firing and the existing hold simply expires.
+            await post('/api/dsp/extras', { limiter_enabled: true });
+            st.demoMeterTick(tt); tt += 500;
+            st.demoMeterTick(tt); tt += 500;
+            const cleared = st.getPeak();
+            assert.equal(cleared.detected, false, 'hold must expire once the peaks are capped');
+            assert.equal(cleared.last_over_at, hit.last_over_at, 'last_over_at must survive the hold clearing');
+            assert.equal(cleared.last_over_at_l, hit.last_over_at_l);
+            assert.equal(cleared.last_over_at_r, hit.last_over_at_r);
+        } finally { Math.random = realRandom; }
     }
 
     // ── Refresh cycle (POST /api/library/refresh) ───────────────────────

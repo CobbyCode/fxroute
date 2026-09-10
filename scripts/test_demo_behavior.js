@@ -625,16 +625,16 @@ const radio = state.getPlayback();
     assert.match(lrPoll.message, /L\/R repeat/);
 
     // ── Playback meter simulation contract ──────────────────────────────
-    // Here: hand-set VU levels alone never trip the peak detector (holds
-    // latch only from the independent raw-peak path), and preset/loudness
-    // changes round-trip through the demo DSP API. The post-limiter tap
-    // itself (an engaged limiter caps the visible level) is covered by
-    // scripts/test_demo_meter_and_scan.js.
+    // Here: a hand-set VU above the 0 dBFS detection threshold never trips
+    // the peak detector (holds latch only from the independent raw-peak
+    // path), and preset/loudness changes round-trip through the demo DSP
+    // API. The post-limiter tap itself (an engaged limiter caps the visible
+    // level) is covered by scripts/test_demo_meter_and_scan.js.
     state.playLocal(state.localTracks[0].id);
     const meterOf = () => state.getPeak();
     await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: 'Direct' }) })).json();
-    state.getMeter().vu_db_l = -13; state.getMeter().vu_db_r = -13; state.getMeter().vu_fresh = true;
-    assert.equal(meterOf().detected, false);
+    // 0.5 dB sits above the 0 dBFS threshold, so a detector reading the VU
+    // would report detection; the raw-peak path must stay silent.
     state.getMeter().vu_db_l = 0.5; state.getMeter().vu_db_r = 0.5; state.getMeter().vu_fresh = true;
     assert.equal(meterOf().detected, false, 'smoothed VU levels must not latch peaks');
     await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: '+6' }) })).json();
@@ -643,8 +643,6 @@ const radio = state.getPlayback();
     assert.equal(loudExtras.global_extras.loudness.enabled, true);
     await (await demoFetch('/api/dsp/extras', { method: 'POST', body: JSON.stringify({ loudnessEnabled: false }) })).json();
     await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: 'Direct' }) })).json();
-    state.getMeter().vu_db_l = -13; state.getMeter().vu_db_r = -13; state.getMeter().vu_fresh = true;
-    assert.equal(meterOf().detected, false);
     const dspAfterMeter = await (await demoFetch('/api/dsp/presets')).json();
     assert.ok(dspAfterMeter.presets.some(p => p.name === '+3'));
     assert.ok(dspAfterMeter.presets.some(p => p.name === '+6'));
