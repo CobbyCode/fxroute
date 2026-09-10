@@ -51,7 +51,8 @@
             tab: '#tab-btn-qobuz',
             target: '#tab-qobuz',
             title: 'Streaming providers',
-            text: 'Spotify, Qobuz and TIDAL, each with its own catalog, cover artwork and search.',
+            text: 'Spotify, Qobuz and TIDAL, each with its own catalog, cover artwork and search. A Qobuz track is starting now — the footer shows the active source and its stream facts.',
+            action: 'play-qobuz',
         },
         {
             id: 'settings',
@@ -259,6 +260,10 @@
                 // Arms the demo scan cycle; the status poll then shows the
                 // progress counters the library step's text points at.
                 post('/api/library/refresh', {});
+            } else if (action === 'play-qobuz') {
+                // Switch the player to the Qobuz transport so the footer
+                // shows a remote source with its own stream facts.
+                post('/api/streaming/qobuz/demo_start', {});
             } else if (action === 'preset-plus6') {
                 // Moves the audible level so the meter visibly jumps.
                 post('/api/dsp/presets/load', { preset_name: '+6' });
