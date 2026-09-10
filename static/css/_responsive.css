@@ -2045,6 +2045,96 @@
     }
 }
 
+/* Album headers use a compact two-column composition. The Back action only
+   reserves space in the title row, leaving the full text width for metadata
+   and the always-visible description. Artwork size never follows text height. */
+.detail-hero-header.detail-hero-header--album {
+    grid-template-columns: clamp(180px, 18vw, 240px) minmax(0, 1fr);
+    grid-template-areas: "cover meta";
+    gap: 1.75rem;
+    min-height: 0;
+    padding: 1.5rem;
+    border-radius: 20px;
+}
+.detail-hero-header.detail-hero-header--album .detail-hero-cover {
+    align-self: start;
+}
+.detail-hero-header--album .detail-hero-meta {
+    align-self: center;
+    gap: 0.45rem;
+    width: 100%;
+    max-width: none;
+    margin-block-start: 0;
+    padding: 0;
+}
+.detail-hero-header--album .detail-hero-title-row {
+    width: 100%;
+    padding-inline-end: 5.5rem;
+    box-sizing: border-box;
+}
+.detail-hero-header--album .detail-hero-title {
+    flex: 0 1 auto;
+    font-size: clamp(1.4rem, 2.2vw, 2.2rem);
+    line-height: 1.15;
+    letter-spacing: -0.035em;
+}
+.detail-hero-header--album .album-detail-count,
+.detail-hero-header--album .streaming-detail-facts {
+    margin-top: 0.2rem;
+    overflow-wrap: anywhere;
+}
+.detail-hero-header--album .album-detail-artist,
+.detail-hero-header--album .streaming-detail-artist {
+    overflow-wrap: anywhere;
+}
+.detail-hero-header--album #tidal-album-about {
+    width: 100%;
+}
+.detail-hero-header--album #tidal-album-about:empty,
+.detail-hero-header--album #tidal-album-facts:empty,
+.detail-hero-header--album .album-detail-artist:empty,
+.detail-hero-header--album .streaming-detail-artist:empty {
+    display: none;
+}
+.detail-hero-header.detail-hero-header--album .album-detail-back {
+    position: absolute;
+    top: 1.5rem;
+    right: 1.5rem;
+}
+@media (min-width: 601px) and (max-width: 1099px) {
+    .detail-hero-header.detail-hero-header--album {
+        grid-template-columns: 170px minmax(0, 1fr);
+        gap: 1.25rem;
+        padding: 1.25rem;
+    }
+    .detail-hero-header.detail-hero-header--album .album-detail-back {
+        top: 1.25rem;
+        right: 1.25rem;
+    }
+}
+@media (max-width: 600px) {
+    .detail-hero-header.detail-hero-header--album {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas: "cover back" "meta meta";
+        gap: 1.1rem;
+        padding: 1rem;
+    }
+    .detail-hero-header.detail-hero-header--album .detail-hero-cover {
+        width: 144px;
+        justify-self: start;
+        border-radius: 14px;
+    }
+    .detail-hero-header--album .detail-hero-title-row {
+        padding-inline-end: 0;
+    }
+    .detail-hero-header.detail-hero-header--album .album-detail-back {
+        position: relative;
+        top: auto;
+        right: auto;
+        justify-self: end;
+    }
+}
+
 /* Prefers reduced motion — keep at end. !important is required here: the
    generic star rule must beat every specific animation/transition rule
    (e.g. .content-state--loading::before) without touching the normal

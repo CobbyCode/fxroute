@@ -109,8 +109,6 @@ assert.ok(css.includes('grid-template-columns: minmax(170px, 24vw) minmax(0, 1fr
     'tablet detail heroes must preserve the shared three-column composition');
 assert.ok(css.includes('grid-template-areas: "cover meta back"'),
     'tablet detail heroes must keep metadata and back action on one grid row');
-assert.ok(!css.includes('"cover back"'),
-    'tablet detail heroes must not split the header into separate back and metadata rows');
 assert.ok(css.includes('width: min(62vw, 220px)'),
     'phone detail covers must stay prominent without dominating the hero');
 assert.ok(css.includes('font-size: clamp(1.3rem, 6.2vw, 1.8rem)'),

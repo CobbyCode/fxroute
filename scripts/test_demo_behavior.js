@@ -650,7 +650,7 @@ const radio = state.getPlayback();
 
     // ── Album About + Discover Similar contract ─────────────────────────
     // About texts ride the same backend fields (artist_description /
-    // album_description) the real UI renders as collapsible <details>;
+    // album_description) the real UI renders as directly visible text;
     // Discover reuses the demo library itself (same genre/decade first),
     // max 6 items, never the album itself, 404 for unknown ids.
     // This section covers the main catalog, so select Local first (the

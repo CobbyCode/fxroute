@@ -2115,10 +2115,10 @@
         // row, then the compact track list. No "Play album" button. The facts
         // line stays TIDAL-primary; MusicBrainz only adds release type, country,
         // label and genres when they are missing, and the artist about renders
-        // as the same collapsible library "About" component.
+        // directly through the shared library description component.
         content.innerHTML =
             '<div class="streaming-detail streaming-detail--hero tidal-detail">' +
-                '<div class="streaming-detail-header detail-hero-header tidal-detail-header">' +
+                '<div class="streaming-detail-header detail-hero-header detail-hero-header--album tidal-detail-header">' +
                     detailBackdropHtml() +
                     detailCoverHtml('tidal-detail-cover') +
                     '<div class="streaming-detail-main detail-hero-meta tidal-detail-meta">' +
@@ -2174,18 +2174,20 @@
     // not expose them, so no metadata is shown twice and TIDAL values win.
     function tidalAlbumFactsHtml(meta, enrichment) {
         const lines = [];
-        const primary = [
-            meta.year ? String(meta.year) : '',
-            tidalQualityLabel(meta.audio_quality),
-            meta.num_tracks ? (meta.num_tracks + ' tracks') : '',
-        ].filter(Boolean);
-        if (primary.length) lines.push(primary.join(' · '));
         const supp = (enrichment && enrichment.supplement) || {};
-        const headline = [supp.release_type, supp.country].filter(Boolean).join(' · ');
-        if (headline) lines.push(headline);
-        if (supp.label) lines.push('Label: ' + supp.label);
+        const primary = [
+            meta.num_tracks != null ? (meta.num_tracks + (meta.num_tracks === 1 ? ' track' : ' tracks')) : '',
+            supp.release_type,
+            meta.year ? String(meta.year) : '',
+            supp.country,
+            tidalQualityLabel(meta.audio_quality),
+        ].filter(Boolean);
+        lines.push(primary.join(' · '));
         const genres = (supp.genres || []).slice(0, 3).filter(Boolean);
-        if (genres.length) lines.push('Genre: ' + genres.join(' / '));
+        lines.push([
+            supp.label ? 'Label: ' + supp.label : '',
+            genres.length ? 'Genre: ' + genres.join(' / ') : '',
+        ]);
         return factsHtml(lines);
     }
 

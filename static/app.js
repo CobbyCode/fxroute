@@ -6145,7 +6145,6 @@ async function openAlbumDetail(albumId) {
         setAlbumDetailBackdrop(coverUrl);
         elements.albumDetailName.textContent = album.name;
         elements.albumDetailArtist.textContent = album.artist;
-        elements.albumDetailCount.textContent = `${tracks.length} track${tracks.length === 1 ? '' : 's'}`;
         updateAlbumFavoriteButton(album);
         elements.albumDetail.querySelectorAll('.album-detail-facts, .album-detail-about').forEach(node => node.remove());
         const factsHtml = albumFactsHtml(album);
@@ -6282,9 +6281,12 @@ function renderAlbumDetailTracks() {
         ? (detail.tracks || []).filter(track => trackMatchesLibraryQuery(track, query))
         : (detail.tracks || []);
     const total = (detail.tracks || []).length;
-    elements.albumDetailCount.textContent = query
+    const trackCount = query
         ? `${tracks.length} of ${total} track${total === 1 ? '' : 's'}`
         : `${total} track${total === 1 ? '' : 's'}`;
+    const album = detail.album;
+    elements.albumDetailCount.textContent = [trackCount, album.release_type, album.year, album.country]
+        .filter(Boolean).join(' · ');
     if (tracks.length === 0) {
         elements.albumDetailTracks.innerHTML = '<div class="track-item track-item-empty">No matching tracks.</div>';
         return;
@@ -6473,20 +6475,20 @@ async function toggleAlbumCardFavorite(albumId) {
 }
 
 function albumFactsHtml(album) {
-    const headline = [album.release_type, album.year, album.country].filter(Boolean).join(' · ');
     const label = album.label ? `Label: ${album.label}` : '';
     const genres = (album.genres || []).slice(0, 3).filter(Boolean);
     const genreLine = genres.length ? `Genre: ${genres.join(' / ')}` : '';
-    const lines = [headline, label, genreLine].filter(Boolean);
-    if (!lines.length) return '';
-    return detailFactsHtml(lines);
+    return detailFactsHtml([[label, genreLine]]);
 }
 
-// Shared metadata-rows builder used by the library album detail and the TIDAL
-// album detail (streaming.js receives it via the init api): one row language
-// for every fact, no per-provider copy.
+// Shared metadata rows: optional fields wrap as units, without empty rows or
+// dangling separators. Streaming receives the same builder via the init api.
 function detailFactsHtml(lines) {
-    const rows = (lines || []).filter(Boolean).map(line => `<div>${escapeHtml(line)}</div>`).join('');
+    const rows = (lines || []).map(line => {
+        const fields = (Array.isArray(line) ? line : [line]).filter(Boolean);
+        if (!fields.length) return '';
+        return `<div class="detail-fact-row">${fields.map(field => `<span>${escapeHtml(field)}</span>`).join('')}</div>`;
+    }).join('');
     if (!rows) return '';
     return `<div class="album-detail-facts">${rows}</div>`;
 }
@@ -6500,14 +6502,14 @@ function albumAboutHtml(album) {
     return detailAboutHtml(label, description);
 }
 
-// Shared collapsible "About" component (library + TIDAL album details). The
-// TIDAL artist page intentionally renders about directly visible instead.
+// Short enrichment text is directly readable, with an accessible section label
+// instead of an extra heading row or an expansion-driven layout change.
 function detailAboutHtml(label, description) {
+    if (!description || !description.trim()) return '';
     return `
-        <details class="album-detail-about">
-            <summary>${escapeHtml(label)}</summary>
+        <section class="album-detail-about detail-description" aria-label="${escapeHtml(label)}">
             <p>${escapeHtml(description)}</p>
-        </details>
+        </section>
     `;
 }
 

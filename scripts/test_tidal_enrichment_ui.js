@@ -4,7 +4,7 @@
 //
 // Verifies:
 //  * TIDAL artist shows the About text directly visible (no accordion),
-//  * TIDAL album keeps About collapsible through the shared library component,
+//  * TIDAL album shows About directly through the shared library component,
 //  * TIDAL album facts stay provider-primary and never duplicate,
 //  * Discover Similar uses mapped artist ids or exactly one artist search,
 //  * missing artist art is hydrated asynchronously and patches the existing
@@ -43,7 +43,7 @@ function extractFunction(source, name) {
 assert.ok(appJs.includes('function detailFactsHtml('),
     'app.js must own the shared metadata-rows builder');
 assert.ok(appJs.includes('function detailAboutHtml('),
-    'app.js must own the shared collapsible About builder');
+    'app.js must own the shared About builder');
 assert.ok(appJs.includes('factsHtml: detailFactsHtml') && appJs.includes('aboutHtml: detailAboutHtml'),
     'app.js must hand both shared builders to streaming.js');
 assert.ok(js.includes("if (typeof api.factsHtml === 'function') factsHtml = api.factsHtml"),
@@ -83,15 +83,16 @@ assert.ok(css.includes('.about-more-toggle'),
 assert.ok(css.includes('.tidal-artist-about'),
     'artist about container style must ship');
 
-// --- TIDAL album: About collapsible + TIDAL-primary facts -------------------
-// Test #6: the album keeps About collapsible through the shared library
-// component (`<details class="album-detail-about">` produced by aboutHtml).
+// --- TIDAL album: directly visible About + TIDAL-primary facts --------------
+const sharedAbout = extractFunction(appJs, 'detailAboutHtml');
+assert.ok(!sharedAbout.includes('<details') && !sharedAbout.includes('<summary'),
+    'album descriptions must be readable without expanding the header');
 const albumRender = extractFunction(js, 'renderTidalAlbum');
 assert.ok(albumRender.includes('id="tidal-album-about"'),
     'album detail must carry an About anchor');
 const albumMetaRender = extractFunction(js, 'renderTidalAlbumMeta');
 assert.ok(albumMetaRender.includes("aboutHtml('About this artist', about)"),
-    'album About must render through the shared collapsible component');
+    'album About must render through the shared directly visible component');
 assert.ok(albumMetaRender.includes('enrichment.artist.about'),
     'album About must come from the enrichment artist payload');
 
