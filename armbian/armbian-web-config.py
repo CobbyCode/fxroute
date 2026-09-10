@@ -811,11 +811,13 @@ _COMPLETION_STYLE = """<style>
   --ink: #10161d;
   --muted: #5a6b73;
   --line: #d3dbde;
+  --paper: #f4f6f5;
   --signal-soft: #e4f3ee;
   --teal: #0c6b5c;
   max-width: 720px;
   margin: 0 auto;
   padding: 32px 20px 56px;
+  background: var(--paper);
   color: var(--ink);
 }
 .completion h2 {
@@ -1616,7 +1618,7 @@ select {{
 }}
 textarea {{ min-height: 108px; resize: vertical; }}
 textarea::placeholder {{ color: var(--muted); opacity: 1; }}
-input:focus, select:focus, textarea:focus {{ border-color: var(--teal); box-shadow: 0 0 0 3px rgba(18, 107, 120, .16); outline: none; }}
+input:focus, select:focus, textarea:focus {{ border-color: var(--teal); box-shadow: 0 0 0 3px rgba(12, 107, 92, .16); outline: none; }}
 button:focus-visible {{ box-shadow: 0 0 0 3px var(--paper), 0 0 0 6px var(--teal); outline: none; }}
 button {{
   border: 0;
