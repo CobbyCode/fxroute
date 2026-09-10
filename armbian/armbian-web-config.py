@@ -1522,7 +1522,7 @@ def setup_page(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Configure your FXRoute administrator account and network.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2310161d'/%3E%3Cpath d='M8 22V13a3 3 0 0 1 3-3h11' stroke='%236ee7b7' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M11 22h11a3 3 0 0 0 3-3v-9' stroke='%23ececf0' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='8' cy='22' r='2.6' fill='%236ee7b7'/%3E%3Ccircle cx='25' cy='10' r='2.6' fill='%23ececf0'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2310161d'/%3E%3Cpath d='M6 23V12a3 3 0 0 1 3-3h13' stroke='%236ee7b7' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M10 23h13a3 3 0 0 0 3-3V9' stroke='%23ececf0' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='6' cy='23' r='3' fill='%236ee7b7'/%3E%3Ccircle cx='26' cy='9' r='3' fill='%23ececf0'/%3E%3C/svg%3E">
 <title>FXRoute setup</title>
 <style>
 :root {{
@@ -1684,7 +1684,7 @@ button:disabled {{ cursor: wait; opacity: .6; }}
 <body>
 <main class="shell">
   <header class="masthead">
-    <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 22V13a3 3 0 0 1 3-3h11" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 22h11a3 3 0 0 0 3-3v-9" stroke="#ececf0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="22" r="2.6" fill="#6ee7b7"/><circle cx="25" cy="10" r="2.6" fill="#ececf0"/></svg></span><span>FXRoute</span></div>
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M6 23V12a3 3 0 0 1 3-3h13" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 23h13a3 3 0 0 0 3-3V9" stroke="#ececf0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6" cy="23" r="3" fill="#6ee7b7"/><circle cx="26" cy="9" r="3" fill="#ececf0"/></svg></span><span>FXRoute</span></div>
     <span class="eyebrow">Admin console</span>
   </header>
   <section class="intro">

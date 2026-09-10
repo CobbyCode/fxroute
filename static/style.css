@@ -1985,11 +1985,18 @@ body {
    opaque background and border on all three inputs, so they render the
    identical gray on every backdrop. The ID selectors (and the doubled
    library class) beat the translucent radio .url-input override by
-   specificity, regardless of file load order. */
+   specificity, regardless of file load order. The background stays pinned
+   in every state (no :focus rule touches it), while the border is only
+   pinned while unfocused: during :focus the accent border must win, or the
+   ID specificity would suppress it. */
 #station-search,
 #tidal-search-input,
 .library-search-field .library-search-input {
     background: var(--bg-input);
+}
+#station-search:not(:focus),
+#tidal-search-input:not(:focus),
+.library-search-field .library-search-input:not(:focus) {
     border-color: var(--border);
 }
 .library-search-input::-webkit-search-cancel-button,
