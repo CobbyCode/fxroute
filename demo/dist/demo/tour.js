@@ -27,21 +27,21 @@
             tab: '#tab-btn-radio',
             target: '#tab-radio',
             title: 'Radio',
-            text: '100+ internet radio stations. Find a station in the search box, tap it and listen instantly.',
+            text: '60+ internet radio stations. Find a station in the search box, tap it and playback starts right away.',
         },
         {
             id: 'library',
             tab: '#tab-btn-library',
             target: '#tab-library',
             title: 'Music library',
-            text: 'Your local catalog — “NAS Library 1” here — with albums, tracks and favorites. Switching shares or refreshing runs a short scan with ramping counters, just like on the real device.',
+            text: 'Browse albums, tracks and favorites — search the catalog and mark favorites. A refresh runs a short scan with progress counters.',
         },
         {
             id: 'dsp',
             tab: '#tab-btn-effects',
             target: '#tab-effects',
             title: 'DSP & audio processing',
-            text: 'Ten presets from Direct to the convolver kernels, plus PEQ, limiter, loudness and more. The “+6” preset is loading right now — watch the output meter climb and the limiter engage.',
+            text: 'Filter presets, PEQ, limiter, loudness and more. The “+6” preset is loading right now — watch the output meter climb and the limiter engage.',
             action: 'preset-plus6',
         },
         {
@@ -49,7 +49,7 @@
             tab: '#tab-btn-qobuz',
             target: '#tab-qobuz',
             title: 'Streaming providers',
-            text: 'Spotify, Qobuz and TIDAL as real remote transports with their own catalogs, cover artwork and quality facts — Qobuz streams FLAC up to 24 bit / 96 kHz.',
+            text: 'Spotify, Qobuz and TIDAL with their own catalogs, cover artwork and quality facts — Qobuz tracks show FLAC up to 24 bit / 96 kHz.',
         },
         {
             id: 'settings',
