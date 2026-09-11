@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.0-beta4
+
+### Installer / Armbian
+- Armbian first boot re-creates a git checkout inside the installed tree
+  (`origin/main` at the built commit, recorded as `build-commit`), so fresh
+  Armbian installs use the normal git-based Maintenance update path like ISO
+  installs already do. The fetch is best effort with three bounded attempts;
+  a GitHub outage during first boot no longer disables updates permanently.
+- Release images refuse unpushed sources for normal builds
+  (`FXROUTE_ARMBIAN_ALLOW_UNPUSHED=1` opts in for dev/test images, mirroring
+  the ISO `FXROUTE_ISO_ALLOW_UNPUSHED` contract).
+
+### Playback / DSP
+- DSP meter tap reads post-limiter behind the protection limiter.
+- Wedged Spotify streams are relinked/rebound in the post-start reconcile;
+  missing source producer ports are awaited instead of failing the handoff.
+- Multichannel capture is routed as stereo pairs (external-input stereo
+  pairs); downloader never fabricates a filename on start.
+
+### Measurement
+- PEQ and convolver preset names are suggested pre-take and stay editable
+  before staging/creation, like the convolver flow.
+
+### Music library / streaming
+- Library gains a Favorites tab with hash-pinned fixtures; album detail
+  layouts, playlist editor placement, save-row behavior and the TIDAL album
+  header/track/playlist presentation are unified.
+- Shared search-field tone and focus treatment across radio, library and
+  TIDAL.
+
+### UI / branding
+- Canonical route-mark lockup in the product header and a rebranded
+  setup/onboarding page; obsolete logo assets removed.
+- Library/streaming layout polish (scroll reset, responsive breakpoints,
+  reduced-motion handling).
+
+### Web demo
+- Full guided-tour rework with honest copy (simulation, no real audio),
+  plus a realism pass: program-envelope meters with post-limiter VU/peak
+  taps, fuller provider catalogs, a second demo SMB library, album-montage
+  playlist covers and deterministic fixtures.
+
+### Internal maintenance
+- Extracted system-update, connection, power, origin and preset-load modules
+  from `main.py` without behavior change; removed duplicated hardening
+  helpers; repaired four post-beta3 release blockers.
+- Restore archives untracked user files before cleaning, so no user data is
+  lost silently.
+
 ## 1.0-beta3 (2026-09-09)
 
 Third public beta, built from tag `v1.0-beta3` (commit `93af4d9`).
