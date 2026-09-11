@@ -5,6 +5,8 @@
     'use strict';
 
     const lib = window.FXROUTE_DEMO_LIBRARY;
+    const lib2 = window.FXROUTE_DEMO_LIBRARY2 || { tracks: [], albums: [], playlists: [] };
+    const lib3 = window.FXROUTE_DEMO_LIBRARY3 || { tracks: [], albums: [], playlists: [] };
     const localTracks = lib.tracks;
     const tidalTracksLib = lib.tidalTracks;
     const tidalAlbumsLib = lib.tidalAlbums;
@@ -30,11 +32,10 @@
         saved_station_id: stations.find((saved) => saved.id === station.id)?.id || null,
     }));
 
-    // Provider tabs use a deliberately small queue, but each provider gets
-    // its own tracks from distinct albums/artists (demo/data/library.js), so
-    // switching tracks changes title, artist, album and cover together and
-    // Spotify never shows Qobuz content (and vice versa). Each provider has
-    // its own artwork key space.
+    // Provider tabs draw from the provider catalogs (demo/data/library.js):
+    // distinct albums/artists per provider, so switching tracks changes
+    // title, artist, album and cover together and Spotify never shows Qobuz
+    // content (and vice versa). Each provider has its own artwork key space.
     const spotifyProviderTracks = (lib.spotifyTracks && lib.spotifyTracks.length)
         ? lib.spotifyTracks.map((track) => ({ ...track, source: 'spotify' }))
         : localTracks.slice(0, 4).map((track) => ({
@@ -56,20 +57,24 @@
 
     // ── Shared mutable DSP hooks (set by routes.js) ─────────────────────
     // The meter sim applies a single audible offset (dB): preset gain plus
-    // the enabled tone extras. The protection limiter never raises the
-    // level; it only clamps peaks that would exceed its threshold.
+    // the enabled tone extras. The simulated tap reads post-all-stages
+    // including the protection limiter (reference: live post-limiter tap),
+    // pre-matrix, full-band stereo — system master and crossover never
+    // appear here. An engaged limiter therefore caps the metered level at
+    // its threshold; disengaged, hot peaks pass unclipped.
+    // The demo exposes no control for the limiter threshold, so the cap
+    // uses the stock value. With the limiter disengaged, hot peaks pass
+    // unclipped and only the display ceiling bounds them.
+    const STOCK_LIMITER_THRESHOLD_DB = -1;
+    const DISPLAY_CEILING_DB = 3;
     let dspMeterOffsetDb = 0;
-    let dspLimiterThresholdDb = -1;
     let dspLimiterEnabled = true;
     let dspExtras = {};
     let dspPresets = [];
     let dspActivePreset = 'Direct';
 
-    function setDspSnapshot({ meterOffsetDb, limiterThresholdDb, limiterEnabled, extras, presets, activePreset }) {
+    function setDspSnapshot({ meterOffsetDb, limiterEnabled, extras, presets, activePreset }) {
         dspMeterOffsetDb = Number(meterOffsetDb || 0);
-        if (limiterThresholdDb !== undefined && limiterThresholdDb !== null) {
-            dspLimiterThresholdDb = Number(limiterThresholdDb);
-        }
         if (limiterEnabled !== undefined && limiterEnabled !== null) {
             dspLimiterEnabled = !!limiterEnabled;
         }
@@ -80,6 +85,19 @@
 
     // ── Playback engine ─────────────────────────────────────────────────
     let currentSource = 'local';
+    // The demo presents "SMB_Demo_Library-1" (the first demo share) as its
+    // active library (selectable under Settings like on a real box); local
+    // playback resolves against the active catalog, routes.js keeps this
+    // in sync on selection.
+    let activeLibraryId = 'demo-library-2';
+    function activeLibraryTracks() {
+        if (activeLibraryId === 'demo-library-2') return (lib2.tracks || []);
+        if (activeLibraryId === 'demo-nas') return (lib3.tracks || []);
+        return localTracks;
+    }
+    function setActiveLibraryId(id) {
+        activeLibraryId = String(id || 'local');
+    }
     let currentTrack = null;
     let queue = [];
     let queueIndex = -1;
@@ -96,55 +114,181 @@
 
     const now = () => Date.now() / 1000;
 
-    const meter = { vu_db_l: -60, vu_db_r: -60, vu_fresh: false };
+    const meter = { vu_db_l: -60, vu_db_r: -60, vu_fresh: false, vu_age_ms: null };
+    // Independent fast peak path (real DSPPeakMonitor): raw instantaneous
+    // peaks of the tapped (post-limiter) signal against 0 dBFS latch a
+    // hold after two consecutive hits. It never derives from the smoothed
+    // VU — but it does see the limiter, so capped peaks never reach it.
+    // The detector compares in dB; the snapshot reports the live monitor's
+    // linear threshold (1.0 == 0 dBFS) on the wire, so the two domains use
+    // separate constants instead of one shared value.
+    // The hold is scaled to the demo tick (500 ms broadcasts) instead of
+    // the real 30 ms, so a latched peak stays visible for one broadcast.
+    const PEAK_THRESHOLD_DB = 0;          // 0 dBFS, the detector's dB domain
+    const PEAK_THRESHOLD_LINEAR = 1.0;    // live DSPPeakMonitor wire value
+    const PEAK_HOLD_MS = 600;
+    // Live monitor no-data timeout: the VU stays "fresh" for this long after
+    // the last audio sample (dsp/peak_monitor.py CAPTURE_NO_DATA_TIMEOUT).
+    const VU_NO_DATA_TIMEOUT_MS = 3000;
+    // Music-like crest factor above the instantaneous program. With the
+    // limiter disengaged, bounded so headroom always clears the red zone:
+    // transient max (-4 dB) + crest max (6 dB) stays under 0 dBFS down to
+    // -3 dB headroom, while hot hits flash red occasionally at default
+    // level and a hot master does clearly. With the stock limiter engaged
+    // the cap sits below the threshold, so nothing reaches the red.
+    const PEAK_CREST_DB = 3;
+    const PEAK_CREST_SPREAD_DB = 3;
+    const peakDet = {
+        l: { hits: 0, holdUntil: 0, lastOverAt: null },
+        r: { hits: 0, holdUntil: 0, lastOverAt: null },
+    };
+    let peakTickNow = 0;
+    function peakDetect(nowTs, rawPeakDb, isLeft) {
+        const det = isLeft ? peakDet.l : peakDet.r;
+        if (rawPeakDb >= PEAK_THRESHOLD_DB) {
+            det.hits += 1;
+            if (det.hits >= 2) {
+                det.holdUntil = nowTs + PEAK_HOLD_MS;
+                det.lastOverAt = new Date(nowTs).toISOString();
+            }
+        } else {
+            det.hits = 0;
+        }
+    }
+    function peakReset() {
+        for (const det of [peakDet.l, peakDet.r]) {
+            det.hits = 0;
+            det.holdUntil = 0;
+        }
+    }
     function peakSnapshot() {
-        const limiting = dspLimiterEnabled && (meter.vu_db_l >= dspLimiterThresholdDb || meter.vu_db_r >= dspLimiterThresholdDb);
-        const over = meter.vu_db_l > 0 || meter.vu_db_r > 0;
-        const detected = !!(meter.vu_fresh && (limiting || over));
+        const activeL = peakTickNow < peakDet.l.holdUntil;
+        const activeR = peakTickNow < peakDet.r.holdUntil;
+        const active = activeL || activeR;
         return {
             available: true,
-            detected,
-            hold_ms: detected ? 500 : 0,
-            threshold: 1.0,
+            detected: active,
+            hold_ms: active ? Math.max(peakDet.l.holdUntil, peakDet.r.holdUntil) - peakTickNow : 0,
+            threshold: PEAK_THRESHOLD_LINEAR,
             vu_db: (meter.vu_db_l + meter.vu_db_r) / 2,
             vu_db_l: meter.vu_db_l,
             vu_db_r: meter.vu_db_r,
-            detected_l: !!(meter.vu_fresh && (over || (dspLimiterEnabled && meter.vu_db_l >= dspLimiterThresholdDb))),
-            detected_r: !!(meter.vu_fresh && (over || (dspLimiterEnabled && meter.vu_db_r >= dspLimiterThresholdDb))),
-            hold_ms_l: detected ? 500 : 0,
-            hold_ms_r: detected ? 500 : 0,
+            detected_l: activeL,
+            detected_r: activeR,
+            hold_ms_l: activeL ? peakDet.l.holdUntil - peakTickNow : 0,
+            hold_ms_r: activeR ? peakDet.r.holdUntil - peakTickNow : 0,
             vu_fresh: !!meter.vu_fresh,
-            vu_age_ms: 200,
+            vu_age_ms: meter.vu_age_ms,
             target: { description: 'DSP output monitor' },
-            last_over_at: detected ? new Date().toISOString() : null,
-            last_over_at_l: detected ? new Date().toISOString() : null,
-            last_over_at_r: detected ? new Date().toISOString() : null,
+            // Live DSPPeakMonitor.snapshot() returns the last-over stamps
+            // independently of the current hold, so consumers keep the
+            // "last clipped at …" time after the indicator clears.
+            last_over_at: peakDet.l.lastOverAt && peakDet.r.lastOverAt
+                ? (peakDet.l.lastOverAt > peakDet.r.lastOverAt ? peakDet.l.lastOverAt : peakDet.r.lastOverAt)
+                : (peakDet.l.lastOverAt || peakDet.r.lastOverAt),
+            last_over_at_l: peakDet.l.lastOverAt,
+            last_over_at_r: peakDet.r.lastOverAt,
             last_error: null,
         };
     }
 
-    setInterval(() => {
-        if (playing && !paused && currentTrack) {
-            // Audible chain, deliberately small and clamped: the base program
-            // sits around -13 dB so Direct stays green, +3 dB approaches the
-            // limiter threshold and +6 dB regularly exceeds it.
-            let levelL = -20 + Math.random() * 14 + dspMeterOffsetDb;
-            let levelR = -20 + Math.random() * 14 + dspMeterOffsetDb;
-            if (dspLimiterEnabled && Number.isFinite(dspLimiterThresholdDb)) {
-                levelL = Math.min(levelL, dspLimiterThresholdDb + Math.random() * 1.5);
-                levelR = Math.min(levelR, dspLimiterThresholdDb + Math.random() * 1.5);
-            } else {
-                levelL = Math.min(levelL, 3);
-                levelR = Math.min(levelR, 3);
+    // Program-envelope meter: instead of uncorrelated random values every
+    // tick, the level chases a slowly-moving program target (correlated L/R
+    // with a small stereo spread) with occasional louder passages that
+    // decay back into the program. Attack is fast, release slower, so the
+    // segments move like real audio. Playback start seeds the program
+    // level directly — signal is present immediately, no forced spike.
+    const meterEnv = {
+        l: -30, r: -30,          // current smoothed level per channel
+        tL: -30, tR: -30,        // target program level per channel
+        nextPickTs: 0,           // when the program target is re-picked
+        transientTs: 0,          // while nowTs < this, chase the transient
+        transientL: -30,
+        transientR: -30,
+    };
+    let meterWasActive = false;
+    // Tick-clock stamp of the last tick that carried audio; the snapshot
+    // reports the sample age against it, mirroring the live age contract.
+    let lastAudioSampleAt = null;
+    function meterTick(nowTs) {
+        // The tick clock advances even while idle so vu_age_ms keeps growing
+        // through the no-data window.
+        peakTickNow = nowTs;
+        const active = !!(playing && !paused && currentTrack);
+        if (active && !meterWasActive) {
+            // Fresh signal: start on the program, not on the floor.
+            const base = -17 + Math.random() * 9;      // -17..-8 dB program
+            const spread = (Math.random() - 0.5) * 3;
+            meterEnv.tL = base + spread;
+            meterEnv.tR = base - spread;
+            meterEnv.l = meterEnv.tL;
+            meterEnv.r = meterEnv.tR;
+            meterEnv.nextPickTs = nowTs + 1200 + Math.random() * 2200;
+            meterEnv.transientTs = 0;
+        }
+        meterWasActive = active;
+        if (active) {
+            if (nowTs >= meterEnv.nextPickTs) {
+                // New program segment: correlated base level plus a small
+                // stereo spread; occasionally a transient into the upper VU
+                // that decays over the next tick or two. Playback always starts
+                // with one so the meter comes alive immediately.
+                const base = -17 + Math.random() * 9;      // -17..-8 dB program
+                const spread = (Math.random() - 0.5) * 3;  // +/- 1.5 dB
+                meterEnv.tL = base + spread;
+                meterEnv.tR = base - spread;
+                meterEnv.nextPickTs = nowTs + 1200 + Math.random() * 2200;
+                if (Math.random() < 0.22) {
+                    meterEnv.transientTs = nowTs + 800 + Math.random() * 800;
+                    // Louder passages, still below full scale on their own:
+                    // with the music-like crest below, raw peaks reach the
+                    // red zone on hot hits while the limiter is disengaged
+                    // (a hot master always, default level occasionally).
+                    meterEnv.transientL = -6 + Math.random() * 2;
+                    meterEnv.transientR = meterEnv.transientL + (Math.random() - 0.5) * 2;
+                }
             }
+            const spiking = nowTs < meterEnv.transientTs;
+            const targetL = spiking ? meterEnv.transientL : meterEnv.tL;
+            const targetR = spiking ? meterEnv.transientR : meterEnv.tR;
+            // Fast attack on transients, gentler attack on program moves,
+            // slow release on the way down.
+            const fL = targetL >= meterEnv.l ? (spiking ? 0.6 : 0.35) : 0.2;
+            const fR = targetR >= meterEnv.r ? (spiking ? 0.6 : 0.35) : 0.2;
+            meterEnv.l += (targetL - meterEnv.l) * fL;
+            meterEnv.r += (targetR - meterEnv.r) * fR;
+            // Post-chain tap: gains ride the signal into the protection
+            // limiter, which caps what VU and peak detector can ever see.
+            // The display ceiling only binds with the limiter disengaged.
+            // Raw peaks ride the instantaneous program plus a music-like
+            // crest factor, feeding the independent peak detector below.
+            const capDb = dspLimiterEnabled ? STOCK_LIMITER_THRESHOLD_DB : DISPLAY_CEILING_DB;
+            peakDetect(nowTs, Math.min(targetL + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, capDb), true);
+            peakDetect(nowTs, Math.min(targetR + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, capDb), false);
+            const levelL = Math.min(meterEnv.l + dspMeterOffsetDb, capDb);
+            const levelR = Math.min(meterEnv.r + dspMeterOffsetDb, capDb);
             meter.vu_db_l = Math.round(levelL * 10) / 10;
             meter.vu_db_r = Math.round(levelR * 10) / 10;
+            lastAudioSampleAt = nowTs;
+            meter.vu_age_ms = 0;
             meter.vu_fresh = true;
         } else {
+            // No audio this tick: floor the VU, but keep it fresh through the
+            // live monitor's no-data window before the sample age goes stale.
+            const ageMs = lastAudioSampleAt === null ? null : Math.max(0, nowTs - lastAudioSampleAt);
             meter.vu_db_l = -60;
             meter.vu_db_r = -60;
-            meter.vu_fresh = false;
+            meter.vu_age_ms = ageMs;
+            meter.vu_fresh = ageMs !== null && ageMs <= VU_NO_DATA_TIMEOUT_MS;
+            peakReset();
+            meterEnv.l = -30; meterEnv.r = -30;
+            meterEnv.tL = -30; meterEnv.tR = -30;
+            meterEnv.transientTs = 0;
+            meterEnv.nextPickTs = 0;
         }
+    }
+    setInterval(() => {
+        meterTick(Date.now());
         window.__demoBroadcast && window.__demoBroadcast('playback_peak_warning', peakSnapshot());
     }, 500);
 
@@ -185,12 +329,16 @@
     // (formatRadioStreamLine). Spotify/Qobuz do not come through here; they
     // are remote-renderer owners with their own payload facts.
     function streamInfoFor(src, track = null) {
-        if (src === 'local') return { codec: 'FLAC', bitrate_kbps: 1411, sample_rate: 48000 };
+        // samplerate_hz everywhere, matching the real normalization
+        // (playback/stream_info.py) and the shared footer renderer; local
+        // and Qobuz derive the rate from the actual track, never a fixed
+        // 48/96 kHz.
+        if (src === 'local') return { codec: 'FLAC', bitrate_kbps: 1411, samplerate_hz: Number(track?.sample_rate_hz) || 48000 };
         if (src === 'tidal') return tidalStreamInfo(track);
-        if (src === 'radio') return { codec: 'MP3', bitrate_kbps: 192, sample_rate: 44100 };
-        if (src === 'spotify') return { codec: 'Ogg', bitrate_kbps: 320, sample_rate: 44100 };
-        if (src === 'qobuz') return { codec: 'FLAC', bitrate_kbps: 1411, sample_rate: 96000 };
-        return { codec: '', bitrate_kbps: 0, sample_rate: 0 };
+        if (src === 'radio') return { codec: 'MP3', bitrate_kbps: 192, samplerate_hz: 44100 };
+        if (src === 'spotify') return { codec: 'Ogg', bitrate_kbps: 320, samplerate_hz: 44100 };
+        if (src === 'qobuz') return { codec: 'FLAC', bitrate_kbps: 1411, samplerate_hz: Number(track?.sample_rate_hz) || 96000 };
+        return { codec: '', bitrate_kbps: 0, samplerate_hz: 0 };
     }
 
     // TIDAL facts per track, derived from the album's quality tier exactly
@@ -451,7 +599,7 @@
     }
 
     function playNext() {
-        if (!queue.length) { playLocal(localTracks[0]?.id); return; }
+        if (!queue.length) { playLocal(activeLibraryTracks()[0]?.id); return; }
         if (currentSource === 'spotify') { spotify.next(); return; }
         if (currentSource === 'qobuz') { qobuz.next(); return; }
         const nextIndex = (queueIndex + 1) % queue.length;
@@ -469,7 +617,7 @@
 
     function togglePause() {
         if (!currentTrack) {
-            playLocal(localTracks[0]?.id);
+            playLocal(activeLibraryTracks()[0]?.id);
             return;
         }
         if (currentSource === 'spotify') { spotify.toggle(); return; }
@@ -482,10 +630,11 @@
 
     // ── Play entry points (used by routes.js) ───────────────────────────
     function playLocal(trackId, queueIds) {
-        const chosen = localTracks.find(t => t.id === trackId) || localTracks[0];
-        let tracks = localTracks;
+        const pool = activeLibraryTracks();
+        const chosen = pool.find(t => t.id === trackId) || pool[0];
+        let tracks = pool;
         if (Array.isArray(queueIds)) {
-            const byId = new Map(localTracks.map(t => [t.id, t]));
+            const byId = new Map(pool.map(t => [t.id, t]));
             tracks = queueIds.map(id => byId.get(id)).filter(Boolean);
         }
         let idx = Math.max(0, tracks.findIndex(t => t.id === chosen.id));
@@ -1306,7 +1455,11 @@
 
     window.FXROUTE_DEMO_STATE = {
         lib,
+        lib2,
+        lib3,
         localTracks,
+        activeLibraryTracks,
+        setActiveLibraryId,
         tidalTracks: () => tidalTracksLib || [],
         tidalAlbums: () => tidalAlbumsLib || [],
         tidalArtists: () => tidalArtistsLib || [],
@@ -1342,6 +1495,9 @@
         getMeter() { return meter; },
         getPeak: peakSnapshot,
         peakSnapshot,
+        // Simulation hook: one meter envelope step. The 500 ms interval calls
+        // this in the browser; tests drive it directly.
+        demoMeterTick: meterTick,
         setDspSnapshot,
         // measurement helpers (consumed by routes.js)
         startMeasurement,

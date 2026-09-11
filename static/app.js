@@ -512,6 +512,7 @@ const elements = {
     refreshLibraryBtn: document.getElementById('refresh-library'),
     libraryViewTracksBtn: document.getElementById('library-view-tracks'),
     libraryViewFoldersBtn: document.getElementById('library-view-folders'),
+    libraryViewFavoritesBtn: document.getElementById('library-view-favorites'),
     libraryViewAlbumsBtn: document.getElementById('library-view-albums'),
     libraryFolderPath: document.getElementById('library-folder-path'),
     librarySearchInput: document.getElementById('library-search'),
@@ -538,7 +539,7 @@ const elements = {
     playlistDetailCount: document.getElementById('playlist-detail-count'),
     playlistDetailInfo: document.getElementById('playlist-detail-info'),
     playlistDetailTracks: document.getElementById('playlist-detail-tracks'),
-    playlistDetailFavorite: document.getElementById('playlist-detail-favorite'),
+    deletePlaylistBtn: document.getElementById('delete-playlist'),
     albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
@@ -2240,7 +2241,7 @@ async function runFxrouteUpdate() {
 async function restoreFxrouteToPublic() {
     const confirmMsg = [
         'This will reset the FXRoute checkout to the current public release on GitHub. ',
-        'Local source changes will be saved as a patch file in backups/. ',
+        'Tracked source changes will be saved as a patch file and untracked files as an archive, both in backups/. ',
         'User data, music, config, and runtime cache are not affected. ',
         'The service will restart after restore.\n\nContinue?'
     ].join('');
@@ -3067,12 +3068,23 @@ function renderSettingsPanel() {
 // selector shows an explicit disabled loading state instead of a bare
 // "Local" option that reads like a finished, share-less result. A cached
 // list stays visible (stale-while-revalidate) and the select is disabled
-// until the response lands.
+// until the response lands. While a background SMB rescan is running
+// (scanning) and no SMB entry is known yet, the selector shows a disabled
+// "Scanning network shares…" placeholder instead of the local-only list;
+// already-cached SMB entries keep rendering immediately.
 function musicLibrarySelectModel(musicLibrary = {}) {
     const libraries = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries : [];
     if (libraries.length === 0 && musicLibrary.loading) {
         return {
             html: '<option value="">Discovering network shares…</option>',
+            value: '',
+            disabled: true,
+        };
+    }
+    const hasSmb = libraries.some((library) => library && library.type === 'smb');
+    if (musicLibrary.scanning && !hasSmb) {
+        return {
+            html: '<option value="">Scanning network shares…</option>',
             value: '',
             disabled: true,
         };
@@ -3762,8 +3774,9 @@ function renderFooterModeButtons() {
     const track = state.playback.current_track;
     const nativeQueueActive = !!(track && (track.source === 'local' || track.source === 'tidal'));
     const queue = state.playback.queue || {};
-    const showShuffle = nativeQueueActive && Number(queue.count || 0) > 1;
-    const showLoop = nativeQueueActive;
+    const hasActiveQueue = Number(queue.count || 0) > 1;
+    const showShuffle = nativeQueueActive && hasActiveQueue;
+    const showLoop = nativeQueueActive && hasActiveQueue;
     if (shuffleBtn) {
         shuffleBtn.classList.toggle('hidden', !showShuffle);
         shuffleBtn.classList.toggle('active', showShuffle && !!state.library.shuffle);
@@ -5199,7 +5212,7 @@ function updatePlayPauseButton(playbackState) {
 }
 function highlightActiveTrack() {
     if (window.__footerSource === 'spotify') {
-        document.querySelectorAll('.station-card.active, .track-item.active').forEach(item => item.classList.remove('active'));
+        document.querySelectorAll('.station-card.active, .track-item.active, .streaming-result.active').forEach(item => item.classList.remove('active'));
         return;
     }
     // A play request holds its optimistic target until the server confirms the
@@ -5218,8 +5231,9 @@ function highlightActiveTrack() {
             card.classList.remove('active');
         }
     });
-    // Library tracks
-    document.querySelectorAll('.track-item').forEach(item => {
+    // Library tracks (TIDAL catalog rows share the same active language
+    // and id namespace, so the running track highlights there as well).
+    document.querySelectorAll('.track-item, .streaming-result[data-track-id]').forEach(item => {
         const trackId = item.dataset.trackId;
         if (displayTrack && displayTrack.id === trackId) {
             item.classList.add('active');
@@ -5462,6 +5476,7 @@ function renderLibraryView() {
 
 function renderLibraryViewButtons() {
     const mode = state.library.viewMode;
+    const favActive = mode === 'albums' && !!state.library.showFavoriteAlbums;
     if (elements.libraryViewTracksBtn) {
         const active = mode === 'tracks';
         elements.libraryViewTracksBtn.classList.toggle('active', active);
@@ -5472,8 +5487,12 @@ function renderLibraryViewButtons() {
         elements.libraryViewFoldersBtn.classList.toggle('active', active);
         elements.libraryViewFoldersBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
+    if (elements.libraryViewFavoritesBtn) {
+        elements.libraryViewFavoritesBtn.classList.toggle('active', favActive);
+        elements.libraryViewFavoritesBtn.setAttribute('aria-pressed', favActive ? 'true' : 'false');
+    }
     if (elements.libraryViewAlbumsBtn) {
-        const active = mode === 'albums';
+        const active = mode === 'albums' && !state.library.showFavoriteAlbums;
         elements.libraryViewAlbumsBtn.classList.toggle('active', active);
         elements.libraryViewAlbumsBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
@@ -5705,7 +5724,15 @@ function renderTracks() {
     updateLibrarySelectionUI();
 }
 function setLibraryViewMode(mode) {
-    state.library.viewMode = mode === 'folders' ? 'folders' : mode === 'albums' ? 'albums' : 'tracks';
+    // Favorites is a tab but reuses the albums view with the existing
+    // favorites filter (same position as the Playlists tab in TIDAL: fourth tab).
+    if (mode === 'favorites') {
+        state.library.viewMode = 'albums';
+        state.library.showFavoriteAlbums = true;
+    } else {
+        state.library.viewMode = mode === 'folders' ? 'folders' : mode === 'albums' ? 'albums' : 'tracks';
+        if (mode === 'albums') state.library.showFavoriteAlbums = false;
+    }
     if (state.library.viewMode === 'tracks') state.library.currentFolder = '';
     if (state.library.viewMode === 'albums') {
         state.library.albumDetail = null;
@@ -6100,6 +6127,15 @@ function playlistFallbackMarkSvg() {
     return `<img class="playlist-collage-fallback-mark" src="${escapeHtml(artworkPlaceholderUrl())}" alt="" />`;
 }
 
+// The library tab has no inner scroll container (neither #tab-library nor
+// #tab-content nor their ancestors set an overflow), so the grids and the
+// detail views share the window scroll. Opening a detail must reset it,
+// otherwise the detail inherits the grid position and starts mid-page at
+// the tracks instead of at the cover/title hero.
+function scrollLibraryDetailToTop() {
+    window.scrollTo(0, 0);
+}
+
 async function openAlbumDetail(albumId) {
     const album = (state.library.albums || []).find(a => a.id === albumId);
     if (!album) return;
@@ -6118,7 +6154,6 @@ async function openAlbumDetail(albumId) {
         setAlbumDetailBackdrop(coverUrl);
         elements.albumDetailName.textContent = album.name;
         elements.albumDetailArtist.textContent = album.artist;
-        elements.albumDetailCount.textContent = `${tracks.length} track${tracks.length === 1 ? '' : 's'}`;
         updateAlbumFavoriteButton(album);
         elements.albumDetail.querySelectorAll('.album-detail-facts, .album-detail-about').forEach(node => node.remove());
         const factsHtml = albumFactsHtml(album);
@@ -6139,6 +6174,7 @@ async function openAlbumDetail(albumId) {
         if (elements.playlistDetail) elements.playlistDetail.classList.add('hidden');
         elements.albumDetail.classList.remove('hidden');
         updatePlaylistSaveRowVisibility();
+        scrollLibraryDetailToTop();
     } catch (e) {
         console.warn('Failed to load album tracks', e);
     }
@@ -6186,6 +6222,7 @@ async function openSmartTopTracks() {
         if (elements.playlistDetail) elements.playlistDetail.classList.add('hidden');
         elements.albumDetail.classList.remove('hidden');
         updatePlaylistSaveRowVisibility();
+        scrollLibraryDetailToTop();
     } catch (e) {
         console.warn('Failed to load Top 40', e);
         showToast('Failed to load Top 40', 'error');
@@ -6255,9 +6292,12 @@ function renderAlbumDetailTracks() {
         ? (detail.tracks || []).filter(track => trackMatchesLibraryQuery(track, query))
         : (detail.tracks || []);
     const total = (detail.tracks || []).length;
-    elements.albumDetailCount.textContent = query
+    const trackCount = query
         ? `${tracks.length} of ${total} track${total === 1 ? '' : 's'}`
         : `${total} track${total === 1 ? '' : 's'}`;
+    const album = detail.album;
+    elements.albumDetailCount.textContent = [trackCount, album.release_type, album.year, album.country]
+        .filter(Boolean).join(' · ');
     if (tracks.length === 0) {
         elements.albumDetailTracks.innerHTML = '<div class="track-item track-item-empty">No matching tracks.</div>';
         return;
@@ -6446,20 +6486,20 @@ async function toggleAlbumCardFavorite(albumId) {
 }
 
 function albumFactsHtml(album) {
-    const headline = [album.release_type, album.year, album.country].filter(Boolean).join(' · ');
     const label = album.label ? `Label: ${album.label}` : '';
     const genres = (album.genres || []).slice(0, 3).filter(Boolean);
     const genreLine = genres.length ? `Genre: ${genres.join(' / ')}` : '';
-    const lines = [headline, label, genreLine].filter(Boolean);
-    if (!lines.length) return '';
-    return detailFactsHtml(lines);
+    return detailFactsHtml([[label, genreLine]]);
 }
 
-// Shared metadata-rows builder used by the library album detail and the TIDAL
-// album detail (streaming.js receives it via the init api): one row language
-// for every fact, no per-provider copy.
+// Shared metadata rows: optional fields wrap as units, without empty rows or
+// dangling separators. Streaming receives the same builder via the init api.
 function detailFactsHtml(lines) {
-    const rows = (lines || []).filter(Boolean).map(line => `<div>${escapeHtml(line)}</div>`).join('');
+    const rows = (lines || []).map(line => {
+        const fields = (Array.isArray(line) ? line : [line]).filter(Boolean);
+        if (!fields.length) return '';
+        return `<div class="detail-fact-row">${fields.map(field => `<span>${escapeHtml(field)}</span>`).join('')}</div>`;
+    }).join('');
     if (!rows) return '';
     return `<div class="album-detail-facts">${rows}</div>`;
 }
@@ -6473,14 +6513,14 @@ function albumAboutHtml(album) {
     return detailAboutHtml(label, description);
 }
 
-// Shared collapsible "About" component (library + TIDAL album details). The
-// TIDAL artist page intentionally renders about directly visible instead.
+// Short enrichment text is directly readable, with an accessible section label
+// instead of an extra heading row or an expansion-driven layout change.
 function detailAboutHtml(label, description) {
+    if (!description || !description.trim()) return '';
     return `
-        <details class="album-detail-about">
-            <summary>${escapeHtml(label)}</summary>
+        <section class="album-detail-about detail-description" aria-label="${escapeHtml(label)}">
             <p>${escapeHtml(description)}</p>
-        </details>
+        </section>
     `;
 }
 
@@ -6526,13 +6566,6 @@ function openPlaylistDetail(playlistId) {
         elements.playlistDetailCover.innerHTML = playlistCoverHtml(playlist);
     }
     if (elements.playlistDetailName) elements.playlistDetailName.textContent = playlist.name;
-    // Own local playlists always show an active heart (delete on click).
-    if (elements.playlistDetailFavorite) {
-        elements.playlistDetailFavorite.classList.add('active');
-        elements.playlistDetailFavorite.textContent = '♥';
-        elements.playlistDetailFavorite.setAttribute('aria-label', 'Delete playlist');
-        elements.playlistDetailFavorite.title = 'Delete playlist';
-    }
     setPlaylistDetailBackdrop(playlist);
     renderPlaylistDetailInfo(playlist, tracks);
     renderPlaylistDetailTracks();
@@ -6541,6 +6574,7 @@ function openPlaylistDetail(playlistId) {
     elements.albumDetail.classList.add('hidden');
     if (elements.playlistDetail) elements.playlistDetail.classList.remove('hidden');
     updatePlaylistSaveRowVisibility();
+    scrollLibraryDetailToTop();
 }
 
 function renderPlaylistDetailTracks() {
@@ -6788,6 +6822,25 @@ function syncRenderedTrackSelection() {
         });
     });
 }
+// The save row is a single shared node. Its home is below the detail cards
+// (right before #library-info), but while an album detail is open it docks
+// inside the detail between header and tracks — like the TIDAL save row —
+// instead of sitting misplaced under the track list. Placement is
+// idempotent, so typing in the name field never moves the focused input.
+function dockPlaylistSaveRow() {
+    const row = elements.playlistSaveRow;
+    if (!row || !elements.albumDetail || !elements.albumDetailTracks || !elements.libraryInfo) return;
+    if (!elements.albumDetail.classList.contains('hidden')) {
+        if (row.parentElement !== elements.albumDetail || row.nextSibling !== elements.albumDetailTracks) {
+            elements.albumDetail.insertBefore(row, elements.albumDetailTracks);
+        }
+        return;
+    }
+    const home = elements.libraryInfo;
+    if (row.parentElement !== home.parentElement || row.nextSibling !== home) {
+        home.parentElement.insertBefore(row, home);
+    }
+}
 function updatePlaylistSaveRowVisibility() {
     if (!elements.playlistSaveRow) return;
     const count = state.library.selectedTrackIds.length;
@@ -6795,11 +6848,20 @@ function updatePlaylistSaveRowVisibility() {
     // as at least one track is consciously added via the + action (never via
     // playback), the save-playlist row is reachable. Playback never touches
     // selectedTrackIds, so this trigger stays exclusive to the + selection.
+    // The row also stays open while a playlist detail is edited so Delete
+    // remains reachable without a selection.
     const hasPlaylistSelection = count >= 1;
-    elements.playlistSaveRow.classList.toggle('hidden', !hasPlaylistSelection);
+    const isEditingPlaylist = !!state.library.playlistDetail;
+    const showRow = hasPlaylistSelection || isEditingPlaylist;
+    elements.playlistSaveRow.classList.toggle('hidden', !showRow);
     if (elements.playlistSaveControls) {
-        elements.playlistSaveControls.classList.toggle('hidden', !hasPlaylistSelection);
+        elements.playlistSaveControls.classList.toggle('hidden', !showRow);
     }
+    // Delete belongs to the edit flow only: hidden while merely creating.
+    if (elements.deletePlaylistBtn) {
+        elements.deletePlaylistBtn.classList.toggle('hidden', !isEditingPlaylist);
+    }
+    dockPlaylistSaveRow();
 }
 function updateLibrarySelectionUI() {
     const allTracks = state.library.tracks || [];
@@ -7732,7 +7794,11 @@ function setupEffectsActions() {
             window.addEventListener('resize', requestSubwooferPreviewRedrawFromState);
         }
     }
-    // Track focus to avoid resetting input values while user is typing
+    // Track focus to avoid resetting input values while user is typing.
+    // SELECTs are discrete choices (no typing to protect): they save with
+    // the short toggle debounce so live A/B switching applies promptly
+    // instead of restarting the 2000 ms typing debounce on every flip.
+    // Numeric inputs keep the long typing debounce.
     [
         elements.effectsHeadroomGainDb,
         elements.effectsAutogainTargetDb,
@@ -7742,9 +7808,12 @@ function setupEffectsActions() {
         elements.effectsToneEffectMode,
     ].forEach(el => {
         if (!el) return;
+        const valueDebounceMs = el.tagName === 'SELECT'
+            ? EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS
+            : EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS;
         el.addEventListener('focus', () => _activeEditing.add(el));
-        el.addEventListener('input', () => saveEffectsExtrasDebounced(EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS));
-        el.addEventListener('change', () => saveEffectsExtrasDebounced(EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS));
+        el.addEventListener('input', () => saveEffectsExtrasDebounced(valueDebounceMs));
+        el.addEventListener('change', () => saveEffectsExtrasDebounced(valueDebounceMs));
         el.addEventListener('blur', () => {
             _activeEditing.delete(el);
             saveEffectsExtrasDebounced(0); // commit immediately on blur
@@ -8731,6 +8800,17 @@ function takeMeasurementPeqToPreset(mode = 'both') {
     showToast(successMessage, 'success');
 }
 
+function resolveMeasurementPeqPresetName(peq, fieldValue, mode) {
+    // Mirrors the convolver field: the visible input is authoritative, so
+    // the stored preset can never diverge from what the user saw. An
+    // untouched field still holds the staged auto name.
+    const fieldName = String(fieldValue ?? '').trim();
+    if (fieldName) return fieldName;
+    const draftName = String(peq?.draft?.presetName || '').trim();
+    if (draftName) return draftName;
+    return getMeasurementPeqPresetName(mode || 'both', { unique: true });
+}
+
 async function createMeasurementPeqPresetFromDraft() {
     if (peqCreateInFlight) {
         showToast('PEQ preset creation already in progress', 'warning');
@@ -8749,7 +8829,7 @@ async function createMeasurementPeqPresetFromDraft() {
         showToast(validationError, 'error');
         return;
     }
-    const presetName = String(peq.draft?.presetName || '').trim() || getMeasurementPeqPresetName(getMeasurementPeqDraftMode(peq) || 'both', { unique: true });
+    const presetName = resolveMeasurementPeqPresetName(peq, elements.measurementPeqPresetName?.value, getMeasurementPeqDraftMode(peq) || 'both');
     peq.draft.presetName = presetName;
     const eqMode = normalizePeqEqMode(state.dsp?.peqDraft?.eqMode || elements.effectsPeqModeSelect?.value || 'IIR');
     peqCreateInFlight = true;
@@ -9222,6 +9302,19 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
     showToast(`Convolver draft updated: ${label}`, 'success');
 }
 
+function resolveMeasurementConvolverItemName(conv, fieldValue, mode, sharedAutoGainDb) {
+    // The visible field is authoritative: whatever stands in the Preset
+    // Name input at click time is saved, so the stored preset can never
+    // diverge from what the user saw (e.g. a render between the last
+    // keystroke and the click, or an in-flight draft reset). An untouched
+    // field still holds the staged auto name, preserving the default flow.
+    const fieldName = String(fieldValue ?? '').trim();
+    if (fieldName) return fieldName;
+    const draftName = String(conv?.draft?.presetName || '').trim();
+    if (draftName) return draftName;
+    return getMeasurementConvolverItemName(mode, sharedAutoGainDb, { unique: true });
+}
+
 async function createMeasurementConvolverPresetFromDraft() {
     if (convolverCreateInFlight) {
         showToast('Convolver preset creation already in progress', 'warning');
@@ -9272,7 +9365,7 @@ async function createMeasurementConvolverPresetFromDraft() {
     }
     const analyses = drafts.map((draft) => draft.analysis);
     const sharedAutoGainDb = Math.min(...analyses.map((analysis) => analysis.autoGainDb));
-    const itemName = String(conv.draft?.presetName || '').trim() || getMeasurementConvolverItemName(mode, sharedAutoGainDb, { unique: true });
+    const itemName = resolveMeasurementConvolverItemName(conv, elements.measurementConvolverPresetName?.value, mode, sharedAutoGainDb);
     conv.draft.presetName = itemName;
     convolverCreateInFlight = true;
     conv.creatingPreset = true;
@@ -10557,14 +10650,6 @@ function scheduleMeasurementGraphRenderForResize() {
     return MeasurementGraph.scheduleMeasurementGraphRenderForResize();
 }
 
-function getSortedNumericValues(values = []) {
-    return MeasurementDsp.getSortedNumericValues(values);
-}
-
-function getValueQuantile(sortedValues = [], quantile = 0.5) {
-    return MeasurementDsp.getValueQuantile(sortedValues, quantile);
-}
-
 function getMeasurementGraphRange(entries = []) {
     return MeasurementDsp.getMeasurementGraphRange(entries);
 }
@@ -10917,7 +11002,7 @@ async function closeHybridMeasurementWizard() {
 }
 
 function renderHybridRoomDiagram(step = {}, mode = 'stereo', complete = false) {
-    return MeasurementFlows.renderHybridRoomDiagram(step = {}, mode = 'stereo', complete = false);
+    return MeasurementFlows.renderHybridRoomDiagram(step, mode, complete);
 }
 
 function renderHybridMeasurementWizard() {
@@ -11458,7 +11543,7 @@ function renderMeasurementPanelInputsSection({ measurementState, current, measur
     if (elements.measurementConvolverSampleRate && !isSelectFocused(elements.measurementConvolverSampleRate)) {
         const selectedInput = getSelectedMeasurementInput();
         const rates = selectedInput?.supportedRates?.length ? selectedInput.supportedRates : [48000];
-        elements.measurementConvolverSampleRate.innerHTML = rates.map(rate => `<option value="${rate}">${formatRateKhz(rate)}</option>`).join('');
+        elements.measurementConvolverSampleRate.innerHTML = rates.map(rate => `<option value="${escapeHtml(rate)}">${formatRateKhz(rate)}</option>`).join('');
         elements.measurementConvolverSampleRate.value = String(measurementState.measurementSampleRate || 48000);
         elements.measurementConvolverSampleRate.disabled = measurementState.startInFlight || !measurementModeReady();
     }
@@ -11776,11 +11861,16 @@ function renderMeasurementPanelEditorsSection({ measurementState, current, measu
     }
     if (elements.measurementPeqPresetName) {
         const hasDraft = !!peqDraftLeftCount || !!peqDraftRightCount;
+        // Like the convolver field: show the stable auto suggestion even
+        // before Take, and keep it editable from the moment a name stands
+        // in the field. A typed name is stored touched, so a later Take
+        // never overwrites it; Create still requires a staged draft.
+        const nameValue = peq.draft?.presetName || getMeasurementPeqPresetName(getMeasurementPeqDraftMode(peq) || 'both');
         if (document.activeElement !== elements.measurementPeqPresetName) {
-            elements.measurementPeqPresetName.value = peq.draft?.presetName || '';
+            elements.measurementPeqPresetName.value = nameValue;
         }
-        elements.measurementPeqPresetName.disabled = !hasDraft;
-        elements.measurementPeqPresetName.placeholder = hasDraft ? 'Preset name' : 'Take L/R/Both to generate a name';
+        elements.measurementPeqPresetName.disabled = peqCreateInFlight;
+        elements.measurementPeqPresetName.placeholder = hasDraft ? 'Preset name' : 'Type a name, or Take L/R/Both to stage';
     }
     if (elements.measurementPeqTakeLeftBtn) elements.measurementPeqTakeLeftBtn.disabled = !peq.filters.length;
     if (elements.measurementPeqTakeRightBtn) elements.measurementPeqTakeRightBtn.disabled = !peq.filters.length;
@@ -11874,8 +11964,8 @@ function renderMeasurementPanelConvolverSection({ measurementState, current, mea
         if (document.activeElement !== elements.measurementConvolverPresetName) {
             elements.measurementConvolverPresetName.value = nameValue;
         }
-        elements.measurementConvolverPresetName.disabled = !hasConvolverDraft || !!draftPhaseMismatch;
-        elements.measurementConvolverPresetName.placeholder = hasConvolverDraft ? 'Preset name' : 'Preview. Take L/R/Both to stage';
+        elements.measurementConvolverPresetName.disabled = !!draftPhaseMismatch || isCreatingConvolverPreset;
+        elements.measurementConvolverPresetName.placeholder = hasConvolverDraft ? 'Preset name' : 'Type a name, or Take L/R/Both to stage';
     }
     if (elements.measurementConvolverWarnings) {
         const warnings = buildMeasurementConvolverWarnings(convAnalyses);
@@ -13298,7 +13388,7 @@ async function switchEffectsPreset() {
 
 // Track which inputs are currently being edited by the user
 const _activeEditing = new Set();
-const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-2, -3, -4, -5, -6]);
+const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-1, -2, -3, -4, -5, -6]);
 const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-12, -15, -18, -23]);
 const EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE = new Set([256, 512, 1024, 2048, 4096, 8192, 16384]);
 const EFFECTS_LOUDNESS_LEGACY_STRENGTHS = new Map([
@@ -14311,6 +14401,9 @@ function setupLibraryActions() {
     if (elements.libraryViewFoldersBtn) {
         elements.libraryViewFoldersBtn.addEventListener('click', () => setLibraryViewMode('folders'));
     }
+    if (elements.libraryViewFavoritesBtn) {
+        elements.libraryViewFavoritesBtn.addEventListener('click', () => setLibraryViewMode('favorites'));
+    }
     if (elements.libraryViewAlbumsBtn) {
         elements.libraryViewAlbumsBtn.addEventListener('click', () => setLibraryViewMode('albums'));
     }
@@ -14326,8 +14419,8 @@ function setupLibraryActions() {
     if (elements.playlistDetailBack) {
         elements.playlistDetailBack.addEventListener('click', () => closePlaylistDetail());
     }
-    if (elements.playlistDetailFavorite) {
-        elements.playlistDetailFavorite.addEventListener('click', async () => {
+    if (elements.deletePlaylistBtn) {
+        elements.deletePlaylistBtn.addEventListener('click', async () => {
             const detail = state.library.playlistDetail;
             if (!detail || !detail.playlist) return;
             if (!confirm(`Delete playlist "${detail.playlist.name}"?`)) return;
@@ -14523,8 +14616,9 @@ function apiPostJson(url, body) {
 }
 
 function escapeHtml(text) {
-    if (!text) return '';
+    if (text === null || text === undefined) return '';
     // Escapes quotes too so the result is safe inside double-quoted attributes.
+    // Any other value (including numeric 0) is stringified as-is.
     return String(text)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')

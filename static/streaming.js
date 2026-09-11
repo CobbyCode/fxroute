@@ -1119,12 +1119,15 @@
                     '</div>' +
                     '<div class="streaming-search">' +
                         '<div class="streaming-search-row">' +
-                            '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search albums, tracks, artists, playlists…" data-placeholder-full="Search albums, tracks, artists, playlists…" data-placeholder-compact="Search…" autocomplete="off" />' +
+                            '<div class="streaming-search-field">' +
+                                '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search albums, tracks, artists, playlists…" data-placeholder-full="Search albums, tracks, artists, playlists…" data-placeholder-compact="Search…" autocomplete="off" />' +
+                                '<button type="button" class="streaming-search-clear" id="tidal-search-clear" aria-label="Clear TIDAL search" disabled>×</button>' +
+                            '</div>' +
                         '</div>' +
                     '</div>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml() +
                 '<div class="streaming-browse-body" id="tidal-browse-body"></div>' +
+                tidalPlaylistSaveRowHtml() +
             '</div>';
         const actions = content.querySelector('.tidal-toolbar-actions');
         if (actions && entry.els.statusLine) actions.prepend(entry.els.statusLine);
@@ -1136,6 +1139,7 @@
         updateTidalPlaylistSaveRow();
         const input = content.querySelector('#tidal-search-input');
         if (input && state.tidal.searchExecuted) input.value = state.tidal.searchQuery;
+        setTidalSearchClearDisabled(input, content.querySelector('#tidal-search-clear'));
         const tabs = content.querySelectorAll('.tidal-subbar .view-tab[data-browse]');
         tabs.forEach((tab) => tab.addEventListener('click', () => {
             tabs.forEach((t) => t.classList.toggle('is-active', t === tab));
@@ -1183,6 +1187,8 @@
 
     function bindTidalSearchBar(root) {
         const input = root.querySelector('#tidal-search-input');
+        const clear = root.querySelector('#tidal-search-clear');
+        const syncClear = () => setTidalSearchClearDisabled(input, clear);
         const updatePlaceholder = () => {
             const compact = window.matchMedia && window.matchMedia('(max-width: 600px)').matches;
             input.placeholder = compact
@@ -1224,7 +1230,7 @@
                 void executeTidalSearch(state.tidal.searchResultType);
             }, TIDAL_SEARCH_DEBOUNCE_MS);
         };
-        input.addEventListener('input', () => startSearch(false));
+        input.addEventListener('input', () => { syncClear(); startSearch(false); });
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -1234,6 +1240,21 @@
                 clearTidalSearch();
             }
         });
+        if (clear) clear.addEventListener('click', () => {
+            input.value = '';
+            syncClear();
+            clearTidalSearch();
+            input.focus();
+        });
+        syncClear();
+    }
+
+    // Clear affordance mirrors the local library search field: the X is
+    // always rendered and only dimmed while the field is empty, instead of
+    // appearing on first input like the native search cancel button
+    // (which stays hidden so there is exactly one clear control).
+    function setTidalSearchClearDisabled(input, clear) {
+        if (clear) clear.disabled = !((input && input.value || '').trim());
     }
 
     function resetTidalSearch() {
@@ -1246,6 +1267,7 @@
         state.tidal.searchInFlight = false;
         const input = document.getElementById('tidal-search-input');
         if (input) input.value = '';
+        setTidalSearchClearDisabled(input, document.getElementById('tidal-search-clear'));
     }
 
     function clearTidalSearch() {
@@ -1480,8 +1502,9 @@
         syncTidalTrackSelection();
     }
 
-    function tidalPlaylistSaveRowHtml() {
-        return '<div class="playlist-save-row tidal-playlist-save-row hidden" id="tidal-playlist-save-row">' +
+    function tidalPlaylistSaveRowHtml(variant) {
+        const modifier = variant === 'album' ? ' tidal-playlist-save-row--album' : '';
+        return '<div class="playlist-save-row tidal-playlist-save-row' + modifier + ' hidden" id="tidal-playlist-save-row">' +
             '<div class="playlist-save-controls">' +
                 '<input type="text" id="tidal-playlist-name" class="url-input" placeholder="New playlist name…" aria-label="New TIDAL playlist name" autocomplete="off" />' +
                 '<button id="tidal-save-playlist" class="btn-secondary" type="button">Save as new</button>' +
@@ -2023,6 +2046,9 @@
     }
 
     // -- album / playlist detail ----------------------------------------------
+    // Detail views replace the browse content in place and share the window
+    // scroll (no inner scroll container), so every detail open resets it to
+    // the top instead of inheriting the browse position.
     function openTidalDetail(view, id, title, artUrl) {
         // Push the full current detail state so Back returns exactly through
         // nested details (browse -> artist -> album) with the previous view's
@@ -2040,6 +2066,7 @@
         state.tidal.detailArt = artUrl || '';
         const entry = entryFor('tidal');
         if (entry) renderTidalBrowse(entry);
+        window.scrollTo(0, 0);
     }
 
     function openTidalAlbum(id, title, artUrl) {
@@ -2093,10 +2120,10 @@
         // row, then the compact track list. No "Play album" button. The facts
         // line stays TIDAL-primary; MusicBrainz only adds release type, country,
         // label and genres when they are missing, and the artist about renders
-        // as the same collapsible library "About" component.
+        // directly through the shared library description component.
         content.innerHTML =
             '<div class="streaming-detail streaming-detail--hero tidal-detail">' +
-                '<div class="streaming-detail-header detail-hero-header tidal-detail-header">' +
+                '<div class="streaming-detail-header detail-hero-header detail-hero-header--album tidal-detail-header">' +
                     detailBackdropHtml() +
                     detailCoverHtml('tidal-detail-cover') +
                     '<div class="streaming-detail-main detail-hero-meta tidal-detail-meta">' +
@@ -2110,7 +2137,7 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml() +
+                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
@@ -2152,18 +2179,20 @@
     // not expose them, so no metadata is shown twice and TIDAL values win.
     function tidalAlbumFactsHtml(meta, enrichment) {
         const lines = [];
-        const primary = [
-            meta.year ? String(meta.year) : '',
-            tidalQualityLabel(meta.audio_quality),
-            meta.num_tracks ? (meta.num_tracks + ' tracks') : '',
-        ].filter(Boolean);
-        if (primary.length) lines.push(primary.join(' · '));
         const supp = (enrichment && enrichment.supplement) || {};
-        const headline = [supp.release_type, supp.country].filter(Boolean).join(' · ');
-        if (headline) lines.push(headline);
-        if (supp.label) lines.push('Label: ' + supp.label);
+        const primary = [
+            meta.num_tracks != null ? (meta.num_tracks + (meta.num_tracks === 1 ? ' track' : ' tracks')) : '',
+            supp.release_type,
+            meta.year ? String(meta.year) : '',
+            supp.country,
+            tidalQualityLabel(meta.audio_quality),
+        ].filter(Boolean);
+        lines.push(primary.join(' · '));
         const genres = (supp.genres || []).slice(0, 3).filter(Boolean);
-        if (genres.length) lines.push('Genre: ' + genres.join(' / '));
+        lines.push([
+            supp.label ? 'Label: ' + supp.label : '',
+            genres.length ? 'Genre: ' + genres.join(' / ') : '',
+        ]);
         return factsHtml(lines);
     }
 
@@ -2655,7 +2684,9 @@
             const resp = await fetch('/api/play', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ source: 'tidal', track_id: startId, queue_track_ids: trackIds }),
+                // Carry the current shuffle intent like library plays do, so a
+                // fresh TIDAL queue does not silently clear an enabled shuffle.
+                body: JSON.stringify({ source: 'tidal', track_id: startId, queue_track_ids: trackIds, shuffle: !!(state.lastData.tidal || {}).shuffle }),
             });
             const data = await resp.json().catch(() => null);
             if (!resp.ok) {

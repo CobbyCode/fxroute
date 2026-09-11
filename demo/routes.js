@@ -20,10 +20,10 @@
     // Pre-filled generously so the browse surfaces look like a real library
     // instead of three lonely entries.
     const tidalFavs = {
-        tracks: new Set(['t_album_01_t1', 't_album_01_t2', 't_album_02_t1', 't_album_03_t1', 't_album_04_t1', 't_album_06_t2', 't_album_08_t1', 't_album_11_t1', 't_album_13_t2', 't_album_16_t1', 't_album_18_t1', 't_album_20_t1']),
-        albums: new Set(['t_album_01', 't_album_02', 't_album_04', 't_album_06', 't_album_08', 't_album_11', 't_album_13', 't_album_16', 't_album_18', 't_album_20']),
-        artists: new Set(['t_artist_01', 't_artist_03', 't_artist_04', 't_artist_06', 't_artist_07', 't_artist_09', 't_artist_11', 't_artist_14', 't_artist_17', 't_artist_20']),
-        playlists: new Set(['t_playlist_01', 't_playlist_03', 't_playlist_04', 't_playlist_06', 't_playlist_08', 't_playlist_10', 't_playlist_12', 't_playlist_15', 't_playlist_16', 't_playlist_20']),
+        tracks: new Set(['t_album_01_t1', 't_album_01_t2', 't_album_02_t1', 't_album_03_t1', 't_album_04_t1', 't_album_05_t2', 't_album_07_t1', 't_album_09_t1', 't_album_12_t2', 't_album_14_t1', 't_album_16_t1', 't_album_18_t1']),
+        albums: new Set(['t_album_01', 't_album_02', 't_album_04', 't_album_05', 't_album_07', 't_album_09', 't_album_12', 't_album_14', 't_album_16', 't_album_18']),
+        artists: new Set(['t_artist_01', 't_artist_03', 't_artist_04', 't_artist_05', 't_artist_07', 't_artist_09', 't_artist_12', 't_artist_14', 't_artist_16', 't_artist_18']),
+        playlists: new Set(['t_playlist_01', 't_playlist_03', 't_playlist_04', 't_playlist_05', 't_playlist_06', 't_playlist_07', 't_playlist_08']),
     };
 
     // ── DSP state ───────────────────────────────────────────────────────
@@ -59,9 +59,11 @@
     };
     let dspCompare = { presetA: 'Neutral', presetB: 'Conv LR MinAlign Harman 30-300Hz -7dB', activeSide: 'B' };
 
-    // Audible preset gain for the meter sim: only the +3/+6 dB filter
+    // Audible offset for the meter sim: only the +3/+6 dB filter
     // presets lift the visible level (their real chains hold a broadband
-    // gain stage); every other preset is level-neutral in the demo.
+    // gain stage); headroom cuts it 1:1 (the real headroom stage sits
+    // before the monitor tap). The limiter needs no offset entry: it caps
+    // the tapped signal at its threshold instead of shifting it.
     function presetMeterGainDb(name) {
         if (name === '+3') return 3;
         if (name === '+6') return 6;
@@ -71,6 +73,9 @@
     function demoMeterOffsetDb() {
         let offset = presetMeterGainDb(dspActivePreset);
         const extras = dspExtras || {};
+        if (extras.headroom && extras.headroom.enabled) {
+            offset += Number(extras.headroom.params && extras.headroom.params.gainDb) || 0;
+        }
         if (extras.autogain && extras.autogain.enabled) offset += 2;
         if (extras.loudness && extras.loudness.enabled) {
             offset += 0.4 * Math.max(1, Math.min(10, Number(extras.loudness.params && extras.loudness.params.strength) || 0));
@@ -82,11 +87,9 @@
     }
 
     function syncDspToState() {
-        const limiter = dspExtras.limiter || {};
         S.setDspSnapshot({
             meterOffsetDb: demoMeterOffsetDb(),
-            limiterThresholdDb: Number(limiter.params && limiter.params.thresholdDb) || -1,
-            limiterEnabled: !!limiter.enabled,
+            limiterEnabled: !!(dspExtras.limiter && dspExtras.limiter.enabled),
             extras: dspExtras,
             presets: dspPresets,
             activePreset: dspActivePreset,
@@ -203,32 +206,315 @@
         }
         const owner = playback.playback_owner;
         const trackId = playback.current_track?.id;
-        const findTrack = (list) => (list || []).find(t => String(t.id) === String(trackId));
+        const inList = (list) => (list || []).find(t => String(t.id) === String(trackId));
         let rate = 48000;
         if (owner === 'spotify') rate = 44100;
         else if (owner === 'qobuz') rate = Number(S.qobuz.current?.sample_rate_hz) || 44100;
         else if (owner === 'radio') rate = 44100;
-        else if (owner === 'local') rate = Number(findTrack(S.localTracks)?.sample_rate_hz) || 48000;
-        else if (owner === 'tidal') rate = TIDAL_TIER_GRAPH_RATE[findTrack(S.tidalTracks())?.audio_quality] || 48000;
+        // Local tracks resolve through the same cross-catalog lookup as the
+        // other endpoints (active catalog first): a track still playing from
+        // a library that is no longer active keeps its real rate.
+        else if (owner === 'local') rate = Number(findTrack(trackId)?.track.sample_rate_hz) || 48000;
+        else if (owner === 'tidal') rate = TIDAL_TIER_GRAPH_RATE[inList(S.tidalTracks())?.audio_quality] || 48000;
         samplerate.active_rate = rate;
     }
     S.onSourceChanged = followSourceGraphRate;
 
+    // ── Audio source model ──────────────────────────────────────────
+    // Mirrors the real stereo-pair abstraction
+    // (audio/samplerate/overview.py + audio/external_input.py):
+    // multichannel capture interfaces are offered as adjacent stereo
+    // pairs (Input 1-2, Input 3-4, ...), never as single mono channels
+    // and never duplicated onto both sides. Single-pair devices keep
+    // the plain device label, exactly like the real overview.
+    // Module scope: the fetch handler below must observe mutations
+    // across requests (selected pair, active mode).
+    const SOURCE_INPUTS = [
+        {
+            id: 101,
+            key: 'alsa_input.usb-MOTU_M4-00.analog-surround-40::pair:1-2',
+            source_key: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+            name: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+            device_label: 'MOTU M4',
+            port_key: null,
+            port_label: null,
+            label: 'MOTU M4 · Input 1–2',
+            sample_spec: 's32le 4ch 48000Hz',
+            channels: 4,
+            channel_map: ['front-left', 'front-right', 'rear-left', 'rear-right'],
+            active_rate: 48000,
+            state: 'RUNNING',
+            is_default: true,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 0,
+            pair_count: 2,
+            pair_label: 'Input 1–2',
+            pair_channels: [1, 2],
+            left_channel: 'FL',
+            right_channel: 'FR',
+        },
+        {
+            id: 102,
+            key: 'alsa_input.usb-MOTU_M4-00.analog-surround-40::pair:3-4',
+            source_key: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+            name: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+            device_label: 'MOTU M4',
+            port_key: null,
+            port_label: null,
+            label: 'MOTU M4 · Input 3–4',
+            sample_spec: 's32le 4ch 48000Hz',
+            channels: 4,
+            channel_map: ['front-left', 'front-right', 'rear-left', 'rear-right'],
+            active_rate: 48000,
+            state: 'RUNNING',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 1,
+            pair_count: 2,
+            pair_label: 'Input 3–4',
+            pair_channels: [3, 4],
+            left_channel: 'RL',
+            right_channel: 'RR',
+        },
+        {
+            id: 103,
+            key: 'alsa_input.usb-DemoSPDIF-00.iec958-stereo',
+            source_key: 'alsa_input.usb-DemoSPDIF-00.iec958-stereo',
+            name: 'alsa_input.usb-DemoSPDIF-00.iec958-stereo',
+            device_label: 'USB S/PDIF',
+            port_key: null,
+            port_label: null,
+            label: 'USB S/PDIF · Input',
+            sample_spec: 's32le 2ch 48000Hz',
+            channels: 2,
+            channel_map: ['front-left', 'front-right'],
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 0,
+            pair_count: 1,
+            pair_label: 'Input 1–2',
+            pair_channels: [1, 2],
+            left_channel: 'FL',
+            right_channel: 'FR',
+        },
+    ];
+    // A connected phone streaming over A2DP: selecting bluetooth-input
+    // in the demo lands on a genuinely active source (streaming state,
+    // connected device, codec), not just a bare mode name.
+    const BLUETOOTH_SOURCE = {
+        available: true,
+        selectable: true,
+        state: 'streaming',
+        receiver_enabled: true,
+        discoverable: true,
+        pairable: true,
+        connected_device: 'Demo Phone',
+        active_codec: 'aac',
+        active_rate: 48000,
+        notes: [],
+    };
+    let sourceMode = 'app-playback';
+    let selectedSourceInputKey = SOURCE_INPUTS[0].key;
+    function sourceInputByKey(key) {
+        return SOURCE_INPUTS.find((item) => item.key === String(key || '')) || null;
+    }
+    function sourceOverview() {
+        const selected = sourceInputByKey(selectedSourceInputKey) || SOURCE_INPUTS[0];
+        const withSelected = (item) => ({ ...item, is_selected: item.key === selected.key });
+        return {
+            mode: sourceMode,
+            modes: [
+                { key: 'app-playback', label: 'App playback', selectable: true },
+                { key: 'external-input', label: 'External input', selectable: true },
+                { key: 'bluetooth-input', label: 'Bluetooth input', selectable: true },
+            ],
+            default_input: withSelected(SOURCE_INPUTS[0]),
+            selected_input: withSelected(selected),
+            current_input: withSelected(selected),
+            inputs: SOURCE_INPUTS.map(withSelected),
+            bluetooth: { ...BLUETOOTH_SOURCE },
+            notes: [],
+            pending: false,
+        };
+    }
+
     // ── Music libraries ─────────────────────────────────────────────────
+    // The demo presents "SMB_Demo_Library-1" (the first demo share) as its
+    // active library, like a box with that share selected; Local and
+    // "SMB_Demo_Library-2" stay selectable under Settings. Each share serves
+    // its own catalog (local main, demo-library-2 SMB-1, demo-nas SMB-2).
     const musicLibraries = {
-        active_id: 'local',
-        active_type: 'local',
+        active_id: 'demo-library-2',
+        active_type: 'smb',
         libraries: [
             { id: 'local', label: 'Local', type: 'local' },
-            { id: 'demo-nas', label: 'NAS Music', type: 'smb' },
+            { id: 'demo-library-2', label: 'SMB_Demo_Library-1', type: 'smb' },
+            { id: 'demo-nas', label: 'SMB_Demo_Library-2', type: 'smb' },
         ],
     };
+
+    // ── Library scan / share-discovery simulation ───────────────────────
+    // A real box rescans after boot and on refresh; the frontend polls
+    // /api/library/status while `scanning` is true and re-fetches tracks
+    // when it flips to false. The demo replays that cycle: a short scan
+    // with ramping counts, then the settled totals. boot.js arms the scan
+    // lazily (it loads after this file) so the very first status poll after
+    // page load reports scanning; POST /api/library/refresh arms it on
+    // demand. Tests can fast-forward by overriding S.demoScan.durationMs.
+    function armLibraryScan(durationMs) {
+        S.demoScan = {
+            active: true,
+            startedTs: Date.now(),
+            durationMs: Number.isFinite(durationMs) ? durationMs : 1600 + Math.random() * 900,
+            target: activeLib().tracks.length,
+        };
+    }
+    function libraryScanStatus() {
+        const scan = S.demoScan;
+        if (!scan || !scan.active) {
+            return { scanning: false, tracks_found: activeLib().tracks.length, files_seen: 0 };
+        }
+        const elapsed = Date.now() - scan.startedTs;
+        if (elapsed >= scan.durationMs) {
+            S.demoScan = null;
+            return { scanning: false, tracks_found: scan.target, files_seen: Math.round(scan.target * 1.7) };
+        }
+        const progress = Math.min(1, elapsed / scan.durationMs);
+        return {
+            scanning: true,
+            tracks_found: Math.min(scan.target, Math.floor(scan.target * progress)),
+            files_seen: Math.floor(scan.target * progress * 1.7),
+        };
+    }
+    function maybeArmBootScan() {
+        if (window.__demoArmBootScan) {
+            // Latch the boot flag once (boot.js runs after this file, so it
+            // is read lazily on the first API call) and arm the scan.
+            window.__demoArmBootScan = false;
+            S.demoBootArmed = true;
+            if (!S.demoScan) armLibraryScan();
+        }
+    }
+    // The share-discovery flag rides /api/music-libraries: the first call
+    // after boot reports a background rescan (the Settings selector shows
+    // the cached shares and re-fetches once), then it settles.
+    function musicLibrariesPayload() {
+        maybeArmBootScan();
+        let refreshing = false;
+        if (S.demoBootArmed && !S.demoDiscoverySettled) {
+            refreshing = true;
+            S.demoDiscoverySettled = true;
+        }
+        return refreshing ? { ...musicLibraries, discovery_refreshing: true } : musicLibraries;
+    }
+
+    // Second/third demo catalogs (demo/data/library2.js = SMB_Demo_Library-1,
+    // demo/data/library3.js = SMB_Demo_Library-2). Only the selected library
+    // serves the browse surfaces; manually added shares fall back to local.
+    const lib2 = window.FXROUTE_DEMO_LIBRARY2 || { tracks: [], albums: [] };
+    const lib3 = window.FXROUTE_DEMO_LIBRARY3 || { tracks: [], albums: [] };
+    function activeLib() {
+        if (musicLibraries.active_id === 'demo-library-2') return lib2;
+        if (musicLibraries.active_id === 'demo-nas') return lib3;
+        return lib;
+    }
+    // Cross-catalog lookup: the active catalog wins, the others are
+    // fallbacks so ids referenced by live state (a track still playing from
+    // a library that was just switched away) keep resolving. Returns the
+    // owning catalog alongside the item, so dependent endpoints serve or
+    // mutate the right catalog instead of re-filtering through activeLib().
+    const allCatalogs = () => [activeLib(), lib, lib2, lib3]
+        .filter((cat, idx, arr) => cat && arr.indexOf(cat) === idx);
+    function findAlbum(id) {
+        for (const catalog of allCatalogs()) {
+            const album = catalog.albums.find(a => a.id === id);
+            if (album) return { album, catalog };
+        }
+        return null;
+    }
+    function findTrack(id) {
+        for (const catalog of allCatalogs()) {
+            const track = catalog.tracks.find(t => t.id === id);
+            if (track) return { track, catalog };
+        }
+        return null;
+    }
+
+    // ── Demo download bodies ────────────────────────────────────────────
+    // Mirrors the real M3U8 export (library/playlist_io.build_m3u_for_playlist):
+    // an #EXTM3U header plus one #EXTINF line and the track path per entry.
+    // Tracks resolve cross-catalog, like the cover endpoints.
+    function demoPlaylistM3u(playlist) {
+        const lines = ['#EXTM3U'];
+        for (const trackId of (playlist.track_ids || [])) {
+            const track = findTrack(trackId)?.track;
+            if (!track) continue;
+            const duration = Number(track.duration) > 0 ? Math.round(Number(track.duration)) : -1;
+            const label = track.artist ? `${track.artist} - ${track.title}` : (track.title || trackId);
+            lines.push(`#EXTINF:${duration},${label}`);
+            lines.push(String(track.url || track.path || trackId));
+        }
+        return lines.join('\n') + '\n';
+    }
+
+    // Selection download stands in for the real ZIP: the frontend only needs
+    // a downloadable body, so this lists the requested tracks (title, artist,
+    // source path) in a clearly-labeled demo manifest.
+    function demoDownloadManifest(trackIds) {
+        const lines = [
+            'FXRoute web-demo selection download — the simulated box transfers no real files.',
+            '',
+        ];
+        for (const id of (trackIds || [])) {
+            const track = findTrack(id)?.track;
+            lines.push(track
+                ? `${track.artist} - ${track.title} :: ${track.url || track.path || id}`
+                : `${id} (not found)`);
+        }
+        return lines.join('\n') + '\n';
+    }
+
+    // Demo stand-in for the real root CA bundle: the simulated box serves no
+    // HTTPS, so the Settings certificate link downloads this clearly-labeled
+    // placeholder instead of 404ing.
+    const DEMO_CERT_PEM = [
+        '-----BEGIN CERTIFICATE-----',
+        'FXRoute web-demo placeholder certificate. This is not a real TLS',
+        'certificate; the simulated box serves no HTTPS in the demo.',
+        '-----END CERTIFICATE-----',
+    ].join('\n') + '\n';
 
     // ── Measurements (saved list seeded with real fixtures) ─────────────
     const savedMeasurements = S.getSavedMeasurements().slice();
 
     // ── Helpers ─────────────────────────────────────────────────────────
-    function j(data, status = 200) {
+    function makeDemoBlob(text, type) {
+        // Real Blob in the browser so URL.createObjectURL works; a plain
+        // text-bearing stand-in in test contexts without a Blob global.
+        const content = String(text || '');
+        if (typeof Blob !== 'undefined') {
+            return new Blob([content], type ? { type } : undefined);
+        }
+        return {
+            size: content.length,
+            type: type || '',
+            text: () => Promise.resolve(content),
+            arrayBuffer: () => Promise.resolve(new Uint8Array(0).buffer),
+        };
+    }
+
+    function j(data, status = 200, headers = {}) {
+        // headers + blob(): the real frontend download paths read
+        // Content-Disposition and consume resp.blob() (see
+        // getDownloadFilenameFromResponse / triggerBlobDownload).
+        const headerMap = { get: (name) => String(headers[name] || '') };
+        const bodyText = (status === 302 || typeof data !== 'string') ? JSON.stringify(data) : data;
+        const mime = String(headers['Content-Type'] || '').split(';')[0].trim();
         if (status === 302) {
             // Image-like redirect endpoints: the browser follows the Location
             // header only when the response really redirects; the demo serves
@@ -237,15 +523,19 @@
                 ok: true,
                 status: 200,
                 url: data.redirect,
+                headers: headerMap,
                 json: () => Promise.resolve({}),
                 text: () => Promise.resolve(''),
+                blob: () => Promise.resolve(makeDemoBlob('', mime)),
             });
         }
         return Promise.resolve({
             ok: status >= 200 && status < 300,
             status,
+            headers: headerMap,
             json: () => Promise.resolve(data),
-            text: () => Promise.resolve(JSON.stringify(data)),
+            text: () => Promise.resolve(bodyText),
+            blob: () => Promise.resolve(makeDemoBlob(bodyText, mime)),
         });
     }
 
@@ -703,7 +993,7 @@
                     url: s.input_url || s.stream_url,
                     url_resolved: s.stream_url,
                     homepage: 'https://example.invalid/' + s.id,
-                    favicon: '',
+                    favicon: s.image_url || '',
                     tags: (s.genres || []).join(','),
                     country: 'Demo',
                     language: 'EN',
@@ -725,82 +1015,106 @@
             return j({ station: { id, title: (cat && cat.title) || uuid } });
         }
 
-        // ── Library ─────────────────────────────────────────────────────
-        if (p === '/api/tracks') return j(lib.tracks);
+        // ── Library (served from the selected library catalog) ──────────
+        if (p === '/api/tracks') return j(activeLib().tracks);
         if (p === '/api/albums') {
+            const catalog = activeLib().albums;
             const q = String(query.get('query') || '').toLowerCase();
-            return j(q ? lib.albums.filter(a => (a.name + ' ' + a.artist + ' ' + (a.genres || []).join(' ')).toLowerCase().includes(q)) : lib.albums);
+            return j(q ? catalog.filter(a => (a.name + ' ' + a.artist + ' ' + (a.genres || []).join(' ')).toLowerCase().includes(q)) : catalog);
         }
         if (p === '/api/playlists') {
+            // Playlists live per library catalog, like separate shares on a
+            // real box: selecting a library switches the playlist set too.
+            const catalogPlaylists = activeLib().playlists || [];
             if (post) {
                 const name = String(body.name || '').trim();
                 const trackIds = Array.isArray(body.track_ids) ? body.track_ids : [];
                 if (!name) return err('Playlist name required', 400);
                 const id = 'playlist_' + Date.now();
-                lib.playlists.push({ id, name, track_ids: trackIds, track_count: trackIds.length });
+                catalogPlaylists.push({ id, name, track_ids: trackIds, track_count: trackIds.length });
                 return j({ status: 'ok', playlist: { id, name, track_ids: trackIds, track_count: trackIds.length } });
             }
-            return j(lib.playlists);
+            return j(catalogPlaylists);
         }
-        const playlistCrud = p.match(/^\/api\/playlists\/([^/]+)(\/export)?$/);
+        const playlistExportMatch = p.match(/^\/api\/playlists\/([^/]+)\/export$/);
+        if (playlistExportMatch) {
+            // Mirror the real backend (library/api.py export_playlist): an
+            // M3U8 attachment with one EXTINF line + path per track. Handled
+            // before the generic CRUD route so export is not swallowed.
+            const id = playlistExportMatch[1];
+            const catalogPlaylists = activeLib().playlists || [];
+            const playlist = catalogPlaylists.find(pl => pl.id === id);
+            if (!playlist) return err('Playlist not found', 404);
+            const safeName = String(playlist.name || 'playlist').replace(/["\r\n]/g, '');
+            return j(demoPlaylistM3u(playlist), 200, {
+                'Content-Type': 'audio/x-mpegurl; charset=utf-8',
+                'Content-Disposition': `attachment; filename="${safeName}.m3u8"`,
+            });
+        }
+        const playlistCrud = p.match(/^\/api\/playlists\/([^/]+)$/);
         if (playlistCrud) {
             const id = playlistCrud[1];
-            if (playlistCrud[2]) return err('Not found', 404);
             if (method === 'DELETE') {
-                const idx = lib.playlists.findIndex(pl => pl.id === id);
-                if (idx >= 0) lib.playlists.splice(idx, 1);
+                const catalogPlaylists = activeLib().playlists || [];
+                const idx = catalogPlaylists.findIndex(pl => pl.id === id);
+                if (idx >= 0) catalogPlaylists.splice(idx, 1);
                 return j({ status: 'ok', deleted: id });
             }
             return err('Playlist not found');
         }
         const albumTracksMatch = p.match(/^\/api\/albums\/([^/]+)\/tracks$/);
         if (albumTracksMatch) {
-            const album = lib.albums.find(a => a.id === albumTracksMatch[1]);
-            if (!album) return err('Album not found');
-            return j(lib.tracks.filter(t => t.album === album.name));
+            // Tracks come from the album's owning catalog: an id from the
+            // inactive library (e.g. a still-playing track) must not be
+            // filtered against the active catalog.
+            const resolved = findAlbum(albumTracksMatch[1]);
+            if (!resolved) return err('Album not found');
+            const { album, catalog } = resolved;
+            return j(catalog.tracks.filter(t => t.album === album.name && (t.artist === album.artist || t.album_artist === album.artist)));
         }
         const albumFavMatch = p.match(/^\/api\/albums\/([^/]+)\/favorite$/);
         if (albumFavMatch) {
-            const album = lib.albums.find(a => a.id === albumFavMatch[1]);
-            if (!album) return err('Album not found');
-            album.favorite = !!body.favorite;
-            return j({ status: 'ok', album_id: album.id, favorite: album.favorite });
+            const resolved = findAlbum(albumFavMatch[1]);
+            if (!resolved) return err('Album not found');
+            resolved.album.favorite = !!body.favorite;
+            return j({ status: 'ok', album_id: resolved.album.id, favorite: resolved.album.favorite });
         }
         const trackFavMatch = p.match(/^\/api\/tracks\/([^/]+)\/favorite$/);
         if (trackFavMatch) {
-            const track = lib.tracks.find(t => t.id === trackFavMatch[1]);
-            if (!track) return err('Track not found');
-            track.favorite = !!body.favorite;
-            return j({ status: 'ok', track_id: track.id, favorite: track.favorite });
+            const resolved = findTrack(trackFavMatch[1]);
+            if (!resolved) return err('Track not found');
+            resolved.track.favorite = !!body.favorite;
+            return j({ status: 'ok', track_id: resolved.track.id, favorite: resolved.track.favorite });
         }
         const albumCoverMatch = p.match(/^\/api\/albums\/([^/]+)\/cover$/);
         if (albumCoverMatch) {
-            const album = lib.albums.find(a => a.id === albumCoverMatch[1]);
-            const redirect = album ? album.coverUrl : lib.demoImage('album:' + (albumCoverMatch[1] || 'x'));
+            const resolved = findAlbum(albumCoverMatch[1]);
+            const redirect = resolved ? resolved.album.coverUrl : lib.demoImage('album:' + (albumCoverMatch[1] || 'x'));
             return j({ redirect });
         }
         const trackCoverMatch = p.match(/^\/api\/tracks\/cover\/([^/]+)$/);
         if (trackCoverMatch) {
-            const track = lib.tracks.find(t => t.id === trackCoverMatch[1]);
-            return j({ redirect: track ? track.cover_url : lib.demoImage('track:' + (trackCoverMatch[1] || 'x')) });
+            const resolved = findTrack(trackCoverMatch[1]);
+            return j({ redirect: resolved ? resolved.track.cover_url : lib.demoImage('track:' + (trackCoverMatch[1] || 'x')) });
         }
         const trackCoverInfoMatch = p.match(/^\/api\/tracks\/cover-info\/([^/]+)$/);
         if (trackCoverInfoMatch) {
-            const track = lib.tracks.find(t => t.id === trackCoverInfoMatch[1]);
-            return j({ cover_url: track ? track.cover_url : '', cover_available: !!track });
+            const resolved = findTrack(trackCoverInfoMatch[1]);
+            return j({ cover_url: resolved ? resolved.track.cover_url : '', cover_available: !!resolved });
         }
         const albumDiscover = p.match(/^\/api\/albums\/([^/]+)\/discover$/);
         if (albumDiscover) {
             // Same contract as the backend (ListenBrainz artist-seeded
-            // suggestions, max 6): reuse the demo library itself — same
+            // suggestions, max 6): reuse the active demo catalog — same
             // genre first, then same decade, then the rest in catalog
             // order. Returns full album entries so the real UI renders
             // identical tiles, no demo-only recommendation logic.
-            const album = lib.albums.find(a => a.id === albumDiscover[1]);
+            const catalog = activeLib().albums;
+            const album = catalog.find(a => a.id === albumDiscover[1]);
             if (!album) return err('Album not found');
             const genre = (album.genres || [])[0] || '';
             const decade = Math.floor(Number(album.year || 0) / 10);
-            const scored = lib.albums
+            const scored = catalog
                 .filter(a => a.id !== album.id)
                 .map(a => {
                     const sameGenre = genre && (a.genres || []).includes(genre) ? 0 : 1;
@@ -811,12 +1125,27 @@
                 .sort((x, y) => x.score - y.score);
             return j({ album_id: album.id, items: scored.slice(0, 6).map(s => s.album), source: 'demo', cached: true, error: '' });
         }
-        if (p === '/api/smart/top-tracks') return j(lib.tracks.slice(0, 40));
-        if (p === '/api/library/status') return j({ scanning: false, tracks_found: lib.tracks.length, files_seen: 0 });
-        if (p === '/api/library/refresh' && post) return j({ status: 'ok' });
+        if (p === '/api/smart/top-tracks') return j(activeLib().tracks.slice(0, 40));
+        if (p === '/api/library/status') {
+            maybeArmBootScan();
+            return j(libraryScanStatus());
+        }
+        if (p === '/api/library/refresh' && post) {
+            armLibraryScan();
+            return j({ status: 'ok', ...libraryScanStatus() });
+        }
         if (p === '/api/library/folders/delete' && post) return j({ status: 'ok' });
         if (p === '/api/tracks/delete' && post) return j({ status: 'ok' });
-        if (p === '/api/tracks/download' && post) return j({ status: 'ok' });
+        if (p === '/api/tracks/download' && post) {
+            // Selection download: a downloadable body for the POSTed ids so
+            // the frontend blob path works (see downloadSelectedTracks).
+            const trackIds = Array.isArray(body.track_ids) ? body.track_ids : [];
+            const single = trackIds.length === 1;
+            return j(demoDownloadManifest(trackIds), 200, {
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="${single ? 'track' : 'fxroute-library-selection.zip'}"`,
+            });
+        }
 
         // ── Streaming providers ─────────────────────────────────────────
         if (p === '/api/streaming/providers') {
@@ -901,7 +1230,7 @@
         }
         if (p === '/api/streaming/spotify/status') return j(S.spotify.snapshot());
         if (p === '/api/streaming/qobuz/status') return j(S.qobuz.payload());
-        const qobuzCmd = p.match(/^\/api\/streaming\/qobuz\/([a-z]+)$/);
+        const qobuzCmd = p.match(/^\/api\/streaming\/qobuz\/([a-z_]+)$/);
         if (qobuzCmd && post) {
             const cmd = qobuzCmd[1];
             const q = S.qobuz;
@@ -970,7 +1299,10 @@
             const trackIds = Array.isArray(body.track_ids) ? body.track_ids : [];
             const id = 't_playlist_' + Date.now();
             const tracks = trackIds.map(tid => tidalTracks().find(t => t.id === tid)).filter(Boolean).map(t => ({ ...t }));
-            const pl = { id, name, description: 'Demo playlist', track_count: tracks.length, art_url: lib.demoImage('playlist:' + id), cover_url: lib.demoImage('playlist:' + id), owner: 'fxroute-demo', is_public: true, tracks };
+            // New playlists show their content like the local collage does:
+            // the first track's album cover, pool fallback when empty.
+            const firstArt = tracks.length && tracks[0].art_url ? tracks[0].art_url : lib.demoImage('playlist:' + id);
+            const pl = { id, name, description: 'Demo playlist', track_count: tracks.length, art_url: firstArt, cover_url: firstArt, owner: 'fxroute-demo', is_public: true, tracks };
             tidalPlaylists().push(pl);
             tidalFavs.playlists.add(id);
             return j({ id, name, owner: 'fxroute-demo', track_count: tracks.length });
@@ -1013,7 +1345,19 @@
         const tidalAlbumTracks = p.match(/^\/api\/streaming\/tidal\/albums\/([^/]+)\/tracks$/);
         if (tidalAlbumTracks) {
             const album = tidalAlbums().find(a => a.id === tidalAlbumTracks[1]);
-            return j(album ? album.tracks : []);
+            if (!album) return j([]);
+            // Normalized track dicts like the real provider boundary
+            // (id/title/artist/album/art_url/duration): the album track
+            // rows render thumb + subtitle from the track itself.
+            return j(album.tracks.map(t => ({
+                id: t.id,
+                title: t.title,
+                artist: album.artist,
+                album: album.title,
+                duration: t.duration,
+                track_number: t.trackNumber,
+                art_url: album.cover_url,
+            })));
         }
         const tidalArtistDetail = p.match(/^\/api\/streaming\/tidal\/artists\/([^/]+)$/);
         if (tidalArtistDetail) {
@@ -1096,10 +1440,35 @@
             return j(samplerate);
         }
         if (p === '/api/audio/source-mode') {
-            if (post) return j({ mode: 'app-playback', modes: [{ key: 'app-playback', label: 'App playback', selectable: true }], default_input: null, selected_input: null, current_input: null, inputs: [], bluetooth: {}, notes: [], pending: false });
-            return j({ mode: 'app-playback', modes: [{ key: 'app-playback', label: 'App playback', selectable: true }], default_input: null, selected_input: null, current_input: null, inputs: [], bluetooth: {}, notes: [], pending: false });
+            if (post) {
+                const mode = String(body.mode || '');
+                const inputKey = body.inputKey != null && body.inputKey !== ''
+                    ? String(body.inputKey)
+                    : (body.input_key != null ? String(body.input_key) : '');
+                if (mode === 'bluetooth-input') {
+                    // Switching sources stops app playback, like the real
+                    // backend pausing every app renderer for external input.
+                    S.stop();
+                    sourceMode = mode;
+                    return j(sourceOverview());
+                }
+                if (mode === 'external-input') {
+                    const input = (inputKey && sourceInputByKey(inputKey))
+                        || sourceInputByKey(selectedSourceInputKey)
+                        || SOURCE_INPUTS[0];
+                    if (inputKey && !sourceInputByKey(inputKey)) return err('Unknown input: ' + inputKey, 400);
+                    selectedSourceInputKey = input.key;
+                    S.stop();
+                    sourceMode = mode;
+                    return j(sourceOverview());
+                }
+                sourceMode = 'app-playback';
+                if (inputKey && sourceInputByKey(inputKey)) selectedSourceInputKey = inputKey;
+                return j(sourceOverview());
+            }
+            return j(sourceOverview());
         }
-        if (p === '/api/music-libraries') return j(musicLibraries);
+        if (p === '/api/music-libraries') return j(musicLibrariesPayload());
         if (p === '/api/music-libraries/manual' && post) {
             const url = String(body.url || '');
             const entry = { id: 'demo-nas-' + Date.now(), label: url.split('/').filter(Boolean).pop() || 'NAS', type: 'smb' };
@@ -1109,7 +1478,18 @@
         if (p === '/api/music-libraries/select' && post) {
             const id = String(body.id || '');
             const entry = musicLibraries.libraries.find(l => l.id === id);
-            if (entry) { musicLibraries.active_id = entry.id; musicLibraries.active_type = entry.type; }
+            if (entry) {
+                const changed = entry.id !== musicLibraries.active_id;
+                musicLibraries.active_id = entry.id;
+                musicLibraries.active_type = entry.type;
+                // Local playback + queue fallbacks in state.js resolve
+                // against the active catalog.
+                if (typeof S.setActiveLibraryId === 'function') S.setActiveLibraryId(entry.id);
+                // A real box rescans the freshly selected share; arm a short
+                // scan (the frontend polls /api/library/status right after
+                // the switch, so the new catalog visibly settles).
+                if (changed) armLibraryScan(1100 + Math.random() * 800);
+            }
             return j(musicLibraries);
         }
         if (p === '/api/system/update') {
@@ -1477,7 +1857,14 @@
         if (p === '/api/download' || p === '/api/download/status') return j({ status: 'idle' });
         if (p === '/api/download/cancel' && post) return j({ ok: true });
         if (p === '/api/stream/info') return j({ codec: 'FLAC', bitrate_kbps: 1411, sample_rate: 48000 });
-        if (p === '/api/certificate/local-root') return j({}, 404);
+        if (p === '/api/certificate/local-root') {
+            // The demo box has no real TLS certificate; serve the clearly
+            // labeled placeholder so the Settings download link works.
+            return j(DEMO_CERT_PEM, 200, {
+                'Content-Type': 'application/x-pem-file',
+                'Content-Disposition': 'attachment; filename="fxroute-demo-certificate.crt"',
+            });
+        }
 
         // ── fallthrough ─────────────────────────────────────────────────
         if (p.startsWith('/api/')) console.warn('[demo] unmapped API call:', method, p);

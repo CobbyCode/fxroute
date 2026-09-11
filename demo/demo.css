@@ -51,9 +51,179 @@
         text-align: center;
         flex-wrap: wrap;
         bottom: calc(var(--footer-height, 150px) + 10px);
+        /* Full-width strip instead of a pill; tuned to be readable over
+           scrolling content and to echo the tour card's radius/blur. */
+        gap: 4px 10px;
+        padding: 7px 12px;
+        border-radius: 14px;
+        font-size: 0.76rem;
+        background: rgba(13, 13, 15, 0.92);
+        backdrop-filter: blur(10px) saturate(1.1);
+        -webkit-backdrop-filter: blur(10px) saturate(1.1);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
     }
+    .demo-banner-tour { padding: 3px 12px; }
 }
 
 /* Hide the GitHub link when the demo runs from file:// where it is less relevant */
 .demo-banner.no-link a { display: none; }
 .demo-banner.is-hidden { display: none; }
+
+.demo-banner-tour {
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: rgba(110, 231, 183, 0.14);
+    border: 1px solid rgba(110, 231, 183, 0.45);
+    color: #8dd7bf !important;
+    white-space: nowrap;
+}
+.demo-banner-tour:hover { background: rgba(110, 231, 183, 0.24); text-decoration: none !important; }
+
+/* ── Demo tour overlay ─────────────────────────────────────────────── */
+.demo-tour-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1100;
+    background: rgba(6, 8, 12, 0.6);
+    backdrop-filter: blur(2px);
+    pointer-events: none;   /* the tour only interacts through its card */
+}
+/* Visual highlight only: stacking order is applied inline so the tour
+   never changes the target's layout (e.g. the fixed playback footer). */
+.demo-tour-target {
+    outline: 2px solid var(--accent, #6ee7b7);
+    outline-offset: 2px;
+    border-radius: 10px;
+    box-shadow: 0 0 0 4px rgba(110, 231, 183, 0.28), 0 0 26px rgba(110, 231, 183, 0.45);
+}
+/* Card is a sibling of the backdrop (appended to body directly) so its
+   z-index outranks highlighted targets instead of being capped by the
+   backdrop's own stacking context. */
+.demo-tour-card {
+    position: fixed;
+    z-index: 1250;
+    pointer-events: auto;   /* the card must not inherit the backdrop's none */
+    width: min(360px, calc(100vw - 28px));
+    padding: 16px 18px 14px;
+    border-radius: 14px;
+    background: rgba(16, 17, 21, 0.97);
+    border: 1px solid rgba(139, 92, 246, 0.5);
+    color: var(--text-primary, #ececf0);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+    font-size: 0.9rem;
+    line-height: 1.45;
+}
+.demo-tour-progress {
+    margin-bottom: 6px;
+    color: var(--text-muted, #848490);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.demo-tour-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+.demo-tour-close {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    margin: -2px -4px 0 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted, #848490);
+    font: inherit;
+    font-size: 0.95rem;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.demo-tour-close:hover,
+.demo-tour-close:focus-visible { color: var(--text-primary, #ececf0); background: rgba(255,255,255,.08); }
+.demo-tour-close:focus-visible { outline: 2px solid var(--accent, #6ee7b7); outline-offset: 2px; }
+.demo-tour-title {
+    margin: 0 0 6px;
+    color: #8dd7bf;
+    font-size: 1.05rem;
+}
+.demo-tour-text { margin: 0; color: var(--text-secondary, #cbd5e1); }
+.demo-tour-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+}
+.demo-tour-btn {
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(139, 92, 246, 0.55);
+    background: rgba(139, 92, 246, 0.16);
+    color: var(--text-primary, #ececf0);
+    font: inherit;
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+.demo-tour-btn:hover,
+.demo-tour-btn:focus-visible { background: rgba(139, 92, 246, 0.32); }
+.demo-tour-btn:focus-visible { outline: 2px solid var(--accent, #6ee7b7); outline-offset: 2px; }
+.demo-tour-next {
+    margin-left: auto;
+    background: var(--accent, #6ee7b7);
+    border-color: var(--accent, #6ee7b7);
+    color: #0b1220;
+    font-weight: 600;
+}
+.demo-tour-next:hover,
+.demo-tour-next:focus-visible { background: #a7f3d0; }
+.demo-tour-skip {
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-muted, #848490);
+}
+.demo-tour-skip:hover { color: var(--text-primary, #ececf0); }
+.demo-tour-dots {
+    display: flex;
+    gap: 5px;
+    margin-top: 10px;
+}
+.demo-tour-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.22);
+}
+.demo-tour-dot.is-active { background: var(--accent, #6ee7b7); }
+@keyframes demo-tour-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(110,231,183,0.0); outline-color: rgba(110,231,183,0.0); }
+    35% { box-shadow: 0 0 0 4px rgba(110,231,183,0.22), 0 0 16px rgba(110,231,183,0.28); outline-color: rgba(110,231,183,0.75); }
+    100% { box-shadow: 0 0 0 0 rgba(110,231,183,0.0); outline-color: rgba(110,231,183,0.0); }
+}
+.demo-tour-pulse {
+    outline: 1.5px solid rgba(110,231,183,0.75);
+    outline-offset: 2px;
+    border-radius: 10px;
+    animation: demo-tour-pulse 900ms ease;
+}
+/* Small screens: slimmer paddings/font so the card stays compact, a
+   larger bottom margin so buttons clear the home-indicator safe area,
+   and a slightly stronger backdrop dim/blur to keep the card readable
+   over busy content. */
+@media (max-width: 480px), (max-height: 500px) {
+    .demo-tour-backdrop {
+        background: rgba(6, 8, 12, 0.55);
+        backdrop-filter: blur(4px) saturate(0.9);
+        -webkit-backdrop-filter: blur(4px) saturate(0.9);
+    }
+    .demo-tour-card {
+        padding: 12px 14px 12px;
+        margin-bottom: 16px;
+        font-size: 0.86rem;
+    }
+    .demo-tour-title { font-size: 1rem; }
+    .demo-tour-actions { margin-top: 10px; }
+}

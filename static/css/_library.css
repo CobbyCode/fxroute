@@ -392,31 +392,35 @@
     font-size: 0.86rem;
     line-height: 1.38;
 }
-.album-detail-about summary {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.32rem;
-    width: fit-content;
-    color: var(--text-primary);
-    cursor: pointer;
-    font-weight: 650;
-    list-style: none;
-}
-.album-detail-about summary::-webkit-details-marker {
-    display: none;
-}
-.album-detail-about summary::before {
-    content: "▸";
-    font-size: 0.78rem;
-    line-height: 1;
-    color: var(--text-secondary);
-}
-.album-detail-about[open] summary::before {
-    content: "▾";
-}
 .album-detail-about p {
     margin: 0.35rem 0 0;
     max-width: 64ch;
+}
+.detail-fact-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.75rem;
+    min-width: 0;
+}
+.detail-fact-row > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.detail-fact-row > span + span {
+    border-inline-start: 1px solid var(--border-strong);
+    padding-inline-start: 0.75rem;
+}
+.album-detail-about.detail-description {
+    width: 100%;
+    max-width: 76ch;
+    margin-top: 0.35rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--border-strong);
+}
+.detail-description p {
+    max-width: none;
+    margin: 0;
+    overflow-wrap: anywhere;
 }
 
 /* Artwork-led detail heroes: the local album and playlist details and the
@@ -726,6 +730,14 @@
     --control-gap: 12px;
     padding-top: 0.55rem;
 }
+/* TIDAL shares the library panel top rhythm (0.55rem) so both views start
+   at the same height; the provider shell keeps only its bottom spacing. */
+#tab-tidal {
+    padding-top: 0.55rem;
+}
+#tab-tidal .streaming-shell {
+    padding-top: 0;
+}
 .library-header {
     display: flex;
     justify-content: space-between;
@@ -755,7 +767,10 @@
 .library-view-toggle {
     display: flex;
     align-items: center;
-    flex: 0 0 auto;
+    /* Shrinkable like the TIDAL tabs row so the four tabs wrap instead of
+       pushing past the panel edge on narrow screens. */
+    flex: 0 1 auto;
+    min-width: 0;
 }
 .library-search-wrap {
     display: flex;
@@ -766,15 +781,37 @@
     min-width: 0;
 }
 .library-search-field {
-    flex: 0 1 clamp(400px, 36vw, 700px);
-    width: clamp(400px, 36vw, 700px);
+    /* Same width language as the TIDAL search (430px, right-flush via the
+       wrap). Definite flex-basis: the wrap shrink-fits its content, so a
+       percentage width would have no definite base to resolve against. */
+    flex: 0 1 430px;
+    width: 430px;
+    max-width: 100%;
     min-width: 0;
     position: relative;
 }
-.library-search-input {
+.library-search-field .library-search-input {
     width: 100%;
     padding-right: 2.1rem;
     font-size: 0.86rem;
+}
+/* One shared search-field tone for Radio, TIDAL and Library: the same
+   opaque background and border on all three inputs, so they render the
+   identical gray on every backdrop. The ID selectors (and the doubled
+   library class) beat the translucent radio .url-input override by
+   specificity, regardless of file load order. The background stays pinned
+   in every state (no :focus rule touches it), while the border is only
+   pinned while unfocused: during :focus the accent border must win, or the
+   ID specificity would suppress it. */
+#station-search,
+#tidal-search-input,
+.library-search-field .library-search-input {
+    background: var(--bg-input);
+}
+#station-search:not(:focus),
+#tidal-search-input:not(:focus),
+.library-search-field .library-search-input:not(:focus) {
+    border-color: var(--border);
 }
 .library-search-input::-webkit-search-cancel-button,
 .library-search-input::-webkit-search-decoration {
@@ -822,6 +859,11 @@
     flex-wrap: nowrap;
     flex: 0 0 auto;
 }
+/* An emptied toolbar (every action hidden, e.g. Select-all in albums
+   mode) collapses so the wrap gap cannot indent the search field. */
+.library-selection-toolbar:not(:has(> :not(.hidden))) {
+    display: none;
+}
 .library-selection-toolbar .btn-secondary {
     min-width: 118px;
 }
@@ -832,22 +874,28 @@
     margin-bottom: 0.75rem;
     flex-wrap: nowrap;
     overflow: hidden;
+    width: 100%;
 }
 .playlist-save-controls {
     display: flex;
     align-items: center;
     gap: var(--control-gap);
     min-width: 0;
-    flex: 0 1 auto;
+    flex: 1 1 auto;
+    width: 100%;
 }
 .playlist-save-controls #save-playlist {
     min-width: 74px;
 }
 .playlist-save-row .url-input {
-    flex: 0 1 160px;
-    min-width: 0;
+    flex: 1 1 0;
+    min-width: 140px;
     font-size: 0.88rem;
     padding: 0.3rem 0.6rem;
+}
+.playlist-save-row .btn-secondary {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 /* TIDAL save row: the library save concept extended with the "add to
    existing playlist" target, so the row wraps instead of clipping. */
@@ -872,6 +920,33 @@
 }
 .tidal-playlist-save-row select.url-input {
     flex: 0 1 200px;
+}
+/* Album detail: the playlist action row uses the full content width. The two
+   text/select fields absorb the extra space (existing target slightly wider);
+   Save as new, Add and Cancel keep their compact natural button widths. */
+.playlist-save-row.tidal-playlist-save-row--album {
+    width: 100%;
+    max-width: none;
+    flex: 1 1 auto;
+}
+.tidal-playlist-save-row--album .playlist-save-controls {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: none;
+    flex-wrap: nowrap;
+    align-items: center;
+}
+.tidal-playlist-save-row--album #tidal-playlist-name {
+    flex: 1 1 0;
+    min-width: 140px;
+}
+.tidal-playlist-save-row--album #tidal-playlist-target {
+    flex: 1.25 1 0;
+    min-width: 170px;
+}
+.tidal-playlist-save-row--album .btn-secondary {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 .tidal-playlist-save-error {
     flex: 0 0 100%;
