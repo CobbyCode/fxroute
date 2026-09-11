@@ -85,12 +85,20 @@ def _check_convolver_invalidation() -> None:
 
 def _check_headroom_range() -> None:
     app = (ROOT / "static" / "app.js").read_text()
+    # -1..-9 are offered when headroom is enabled ("no headroom" is the
+    # checkbox's job, so 0 dB is not offered). 0 stays accepted in the
+    # allow-list so a previously stored 0 round-trips through
+    # render/collect instead of being silently rewritten to -3 dB.
     assert "new Set([-9, -8, -7, -6, -5, -4, -3, -2, -1, 0])" in app, \
-        "headroom allow-list must span the backend contract -9..0"
+        "headroom allow-list must accept -9..0 (0 for legacy round-trip only)"
     html = (ROOT / "static" / "index.html").read_text()
-    for value in ("0", "-7", "-8", "-9"):
-        assert f'<option value="{value}">' in html, f"headroom option {value} missing"
-    print("headroom UI spans backend contract -9..0 dB: ok")
+    headroom_start = html.index('id="effects-headroom-gain-db"')
+    headroom_block = html[headroom_start:html.index("</select>", headroom_start)]
+    for value in ("-1", "-2", "-3", "-4", "-5", "-6", "-7", "-8", "-9"):
+        assert f'<option value="{value}"' in headroom_block, f"headroom option {value} missing"
+    assert '<option value="0"' not in headroom_block, \
+        "0 dB must not be offered (checkbox covers no-headroom)"
+    print("headroom UI offers -1..-9 dB, stored 0 still round-trips: ok")
 
 
 def main() -> None:

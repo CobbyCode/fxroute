@@ -13433,6 +13433,10 @@ async function switchEffectsPreset() {
 
 // Track which inputs are currently being edited by the user
 const _activeEditing = new Set();
+// Offered values when headroom is enabled. 0 dB is deliberately NOT offered:
+// "no headroom" is the checkbox's job. 0 stays in the set anyway so a
+// previously stored 0 round-trips through render/collect instead of being
+// silently rewritten to the -3 dB fallback.
 const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-9, -8, -7, -6, -5, -4, -3, -2, -1, 0]);
 const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-12, -15, -18, -23]);
 const EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE = new Set([256, 512, 1024, 2048, 4096, 8192, 16384]);
