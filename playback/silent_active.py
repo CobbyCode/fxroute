@@ -19,6 +19,7 @@ from audio import pw_link
 from audio import sink_inputs
 from audio.samplerate import OUTPUT_MODE_STEREO, get_audio_output_overview
 from audio.system_volume import get_output_volume
+from audio.output_ports import hardware_playback_ports_from_mode
 from dsp.runtime import _contains_link
 import playback.source_policy as source_policy
 from playback.state import is_local_playback_active, is_spotify_playback_active
@@ -71,10 +72,17 @@ class SilentActiveRecovery:
         if not output_key:
             return True
         # Native stereo topology: the source reaches the DSP ingress sink and
-        # the DSP output reaches the selected hardware output.
+        # the DSP output reaches the selected hardware output, whatever the
+        # device calls its playback ports (playback_FL/FR or playback_AUX0/1).
+        # Discovery resolves the pair once; the semantic names are only the
+        # fallback for payloads built without port discovery (tests, legacy).
+        ports = hardware_playback_ports_from_mode(
+            output_mode, ("playback_FL", "playback_FR"), count=2)
+        if len(ports) < 2:
+            ports = ("playback_FL", "playback_FR")
         return (
-            _contains_link(links_text, "fxroute_dsp:output_1", f"{output_key}:playback_FL")
-            and _contains_link(links_text, "fxroute_dsp:output_2", f"{output_key}:playback_FR")
+            _contains_link(links_text, "fxroute_dsp:output_1", f"{output_key}:{ports[0]}")
+            and _contains_link(links_text, "fxroute_dsp:output_2", f"{output_key}:{ports[1]}")
         )
 
     def _snapshot(

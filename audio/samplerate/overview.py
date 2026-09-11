@@ -9,6 +9,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Mapping
 
+from audio.output_ports import resolve_hardware_playback_ports
+
 from .bluetooth import get_bluetooth_audio_overview
 from .constants import (
     NON_SELECTABLE_INPUT_KEYS,
@@ -248,7 +250,7 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
     # already hold a fresh samplerate status may pass it as ``status`` so the
     # build does not repeat that pipeline.
     notes: list[str] = []
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         status_future = (
             None if isinstance(status, dict) else pool.submit(get_samplerate_status)
         )
@@ -256,6 +258,11 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
         sinks_short_future = pool.submit(_run_command, ["pactl", "list", "sinks", "short"])
         sinks_detailed_future = pool.submit(_run_command, ["pactl", "list", "sinks"])
         nodes_future = pool.submit(_run_command, ["pw-cli", "ls", "Node"])
+        # The live port list is the authority on how the sink names its
+        # playback ports (playback_FL/FR/RL/RR vs. playback_AUX0…).  A failure
+        # here is not an output-discovery failure: the resolved list simply
+        # stays unavailable and the runtime falls back to the semantic names.
+        ports_future = pool.submit(_run_command, ["pw-link", "-io"])
 
         if status_future is not None:
             status = status_future.result()
@@ -284,6 +291,11 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
             node_ids = _parse_pw_node_ids(nodes_future.result())
         except Exception as exc:
             notes.append(f"Output sample-rate capabilities unavailable: {exc}")
+
+        try:
+            port_listing = ports_future.result()
+        except Exception:
+            port_listing = ""
 
     default_name = default_sink.get("name")
     current_name = relevant_sink.get("name") or default_name
@@ -375,6 +387,13 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
         if fallback_key is not None:
             selected_output = _build_selected_output_payload(fallback_key, None, explicit_outputs)
     effective_output = next((item for item in explicit_outputs if item.get("key") == (selected_output or {}).get("key")), None) or current_output
+    # Resolve the effective sink's real playback ports once, here in output
+    # discovery, so DSP link build, graph diagnosis, link repair/readback and
+    # the silent-active watcher all describe the same port topology instead
+    # of each assuming playback_FL/FR/RL/RR.
+    hardware_playback_ports = list(
+        resolve_hardware_playback_ports(port_listing, str((effective_output or {}).get("key") or ""))
+    )
     output_mode_available = bool((effective_output or {}).get("channels") and (effective_output or {}).get("channels") >= 4)
     if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and not output_mode_available:
         label = (
@@ -413,6 +432,7 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
             },
             "available": output_mode_available,
             "required_channels": 4,
+            "hardware_playback_ports": hardware_playback_ports,
             "effective_output_key": (effective_output or {}).get("key"),
             "effective_output_channels": (effective_output or {}).get("channels"),
             "effective_output_rate": (effective_output or {}).get("active_rate"),

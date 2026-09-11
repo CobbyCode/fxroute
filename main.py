@@ -1341,10 +1341,17 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
     dsp_out_2 = "fxroute_dsp:output_2"
     dsp_out_3 = "fxroute_dsp:output_3"
     dsp_out_4 = "fxroute_dsp:output_4"
-    hw_fl = f"{output_key}:playback_FL" if output_key else ""
-    hw_fr = f"{output_key}:playback_FR" if output_key else ""
-    hw_rl = f"{output_key}:playback_RL" if output_key else ""
-    hw_rr = f"{output_key}:playback_RR" if output_key else ""
+    # Read the hardware side back through the same discovery-resolved port
+    # list the DSP links against, so the dump never reports a playback_FL/FR
+    # topology the device does not actually expose (e.g. playback_AUX0…).
+    hardware_ports = [str(port) for port in (output_mode.get("hardware_playback_ports") or ())]
+    if not hardware_ports:
+        hardware_ports = ["playback_FL", "playback_FR", "playback_RL", "playback_RR"]
+    hw_targets = [f"{output_key}:{port}" for port in hardware_ports[:4]] if output_key else []
+    hw_fl = hw_targets[0] if len(hw_targets) > 0 else ""
+    hw_fr = hw_targets[1] if len(hw_targets) > 1 else ""
+    hw_rl = hw_targets[2] if len(hw_targets) > 2 else ""
+    hw_rr = hw_targets[3] if len(hw_targets) > 3 else ""
     links = {
         "sink_to_dsp_left": _contains_link(link_text, sink_monitor_left, dsp_in_left),
         "sink_to_dsp_right": _contains_link(link_text, sink_monitor_right, dsp_in_right),

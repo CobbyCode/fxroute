@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
+from audio.output_ports import HARDWARE_CHANNEL_ORDER, resolve_hardware_playback_ports
 from audio.pw_link import stop_command_child_cancellation_safe
 
 DSP_NODE_NAME = "fxroute_dsp"
@@ -177,15 +178,14 @@ class DSPRuntimeConfig:
     layout: tuple[dict[str, Any], ...]
 
     @classmethod
-    def from_overview(cls, overview: dict[str, Any]) -> "DSPRuntimeConfig":
+    def from_overview(cls, overview: dict[str, Any], *,
+                      hardware_ports: Sequence[str] | None = None) -> "DSPRuntimeConfig":
         bass = BassManagementConfig.from_overview(overview)
         layout = [
             {"name": "FL", "routes": [{"input": 0, "gain": 1.0}]},
             {"name": "FR", "routes": [{"input": 1, "gain": 1.0}]},
         ]
-        ports = ["playback_FL", "playback_FR"]
-        if bass.output_channels >= 4:
-            ports.extend(("playback_RL", "playback_RR"))
+        ports = cls._resolve_ports(bass, hardware_ports)
         if bass.output_mode.startswith("subwoofer-2."):
             if bass.main_highpass_enabled:
                 for channel in layout:
@@ -213,6 +213,39 @@ class DSPRuntimeConfig:
                 {"name": "SUB2", "routes": [{"input": 1, "gain": 0.0}]},
             ))
         return cls(bass.output_mode, bass.output_key, bass.sample_rate, tuple(ports), tuple(layout))
+
+    @staticmethod
+    def _resolve_ports(bass: BassManagementConfig,
+                       hardware_ports: Sequence[str] | None) -> list[str]:
+        """Map the DSP outputs onto the sink's real playback ports.
+
+        The discovered list is ordered by the device's own channel order
+        (``playback_FL/FR/RL/RR`` or ``playback_AUX0…``); the DSP outputs are
+        fixed (Out 1/2 Main, Out 3/4 Sub), so only its first entries are used.
+        Without a discovered list the historical semantic port names keep the
+        configured topology working.  A mode that needs more hardware outputs
+        than the device actually exposes is rejected with a clear reason
+        instead of failing later inside ``pw-link``.
+        """
+        resolved = [str(port) for port in (hardware_ports or ()) if port]
+        if resolved:
+            require_sub_outputs = bass.output_mode.startswith("subwoofer-2.")
+            if require_sub_outputs and len(resolved) < 4:
+                raise RuntimeError(
+                    f"Output mode {bass.output_mode} requires 4 hardware playback ports, "
+                    f"but {bass.output_key or 'the selected output'} exposes {len(resolved)} "
+                    f"({', '.join(resolved)})"
+                )
+            if len(resolved) < 2:
+                raise RuntimeError(
+                    f"{bass.output_key or 'The selected output'} exposes fewer than two "
+                    f"hardware playback ports ({', '.join(resolved) or 'none'})"
+                )
+            return resolved[:2] if bass.output_channels < 4 else resolved[:4]
+        ports = ["playback_FL", "playback_FR"]
+        if bass.output_channels >= 4:
+            ports.extend(("playback_RL", "playback_RR"))
+        return ports
 
 
 class DSPRuntime:
@@ -293,11 +326,15 @@ class DSPRuntime:
     async def _remove_direct_source_links(self) -> None:
         if self._config is None:
             return
+        # The source nodes keep their fixed output_FL/FR/RL/RR naming; only
+        # the hardware side is resolved, so a direct source→sink link is
+        # removed no matter how the device names its playback ports.
         for node in ("mpv", "spotify"):
-            for channel in ("FL", "FR", "RL", "RR"):
+            for index, port in enumerate(self._config.hardware_ports):
+                channel = HARDWARE_CHANNEL_ORDER[index] if index < len(HARDWARE_CHANNEL_ORDER) else index + 1
                 await self._run((
                     "pw-link", "-d", f"{node}:output_{channel}",
-                    f"{self._config.output_key}:playback_{channel}",
+                    f"{self._config.output_key}:{port}",
                 ))
 
     async def reclean_direct_dsp_links(self) -> None:
@@ -312,6 +349,7 @@ class DSPRuntime:
                 "helper_args": [str(self.binary), str(self._config_path)] if self._config_path else None,
                 "config": {"sample_rate": self._config.sample_rate, "output_mode": self._config.output_mode,
                             "output_key": self._config.output_key,
+                            "hardware_ports": list(self._config.hardware_ports),
                             "layout": [dict(channel) for channel in getattr(self._config, "layout", ())]} if self._config else None,
                 "last_error": self._error, "last_started_at": self._started_at,
                 "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
@@ -463,9 +501,29 @@ class DSPRuntime:
             await self._sync(overview, initial_output_gain_db=initial_output_gain_db,
                              extras_override=extras_override)
 
+    async def _resolve_hardware_ports(self, overview: Mapping[str, Any]) -> tuple[str, ...] | None:
+        """Resolve the selected sink's real playback ports for this sync.
+
+        Output discovery already resolved the ports; a direct ``pw-link -io``
+        read is the fallback so a sync never links against a hardcoded port
+        topology when the discovery payload is unavailable.
+        """
+        output_mode = overview.get("output_mode") or {}
+        output_key = str(output_mode.get("effective_output_key") or "").strip()
+        discovered = output_mode.get("hardware_playback_ports")
+        if isinstance(discovered, (list, tuple)) and discovered:
+            return tuple(str(port) for port in discovered)
+        if not output_key:
+            return None
+        result = await self._run(("pw-link", "-io"))
+        if result.returncode:
+            return None
+        return resolve_hardware_playback_ports(result.stdout, output_key) or None
+
     async def _sync(self, overview: dict[str, Any], *, initial_output_gain_db: float = 0.0,
                     extras_override: dict[str, Any] | None = None) -> None:
-        config = DSPRuntimeConfig.from_overview(overview)
+        config = DSPRuntimeConfig.from_overview(
+            overview, hardware_ports=await self._resolve_hardware_ports(overview))
         if not config.output_key:
             raise RuntimeError("Native DSP requires a selected hardware output")
         async with self._lock:

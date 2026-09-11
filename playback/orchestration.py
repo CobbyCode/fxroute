@@ -19,12 +19,32 @@ from typing import Any, Awaitable, Callable, Mapping
 
 import playback.source_policy as source_policy
 import audio.samplerate as samplerate
+from audio.output_ports import (
+    HARDWARE_CHANNEL_ORDER,
+    hardware_playback_ports_from_mode,
+    resolve_hardware_playback_ports,
+)
 from playback.transition import PlaybackTransitionFailure, TransitionRequest, stable_graph_readbacks
 
 logger = logging.getLogger(__name__)
 
 # Sink-input sink indexes meaning "bound to no sink" as reported by pactl.
 _WEDGED_SINK_INDEXES = frozenset({"4294967295", "-1"})
+
+
+def _hardware_output_ports(output_mode: Mapping[str, Any], io_text: str, output_key: str,
+                           count: int) -> tuple[str, ...]:
+    """Resolve the hardware playback ports for the mode's DSP outputs.
+
+    The discovery payload carries the already resolved list; a direct
+    ``pw-link -io`` read is the fallback, and the historic semantic port names
+    are the last resort so a graph diagnosis never invents a port topology
+    that was not actually resolved.
+    """
+    fallback = (
+        resolve_hardware_playback_ports(io_text, output_key) if output_key else ()
+    ) or tuple(f"playback_{channel}" for channel in HARDWARE_CHANNEL_ORDER)
+    return hardware_playback_ports_from_mode(output_mode, fallback, count=count)
 
 
 def _sink_input_is_wedged(entry: Mapping[str, Any]) -> bool:
@@ -395,7 +415,7 @@ class PlaybackOrchestrator:
         result = {"mode": None, "output_key": "", "dsp_ports": False, "helper_ports": None,
                   "helper_active": None, "helper_rate": None, "helper_rate_matches": None,
                   "links": {}, "source_links": {}, "source_links_complete": None,
-                  "direct_source_to_hw_present": False,
+                  "direct_source_to_hw_present": False, "output_targets": (),
                   "links_complete": False, "bypass_only": False,
                   "port_identities": {"source": (), "source_target": (), "dsp": (), "helper": (), "output": ()},
                   "signature": "unreadable"}
@@ -428,8 +448,13 @@ class PlaybackOrchestrator:
         source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
         snapshot = dict(self._deps.get_dsp_snapshot() or {}) if self._deps.get_dsp_snapshot else {}
         output_count = 4 if mode in self._deps.output_mode_subwoofer_modes else 2
-        channels = ("FL", "FR", "RL", "RR")[:output_count]
-        dsp_ports = tuple(f"fxroute_dsp:output_{i + 1}" for i in range(output_count))
+        # Resolve the device's real playback ports (playback_FL/FR/RL/RR or
+        # playback_AUX0…) for the mode's DSP outputs.  The diagnosis, the
+        # repair path and the DSP link build then all describe one topology.
+        hardware_ports = _hardware_output_ports(output_mode, io_text, output_key, output_count)
+        output_targets = tuple(f"{output_key}:{port}" for port in hardware_ports)
+        dsp_ports = tuple(f"fxroute_dsp:output_{i + 1}" for i in range(len(hardware_ports)))
+        result["output_targets"] = output_targets
         ingress_sources = ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR")
         ingress_targets = ("fxroute_dsp:input_1", "fxroute_dsp:input_2")
         result["dsp_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
@@ -445,20 +470,20 @@ class PlaybackOrchestrator:
         # ``playback_<ch>``).
         bypass_ports: list[str] = []
         for node in dict.fromkeys(source_policy.GRAPH_NODE_BY_SOURCE.values()):
-            for channel in ("FL", "FR", "RL", "RR"):
+            for channel in HARDWARE_CHANNEL_ORDER:
                 bypass_ports.extend((f"{node}:output_{channel}", f"{node}:playback_{channel}"))
         result["direct_source_to_hw_present"] = any(
-            self._deps.contains_link(link_text, port, f"{output_key}:playback_{channel}")
+            self._deps.contains_link(link_text, port, target)
             for port in bypass_ports
-            for channel in ("FL", "FR", "RL", "RR")
+            for target in output_targets
         )
         result["links"] = {
             **{f"{p} -> {t}": self._deps.contains_link(link_text, p, t) for p, t in zip(ingress_sources, ingress_targets)},
-            **{f"{p} -> {output_key}:playback_{c}": self._deps.contains_link(link_text, p, f"{output_key}:playback_{c}") for p, c in zip(dsp_ports, channels)},
+            **{f"{p} -> {t}": self._deps.contains_link(link_text, p, t) for p, t in zip(dsp_ports, output_targets)},
         }
         result["port_identities"] = {"source": tuple(p for p in source_ports if p in io_text), "source_target": tuple(p for p in source_targets if p in io_text),
                                       "dsp": tuple(p for p in ingress_targets if p in io_text), "helper": tuple(p for p in dsp_ports if p in io_text),
-                                      "output": tuple(f"{output_key}:playback_{c}" for c in channels if f"{output_key}:playback_{c}" in io_text)}
+                                      "output": tuple(p for p in output_targets if p in io_text)}
         native = bool(result["source_links_complete"] is not False and result["dsp_ports"] and result["helper_rate_matches"] and all(result["links"].values()))
         result["bypass_only"] = bool(native and result["direct_source_to_hw_present"])
         result["links_complete"] = bool(native and not result["direct_source_to_hw_present"])
@@ -631,8 +656,11 @@ class PlaybackOrchestrator:
         if diagnosis.get("helper_ports") is not True or diagnosis.get("helper_active") is not True or diagnosis.get("helper_rate_matches") is not True or diagnosis.get("helper_rate") != target_rate:
             return False
         missing = set(self.missing_playback_graph_links(diagnosis))
-        channels = ("FL", "FR", "RL", "RR")[:4 if diagnosis.get("mode") in self._deps.output_mode_subwoofer_modes else 2]
-        repairable = {"fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1", "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2", *(f"fxroute_dsp:output_{i + 1} -> {output_key}:playback_{c}" for i, c in enumerate(channels))}
+        targets = tuple(diagnosis.get("output_targets") or ()) or tuple(
+            f"{output_key}:playback_{channel}"
+            for channel in HARDWARE_CHANNEL_ORDER[:4 if diagnosis.get("mode") in self._deps.output_mode_subwoofer_modes else 2]
+        )
+        repairable = {"fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1", "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2", *(f"fxroute_dsp:output_{i + 1} -> {target}" for i, target in enumerate(targets))}
         return bool(missing) and missing.issubset(repairable)
 
     def log_playback_graph_diagnosis(self, diagnosis: dict, *, target_rate: int, reason: str, detail: str) -> None:
@@ -646,7 +674,11 @@ class PlaybackOrchestrator:
         if not output_key:
             raise RuntimeError("Playback handoff repair failed: missing stereo output target")
         links = await self._deps.run_pw_link_command("-l")
-        for source, target in (("fxroute_dsp:output_1", f"{output_key}:playback_FL"), ("fxroute_dsp:output_2", f"{output_key}:playback_FR")):
+        targets = tuple(diagnosis.get("output_targets") or ()) or tuple(
+            f"{output_key}:playback_{channel}" for channel in HARDWARE_CHANNEL_ORDER[:2]
+        )
+        for index, target in enumerate(targets[:2]):
+            source = f"fxroute_dsp:output_{index + 1}"
             if not self._deps.contains_link(links, source, target):
                 await self._deps.connect_ports((source,), target)
 
