@@ -18,6 +18,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUTPUT=""
 SOURCE_DIR="$ROOT_DIR"
 BUILD_COMMIT=""
+KERNEL_RPM=""
 DOCKER_IMAGE="${FXROUTE_LIVE_DOCKER_IMAGE:-registry.opensuse.org/opensuse/leap:16.0}"
 MINIMAL=0
 KEEP_WORK=0
@@ -33,6 +34,10 @@ Options:
   --output PATH        Write squashfs image to PATH (required)
   --source DIR         FXRoute source directory (default: repo root)
   --commit REV         FXRoute commit to bake in (default: HEAD)
+  --kernel-rpm PATH    kernel-default RPM matching the ISO kernel; its
+                       modules are installed so pointer/input devices can
+                       bind after switch-root (default: none, live has no
+                       kernel modules and USB mice/trackpads stay dead)
   --docker-image REF   Leap container image (default: $DOCKER_IMAGE)
   --minimal            Build a tiny placeholder image (GRUB/structure tests only,
                        not a bootable FXRoute desktop)
@@ -63,6 +68,11 @@ while [[ $# -gt 0 ]]; do
       BUILD_COMMIT="$2"
       shift 2
       ;;
+    --kernel-rpm)
+      [[ $# -ge 2 ]] || die "--kernel-rpm requires a path"
+      KERNEL_RPM="$2"
+      shift 2
+      ;;
     --docker-image)
       [[ $# -ge 2 ]] || die "--docker-image requires a reference"
       DOCKER_IMAGE="$2"
@@ -91,6 +101,12 @@ done
 [[ -f "$SOURCE_DIR/main.py" && -f "$SOURCE_DIR/requirements.txt" ]] \
   || die "source directory does not look like FXRoute: $SOURCE_DIR"
 [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "SOURCE_DATE_EPOCH must be a non-negative integer"
+if [[ -n "$KERNEL_RPM" ]]; then
+  [[ -f "$KERNEL_RPM" ]] || die "kernel RPM not found: $KERNEL_RPM"
+  KERNEL_RPM="$(realpath -m "$KERNEL_RPM")"
+  # The package identity (kernel-default) is verified inside the container
+  # via rpm -qp; the staged file name is not significant.
+fi
 # Epoch-zero files are treated as unmodified by SDDM's config loader, which
 # then falls back to /etc/X11/xdm/Xsession (absent on Leap 16). sysusers also
 # uses this epoch for shadow's last-change DAY; day zero means expired.
@@ -202,6 +218,28 @@ zypper --non-interactive install --no-recommends \
   gcc gcc-c++ cmake pkgconf-pkg-config make \
   pipewire-devel lilv liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins \
   libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel || true
+# Kernel modules matching the ISO kernel. The container image ships none and
+# repo kernels no longer match the booted ISO kernel, so the exact
+# kernel-default RPM is injected via --kernel-rpm. Without these, pointer
+# and input drivers (usbhid, i2c-hid, psmouse) can never load after
+# switch-root and USB mice/trackpads stay dead while the AT keyboard works.
+if [[ -f /tmp/kernel-default.rpm ]]; then
+  RPM_NAME="$(rpm -qp --queryformat '%{NAME}' /tmp/kernel-default.rpm 2>/dev/null || true)"
+  [[ "$RPM_NAME" == kernel-default ]] || { echo "[live-root][error] expected a kernel-default RPM, got '${RPM_NAME:-unknown}'" >&2; exit 1; }
+  command -v depmod >/dev/null 2>&1 || zypper --non-interactive install --no-recommends kmod || true
+  rpm -i --nodeps --noscripts /tmp/kernel-default.rpm
+  KVER=""
+  for d in /usr/lib/modules/*-default; do
+    if [[ -d "$d" ]]; then KVER="$(basename "$d")"; break; fi
+  done
+  [[ -n "$KVER" ]] || { echo "[live-root][error] no kernel modules after kernel RPM install" >&2; exit 1; }
+  depmod -a "$KVER"
+  # Module files may be compressed (.ko.zst on Leap 16); match any suffix.
+  # psmouse is intentionally absent: SUSE builds it into the kernel.
+  for mod in kernel/drivers/hid/usbhid/usbhid.ko kernel/drivers/hid/i2c-hid/i2c-hid.ko kernel/drivers/hid/hid-multitouch.ko; do
+    compgen -G "/usr/lib/modules/$KVER/$mod*" > /dev/null || { echo "[live-root][error] pointer module missing: $mod" >&2; exit 1; }
+  done
+fi
 for cmd in python3 git mpv playerctl wpctl pactl firefox sddm; do
   command -v "$cmd" >/dev/null 2>&1 || echo "[live-root][warn] expected command missing after package install: $cmd"
 done
@@ -213,11 +251,14 @@ if ! id -u "$LIVE_USER" >/dev/null 2>&1; then
   useradd -m -U -s /bin/bash "$LIVE_USER"
 fi
 passwd -d "$LIVE_USER" || true
-# audio/video for ALSA+display, systemd-journal for qbzd volume bridge.
-# (wheel may not exist in minimal Leap containers; sudoers drop-in below
-# grants live sudo independently, so a missing group must not fail here.)
-usermod -aG audio,video,systemd-journal "$LIVE_USER" 2>/dev/null || \
-  usermod -aG audio,video "$LIVE_USER" 2>/dev/null || true
+# audio/video for ALSA+display, input for pointer devices via logind seat
+# ACLs, systemd-journal for qbzd volume bridge. Each group best-effort so a
+# missing group never drops the others (wheel may not exist in minimal Leap
+# containers; sudoers drop-in below grants live sudo independently).
+getent group input >/dev/null 2>&1 || groupadd -r input 2>/dev/null || true
+for grp in audio video input systemd-journal; do
+  usermod -aG "$grp" "$LIVE_USER" 2>/dev/null || true
+done
 # Volatile live sudo (physical autologin session; sshd stays disabled without
 # fxroute.live-password). Passwordless sudo matches common live media and keeps
 # provider/CIFS helpers usable without persisting credentials.
@@ -490,11 +531,16 @@ printf '[live-root] pulling %s\n' "$DOCKER_IMAGE"
 docker pull "$DOCKER_IMAGE" >/dev/null
 
 printf '[live-root] running live setup in container\n'
+KERNEL_RPM_MOUNT=()
+if [[ -n "$KERNEL_RPM" ]]; then
+  KERNEL_RPM_MOUNT=(-v "$KERNEL_RPM:/tmp/kernel-default.rpm:ro,z")
+fi
 docker run --rm --name "$CONTAINER_NAME" \
   -v "$SOURCE_SNAP:/tmp/fxroute-source.tar:ro,z" \
   -v "$SETUP_SCRIPT:/tmp/live-setup-inner.sh:ro,z" \
   -v "$UDEV_RULE_SRC:/tmp/fxroute-live-udev.rules:ro,z" \
   -v "$LIVE_INIT_SRC:/tmp/fxroute-live-init.sh:ro,z" \
+  "${KERNEL_RPM_MOUNT[@]}" \
   -v "$LIVE_ROOT:/live-root:z" \
   -v "$WORK_DIR:/live-output:z" \
   -e SOURCE_DATE_EPOCH="$LIVE_EPOCH" \

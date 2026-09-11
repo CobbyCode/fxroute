@@ -82,6 +82,12 @@ requested epoch. SquashFS is packed inside the build container so system
 owners, service-account directories and setuid bits survive export; only
 the completed image file is assigned to the host user. Container identity
 markers and temporary runtime files are excluded.
+The live root also ships the base ISO's exact `kernel-default` modules
+(`--kernel-rpm`, extracted from the base ISO during the ISO build): the
+container image carries none and repo kernels no longer match the booted
+ISO kernel, so without them pointer/input drivers (usbhid, i2c-hid,
+psmouse) could never load after switch-root. The live user is a member
+of `audio`, `video`, `input` and `systemd-journal`.
 The source archive is created from `git ls-files`, with normalized tar metadata, and is
 copied to the installed system by Agama before the first boot.
 `SOURCE_DATE_EPOCH` defaults to `0`; the builder uses reproducible `mkisofs` and
@@ -225,6 +231,10 @@ FXROUTE_ISO_TRY_PASSWORD="..." \
 Try kernel cmdline to enable live SSH for the test; release boots omit it
 and keep `sshd` disabled with a locked live password.
 
+In the running live desktop the notice is a compact pill above the
+playback footer (mirroring the web-demo banner, no tour): it can be
+closed immediately and hides itself after three minutes.
+
 For the live desktop-start packaging regression, inspect the actual image:
 
 ```bash
@@ -234,7 +244,8 @@ FXROUTE_TEST_LIVE_SQUASH=/path/to/squashfs.img \
 
 This checks system/SDDM ownership, sudo's setuid bit, nonzero SDDM config
 timestamps, the vendor session wrapper, SUSE's sysconfig autologin override,
-and removal of the Docker identity marker. The reproduced failure was a
+kernel pointer-driver modules (usbhid, i2c-hid) with modules.dep, live-user
+`input` group membership, and removal of the Docker identity marker. The reproduced failure was a
 successful login followed by `Session started false`: SDDM fell back to
 the absent `/etc/X11/xdm/Xsession` instead of the packaged
 `/usr/etc/X11/xdm/Xsession`. Changing only the config mtime from zero to a

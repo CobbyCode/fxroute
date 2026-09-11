@@ -255,7 +255,20 @@ else
     cp -- "$LIVE_SQUASH" "$STAGE_DIR/LiveFX/squashfs.img"
   else
     printf '[iso] building LiveFX squashfs image\n'
-    "$ROOT_DIR/iso/scripts/build-live-root.sh" --output "$STAGE_DIR/LiveFX/squashfs.img"
+    # Version-exact kernel modules for the live root: it boots this ISO's
+    # kernel, so pointer/input drivers must come from the kernel-default
+    # RPM on this very ISO (repo kernels no longer match). Without them
+    # USB mice/trackpads stay dead after switch-root. Fail fast if absent.
+    # NOTE: materialize the listing first (see final-grub.cfg note below).
+    isoinfo -R -i "$BASE_ISO" -f > "$WORK_DIR/base-isol.txt" 2>/dev/null \
+      || die "could not list base ISO contents"
+    KERNEL_RPM_ISO_PATH="$(grep -E '/kernel-default-[0-9][^/]*\.x86_64\.rpm$' "$WORK_DIR/base-isol.txt" | grep -v -E -- '-extra-|-optional-' | head -n 1 || true)"
+    [[ -n "$KERNEL_RPM_ISO_PATH" ]] || die "kernel-default RPM not found on base ISO ($BASE_ISO)"
+    printf '[iso] extracting live kernel modules: %s\n' "$KERNEL_RPM_ISO_PATH"
+    isoinfo -R -i "$BASE_ISO" -x "$KERNEL_RPM_ISO_PATH" > "$WORK_DIR/kernel-default.rpm" \
+      || die "could not extract kernel-default RPM from base ISO"
+    "$ROOT_DIR/iso/scripts/build-live-root.sh" --output "$STAGE_DIR/LiveFX/squashfs.img" \
+      --kernel-rpm "$WORK_DIR/kernel-default.rpm"
   fi
   [[ -f "$STAGE_DIR/LiveFX/squashfs.img" ]] || die "live squash staging failed"
 fi

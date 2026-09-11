@@ -1169,11 +1169,61 @@ function scheduleOfflineIndicator() {
         elements.offlineIndicator.classList.remove('hidden');
     }, CONFIG.offlineIndicatorDelay);
 }
+// Volatile Try session hint, styled like the web-demo banner (demo/boot.js):
+// a compact pill parked above the playback footer. data.live (top-level)
+// or data.system.live. Dismissible via close button (session-scoped) and
+// auto-hidden after a few minutes so it never covers controls.
+const LIVE_BANNER_AUTOHIDE_MS = 3 * 60 * 1000;
+const LIVE_BANNER_STORAGE_KEY = 'fxroute-live-banner-hidden';
+let liveBannerWired = false;
+let liveBannerTimer = null;
+function positionLiveBanner() {
+    const banner = elements.liveBanner;
+    if (!banner || typeof banner.getBoundingClientRect !== 'function') return false;
+    const footer = document.getElementById('playback-bar');
+    if (!footer) return false;
+    const rect = footer.getBoundingClientRect();
+    const viewportH = window.innerHeight || document.documentElement.clientHeight;
+    banner.style.bottom = Math.max(10, viewportH - rect.top + 12) + 'px';
+    return true;
+}
 function updateLiveBanner(data) {
-    // Volatile Try session hint. data.live (top-level) or data.system.live.
-    if (!elements.liveBanner) return;
+    const banner = elements.liveBanner;
+    if (!banner) return;
     const live = !!(data && (data.live === true || (data.system && data.system.live === true)));
-    elements.liveBanner.classList.toggle('hidden', !live);
+    if (!live) {
+        banner.classList.add('is-hidden');
+        return;
+    }
+    if (!liveBannerWired) {
+        liveBannerWired = true;
+        const closeBtn = banner.querySelector('.live-banner-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                banner.classList.add('is-hidden');
+                try { sessionStorage.setItem(LIVE_BANNER_STORAGE_KEY, '1'); } catch (e) {}
+            });
+        }
+        if (typeof window.addEventListener === 'function') {
+            window.addEventListener('resize', () => { positionLiveBanner(); });
+            window.addEventListener('load', () => { positionLiveBanner(); });
+        }
+        (function pollBanner() {
+            if (!positionLiveBanner() && typeof window.setTimeout === 'function') {
+                window.setTimeout(pollBanner, 120);
+            }
+        })();
+    }
+    let dismissed = false;
+    try { dismissed = sessionStorage.getItem(LIVE_BANNER_STORAGE_KEY) === '1'; } catch (e) {}
+    if (dismissed) return;
+    positionLiveBanner();
+    banner.classList.remove('is-hidden');
+    if (liveBannerTimer) return;
+    liveBannerTimer = setTimeout(() => {
+        liveBannerTimer = null;
+        banner.classList.add('is-hidden');
+    }, LIVE_BANNER_AUTOHIDE_MS);
 }
 async function resyncPlaybackAfterReconnect() {
     const generation = ++wsReconnectSyncGeneration;

@@ -60,6 +60,21 @@ class LiveRootImageTests(unittest.TestCase):
         accounts = {row.split(":")[0]: row.split(":") for row in self.cat("/etc/shadow").splitlines()}
         self.assertNotEqual(accounts["sddm"][2], "0", "epoch day zero makes PAM reject the SDDM user manager")
 
+    def test_live_root_ships_pointer_driver_modules(self):
+        hid = [p for p in self.files if re.search(r"/modules/[^/]+/kernel/drivers/hid/usbhid/usbhid\.ko(\.\w+)?$", p)]
+        self.assertTrue(hid, "live root has no usbhid module; USB mice can never bind")
+        i2c_hid = [p for p in self.files if re.search(r"/modules/[^/]+/kernel/drivers/hid/i2c-hid/i2c-hid\.ko(\.\w+)?$", p)]
+        self.assertTrue(i2c_hid, "live root has no i2c-hid module; I2C trackpads can never bind")
+        dep = [p for p in self.files if re.search(r"/modules/[^/]+/modules\.dep$", p)]
+        self.assertTrue(dep, "live root has no modules.dep; on-demand driver loading cannot resolve aliases")
+
+    def test_live_user_is_in_input_group(self):
+        groups = {}
+        for row in self.cat("/etc/group").splitlines():
+            parts = row.split(":")
+            groups[parts[0]] = parts[3].split(",") if len(parts) > 3 and parts[3] else []
+        self.assertIn("fxroute", groups.get("input", []))
+
     def test_suse_autologin_and_vendor_session_are_available(self):
         config = self.cat("/etc/sysconfig/displaymanager")
         autologin = re.search(r'(?m)^DISPLAYMANAGER_AUTOLOGIN="(.*)"$', config)

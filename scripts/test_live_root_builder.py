@@ -42,6 +42,17 @@ class LiveRootBuilderTests(unittest.TestCase):
         self.assertIn("display-manager.service", text)
         self.assertIn("sddm.service", text)
 
+    def test_builder_installs_matching_kernel_modules(self):
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn("--kernel-rpm", text)
+        self.assertIn("usbhid", text)
+        self.assertIn("depmod", text)
+
+    def test_builder_adds_live_user_to_input_group(self):
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn("input", text)
+        self.assertIn("usermod -aG", text)
+
 
 if __name__ == "__main__":
     unittest.main()
