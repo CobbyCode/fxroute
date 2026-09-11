@@ -19,13 +19,14 @@ IMAGE_DIR="/opt/fxroute-armbian"
 [[ -n "$RELEASE" && -n "$LINUXFAMILY" && -n "$BOARD" ]] \
   || { printf '%s\n' "Armbian customization arguments are incomplete" >&2; exit 1; }
 
-for required in source.tar first-boot-install.sh fxroute-armbian-first-boot.service armbian-web-config.py armbian-web-config.service; do
+for required in source.tar build-commit first-boot-install.sh fxroute-armbian-first-boot.service armbian-web-config.py armbian-web-config.service; do
   [[ -f "$OVERLAY_DIR/$required" && ! -L "$OVERLAY_DIR/$required" ]] \
     || { printf 'Missing Armbian overlay file: %s\n' "$OVERLAY_DIR/$required" >&2; exit 1; }
 done
 
 install -d -m 755 "$IMAGE_DIR"
 install -m 644 "$OVERLAY_DIR/source.tar" "$IMAGE_DIR/source.tar"
+install -m 644 "$OVERLAY_DIR/build-commit" "$IMAGE_DIR/build-commit"
 install -d -m 755 /usr/local/libexec
 install -m 755 "$OVERLAY_DIR/first-boot-install.sh" \
   /usr/local/libexec/fxroute-armbian-first-boot.sh

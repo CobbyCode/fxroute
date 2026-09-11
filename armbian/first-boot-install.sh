@@ -280,6 +280,68 @@ export HOME="$fxroute_home"
   --device-name "$(derive_fxroute_device_name)" \
   --yes
 
+# Re-create a git checkout inside the installed tree so the standard
+# git-based updater (scripts/update_fxroute.sh) works on Armbian installs.
+# Best effort: a transient GitHub outage must not fail the first boot.
+enable_git_updates() {
+  local target="$fxroute_home/fxroute"
+  local remote_url="https://github.com/CobbyCode/fxroute.git"
+  local build_commit="" attempt=""
+
+  if ! command -v git >/dev/null 2>&1; then
+    printf '%s\n' "git is not installed; git-based FXRoute updates unavailable" >&2
+    return 0
+  fi
+  # Everything runs as the target user: the install tree is fxroute-owned,
+  # and git refuses repositories with a different owner (dubious ownership).
+  if runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+      git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -f "$BASE_DIR/build-commit" ]]; then
+    build_commit="$(tr -d '[:space:]' < "$BASE_DIR/build-commit")"
+    [[ "$build_commit" =~ ^[0-9a-f]{40}$ ]] || build_commit=""
+  fi
+
+  runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" init -q -b main
+  runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" remote add origin "$remote_url"
+  for attempt in 1 2 3; do
+    if runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" \
+        -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+        fetch -q --no-tags origin \
+        "+refs/heads/main:refs/remotes/origin/main"; then
+      break
+    fi
+    if [[ "$attempt" -eq 3 ]]; then
+      printf '%s\n' "Could not fetch the FXRoute git history; git-based updates stay disabled" >&2
+      return 0
+    fi
+    sleep 5
+  done
+
+  if [[ -n "$build_commit" ]] \
+      && runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+          git -C "$target" cat-file -e "$build_commit^{commit}" 2>/dev/null; then
+    # The built commit is on the remote: make the tree exactly match it.
+    runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+      git -C "$target" checkout -q -f -B main "$build_commit"
+  else
+    # Development/test image: the built commit is not on the remote.  Never
+    # overwrite the freshly installed tree with an older checkout; record
+    # the installed state as a local commit on top of origin/main instead.
+    runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" reset -q --soft origin/main
+    runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" add -A
+    runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" \
+      git -C "$target" -c user.name="FXRoute Armbian Install" -c user.email="install@fxroute.local" \
+      commit -q -m "FXRoute Armbian install snapshot"
+    build_commit="$(runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" rev-parse HEAD)"
+  fi
+  runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" config branch.main.remote origin
+  runuser -u "$FXROUTE_USER" -- env HOME="$fxroute_home" git -C "$target" config branch.main.merge refs/heads/main
+  printf '%s\n' "Prepared git-based updates from $remote_url at $build_commit"
+}
+enable_git_updates
+
 completed=1
 
 fxroute_device="$(derive_fxroute_device_name || printf 'fxroute\n')"

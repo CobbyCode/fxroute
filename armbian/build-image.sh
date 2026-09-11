@@ -254,6 +254,17 @@ create_source_archive() {
         --no-recursion --null --verbatim-files-from --files-from=-
   tar --list --file="$SOURCE_ARCHIVE" >/dev/null \
     || die "Could not read generated FXRoute source archive"
+  # Record the exact source commit so first boot can re-create a git checkout
+  # for the standard git-based updater (same contract as the ISO build).
+  # Release images must be built from a pushed commit; dev/test builds may
+  # opt out explicitly.
+  if ! git -C "$ROOT_DIR" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    if [[ "${FXROUTE_ARMBIAN_ALLOW_UNPUSHED:-0}" != "1" ]]; then
+      die "HEAD is not an ancestor of origin/main; push the image source commit first (or set FXROUTE_ARMBIAN_ALLOW_UNPUSHED=1 for a dev/test image)."
+    fi
+    printf '[armbian] warning: building from an unpushed commit; first-boot updates will use a local snapshot commit\n'
+  fi
+  git -C "$ROOT_DIR" rev-parse HEAD > "$WORK_DIR/build-commit"
 }
 
 board_config_path() {
@@ -413,6 +424,7 @@ EOF
   cp -- "$ROOT_DIR/armbian/customize-image.sh" "$userpatches/customize-image.sh"
   chmod 755 "$userpatches/customize-image.sh"
   cp -- "$SOURCE_ARCHIVE" "$userpatches/overlay/source.tar"
+  cp -- "$WORK_DIR/build-commit" "$userpatches/overlay/build-commit"
   cp -- "$ROOT_DIR/armbian/first-boot-install.sh" "$userpatches/overlay/first-boot-install.sh"
   cp -- "$ROOT_DIR/armbian/fxroute-armbian-first-boot.service" \
     "$userpatches/overlay/fxroute-armbian-first-boot.service"
