@@ -5583,14 +5583,20 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     align-self: end;
 }
 
-/* Subwoofer selects share the common #tab-effects control metrics; one
-   shared cap fits the widest option ("On") with generous room beside the
-   single-letter "N"/"I" polarity values, and centered text keeps the box
-   calm between heading and native arrow. The select type selector is
-   load-bearing: #tab-effects .url-input (equal specificity, later in the
-   file) would otherwise keep width:100% alive and stretch the selects back
-   across their grid tracks. */
-#tab-effects select.effects-subwoofer-compact-select,
+/* Subwoofer selects share the common #tab-effects control metrics; the
+   Main highpass cap (5.2rem) fits the widest option ("On"/"Off") with room
+   beside the native arrow on Android, where the narrower cap clipped "On".
+   The polarity selects keep the tighter 4.2rem cap beside the single-letter
+   "N"/"I" values. Centered text keeps the boxes calm between heading and
+   native arrow. The select type selectors are load-bearing: #tab-effects
+   .url-input (equal specificity, later in the file) would otherwise keep
+   width:100% alive and stretch the selects back across their grid tracks. */
+#tab-effects select.effects-subwoofer-compact-select {
+    width: min(100%, 5.2rem);
+    min-width: 0;
+    max-width: 100%;
+    text-align: center;
+}
 #tab-effects select.effects-subwoofer-polarity-select {
     width: min(100%, 4.2rem);
     min-width: 0;
