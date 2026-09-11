@@ -92,7 +92,9 @@ switch-root. WLAN firmware for the usual notebook adapters
 (`kernel-firmware-iwlwifi/-ath10k/-ath11k/-ath12k/-atheros/-brcm/
 -mediatek/-realtek/-marvell`) plus `wireless-regdb` comes from the repos.
 The live user is a member of `audio`, `video`, `input` and
-`systemd-journal`. The FXRoute/Spotify desktop links use the same
+`systemd-journal`. `NetworkManager.service` is enabled explicitly: the
+installer enables it on installed systems, package presets do not, so
+without this no interface would come up and Plasma would list no WLANs. The FXRoute/Spotify desktop links use the same
 `fxroute-appliance-session-init.sh` helper as the installed desktop,
 invoked first-login-only from the live kiosk launcher.
 The source archive is created from `git ls-files`, with normalized tar metadata, and is

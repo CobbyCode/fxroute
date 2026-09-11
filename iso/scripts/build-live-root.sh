@@ -400,6 +400,10 @@ systemctl set-default graphical.target
 # force SDDM so the live autologin config actually takes effect.
 ln -sf /usr/lib/systemd/system/sddm.service /etc/systemd/system/display-manager.service
 systemctl enable sddm.service
+# NetworkManager is enabled by the installer on installed systems, not by
+# package presets; the live root must do the same or no interface (wired
+# or WLAN) ever comes up and Plasma lists no networks.
+systemctl enable NetworkManager.service
 
 # Appliance defaults (mirrors first-boot-install.sh desktop stack, live edition).
 mkdir -p /etc/systemd/logind.conf.d

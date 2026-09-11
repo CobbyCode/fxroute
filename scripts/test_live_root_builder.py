@@ -66,6 +66,10 @@ class LiveRootBuilderTests(unittest.TestCase):
         self.assertIn("input", text)
         self.assertIn("usermod -aG", text)
 
+    def test_builder_enables_networkmanager(self):
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn("systemctl enable NetworkManager", text)
+
 
 if __name__ == "__main__":
     unittest.main()

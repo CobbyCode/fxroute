@@ -99,6 +99,10 @@ class LiveRootImageTests(unittest.TestCase):
         self.assertIn("/usr/share/pixmaps/fxroute.svg", fxroute_link)
         self.assertIn("/usr/local/libexec/fxroute-appliance-session-init.sh", self.files)
 
+    def test_live_networkmanager_starts_at_boot(self):
+        self.assertIn("/etc/systemd/system/multi-user.target.wants/NetworkManager.service", self.files,
+                      "NetworkManager is not enabled; no interface comes up and Plasma lists no WLANs")
+
     def test_live_user_is_in_input_group(self):
         groups = {}
         for row in self.cat("/etc/group").splitlines():
