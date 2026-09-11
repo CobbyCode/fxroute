@@ -1,6 +1,28 @@
 # Changelog
 
-## 1.0-beta4
+## 1.0-beta4 (2026-09-11)
+
+Fourth public beta, built from tag `v1.0-beta4` (commit `000129c`).
+Distribution channels unchanged: web demo on GitHub Pages, Raspberry Pi 4/5
+images via GitHub Release, x86_64 Leap 16 ISO via SourceForge. Khadas/VIM1S
+stays internal and gets no public image.
+
+### Release provenance
+
+- Built from tag `v1.0-beta4` (commit `000129c`, `main`).
+- The x86_64 Leap 16 ISO and the Pi 4/Pi 5 images were rebuilt from
+  `000129c` (Armbian build inputs changed since Beta 3: first boot now
+  re-creates the git checkout, so fresh Armbian installs use the normal
+  git-based Maintenance update path).
+- No new QEMU/installer verification matrix was run for this release (per
+  scope); the web demo was republished to GitHub Pages from `000129c`.
+- SHA-256:
+  - `fxroute-1.0-beta4-rpi4-trixie-current.img.xz` —
+    `b84e6a52e0ed88eab3d847b55bd904fe7fe6bfc8091103dfde4406808d531baf`
+  - `fxroute-1.0-beta4-rpi5-trixie-current.img.xz` —
+    `ee330ce593c99cfcc04162914c07c7cf983cae6cbb6f3509842ed92df51c7adf`
+  - `fxroute-1.0-beta4-x86_64-leap16.iso` —
+    `2612d0b268817655292fd4c3b462b37b1747821483170068dd30a03f271bb863`
 
 ### Installer / Armbian
 - Armbian first boot re-creates a git checkout inside the installed tree
@@ -48,6 +70,12 @@
   helpers; repaired four post-beta3 release blockers.
 - Restore archives untracked user files before cleaning, so no user data is
   lost silently.
+
+Public release artifact names (built from tag `v1.0-beta4`):
+
+- `fxroute-1.0-beta4-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta4-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta4-x86_64-leap16.iso` (SourceForge, + `.sha256`)
 
 ## 1.0-beta3 (2026-09-09)
 
