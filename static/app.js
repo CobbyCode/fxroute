@@ -13588,7 +13588,7 @@ function renderSubwooferPanel() {
     if (elements.effectsSubwooferFrequencyNumber && !_activeEditing.has(elements.effectsSubwooferFrequencyNumber)) {
         elements.effectsSubwooferFrequencyNumber.value = String(subwoofer.crossover_frequency_hz);
     }
-    if (elements.effectsSubwooferMainHighpass) {
+    if (elements.effectsSubwooferMainHighpass && !_activeEditing.has(elements.effectsSubwooferMainHighpass)) {
         elements.effectsSubwooferMainHighpass.value = subwoofer.main_highpass_enabled ? 'on' : 'off';
     }
     if (elements.effectsSubwooferLevel && !_activeEditing.has(elements.effectsSubwooferLevel)) {
