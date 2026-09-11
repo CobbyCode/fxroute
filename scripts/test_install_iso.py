@@ -287,7 +287,7 @@ class InstallIsoContractTests(unittest.TestCase):
         build = self.read("iso/build-leap-16-iso.sh")
         entries = re.findall(r'--add-entry\s+"([^"]+)"', build)
 
-        self.assertEqual(entries, ["FXRoute Headless", "FXRoute Desktop"])
+        self.assertEqual(entries, ["Try FXRoute", "FXRoute Headless", "FXRoute Desktop"])
         self.assertIn("inst.auto=device:/fxroute/profiles/headless.jsonnet", build)
         self.assertIn("inst.auto=device:/fxroute/profiles/desktop.jsonnet", build)
         self.assertNotIn("devices=/dev/sr0", build)
@@ -298,6 +298,9 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("inst.finish=reboot", build)
         self.assertNotIn("Ubuntu", build)
         self.assertNotIn("subiquity", build)
+        # Try boots the LiveFX image with RAM overlay, never via Agama.
+        self.assertIn("rd.live.dir=LiveFX", build)
+        self.assertIn("fxroute.live=1", build)
 
     def test_headless_profile_has_no_graphical_stack(self):
         profile = json.loads((PROFILE_DIR / "headless.jsonnet").read_text())
@@ -567,7 +570,7 @@ class InstallIsoContractTests(unittest.TestCase):
     def test_qemu_test_runner_covers_fresh_headless_and_desktop_guests(self):
         runner = self.read("iso/test-leap-16-iso.sh")
 
-        self.assertIn('headless|desktop', runner)
+        self.assertIn('headless|desktop|try|live', runner)
         self.assertIn("qemu-img create", runner)
         self.assertIn("-cdrom", runner)
         self.assertIn("select_boot_entry", runner)

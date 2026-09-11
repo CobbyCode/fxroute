@@ -1,0 +1,9 @@
+# FXRoute live-mode udisks protection.
+# Internal fixed drives must never be automounted or shown in the live desktop.
+# Agama/installer paths are additionally masked via kernel cmdline; this rule
+# only covers the desktop/udisks layer in the Try boot.
+SUBSYSTEM=="block", ENV{ID_BUS}=="ata", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"
+SUBSYSTEM=="block", ENV{ID_BUS}=="sata", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"
+SUBSYSTEM=="block", ENV{ID_BUS}=="nvme", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"
+# USB sticks remain usable for measurement export; internal USB HDDs are rare
+# in this context and stay manually mountable via explicit sudo mount.

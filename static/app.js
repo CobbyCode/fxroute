@@ -446,6 +446,7 @@ const MEASUREMENT_WINDOW_HEARTBEAT_INTERVAL_MS = 10000;
 // DOM elements
 const elements = {
     offlineIndicator: document.getElementById('offline-indicator'),
+    liveBanner: document.getElementById('live-banner'),
     settingsOpenBtn: document.getElementById('open-settings'),
     settingsPanel: document.getElementById('settings-panel'),
     settingsCloseBtn: document.getElementById('close-settings'),
@@ -1168,6 +1169,12 @@ function scheduleOfflineIndicator() {
         elements.offlineIndicator.classList.remove('hidden');
     }, CONFIG.offlineIndicatorDelay);
 }
+function updateLiveBanner(data) {
+    // Volatile Try session hint. data.live (top-level) or data.system.live.
+    if (!elements.liveBanner) return;
+    const live = !!(data && (data.live === true || (data.system && data.system.live === true)));
+    elements.liveBanner.classList.toggle('hidden', !live);
+}
 async function resyncPlaybackAfterReconnect() {
     const generation = ++wsReconnectSyncGeneration;
     try {
@@ -1182,6 +1189,7 @@ async function resyncPlaybackAfterReconnect() {
 
         if (playback) {
             mergePlaybackState(playback);
+            updateLiveBanner(playback);
             syncFooterOwnershipFromPlayback(playback);
             syncLibraryStateFromPlaybackContext(true);
         }
@@ -5289,6 +5297,7 @@ async function fetchPlaybackStatus() {
         if (!resp.ok) throw new Error('Failed to fetch playback status');
         const data = await resp.json();
         mergePlaybackState(data);
+        updateLiveBanner(data);
         syncFooterOwnershipFromPlayback(data);
         syncLibraryStateFromPlaybackContext(true);
         updatePlaybackUI();

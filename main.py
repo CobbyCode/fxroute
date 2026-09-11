@@ -86,6 +86,26 @@ def _read_version_file() -> str:
     return install_info.read_version_file()
 
 
+def is_live_mode() -> bool:
+    """Return True inside the volatile Try FXRoute live session.
+
+    Detection is intentionally redundant: the live root ships the marker
+    file /etc/fxroute-live, and the live GRUB entry passes fxroute.live=1
+    on the kernel cmdline. Either signal counts; both are absent on
+    installed systems. Read-only, no caching (tests patch Path/cmdline).
+    """
+    try:
+        if Path("/etc/fxroute-live").is_file():
+            return True
+    except OSError:
+        pass
+    try:
+        cmdline = Path("/proc/cmdline").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return "fxroute.live=1" in cmdline.split()
+
+
 def _read_build_id() -> str:
     """Thin wrapper: build-id resolution lives in install_info (REFACTOR-009)."""
     return install_info.read_build_id()
@@ -3535,9 +3555,11 @@ async def get_status():
         else:
             state["stream_info"] = None
             stream_info_ledger.reset()
-        state["system"] = {"version": _read_version_file()}
+        state["system"] = {"version": _read_version_file(), "live": is_live_mode()}
+        state["live"] = state["system"]["live"]
         return state
-    return {"running": False, "system": {"version": _read_version_file()}}
+    live = is_live_mode()
+    return {"running": False, "system": {"version": _read_version_file(), "live": live}, "live": live}
 
 
 @app.get("/api/power/state")

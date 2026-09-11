@@ -183,6 +183,26 @@ body {
     box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.22);
 }
 .offline-indicator.hidden { display: none; }
+/* Live mode notice: restrained amber band below the offline indicator slot.
+   Only shown when /api/status reports live:true (volatile Try session). */
+.live-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: rgba(120, 72, 10, 0.72);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(251, 191, 36, 0.35);
+    color: #fff7e6;
+    text-align: center;
+    padding: 0.45rem 1rem;
+    font-weight: 600;
+    font-size: 0.82rem;
+    z-index: var(--z-banner);
+    letter-spacing: 0.02em;
+}
+.live-banner.hidden { display: none; }
 .hidden { display: none !important; }
 @keyframes bannerSlide {
     from { transform: translateY(-100%); }

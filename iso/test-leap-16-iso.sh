@@ -17,13 +17,15 @@ KEEP_TEST_ROOT="${FXROUTE_KEEP_ISO_TEST:-0}"
 AGAMA_USER="${FXROUTE_ISO_USER:-fxroute}"
 AGAMA_USER_PASSWORD="${FXROUTE_ISO_USER_PASSWORD:-}"
 AGAMA_LIVE_PASSWORD="${FXROUTE_ISO_LIVE_PASSWORD:-}"
+LIVE_USER="${FXROUTE_ISO_TRY_USER:-fxroute}"
+LIVE_PASSWORD="${FXROUTE_ISO_TRY_PASSWORD:-}"
 AGAMA_LOCALE="${FXROUTE_ISO_LOCALE:-en_US.UTF-8}"
 AGAMA_KEYMAP="${FXROUTE_ISO_KEYMAP:-us}"
 AGAMA_TIMEZONE="${FXROUTE_ISO_TIMEZONE:-Europe/Berlin}"
 
 usage() {
   cat <<EOF
-Usage: $0 [all|headless|desktop] [ISO]
+Usage: $0 [all|headless|desktop|try|live] [ISO]
 
 Boot a fresh QEMU/KVM guest for each selected profile, drive the
 interactive Agama decisions through the installer's own Agama CLI
@@ -31,6 +33,11 @@ interactive Agama decisions through the installer's own Agama CLI
 selection, install start), and verify the installed FXRoute service,
 DSP setup, and desktop selection. SSH into the installed system uses
 the account password created in Agama.
+
+The try/live profile boots the non-persistent Try FXRoute system
+directly (no Agama install) and verifies /api/status live:true,
+fxroute_dsp_sink, RAM overlay, reboot volatility, and that internal
+disks are not auto-mounted.
 
 The installer live password must be known for the installer SSH access:
 append live.password=... to the boot entry for automated runs (the
@@ -40,11 +47,16 @@ pass it as FXROUTE_ISO_LIVE_PASSWORD. The account password created in
 Agama comes from FXROUTE_ISO_USER_PASSWORD. The Agama web ports are
 forwarded to the host so the same decisions can also be made manually
 in a browser via https://agama.local or the forwarded ports.
+For try/live, pass the live SSH password as FXROUTE_ISO_TRY_PASSWORD
+(booted as fxroute.live-password=...); release ISOs keep sshd disabled
+without it.
 
 Environment:
   FXROUTE_ISO_USER           Account name created in Agama (default: fxroute)
-  FXROUTE_ISO_USER_PASSWORD  Account password created in Agama (required)
-  FXROUTE_ISO_LIVE_PASSWORD  Installer live password for the installer SSH (required)
+  FXROUTE_ISO_USER_PASSWORD  Account password created in Agama (required for headless/desktop/all)
+  FXROUTE_ISO_LIVE_PASSWORD  Installer live password for the installer SSH (required for headless/desktop/all)
+  FXROUTE_ISO_TRY_USER       Live user for try (default: fxroute)
+  FXROUTE_ISO_TRY_PASSWORD   Live SSH password for try verification (required for try/live/all)
   FXROUTE_ISO_LOCALE         Locale selected in Agama (default: en_US.UTF-8)
   FXROUTE_ISO_KEYMAP         Keymap selected in Agama (default: us)
   FXROUTE_ISO_TIMEZONE       Timezone selected in Agama (default: Europe/Berlin)
@@ -60,10 +72,16 @@ die() {
 }
 
 case "$PROFILE_SELECTION" in
-  all) PROFILES=(headless desktop) ;;
-  headless|desktop) PROFILES=("$PROFILE_SELECTION") ;;
+  all) PROFILES=(headless desktop try) ;;
+  headless|desktop|try|live)
+    if [[ "$PROFILE_SELECTION" == "live" ]]; then
+      PROFILES=(try)
+    else
+      PROFILES=("$PROFILE_SELECTION")
+    fi
+    ;;
   -h|--help) usage; exit 0 ;;
-  *) die "Profile must be all, headless, or desktop" ;;
+  *) die "Profile must be all, headless, desktop, try, or live" ;;
 esac
 
 [[ -f "$ISO_PATH" ]] || die "ISO not found: $ISO_PATH"
@@ -74,9 +92,26 @@ command -v ssh >/dev/null 2>&1 || die "ssh is required"
 command -v setsid >/dev/null 2>&1 || die "setsid is required for the installer password login"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 command -v base64 >/dev/null 2>&1 || die "base64 is required for the interactive setup phase"
-[[ -n "$AGAMA_USER_PASSWORD" ]] || die "FXROUTE_ISO_USER_PASSWORD is required (account password created in Agama)"
-[[ -n "$AGAMA_LIVE_PASSWORD" ]] || die "FXROUTE_ISO_LIVE_PASSWORD is required (installer live password for the installer SSH)"
+needs_install_profile=0
+needs_try_profile=0
+for _p in "${PROFILES[@]}"; do
+  case "$_p" in
+    headless|desktop) needs_install_profile=1 ;;
+    try) needs_try_profile=1 ;;
+  esac
+done
+if [[ "$needs_install_profile" -eq 1 ]]; then
+  [[ -n "$AGAMA_USER_PASSWORD" ]] || die "FXROUTE_ISO_USER_PASSWORD is required (account password created in Agama)"
+  [[ -n "$AGAMA_LIVE_PASSWORD" ]] || die "FXROUTE_ISO_LIVE_PASSWORD is required (installer live password for the installer SSH)"
+fi
+if [[ "$needs_try_profile" -eq 1 ]]; then
+  [[ -n "$LIVE_PASSWORD" ]] || die "FXROUTE_ISO_TRY_PASSWORD is required (live SSH password for try verification)"
+  # Typed into the GRUB editor via QEMU monitor sendkey (alnum plus - = . / ,).
+  [[ "$LIVE_PASSWORD" =~ ^[A-Za-z0-9=.,/-]+$ ]] \
+    || die "FXROUTE_ISO_TRY_PASSWORD must match [A-Za-z0-9=.,/-]+ (GRUB sendkey typing)"
+fi
 [[ "$AGAMA_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "FXROUTE_ISO_USER must be a valid Unix username"
+[[ "$LIVE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "FXROUTE_ISO_TRY_USER must be a valid Unix username"
 
 if [[ -e "$TEST_ROOT" ]]; then
   die "Test root already exists; remove it before rerunning: $TEST_ROOT"
@@ -134,6 +169,7 @@ port_for_profile() {
   case "$1" in
     headless) printf '%s\n' "${FXROUTE_ISO_TEST_HEADLESS_HTTP_PORT:-$(find_free_port)}" ;;
     desktop) printf '%s\n' "${FXROUTE_ISO_TEST_DESKTOP_HTTP_PORT:-$(find_free_port)}" ;;
+    try) printf '%s\n' "${FXROUTE_ISO_TEST_TRY_HTTP_PORT:-$(find_free_port)}" ;;
   esac
 }
 
@@ -141,6 +177,7 @@ ssh_port_for_profile() {
   case "$1" in
     headless) printf '%s\n' "${FXROUTE_ISO_TEST_HEADLESS_SSH_PORT:-$(find_free_port)}" ;;
     desktop) printf '%s\n' "${FXROUTE_ISO_TEST_DESKTOP_SSH_PORT:-$(find_free_port)}" ;;
+    try) printf '%s\n' "${FXROUTE_ISO_TEST_TRY_SSH_PORT:-$(find_free_port)}" ;;
   esac
 }
 
@@ -148,6 +185,7 @@ agama_https_port_for_profile() {
   case "$1" in
     headless) printf '%s\n' "${FXROUTE_ISO_TEST_HEADLESS_AGAMA_HTTPS_PORT:-$(find_free_port)}" ;;
     desktop) printf '%s\n' "${FXROUTE_ISO_TEST_DESKTOP_AGAMA_HTTPS_PORT:-$(find_free_port)}" ;;
+    try) printf '%s\n' "${FXROUTE_ISO_TEST_TRY_AGAMA_HTTPS_PORT:-$(find_free_port)}" ;;
   esac
 }
 
@@ -155,6 +193,7 @@ agama_http_port_for_profile() {
   case "$1" in
     headless) printf '%s\n' "${FXROUTE_ISO_TEST_HEADLESS_AGAMA_HTTP_PORT:-$(find_free_port)}" ;;
     desktop) printf '%s\n' "${FXROUTE_ISO_TEST_DESKTOP_AGAMA_HTTP_PORT:-$(find_free_port)}" ;;
+    try) printf '%s\n' "${FXROUTE_ISO_TEST_TRY_AGAMA_HTTP_PORT:-$(find_free_port)}" ;;
   esac
 }
 
@@ -164,11 +203,13 @@ select_boot_entry() {
   local down_count=""
 
   # The BIOS GRUB menu contains "Boot from Hard Disk", the regular installer,
-  # Desktop, and Headless in that order. Start from the first entry so this
-  # remains independent of any saved GRUB selection.
+  # Desktop, Headless, and Try in that order (Try is staged first so it ends
+  # up last and Desktop/Headless downs stay stable). Start from the first
+  # entry so this remains independent of any saved GRUB selection.
   case "$profile" in
     desktop) down_count=2 ;;
     headless) down_count=3 ;;
+    try) down_count=4 ;;
     *) die "Unknown profile: $profile" ;;
   esac
 
@@ -887,6 +928,159 @@ grep -Eqi 'already up to date|update available|reconciliation is incomplete' /tm
 EOF
 }
 
+ssh_live() {
+  local ssh_port="$1"
+  shift
+  SSH_ASKPASS="$ROOT_DIR/iso/agama-askpass.sh" \
+  SSH_ASKPASS_REQUIRE=force \
+  DISPLAY=:0 \
+  FXROUTE_ASKPASS_PASSWORD="$LIVE_PASSWORD" \
+  setsid ssh \
+    -o PreferredAuthentications=password \
+    -o PubkeyAuthentication=no \
+    -o ConnectTimeout=5 \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=1 \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -p "$ssh_port" "$LIVE_USER@127.0.0.1" "$@"
+}
+
+sudo_live() {
+  local ssh_port="$1"
+  shift
+  printf '%s\n' "$LIVE_PASSWORD" | ssh_live "$ssh_port" sudo -S -- "$@"
+}
+
+wait_for_live() {
+  local profile="$1"
+  local pid="$2"
+  local http_port="$3"
+  local ssh_port="$4"
+  local started=$SECONDS
+  local status_file="$TEST_ROOT/$profile-status.json"
+
+  while (( SECONDS - started < TIMEOUT_SECONDS )); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      printf '[iso-test] QEMU exited while waiting for %s live\n' "$profile" >&2
+      tail -100 "$TEST_ROOT/$profile-serial.log" >&2 || true
+      return 1
+    fi
+    if curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
+        "http://127.0.0.1:$http_port/api/status" > "$status_file" 2>/dev/null; then
+      if python3 - "$status_file" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+live = payload.get("live") is True or (isinstance(payload.get("system"), dict) and payload["system"].get("live") is True)
+raise SystemExit(0 if live else 1)
+PY
+      then
+        if ssh_live "$ssh_port" true >/dev/null 2>&1; then
+          printf '[iso-test] %s live guest is serving FXRoute with live:true\n' "$profile"
+          return 0
+        fi
+      fi
+    fi
+    sleep 5
+  done
+  printf '[iso-test] timeout waiting for %s live\n' "$profile" >&2
+  tail -160 "$TEST_ROOT/$profile-serial.log" >&2 || true
+  return 1
+}
+
+verify_live() {
+  local ssh_port="$1"
+  ssh_live "$ssh_port" bash -s -- "$LIVE_USER" <<'EOF'
+set -Eeuo pipefail
+account="$1"
+test "$(id -un)" = "$account"
+test -f /etc/fxroute-live
+test "$(cat /etc/hostname)" = fxroute-live
+# No installer first-boot in live mode.
+! systemctl is-enabled fxroute-first-boot.service >/dev/null 2>&1
+! test -f /var/lib/fxroute-iso/install-complete
+# RAM overlay backs root and home.
+findmnt -n -o SOURCE,FSTYPE,OPTIONS / | grep -Eq 'LiveOS_rootfs|overlay'
+findmnt -n -o OPTIONS / | grep -Eq 'rw'
+# FXRoute serves HTTP locally with live flag.
+curl --fail --silent http://127.0.0.1:8000/api/status | python3 -c "import json,sys; p=json.load(sys.stdin); assert p.get('live') is True or p.get('system',{}).get('live') is True"
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+systemctl --user is-active fxroute.service
+pactl list sinks short | awk '{print $2}' | grep -Fx 'fxroute_dsp_sink' >/dev/null
+# Desktop appliance is present.
+test -f /usr/local/bin/fxroute-desktop-launcher
+grep -Fq 'firefox --kiosk http://127.0.0.1:8000/' /usr/local/bin/fxroute-desktop-launcher
+test -f "$HOME/Desktop/LIVE-MODE-README.txt"
+grep -Fq 'Live Mode' "$HOME/Desktop/LIVE-MODE-README.txt"
+# Live banner asset is served.
+curl --fail --silent http://127.0.0.1:8000/ | grep -Fq 'live-banner'
+EOF
+}
+
+verify_live_no_internal_mounts() {
+  local ssh_port="$1"
+  ssh_live "$ssh_port" bash -s <<'EOF'
+set -Eeuo pipefail
+# Internal ATA/NVMe block devices exist in the test guest (two virtio disks),
+# but none of their partitions may be mounted in live mode. Only the live
+# medium (iso9660/squashfs/tmpfs/overlay) backs /.
+if ls /dev/vd* >/dev/null 2>&1; then
+  mounted="$(findmnt -rn -o SOURCE,TARGET,FSTYPE || true)"
+  printf '%s\n' "$mounted"
+  # No /dev/vd* or /dev/sd* or /dev/nvme* source may appear as a mount source,
+  # except the live ISO itself is sr0/loop (iso9660/squashfs), never vd*.
+  if printf '%s\n' "$mounted" | grep -Eq '^/dev/(vd|sd|nvme|hd)[a-z0-9]+'; then
+    printf '[iso-test] internal disk is mounted in live mode:\n%s\n' "$mounted" >&2
+    exit 1
+  fi
+fi
+# Agama must not be running in live mode.
+! systemctl is-active --quiet agama.service
+! systemctl is-active --quiet fxroute-first-boot.service
+EOF
+}
+
+verify_live_volatility() {
+  local profile="$1"
+  local pid="$2"
+  local ssh_port="$3"
+  local http_port="$4"
+  local probe_path=".cache/fxroute-live-try-probe"
+  ssh_live "$ssh_port" "touch ~/$probe_path && test -f ~/$probe_path"
+  reboot_live_guest "$profile" "$pid" "$ssh_port"
+  wait_for_live "$profile" "$pid" "$http_port" "$ssh_port"
+  if ssh_live "$ssh_port" "test -f ~/$probe_path" >/dev/null 2>&1; then
+    printf '[iso-test] live home survived reboot (not volatile)\n' >&2
+    return 1
+  fi
+}
+
+reboot_live_guest() {
+  local profile="$1"
+  local pid="$2"
+  local ssh_port="$3"
+  local old_boot_id
+  local new_boot_id
+
+  printf '[iso-test] rebooting %s live guest to verify volatility\n' "$profile"
+  old_boot_id="$(ssh_live "$ssh_port" cat /proc/sys/kernel/random/boot_id)"
+  sudo_live "$ssh_port" systemctl reboot >/dev/null 2>&1 || ssh_live "$ssh_port" sudo reboot >/dev/null 2>&1 || true
+  for _ in $(seq 1 90); do
+    kill -0 "$pid" 2>/dev/null || {
+      printf '[iso-test] QEMU exited while rebooting %s live\n' "$profile" >&2
+      return 1
+    }
+    new_boot_id="$(ssh_live "$ssh_port" cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+    if [[ -n "$new_boot_id" && "$new_boot_id" != "$old_boot_id" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  printf '[iso-test] timeout waiting for %s live reboot\n' "$profile" >&2
+  return 1
+}
+
 for profile in "${PROFILES[@]}"; do
   http_port="$(port_for_profile "$profile")"
   ssh_port="$(ssh_port_for_profile "$profile")"
@@ -935,6 +1129,25 @@ for profile in "${PROFILES[@]}"; do
     -daemonize
   pid="$(<"$pid_file")"
   PIDS+=("$pid")
+  if [[ "$profile" == "try" ]]; then
+    # Try boot needs no Agama interaction; pass the live SSH password via
+    # kernel cmdline (release boots omit it and keep sshd disabled).
+    FXROUTE_ISO_KERNEL_EXTRA="fxroute.live-password=$LIVE_PASSWORD" \
+      select_boot_entry "$profile" "$monitor"
+    wait_for_live "$profile" "$pid" "$http_port" "$ssh_port"
+    verify_live "$ssh_port"
+    verify_live_no_internal_mounts "$ssh_port"
+    verify_live_volatility "$profile" "$pid" "$ssh_port" "$http_port"
+    printf '[iso-test] %s profile passed\n' "$profile"
+    # Live guest uses the live password for sudo; poweroff via live SSH.
+    printf '%s\n' "$LIVE_PASSWORD" | ssh_live "$ssh_port" sudo -S -- systemctl poweroff >/dev/null 2>&1 || true
+    for _ in $(seq 1 30); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+    done
+    kill "$pid" 2>/dev/null || true
+    continue
+  fi
   select_boot_entry "$profile" "$monitor"
 
   setup_agama_interactive "$profile" "$agama_https_port" "$ssh_port" "$pid"

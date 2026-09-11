@@ -9,6 +9,8 @@ BASE_URL="https://download.opensuse.org/distribution/leap/16.0/offline/Leap-16.0
 BASE_SHA512="94411793a1878b3558211c8bbe4f3823c3c5212cc2dd9f9e4532a18be7eddd3be14db5a3bb47a2f36dd957e190ea706cd45af16bce218dfc00f71e64a8469971"
 BASE_ISO="${FXROUTE_BASE_ISO:-${XDG_CACHE_HOME:-$HOME/.cache}/fxroute/Leap-16.0-offline-installer-x86_64.install.iso}"
 OUTPUT="${FXROUTE_ISO_OUTPUT:-$ROOT_DIR/dist/fxroute-leap-16-x86_64.iso}"
+LIVE_SQUASH="${FXROUTE_LIVE_SQUASH:-}"
+SKIP_LIVE=0
 KEEP_WORK=0
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
 
@@ -22,9 +24,15 @@ The profiles contain no user passwords or SSH keys. The account, the
 network/WLAN setup, the target disk, and locale/keyboard/timezone are
 chosen interactively in Agama; the ISO itself ships no credentials.
 
+The ISO also ships a non-persistent "Try FXRoute" live system
+(/LiveFX/squashfs.img, RAM overlay, no Agama, no installer).
+
 Options:
   --base-iso PATH          Use PATH instead of the cached/downloaded Leap ISO
   --output PATH            Write the resulting ISO to PATH
+  --live-squash PATH       Use PATH as the prebuilt LiveFX squashfs image
+                           (default: build via iso/scripts/build-live-root.sh)
+  --no-live                Skip the Try FXRoute live system (dev/test only)
   --keep-work              Keep the temporary media staging directory
   -h, --help               Show this help
 EOF
@@ -46,6 +54,15 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--output requires a path"
       OUTPUT="$2"
       shift 2
+      ;;
+    --live-squash)
+      [[ $# -ge 2 ]] || die "--live-squash requires a path"
+      LIVE_SQUASH="$2"
+      shift 2
+      ;;
+    --no-live)
+      SKIP_LIVE=1
+      shift
       ;;
     --keep-work)
       KEEP_WORK=1
@@ -177,7 +194,7 @@ export FXROUTE_REAL_ISOHYBRID="$REAL_ISOHYBRID"
 
 SOURCE_ARCHIVE="$WORK_DIR/source.tar"
 STAGE_DIR="$WORK_DIR/stage"
-mkdir -p "$STAGE_DIR/fxroute/profiles" "$STAGE_DIR/fxroute/scripts"
+mkdir -p "$STAGE_DIR/fxroute/profiles" "$STAGE_DIR/fxroute/scripts" "$STAGE_DIR/LiveFX"
 
 printf '[iso] creating deterministic source.tar\n'
 git -C "$ROOT_DIR" ls-files -z \
@@ -223,6 +240,27 @@ PY
 stage_profile "$ROOT_DIR/iso/profiles/headless.jsonnet" "$STAGE_DIR/fxroute/profiles/headless.jsonnet"
 stage_profile "$ROOT_DIR/iso/profiles/desktop.jsonnet" "$STAGE_DIR/fxroute/profiles/desktop.jsonnet"
 
+LIVE_BOOT_OPTIONS_FILE="$ROOT_DIR/iso/scripts/live-boot-options.txt"
+[[ -f "$LIVE_BOOT_OPTIONS_FILE" ]] || die "live boot options are missing: $LIVE_BOOT_OPTIONS_FILE"
+LIVE_BOOT_OPTIONS="$(tr '\n' ' ' < "$LIVE_BOOT_OPTIONS_FILE")"
+[[ "$LIVE_BOOT_OPTIONS" == *"rd.live.dir=LiveFX"* ]] || die "live boot options must select LiveFX"
+[[ "$LIVE_BOOT_OPTIONS" != *"inst.auto"* ]] || die "live boot options must not contain inst.auto"
+
+if [[ "$SKIP_LIVE" -eq 1 ]]; then
+  printf '[iso] skipping Try FXRoute live system (--no-live)\n'
+else
+  if [[ -n "$LIVE_SQUASH" ]]; then
+    [[ -f "$LIVE_SQUASH" ]] || die "live squash image not found: $LIVE_SQUASH"
+    printf '[iso] staging prebuilt live squash: %s\n' "$LIVE_SQUASH"
+    cp -- "$LIVE_SQUASH" "$STAGE_DIR/LiveFX/squashfs.img"
+  else
+    printf '[iso] building LiveFX squashfs image\n'
+    "$ROOT_DIR/iso/scripts/build-live-root.sh" --output "$STAGE_DIR/LiveFX/squashfs.img"
+  fi
+  [[ -f "$STAGE_DIR/LiveFX/squashfs.img" ]] || die "live squash staging failed"
+fi
+
+TRY_ISO="$WORK_DIR/try.iso"
 HEADLESS_ISO="$WORK_DIR/headless.iso"
 FINAL_ISO="$WORK_DIR/fxroute-leap-16-x86_64.iso"
 export SOURCE_DATE_EPOCH
@@ -234,13 +272,26 @@ find "$STAGE_DIR" -exec touch -h --date="@$SOURCE_DATE_EPOCH" {} +
 
 mkmedia_args=(--mkisofs --mbr --no-mount-iso --no-sign --no-check --no-digest --tmp-dir "$MKMEDIA_TMP")
 
+if [[ "$SKIP_LIVE" -eq 1 ]]; then
+  LIVE_BASE_ISO="$BASE_ISO"
+else
+  printf '[iso] adding Try FXRoute live boot entry\n'
+  "$MKMEDIA" \
+    "${mkmedia_args[@]}" \
+    --create "$TRY_ISO" \
+    --add-entry "Try FXRoute" \
+    --boot "$LIVE_BOOT_OPTIONS" \
+    "$BASE_ISO" "$STAGE_DIR"
+  LIVE_BASE_ISO="$TRY_ISO"
+fi
+
 printf '[iso] adding FXRoute Headless boot entry\n'
 "$MKMEDIA" \
   "${mkmedia_args[@]}" \
   --create "$HEADLESS_ISO" \
   --add-entry "FXRoute Headless" \
   --boot "inst.auto=device:/fxroute/profiles/headless.jsonnet inst.install=0 inst.finish=reboot" \
-  "$BASE_ISO" "$STAGE_DIR"
+  "$LIVE_BASE_ISO" "$STAGE_DIR"
 
 printf '[iso] adding FXRoute Desktop boot entry\n'
 "$MKMEDIA" \
@@ -255,8 +306,30 @@ grep -Fq 'menuentry "FXRoute Desktop"' "$WORK_DIR/final-grub.cfg" \
   || die "final ISO is missing the FXRoute Desktop boot label"
 grep -Fq 'menuentry "FXRoute Headless"' "$WORK_DIR/final-grub.cfg" \
   || die "final ISO is missing the FXRoute Headless boot label"
+if [[ "$SKIP_LIVE" -eq 0 ]]; then
+  grep -Fq 'menuentry "Try FXRoute"' "$WORK_DIR/final-grub.cfg" \
+    || die "final ISO is missing the Try FXRoute boot label"
+  # Try entry must boot the LiveFX image with RAM overlay, without Agama/installer.
+  grep -Fq 'rd.live.dir=LiveFX' "$WORK_DIR/final-grub.cfg" \
+    || die "Try FXRoute entry is missing rd.live.dir=LiveFX"
+  grep -Fq 'rd.live.overlay.overlayfs=1' "$WORK_DIR/final-grub.cfg" \
+    || die "Try FXRoute entry is missing the RAM overlay flag"
+  grep -Fq 'fxroute.live=1' "$WORK_DIR/final-grub.cfg" \
+    || die "Try FXRoute entry is missing fxroute.live=1"
+  if grep -A6 'menuentry "Try FXRoute"' "$WORK_DIR/final-grub.cfg" | grep -Fq 'inst.auto'; then
+    die "Try FXRoute entry must not contain inst.auto"
+  fi
+  # NOTE: avoid `isoinfo | grep -q` under `set -o pipefail` (isoinfo exits 141
+  # on SIGPIPE when grep quits early); materialize the listing first.
+  isoinfo -i "$FINAL_ISO" -R -l > "$WORK_DIR/final-isol.txt" 2>/dev/null || true
+  grep -Fq "LiveFX" "$WORK_DIR/final-isol.txt" \
+    || die "final ISO is missing the LiveFX directory"
+  grep -Fq "squashfs.img" "$WORK_DIR/final-isol.txt" \
+    || die "final ISO is missing the LiveFX squashfs image"
+fi
 if grep -Fq ' - FXRoute Desktop"' "$WORK_DIR/final-grub.cfg" ||
-   grep -Fq ' - FXRoute Headless"' "$WORK_DIR/final-grub.cfg"; then
+   grep -Fq ' - FXRoute Headless"' "$WORK_DIR/final-grub.cfg" ||
+   grep -Fq ' - Try FXRoute"' "$WORK_DIR/final-grub.cfg"; then
   die "final ISO still contains the unnormalized FXRoute boot labels"
 fi
 [[ "$(od -An -tx1 -j 510 -N 2 "$FINAL_ISO" | tr -d '[:space:]')" == "55aa" ]] \

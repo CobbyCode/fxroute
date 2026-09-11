@@ -1,0 +1,529 @@
+#!/usr/bin/env bash
+# FXRoute Live root builder (flat squashfs for dmsquash-live).
+#
+# Builds /LiveFX/squashfs.img as a FLAT squashfs: the squash root IS the
+# live root filesystem (it contains /proc, /usr, /etc, ...). This matches
+# the real dmsquash-live path in the Leap 16 initrd:
+#   usr/sbin/dmsquash-live-root:
+#     if [ -d /run/initramfs/squashfs/LiveOS ]; then FSIMG=.../rootfs.img
+#     elif [ -d /run/initramfs/squashfs/proc ]; then FSIMG=$SQUASHED; overlayfs=required
+# A nested outer squash with LiveOS/rootfs.img is the base ISO format and is
+# NOT used here; flat is simpler (mksquashfs only, no mkfs.ext4) and supported.
+set -Eeuo pipefail
+
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+OUTPUT=""
+SOURCE_DIR="$ROOT_DIR"
+BUILD_COMMIT=""
+DOCKER_IMAGE="${FXROUTE_LIVE_DOCKER_IMAGE:-registry.opensuse.org/opensuse/leap:16.0}"
+MINIMAL=0
+KEEP_WORK=0
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
+
+usage() {
+  cat <<EOF
+Usage: $0 --output PATH [options]
+
+Build a flat LiveFX squashfs image (squash root = live rootfs).
+
+Options:
+  --output PATH        Write squashfs image to PATH (required)
+  --source DIR         FXRoute source directory (default: repo root)
+  --commit REV         FXRoute commit to bake in (default: HEAD)
+  --docker-image REF   Leap container image (default: $DOCKER_IMAGE)
+  --minimal            Build a tiny placeholder image (GRUB/structure tests only,
+                       not a bootable FXRoute desktop)
+  --keep-work          Keep the temporary live-root directory
+  -h, --help           Show this help
+EOF
+}
+
+die() {
+  printf '[live-root][error] %s\n' "$*" >&2
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      [[ $# -ge 2 ]] || die "--output requires a path"
+      OUTPUT="$2"
+      shift 2
+      ;;
+    --source)
+      [[ $# -ge 2 ]] || die "--source requires a directory"
+      SOURCE_DIR="$2"
+      shift 2
+      ;;
+    --commit)
+      [[ $# -ge 2 ]] || die "--commit requires a revision"
+      BUILD_COMMIT="$2"
+      shift 2
+      ;;
+    --docker-image)
+      [[ $# -ge 2 ]] || die "--docker-image requires a reference"
+      DOCKER_IMAGE="$2"
+      shift 2
+      ;;
+    --minimal)
+      MINIMAL=1
+      shift
+      ;;
+    --keep-work)
+      KEEP_WORK=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "Unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n "$OUTPUT" ]] || die "--output is required"
+[[ -d "$SOURCE_DIR" ]] || die "source directory not found: $SOURCE_DIR"
+[[ -f "$SOURCE_DIR/main.py" && -f "$SOURCE_DIR/requirements.txt" ]] \
+  || die "source directory does not look like FXRoute: $SOURCE_DIR"
+[[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "SOURCE_DATE_EPOCH must be a non-negative integer"
+# Epoch-zero files are treated as unmodified by SDDM's config loader, which
+# then falls back to /etc/X11/xdm/Xsession (absent on Leap 16). sysusers also
+# uses this epoch for shadow's last-change DAY; day zero means expired.
+# Keep reproducibility, but use at least day one for the bootable filesystem.
+LIVE_EPOCH="$SOURCE_DATE_EPOCH"
+if [[ "$LIVE_EPOCH" -lt 86400 ]]; then
+  LIVE_EPOCH=86400
+fi
+command -v mksquashfs >/dev/null 2>&1 || die "mksquashfs is required"
+
+if [[ -z "$BUILD_COMMIT" ]]; then
+  BUILD_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$BUILD_COMMIT" ]] || die "could not determine build commit"
+fi
+
+OUTPUT="$(realpath -m "$OUTPUT")"
+mkdir -p "$(dirname "$OUTPUT")"
+
+BUILD_TMP_BASE="${FXROUTE_LIVE_TMPDIR:-${XDG_CACHE_HOME:-$HOME/.cache}/fxroute/live}"
+mkdir -p "$BUILD_TMP_BASE"
+WORK_DIR="$(mktemp -d "$BUILD_TMP_BASE/live-root.XXXXXX")"
+LIVE_ROOT="$WORK_DIR/root"
+CONTAINER_NAME="fxroute-live-build-$$"
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+cleanup() {
+  if [[ "$KEEP_WORK" -eq 1 ]]; then
+    printf '[live-root] keeping work directory: %s\n' "$WORK_DIR"
+  else
+    # Remove the exported root with container privileges; never change its
+    # ownership (even --keep-work must retain the image's real uid/gid/modes).
+    rm -rf -- "$WORK_DIR" 2>/dev/null || \
+      docker run --rm -v "$BUILD_TMP_BASE:/w:z" "$DOCKER_IMAGE" \
+        rm -rf "/w/$(basename "$WORK_DIR")" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+if [[ "$MINIMAL" -eq 1 ]]; then
+  printf '[live-root] building minimal placeholder image\n'
+  mkdir -p "$LIVE_ROOT/proc" "$LIVE_ROOT/sys" "$LIVE_ROOT/dev" \
+    "$LIVE_ROOT/etc" "$LIVE_ROOT/boot"
+  printf 'fxroute-live\n' > "$LIVE_ROOT/etc/hostname"
+  printf 'fxroute-live placeholder (structure test only)\n' > "$LIVE_ROOT/etc/fxroute-live"
+  printf '%s\n' "$BUILD_COMMIT" > "$LIVE_ROOT/etc/fxroute-live-commit"
+  # Flat-format marker: squash root must contain /proc so dmsquash-live
+  # takes the FSIMG=SQUASHED + overlayfs=required path.
+  # NOTE: mksquashfs 4.6+ refuses explicit -mkfs-time/-all-time when
+  # $SOURCE_DATE_EPOCH is exported, so unset it for the call.
+  find "$LIVE_ROOT" -exec touch -h --date="@$SOURCE_DATE_EPOCH" {} + 2>/dev/null || true
+  env -u SOURCE_DATE_EPOCH mksquashfs "$LIVE_ROOT" "$OUTPUT" -comp xz -noappend \
+    -mkfs-time "$SOURCE_DATE_EPOCH" -all-time "$SOURCE_DATE_EPOCH" \
+    -no-xattrs >/dev/null
+  printf '[live-root] wrote %s\n' "$OUTPUT"
+  exit 0
+fi
+
+command -v docker >/dev/null 2>&1 || die "docker is required for the full live build (or use --minimal)"
+
+printf '[live-root] building full FXRoute live root from %s @ %s\n' "$SOURCE_DIR" "$BUILD_COMMIT"
+mkdir -p "$LIVE_ROOT"
+
+# Source snapshot for the container (deterministic file list).
+SOURCE_SNAP="$WORK_DIR/source.tar"
+git -C "$ROOT_DIR" ls-files -z \
+  | tar --directory="$ROOT_DIR" --create --file="$SOURCE_SNAP" \
+      --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 \
+      --numeric-owner --pax-option=delete=atime,delete=ctime \
+      --no-recursion --null --verbatim-files-from \
+      --files-from=-
+
+SETUP_SCRIPT="$WORK_DIR/live-setup.sh"
+cat > "$SETUP_SCRIPT" <<'SETUP_EOF'
+set -Eeuo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DEBIAN_FRONTEND=noninteractive
+
+LIVE_USER="fxroute"
+LIVE_HOME="/home/$LIVE_USER"
+BUILD_COMMIT_FILE="/etc/fxroute-live-commit"
+
+# Base desktop + FXRoute runtime packages (mirrors iso/profiles/desktop.jsonnet
+# plus install.sh zypper core/audio/support/smb sets). Leap 16.0 OSS names:
+# pattern kde_plasma via -t pattern, ffmpeg binary via ffmpeg-7, kwriteconfig6
+# via kf6-kconfig, wallpaper tool via plasma6-workspace, squash tools via
+# squashfs. Groups are best-effort (|| true); critical binaries verified below.
+zypper --non-interactive refresh || true
+zypper --non-interactive install --no-recommends -t pattern kde_plasma || true
+zypper --non-interactive install --no-recommends \
+  plasma6-session plasma6-session-x11 sddm-qt6 plasma6-pa plasma6-nm qt6-wayland \
+  plasma6-workspace kf6-kconfig \
+  MozillaFirefox \
+  python3 python313-pip tar ca-certificates iproute2 openssh-server git \
+  curl socat mpv playerctl \
+  bluez wireplumber pipewire-tools pipewire-pulseaudio pulseaudio-utils \
+  pipewire-spa-plugins-0_2 rtkit \
+  samba-client cifs-utils glib2-tools gvfs gvfs-backend-samba gvfs-fuse \
+  dbus-1-tools avahi caddy firewalld sudo \
+  alsa-utils xdg-user-dirs squashfs || true
+# ffmpeg binary (Leap splits it as ffmpeg-7/ffmpeg-4, Tumbleweed as ffmpeg).
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  zypper --non-interactive install --no-recommends ffmpeg-7 || true
+fi
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  zypper --non-interactive install --no-recommends ffmpeg-4 || true
+fi
+# DSP build toolchain (runtime libs stay, toolchain could be removed later).
+zypper --non-interactive install --no-recommends \
+  gcc gcc-c++ cmake pkgconf-pkg-config make \
+  pipewire-devel lilv liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins \
+  libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel || true
+for cmd in python3 git mpv playerctl wpctl pactl firefox sddm; do
+  command -v "$cmd" >/dev/null 2>&1 || echo "[live-root][warn] expected command missing after package install: $cmd"
+done
+command -v python3 >/dev/null 2>&1 || { echo "[live-root][error] python3 is required" >&2; exit 1; }
+command -v firefox >/dev/null 2>&1 || { echo "[live-root][error] firefox is required" >&2; exit 1; }
+
+# Live user (fixed name, autologin, no password needed locally).
+if ! id -u "$LIVE_USER" >/dev/null 2>&1; then
+  useradd -m -U -s /bin/bash "$LIVE_USER"
+fi
+passwd -d "$LIVE_USER" || true
+# audio/video for ALSA+display, systemd-journal for qbzd volume bridge.
+# (wheel may not exist in minimal Leap containers; sudoers drop-in below
+# grants live sudo independently, so a missing group must not fail here.)
+usermod -aG audio,video,systemd-journal "$LIVE_USER" 2>/dev/null || \
+  usermod -aG audio,video "$LIVE_USER" 2>/dev/null || true
+# Volatile live sudo (physical autologin session; sshd stays disabled without
+# fxroute.live-password). Passwordless sudo matches common live media and keeps
+# provider/CIFS helpers usable without persisting credentials.
+if ! rpm -q sudo >/dev/null 2>&1; then
+  zypper --non-interactive install --no-recommends sudo || true
+fi
+mkdir -p /etc/sudoers.d
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$LIVE_USER" > /etc/sudoers.d/99-fxroute-live
+chmod 440 /etc/sudoers.d/99-fxroute-live
+visudo -cf /etc/sudoers.d/99-fxroute-live >/dev/null 2>&1 || true
+
+# Live firewall: firewalld is enabled by preset; open the FXRoute LAN ports
+# offline (no running daemon in the container). Without 8000/tcp the QEMU
+# user-forward and LAN browsers cannot reach the live Web UI.
+if command -v firewall-offline-cmd >/dev/null 2>&1; then
+  firewall-offline-cmd --zone=public --add-port=8000/tcp || true
+  firewall-offline-cmd --zone=public --add-port=80/tcp || true
+  firewall-offline-cmd --zone=public --add-port=443/tcp || true
+  firewall-offline-cmd --zone=public --add-port=5353/udp || true
+  firewall-offline-cmd --zone=public --add-port=4444/tcp || true
+  firewall-offline-cmd --zone=public --add-service=ssh || true
+fi
+
+# FXRoute checkout on the build commit (no git fetch at live boot).
+rm -rf -- "$LIVE_HOME/fxroute"
+mkdir -p -- "$LIVE_HOME/fxroute"
+tar --extract --file /tmp/fxroute-source.tar --directory "$LIVE_HOME/fxroute" --no-same-owner
+chown -R "$LIVE_USER:$(id -gn "$LIVE_USER")" "$LIVE_HOME/fxroute"
+chmod 755 "$LIVE_HOME/fxroute/install.sh"
+if [[ -f /etc/fxroute-live-commit ]]; then
+  LIVE_COMMIT="$(cat /etc/fxroute-live-commit)"
+else
+  LIVE_COMMIT="unknown"
+fi
+# Best effort: make the tree match the build commit when git is available.
+if command -v git >/dev/null 2>&1; then
+  su "$LIVE_USER" -c "cd ~/fxroute && git init -q -b main 2>/dev/null || true"
+  su "$LIVE_USER" -c "cd ~/fxroute && git add -A 2>/dev/null && git -c user.name='FXRoute Live' -c user.email='live@fxroute.local' commit -qm 'FXRoute live snapshot $LIVE_COMMIT' 2>/dev/null || true"
+fi
+
+# Python venv + dependencies (same as install.sh, but without starting systemd units).
+su "$LIVE_USER" -c "cd ~/fxroute && python3 -m venv .venv"
+su "$LIVE_USER" -c "cd ~/fxroute && .venv/bin/pip install -q --upgrade pip"
+su "$LIVE_USER" -c "cd ~/fxroute && .venv/bin/pip install -q -r requirements.txt"
+if [[ -f "$LIVE_HOME/fxroute/requirements-tidal.txt" ]]; then
+  su "$LIVE_USER" -c "cd ~/fxroute && .venv/bin/pip install -q -r requirements-tidal.txt || true"
+fi
+
+# Native DSP build.
+su "$LIVE_USER" -c "cd ~/fxroute && bash native_dsp/build.sh || bash -c 'cmake -S native_dsp -B native_dsp/build && cmake --build native_dsp/build --parallel'"
+
+# Minimal .env for live (Music dir in RAM home).
+if [[ ! -f "$LIVE_HOME/fxroute/.env" ]]; then
+  printf 'MUSIC_ROOT=%s/Music\nDOWNLOADS_SUBDIR=incoming\nLOG_LEVEL=INFO\nHOST=0.0.0.0\nPORT=8000\n' "$LIVE_HOME" > "$LIVE_HOME/fxroute/.env"
+  chown "$LIVE_USER:$(id -gn "$LIVE_USER")" "$LIVE_HOME/fxroute/.env"
+fi
+su "$LIVE_USER" -c "mkdir -p ~/Music ~/fxroute/media/cache/covers ~/.config/fxroute/measurements"
+
+# PipeWire DSP sink config for the live user.
+su "$LIVE_USER" -c "mkdir -p ~/.config/pipewire/pipewire-pulse.conf.d ~/.config/pipewire/pipewire.conf.d ~/.config/wireplumber/wireplumber.conf.d ~/.config/systemd/user"
+cat > "$LIVE_HOME/.config/pipewire/pipewire-pulse.conf.d/50-fxroute-dsp-sink.conf" <<'EOF'
+pulse.cmd = [
+  { cmd = "load-module" args = "module-null-sink sink_name=fxroute_dsp_sink sink_properties=device.description=FXRoute_DSP_Ingress" flags = [ ] }
+]
+EOF
+chown "$LIVE_USER:$(id -gn "$LIVE_USER")" "$LIVE_HOME/.config/pipewire/pipewire-pulse.conf.d/50-fxroute-dsp-sink.conf"
+
+# fxroute.service user unit (same Exec as install.sh) + enable via symlink.
+LIVE_UID="$(id -u "$LIVE_USER")"
+cat > "$LIVE_HOME/.config/systemd/user/fxroute.service" <<EOF
+[Unit]
+Description=FXRoute
+After=default.target
+Documentation=file://$LIVE_HOME/fxroute/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=$LIVE_HOME/fxroute
+EnvironmentFile=$LIVE_HOME/fxroute/.env
+ExecStart=$LIVE_HOME/fxroute/.venv/bin/python3 $LIVE_HOME/fxroute/main.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+chown "$LIVE_USER:$(id -gn "$LIVE_USER")" "$LIVE_HOME/.config/systemd/user/fxroute.service"
+su "$LIVE_USER" -c "mkdir -p ~/.config/systemd/user/default.target.wants && ln -sf ../fxroute.service ~/.config/systemd/user/default.target.wants/fxroute.service"
+
+# Appliance identity: hostname + live marker + transient machine-id.
+printf 'fxroute-live\n' > /etc/hostname
+printf 'fxroute-live\n' > /etc/fxroute-live
+printf '%s\n' "$LIVE_COMMIT" > /etc/fxroute-live-commit
+: > /etc/machine-id
+chmod 444 /etc/machine-id || true
+
+# SDDM autologin as live user (X11 default.desktop like first-boot; the
+# plasma6-session-x11 package provides it, plasmawayland stays available).
+mkdir -p /etc/sddm.conf.d
+cat > /etc/sddm.conf.d/10-fxroute-autologin.conf <<EOF
+[Autologin]
+User=$LIVE_USER
+Session=default.desktop
+Relogin=false
+EOF
+chmod 644 /etc/sddm.conf.d/10-fxroute-autologin.conf
+if [[ ! -e /usr/share/xsessions/default.desktop ]]; then
+  echo "[live-root][error] X11 default.desktop session is missing" >&2
+  exit 1
+fi
+# SUSE's SDDM patch reads this setting after the SDDM drop-ins. An empty
+# DISPLAYMANAGER_AUTOLOGIN overrides User= above (same as installed desktop).
+if grep -q '^DISPLAYMANAGER_AUTOLOGIN=' /etc/sysconfig/displaymanager; then
+  sed -i "s|^DISPLAYMANAGER_AUTOLOGIN=.*|DISPLAYMANAGER_AUTOLOGIN=\"$LIVE_USER\"|" /etc/sysconfig/displaymanager
+else
+  printf 'DISPLAYMANAGER_AUTOLOGIN="%s"\n' "$LIVE_USER" >> /etc/sysconfig/displaymanager
+fi
+test -x /usr/etc/X11/xdm/Xsession
+systemctl set-default graphical.target
+# The xdm package symlinks display-manager.service to display-manager-legacy;
+# force SDDM so the live autologin config actually takes effect.
+ln -sf /usr/lib/systemd/system/sddm.service /etc/systemd/system/display-manager.service
+systemctl enable sddm.service
+
+# Appliance defaults (mirrors first-boot-install.sh desktop stack, live edition).
+mkdir -p /etc/systemd/logind.conf.d
+cat > /etc/systemd/logind.conf.d/10-fxroute-appliance.conf <<'EOF'
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+IdleAction=ignore
+HandlePowerKey=poweroff
+EOF
+chmod 644 /etc/systemd/logind.conf.d/10-fxroute-appliance.conf
+
+# Live Firefox: homepage = local FXRoute.
+for candidate in /usr/lib64/firefox/distribution /usr/lib/firefox/distribution; do
+  if mkdir -p "$candidate" 2>/dev/null; then
+    cat > "$candidate/policies.json" <<'EOF'
+{
+  "policies": {
+    "Homepage": {
+      "URL": "http://127.0.0.1:8000/",
+      "StartPage": "homepage"
+    },
+    "DontCheckDefaultBrowser": true,
+    "DisableFirefoxStudies": true,
+    "DisablePocket": true
+  }
+}
+EOF
+    chmod 644 "$candidate/policies.json"
+    break
+  fi
+done
+
+# Live desktop launcher (waits for /api/status, then kiosk). Reuses appliance pattern.
+cat > /usr/local/bin/fxroute-desktop-launcher <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+until curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
+    http://127.0.0.1:8000/api/status >/dev/null; do
+  sleep 1
+done
+exec firefox --kiosk http://127.0.0.1:8000/
+EOF
+chmod 755 /usr/local/bin/fxroute-desktop-launcher
+su "$LIVE_USER" -c "mkdir -p ~/.config/autostart"
+cat > "$LIVE_HOME/.config/autostart/fxroute.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=FXRoute
+Comment=Open the FXRoute control surface
+Exec=/usr/local/bin/fxroute-desktop-launcher
+TryExec=firefox
+OnlyShowIn=KDE;
+X-GNOME-Autostart-enabled=true
+EOF
+chown "$LIVE_USER:$(id -gn "$LIVE_USER")" "$LIVE_HOME/.config/autostart/fxroute.desktop"
+chmod 644 "$LIVE_HOME/.config/autostart/fxroute.desktop"
+
+# Live KWallet/welcome/power defaults for the live user.
+LIVE_GROUP="$(id -gn "$LIVE_USER")"
+printf '[Wallet]\nEnabled=false\n' > "$LIVE_HOME/.config/kwalletrc"
+printf '[Daemon]\nAutolock=false\nLockOnResume=false\n' > "$LIVE_HOME/.config/kscreenlockerrc"
+cat > "$LIVE_HOME/.config/powerdevilrc" <<'EOF'
+[AC][SuspendAndShutdown]
+AutoSuspendAction=0
+[AC][Display]
+DimDisplayWhenIdle=false
+TurnOffDisplayWhenIdle=false
+[Battery][SuspendAndShutdown]
+AutoSuspendAction=0
+[Battery][Display]
+DimDisplayWhenIdle=false
+TurnOffDisplayWhenIdle=false
+[LowBattery][SuspendAndShutdown]
+AutoSuspendAction=0
+[LowBattery][Display]
+DimDisplayWhenIdle=false
+TurnOffDisplayWhenIdle=false
+EOF
+chown "$LIVE_USER:$LIVE_GROUP" "$LIVE_HOME/.config/kwalletrc" "$LIVE_HOME/.config/kscreenlockerrc" "$LIVE_HOME/.config/powerdevilrc"
+chmod 600 "$LIVE_HOME/.config/kwalletrc" "$LIVE_HOME/.config/kscreenlockerrc" "$LIVE_HOME/.config/powerdevilrc"
+su "$LIVE_USER" -c "mkdir -p ~/.local/share/opensuse-welcome && echo 1 > ~/.local/share/opensuse-welcome/launched"
+su "$LIVE_USER" -c "mkdir -p ~/.config/autostart && printf '[Desktop Entry]\nHidden=true\n' > ~/.config/autostart/org.opensuse.opensuse_welcome_launcher.desktop"
+
+# Live notice on the desktop.
+cat > "$LIVE_HOME/Desktop-LIVE-README.txt" <<'EOF'
+FXRoute Live Mode — changes and logins are not saved and will be lost after reboot.
+
+Try FXRoute directly from this USB/ISO medium. Network, audio, DSP,
+measurements and providers work in this session, but nothing is stored.
+Internal drives are not automatically mounted or changed.
+EOF
+chown "$LIVE_USER:$LIVE_GROUP" "$LIVE_HOME/Desktop-LIVE-README.txt" || true
+su "$LIVE_USER" -c "mkdir -p ~/Desktop && cp -f ~/Desktop-LIVE-README.txt ~/Desktop/LIVE-MODE-README.txt || true"
+
+# udisks protection is installed as a file (see live-udev-nomount.rules); copy it.
+if [[ -f /tmp/fxroute-live-udev.rules ]]; then
+  mkdir -p /etc/udev/rules.d
+  cp -- /tmp/fxroute-live-udev.rules /etc/udev/rules.d/99-fxroute-live-nomount.rules
+  chmod 644 /etc/udev/rules.d/99-fxroute-live-nomount.rules
+fi
+if [[ -f /tmp/fxroute-live-init.sh ]]; then
+  mkdir -p /usr/local/libexec
+  cp -- /tmp/fxroute-live-init.sh /usr/local/libexec/fxroute-live-init.sh
+  chmod 755 /usr/local/libexec/fxroute-live-init.sh
+  mkdir -p /etc/systemd/system
+  cat > /etc/systemd/system/fxroute-live-init.service <<EOF2
+[Unit]
+Description=FXRoute live session init (volatile only)
+After=network-online.target
+Wants=network-online.target
+Before=display-manager.service
+ConditionPathExists=/etc/fxroute-live
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/fxroute-live-init.sh
+RemainAfterExit=yes
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
+EOF2
+  systemctl enable fxroute-live-init.service || true
+fi
+
+# Live must not start the installer or sshd by default.
+systemctl disable fxroute-first-boot.service 2>/dev/null || true
+systemctl mask fxroute-first-boot.service 2>/dev/null || true
+systemctl disable sshd.service 2>/dev/null || true
+
+# Ensure flat-squash contract: /proc must exist in the squash root.
+mkdir -p /proc /sys /dev /run /tmp
+chmod 755 /proc /sys || true
+chmod 1777 /tmp
+
+SETUP_EOF
+chmod 755 "$SETUP_SCRIPT"
+
+UDEV_RULE_SRC="$ROOT_DIR/iso/scripts/live-udev-nomount.rules"
+[[ -f "$UDEV_RULE_SRC" ]] || die "udev rule is missing: $UDEV_RULE_SRC"
+LIVE_INIT_SRC="$ROOT_DIR/iso/scripts/fxroute-live-init.sh"
+[[ -f "$LIVE_INIT_SRC" ]] || die "live init script is missing: $LIVE_INIT_SRC"
+
+printf '[live-root] pulling %s\n' "$DOCKER_IMAGE"
+docker pull "$DOCKER_IMAGE" >/dev/null
+
+printf '[live-root] running live setup in container\n'
+docker run --rm --name "$CONTAINER_NAME" \
+  -v "$SOURCE_SNAP:/tmp/fxroute-source.tar:ro,z" \
+  -v "$SETUP_SCRIPT:/tmp/live-setup-inner.sh:ro,z" \
+  -v "$UDEV_RULE_SRC:/tmp/fxroute-live-udev.rules:ro,z" \
+  -v "$LIVE_INIT_SRC:/tmp/fxroute-live-init.sh:ro,z" \
+  -v "$LIVE_ROOT:/live-root:z" \
+  -v "$WORK_DIR:/live-output:z" \
+  -e SOURCE_DATE_EPOCH="$LIVE_EPOCH" \
+  "$DOCKER_IMAGE" bash -c "
+    set -Eeuo pipefail
+    printf '%s\n' '$BUILD_COMMIT' > /etc/fxroute-live-commit
+    bash /tmp/live-setup-inner.sh
+    # Export container root to /live-root (exclude kernel pseudo-fs and docker metadata).
+    tar --create --one-file-system --numeric-owner --preserve-permissions \
+      --exclude=./live-root --exclude=./live-output --exclude=./.dockerenv \
+      --exclude=./proc/* --exclude=./sys/* --exclude=./dev/* \
+      --exclude=./run/* --exclude=./tmp/* \
+      --directory=/ . | tar --extract --directory=/live-root \
+        --numeric-owner --same-owner --same-permissions
+    # Re-create pseudo-fs mountpoints inside the exported tree.
+    mkdir -p /live-root/proc /live-root/sys /live-root/dev /live-root/run /live-root/tmp
+    chmod 1777 /live-root/tmp
+    # Build commit marker survives the tar round-trip.
+    printf '%s\n' '$BUILD_COMMIT' > /live-root/etc/fxroute-live-commit
+    printf 'fxroute-live\n' > /live-root/etc/hostname
+    printf 'fxroute-live\n' > /live-root/etc/fxroute-live
+    : > /live-root/etc/machine-id
+    # Pack while the root still has its original ownership and setuid bits.
+    # Only the finished artifact is handed to the invoking host user.
+    env -u SOURCE_DATE_EPOCH mksquashfs /live-root /live-output/squashfs.img \
+      -comp xz -noappend -mkfs-time '$LIVE_EPOCH' -all-time '$LIVE_EPOCH' \
+      -no-xattrs -no-progress >/dev/null
+    chown '$HOST_UID:$HOST_GID' /live-output/squashfs.img
+  "
+
+mv -- "$WORK_DIR/squashfs.img" "$OUTPUT"
+printf '[live-root] wrote %s\n' "$OUTPUT"

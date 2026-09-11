@@ -11,6 +11,13 @@ normal Agama boot menu:
   the FXRoute UI fullscreen after login; the Plasma shell, panel, and
   keyboard shortcuts remain available (closing the window returns to the
   normal desktop).
+- `Try FXRoute`: non-persistent live mode. Boots a prebuilt FXRoute desktop
+  from `/LiveFX/squashfs.img` with a RAM overlay (`rd.live.overlay.overlayfs=1`),
+  `graphical.target`, no Agama (`systemd.mask=agama*`), no `inst.auto`, and no
+  `fxroute-first-boot.service`. Hostname `fxroute-live`, volatile machine-id,
+  Caddy state in RAM only. Live Mode — changes and logins are not saved and
+  will be lost after reboot. Internal ATA/NVMe drives are not auto-mounted
+  (udev `UDISKS_IGNORE`, Agama masked); the install paths are unchanged.
 
 ## Installation flow
 
@@ -58,8 +65,24 @@ export SOURCE_DATE_EPOCH=0
 ./iso/build-leap-16-iso.sh
 ```
 
-Use `--base-iso` or `--output` to override individual values. The source
-archive is created from `git ls-files`, with normalized tar metadata, and is
+Use `--base-iso` or `--output` to override individual values. Use
+`--live-squash PATH` to reuse a prebuilt LiveFX image and `--no-live` to
+skip the Try system for dev/test (release ISOs always ship it).
+`iso/scripts/build-live-root.sh --output PATH` builds the flat
+`/LiveFX/squashfs.img` (squash root = live rootfs with `/proc`, no nested
+`LiveOS/rootfs.img`) via Docker Leap 16.0 from the desktop profile packages
+plus the `install.sh` core/audio sets, with FXRoute checkout, venv, native
+DSP, `fxroute.service`, SDDM autologin (`fxroute`), and the appliance
+defaults prebaked; `--minimal` emits a tiny structure-test image.
+The bootable live filesystem uses a minimum epoch of `86400` (1970-01-02),
+even with `SOURCE_DATE_EPOCH=0`. SDDM ignores epoch-zero configuration,
+including Leap's Xsession path, and sysusers interprets shadow last-change
+day zero as requiring a password change. The ISO metadata still uses the
+requested epoch. SquashFS is packed inside the build container so system
+owners, service-account directories and setuid bits survive export; only
+the completed image file is assigned to the host user. Container identity
+markers and temporary runtime files are excluded.
+The source archive is created from `git ls-files`, with normalized tar metadata, and is
 copied to the installed system by Agama before the first boot.
 `SOURCE_DATE_EPOCH` defaults to `0`; the builder uses reproducible `mkisofs` and
 `isohybrid` shims, normalizes Rock Ridge change times and EFI volume serials,
@@ -189,6 +212,35 @@ Agama. The runner additionally forwards the Agama web ports so the same
 decisions can be made manually in a browser via `https://agama.local` or
 the forwarded ports.
 
+Try verification boots `Try FXRoute` without Agama and checks live:true,
+`fxroute_dsp_sink`, RAM overlay, reboot volatility (home probe lost), and
+that internal disks stay unmounted:
+
+```bash
+FXROUTE_ISO_TRY_PASSWORD="..." \
+  ./iso/test-leap-16-iso.sh try dist/fxroute-leap-16-x86_64.iso
+```
+
+`FXROUTE_ISO_TRY_PASSWORD` is passed as `fxroute.live-password=...` on the
+Try kernel cmdline to enable live SSH for the test; release boots omit it
+and keep `sshd` disabled with a locked live password.
+
+For the live desktop-start packaging regression, inspect the actual image:
+
+```bash
+FXROUTE_TEST_LIVE_SQUASH=/path/to/squashfs.img \
+  python3 -m unittest scripts.test_live_root_image
+```
+
+This checks system/SDDM ownership, sudo's setuid bit, nonzero SDDM config
+timestamps, the vendor session wrapper, SUSE's sysconfig autologin override,
+and removal of the Docker identity marker. The reproduced failure was a
+successful login followed by `Session started false`: SDDM fell back to
+the absent `/etc/X11/xdm/Xsession` instead of the packaged
+`/usr/etc/X11/xdm/Xsession`. Changing only the config mtime from zero to a
+positive value restored the vendor configuration. Hardware acceptance is
+separate from these artifact and targeted VM checks.
+
 Set `FXROUTE_KEEP_ISO_TEST=1` to retain serial logs and guest disks after a
 test. The desktop check reboots the guest before validating SDDM, Wayland,
 Firefox fullscreen autostart, and the appliance defaults. QEMU emulates
@@ -211,5 +263,5 @@ qemu-system-x86_64 \
 rm -rf -- "$uefi_work"
 ```
 
-Confirm that UEFI reaches the GRUB menu and that both `FXRoute Desktop` and
-`FXRoute Headless` entries are present before selecting one.
+Confirm that UEFI reaches the GRUB menu and that `FXRoute Desktop`,
+`FXRoute Headless`, and `Try FXRoute` entries are present before selecting one.
