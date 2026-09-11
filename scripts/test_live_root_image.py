@@ -68,6 +68,37 @@ class LiveRootImageTests(unittest.TestCase):
         dep = [p for p in self.files if re.search(r"/modules/[^/]+/modules\.dep$", p)]
         self.assertTrue(dep, "live root has no modules.dep; on-demand driver loading cannot resolve aliases")
 
+    def test_live_root_ships_wifi_driver_modules(self):
+        for driver in ("net/wireless/intel/iwlwifi/iwlwifi",
+                       "net/wireless/ath/ath11k/ath11k",
+                       "net/wireless/mediatek/mt76/mt7921/mt7921e",
+                       "net/wireless/realtek/rtw89/rtw89_8852ae"):
+            with self.subTest(driver=driver):
+                found = [p for p in self.files
+                         if re.search(r"/modules/[^/]+/kernel/drivers/%s\.ko(\.\w+)?$" % driver, p)]
+                self.assertTrue(found, f"live root has no {driver} module")
+
+    def test_live_root_ships_wifi_firmware(self):
+        # Leap 16 compresses firmware (.bin.xz/.ucode.xz); match any suffix.
+        for pattern, hint in ((r"/usr/lib/firmware/iwlwifi-[^/]+\.ucode(\.\w+)?$", "iwlwifi"),
+                              (r"/usr/lib/firmware/ath11k/.+\.bin(\.\w+)?$", "ath11k"),
+                              (r"/usr/lib/firmware/mediatek/.+", "mediatek"),
+                              (r"/usr/lib/firmware/rtw89/[^/]+\.bin(\.\w+)?$", "rtw89"),
+                              (r"/usr/lib/firmware/regulatory\.db$", "regdb")):
+            with self.subTest(firmware=hint):
+                found = [p for p in self.files if re.search(pattern, p)]
+                self.assertTrue(found, f"live root has no {hint} firmware")
+
+    def test_live_desktop_links_match_installed_desktop(self):
+        for name in ("/home/fxroute/Desktop/FXRoute.desktop",
+                     "/home/fxroute/Desktop/Spotify Download.desktop"):
+            with self.subTest(link=name):
+                self.assertIn(name, self.files)
+        fxroute_link = self.cat("/home/fxroute/Desktop/FXRoute.desktop")
+        self.assertIn("http://127.0.0.1:8000/", fxroute_link)
+        self.assertIn("/usr/share/pixmaps/fxroute.svg", fxroute_link)
+        self.assertIn("/usr/local/libexec/fxroute-appliance-session-init.sh", self.files)
+
     def test_live_user_is_in_input_group(self):
         groups = {}
         for row in self.cat("/etc/group").splitlines():

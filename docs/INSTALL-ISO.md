@@ -82,12 +82,19 @@ requested epoch. SquashFS is packed inside the build container so system
 owners, service-account directories and setuid bits survive export; only
 the completed image file is assigned to the host user. Container identity
 markers and temporary runtime files are excluded.
-The live root also ships the base ISO's exact `kernel-default` modules
-(`--kernel-rpm`, extracted from the base ISO during the ISO build): the
-container image carries none and repo kernels no longer match the booted
-ISO kernel, so without them pointer/input drivers (usbhid, i2c-hid,
-psmouse) could never load after switch-root. The live user is a member
-of `audio`, `video`, `input` and `systemd-journal`.
+The live root also ships the base ISO's exact `kernel-default` and
+`kernel-default-extra` modules (`--kernel-rpm`, repeatable, extracted from
+the base ISO during the ISO build): the container image carries none and
+repo kernels no longer match the booted ISO kernel, so without them
+pointer/input drivers (usbhid, i2c-hid) and current WLAN drivers
+(iwlwifi, ath11k/ath12k, mt7921e, rtw89) could never load after
+switch-root. WLAN firmware for the usual notebook adapters
+(`kernel-firmware-iwlwifi/-ath10k/-ath11k/-ath12k/-atheros/-brcm/
+-mediatek/-realtek/-marvell`) plus `wireless-regdb` comes from the repos.
+The live user is a member of `audio`, `video`, `input` and
+`systemd-journal`. The FXRoute/Spotify desktop links use the same
+`fxroute-appliance-session-init.sh` helper as the installed desktop,
+invoked first-login-only from the live kiosk launcher.
 The source archive is created from `git ls-files`, with normalized tar metadata, and is
 copied to the installed system by Agama before the first boot.
 `SOURCE_DATE_EPOCH` defaults to `0`; the builder uses reproducible `mkisofs` and
@@ -244,8 +251,12 @@ FXROUTE_TEST_LIVE_SQUASH=/path/to/squashfs.img \
 
 This checks system/SDDM ownership, sudo's setuid bit, nonzero SDDM config
 timestamps, the vendor session wrapper, SUSE's sysconfig autologin override,
-kernel pointer-driver modules (usbhid, i2c-hid) with modules.dep, live-user
-`input` group membership, and removal of the Docker identity marker. The reproduced failure was a
+kernel pointer-driver modules (usbhid, i2c-hid) and WLAN drivers
+(iwlwifi, ath11k, mt7921e, rtw89) with modules.dep, WLAN firmware
+(iwlwifi/ath11k/mediatek/rtw89/regdb), the live desktop links
+(FXRoute.desktop, Spotify Download.desktop) with the shared session-init
+helper, live-user `input` group membership, and removal of the Docker
+identity marker. The reproduced failure was a
 successful login followed by `Session started false`: SDDM fell back to
 the absent `/etc/X11/xdm/Xsession` instead of the packaged
 `/usr/etc/X11/xdm/Xsession`. Changing only the config mtime from zero to a

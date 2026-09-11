@@ -48,6 +48,19 @@ class LiveRootBuilderTests(unittest.TestCase):
         self.assertIn("usbhid", text)
         self.assertIn("depmod", text)
 
+    def test_builder_covers_extra_kernel_drivers_and_wifi_firmware(self):
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn("kernel-default-extra", text)
+        self.assertIn("ath11k", text)
+        self.assertIn("kernel-firmware-iwlwifi", text)
+        self.assertIn("kernel-firmware-mediatek", text)
+        self.assertIn("kernel-firmware-realtek", text)
+        self.assertIn("wireless-regdb", text)
+
+    def test_builder_reuses_session_init_for_desktop_links(self):
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn("fxroute-appliance-session-init", text)
+
     def test_builder_adds_live_user_to_input_group(self):
         text = BUILDER.read_text(encoding="utf-8")
         self.assertIn("input", text)

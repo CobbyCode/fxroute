@@ -489,6 +489,9 @@ class InstallIsoContractTests(unittest.TestCase):
         # Desktop links: FXRoute start target + official Spotify download.
         self.assertIn("http://127.0.0.1:8000/", script)
         self.assertIn("https://www.spotify.com/download/linux/", script)
+        self.assertIn("FXRoute.desktop", script)
+        self.assertIn("ensure_desktop_links", session_init)
+        self.assertIn("FXRoute.desktop", session_init)
         self.assertIn("fxroute-wallpaper.png", script)
         # The Plasma shell itself stays unlocked.
         self.assertIn("closing the window returns to the normal desktop", script)

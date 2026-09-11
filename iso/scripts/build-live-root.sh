@@ -18,7 +18,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUTPUT=""
 SOURCE_DIR="$ROOT_DIR"
 BUILD_COMMIT=""
-KERNEL_RPM=""
+KERNEL_RPMS=()
 DOCKER_IMAGE="${FXROUTE_LIVE_DOCKER_IMAGE:-registry.opensuse.org/opensuse/leap:16.0}"
 MINIMAL=0
 KEEP_WORK=0
@@ -34,10 +34,11 @@ Options:
   --output PATH        Write squashfs image to PATH (required)
   --source DIR         FXRoute source directory (default: repo root)
   --commit REV         FXRoute commit to bake in (default: HEAD)
-  --kernel-rpm PATH    kernel-default RPM matching the ISO kernel; its
-                       modules are installed so pointer/input devices can
-                       bind after switch-root (default: none, live has no
-                       kernel modules and USB mice/trackpads stay dead)
+  --kernel-rpm PATH    kernel RPM matching the ISO kernel; its modules are
+                       installed so input/WLAN drivers can bind after
+                       switch-root (repeatable: kernel-default plus
+                       kernel-default-extra for ath11k/ath12k/mt76 WLAN
+                       drivers; default: none, live drivers stay missing)
   --docker-image REF   Leap container image (default: $DOCKER_IMAGE)
   --minimal            Build a tiny placeholder image (GRUB/structure tests only,
                        not a bootable FXRoute desktop)
@@ -70,7 +71,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --kernel-rpm)
       [[ $# -ge 2 ]] || die "--kernel-rpm requires a path"
-      KERNEL_RPM="$2"
+      KERNEL_RPMS+=("$2")
       shift 2
       ;;
     --docker-image)
@@ -101,11 +102,13 @@ done
 [[ -f "$SOURCE_DIR/main.py" && -f "$SOURCE_DIR/requirements.txt" ]] \
   || die "source directory does not look like FXRoute: $SOURCE_DIR"
 [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "SOURCE_DATE_EPOCH must be a non-negative integer"
-if [[ -n "$KERNEL_RPM" ]]; then
-  [[ -f "$KERNEL_RPM" ]] || die "kernel RPM not found: $KERNEL_RPM"
-  KERNEL_RPM="$(realpath -m "$KERNEL_RPM")"
-  # The package identity (kernel-default) is verified inside the container
-  # via rpm -qp; the staged file name is not significant.
+if [[ "${#KERNEL_RPMS[@]}" -gt 0 ]]; then
+  for i in "${!KERNEL_RPMS[@]}"; do
+    [[ -f "${KERNEL_RPMS[$i]}" ]] || die "kernel RPM not found: ${KERNEL_RPMS[$i]}"
+    KERNEL_RPMS[$i]="$(realpath -m "${KERNEL_RPMS[$i]}")"
+  done
+  # The package identity (kernel-default/-extra) is verified inside the
+  # container via rpm -qp; the staged file name is not significant.
 fi
 # Epoch-zero files are treated as unmodified by SDDM's config loader, which
 # then falls back to /etc/X11/xdm/Xsession (absent on Leap 16). sysusers also
@@ -218,16 +221,23 @@ zypper --non-interactive install --no-recommends \
   gcc gcc-c++ cmake pkgconf-pkg-config make \
   pipewire-devel lilv liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins \
   libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel || true
-# Kernel modules matching the ISO kernel. The container image ships none and
-# repo kernels no longer match the booted ISO kernel, so the exact
-# kernel-default RPM is injected via --kernel-rpm. Without these, pointer
-# and input drivers (usbhid, i2c-hid, psmouse) can never load after
-# switch-root and USB mice/trackpads stay dead while the AT keyboard works.
-if [[ -f /tmp/kernel-default.rpm ]]; then
-  RPM_NAME="$(rpm -qp --queryformat '%{NAME}' /tmp/kernel-default.rpm 2>/dev/null || true)"
-  [[ "$RPM_NAME" == kernel-default ]] || { echo "[live-root][error] expected a kernel-default RPM, got '${RPM_NAME:-unknown}'" >&2; exit 1; }
+# Kernel modules matching the ISO kernel. The container image ships none
+# and repo kernels no longer match the booted ISO kernel, so the exact
+# kernel RPMs are injected via --kernel-rpm (kernel-default plus
+# kernel-default-extra, which carries the ath11k/ath12k/mt76 WLAN drivers).
+# Without these, pointer and WLAN drivers can never load after switch-root:
+# USB mice/trackpads stay dead while the AT keyboard works, and Plasma
+# shows no WLANs. Firmware comes from the distro packages below.
+if compgen -G "/tmp/kernel-rpm-*.rpm" > /dev/null; then
   command -v depmod >/dev/null 2>&1 || zypper --non-interactive install --no-recommends kmod || true
-  rpm -i --nodeps --noscripts /tmp/kernel-default.rpm
+  for kernel_rpm in /tmp/kernel-rpm-*.rpm; do
+    RPM_NAME="$(rpm -qp --queryformat '%{NAME}' "$kernel_rpm" 2>/dev/null || true)"
+    case "$RPM_NAME" in
+      kernel-default|kernel-default-extra) ;;
+      *) echo "[live-root][error] expected a kernel-default RPM, got '${RPM_NAME:-unknown}' ($kernel_rpm)" >&2; exit 1 ;;
+    esac
+    rpm -i --nodeps --noscripts "$kernel_rpm"
+  done
   KVER=""
   for d in /usr/lib/modules/*-default; do
     if [[ -d "$d" ]]; then KVER="$(basename "$d")"; break; fi
@@ -236,10 +246,18 @@ if [[ -f /tmp/kernel-default.rpm ]]; then
   depmod -a "$KVER"
   # Module files may be compressed (.ko.zst on Leap 16); match any suffix.
   # psmouse is intentionally absent: SUSE builds it into the kernel.
-  for mod in kernel/drivers/hid/usbhid/usbhid.ko kernel/drivers/hid/i2c-hid/i2c-hid.ko kernel/drivers/hid/hid-multitouch.ko; do
-    compgen -G "/usr/lib/modules/$KVER/$mod*" > /dev/null || { echo "[live-root][error] pointer module missing: $mod" >&2; exit 1; }
+  for mod in kernel/drivers/hid/usbhid/usbhid.ko kernel/drivers/hid/i2c-hid/i2c-hid.ko kernel/drivers/hid/hid-multitouch.ko kernel/drivers/net/wireless/intel/iwlwifi/iwlwifi.ko kernel/drivers/net/wireless/ath/ath11k/ath11k.ko kernel/drivers/net/wireless/mediatek/mt76/mt7921/mt7921e.ko; do
+    compgen -G "/usr/lib/modules/$KVER/$mod*" > /dev/null || { echo "[live-root][error] driver module missing: $mod" >&2; exit 1; }
   done
 fi
+# WLAN firmware for the usual notebook adapters (version-independent, hence
+# from the repos) plus the regulatory database. Without these the drivers
+# above probe but never associate, and Plasma lists no WLANs.
+zypper --non-interactive install --no-recommends \
+  kernel-firmware-iwlwifi kernel-firmware-ath10k kernel-firmware-ath11k \
+  kernel-firmware-ath12k kernel-firmware-atheros kernel-firmware-brcm \
+  kernel-firmware-mediatek kernel-firmware-realtek kernel-firmware-marvell \
+  wireless-regdb || true
 for cmd in python3 git mpv playerctl wpctl pactl firefox sddm; do
   command -v "$cmd" >/dev/null 2>&1 || echo "[live-root][warn] expected command missing after package install: $cmd"
 done
@@ -416,6 +434,47 @@ EOF
   fi
 done
 
+# Appliance session helper, icon and wallpaper: same files the installed
+# desktop uses (first-boot-install.sh). The helper ensures the FXRoute and
+# Spotify desktop links at graphical login, honoring localized folders.
+if [[ -f /tmp/fxroute-session-init.sh ]]; then
+  mkdir -p /usr/local/libexec
+  cp -- /tmp/fxroute-session-init.sh /usr/local/libexec/fxroute-appliance-session-init.sh
+  chmod 755 /usr/local/libexec/fxroute-appliance-session-init.sh
+fi
+if [[ -f "$LIVE_HOME/fxroute/static/favicon.svg" ]]; then
+  mkdir -p /usr/share/pixmaps
+  cp -- "$LIVE_HOME/fxroute/static/favicon.svg" /usr/share/pixmaps/fxroute.svg
+  chmod 644 /usr/share/pixmaps/fxroute.svg
+fi
+if [[ -f "$LIVE_HOME/fxroute/assets/fxroute-wallpaper.png" ]]; then
+  mkdir -p /usr/share/wallpapers
+  cp -- "$LIVE_HOME/fxroute/assets/fxroute-wallpaper.png" /usr/share/wallpapers/fxroute-wallpaper.png
+  chmod 644 /usr/share/wallpapers/fxroute-wallpaper.png
+fi
+
+# Desktop links at build time too (same content as the installed desktop;
+# the session helper re-ensures them at login for localized folders).
+su "$LIVE_USER" -c "mkdir -p ~/Desktop"
+cat > "$LIVE_HOME/Desktop/FXRoute.desktop" <<'EOF'
+[Desktop Entry]
+Type=Link
+Name=FXRoute
+Comment=Open the FXRoute control surface
+URL=http://127.0.0.1:8000/
+Icon=/usr/share/pixmaps/fxroute.svg
+EOF
+cat > "$LIVE_HOME/Desktop/Spotify Download.desktop" <<'EOF'
+[Desktop Entry]
+Type=Link
+Name=Spotify
+Comment=Official Spotify download page for Linux
+URL=https://www.spotify.com/download/linux/
+Icon=internet-web-browser
+EOF
+chown "$LIVE_USER:$(id -gn "$LIVE_USER")" "$LIVE_HOME/Desktop/FXRoute.desktop" "$LIVE_HOME/Desktop/Spotify Download.desktop"
+chmod 644 "$LIVE_HOME/Desktop/FXRoute.desktop" "$LIVE_HOME/Desktop/Spotify Download.desktop"
+
 # Live desktop launcher (waits for /api/status, then kiosk). Reuses appliance pattern.
 cat > /usr/local/bin/fxroute-desktop-launcher <<'EOF'
 #!/usr/bin/env bash
@@ -424,6 +483,15 @@ until curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
     http://127.0.0.1:8000/api/status >/dev/null; do
   sleep 1
 done
+# First graphical login only: desktop links, wallpaper, Firefox bookmark
+# (same helper as the installed desktop).
+if [[ ! -f "$HOME/.local/share/fxroute/appliance-ready" ]]; then
+  if [[ -x /usr/local/libexec/fxroute-appliance-session-init.sh ]]; then
+    /usr/local/libexec/fxroute-appliance-session-init.sh || true
+  fi
+  mkdir -p "$HOME/.local/share/fxroute"
+  touch "$HOME/.local/share/fxroute/appliance-ready"
+fi
 exec firefox --kiosk http://127.0.0.1:8000/
 EOF
 chmod 755 /usr/local/bin/fxroute-desktop-launcher
@@ -526,20 +594,23 @@ UDEV_RULE_SRC="$ROOT_DIR/iso/scripts/live-udev-nomount.rules"
 [[ -f "$UDEV_RULE_SRC" ]] || die "udev rule is missing: $UDEV_RULE_SRC"
 LIVE_INIT_SRC="$ROOT_DIR/iso/scripts/fxroute-live-init.sh"
 [[ -f "$LIVE_INIT_SRC" ]] || die "live init script is missing: $LIVE_INIT_SRC"
+SESSION_INIT_SRC="$ROOT_DIR/iso/scripts/fxroute-appliance-session-init.sh"
+[[ -f "$SESSION_INIT_SRC" ]] || die "session init script is missing: $SESSION_INIT_SRC"
 
 printf '[live-root] pulling %s\n' "$DOCKER_IMAGE"
 docker pull "$DOCKER_IMAGE" >/dev/null
 
 printf '[live-root] running live setup in container\n'
 KERNEL_RPM_MOUNT=()
-if [[ -n "$KERNEL_RPM" ]]; then
-  KERNEL_RPM_MOUNT=(-v "$KERNEL_RPM:/tmp/kernel-default.rpm:ro,z")
-fi
+for i in "${!KERNEL_RPMS[@]}"; do
+  KERNEL_RPM_MOUNT+=(-v "${KERNEL_RPMS[$i]}:/tmp/kernel-rpm-$i.rpm:ro,z")
+done
 docker run --rm --name "$CONTAINER_NAME" \
   -v "$SOURCE_SNAP:/tmp/fxroute-source.tar:ro,z" \
   -v "$SETUP_SCRIPT:/tmp/live-setup-inner.sh:ro,z" \
   -v "$UDEV_RULE_SRC:/tmp/fxroute-live-udev.rules:ro,z" \
   -v "$LIVE_INIT_SRC:/tmp/fxroute-live-init.sh:ro,z" \
+  -v "$SESSION_INIT_SRC:/tmp/fxroute-session-init.sh:ro,z" \
   "${KERNEL_RPM_MOUNT[@]}" \
   -v "$LIVE_ROOT:/live-root:z" \
   -v "$WORK_DIR:/live-output:z" \
