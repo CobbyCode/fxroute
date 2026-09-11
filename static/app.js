@@ -1501,7 +1501,11 @@ function setupSettingsActions() {
 
 function normalizeSubwooferSettings(input = {}) {
     const frequency = Math.max(40, Math.min(200, Math.round(Number(input.crossover_frequency_hz ?? input.crossoverFrequencyHz ?? 80) || 80)));
-    const level = Math.max(-24, Math.min(12, Number(input.sub_level_db ?? input.subLevelDb ?? 0) || 0));
+    // -80 dB floor: 2.2 AutoSub mutes inactive subs to -80 (backend and DSP
+    // runtime accept -80..12 for 2.2; 2.1 persists clamp to -24 server-side,
+    // so a wider frontend clamp converges on save instead of silently
+    // raising a muted sub to -24 on display and re-save.
+    const level = Math.max(-80, Math.min(12, Number(input.sub_level_db ?? input.subLevelDb ?? 0) || 0));
     const alignment = Math.max(-40, Math.min(40, Number(input.sub_alignment_ms ?? input.subAlignmentMs ?? 0) || 0));
     const polarity = String(input.sub_polarity ?? input.subPolarity ?? 'normal').toLowerCase() === 'invert' ? 'invert' : 'normal';
     const roundedAlignment = Math.round(alignment * 100) / 100;
@@ -1516,7 +1520,10 @@ function normalizeSubwooferSettings(input = {}) {
 }
 
 function normalizeSingleSubwooferSettings(input = {}) {
-    const level = Math.max(-24, Math.min(12, Number(input.level_db ?? input.levelDb ?? 0) || 0));
+    // Same -80 dB floor as normalizeSubwooferSettings: must round-trip the
+    // 2.2 AutoSub mute level instead of clamping the display to -24 and
+    // unmuting (+56 dB) on the next UI save.
+    const level = Math.max(-80, Math.min(12, Number(input.level_db ?? input.levelDb ?? 0) || 0));
     const alignment = Math.max(-40, Math.min(40, Number(input.alignment_ms ?? input.alignmentMs ?? 0) || 0));
     const polarity = String(input.polarity ?? 'normal').toLowerCase() === 'invert' ? 'invert' : 'normal';
     return {
@@ -8524,6 +8531,8 @@ function clearMeasurementConvolverDraftForSettingsChange(notice = '') {
 function updateMeasurementConvolverField(field, value) {
     const conv = ensureMeasurementConvolverState();
     const previousPhaseMode = conv.phaseMode;
+    const previousIrLength = String(conv.irLength ?? '');
+    const previousSampleRate = String(state.measurement?.measurementSampleRate ?? '');
     if (field === 'targetCurve') {
         const nextTarget = getMeasurementConvolverCurveOptions().some((curve) => curve.key === value) ? value : conv.targetCurve;
         if (nextTarget !== conv.targetCurve) {
@@ -8568,6 +8577,9 @@ function updateMeasurementConvolverField(field, value) {
     }
     if (field === 'sampleRate') {
         state.measurement.measurementSampleRate = String(value || '48000');
+        if (String(state.measurement.measurementSampleRate) !== previousSampleRate) {
+            clearMeasurementConvolverDraftForSettingsChange('Sample rate changed. Take L/R again.');
+        }
         void saveMeasurementSetupSettings({ measurementSampleRate: Number(state.measurement.measurementSampleRate) });
     }
     if (field === 'phaseMode') conv.phaseMode = measurementConvolverPhaseModes.includes(String(value)) ? String(value) : conv.phaseMode;
@@ -8580,6 +8592,13 @@ function updateMeasurementConvolverField(field, value) {
         }
     }
     ensureMeasurementConvolverState();
+    // IR length is a generation input like the limits above: creating from a
+    // stale draft would silently ignore the newly selected taps. This also
+    // covers the legacy 'quality' path, which remaps taps without passing
+    // through the 'irLength' branch.
+    if (String(conv.irLength ?? '') !== previousIrLength) {
+        clearMeasurementConvolverDraftForSettingsChange('Convolver taps changed. Take L/R again.');
+    }
     if (field === 'phaseMode' || field === 'quality') {
         clearMeasurementConvolverDraftForPhaseChange(previousPhaseMode);
     }
@@ -13414,7 +13433,7 @@ async function switchEffectsPreset() {
 
 // Track which inputs are currently being edited by the user
 const _activeEditing = new Set();
-const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-1, -2, -3, -4, -5, -6]);
+const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-9, -8, -7, -6, -5, -4, -3, -2, -1, 0]);
 const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-12, -15, -18, -23]);
 const EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE = new Set([256, 512, 1024, 2048, 4096, 8192, 16384]);
 const EFFECTS_LOUDNESS_LEGACY_STRENGTHS = new Map([
