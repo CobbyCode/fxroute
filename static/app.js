@@ -1555,6 +1555,31 @@ function normalizeSubwoofersSettings(subwoofers = {}, fallbackSubwoofer = {}) {
     };
 }
 
+function applySubwooferDraftToOutputMode(draft = {}, settings = {}) {
+    // 2.2 keeps the global crossover/highpass both top-level (runtime and
+    // readback source of truth) and inside the legacy 2.1 `subwoofer` block.
+    // The draft must keep both in sync: getSubwooferGlobalSettings() prefers
+    // the top-level field, so a stale top-level snaps the Main-highpass
+    // select back to On (and the next save re-reads On) before Off is sent.
+    if (settings && typeof settings === 'object' && settings.subwoofers) {
+        const next = {
+            ...(draft || {}),
+            ...settings,
+        };
+        if (settings.subwoofer?.crossover_frequency_hz !== undefined) {
+            next.crossover_frequency_hz = settings.subwoofer.crossover_frequency_hz;
+        }
+        if (settings.subwoofer?.main_highpass_enabled !== undefined) {
+            next.main_highpass_enabled = settings.subwoofer.main_highpass_enabled;
+        }
+        return next;
+    }
+    return {
+        ...(draft || {}),
+        ...(settings?.subwoofers ? settings : { subwoofer: settings }),
+    };
+}
+
 function collectSubwooferSettings() {
     return normalizeSubwooferSettings({
         crossover_frequency_hz: elements.effectsSubwooferFrequencyNumber?.value || 80,
@@ -1706,11 +1731,12 @@ async function saveAudioOutputMode(mode, settings = null, options = {}) {
     const requestId = ++_audioOutputModeRequestId;
     const mutationGeneration = ++_audioOutputModeMutationGeneration;
     if (!modeOnly && !suppressApply) {
+        const bodySettings = ('subwoofers' in requestBody)
+            ? { subwoofer: requestBody.subwoofer, subwoofers: requestBody.subwoofers }
+            : (('subwoofer' in requestBody) ? requestBody.subwoofer : {});
         state.settings.audioOutputs.output_mode = {
-            ...(state.settings.audioOutputs.output_mode || {}),
+            ...applySubwooferDraftToOutputMode(state.settings.audioOutputs.output_mode || {}, bodySettings),
             mode: nextMode,
-            ...('subwoofer' in requestBody ? { subwoofer: requestBody.subwoofer } : {}),
-            ...('subwoofers' in requestBody ? { subwoofers: requestBody.subwoofers } : {}),
         };
         renderSettingsPanel();
     }
@@ -13749,10 +13775,10 @@ const SUBWOOFER_COMMIT_DEBOUNCE_MS = 600;
 function updateSubwooferDraftFromControls() {
     const mode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
     const settings = isSubwoofer22Mode(mode) ? collectSubwoofer22Settings() : collectSubwooferSettings();
-    state.settings.audioOutputs.output_mode = {
-        ...(state.settings.audioOutputs.output_mode || {}),
-        ...(settings.subwoofers ? settings : { subwoofer: settings }),
-    };
+    state.settings.audioOutputs.output_mode = applySubwooferDraftToOutputMode(
+        state.settings.audioOutputs.output_mode || {},
+        settings,
+    );
     renderSubwooferPanel();
     return settings;
 }
@@ -13827,10 +13853,10 @@ function saveSubwooferDebounced(delayMs = SUBWOOFER_COMMIT_DEBOUNCE_MS) {
     if (signature === _subwooferLastRequestedSignature) {
         return _subwooferSavePromise || Promise.resolve(null);
     }
-    state.settings.audioOutputs.output_mode = {
-        ...(state.settings.audioOutputs.output_mode || {}),
-        ...(settings.subwoofers ? settings : { subwoofer: settings }),
-    };
+    state.settings.audioOutputs.output_mode = applySubwooferDraftToOutputMode(
+        state.settings.audioOutputs.output_mode || {},
+        settings,
+    );
     const pending = createPendingSubwooferSave(mode, settings, signature);
     _subwooferPendingSave = pending;
     _subwooferSaveTimer = window.setTimeout(() => pending.start(), delayMs);
