@@ -152,6 +152,23 @@ class MusicLibraryManagerTests(unittest.TestCase):
                 with self.assertRaises(FileNotFoundError):
                     manager.activate("smb:server:Music")
 
+    def test_mount_failure_reports_helper_diagnostics(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            manager = MusicLibraryManager(base / "Music", mount_root=base / "mounts", discovery_hosts=[])
+            manager.add_manual_share("server", "Music")
+
+            def run(command, **kwargs):
+                if command[0] == "sudo":
+                    return subprocess.CompletedProcess(command, 1, "", "mount error(13): Permission denied\n")
+                return subprocess.CompletedProcess(command, 1, "", "gio: no password given\n")
+
+            with patch("library.sources.os.path.ismount", return_value=False), patch(
+                "library.sources.subprocess.run", side_effect=run
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "Permission denied"):
+                    manager.activate("smb:server:Music")
+
     def test_plain_gvfs_directory_is_not_accepted(self):
         with tempfile.TemporaryDirectory() as td:
             runtime = Path(td)

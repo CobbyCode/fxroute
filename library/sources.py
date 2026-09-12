@@ -437,34 +437,49 @@ class MusicLibraryManager:
             raise ValueError("Unknown music library")
         _kind, server, share = library_id.split(":", 2)
         root = self._mounted_share_path(server, share)
+        mount_diagnostics: list[str] = []
         if root is None:
             try:
-                subprocess.run(
+                helper_result = subprocess.run(
                     ["sudo", "-n", "/usr/local/sbin/fxroute-cifs-mount", server, share],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
                     timeout=15,
                     check=False,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
+            else:
+                helper_error = (helper_result.stderr or "").strip().splitlines()
+                if helper_error:
+                    mount_diagnostics.append(helper_error[-1].strip())
             root = self._mounted_share_path(server, share)
         if root is None:
             try:
-                subprocess.run(
+                gio_result = subprocess.run(
                     ["gio", "mount", f"smb://{server}/{share}"],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
                     timeout=10,
                     check=False,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
+            else:
+                gio_error = (gio_result.stderr or "").strip().splitlines()
+                if gio_error:
+                    mount_diagnostics.append(gio_error[-1].strip())
             root = self._mounted_share_path(server, share)
         if root is None:
-            raise FileNotFoundError(f"SMB share is not mounted: {_server_label(server)} / {share}")
+            detail = f"SMB share is not mounted: {_server_label(server)} / {share}"
+            if mount_diagnostics:
+                detail += f" ({'; '.join(mount_diagnostics)})"
+                logger.warning("SMB mount failed for %s / %s: %s", server, share, "; ".join(mount_diagnostics))
+            raise FileNotFoundError(detail)
         self.active_id = library_id
         self.active_type = "smb"
         self.active_root = root
