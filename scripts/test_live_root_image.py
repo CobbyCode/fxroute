@@ -89,6 +89,12 @@ class LiveRootImageTests(unittest.TestCase):
                 found = [p for p in self.files if re.search(pattern, p)]
                 self.assertTrue(found, f"live root has no {hint} firmware")
 
+    def test_live_root_ships_speaker_firmware(self):
+        sof = [p for p in self.files if re.search(r"/usr/lib/firmware/intel/sof/.+\.ri(\.\w+)?$", p)]
+        self.assertTrue(sof, "live root has no SOF firmware; Intel notebook speakers stay silent")
+        amps = [p for p in self.files if re.search(r"/usr/lib/firmware/TAS.+\.bin(\.\w+)?$", p)]
+        self.assertTrue(amps, "live root has no amp firmware")
+
     def test_live_desktop_links_match_installed_desktop(self):
         for name in ("/home/fxroute/Desktop/FXRoute.desktop",
                      "/home/fxroute/Desktop/Spotify Download.desktop"):

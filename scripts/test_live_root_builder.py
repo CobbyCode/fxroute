@@ -57,6 +57,11 @@ class LiveRootBuilderTests(unittest.TestCase):
         self.assertIn("kernel-firmware-realtek", text)
         self.assertIn("wireless-regdb", text)
 
+    def test_builder_covers_speaker_firmware(self):
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn("sof-firmware", text)
+        self.assertIn("kernel-firmware-sound", text)
+
     def test_builder_reuses_session_init_for_desktop_links(self):
         text = BUILDER.read_text(encoding="utf-8")
         self.assertIn("fxroute-appliance-session-init", text)

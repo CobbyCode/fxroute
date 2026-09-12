@@ -253,11 +253,15 @@ fi
 # WLAN firmware for the usual notebook adapters (version-independent, hence
 # from the repos) plus the regulatory database. Without these the drivers
 # above probe but never associate, and Plasma lists no WLANs.
+# Speaker firmware for notebook audio (Intel SOF, amp/DSP firmware, legacy
+# Intel SST, Bluetooth): without it the sound card never appears and radio
+# playback stays silent.
 zypper --non-interactive install --no-recommends \
   kernel-firmware-iwlwifi kernel-firmware-ath10k kernel-firmware-ath11k \
   kernel-firmware-ath12k kernel-firmware-atheros kernel-firmware-brcm \
   kernel-firmware-mediatek kernel-firmware-realtek kernel-firmware-marvell \
-  wireless-regdb || true
+  wireless-regdb sof-firmware kernel-firmware-sound kernel-firmware-intel \
+  kernel-firmware-bluetooth || true
 for cmd in python3 git mpv playerctl wpctl pactl firefox sddm; do
   command -v "$cmd" >/dev/null 2>&1 || echo "[live-root][warn] expected command missing after package install: $cmd"
 done
