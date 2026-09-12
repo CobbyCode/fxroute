@@ -134,12 +134,16 @@ class LiveRootImageTests(unittest.TestCase):
         self.assertIn("/etc/systemd/system/multi-user.target.wants/NetworkManager.service", self.files,
                       "NetworkManager is not enabled; no interface comes up and Plasma lists no WLANs")
 
-    def test_live_user_is_in_input_group(self):
+    def test_live_user_has_installer_audio_groups(self):
+        # install.sh grants ALSA (audio) and journal access; logind seat
+        # ACLs cover input/video devices, so those groups stay empty.
         groups = {}
         for row in self.cat("/etc/group").splitlines():
             parts = row.split(":")
             groups[parts[0]] = parts[3].split(",") if len(parts) > 3 and parts[3] else []
-        self.assertIn("fxroute", groups.get("input", []))
+        for group in ("audio", "systemd-journal"):
+            with self.subTest(group=group):
+                self.assertIn("fxroute", groups.get(group, []))
 
     def test_suse_autologin_and_vendor_session_are_available(self):
         config = self.cat("/etc/sysconfig/displaymanager")
