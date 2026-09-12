@@ -7162,6 +7162,11 @@ input[type="number"]::-webkit-outer-spin-button {
     font-variant-numeric: tabular-nums;
     line-height: 1;
 }
+/* Leading number/play wrapper: transparent on desktop so both keep their
+   own flex slots; narrow phones stack them into one slot. */
+.track-numplay {
+    display: contents;
+}
 .track-info {
     flex: 1;
     min-width: 0;
@@ -8454,6 +8459,15 @@ input[type="number"]::-webkit-outer-spin-button {
             min-height: 44px;
         }
         .track-item { padding: 0.7rem 0.75rem; }
+        /* Narrow phones: number and play share one leading slot. */
+        .track-numplay {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            gap: .12rem;
+            flex: 0 0 auto;
+        }
+        .track-numplay .track-index { text-align: center; }
         /* Download */
         .playlist-save-row {
             flex-wrap: nowrap;
@@ -9016,6 +9030,9 @@ input[type="number"]::-webkit-outer-spin-button {
         .tab-btn { min-width: 74px; font-size: .78rem; gap: .22rem; }
         .tab-glyph { width: .8rem; font-size: .8rem; }
         .stations-grid { gap: .58rem; }
+
+    /* Very narrow phones: drop the row cover so its width serves title/artist. */
+    .track-thumb { display: none; }
 
 }
 

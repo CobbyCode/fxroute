@@ -6482,11 +6482,16 @@ function librarySelectionButtonHtml(trackId, isSelected) {
 // Shared detail track-row body for the library list view, album / playlist
 // detail, and (via the init api) TIDAL detail rows.  One row language:
 // optional index, round play button, stacked title / sub, optional album
-// context, selection Plus, favorite, duration.
+// context, selection Plus, favorite, duration. Rows with an index wrap the
+// number and the play button in one leading element so narrow phones can
+// share a single slot; rows without an index keep a lone play button.
 function detailTrackRowHtml({ index, title, sub, album, favoriteButton, selectionButton, duration, thumb }) {
+    const playButton = '<button type="button" class="track-play" title="Play">▶</button>';
+    const lead = index != null
+        ? '<span class="track-numplay"><span class="track-index">' + index + '</span>' + playButton + '</span>'
+        : playButton;
     return (
-        (index != null ? '<span class="track-index">' + index + '</span>' : '') +
-        '<button type="button" class="track-play" title="Play">▶</button>' +
+        lead +
         (thumb || '') +
         '<div class="track-info">' +
             '<div class="track-title">' + title + '</div>' +
