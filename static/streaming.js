@@ -59,7 +59,7 @@
     // these copy/content flags key off the provider id.
     const PROVIDER_META = {
         spotify: { name: 'Spotify', canConnect: false },
-        qobuz: { name: 'Qobuz', canConnect: false },
+        qobuz: { name: 'Qobuz', canConnect: true },
         tidal: { name: 'Tidal', canConnect: true, catalog: true },
     };
 
@@ -549,11 +549,22 @@
         els.emptyIcon.textContent = '';
         els.emptyActions.innerHTML = '';
         if (action === 'connect') {
+            // Disconnected account providers share one primary login action.
+            // The label/handler follows the card's own provider so Qobuz and
+            // TIDAL read as the same component with the same button style.
+            const providerId = entry.providerId || entry.root?.getAttribute?.('data-provider');
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'btn-primary';
-            btn.textContent = 'Connect TIDAL';
-            btn.addEventListener('click', () => openTidalLogin());
+            if (providerId === 'qobuz') {
+                btn.textContent = 'Start Qobuz Login';
+                btn.addEventListener('click', () => {
+                    if (typeof api.openQobuzLogin === 'function') api.openQobuzLogin();
+                });
+            } else {
+                btn.textContent = 'Start TIDAL Login';
+                btn.addEventListener('click', () => openTidalLogin());
+            }
             els.emptyActions.appendChild(btn);
         }
     }
@@ -594,7 +605,7 @@
     }
 
     function connectMessage(providerId) {
-        if (providerId === 'qobuz') return 'Sign in to Qobuz through qbzd to start playback.';
+        if (providerId === 'qobuz') return 'Sign in to Qobuz to start playback.';
         return 'Connect your TIDAL account to browse and play music.';
     }
 
@@ -833,13 +844,20 @@
         content.hidden = false;
         if (state.tidal.view === 'pkce') { renderTidalPkce(content); return; }
         if (state.tidal.view === 'device') { renderTidalDevice(content); return; }
+        // Disconnected card shares the .streaming-empty geometry (same width,
+        // padding, centering, heading/text sizes, primary button). The browser
+        // login is the single primary action; device login stays available as
+        // a subordinate second option underneath with its quality note.
         content.innerHTML =
-            '<div class="streaming-auth">' +
-                '<h3 class="streaming-auth-title">Connect TIDAL</h3>' +
-                '<p class="streaming-auth-hint">For Lossless and Hi-Res, use the secure browser login.</p>' +
-                '<div class="streaming-auth-actions">' +
+            '<div class="streaming-auth streaming-auth--disconnected">' +
+                '<h2 class="streaming-auth-title">Connect TIDAL</h2>' +
+                '<p class="streaming-auth-hint">Sign in for lossless and Hi-Res playback.</p>' +
+                '<div class="streaming-auth-actions streaming-auth-actions--primary">' +
                     '<button type="button" class="btn-primary" id="tidal-auth-pkce">Start TIDAL Login</button>' +
-                    '<button type="button" class="btn-ghost" id="tidal-auth-device">Device login (limited to AAC 320 kbps)</button>' +
+                '</div>' +
+                '<div class="streaming-auth-alternative">' +
+                    '<button type="button" class="streaming-auth-secondary" id="tidal-auth-device">Use device login instead</button>' +
+                    '<p class="streaming-auth-note">Device login (limited to AAC 320 kbps).</p>' +
                 '</div>' +
             '</div>';
         content.querySelector('#tidal-auth-pkce').addEventListener('click', () => {

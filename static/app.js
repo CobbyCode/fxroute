@@ -1014,6 +1014,7 @@ document.addEventListener('DOMContentLoaded', () => {
             aboutHtml: detailAboutHtml,
             spotifyCommand,
             spotifySeek,
+            openQobuzLogin: () => void beginQobuzLogin(),
             openTidalLogin: () => void beginTidalLogin(),
         });
     } catch(e) { console.error('streaming module initialization crashed:', e); }
