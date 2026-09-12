@@ -95,6 +95,7 @@ async function main() {
         'getMeasurementPeqNameSuffix',
         'getMeasurementPeqDraftMode',
         'getMeasurementPeqPresetName',
+        'resolveMeasurementPeqPresetName',
         'takeMeasurementPeqToPreset',
         'createMeasurementPeqPresetFromDraft',
     ].map(extractFunction).join('\n');
