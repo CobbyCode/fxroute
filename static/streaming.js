@@ -18,6 +18,22 @@
     let api = null;
     let showToast = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
+    // Shared transition-error formatter injected by app.js. The local default
+    // still handles the structured {message, stage} payload so this module
+    // never renders "[object Object]" when used standalone.
+    let formatTransitionErrorDetail = function (detail, fallback) {
+        if (typeof detail === 'string' && detail.trim()) return detail.trim();
+        if (detail && typeof detail === 'object') {
+            const message = typeof detail.message === 'string' ? detail.message.trim() : '';
+            const stage = typeof detail.stage === 'string' ? detail.stage.trim() : '';
+            if (message) {
+                return stage && !message.toLowerCase().includes(stage.toLowerCase())
+                    ? message + ' (stage: ' + stage + ')'
+                    : message;
+            }
+        }
+        return fallback || '';
+    };
     // Canonical favorite heart: one inline SVG painted from currentColor, so
     // the muted / accent button states stay authoritative. app.js owns the
     // implementation and injects it in init; the default keeps this module
@@ -131,6 +147,7 @@
         api = interfaceApi || {};
         if (typeof api.showToast === 'function') showToast = api.showToast;
         if (typeof api.escapeHtml === 'function') escapeHtml = api.escapeHtml;
+        if (typeof api.formatTransitionErrorDetail === 'function') formatTransitionErrorDetail = api.formatTransitionErrorDetail;
         if (typeof api.favoriteHeartSvg === 'function') favoriteHeartSvg = api.favoriteHeartSvg;
         if (typeof api.formatTime === 'function') formatTime = api.formatTime;
         if (typeof api.artworkPlaceholderUrl === 'function') artworkPlaceholderUrl = api.artworkPlaceholderUrl;
@@ -788,11 +805,16 @@
     // Error normalization (provider-neutral user-facing text)
     // -----------------------------------------------------------------------
     function errorDetail(resp) {
-        return resp.json().then((d) => d?.detail || '').catch(() => '');
+        // Keep the structured detail readable through the Error message: a raw
+        // object would otherwise become "[object Object]" in every caller.
+        return resp.json().then((d) => formatTransitionErrorDetail(d?.detail, '')).catch(() => '');
     }
 
     function friendlyError(raw) {
-        const text = String(raw || '');
+        // Provider/transition errors can be structured objects. Never stringify
+        // one blindly: that is what produced the bare "[object Object]" toast.
+        const text = formatTransitionErrorDetail(raw, '')
+            || (typeof raw === 'string' ? raw : '');
         const lower = text.toLowerCase();
         if (lower.includes('not authenticated') || lower.includes('not eligible') || lower.includes('unauthorized')) {
             return 'You need to sign in to continue.';

@@ -50,6 +50,7 @@ class PlaybackRuntimeDependencies:
     ensure_playback_samplerate_force: Callable[..., Awaitable[bool]]
     persist_audio_output_mode: Callable[..., dict]
     trigger_idle_sink_renegotiation: Callable[..., Awaitable[bool]]
+    recover_stale_samplerate_helper: Callable[..., Awaitable[bool]]
     reconcile_transition_sink_rate: Callable[..., Awaitable[bool]]
     coordinator_source_rate: Callable[..., int | None]
     coordinator_target_rate: Callable[..., int | None]

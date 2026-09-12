@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 STALE_SYNC_RETRY_DEADLINE_S = 30.0
 STALE_SYNC_RETRY_POLL_S = 1.0
 
+# Bounded wait for the hardware sink to renegotiate after a stale helper was
+# rebuilt at the target rate (process rebuild, not a rate change).
+STALE_HELPER_ALIGNMENT_TIMEOUT_MS = 2500
+
 
 @dataclass(frozen=True)
 class DspOrchestrationDeps:
@@ -64,6 +68,9 @@ class DspOrchestrationDeps:
     peak_monitor_restart_settle_ms: float
     sleep: Callable[[float], Awaitable[Any]]
     get_output_mode: Callable[[], str] | None = None
+    # Live force-rate writer used only by the deliberate stale-helper repair to
+    # drop a pin that contradicts the recovery target.
+    set_pipewire_force_rate: Callable[[int], None] | None = None
 
 
 def helper_argument_sample_rate(snapshot: dict | None) -> int | None:
@@ -102,6 +109,7 @@ class DspOrchestrator:
         _rate_lock_held: bool = False,
         target_overview: dict | None = None,
         retry_on_stale: bool = False,
+        allow_unsettled_rate: bool = False,
     ) -> dict:
         """Synchronize the native helper from one live, lock-protected rate.
 
@@ -119,6 +127,12 @@ class DspOrchestrator:
         the sink settles on the authoritative rate. This closes the gap where a
         user-initiated output switch during rate-pinned playback persisted the
         selection but left the graph linked to the previous card forever.
+
+        ``allow_unsettled_rate`` is reserved for a deliberate stale-helper
+        repair (see :meth:`recover_stale_helper_samplerate`): the caller's
+        explicit target becomes authoritative and the sink-rate gates are
+        bypassed once, because a stale helper pins the hardware sink away from
+        that target and the gates can therefore never pass.
         """
         overview_was_supplied = audio_overview is not None
         overview = (
@@ -153,6 +167,17 @@ class DspOrchestrator:
                     reason, requested_rate,
                 )
                 return overview
+
+            if allow_unsettled_rate and requested_rate is not None:
+                # Deliberate stale-helper repair: the requested target is
+                # authoritative.  The gates below require the hardware sink to
+                # already sit at that rate -- exactly what the stale helper
+                # prevents -- so they can never pass and are bypassed once.
+                repair_overview = samplerate.audio_output_overview_with_effective_rate(
+                    target_overview or overview, requested_rate,
+                )
+                await dsp_runtime.sync(repair_overview)
+                return repair_overview
 
             sink_rate = samplerate_status.get("active_rate")
             if sink_rate != authoritative_rate:
@@ -278,6 +303,135 @@ class DspOrchestrator:
             reason, requested_rate,
         )
 
+    async def recover_stale_helper_samplerate(
+        self,
+        target_rate: int,
+        *,
+        reason: str = "unspecified",
+        _rate_lock_held: bool = False,
+    ) -> bool:
+        """Rebuild a stale native DSP helper so the hardware sink can move.
+
+        A helper left running at a previous rate keeps the hardware sink at
+        that rate: ``clock.force-rate`` writes, sink suspend/resume pulses and
+        the idle silent trigger all fail to renegotiate a sink that an active
+        helper stream clocks.  Rebuilding the helper at ``target_rate`` is the
+        only path that releases that pin, so this is the recovery for the
+        circular helper/sink state a skipped or deferred measurement restore
+        can leave behind.
+
+        Only that exact state is touched: the helper must be live at a rate
+        other than the target and the sink must not already be aligned.
+        Returns whether the sink ended up aligned at ``target_rate``.
+        """
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            return False
+        if self._deps.measurement_audio_graph_owned():
+            return False
+        dsp_runtime = self._deps.get_dsp_runtime()
+        if dsp_runtime is None:
+            return False
+        try:
+            status = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
+        except Exception:
+            return False
+        if samplerate.playback_rate_aligned(status, target_rate):
+            return True
+        try:
+            snapshot = dict(dsp_runtime.snapshot() or {})
+        except Exception:
+            return False
+        helper_rate = helper_argument_sample_rate(snapshot)
+        if not snapshot.get("active") or helper_rate is None or helper_rate == target_rate:
+            # No live helper, or it already runs at the target: not this state.
+            return False
+        force_rate = status.get("force_rate")
+        if (
+            self._deps.set_pipewire_force_rate is not None
+            and isinstance(force_rate, int)
+            and force_rate > 0
+            and force_rate != target_rate
+        ):
+            # A pin that contradicts the target would leave the graph resampling
+            # to the stale rate even after the helper rebuild, so the recovery
+            # owns the pin too (same intent: the caller's target rate).
+            try:
+                await asyncio.to_thread(self._deps.set_pipewire_force_rate, target_rate)
+            except Exception as exc:
+                logger.warning(
+                    "Stale native DSP helper rebuild could not align the force-rate pin: "
+                    "reason=%s target_rate=%s pinned_rate=%s error=%s",
+                    reason, target_rate, force_rate, exc,
+                )
+                return False
+        try:
+            overview = await asyncio.to_thread(self._deps.get_audio_output_overview)
+        except Exception:
+            return False
+        staged_overview = samplerate.audio_output_overview_with_effective_rate(
+            overview, target_rate,
+        )
+        logger.warning(
+            "Stale native DSP helper rebuild: reason=%s target_rate=%s helper_rate=%s hardware_sink_rate=%s",
+            reason, target_rate, helper_rate, status.get("active_rate"),
+        )
+        try:
+            await self.sync_runtime(
+                audio_overview=staged_overview,
+                target_overview=staged_overview,
+                reason=f"stale-helper-rebuild:{reason}",
+                _rate_lock_held=_rate_lock_held,
+                allow_unsettled_rate=True,
+            )
+        except Exception as exc:
+            logger.error(
+                "Stale native DSP helper rebuild failed: reason=%s target_rate=%s error=%s",
+                reason, target_rate, exc,
+            )
+            return False
+        aligned = bool(await self._deps.wait_for_samplerate_alignment(
+            target_rate, timeout_ms=STALE_HELPER_ALIGNMENT_TIMEOUT_MS,
+        ))
+        logger.info(
+            "Stale native DSP helper rebuild result: reason=%s target_rate=%s aligned=%s helper_rate_before=%s",
+            reason, target_rate, aligned, helper_rate,
+        )
+        return aligned
+
+    async def _repair_idle_stale_pinned_rate(self, dsp_runtime: Any) -> None:
+        """Repair the one unambiguous idle helper/rate inconsistency.
+
+        With no current track the link watcher has no source identity or
+        target rate, so the full link recovery cannot run.  A live force-rate
+        pin the running helper does not honour is still unambiguous: the
+        helper holds the hardware sink at its own rate, so every later play on
+        the pinned rate would fail its target-rate stage.  Only that state is
+        repaired; a healthy idle graph is left untouched.
+        """
+        try:
+            status = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
+        except Exception:
+            return
+        pinned_rate = status.get("force_rate")
+        if not isinstance(pinned_rate, int) or pinned_rate <= 0:
+            return
+        if samplerate.playback_rate_aligned(status, pinned_rate):
+            return
+        try:
+            snapshot = dict(dsp_runtime.snapshot() or {})
+        except Exception:
+            return
+        helper_rate = helper_argument_sample_rate(snapshot)
+        if not snapshot.get("active") or helper_rate is None or helper_rate == pinned_rate:
+            return
+        logger.warning(
+            "Idle stale native DSP helper detected: pinned_rate=%s helper_rate=%s hardware_sink_rate=%s",
+            pinned_rate, helper_rate, status.get("active_rate"),
+        )
+        await self.recover_stale_helper_samplerate(
+            pinned_rate, reason="idle-helper-rate-watch",
+        )
+
     async def sync_runtime_at_rate(self, target_rate: int, *, _rate_lock_held: bool = False) -> None:
         """Re-sync through the central live-rate helper path after a rate transition."""
         dsp_runtime = self._deps.get_dsp_runtime()
@@ -300,12 +454,24 @@ class DspOrchestrator:
             selected_aligned, _ = await self._deps.wait_for_selected_output_effective_rate(target_rate, timeout_ms=3500)
             sink_aligned = await self._deps.wait_for_samplerate_alignment(target_rate, timeout_ms=3500)
             if not selected_aligned or not sink_aligned:
-                logger.warning(
-                    "Subwoofer runtime measurement release re-sync deferred: target_rate=%s "
-                    "selected_output_aligned=%s sink_aligned=%s",
-                    target_rate, selected_aligned, sink_aligned,
+                # A measurement release must not leave an ownerless graph at
+                # the measurement rate.  The sink cannot reach the restore
+                # rate while a stale helper still clocks it, so repair that
+                # helper instead of deferring the restore forever (the skipped
+                # ``intent-changed-after-quiet`` restore path used to stop
+                # here and persist a 48 kHz helper under a 44.1 kHz pin).
+                recovered = await self.recover_stale_helper_samplerate(
+                    target_rate,
+                    reason="measurement-release",
+                    _rate_lock_held=_rate_lock_held,
                 )
-                return
+                if not recovered:
+                    logger.warning(
+                        "Subwoofer runtime measurement release re-sync deferred: target_rate=%s "
+                        "selected_output_aligned=%s sink_aligned=%s",
+                        target_rate, selected_aligned, sink_aligned,
+                    )
+                    return
         await self.sync_runtime(
             reason="measurement-release", _rate_lock_held=_rate_lock_held,
         )
@@ -415,6 +581,10 @@ class DspOrchestrator:
                     continue
                 track = dict(self._deps.get_current_track_info() or {})
                 if not track:
+                    # No source owns a target rate.  Repair a pinned helper
+                    # that does not honour the live force-rate pin rather than
+                    # preserving that inconsistency until the next play fails.
+                    await self._repair_idle_stale_pinned_rate(dsp_runtime)
                     continue
                 source = str(track.get("source") or "")
                 target_rate = self._deps.coordinator_target_rate(source, track)

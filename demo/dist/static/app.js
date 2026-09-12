@@ -1008,6 +1008,7 @@ document.addEventListener('DOMContentLoaded', () => {
             favoriteHeartSvg,
             formatTime,
             artworkPlaceholderUrl,
+            formatTransitionErrorDetail,
             trackRowHtml: detailTrackRowHtml,
             factsHtml: detailFactsHtml,
             aboutHtml: detailAboutHtml,
@@ -14690,8 +14691,12 @@ async function apiFetchJson(url, options = {}) {
     const resp = await fetch(url, options);
     const data = await resp.json().catch(() => null);
     if (!resp.ok) {
+        // A transition failure carries a structured detail object
+        // ({ok, transition_id, stage, failure_latched, message}). Rendering it
+        // through String() would surface the useless "[object Object]"; the
+        // shared formatter keeps the backend message and stage visible.
         const detail = data && (data.detail || data.error || data.message);
-        throw new Error(detail || `HTTP ${resp.status} ${url}`);
+        throw new Error(formatTransitionErrorDetail(detail, `HTTP ${resp.status} ${url}`));
     }
     return data;
 }

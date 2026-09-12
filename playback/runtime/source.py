@@ -279,6 +279,16 @@ class _RuntimeSourceMixin:
         if not aligned:
             aligned = await self._deps.trigger_idle_sink_renegotiation(request.target_rate)
         if not aligned:
+            # A helper left running at another rate pins the hardware sink at
+            # that rate: neither the force-rate pin, the sink suspend/resume
+            # pulse nor the idle silent trigger can move it.  Rebuild the
+            # stale helper at the target so the sink can renegotiate, then
+            # re-check -- no blind timeout extension.
+            aligned = await self._deps.recover_stale_samplerate_helper(
+                request.target_rate,
+                reason=f"coordinator:{request.operation}:{request.source}",
+            )
+        if not aligned:
             status = await asyncio.to_thread(self._deps.get_samplerate_status)
             raise RuntimeError(
                 "target hardware rate did not settle: "

@@ -819,6 +819,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         ),
         persist_audio_output_mode=lambda *a, **k: persist_audio_output_mode(*a, **k),
         trigger_idle_sink_renegotiation=lambda *a, **k: samplerate.trigger_idle_sink_renegotiation(*a, **k),
+        recover_stale_samplerate_helper=lambda *a, **k: dsp_orchestrator.recover_stale_helper_samplerate(*a, **k),
         reconcile_transition_sink_rate=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.reconcile_transition_sink_rate(
             *a, measurement_blocks_rate=measurement_blocks_rate, **k
         ),
@@ -2625,6 +2626,9 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         peak_monitor_restart_settle_ms=PEAK_MONITOR_RESTART_SETTLE_MS,
         sleep=lambda delay: asyncio.sleep(delay),
         get_output_mode=lambda: _current_output_mode(),
+        # Only the deliberate stale-helper repair writes the pin: it must not
+        # leave a pin contradicting the rate it just rebuilt the helper at.
+        set_pipewire_force_rate=lambda rate: samplerate.set_pipewire_force_rate(rate),
     )
 
 
