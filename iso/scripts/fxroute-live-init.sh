@@ -61,6 +61,10 @@ runuser -u "$LIVE_USER" -- env HOME="$LIVE_HOME" mkdir -p \
 # Each user-bus call is time-boxed so a missing bus can never stall the boot
 # before the display manager (then SDDM autologin would never appear).
 systemctl start "user@${LIVE_UID}.service" 2>/dev/null || true
+# Cold live media (USB/squash decompression) can need many seconds for the
+# first mpv exec; the app's version probe would time out and leave the
+# player dead forever. Pre-warm the page cache before starting the service.
+timeout 120 runuser -u "$LIVE_USER" -- mpv --version >/dev/null 2>&1 || true
 live_user_systemctl() {
   timeout 30 runuser -u "$LIVE_USER" -- env HOME="$LIVE_HOME" \
     XDG_RUNTIME_DIR="/run/user/$LIVE_UID" \

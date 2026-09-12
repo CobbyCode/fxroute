@@ -72,6 +72,18 @@ class LiveRootBuilderTests(unittest.TestCase):
         self.assertIn("fxroute-provider-privileged", text)
         self.assertIn("/usr/local/sbin", text)
 
+    def test_builder_parity_audio_and_power_configs(self):
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn("50-fxroute-bluetooth.conf", text)
+        self.assertIn("90-fxroute-clock-rate.conf", text)
+        self.assertIn("50-fxroute-power.rules", text)
+        self.assertIn("seat-monitoring", text)
+        self.assertIn("default.clock.allowed-rates", text)
+
+    def test_live_init_prewarms_mpv(self):
+        text = LIVE_INIT.read_text(encoding="utf-8")
+        self.assertIn("mpv --version", text)
+
     def test_builder_adds_live_user_to_input_group(self):
         text = BUILDER.read_text(encoding="utf-8")
         self.assertIn("input", text)

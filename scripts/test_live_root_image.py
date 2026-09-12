@@ -95,6 +95,17 @@ class LiveRootImageTests(unittest.TestCase):
         amps = [p for p in self.files if re.search(r"/usr/lib/firmware/TAS.+\.bin(\.\w+)?$", p)]
         self.assertTrue(amps, "live root has no amp firmware")
 
+    def test_live_parity_audio_and_power_configs(self):
+        for path in ("/home/fxroute/.config/wireplumber/wireplumber.conf.d/50-fxroute-bluetooth.conf",
+                     "/home/fxroute/.config/pipewire/pipewire.conf.d/90-fxroute-clock-rate.conf",
+                     "/etc/polkit-1/rules.d/50-fxroute-power.rules"):
+            with self.subTest(path=path):
+                self.assertIn(path, self.files)
+        bt = self.cat("/home/fxroute/.config/wireplumber/wireplumber.conf.d/50-fxroute-bluetooth.conf")
+        self.assertIn("seat-monitoring", bt)
+        clock = self.cat("/home/fxroute/.config/pipewire/pipewire.conf.d/90-fxroute-clock-rate.conf")
+        self.assertIn("default.clock.allowed-rates", clock)
+
     def test_live_privileged_helpers_present_and_root_owned(self):
         for helper in ("/usr/local/sbin/fxroute-cifs-mount",
                        "/usr/local/sbin/fxroute-provider-privileged"):

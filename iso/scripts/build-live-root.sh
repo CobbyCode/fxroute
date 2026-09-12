@@ -461,6 +461,36 @@ if [[ -f "$LIVE_HOME/fxroute/assets/fxroute-wallpaper.png" ]]; then
   chmod 644 /usr/share/wallpapers/fxroute-wallpaper.png
 fi
 
+# Audio/power parity with the installed path (install.sh): WirePlumber
+# Bluetooth monitor without seat gate, canonical PipeWire clock rates, and
+# the narrow polkit rule for the UI power menu (rendered for fxroute).
+su "$LIVE_USER" -c "mkdir -p ~/.config/wireplumber/wireplumber.conf.d ~/.config/pipewire/pipewire.conf.d"
+cat > "$LIVE_HOME/.config/wireplumber/wireplumber.conf.d/50-fxroute-bluetooth.conf" <<'EOF'
+# Managed by FXRoute. Headless appliances (linger, no login session) never
+# activate a logind seat; with seat-monitoring enabled WirePlumber never
+# creates the BlueZ monitor, no A2DP endpoints are registered and Bluetooth
+# input stays unavailable. Disable the seat gate so the monitor always runs.
+wireplumber.profiles = {
+  main = {
+    monitor.bluez.seat-monitoring = disabled
+  }
+}
+EOF
+cat > "$LIVE_HOME/.config/pipewire/pipewire.conf.d/90-fxroute-clock-rate.conf" <<'EOF'
+# Managed by FXRoute. Changes take effect after restarting PipeWire/session or rebooting.
+context.properties = {
+    default.clock.rate = 44100
+    default.clock.allowed-rates = [ 44100 48000 88200 96000 176400 192000 352800 384000 ]
+}
+EOF
+chown "$LIVE_USER:$(id -gn "$LIVE_USER")" "$LIVE_HOME/.config/wireplumber/wireplumber.conf.d/50-fxroute-bluetooth.conf" "$LIVE_HOME/.config/pipewire/pipewire.conf.d/90-fxroute-clock-rate.conf"
+chmod 644 "$LIVE_HOME/.config/wireplumber/wireplumber.conf.d/50-fxroute-bluetooth.conf" "$LIVE_HOME/.config/pipewire/pipewire.conf.d/90-fxroute-clock-rate.conf"
+if [[ -f "$LIVE_HOME/fxroute/assets/polkit/50-fxroute-power.rules" ]]; then
+  mkdir -p /etc/polkit-1/rules.d
+  sed -e "s/INSTALL_USER_PLACEHOLDER/$LIVE_USER/g" "$LIVE_HOME/fxroute/assets/polkit/50-fxroute-power.rules" > /etc/polkit-1/rules.d/50-fxroute-power.rules
+  chmod 644 /etc/polkit-1/rules.d/50-fxroute-power.rules
+fi
+
 # Privileged helpers the app calls via passwordless sudo (same paths as
 # install.sh): CIFS mount helper for SMB libraries and the provider
 # helper for provider login/network checks. Live sudo already covers

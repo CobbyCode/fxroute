@@ -97,7 +97,7 @@ class MPVWrapper:
             pass
 
         try:
-            subprocess.run(["mpv", "--version"], capture_output=True, check=True, timeout=2)
+            subprocess.run(["mpv", "--version"], capture_output=True, check=True, timeout=15)
         except subprocess.TimeoutExpired as e:
             raise MPVNotInstalledError("mpv version probe timed out") from e
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
@@ -107,7 +107,7 @@ class MPVWrapper:
         logger.info(f"Starting mpv: {' '.join(cmd)}")
         self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        timeout = 5
+        timeout = 15
         start = time.time()
         while not os.path.exists(self.socket_path):
             if time.time() - start > timeout:
