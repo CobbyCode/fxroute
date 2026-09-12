@@ -80,9 +80,20 @@ class LiveRootBuilderTests(unittest.TestCase):
         self.assertIn("seat-monitoring", text)
         self.assertIn("default.clock.allowed-rates", text)
 
+    def test_builder_builds_calf_like_installer(self):
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn('CALF_VERSION="0.90.9"', text)
+        self.assertIn("2d304eed88e87438b2b8857a2f4480046bf4003bce2e17a042abdbbf7d59122f", text)
+        self.assertIn(".lv2/calf.lv2", text)
+
     def test_live_init_prewarms_mpv(self):
         text = LIVE_INIT.read_text(encoding="utf-8")
         self.assertIn("mpv --version", text)
+
+    def test_live_init_unmutes_audio(self):
+        text = LIVE_INIT.read_text(encoding="utf-8")
+        self.assertIn("amixer", text)
+        self.assertIn("unmute", text)
 
     def test_builder_adds_live_user_to_input_group(self):
         text = BUILDER.read_text(encoding="utf-8")

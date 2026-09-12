@@ -95,6 +95,11 @@ class LiveRootImageTests(unittest.TestCase):
         amps = [p for p in self.files if re.search(r"/usr/lib/firmware/TAS.+\.bin(\.\w+)?$", p)]
         self.assertTrue(amps, "live root has no amp firmware")
 
+    def test_live_calf_bundle_matches_installer(self):
+        self.assertIn("/home/fxroute/.lv2/calf.lv2", self.files)
+        manifest = self.cat("/home/fxroute/.lv2/calf.lv2/manifest.ttl")
+        self.assertIn("BassEnhancer", manifest)
+
     def test_live_parity_audio_and_power_configs(self):
         for path in ("/home/fxroute/.config/wireplumber/wireplumber.conf.d/50-fxroute-bluetooth.conf",
                      "/home/fxroute/.config/pipewire/pipewire.conf.d/90-fxroute-clock-rate.conf",

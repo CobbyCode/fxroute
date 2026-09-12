@@ -65,6 +65,15 @@ systemctl start "user@${LIVE_UID}.service" 2>/dev/null || true
 # first mpv exec; the app's version probe would time out and leave the
 # player dead forever. Pre-warm the page cache before starting the service.
 timeout 120 runuser -u "$LIVE_USER" -- mpv --version >/dev/null 2>&1 || true
+# Fresh live boots start factory-muted; unmute once so demo audio is
+# audible without opening a mixer first. Best effort, never fatal.
+for card in /dev/snd/controlC*; do
+  [[ -e "$card" ]] || continue
+  card_id="${card#/dev/snd/controlC}"
+  amixer -c "$card_id" sset Master unmute >/dev/null 2>&1 || true
+  amixer -c "$card_id" sset Master 80% >/dev/null 2>&1 || true
+  amixer -c "$card_id" sset PCM unmute >/dev/null 2>&1 || true
+done
 live_user_systemctl() {
   timeout 30 runuser -u "$LIVE_USER" -- env HOME="$LIVE_HOME" \
     XDG_RUNTIME_DIR="/run/user/$LIVE_UID" \

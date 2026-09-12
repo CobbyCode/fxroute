@@ -332,6 +332,32 @@ fi
 # Native DSP build.
 su "$LIVE_USER" -c "cd ~/fxroute && bash native_dsp/build.sh || bash -c 'cmake -S native_dsp -B native_dsp/build && cmake --build native_dsp/build --parallel'"
 
+# Calf LV2 exactly like install.sh (pinned version + checksum): the DSP
+# helper chain always instantiates the Calf BassEnhancer, so a missing
+# bundle fails every playback transition on every device. User-local
+# bundle like the installer; the build fails loudly if it is incomplete.
+CALF_VERSION="0.90.9"
+CALF_SHA256="2d304eed88e87438b2b8857a2f4480046bf4003bce2e17a042abdbbf7d59122f"
+curl -fL --retry 3 -o /tmp/calf.tar.gz "https://github.com/calf-studio-gear/calf/archive/$CALF_VERSION.tar.gz"
+printf '%s  %s\n' "$CALF_SHA256" /tmp/calf.tar.gz | sha256sum -c -
+rm -rf /tmp/calf-src /tmp/calf-build /tmp/calf-stage
+mkdir -p /tmp/calf-src
+tar -xzf /tmp/calf.tar.gz -C /tmp/calf-src
+cmake -S "/tmp/calf-src/calf-$CALF_VERSION" -B /tmp/calf-build \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+  -DLV2DIR=/usr/lib64/lv2 -DWANT_GUI=OFF -DWANT_JACK=OFF \
+  -DWANT_LASH=OFF -DWANT_SORDI=OFF
+cmake --build /tmp/calf-build --parallel
+env DESTDIR=/tmp/calf-stage cmake --install /tmp/calf-build
+[[ -d /tmp/calf-stage/usr/lib64/lv2/calf.lv2 && -f /tmp/calf-stage/usr/lib64/calf/libcalf.so ]] \
+  || { echo "[live-root][error] Calf LV2 source build did not produce the expected bundle" >&2; exit 1; }
+rm -f /tmp/calf-stage/usr/lib64/lv2/calf.lv2/calf.so
+cp -- /tmp/calf-stage/usr/lib64/calf/libcalf.so /tmp/calf-stage/usr/lib64/lv2/calf.lv2/calf.so
+su "$LIVE_USER" -c "mkdir -p ~/.lv2 && rm -rf ~/.lv2/calf.lv2"
+cp -a /tmp/calf-stage/usr/lib64/lv2/calf.lv2 "$LIVE_HOME/.lv2/calf.lv2"
+chown -R "$LIVE_USER:$(id -gn "$LIVE_USER")" "$LIVE_HOME/.lv2/calf.lv2"
+rm -rf /tmp/calf.tar.gz /tmp/calf-src /tmp/calf-build /tmp/calf-stage
+
 # Minimal .env for live (Music dir in RAM home).
 if [[ ! -f "$LIVE_HOME/fxroute/.env" ]]; then
   printf 'MUSIC_ROOT=%s/Music\nDOWNLOADS_SUBDIR=incoming\nLOG_LEVEL=INFO\nHOST=0.0.0.0\nPORT=8000\n' "$LIVE_HOME" > "$LIVE_HOME/fxroute/.env"
