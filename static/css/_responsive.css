@@ -1030,11 +1030,6 @@
             justify-content: center;
         }
 
-        #measurement-setup-toggle {
-            align-self: stretch;
-            margin-top: 0.15rem;
-        }
-
         .measurement-card-setup,
         .measurement-card-setup .measurement-stack,
         .measurement-card-setup .field-group {
@@ -1064,8 +1059,7 @@
         .measurement-peq-editor-actions .btn-danger,
         .measurement-peq-take-row .btn-secondary,
         .measurement-save-row .btn-secondary,
-        #measurement-repeat-start,
-        #measurement-setup-toggle {
+        #measurement-repeat-start {
             width: 100%;
         }
 

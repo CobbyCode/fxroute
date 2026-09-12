@@ -4266,6 +4266,15 @@ body {
     gap: 1rem;
 }
 
+.measurement-main.is-setup > :not(.measurement-card-setup) {
+    display: none;
+}
+
+#measurement-setup-back {
+    align-self: flex-start;
+    margin-bottom: 1rem;
+}
+
 .measurement-sidebar {
     display: none;
 }
@@ -4353,10 +4362,15 @@ body {
     display: none;
 }
 
-.measurement-clear-btn {
-    min-height: 34px;
-    padding: 0.38rem 0.85rem;
+#measurement-setup-toggle,
+#measurement-clear {
+    flex: 0 0 auto;
+    width: 5.25rem;
+    height: 44px;
+    min-height: 44px;
+    padding: 0.5rem 0.85rem;
     white-space: nowrap;
+    justify-self: end;
 }
 
 .measurement-actions-top {
@@ -4378,6 +4392,13 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+}
+
+.measurement-workflow-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
 }
 
 .measurement-workflow-section + .measurement-workflow-section {
@@ -4475,11 +4496,6 @@ body {
     align-items: center;
     gap: 0.55rem;
     min-width: 0;
-}
-
-#measurement-setup-toggle {
-    align-self: flex-start;
-    min-width: 104px;
 }
 
 #measurement-repeat-start,
@@ -8165,11 +8181,6 @@ input[type="number"]::-webkit-outer-spin-button {
             justify-content: center;
         }
 
-        #measurement-setup-toggle {
-            align-self: stretch;
-            margin-top: 0.15rem;
-        }
-
         .measurement-card-setup,
         .measurement-card-setup .measurement-stack,
         .measurement-card-setup .field-group {
@@ -8199,8 +8210,7 @@ input[type="number"]::-webkit-outer-spin-button {
         .measurement-peq-editor-actions .btn-danger,
         .measurement-peq-take-row .btn-secondary,
         .measurement-save-row .btn-secondary,
-        #measurement-repeat-start,
-        #measurement-setup-toggle {
+        #measurement-repeat-start {
             width: 100%;
         }
 

@@ -112,6 +112,9 @@ window.fetch = (url, opts) => {
     if (u.includes('/api/status')) return json({ source: 'local', status: 'Stopped' });
     if (u.includes('/api/dsp/presets')) return json({ available: true, preset_count: 0, active_preset: 'Neutral', presets: [] });
     if (u.includes('/api/measurements/settings')) {
+        if (opts?.method === 'PATCH') {
+            window.__measurementCalls.push({ type: 'settings', payload: JSON.parse(opts.body) });
+        }
         return json({ measurement_settings: { measurementSampleRate: 48000 } });
     }
     if (u.includes('/api/measurements/inputs')) {
@@ -164,6 +167,49 @@ def _run():
                 page = browser.new_page(viewport={"width": width, "height": height})
                 page.add_init_script(STUB)
                 _open_measurement(page)
+
+                setup = page.locator('#measurement-setup-toggle')
+                setup_box = setup.bounding_box()
+                reset_box = page.locator('#measurement-clear').bounding_box()
+                label_box = page.locator('.measurement-workflow-label').first.bounding_box()
+                assert abs(setup_box['width'] - reset_box['width']) < 1, 'Setup and Reset widths differ'
+                assert abs(setup_box['height'] - reset_box['height']) < 1, 'Setup and Reset heights differ'
+                assert abs(setup_box['x'] + setup_box['width'] - reset_box['x'] - reset_box['width']) < 1
+                assert abs(setup_box['y'] + setup_box['height'] / 2 - label_box['y'] - label_box['height'] / 2) < 1
+                page.evaluate("""() => {
+                    window.__setupNodes = [...document.querySelectorAll('#measurement-setup-card input, #measurement-setup-card select')];
+                    window.__assistantNode = document.querySelector('#measurement-panel [role=dialog]');
+                }""")
+                setup.click()
+                assert page.locator('#measurement-setup-card').is_visible()
+                assert page.locator('#measurement-setup-status').is_visible(), 'Setup must retain input status feedback'
+                assert not page.locator('.measurement-card-controls').is_visible()
+                assert not page.locator('.measurement-card-graph').is_visible()
+                assert not page.locator('.measurement-card-list').is_visible()
+                assert page.locator('[role=dialog]:visible').count() == 1
+                assert page.evaluate("document.activeElement?.id") == 'measurement-setup-back'
+                page.locator('#measurement-mic-input-channel-select').select_option('2')
+                page.wait_for_function("window.__measurementCalls.some(c => c.type === 'settings' && c.payload.selectedMicInputChannel === '2')")
+                page.locator('#measurement-setup-back').click()
+                assert not page.locator('#measurement-setup-card').is_visible()
+                assert page.locator('#measurement-setup-status').is_visible()
+                assert page.locator('.measurement-card-graph').is_visible()
+                assert page.evaluate("document.activeElement?.id") == 'measurement-setup-toggle'
+                setup.click()
+                assert page.locator('#measurement-mic-input-channel-select').input_value() == '2'
+                assert page.evaluate("""() =>
+                    window.__assistantNode === document.querySelector('#measurement-panel [role=dialog]') &&
+                    window.__setupNodes.every(node => node === document.getElementById(node.id))
+                """)
+                assert page.evaluate("""() => {
+                    const dialog = document.querySelector('.measurement-dialog');
+                    return dialog.scrollWidth <= dialog.clientWidth + 1;
+                }""")
+                page.keyboard.press('Escape')
+                assert page.locator('#measurement-panel').is_visible()
+                assert not page.locator('#measurement-setup-card').is_visible()
+                assert page.evaluate("document.activeElement?.id") == 'measurement-setup-toggle'
+                checks += 21
 
                 assert page.locator(".measurement-workflow-label").all_text_contents()[:1] == ["Measurements"]
                 assert page.locator("#measurement-sweep-toggle").inner_text() == "Start Sweep"

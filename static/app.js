@@ -567,6 +567,8 @@ const elements = {
     measurementPanel: document.getElementById('measurement-panel'),
     measurementCloseBtn: document.getElementById('measurement-close'),
     measurementSetupCard: document.getElementById('measurement-setup-card'),
+    measurementMain: document.getElementById('measurement-main'),
+    measurementSetupBackBtn: document.getElementById('measurement-setup-back'),
     measurementSetupToggleBtn: document.getElementById('measurement-setup-toggle'),
     measurementModeNote: document.getElementById('measurement-mode-note'),
     measurementInputGroup: document.getElementById('measurement-input-group'),
@@ -10701,6 +10703,10 @@ function toggleMeasurementPanel(forceOpen = null) {
                     setMeasurementSweepMenuOpen(false);
                     return;
                 }
+                if (state.measurement.setupOpen) {
+                    setMeasurementSetupOpen(false);
+                    return;
+                }
                 toggleMeasurementPanel(false);
             },
         });
@@ -11603,11 +11609,17 @@ function renderMeasurementPanel() {
 }
 
 function renderMeasurementPanelSetupSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
+    elements.measurementMain?.classList.toggle('is-setup', measurementState.setupOpen);
+    const statusParent = measurementState.setupOpen
+        ? elements.measurementSetupCard
+        : elements.measurementSetupToggleBtn?.closest('.measurement-card-controls');
+    if (elements.measurementSetupStatus && statusParent && elements.measurementSetupStatus.parentElement !== statusParent) {
+        statusParent.appendChild(elements.measurementSetupStatus);
+    }
     if (elements.measurementSetupCard) {
         elements.measurementSetupCard.classList.toggle('hidden', !measurementState.setupOpen);
     }
     if (elements.measurementSetupToggleBtn) {
-        elements.measurementSetupToggleBtn.textContent = measurementState.setupOpen ? 'Close setup' : 'Setup';
         elements.measurementSetupToggleBtn.disabled = measurementState.startInFlight;
     }
     if (elements.measurementModeNote) {
@@ -12334,6 +12346,15 @@ function bindMeasurementPanelDelegation() {
     });
 }
 
+function setMeasurementSetupOpen(open) {
+    state.measurement.setupOpen = open;
+    setMeasurementSweepMenuOpen(false);
+    renderMeasurementPanel();
+    const focusTarget = open ? elements.measurementSetupBackBtn : elements.measurementSetupToggleBtn;
+    focusTarget?.focus();
+    if (open) elements.measurementPanel.querySelector('.measurement-dialog').scrollTop = 0;
+}
+
 function setupMeasurementActions() {
     if (!elements.measurementPanel || !elements.effectsMeasureOpenBtn || !elements.measurementCloseBtn) return;
     bindMeasurementPanelDelegation();
@@ -12346,10 +12367,10 @@ function setupMeasurementActions() {
     });
     if (elements.measurementSetupToggleBtn) {
         elements.measurementSetupToggleBtn.addEventListener('click', () => {
-            state.measurement.setupOpen = !state.measurement.setupOpen;
-            renderMeasurementPanel();
+            setMeasurementSetupOpen(true);
         });
     }
+    elements.measurementSetupBackBtn?.addEventListener('click', () => setMeasurementSetupOpen(false));
     if (elements.measurementSweepToggleBtn) {
         elements.measurementSweepToggleBtn.addEventListener('click', () => {
             if (state.measurement.startInFlight || hasActiveMeasurementJob()) {
