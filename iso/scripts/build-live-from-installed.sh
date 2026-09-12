@@ -52,6 +52,11 @@ scrub_tree() {
   rm -rf "$tree/var/lib/caddy"
   # First boot already ran; it must never rerun (or reinstall) live.
   ln -sf /dev/null "$tree/etc/systemd/system/fxroute-first-boot.service"
+  # First-boot state must not leak into live: the masked service must never
+  # be considered done/failed/in-progress on a volatile session.
+  rm -f "$tree/var/lib/fxroute-iso/install-complete" \
+    "$tree/var/lib/fxroute-iso/install-failed" \
+    "$tree/var/lib/fxroute-iso/install-in-progress"
   filter_fstab < "$tree/etc/fstab" > "$tree/etc/fstab.live"
   mv "$tree/etc/fstab.live" "$tree/etc/fstab"
   # Live sudo without credentials (helpers call sudo -n).

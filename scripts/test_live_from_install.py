@@ -66,6 +66,9 @@ class LiveFromInstallTests(unittest.TestCase):
                 "/usr/lib/systemd/system/sshd.service")
             (tree / "root").mkdir(exist_ok=True)
             (tree / "root/.bash_history").write_text("secret-cmd\n")
+            iso_state = tree / "var/lib/fxroute-iso"
+            iso_state.mkdir(parents=True)
+            (iso_state / "install-complete").write_text("done\n")
             proc = subprocess.run(
                 ["bash", "-c",
                  "source iso/scripts/build-live-from-installed.sh --source-only 2>/dev/null;"
@@ -79,6 +82,7 @@ class LiveFromInstallTests(unittest.TestCase):
             self.assertEqual((tree / "etc/hostname").read_text(), "fxroute-live\n")
             self.assertFalse((tree / "root/.bash_history").exists())
             self.assertFalse((tree / "etc/systemd/system/multi-user.target.wants/sshd.service").exists())
+            self.assertFalse((iso_state / "install-complete").exists())
             self.assertTrue((tree / "etc/fxroute-live").is_file())
             fstab = (tree / "etc/fstab").read_text()
             self.assertNotIn("UUID=", fstab)
