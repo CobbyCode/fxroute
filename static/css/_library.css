@@ -363,13 +363,13 @@
     -webkit-tap-highlight-color: transparent;
 }
 .album-favorite-toggle.active {
-    color: #facc15;
+    color: var(--accent);
 }
 .album-favorite-toggle:hover {
     color: var(--text-primary);
 }
 .album-favorite-toggle.active:hover {
-    color: #fde047;
+    color: var(--accent-hover);
 }
 .album-favorite-toggle:focus-visible {
     outline: 2px solid var(--accent);

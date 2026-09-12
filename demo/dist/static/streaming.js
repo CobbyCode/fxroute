@@ -18,6 +18,13 @@
     let api = null;
     let showToast = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
+    // Canonical favorite heart: one inline SVG painted from currentColor, so
+    // the muted / accent button states stay authoritative. app.js owns the
+    // implementation and injects it in init; the default keeps this module
+    // renderable standalone, exactly like escapeHtml above.
+    let favoriteHeartSvg = function () {
+        return '<svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+    };
 
     /* Line-icon variants for the loop transport (replaces color emojis). */
     const LOOP_ALL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>';
@@ -124,6 +131,7 @@
         api = interfaceApi || {};
         if (typeof api.showToast === 'function') showToast = api.showToast;
         if (typeof api.escapeHtml === 'function') escapeHtml = api.escapeHtml;
+        if (typeof api.favoriteHeartSvg === 'function') favoriteHeartSvg = api.favoriteHeartSvg;
         if (typeof api.formatTime === 'function') formatTime = api.formatTime;
         if (typeof api.artworkPlaceholderUrl === 'function') artworkPlaceholderUrl = api.artworkPlaceholderUrl;
         if (typeof api.trackRowHtml === 'function') trackRowHtml = api.trackRowHtml;
@@ -1827,7 +1835,7 @@
             'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
             'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
             'title="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
-            (active ? '♥' : '♡') + '</button>';
+            favoriteHeartSvg() + '</button>';
     }
 
     function bindTidalFavoriteButtons(container) {
@@ -1844,7 +1852,7 @@
         const active = state.tidal.favoriteIds[type].has(idStr);
         document.querySelectorAll('.streaming-fav[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"], .track-fav[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"]').forEach((btn) => {
             btn.classList.toggle('is-active', active);
-            btn.innerHTML = active ? '♥' : '♡';
+            btn.innerHTML = favoriteHeartSvg();
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove from favorites' : 'Add to favorites');
             btn.title = active ? 'Remove from favorites' : 'Add to favorites';
@@ -1861,7 +1869,7 @@
             'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
             'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
             'title="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
-            (active ? '♥' : '♡') + '</button>';
+            favoriteHeartSvg() + '</button>';
     }
 
     function bindFavoriteDetailButtons(container) {
@@ -1878,7 +1886,7 @@
         const active = state.tidal.favoriteIds[type].has(idStr);
         document.querySelectorAll('.album-favorite-toggle[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"]').forEach((btn) => {
             btn.classList.toggle('active', active);
-            btn.textContent = active ? '♥' : '♡';
+            btn.innerHTML = favoriteHeartSvg();
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove from favorites' : 'Add to favorites');
             btn.title = active ? 'Remove from favorites' : 'Add to favorites';

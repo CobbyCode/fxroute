@@ -37,6 +37,10 @@
         Disconnected from server
     </div>
 
+    <!-- Live mode notice (only visible in volatile Try FXRoute sessions).
+         Bottom pill above the playback footer, like the web-demo banner. -->
+    <div id="live-banner" class="live-banner is-hidden" role="status"><strong>Live Mode</strong><span> — changes and logins are not saved and will be lost after reboot.</span><button type="button" class="live-banner-close" aria-label="Hide live notice" title="Hide live notice">×</button></div>
+
     <!-- Main content -->
     <main id="app">
         <!-- Header -->
@@ -450,7 +454,7 @@
                         <div class="album-detail-meta detail-hero-meta">
                             <div class="album-detail-title-row detail-hero-title-row">
                                 <h2 id="album-detail-name" class="album-detail-name detail-hero-title"></h2>
-                                <button id="album-favorite-toggle" class="album-favorite-toggle" type="button" aria-label="Favorite album" title="Favorite album">♡</button>
+                                <button id="album-favorite-toggle" class="album-favorite-toggle" type="button" aria-label="Favorite album" title="Favorite album"><svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
                             </div>
                             <p id="album-detail-artist" class="album-detail-artist"></p>
                             <p id="album-detail-count" class="album-detail-count"></p>
@@ -1315,7 +1319,7 @@
                         <span class="sc-title" id="sc-title"></span>
                         <span class="sc-album" id="sc-album"></span>
                     </div>
-                    <button id="track-favorite-btn" class="track-favorite-btn hidden" type="button" aria-label="Add track to favorites" aria-pressed="false" title="Add track to favorites">♡</button>
+                    <button id="track-favorite-btn" class="track-favorite-btn hidden" type="button" aria-label="Add track to favorites" aria-pressed="false" title="Add track to favorites"><svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
                 </div>
                 <div class="playback-meta-row">
                     <div id="samplerate-status" class="samplerate-status hidden">44.1kHz</div>

@@ -366,8 +366,8 @@ assert.ok(js.includes('class="album-detail-back"'),
     'Tidal detail back button must reuse the library back style');
 assert.ok(js.includes('favoriteDetailHtml') && js.includes('album-favorite-toggle'),
     'Tidal detail favorite must be a library-style heart');
-assert.ok(js.includes("'♥' : '♡'"),
-    'the detail heart must render filled/outline like the library');
+assert.ok(js.includes('favoriteHeartSvg()'),
+    'the detail heart must render the shared currentColor SVG heart');
 assert.ok(js.includes("favoriteDetailHtml('albums')") && js.includes("favoriteDetailHtml('playlists')"),
     'album and playlist headers must both carry the heart favorite');
 assert.ok(js.includes('tidal-detail'),

@@ -124,6 +124,7 @@ BROWSER_TESTS=(
     scripts/check_viewports.py
     scripts/test_brand_geometry.py
     scripts/test_favorite_button_geometry.py
+    scripts/test_favorite_heart_render.py
     scripts/test_favorite_primitives_geometry.py
     scripts/test_footer_badge_geometry.py
     scripts/test_library_folder_back.py

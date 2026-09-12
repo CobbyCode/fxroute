@@ -277,6 +277,13 @@ body {
 .track-fav:disabled,
 .streaming-fav:disabled{opacity:.45;cursor:wait}
 .track-row-favorite.active{ text-shadow:0 0 10px rgba(110,231,183,.18)}
+/* Favorite heart: one inline SVG painted from currentColor, so the muted /
+   accent colours above stay authoritative and no platform colour-emoji font
+   can repaint an active heart. Outline when idle, filled when the button
+   carries its active state. */
+.fav-heart{display:block;width:1em;height:1em;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linejoin:round;pointer-events:none}
+.active>.fav-heart,
+.is-active>.fav-heart{fill:currentColor}
 .track-add,
 .streaming-add{flex:0 0 auto;width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);font:inherit;font-size:1.05rem;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer;transition:color .12s var(--ease),border-color .12s var(--ease),background .12s var(--ease),transform .12s var(--ease);-webkit-tap-highlight-color:transparent}
 .track-add:hover,
@@ -1614,13 +1621,13 @@ body {
     -webkit-tap-highlight-color: transparent;
 }
 .album-favorite-toggle.active {
-    color: #facc15;
+    color: var(--accent);
 }
 .album-favorite-toggle:hover {
     color: var(--text-primary);
 }
 .album-favorite-toggle.active:hover {
-    color: #fde047;
+    color: var(--accent-hover);
 }
 .album-favorite-toggle:focus-visible {
     outline: 2px solid var(--accent);

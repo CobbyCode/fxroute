@@ -446,6 +446,7 @@ const MEASUREMENT_WINDOW_HEARTBEAT_INTERVAL_MS = 10000;
 // DOM elements
 const elements = {
     offlineIndicator: document.getElementById('offline-indicator'),
+    liveBanner: document.getElementById('live-banner'),
     settingsOpenBtn: document.getElementById('open-settings'),
     settingsPanel: document.getElementById('settings-panel'),
     settingsCloseBtn: document.getElementById('close-settings'),
@@ -996,6 +997,7 @@ document.addEventListener('DOMContentLoaded', () => {
             playStation: stationId => playRadio(stationId),
             showToast,
             escapeHtml,
+            favoriteHeartSvg,
             highlightActiveTrack,
             extractDroppedUrl,
         });
@@ -1004,6 +1006,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.FXRouteStreaming.init({
             showToast,
             escapeHtml,
+            favoriteHeartSvg,
             formatTime,
             artworkPlaceholderUrl,
             trackRowHtml: detailTrackRowHtml,
@@ -1168,6 +1171,62 @@ function scheduleOfflineIndicator() {
         elements.offlineIndicator.classList.remove('hidden');
     }, CONFIG.offlineIndicatorDelay);
 }
+// Volatile Try session hint, styled like the web-demo banner (demo/boot.js):
+// a compact pill parked above the playback footer. data.live (top-level)
+// or data.system.live. Dismissible via close button (session-scoped) and
+// auto-hidden after a few minutes so it never covers controls.
+const LIVE_BANNER_AUTOHIDE_MS = 3 * 60 * 1000;
+const LIVE_BANNER_STORAGE_KEY = 'fxroute-live-banner-hidden';
+let liveBannerWired = false;
+let liveBannerTimer = null;
+function positionLiveBanner() {
+    const banner = elements.liveBanner;
+    if (!banner || typeof banner.getBoundingClientRect !== 'function') return false;
+    const footer = document.getElementById('playback-bar');
+    if (!footer) return false;
+    const rect = footer.getBoundingClientRect();
+    const viewportH = window.innerHeight || document.documentElement.clientHeight;
+    banner.style.bottom = Math.max(10, viewportH - rect.top + 12) + 'px';
+    return true;
+}
+function updateLiveBanner(data) {
+    const banner = elements.liveBanner;
+    if (!banner) return;
+    const live = !!(data && (data.live === true || (data.system && data.system.live === true)));
+    if (!live) {
+        banner.classList.add('is-hidden');
+        return;
+    }
+    if (!liveBannerWired) {
+        liveBannerWired = true;
+        const closeBtn = banner.querySelector('.live-banner-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                banner.classList.add('is-hidden');
+                try { sessionStorage.setItem(LIVE_BANNER_STORAGE_KEY, '1'); } catch (e) {}
+            });
+        }
+        if (typeof window.addEventListener === 'function') {
+            window.addEventListener('resize', () => { positionLiveBanner(); });
+            window.addEventListener('load', () => { positionLiveBanner(); });
+        }
+        (function pollBanner() {
+            if (!positionLiveBanner() && typeof window.setTimeout === 'function') {
+                window.setTimeout(pollBanner, 120);
+            }
+        })();
+    }
+    let dismissed = false;
+    try { dismissed = sessionStorage.getItem(LIVE_BANNER_STORAGE_KEY) === '1'; } catch (e) {}
+    if (dismissed) return;
+    positionLiveBanner();
+    banner.classList.remove('is-hidden');
+    if (liveBannerTimer) return;
+    liveBannerTimer = setTimeout(() => {
+        liveBannerTimer = null;
+        banner.classList.add('is-hidden');
+    }, LIVE_BANNER_AUTOHIDE_MS);
+}
 async function resyncPlaybackAfterReconnect() {
     const generation = ++wsReconnectSyncGeneration;
     try {
@@ -1182,6 +1241,7 @@ async function resyncPlaybackAfterReconnect() {
 
         if (playback) {
             mergePlaybackState(playback);
+            updateLiveBanner(playback);
             syncFooterOwnershipFromPlayback(playback);
             syncLibraryStateFromPlaybackContext(true);
         }
@@ -4315,6 +4375,16 @@ function renderSamplerateUI() {
     elements.samplerateStatus.classList.remove('hidden');
 }
 
+// Favorite hearts render as one inline SVG instead of the Unicode hearts
+// (U+2665 / U+2661). In some browser/OS combinations those fall back to a
+// colour-emoji font, which paints an active heart red no matter what the
+// button's CSS colour says. The SVG is painted from currentColor, so the
+// existing muted / accent button states stay the single source of truth.
+function favoriteHeartSvg() {
+    return '<svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+        + '<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+}
+
 function renderTrackFavoriteButton(track = state.playback.current_track) {
     const button = elements.trackFavoriteBtn;
     if (!button) return;
@@ -4326,7 +4396,7 @@ function renderTrackFavoriteButton(track = state.playback.current_track) {
     button.classList.toggle('hidden', !available);
     if (!available) {
         button.disabled = true;
-        button.textContent = '♡';
+        button.innerHTML = favoriteHeartSvg();
         button.classList.remove('active');
         button.setAttribute('aria-pressed', 'false');
         return;
@@ -4341,7 +4411,7 @@ function renderTrackFavoriteButton(track = state.playback.current_track) {
             && window.FXRouteStreaming.isTidalFavorite);
         const favorite = ready ? window.FXRouteStreaming.isTidalFavorite('tracks', track.id) : false;
         button.disabled = inFlight || !ready;
-        button.textContent = favorite ? '♥' : '♡';
+        button.innerHTML = favoriteHeartSvg();
         button.classList.toggle('active', favorite);
         button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
         button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
@@ -4357,7 +4427,7 @@ function renderTrackFavoriteButton(track = state.playback.current_track) {
     // Local library track favorite (unchanged native path).
     button.disabled = inFlight;
     const favorite = !!track.favorite;
-    button.textContent = favorite ? '♥' : '♡';
+    button.innerHTML = favoriteHeartSvg();
     button.classList.toggle('active', favorite);
     button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
     button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
@@ -4387,7 +4457,7 @@ function syncTrackFavoriteRowButtons(trackId = null) {
         if (trackId && id !== trackId) return;
         const track = findTrackById(id);
         const favorite = !!track?.favorite;
-        button.textContent = favorite ? '♥' : '♡';
+        button.innerHTML = favoriteHeartSvg();
         button.classList.toggle('active', favorite);
         button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
         button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
@@ -5289,6 +5359,7 @@ async function fetchPlaybackStatus() {
         if (!resp.ok) throw new Error('Failed to fetch playback status');
         const data = await resp.json();
         mergePlaybackState(data);
+        updateLiveBanner(data);
         syncFooterOwnershipFromPlayback(data);
         syncLibraryStateFromPlaybackContext(true);
         updatePlaybackUI();
@@ -5904,7 +5975,7 @@ function renderAlbums() {
     const playlistHtml = playlists.map(playlist => `
         <div class="album-card playlist-card" data-playlist-id="${escapeHtml(playlist.id)}" role="button" tabindex="0">
             <div class="album-art-wrap">${playlistCoverHtml(playlist)}</div>
-            <button type="button" class="album-card-fav is-active" data-playlist-fav="${escapeHtml(playlist.id)}" aria-label="Delete playlist" title="Delete playlist">♥</button>
+            <button type="button" class="album-card-fav is-active" data-playlist-fav="${escapeHtml(playlist.id)}" aria-label="Delete playlist" title="Delete playlist">${favoriteHeartSvg()}</button>
             <div class="album-name">${escapeHtml(playlist.name)}</div>
             <div class="album-artist">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
         </div>`).join('');
@@ -5921,7 +5992,7 @@ function renderAlbums() {
                      onload="this.classList.add('loaded')"
                      onerror="this.onerror=null;this.src='${fallbackSvg}'" />
             </div>
-            <button type="button" class="album-card-fav${favClass}" data-fav-id="${escapeHtml(album.id)}" aria-label="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}" title="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}">${album.favorite ? '♥' : '♡'}</button>
+            <button type="button" class="album-card-fav${favClass}" data-fav-id="${escapeHtml(album.id)}" aria-label="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}" title="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}">${favoriteHeartSvg()}</button>
             <div class="album-name">${escapeHtml(album.name)}</div>
             <div class="album-artist">${escapeHtml(album.artist)}</div>
         </div>`;
@@ -6374,7 +6445,7 @@ function renderAlbumDetailTracks() {
 }
 
 function libraryFavoriteButtonHtml(trackId, favorite) {
-    const heart = favorite ? '♥' : '♡';
+    const heart = favoriteHeartSvg();
     return '<button class="track-row-favorite' + (favorite ? ' active' : '') + '" data-track-favorite="' + escapeHtml(trackId) + '" type="button"' +
         ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
         ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
@@ -6382,7 +6453,7 @@ function libraryFavoriteButtonHtml(trackId, favorite) {
 }
 
 function detailFavoriteButtonHtml(trackId, favorite) {
-    const heart = favorite ? '♥' : '♡';
+    const heart = favoriteHeartSvg();
     return '<button class="track-fav' + (favorite ? ' active' : '') + '" data-track-favorite="' + escapeHtml(trackId) + '" type="button"' +
         ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
         ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
@@ -6427,7 +6498,7 @@ function updateAlbumFavoriteButton(album) {
     elements.albumFavoriteToggle.classList.remove('hidden');
     elements.albumFavoriteToggle.disabled = false;
     const favorite = !!album?.favorite;
-    elements.albumFavoriteToggle.textContent = favorite ? '♥' : '♡';
+    elements.albumFavoriteToggle.innerHTML = favoriteHeartSvg();
     elements.albumFavoriteToggle.classList.toggle('active', favorite);
     elements.albumFavoriteToggle.setAttribute('aria-pressed', favorite ? 'true' : 'false');
     elements.albumFavoriteToggle.setAttribute('aria-label', favorite ? 'Remove album from favorites' : 'Add album to favorites');
@@ -6502,7 +6573,7 @@ async function toggleAlbumCardFavorite(albumId) {
         document.querySelectorAll('.album-card-fav[data-fav-id="' + CSS.escape(albumId) + '"]').forEach((btn) => {
             const f = stored.favorite;
             btn.classList.toggle('is-active', f);
-            btn.innerHTML = f ? '♥' : '♡';
+            btn.innerHTML = favoriteHeartSvg();
             btn.setAttribute('aria-label', f ? 'Remove from favorites' : 'Add to favorites');
             btn.title = f ? 'Remove from favorites' : 'Add to favorites';
         });
