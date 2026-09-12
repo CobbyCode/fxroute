@@ -287,6 +287,82 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self._restore(originals)
 
+    async def test_play_click_in_paused_native_queue_resumes_selection(self):
+        # Selecting a track from a paused native queue must start it, exactly
+        # like the app_replace/coordinator path (should_play=True).  MPV keeps
+        # pause across a playlist-pos jump, so the fast path resumes explicitly
+        # instead of reporting "playing" over a still-paused transport.
+        queue_a = [_track("a", rate=48000), _track("b", rate=48000), _track("c", rate=48000)]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        try:
+            player = main.runtime.player_instance
+            player.state["current_file"] = "/music/a.flac"
+            player.state["playing"] = False
+            player.state["paused"] = True
+            player.playlist_count = 3
+            pause_calls = []
+
+            def set_pause(paused):
+                pause_calls.append(paused)
+                player.state["paused"] = paused
+                player.state["playing"] = not paused
+
+            player.set_pause = set_pause
+
+            with self._patch_context(lambda _request: self.fail("Coordinator must not run")):
+                result = await self._play(track_id="c", queue_track_ids=["a", "b", "c"])
+
+            self.assertEqual(pause_calls, [False])
+            self.assertFalse(main.runtime.player_instance.state["paused"])
+            self.assertEqual(result["status"], "playing")
+            self.assertEqual(result["track"]["id"], "c")
+            self.assertEqual(playback_queue.queue.index, 2)
+            self.assertEqual(main.runtime.player_instance.state["playlist_pos"], 2)
+        finally:
+            self._restore(originals)
+
+    async def test_new_tidal_queue_with_shuffle_permutes_remaining_tracks(self):
+        # A new TIDAL queue with shuffle=true must apply the established shuffle
+        # semantics immediately (current entry fixed, everything else permuted)
+        # and keep the unshuffled order for restore.
+        originals = self._install([_track("x")], index=0)
+        try:
+            def _tidal_track(track_id):
+                return {
+                    "id": track_id, "title": track_id, "artist": "Test",
+                    "album": "Tidal Album", "source": "tidal",
+                    "url": f"https://cdn/{track_id}.flac", "sample_rate_hz": 44100,
+                }
+
+            class _Provider:
+                async def is_authenticated(self):
+                    return True
+
+            async def run(_request):
+                return SimpleNamespace(target_rate=44100, committed=True, transition_id="tr-tidal")
+
+            with patch.object(main, "_tidal_provider", return_value=_Provider()), \
+                 patch.object(main, "_resolve_tidal_track", new=AsyncMock(side_effect=lambda track_id: _tidal_track(track_id))), \
+                 patch.object(main, "_resolve_tidal_track_meta", new=AsyncMock(side_effect=lambda track_id: _tidal_track(track_id))), \
+                 patch.object(main, "_schedule_tidal_prefetch", lambda: None), \
+                 patch.object(main, "_coordinator_rate_change", return_value=False), \
+                 patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()), \
+                 self._patch_context(run):
+                result = await self._play(
+                    track_id="c", queue_track_ids=["a", "b", "c", "d"],
+                    source="tidal", shuffle=True,
+                )
+
+            self.assertEqual(result["status"], "playing")
+            self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["d", "b", "c", "a"])
+            self.assertEqual(playback_queue.queue.tracks[playback_queue.queue.index]["id"], "c")
+            self.assertTrue(playback_queue.queue.shuffle)
+            self.assertEqual(
+                [item["id"] for item in playback_queue.queue.original], ["a", "b", "c", "d"]
+            )
+        finally:
+            self._restore(originals)
+
     async def test_play_click_in_same_native_queue_after_spotify_takeover_runs_coordinator(self):
         # Regression (.104): library queue active -> Spotify takes over and
         # stops MPV (empty playlist) -> back to the library, starting a track

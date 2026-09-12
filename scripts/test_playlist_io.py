@@ -201,6 +201,43 @@ class PlaylistIOResolveTests(unittest.TestCase):
         # Unknown entry skipped, duplicate dropped, order preserved.
         self.assertEqual(result, ["b", "a", "c"])
 
+    def test_resolve_exact_relative_path_survives_basename_collision(self):
+        # A track at the music root and a same-named track in a subfolder:
+        # the root track's exact relative path must still resolve.  The old
+        # single-index merge dropped it as "ambiguous" because the nested
+        # track's basename collided with it.
+        root_track = make_track("root", self.music_root / "song.flac")
+        nested_track = make_track("nested", self.music_root / "album" / "song.flac")
+        with patch.object(main, "settings", self.settings):
+            self.assertEqual(
+                playlist_io.resolve_m3u_track_ids(
+                    ["song.flac"], self.music_root, tracks=[root_track, nested_track]
+                ),
+                ["root"],
+            )
+            self.assertEqual(
+                playlist_io.resolve_m3u_track_ids(
+                    ["album/song.flac"], self.music_root, tracks=[root_track, nested_track]
+                ),
+                ["nested"],
+            )
+            # Order of the track list must not matter.
+            self.assertEqual(
+                playlist_io.resolve_m3u_track_ids(
+                    ["song.flac", "album/song.flac"],
+                    self.music_root,
+                    tracks=[nested_track, root_track],
+                ),
+                ["root", "nested"],
+            )
+            # A bare basename with no exact match still resolves when unique.
+            self.assertEqual(
+                playlist_io.resolve_m3u_track_ids(
+                    ["song.flac"], self.music_root, tracks=[nested_track]
+                ),
+                ["nested"],
+            )
+
     def test_resolve_empty_entries(self):
         with patch.object(main, "settings", self.settings):
             self.assertEqual(playlist_io.resolve_m3u_track_ids([], self.music_root, tracks=[]), [])

@@ -856,29 +856,46 @@ class LibraryScanner:
         return result
 
 
-def _compilation_albums_for_tracks(tracks: List[Track]) -> set[str]:
-    """Album names that appear with >1 distinct artist and no album_artist."""
-    album_artists: Dict[str, set[str]] = {}
+def _album_scope_key(track: Track) -> tuple[str, str]:
+    """Identity scope for compilation detection: album name + folder.
+
+    Same-titled albums by different artists in different folders are distinct
+    releases, not a compilation.  Only tracks that share the album folder may
+    be grouped as ``Various Artists``.
+    """
+    album_name = (track.album or "").strip().lower()
+    folder = ""
+    if track.path:
+        try:
+            folder = str(track.path.parent.resolve()).lower()
+        except Exception:
+            folder = str(track.path.parent).lower()
+    return album_name, folder
+
+
+def _compilation_albums_for_tracks(tracks: List[Track]) -> set[tuple[str, str]]:
+    """Album scopes that appear with >1 distinct artist and no album_artist."""
+    scope_artists: Dict[tuple[str, str], set[str]] = {}
     for track in tracks:
-        album_name = (track.album or "").strip()
+        scope = _album_scope_key(track)
         album_artist_tag = (track.album_artist or "").strip()
-        if not album_name or album_artist_tag:
+        if not scope[0] or album_artist_tag:
             continue
-        album_artists.setdefault(album_name.lower(), set())
+        scope_artists.setdefault(scope, set())
         artist = (track.artist or "").strip()
         if artist:
-            album_artists[album_name.lower()].add(artist.lower())
-    return {name for name, artists in album_artists.items() if len(artists) > 1}
+            scope_artists[scope].add(artist.lower())
+    return {scope for scope, artists in scope_artists.items() if len(artists) > 1}
 
 
-def _album_identity(track: Track, compilation_albums: set[str]) -> tuple[str, str]:
+def _album_identity(track: Track, compilation_albums: set[tuple[str, str]]) -> tuple[str, str]:
     """Effective (album_name, album_artist) after Various/compilation rules."""
     album_name = (track.album or "").strip()
     album_artist = (track.album_artist or "").strip()
     if not album_name:
         return "Various", "Various"
     if not album_artist:
-        if album_name.lower() in compilation_albums:
+        if _album_scope_key(track) in compilation_albums:
             return album_name, "Various Artists"
         return album_name, (track.artist or "").strip() or "Various Artists"
     return album_name, album_artist

@@ -191,6 +191,28 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
         coordinator.assert_not_awaited()
         player.stop_playback.assert_not_called()
 
+    async def test_playback_toggle_resumes_paused_spotify_transport(self):
+        # A committed Spotify owner routes /api/playback/toggle to the global
+        # transport adapter; the resume branch must call the Spotify play
+        # transport and broadcast.  Regression: the symbol was never imported,
+        # so a resume raised NameError and never resumed or broadcast.
+        player = PlayerDouble()
+        play = AsyncMock(return_value={"status": "Playing"})
+        broadcast = AsyncMock(side_effect=lambda data: data)
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            main, "_resolve_playback_owner", return_value="spotify"
+        ), patch.object(
+            main, "get_spotify_ui_state",
+            new=AsyncMock(return_value={"available": True, "status": "Paused"}),
+        ), patch.object(
+            main, "spotify_play", play
+        ), patch.object(main, "broadcast_spotify_state", broadcast):
+            result = await main.toggle_playback()
+
+        play.assert_awaited_once()
+        broadcast.assert_awaited_once()
+        self.assertEqual(result["status"], "Playing")
+
     async def test_spotify_toggle_start_uses_coordinator_source_handoff(self):
         run = AsyncMock()
         states = iter(({"status": "Paused"}, {"status": "Playing"}))

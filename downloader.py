@@ -307,9 +307,19 @@ class Downloader:
                 self._notify_callbacks()
 
     def _notify_callbacks(self):
-        """Notify registered callbacks with current download state."""
+        """Notify registered callbacks with current download state.
+
+        The snapshot is JSON-serializable: ``started_at`` is a datetime in
+        the internal state, but every payload crossing this boundary (and the
+        ``manager.broadcast`` that serializes it) must be dumpable, otherwise a
+        failing progress broadcast would also skip the completion-triggered
+        library refresh.
+        """
         if self._active_download:
             state = self._active_download.copy()
+            started_at = state.get("started_at")
+            if isinstance(started_at, datetime):
+                state["started_at"] = started_at.isoformat()
             for callback in self._callbacks:
                 try:
                     if asyncio.iscoroutinefunction(callback):

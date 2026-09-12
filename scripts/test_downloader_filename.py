@@ -8,9 +8,11 @@ authoritative source for it. The start call therefore returns None and the
 initial download state carries filename=None, not a guessed "download_<ts>".
 """
 
+import json
 import pathlib
 import sys
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -51,6 +53,46 @@ class DownloaderFilenameTests(unittest.TestCase):
             hasattr(downloader, "_get_output_filename"),
             "the fabricated-name helper must be gone",
         )
+
+
+class DownloaderProgressPayloadTests(unittest.TestCase):
+    """Progress/completion payloads must be JSON-serializable.
+
+    ``manager.broadcast`` serializes with ``json.dumps`` before the download
+    callback is allowed to trigger the library refresh.  The internal state
+    holds ``started_at`` as a datetime; a non-serializable payload made every
+    progress broadcast raise and skipped the completion library refresh.
+    """
+
+    def _downloader(self):
+        with patch.object(Downloader, "_verify_ytdlp"), patch(
+            "downloader.get_settings"
+        ) as settings:
+            settings.return_value.download_dir.mkdir = lambda **_kwargs: None
+            return Downloader()
+
+    def test_progress_snapshot_is_json_serializable(self):
+        downloader = self._downloader()
+        captured = []
+        downloader.register_callback(captured.append)
+        with downloader._lock:
+            downloader._active_download = {
+                "url": "https://example.com/watch?v=x",
+                "status": "downloading",
+                "progress_percent": 12.5,
+                "filename": "song.flac",
+                "started_at": datetime(2026, 9, 12, 10, 0, 0),
+                "error": None,
+                "status_text": "Downloading\u2026 12.5%",
+            }
+        downloader._notify_callbacks()
+
+        self.assertEqual(len(captured), 1)
+        payload = captured[0]
+        json.dumps(payload, allow_nan=False)
+        self.assertIsInstance(payload["started_at"], str)
+        self.assertEqual(payload["status"], "downloading")
+        self.assertEqual(payload["progress_percent"], 12.5)
 
 
 if __name__ == "__main__":

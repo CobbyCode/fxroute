@@ -54,20 +54,35 @@ def build_m3u_for_playlist(playlist, tracks, music_root: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_track_match_index(tracks, music_root: Path) -> dict[str, str]:
-    matches = {}
-    ambiguous = set()
+def _normalize_match_key(key: str) -> str:
+    return (key or "").replace("\\", "/").strip().lstrip("./").lower()
 
-    def add(key: str, track_id: str) -> None:
-        key = (key or "").replace("\\", "/").strip().lstrip("./").lower()
+
+def build_track_match_index(tracks, music_root: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Build the M3U resolution indexes as ``(exact, basenames)``.
+
+    ``exact`` holds unambiguous relative paths, absolute paths and URLs.
+    ``basenames`` holds bare filenames and is consulted only after an exact
+    miss.  Keeping them apart means a basename collision (two tracks named
+    ``song.flac`` in different folders) can never remove another track's exact
+    relative path from the index; the same-named file remains resolvable by
+    the path an M3U actually recorded.
+    """
+    exact: dict[str, str] = {}
+    basenames: dict[str, str] = {}
+    ambiguous_exact: set[str] = set()
+    ambiguous_basenames: set[str] = set()
+
+    def add(index: dict[str, str], ambiguous: set[str], key: str, track_id: str) -> None:
+        key = _normalize_match_key(key)
         if not key:
             return
-        if key in matches and matches[key] != track_id:
+        if key in index and index[key] != track_id:
             ambiguous.add(key)
-            matches.pop(key, None)
+            index.pop(key, None)
             return
         if key not in ambiguous:
-            matches[key] = track_id
+            index[key] = track_id
 
     for track in tracks:
         if not track.path:
@@ -75,14 +90,14 @@ def build_track_match_index(tracks, music_root: Path) -> dict[str, str]:
         path = track.path.resolve()
         try:
             rel = path.relative_to(music_root.resolve()).as_posix()
-            add(rel, track.id)
+            add(exact, ambiguous_exact, rel, track.id)
         except Exception:
             pass
-        add(path.as_posix(), track.id)
-        add(path.name, track.id)
+        add(exact, ambiguous_exact, path.as_posix(), track.id)
+        add(basenames, ambiguous_basenames, path.name, track.id)
         if track.url:
-            add(str(track.url), track.id)
-    return matches
+            add(exact, ambiguous_exact, str(track.url), track.id)
+    return exact, basenames
 
 
 def resolve_m3u_track_ids(
@@ -93,7 +108,7 @@ def resolve_m3u_track_ids(
 ) -> List[str]:
     if tracks is None:
         raise ValueError("tracks are required")
-    match_index = build_track_match_index(tracks, music_root)
+    exact_index, basename_index = build_track_match_index(tracks, music_root)
     track_ids = []
     seen = set()
 
@@ -112,12 +127,20 @@ def resolve_m3u_track_ids(
                 pass
         candidates.append(Path(value).name)
 
-        for candidate in candidates:
-            track_id = match_index.get(candidate.replace("\\", "/").strip().lstrip("./").lower())
-            if track_id and track_id not in seen:
-                seen.add(track_id)
-                track_ids.append(track_id)
-                break
+        # Exact identities win over bare filenames, so a recorded relative path
+        # is never shadowed by another folder's same-named file.
+        track_id = next(
+            (exact_index[key] for key in (_normalize_match_key(candidate) for candidate in candidates) if key in exact_index),
+            None,
+        )
+        if track_id is None:
+            track_id = next(
+                (basename_index[key] for key in (_normalize_match_key(candidate) for candidate in candidates) if key in basename_index),
+                None,
+            )
+        if track_id and track_id not in seen:
+            seen.add(track_id)
+            track_ids.append(track_id)
     return track_ids
 
 

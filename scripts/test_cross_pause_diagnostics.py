@@ -87,6 +87,33 @@ class CrossPauseDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             any("ocal" in line for line in captured.output), captured.output
         )
 
+    async def test_external_input_pauses_running_qobuz(self):
+        # Switching to External Input/Bluetooth must silence every app source,
+        # including a running Qobuz renderer (regression: only local and
+        # Spotify were paused, so Qobuz stayed audible over the input).
+        player = SimpleNamespace(_running=False, state={}, stop_playback=Mock())
+        qobuz_pause = AsyncMock(return_value={"status": "Paused"})
+        broadcast = AsyncMock(side_effect=lambda data=None: data)
+        with patch.object(
+            main.runtime, "player_instance", player
+        ), patch.object(
+            main,
+            "get_spotify_ui_state",
+            new=AsyncMock(return_value={"status": "Stopped"}),
+        ), patch.object(
+            main,
+            "get_qobuz_ui_state",
+            new=AsyncMock(return_value={"available": True, "status": "Playing"}),
+        ), patch.object(
+            main, "qobuz_pause", qobuz_pause
+        ), patch.object(
+            main, "broadcast_qobuz_state", broadcast
+        ):
+            await main._pause_all_app_playback_for_external_input()
+
+        qobuz_pause.assert_awaited_once()
+        broadcast.assert_awaited_once()
+
     async def test_external_input_pause_failure_is_logged_not_raised(self):
         player = SimpleNamespace(
             _running=True,
@@ -99,6 +126,10 @@ class CrossPauseDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             main,
             "get_spotify_ui_state",
             new=AsyncMock(return_value={"status": "Stopped"}),
+        ), patch.object(
+            main,
+            "get_qobuz_ui_state",
+            new=AsyncMock(return_value={"available": False, "status": "Stopped"}),
         ), self.assertLogs("main", level="WARNING") as captured:
             result = await main._pause_all_app_playback_for_external_input()
         self.assertIsNone(result)

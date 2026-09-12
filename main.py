@@ -391,6 +391,7 @@ from streaming.spotify.mpris import playerctl_available, spotify_installed
 from streaming.spotify.provider import (
     SPOTIFY_PREARM_SAMPLE_RATE_HZ,
     get_status as spotify_get_status,
+    play as spotify_play,
     pause as spotify_pause,
     next_track as spotify_next,
     previous as spotify_previous,
@@ -2901,14 +2902,24 @@ async def play_track(req: PlayRequest):
         and _native_mpv_direct_selection_ready(active_queue_ids)
     ):
         target_index = active_queue_ids.index(req.track_id)
+        was_paused = bool(runtime.player_instance.state.get("paused"))
         if not await playback_queue.queue.load_track(target_index, transition_reason="direct queue selection"):
             raise HTTPException(status_code=409, detail="Native queue navigation failed")
+        if was_paused:
+            # Selecting a track from a paused native queue must start it, like
+            # the app_replace/coordinator path (should_play=True).  MPV keeps
+            # pause across a playlist-pos jump, so resume explicitly instead of
+            # reporting "playing" over a still-paused transport.
+            await _drain_worker(runtime.player_instance.set_pause, False)
+            _mark_player_state_authoritative(runtime.player_instance.state)
+            _mark_playback_intent_changed()
         track_info = dict(playback_queue.queue.tracks[target_index])
+        new_state = runtime.player_instance.state
         return {
-            "status": "playing",
+            "status": "playing" if not new_state.get("paused") else "paused",
             "url": str(track_info.get("url") or ""),
             "track": track_info,
-            "playback": build_playback_payload(runtime.player_instance.state),
+            "playback": build_playback_payload(new_state),
         }
 
     previous_state = dict(runtime.player_instance.state)
@@ -2965,17 +2976,27 @@ async def play_track(req: PlayRequest):
                 if entry is not None:
                     queue_tracks.append(entry)
         multi_track = len(queue_tracks) > 1
+        # A new queue with shuffle on applies the established shuffle semantics
+        # immediately (current entry fixed, everything else permuted).  The
+        # original order is kept unshuffled so disabling shuffle restores it.
+        original_queue_tracks = [dict(item) for item in queue_tracks]
+        if multi_track and bool(req.shuffle):
+            current_index = next(
+                (index for index, item in enumerate(queue_tracks) if str(item.get("id")) == str(req.track_id)),
+                0,
+            )
+            queue_tracks = playback_queue.shuffle_around_current(queue_tracks, current_index)
         track_index = next(
             (index for index, item in enumerate(queue_tracks) if str(item.get("id")) == str(req.track_id)),
             -1,
         )
         queue_candidate = playback_queue.QueueCandidate(
             queue=[dict(item) for item in queue_tracks] if multi_track else [],
-            original=[dict(item) for item in queue_tracks] if multi_track else [],
+            original=original_queue_tracks if multi_track else [],
             index=track_index if multi_track else -1,
             mode="app_replace",
             loop=bool(req.loop),
-            shuffle=bool(req.shuffle),
+            shuffle=bool(req.shuffle) and multi_track,
             single_track_loop=bool(req.loop) and not multi_track,
             track=track_info,
         )
@@ -3937,6 +3958,13 @@ async def _pause_all_app_playback_for_external_input() -> None:
             await broadcast_spotify_state(data)
     except Exception as exc:
         logger.warning("Spotify pause for external input failed: %s", exc)
+    try:
+        qobuz_state = await get_qobuz_ui_state()
+        if _is_qobuz_playback_active(qobuz_state):
+            await qobuz_pause()
+            await broadcast_qobuz_state()
+    except Exception as exc:
+        logger.warning("Qobuz pause for external input failed: %s", exc)
 
 
 @app.post("/api/audio/source-mode")

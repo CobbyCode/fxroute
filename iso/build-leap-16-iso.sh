@@ -36,7 +36,7 @@ Options:
                            (default: convert FXROUTE_LIVE_DISK via
                            iso/scripts/build-live-from-installed.sh)
   --live-disk PATH         Installed FXRoute desktop disk (qcow2) to convert
-                           into the live system (default: $FXROUTE_LIVE_DISK)
+                           into the live system (default: ${FXROUTE_LIVE_DISK:-})
   --live-ssh-password PASS Account password on the live disk, for extraction
                            (or FXROUTE_LIVE_CONVERT_PASSWORD)
   --no-live                Skip the Try FXRoute live system (dev/test only)

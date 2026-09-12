@@ -103,6 +103,22 @@ def _cover_media_type(path: Path) -> str:
     return "application/octet-stream"
 
 
+def _build_tracks_zip(track_paths: List[Path]) -> Path:
+    """Write the selected tracks to a temporary ZIP archive (blocking)."""
+    with tempfile.NamedTemporaryFile(prefix="fxroute-library-selection-", suffix=".zip", delete=False) as temp_file:
+        temp_zip_path = Path(temp_file.name)
+
+    used_names = set()
+    try:
+        with zipfile.ZipFile(temp_zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for track_path in track_paths:
+                archive.write(track_path, arcname=zip_album.dedupe_archive_name(track_path.name, used_names))
+    except Exception:
+        temp_zip_path.unlink(missing_ok=True)
+        raise
+    return temp_zip_path
+
+
 def _serve_cover_image(image_path: Path, size: int = 256) -> FileResponse:
     """Serve an album cover, using cached thumbnails when Pillow is available."""
     image_path = image_path.resolve()
@@ -537,17 +553,11 @@ async def download_tracks(req: DownloadTracksRequest):
         _, track_path = selected_tracks[0]
         return FileResponse(track_path, filename=track_path.name)
 
-    with tempfile.NamedTemporaryFile(prefix="fxroute-library-selection-", suffix=".zip", delete=False) as temp_file:
-        temp_zip_path = Path(temp_file.name)
-
-    used_names = set()
-    try:
-        with zipfile.ZipFile(temp_zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
-            for _, track_path in selected_tracks:
-                archive.write(track_path, arcname=zip_album.dedupe_archive_name(track_path.name, used_names))
-    except Exception:
-        temp_zip_path.unlink(missing_ok=True)
-        raise
+    # Writing the archive is blocking file I/O: keep it off the event loop on
+    # the same blocking-work path the library scan already uses.
+    temp_zip_path = await _run_blocking(
+        _build_tracks_zip, [track_path for _, track_path in selected_tracks]
+    )
 
     return FileResponse(
         temp_zip_path,
@@ -651,7 +661,9 @@ async def upload_track(file: UploadFile = File(...)):
             album_dir.mkdir(parents=True, exist_ok=False)
 
             try:
-                extraction = zip_album.extract_zip_album(temp_zip_path, album_dir)
+                # Extraction is blocking ZIP/disk I/O; run it on the existing
+                # blocking-work path instead of the event loop.
+                extraction = await _run_blocking(zip_album.extract_zip_album, temp_zip_path, album_dir)
                 audio_files = extraction["audio_files"]
                 playlist_files = extraction["playlist_files"]
                 if not audio_files and not playlist_files:

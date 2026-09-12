@@ -232,6 +232,26 @@ class InstallIsoContractTests(unittest.TestCase):
             self.assertNotIn("__FXROUTE_SSH_PUBLIC_KEY__", profile_text)
             self.assertNotIn("hashedPassword", profile_text)
 
+    def test_build_script_help_works_without_live_env(self):
+        # --help must work under `set -u` with no live-build environment set:
+        # the usage heredoc must not dereference an unset FXROUTE_LIVE_DISK.
+        environment = os.environ.copy()
+        for key in (
+            "FXROUTE_LIVE_DISK",
+            "FXROUTE_LIVE_SQUASH",
+            "FXROUTE_BASE_ISO",
+            "FXROUTE_ISO_OUTPUT",
+        ):
+            environment.pop(key, None)
+        result = subprocess.run(
+            [str(ROOT / "iso/build-leap-16-iso.sh"), "--help"],
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Usage:", result.stdout)
+
     def test_builder_rejects_the_removed_credential_flags(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             key_file = Path(temporary_directory) / "id_ed25519.pub"

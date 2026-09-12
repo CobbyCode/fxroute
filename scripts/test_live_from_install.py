@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Live-from-installed converter contract and fixture tests."""
+import os
 import re
 import subprocess
 import unittest
@@ -89,6 +90,28 @@ class LiveFromInstallTests(unittest.TestCase):
         self.assertIn("/dev/null", text)
         self.assertIn("kernel-default-extra", text)
         self.assertIn("depmod", text)
+
+    def test_converter_help_works_without_env(self):
+        environment = {
+            key: value for key, value in os.environ.items()
+            if key != "FXROUTE_LIVE_CONVERT_PASSWORD"
+        }
+        proc = subprocess.run(
+            ["bash", str(CONVERTER), "--help"],
+            capture_output=True, text=True, cwd=ROOT, env=environment,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "Usage:" in proc.stdout
+
+    def test_converter_packs_as_root_and_keeps_host_artifact_ownership(self):
+        # The extracted tree is root-owned. The pack step must run inside the
+        # (root) container so system owners, service-account directories and
+        # setuid bits survive even when the host build runs as a non-root
+        # user; only the finished image is handed back to the host user.
+        text = CONVERTER.read_text(encoding="utf-8")
+        self.assertIn("mksquashfs /t /o/squashfs.img", text)
+        self.assertIn("tar -x -C /t --numeric-owner", text)
+        self.assertIn('chown "$HOST_UID:$HOST_GID" /o/squashfs.img', text)
 
     def test_iso_builder_calls_new_converter(self):
         text = (ROOT / "iso" / "build-leap-16-iso.sh").read_text(encoding="utf-8")
