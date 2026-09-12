@@ -48,6 +48,12 @@ class LiveRootBuilderTests(unittest.TestCase):
         self.assertIn("usbhid", text)
         self.assertIn("depmod", text)
 
+    def test_builder_ships_konsole_like_installed(self):
+        # Agama installs the pattern with recommends (Konsole included);
+        # the builder uses --no-recommends, so the terminal is explicit.
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn("konsole", text)
+
     def test_builder_covers_extra_kernel_drivers_and_wifi_firmware(self):
         text = BUILDER.read_text(encoding="utf-8")
         self.assertIn("kernel-default-extra", text)

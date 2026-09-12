@@ -200,7 +200,7 @@ zypper --non-interactive refresh || true
 zypper --non-interactive install --no-recommends -t pattern kde_plasma || true
 zypper --non-interactive install --no-recommends \
   plasma6-session plasma6-session-x11 sddm-qt6 plasma6-pa plasma6-nm qt6-wayland \
-  plasma6-workspace kf6-kconfig \
+  plasma6-workspace kf6-kconfig konsole \
   MozillaFirefox \
   python3 python313-pip tar ca-certificates iproute2 openssh-server git \
   curl socat mpv playerctl \
@@ -548,14 +548,38 @@ EOF
 chown "$LIVE_USER:$(id -gn "$LIVE_USER")" "$LIVE_HOME/Desktop/FXRoute.desktop" "$LIVE_HOME/Desktop/Spotify Download.desktop"
 chmod 644 "$LIVE_HOME/Desktop/FXRoute.desktop" "$LIVE_HOME/Desktop/Spotify Download.desktop"
 
-# Live desktop launcher (waits for /api/status, then kiosk). Reuses appliance pattern.
+# Live desktop launcher (waits bounded for /api/status, then kiosk; a backend
+# that never comes up produces a visible error state instead of a dead desktop).
 cat > /usr/local/bin/fxroute-desktop-launcher <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-until curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
-    http://127.0.0.1:8000/api/status >/dev/null; do
+# Wait for the FXRoute backend, but never unbounded: a backend that never
+# comes up must still produce a visible desktop state instead of leaving the
+# user on a seemingly dead desktop with no kiosk and no clue. 180s covers the
+# cold-media backend start (mpv probes, venv import) plus several service
+# restart attempts (RestartSec=10); healthy boots leave the loop in seconds.
+status_url="http://127.0.0.1:8000/api/status"
+backend_ready=0
+for _ in $(seq 1 180); do
+  if curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
+      "$status_url" >/dev/null; then
+    backend_ready=1
+    break
+  fi
   sleep 1
 done
+if [[ "$backend_ready" != 1 ]]; then
+  logger -t fxroute-desktop-launcher \
+    "FXRoute backend not reachable after 180s; showing the error state" || true
+  # Visible failure state: a note on the Desktop plus the kiosk window with
+  # the browser's own "unable to connect" page instead of a bare desktop.
+  mkdir -p "$HOME/Desktop" 2>/dev/null || true
+  printf '%s\n' \
+    'FXRoute could not start: the backend did not come up on 127.0.0.1:8000.' \
+    'Diagnosis: journalctl --user -u fxroute -n 50' \
+    > "$HOME/Desktop/FXRoute-NOT-STARTED.txt" 2>/dev/null || true
+  exec firefox --kiosk http://127.0.0.1:8000/
+fi
 # First graphical login only: desktop links, wallpaper, Firefox bookmark
 # (same helper as the installed desktop).
 if [[ ! -f "$HOME/.local/share/fxroute/appliance-ready" ]]; then
