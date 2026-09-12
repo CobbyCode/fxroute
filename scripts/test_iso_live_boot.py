@@ -29,9 +29,10 @@ class IsoLiveBootTests(unittest.TestCase):
         text = BUILD.read_text(encoding="utf-8")
         self.assertIn("LiveFX/squashfs.img", text)
         self.assertTrue(
-            "FXROUTE_LIVE_SQUASH" in text or "build-live-root" in text,
+            "FXROUTE_LIVE_SQUASH" in text or "build-live-from-installed" in text,
             "build must stage LiveFX squash",
         )
+        self.assertNotIn("build-live-root.sh", text)
         self.assertIn('menuentry "Try FXRoute"', text)
 
 

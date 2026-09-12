@@ -10,6 +10,8 @@ BASE_SHA512="94411793a1878b3558211c8bbe4f3823c3c5212cc2dd9f9e4532a18be7eddd3be14
 BASE_ISO="${FXROUTE_BASE_ISO:-${XDG_CACHE_HOME:-$HOME/.cache}/fxroute/Leap-16.0-offline-installer-x86_64.install.iso}"
 OUTPUT="${FXROUTE_ISO_OUTPUT:-$ROOT_DIR/dist/fxroute-leap-16-x86_64.iso}"
 LIVE_SQUASH="${FXROUTE_LIVE_SQUASH:-}"
+LIVE_DISK="${FXROUTE_LIVE_DISK:-}"
+LIVE_SSH_PASSWORD="${FXROUTE_LIVE_SSH_PASSWORD:-${FXROUTE_LIVE_CONVERT_PASSWORD:-}}"
 SKIP_LIVE=0
 KEEP_WORK=0
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
@@ -31,7 +33,12 @@ Options:
   --base-iso PATH          Use PATH instead of the cached/downloaded Leap ISO
   --output PATH            Write the resulting ISO to PATH
   --live-squash PATH       Use PATH as the prebuilt LiveFX squashfs image
-                           (default: build via iso/scripts/build-live-root.sh)
+                           (default: convert FXROUTE_LIVE_DISK via
+                           iso/scripts/build-live-from-installed.sh)
+  --live-disk PATH         Installed FXRoute desktop disk (qcow2) to convert
+                           into the live system (default: $FXROUTE_LIVE_DISK)
+  --live-ssh-password PASS Account password on the live disk, for extraction
+                           (or FXROUTE_LIVE_CONVERT_PASSWORD)
   --no-live                Skip the Try FXRoute live system (dev/test only)
   --keep-work              Keep the temporary media staging directory
   -h, --help               Show this help
@@ -58,6 +65,16 @@ while [[ $# -gt 0 ]]; do
     --live-squash)
       [[ $# -ge 2 ]] || die "--live-squash requires a path"
       LIVE_SQUASH="$2"
+      shift 2
+      ;;
+    --live-disk)
+      [[ $# -ge 2 ]] || die "--live-disk requires a path"
+      LIVE_DISK="$2"
+      shift 2
+      ;;
+    --live-ssh-password)
+      [[ $# -ge 2 ]] || die "--live-ssh-password requires a password"
+      LIVE_SSH_PASSWORD="$2"
       shift 2
       ;;
     --no-live)
@@ -254,26 +271,14 @@ else
     printf '[iso] staging prebuilt live squash: %s\n' "$LIVE_SQUASH"
     cp -- "$LIVE_SQUASH" "$STAGE_DIR/LiveFX/squashfs.img"
   else
-    printf '[iso] building LiveFX squashfs image\n'
-    # Version-exact kernel modules for the live root: it boots this ISO's
-    # kernel, so input/WLAN drivers must come from the kernel RPMs on this
-    # very ISO (repo kernels no longer match). kernel-default-extra carries
-    # the ath11k/ath12k/mt76 WLAN drivers. Without them USB mice/trackpads
-    # stay dead after switch-root and Plasma shows no WLANs. Fail fast.
-    # NOTE: materialize the listing first (see final-grub.cfg note below).
-    isoinfo -R -i "$BASE_ISO" -f > "$WORK_DIR/base-isol.txt" 2>/dev/null \
-      || die "could not list base ISO contents"
-    KERNEL_RPM_ARGS=()
-    for rpm_kind in "kernel-default" "kernel-default-extra"; do
-      KERNEL_RPM_ISO_PATH="$(grep -E "/${rpm_kind}-[0-9][^/]*\\.x86_64\\.rpm\$" "$WORK_DIR/base-isol.txt" | head -n 1 || true)"
-      [[ -n "$KERNEL_RPM_ISO_PATH" ]] || die "${rpm_kind} RPM not found on base ISO ($BASE_ISO)"
-      printf '[iso] extracting live kernel modules: %s\n' "$KERNEL_RPM_ISO_PATH"
-      isoinfo -R -i "$BASE_ISO" -x "$KERNEL_RPM_ISO_PATH" > "$WORK_DIR/${rpm_kind}.rpm" \
-        || die "could not extract ${rpm_kind} RPM from base ISO"
-      KERNEL_RPM_ARGS+=(--kernel-rpm "$WORK_DIR/${rpm_kind}.rpm")
-    done
-    "$ROOT_DIR/iso/scripts/build-live-root.sh" --output "$STAGE_DIR/LiveFX/squashfs.img" \
-      "${KERNEL_RPM_ARGS[@]}"
+    printf '[iso] converting installed desktop into LiveFX squashfs image\n'
+    [[ -n "$LIVE_DISK" ]] || die "--live-disk (or FXROUTE_LIVE_DISK) is required to build the live system (or pass --live-squash)"
+    [[ -f "$LIVE_DISK" ]] || die "live disk not found: $LIVE_DISK"
+    [[ -n "$LIVE_SSH_PASSWORD" ]] || die "--live-ssh-password (or FXROUTE_LIVE_CONVERT_PASSWORD) is required for extraction"
+    "$ROOT_DIR/iso/scripts/build-live-from-installed.sh" \
+      --disk "$LIVE_DISK" --base-iso "$BASE_ISO" \
+      --output "$STAGE_DIR/LiveFX/squashfs.img" \
+      --ssh-password "$LIVE_SSH_PASSWORD"
   fi
   [[ -f "$STAGE_DIR/LiveFX/squashfs.img" ]] || die "live squash staging failed"
 fi

@@ -66,14 +66,21 @@ export SOURCE_DATE_EPOCH=0
 ```
 
 Use `--base-iso` or `--output` to override individual values. Use
-`--live-squash PATH` to reuse a prebuilt LiveFX image and `--no-live` to
-skip the Try system for dev/test (release ISOs always ship it).
-`iso/scripts/build-live-root.sh --output PATH` builds the flat
+`--live-squash PATH` to reuse a prebuilt LiveFX image, `--live-disk PATH`
+with `--live-ssh-password` (or `FXROUTE_LIVE_DISK` /
+`FXROUTE_LIVE_CONVERT_PASSWORD`) to convert an installed FXRoute desktop
+disk, and `--no-live` to skip the Try system for dev/test (release ISOs
+always ship it).
+`iso/scripts/build-live-from-installed.sh` builds the flat
 `/LiveFX/squashfs.img` (squash root = live rootfs with `/proc`, no nested
-`LiveOS/rootfs.img`) via Docker Leap 16.0 from the desktop profile packages
-plus the `install.sh` core/audio sets, with FXRoute checkout, venv, native
-DSP, `fxroute.service`, SDDM autologin (`fxroute`), and the appliance
-defaults prebaked; `--minimal` emits a tiny structure-test image.
+`LiveOS/rootfs.img`) from a working Agama desktop installation: the
+golden disk comes from the proven `desktop` QEMU install automation,
+its filesystem is extracted, only true live semantics are applied
+(volatile identity, no credentials, neutral fstab, ISO-kernel modules
+from the base ISO, live marker, internal-disk protection), and the
+result is packed with pinned squash metadata. Everything else
+(packages, PipeWire, desktop, helpers, DSP) comes from the installed
+system untouched; `install.sh` is not modified.
 The bootable live filesystem uses a minimum epoch of `86400` (1970-01-02),
 even with `SOURCE_DATE_EPOCH=0`. SDDM ignores epoch-zero configuration,
 including Leap's Xsession path, and sysusers interprets shadow last-change

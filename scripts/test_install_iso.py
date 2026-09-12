@@ -507,7 +507,6 @@ class InstallIsoContractTests(unittest.TestCase):
         """
         for path in (
             "iso/scripts/first-boot-install.sh",
-            "iso/scripts/build-live-root.sh",
         ):
             script = self.read(path)
             with self.subTest(script=path):
