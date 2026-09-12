@@ -91,14 +91,26 @@ def _run():
             page.click("#library-view-folders")
             page.wait_for_function("document.querySelectorAll('#tracks-list .folder-item').length > 0")
 
-            for width, height in ((1440, 900), (390, 844)):
+            # Desktop offers the round play button in the folder row; phones
+            # hide it (054107f) and open the folder through the row itself.
+            # Each viewport drives the affordance its breakpoint actually
+            # offers, so a hidden button is asserted, never clicked.
+            for width, height, via_row in ((1440, 900, False), (390, 844, True)):
                 page.set_viewport_size({"width": width, "height": height})
                 page.click("#library-view-folders")
                 page.wait_for_selector('#tracks-list .folder-item[data-folder="Records"]')
                 check(f"[{width}px] root has no Back button", page.locator("#library-folder-back").count() == 0)
                 check(f"[{width}px] root breadcrumb is visible", page.locator("#library-folder-path").inner_text() == "Music root")
 
-                page.click('#tracks-list .track-play[data-folder="Records"]')
+                folder_play = page.locator('#tracks-list .track-play[data-folder="Records"]')
+                if via_row:
+                    check(f"[{width}px] phone row hides the separate play button", not folder_play.is_visible())
+                    # The row itself is the tap trigger on phones; the title is
+                    # inside the row and away from the folder action buttons.
+                    page.click('#tracks-list .folder-item[data-folder="Records"] .track-title')
+                else:
+                    check(f"[{width}px] desktop keeps the round play button", folder_play.is_visible())
+                    folder_play.click()
                 page.wait_for_selector("#library-folder-back")
                 page.wait_for_selector('#tracks-list .folder-item[data-folder="Records/Live"]')
                 breadcrumb = page.locator("#library-folder-path").inner_text()
