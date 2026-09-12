@@ -438,6 +438,17 @@ class MusicLibraryManager:
         _kind, server, share = library_id.split(":", 2)
         root = self._mounted_share_path(server, share)
         mount_diagnostics: list[str] = []
+
+        def _note_diagnostics(result: subprocess.CompletedProcess | None, tool: str, timeout_s: int) -> None:
+            if result is None:
+                mount_diagnostics.append(f"{tool} timed out after {timeout_s}s")
+                return
+            error_lines = (result.stderr or "").strip().splitlines()
+            if error_lines and error_lines[-1].strip():
+                mount_diagnostics.append(error_lines[-1].strip())
+            elif result.returncode != 0:
+                mount_diagnostics.append(f"{tool} failed (exit {result.returncode})")
+
         if root is None:
             try:
                 helper_result = subprocess.run(
@@ -450,11 +461,9 @@ class MusicLibraryManager:
                     check=False,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
+                _note_diagnostics(None, "cifs-mount helper", 15)
             else:
-                helper_error = (helper_result.stderr or "").strip().splitlines()
-                if helper_error:
-                    mount_diagnostics.append(helper_error[-1].strip())
+                _note_diagnostics(helper_result, "cifs-mount helper", 15)
             root = self._mounted_share_path(server, share)
         if root is None:
             try:
@@ -468,11 +477,9 @@ class MusicLibraryManager:
                     check=False,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
+                _note_diagnostics(None, "gio mount", 10)
             else:
-                gio_error = (gio_result.stderr or "").strip().splitlines()
-                if gio_error:
-                    mount_diagnostics.append(gio_error[-1].strip())
+                _note_diagnostics(gio_result, "gio mount", 10)
             root = self._mounted_share_path(server, share)
         if root is None:
             detail = f"SMB share is not mounted: {_server_label(server)} / {share}"
