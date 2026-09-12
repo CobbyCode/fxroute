@@ -80,6 +80,12 @@ class LiveRootBuilderTests(unittest.TestCase):
         self.assertIn("seat-monitoring", text)
         self.assertIn("default.clock.allowed-rates", text)
 
+    def test_builder_leaves_providers_uninstalled_like_installer(self):
+        # Installed path uses --providers none; live must not preinstall any
+        # provider either (TIDAL/Spotify/Qobuz install on demand from Settings).
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertNotIn("requirements-tidal", text)
+
     def test_builder_builds_calf_like_installer(self):
         text = BUILDER.read_text(encoding="utf-8")
         self.assertIn('CALF_VERSION="0.90.9"', text)

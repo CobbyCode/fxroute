@@ -322,12 +322,12 @@ if command -v git >/dev/null 2>&1; then
 fi
 
 # Python venv + dependencies (same as install.sh, but without starting systemd units).
+# Providers stay uninstalled like install.sh --providers none on the
+# installed path: TIDAL/Spotify/Qobuz install on demand from Settings.
+# (The TIDAL pip list ships in the source tree for that on-demand install.)
 su "$LIVE_USER" -c "cd ~/fxroute && python3 -m venv .venv"
 su "$LIVE_USER" -c "cd ~/fxroute && .venv/bin/pip install -q --upgrade pip"
 su "$LIVE_USER" -c "cd ~/fxroute && .venv/bin/pip install -q -r requirements.txt"
-if [[ -f "$LIVE_HOME/fxroute/requirements-tidal.txt" ]]; then
-  su "$LIVE_USER" -c "cd ~/fxroute && .venv/bin/pip install -q -r requirements-tidal.txt || true"
-fi
 
 # Native DSP build.
 su "$LIVE_USER" -c "cd ~/fxroute && bash native_dsp/build.sh || bash -c 'cmake -S native_dsp -B native_dsp/build && cmake --build native_dsp/build --parallel'"
