@@ -1013,8 +1013,11 @@ test -f /usr/local/bin/fxroute-desktop-launcher
 grep -Fq 'firefox --kiosk http://127.0.0.1:8000/' /usr/local/bin/fxroute-desktop-launcher
 test -f "$HOME/Desktop/LIVE-MODE-README.txt"
 grep -Fq 'Live Mode' "$HOME/Desktop/LIVE-MODE-README.txt"
-# Live banner asset is served.
-curl --fail --silent http://127.0.0.1:8000/ | grep -Fq 'live-banner'
+# Live banner asset is served (download-then-grep: piping curl into grep -q
+# aborts curl with SIGPIPE once the early match exits, which fails the
+# pipeline under pipefail even though the banner is present).
+curl --fail --silent http://127.0.0.1:8000/ -o /tmp/fxroute-live-index.html
+grep -Fq 'live-banner' /tmp/fxroute-live-index.html
 EOF
 }
 
@@ -1046,9 +1049,10 @@ verify_live_volatility() {
   local pid="$2"
   local ssh_port="$3"
   local http_port="$4"
+  local monitor="$5"
   local probe_path=".cache/fxroute-live-try-probe"
   ssh_live "$ssh_port" "touch ~/$probe_path && test -f ~/$probe_path"
-  reboot_live_guest "$profile" "$pid" "$ssh_port"
+  reboot_live_guest "$profile" "$pid" "$ssh_port" "$monitor"
   wait_for_live "$profile" "$pid" "$http_port" "$ssh_port"
   if ssh_live "$ssh_port" "test -f ~/$probe_path" >/dev/null 2>&1; then
     printf '[iso-test] live home survived reboot (not volatile)\n' >&2
@@ -1060,12 +1064,20 @@ reboot_live_guest() {
   local profile="$1"
   local pid="$2"
   local ssh_port="$3"
+  local monitor="$4"
   local old_boot_id
   local new_boot_id
 
   printf '[iso-test] rebooting %s live guest to verify volatility\n' "$profile"
   old_boot_id="$(ssh_live "$ssh_port" cat /proc/sys/kernel/random/boot_id)"
   sudo_live "$ssh_port" systemctl reboot >/dev/null 2>&1 || ssh_live "$ssh_port" sudo reboot >/dev/null 2>&1 || true
+  # QEMU's `-boot once=d` is consumed by the first boot: after a guest
+  # reboot the firmware falls back to the (empty) hard disk, so the Try
+  # session would never return. Re-drive the GRUB selection through the
+  # still-connected monitor, including the test-only live password that
+  # enables SSH (release boots omit it and keep sshd disabled).
+  FXROUTE_ISO_KERNEL_EXTRA="fxroute.live-password=$LIVE_PASSWORD" \
+    select_boot_entry "$profile" "$monitor"
   for _ in $(seq 1 90); do
     kill -0 "$pid" 2>/dev/null || {
       printf '[iso-test] QEMU exited while rebooting %s live\n' "$profile" >&2
@@ -1137,7 +1149,7 @@ for profile in "${PROFILES[@]}"; do
     wait_for_live "$profile" "$pid" "$http_port" "$ssh_port"
     verify_live "$ssh_port"
     verify_live_no_internal_mounts "$ssh_port"
-    verify_live_volatility "$profile" "$pid" "$ssh_port" "$http_port"
+    verify_live_volatility "$profile" "$pid" "$ssh_port" "$http_port" "$monitor"
     printf '[iso-test] %s profile passed\n' "$profile"
     # Live guest uses the live password for sudo; poweroff via live SSH.
     printf '%s\n' "$LIVE_PASSWORD" | ssh_live "$ssh_port" sudo -S -- systemctl poweroff >/dev/null 2>&1 || true
