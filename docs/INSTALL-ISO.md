@@ -98,8 +98,10 @@ pointer/input drivers (usbhid, i2c-hid) and current WLAN drivers
 switch-root. WLAN firmware for the usual notebook adapters
 (`kernel-firmware-iwlwifi/-ath10k/-ath11k/-ath12k/-atheros/-brcm/
 -mediatek/-realtek/-marvell`) plus `wireless-regdb` comes from the repos.
-The live user is a member of `audio`, `video`, `input` and
-`systemd-journal`. `NetworkManager.service` is enabled explicitly: the
+The live user is a member of `audio` and `systemd-journal`: `install.sh`
+grants ALSA and journal access, and the logind seat ACLs already cover the
+DRM (`video`) and input devices for the active session, so those groups stay
+empty. `NetworkManager.service` is enabled explicitly: the
 installer enables it on installed systems, package presets do not, so
 without this no interface would come up and Plasma would list no WLANs. The FXRoute/Spotify desktop links use the same
 `fxroute-appliance-session-init.sh` helper as the installed desktop,
@@ -264,7 +266,8 @@ kernel pointer-driver modules (usbhid, i2c-hid) and WLAN drivers
 (iwlwifi, ath11k, mt7921e, rtw89) with modules.dep, WLAN firmware
 (iwlwifi/ath11k/mediatek/rtw89/regdb), the live desktop links
 (FXRoute.desktop, Spotify Download.desktop) with the shared session-init
-helper, live-user `input` group membership, and removal of the Docker
+helper, the live user's `audio` and `systemd-journal` membership (logind seat
+ACLs cover the `video`/`input` devices), and removal of the Docker
 identity marker. The reproduced failure was a
 successful login followed by `Session started false`: SDDM fell back to
 the absent `/etc/X11/xdm/Xsession` instead of the packaged
