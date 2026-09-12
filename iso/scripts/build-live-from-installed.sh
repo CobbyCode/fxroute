@@ -184,6 +184,11 @@ mkdir -p "$(dirname "$OUTPUT")"
 WORK_DIR="${WORK_DIR_OVERRIDE:-$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/fxroute/live-convert.XXXXXX")}"
 mkdir -p "$WORK_DIR"
 TREE="$WORK_DIR/tree"
+# Stale trees contain root-owned files; remove with container privileges.
+if [[ -e "$TREE" ]]; then
+  rm -rf -- "$TREE" 2>/dev/null || \
+    docker run --rm -v "$WORK_DIR:/w:z" "$DOCKER_IMAGE" rm -rf /w/tree >/dev/null 2>&1 || true
+fi
 mkdir -p "$TREE"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
@@ -263,6 +268,7 @@ printf '%s\n' "$SSH_PASSWORD" | SSH_ASKPASS="$ROOT_DIR/iso/agama-askpass.sh" SSH
   -e LIVE_EPOCH="$LIVE_EPOCH" \
   "$DOCKER_IMAGE" bash -c '
     set -Eeuo pipefail
+    command -v cpio >/dev/null 2>&1 || zypper --non-interactive install --no-recommends cpio >/dev/null 2>&1
     tar -x -C /t --numeric-owner
     [[ -f /t/etc/os-release ]] || { echo "[live-convert][error] extraction failed" >&2; exit 1; }
     export LIVE_TREE=/t UDEV_RULE_SRC=/tmp/live-udev.rules LIVE_INIT_SRC=/tmp/live-init.sh
