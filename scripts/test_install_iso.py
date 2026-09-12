@@ -532,10 +532,13 @@ class InstallIsoContractTests(unittest.TestCase):
             with self.subTest(script=path):
                 # The old unbounded pattern must be gone.
                 self.assertNotIn("until curl", script)
-                # Bounded wait: a counted loop, not an endless until.
+                # Bounded wait: a wall-clock deadline, so the 180s budget cannot
+                # stretch to 180 potentially 30s-long requests.
                 self.assertIn("backend_ready=0", script)
                 self.assertIn("backend_ready=1", script)
-                self.assertIn("$(seq 1 180)", script)
+                self.assertIn("deadline=$(( SECONDS + 180 ))", script)
+                self.assertIn("while (( SECONDS < deadline )); do", script)
+                self.assertNotIn("$(seq 1 180)", script)
                 # Failure path: journal line, visible Desktop note, kiosk.
                 self.assertIn("logger -t fxroute-desktop-launcher", script)
                 self.assertIn("FXRoute-NOT-STARTED.txt", script)
@@ -619,7 +622,11 @@ class InstallIsoContractTests(unittest.TestCase):
             self.read(f"iso/profiles/{profile}.jsonnet")
             for profile in ("headless", "desktop")
         )
-        self.assertIn("--connect-timeout 5 --max-time 30", script)
+        # The backend probe bounds the connect time and caps the total request
+        # time by what is left of the wall-clock wait budget.
+        self.assertIn("--connect-timeout 5", script)
+        self.assertIn('--max-time "$request_timeout"', script)
+        self.assertIn("request_timeout=$(( remaining < 30 ? remaining : 30 ))", script)
         self.assertIn("TimeoutStartSec=2h", service_profiles)
 
     def test_qemu_test_runner_covers_fresh_headless_and_desktop_guests(self):

@@ -499,14 +499,20 @@ EOF
 set -Eeuo pipefail
 # Wait for the FXRoute backend, but never unbounded: a backend that never
 # comes up must still produce a visible desktop state instead of leaving the
-# user on a seemingly dead desktop with no kiosk and no clue. 180s covers the
+# user on a seemingly dead desktop with no kiosk and no clue. The budget is
+# wall-clock 180s (not 180 potentially 30s-long requests), which covers the
 # backend start plus several service restart attempts (RestartSec=10);
 # healthy boots leave the loop in seconds.
 status_url="http://127.0.0.1:8000/api/status"
 backend_ready=0
-for _ in $(seq 1 180); do
-  if curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
-      "$status_url" >/dev/null; then
+deadline=$(( SECONDS + 180 ))
+while (( SECONDS < deadline )); do
+  remaining=$(( deadline - SECONDS ))
+  # A request that hangs must not push the wait past the budget: the total
+  # request time is capped by what is left of it.
+  request_timeout=$(( remaining < 30 ? remaining : 30 ))
+  if curl --fail --silent --show-error --connect-timeout 5 \
+      --max-time "$request_timeout" "$status_url" >/dev/null; then
     backend_ready=1
     break
   fi
