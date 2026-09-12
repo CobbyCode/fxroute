@@ -207,6 +207,54 @@ class LiveFromInstallTests(unittest.TestCase):
             # The profile skeleton itself stays usable for the kiosk.
             self.assertTrue(profile.is_dir())
 
+    def test_converter_neutralizes_inherited_locale_to_english(self):
+        """The live session must not inherit the golden disk's locale.
+
+        Regression: a German reference installation baked LANG=de_DE.UTF-8,
+        KEYMAP=de and XkbLayout "de" into the public live image. The live
+        session always defaults to English.
+        """
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tree = Path(td)
+            self._conversion_fixture(tree)
+            (tree / "etc/locale.conf").write_text("LANG=de_DE.UTF-8\n")
+            (tree / "etc/vconsole.conf").write_text(
+                "KEYMAP=de\nFONT=eurlatgr.psfu\nXKBLAYOUT=de\nXKBMODEL=pc105\n"
+            )
+            xorg_conf = tree / "etc/X11/xorg.conf.d/00-keyboard.conf"
+            xorg_conf.parent.mkdir(parents=True)
+            xorg_conf.write_text(
+                'Section "InputClass"\n'
+                '        Identifier "system-keyboard"\n'
+                '        MatchIsKeyboard "on"\n'
+                '        Option "XkbLayout" "de"\n'
+                '        Option "XkbModel" "pc105"\n'
+                'EndSection\n'
+            )
+            localerc = tree / "home/fxroute/.config/plasma-localerc"
+            localerc.parent.mkdir(parents=True, exist_ok=True)
+            localerc.write_text("[Formats]\nLANG=de_DE.UTF-8\n")
+            proc = subprocess.run(
+                ["bash", "-c",
+                 "set -Eeuo pipefail;"
+                 "source iso/scripts/build-live-from-installed.sh --source-only 2>/dev/null;"
+                 f" LIVE_TREE='{tree}' BUILD_COMMIT=test LIVE_USER=fxroute scrub_tree"],
+                capture_output=True, text=True, cwd=ROOT,
+            )
+            assert proc.returncode == 0, proc.stderr
+            self.assertEqual((tree / "etc/locale.conf").read_text(), "LANG=en_US.UTF-8\n")
+            vconsole = (tree / "etc/vconsole.conf").read_text()
+            self.assertIn("KEYMAP=us", vconsole.splitlines())
+            self.assertIn("XKBLAYOUT=us", vconsole.splitlines())
+            self.assertNotIn("FONT=", vconsole)
+            self.assertNotIn('"de"', vconsole)
+            xorg = xorg_conf.read_text()
+            self.assertIn('Option "XkbLayout" "us"', xorg)
+            self.assertNotIn('"de"', xorg)
+            self.assertIn("LANG=en_US.UTF-8", localerc.read_text().splitlines())
+
     def test_converter_refuses_a_live_account_that_is_not_in_the_system(self):
         """A mismatched --ssh-user must fail loudly, never leak credentials."""
         import tempfile

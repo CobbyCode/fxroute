@@ -115,6 +115,43 @@ scrub_user_state() {
   rm -f "$tree/root/.bash_history"
 }
 
+# The live session must not inherit the reference installation's locale: the
+# Try desktop, console and X11 keymap always default to English, no matter
+# which language the golden disk was installed with. Only the live default
+# is set here; installed systems keep their interactive Agama choice.
+# Runs as root (container) in production; fixture tests run it as the
+# invoking user on user-owned trees.
+neutralize_locale() {
+  local tree="$1"
+  printf 'LANG=en_US.UTF-8\n' > "$tree/etc/locale.conf"
+  if [[ -f "$tree/etc/vconsole.conf" ]]; then
+    sed -i -e 's/^KEYMAP=.*/KEYMAP=us/' -e 's/^XKBLAYOUT=.*/XKBLAYOUT=us/' \
+      -e '/^FONT=/d' "$tree/etc/vconsole.conf"
+    grep -q '^KEYMAP=' "$tree/etc/vconsole.conf" \
+      || printf 'KEYMAP=us\n' >> "$tree/etc/vconsole.conf"
+    grep -q '^XKBLAYOUT=' "$tree/etc/vconsole.conf" \
+      || printf 'XKBLAYOUT=us\n' >> "$tree/etc/vconsole.conf"
+  else
+    printf 'KEYMAP=us\n' > "$tree/etc/vconsole.conf"
+  fi
+  local xorg_conf="$tree/etc/X11/xorg.conf.d/00-keyboard.conf"
+  if [[ -f "$xorg_conf" ]]; then
+    sed -i 's/Option "XkbLayout" "[^"]*"/Option "XkbLayout" "us"/' "$xorg_conf"
+  fi
+  local home localerc
+  for home in "$tree"/home/*; do
+    [[ -d "$home" ]] || continue
+    localerc="$home/.config/plasma-localerc"
+    if [[ -f "$localerc" ]]; then
+      if grep -q '^\[Formats\]' "$localerc"; then
+        sed -i '/^\[Formats\]/,/^\[/ s/^LANG=.*/LANG=en_US.UTF-8/' "$localerc"
+      else
+        printf '\n[Formats]\nLANG=en_US.UTF-8\n' >> "$localerc"
+      fi
+    fi
+  done
+}
+
 # Scrub identity and secrets from the extracted tree. Everything here is
 # true live semantics: no credential or machine identity may ship.
 # Runs as root (container) in production; fixture tests run it as the
@@ -134,6 +171,7 @@ scrub_tree() {
   rm -rf "$tree/var/log"/* "$tree/var/tmp"/* "$tree/var/cache/zypp"
   scrub_account_passwords "$tree" "$live_account"
   scrub_user_state "$tree"
+  neutralize_locale "$tree"
   : > "$tree/etc/machine-id"
   printf 'fxroute-live\n' > "$tree/etc/hostname"
   printf 'fxroute-live\n' > "$tree/etc/fxroute-live"
@@ -415,7 +453,7 @@ printf '%s\n' "$SSH_PASSWORD" | SSH_ASKPASS="$ROOT_DIR/iso/agama-askpass.sh" SSH
     tar -x -C /t --numeric-owner
     [[ -f /t/etc/os-release ]] || { echo "[live-convert][error] extraction failed" >&2; exit 1; }
     export LIVE_TREE=/t UDEV_RULE_SRC=/tmp/live-udev.rules LIVE_INIT_SRC=/tmp/live-init.sh
-    '"$(declare -f filter_fstab live_regular_accounts resolve_live_account scrub_account_passwords scrub_user_state scrub_tree slim_tree)"'
+    '"$(declare -f filter_fstab live_regular_accounts resolve_live_account scrub_account_passwords scrub_user_state neutralize_locale scrub_tree slim_tree)"'
     scrub_tree
     for rpm in /tmp/k-default.rpm /tmp/k-extra.rpm; do
       name="$(rpm -qp --queryformat "%{NAME}" "$rpm")"
