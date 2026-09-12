@@ -461,6 +461,15 @@ if [[ -f "$LIVE_HOME/fxroute/assets/fxroute-wallpaper.png" ]]; then
   chmod 644 /usr/share/wallpapers/fxroute-wallpaper.png
 fi
 
+# Privileged helpers the app calls via passwordless sudo (same paths as
+# install.sh): CIFS mount helper for SMB libraries and the provider
+# helper for provider login/network checks. Live sudo already covers
+# NOPASSWD, so only the root-owned binaries are needed here.
+for helper in fxroute-cifs-mount fxroute-provider-privileged; do
+  [[ -f "$LIVE_HOME/fxroute/scripts/$helper" ]] || { echo "[live-root][error] helper missing: scripts/$helper" >&2; exit 1; }
+  install -o 0 -g 0 -m 755 "$LIVE_HOME/fxroute/scripts/$helper" /usr/local/sbin/$helper
+done
+
 # Desktop links at build time too (same content as the installed desktop;
 # the session helper re-ensures them at login for localized folders).
 su "$LIVE_USER" -c "mkdir -p ~/Desktop"

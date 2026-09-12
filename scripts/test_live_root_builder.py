@@ -66,6 +66,12 @@ class LiveRootBuilderTests(unittest.TestCase):
         text = BUILDER.read_text(encoding="utf-8")
         self.assertIn("fxroute-appliance-session-init", text)
 
+    def test_builder_installs_privileged_helpers(self):
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn("fxroute-cifs-mount", text)
+        self.assertIn("fxroute-provider-privileged", text)
+        self.assertIn("/usr/local/sbin", text)
+
     def test_builder_adds_live_user_to_input_group(self):
         text = BUILDER.read_text(encoding="utf-8")
         self.assertIn("input", text)

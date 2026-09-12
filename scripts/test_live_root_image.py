@@ -95,6 +95,15 @@ class LiveRootImageTests(unittest.TestCase):
         amps = [p for p in self.files if re.search(r"/usr/lib/firmware/TAS.+\.bin(\.\w+)?$", p)]
         self.assertTrue(amps, "live root has no amp firmware")
 
+    def test_live_privileged_helpers_present_and_root_owned(self):
+        for helper in ("/usr/local/sbin/fxroute-cifs-mount",
+                       "/usr/local/sbin/fxroute-provider-privileged"):
+            with self.subTest(helper=helper):
+                self.assertIn(helper, self.files)
+                mode, uid, gid, _, _ = self.files[helper]
+                self.assertEqual(uid, 0, "helper must be root-owned for the sudo check")
+                self.assertIn("x", mode)
+
     def test_live_desktop_links_match_installed_desktop(self):
         for name in ("/home/fxroute/Desktop/FXRoute.desktop",
                      "/home/fxroute/Desktop/Spotify Download.desktop"):
