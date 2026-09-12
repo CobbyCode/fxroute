@@ -13,7 +13,9 @@ rebuilt the helper.  The output-mode switch must not be the repair mechanism.
 
 Covers the recovery at all three layers:
 1. ``DspOrchestrator.sync_runtime_at_rate`` (measurement release) rebuilds the
-   stale helper instead of silently deferring the restore.
+   stale helper instead of silently deferring the restore -- including while
+   the session still reports graph ownership, which is the production shape
+   (``owns_audio_graph`` stays true until the release returns).
 2. ``_RuntimeSourceMixin.establish_target_rate`` recovers a stale helper
    before failing the transition, so a later play self-heals.
 3. The idle link-watch tick repairs a live force-rate pin the helper does not
@@ -63,12 +65,25 @@ class _FakeDspRuntime:
         )
 
 
+class _FailingSyncRuntime(_FakeDspRuntime):
+    """Runtime whose rebuild fails before the running helper is replaced."""
+
+    def __init__(self, helper_rate: int) -> None:
+        super().__init__(helper_rate)
+        self.attempts = 0
+
+    async def sync(self, overview: dict) -> None:
+        self.attempts += 1
+        raise RuntimeError("native DSP config could not be prepared")
+
+
 class _OrchestratorDeps:
     """Dependency bag where the hardware sink follows the running helper."""
 
-    def __init__(self, runtime: _FakeDspRuntime, *, pinned_rate: int) -> None:
+    def __init__(self, runtime: _FakeDspRuntime, *, pinned_rate: int, owned: bool = False) -> None:
         self.runtime = runtime
         self.pinned_rate = pinned_rate
+        self.owned = owned
         self.force_rate_writes: list[int] = []
 
     # -- injected services -------------------------------------------------
@@ -99,7 +114,7 @@ class _OrchestratorDeps:
         return None
 
     def measurement_audio_graph_owned(self):
-        return False
+        return self.owned
 
     def observe_playback_samplerate_drift(self):
         raise AssertionError("not used")
@@ -171,6 +186,34 @@ class MeasurementReleaseRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.helper_rate, TARGET_RATE)
         self.assertEqual(deps.force_rate_writes, [TARGET_RATE])
 
+    async def test_release_repairs_while_the_session_still_owns_the_graph(self):
+        # Production shape: the release runs inside the sample-rate session
+        # (``active``/``owns_audio_graph`` stay true until it returns) and
+        # holds the lock, so the ownership guard must not abort the repair.
+        runtime = _FakeDspRuntime(MEASUREMENT_RATE)
+        deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE, owned=True)
+        orchestrator = DspOrchestrator(deps)
+
+        await orchestrator.sync_runtime_at_rate(TARGET_RATE, _rate_lock_held=True)
+
+        self.assertEqual(runtime.helper_rate, TARGET_RATE)
+        self.assertTrue(
+            runtime.sync_calls,
+            "an owned release must rebuild the stale helper, not defer",
+        )
+
+    async def test_owned_graph_is_never_repaired_without_the_session_lock(self):
+        runtime = _FakeDspRuntime(MEASUREMENT_RATE)
+        deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE, owned=True)
+        orchestrator = DspOrchestrator(deps)
+
+        recovered = await orchestrator.recover_stale_helper_samplerate(
+            TARGET_RATE, reason="test"
+        )
+
+        self.assertFalse(recovered)
+        self.assertEqual(runtime.sync_calls, [])
+
     async def test_no_rebuild_when_the_helper_already_matches(self):
         runtime = _FakeDspRuntime(TARGET_RATE)
         deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE)
@@ -241,18 +284,20 @@ class EstablishTargetRateRecoveryTests(unittest.IsolatedAsyncioTestCase):
 class IdleLinkWatcherRepairTests(unittest.IsolatedAsyncioTestCase):
     """Layer 3: an idle broken graph is repaired, not preserved."""
 
-    async def _run_one_tick(self, runtime: _FakeDspRuntime, *, pinned_rate: int) -> _OrchestratorDeps:
+    async def _run_one_tick(
+        self, runtime: _FakeDspRuntime, *, pinned_rate: int, ticks: int = 1
+    ) -> _OrchestratorDeps:
         deps = _OrchestratorDeps(runtime, pinned_rate=pinned_rate)
-        ticks = 0
+        sleeps = 0
 
-        async def cancel_on_second_sleep(_delay):
-            nonlocal ticks
-            ticks += 1
-            if ticks < 2:
+        async def cancel_after_the_requested_ticks(_delay):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps <= ticks:
                 return
             raise asyncio.CancelledError
 
-        deps.sleep = cancel_on_second_sleep
+        deps.sleep = cancel_after_the_requested_ticks
         deps.observe_playback_samplerate_drift = AsyncMock()
         orchestrator = DspOrchestrator(deps)
         task = asyncio.create_task(orchestrator.runtime_link_watch_loop())
@@ -270,6 +315,13 @@ class IdleLinkWatcherRepairTests(unittest.IsolatedAsyncioTestCase):
         await self._run_one_tick(runtime, pinned_rate=0)
         self.assertEqual(runtime.helper_rate, MEASUREMENT_RATE)
         self.assertEqual(runtime.sync_calls, [])
+
+    async def test_idle_repair_is_rate_limited_between_ticks(self):
+        # A rebuild that fails before the running helper is replaced must not
+        # be retried on every 2 s watch tick.
+        runtime = _FailingSyncRuntime(MEASUREMENT_RATE)
+        await self._run_one_tick(runtime, pinned_rate=TARGET_RATE, ticks=2)
+        self.assertEqual(runtime.attempts, 1)
 
 
 if __name__ == "__main__":

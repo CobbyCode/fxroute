@@ -34,6 +34,10 @@ STALE_SYNC_RETRY_POLL_S = 1.0
 # rebuilt at the target rate (process rebuild, not a rate change).
 STALE_HELPER_ALIGNMENT_TIMEOUT_MS = 2500
 
+# Minimum spacing between idle stale-helper repair attempts: one failed rebuild
+# must not turn the 2 s link watch tick into a rebuild loop.
+IDLE_STALE_HELPER_REPAIR_COOLDOWN_S = 30.0
+
 
 @dataclass(frozen=True)
 class DspOrchestrationDeps:
@@ -100,6 +104,7 @@ class DspOrchestrator:
     def __init__(self, deps: DspOrchestrationDeps, *, stale_retry_deadline_s: float = STALE_SYNC_RETRY_DEADLINE_S):
         self._deps = deps
         self._stale_retry_deadline_s = stale_retry_deadline_s
+        self._idle_repair_last_attempt_at = 0.0
 
     async def sync_runtime(
         self,
@@ -309,6 +314,7 @@ class DspOrchestrator:
         *,
         reason: str = "unspecified",
         _rate_lock_held: bool = False,
+        allow_measurement_graph_owned: bool = False,
     ) -> bool:
         """Rebuild a stale native DSP helper so the hardware sink can move.
 
@@ -323,10 +329,18 @@ class DspOrchestrator:
         Only that exact state is touched: the helper must be live at a rate
         other than the target and the sink must not already be aligned.
         Returns whether the sink ended up aligned at ``target_rate``.
+
+        ``allow_measurement_graph_owned`` exists for the measurement release:
+        that path runs while the session still reports graph ownership
+        (``owns_audio_graph`` is ``active or entry_in_progress``, and ``active``
+        is cleared only *after* the re-sync returns) and already holds the
+        sample-rate lock, so the ownership guard would otherwise abort the
+        repair on exactly the path that has to consume the stale helper. It is
+        only passed together with ``_rate_lock_held``, never on its own.
         """
         if not isinstance(target_rate, int) or target_rate <= 0:
             return False
-        if self._deps.measurement_audio_graph_owned():
+        if self._deps.measurement_audio_graph_owned() and not allow_measurement_graph_owned:
             return False
         dsp_runtime = self._deps.get_dsp_runtime()
         if dsp_runtime is None:
@@ -354,7 +368,9 @@ class DspOrchestrator:
         ):
             # A pin that contradicts the target would leave the graph resampling
             # to the stale rate even after the helper rebuild, so the recovery
-            # owns the pin too (same intent: the caller's target rate).
+            # owns the pin too (same intent: the caller's target rate). This is
+            # the same canonical write the measurement session uses to restore
+            # its own force-rate, not a second pin owner.
             try:
                 await asyncio.to_thread(self._deps.set_pipewire_force_rate, target_rate)
             except Exception as exc:
@@ -424,6 +440,10 @@ class DspOrchestrator:
         helper_rate = helper_argument_sample_rate(snapshot)
         if not snapshot.get("active") or helper_rate is None or helper_rate == pinned_rate:
             return
+        attempt_at = time.monotonic()
+        if attempt_at - self._idle_repair_last_attempt_at < IDLE_STALE_HELPER_REPAIR_COOLDOWN_S:
+            return
+        self._idle_repair_last_attempt_at = attempt_at
         logger.warning(
             "Idle stale native DSP helper detected: pinned_rate=%s helper_rate=%s hardware_sink_rate=%s",
             pinned_rate, helper_rate, status.get("active_rate"),
@@ -460,10 +480,15 @@ class DspOrchestrator:
                 # helper instead of deferring the restore forever (the skipped
                 # ``intent-changed-after-quiet`` restore path used to stop
                 # here and persist a 48 kHz helper under a 44.1 kHz pin).
+                # The release still reports graph ownership (``active`` is
+                # cleared only after this call returns) and holds the
+                # sample-rate lock, so the ownership guard must be opted out
+                # here or the repair would abort on exactly this path.
                 recovered = await self.recover_stale_helper_samplerate(
                     target_rate,
                     reason="measurement-release",
                     _rate_lock_held=_rate_lock_held,
+                    allow_measurement_graph_owned=_rate_lock_held,
                 )
                 if not recovered:
                     logger.warning(
