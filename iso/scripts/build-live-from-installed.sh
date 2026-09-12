@@ -7,6 +7,10 @@
 # neutral fstab, ISO-kernel modules, live marker, internal-disk
 # protection. Everything else (packages, PipeWire, desktop, helpers,
 # DSP) comes from the installed system untouched.
+#
+# Ownership rule: the extracted tree contains root-owned files, so every
+# tree mutation runs as root inside the container. The host only
+# orchestrates (QEMU, SSH pipe, RPM extraction from ISO).
 set -Eeuo pipefail
 
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -15,46 +19,6 @@ export PATH
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 UDEV_RULE_SRC="$ROOT_DIR/iso/scripts/live-udev-nomount.rules"
 LIVE_INIT_SRC="$ROOT_DIR/iso/scripts/fxroute-live-init.sh"
-DISK=""
-BASE_ISO=""
-OUTPUT=""
-SSH_USER="fxroute"
-SSH_PASSWORD="${FXROUTE_LIVE_CONVERT_PASSWORD:-}"
-SUDO_PASSWORD=""
-BUILD_COMMIT=""
-DOCKER_IMAGE="${FXROUTE_LIVE_DOCKER_IMAGE:-registry.opensuse.org/opensuse/leap:16.0}"
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
-LIVE_EPOCH="$SOURCE_DATE_EPOCH"
-if [[ "$LIVE_EPOCH" -lt 86400 ]]; then
-  # Epoch-zero files are treated as unmodified by SDDM's config loader and
-  # sysusers uses epoch day zero (expired). Floor at day one; the ISO
-  # metadata still uses the requested epoch.
-  LIVE_EPOCH=86400
-fi
-
-usage() {
-  cat <<EOF
-Usage: $0 --disk QCOW2 --base-iso ISO --output PATH [options]
-
-Convert a working FXRoute desktop installation into a live squashfs.
-
-Options:
-  --disk PATH          Installed system disk image (qcow2, powered off)
-  --base-iso PATH      Leap installer ISO (provides the booted kernel RPMs)
-  --output PATH        Write squashfs image to PATH (required)
-  --ssh-user NAME      Installed account for extraction (default: fxroute)
-  --ssh-password PASS  Account password (for sudo during extraction)
-  --commit REV         Build commit marker (default: HEAD)
-  --docker-image REF   Leap container image (default: $DOCKER_IMAGE)
-  --work-dir DIR       Keep/prepare work directory (default: mktemp)
-  -h, --help           Show this help
-EOF
-}
-
-die() {
-  printf '[live-convert][error] %s\n' "$*" >&2
-  exit 1
-}
 
 # Drop disk-backed fstab entries (UUID/LABEL//dev); the live system boots
 # from squashfs+overlay and must never wait on install-disk partitions.
@@ -65,6 +29,8 @@ filter_fstab() {
 
 # Scrub identity and secrets from the extracted tree. Everything here is
 # true live semantics: no credential or machine identity may ship.
+# Runs as root (container) in production; fixture tests run it as the
+# invoking user on user-owned trees.
 scrub_tree() {
   local tree="$LIVE_TREE"
   rm -f "$tree/etc/ssh"/ssh_host_*
@@ -134,9 +100,51 @@ README_EOF
     chmod 644 "$tree/home/fxroute/Desktop/LIVE-MODE-README.txt"
   fi
 }
+
 # Sourced by fixture tests as: source <this> --source-only
 if [[ "${1:-}" == "--source-only" ]]; then
   return 0 2>/dev/null || exit 0
+fi
+
+usage() {
+  cat <<EOF
+Usage: $0 --disk QCOW2 --base-iso ISO --output PATH [options]
+
+Convert a working FXRoute desktop installation into a live squashfs.
+
+Options:
+  --disk PATH          Installed system disk image (qcow2, powered off)
+  --base-iso PATH      Leap installer ISO (provides the booted kernel RPMs)
+  --output PATH        Write squashfs image to PATH (required)
+  --ssh-user NAME      Installed account for extraction (default: fxroute)
+  --ssh-password PASS  Account password (for sudo during extraction;
+                       or FXROUTE_LIVE_CONVERT_PASSWORD)
+  --commit REV         Build commit marker (default: HEAD)
+  --docker-image REF   Leap container image (default: Leap 16.0)
+  --work-dir DIR       Work directory (default: mktemp)
+  -h, --help           Show this help
+EOF
+}
+
+die() {
+  printf '[live-convert][error] %s\n' "$*" >&2
+  exit 1
+}
+
+DISK=""
+BASE_ISO=""
+OUTPUT=""
+SSH_USER="fxroute"
+SSH_PASSWORD="${FXROUTE_LIVE_CONVERT_PASSWORD:-}"
+BUILD_COMMIT=""
+DOCKER_IMAGE="${FXROUTE_LIVE_DOCKER_IMAGE:-registry.opensuse.org/opensuse/leap:16.0}"
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
+LIVE_EPOCH="$SOURCE_DATE_EPOCH"
+if [[ "$LIVE_EPOCH" -lt 86400 ]]; then
+  # Epoch-zero files are treated as unmodified by SDDM's config loader and
+  # sysusers uses epoch day zero (expired). Floor at day one; the ISO
+  # metadata still uses the requested epoch.
+  LIVE_EPOCH=86400
 fi
 
 while [[ $# -gt 0 ]]; do
@@ -161,10 +169,10 @@ done
 [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "SOURCE_DATE_EPOCH must be a non-negative integer"
 command -v qemu-system-x86_64 >/dev/null 2>&1 || die "qemu-system-x86_64 is required"
 command -v ssh >/dev/null 2>&1 || die "ssh is required"
-command -v rpm2cpio >/dev/null 2>&1 || die "rpm2cpio is required"
-command -v cpio >/dev/null 2>&1 || die "cpio is required"
 command -v docker >/dev/null 2>&1 || die "docker is required"
 command -v isoinfo >/dev/null 2>&1 || die "isoinfo is required"
+[[ -f "$UDEV_RULE_SRC" ]] || die "udev rule is missing: $UDEV_RULE_SRC"
+[[ -f "$LIVE_INIT_SRC" ]] || die "live init script is missing: $LIVE_INIT_SRC"
 
 if [[ -z "$BUILD_COMMIT" ]]; then
   BUILD_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)"
@@ -180,16 +188,6 @@ mkdir -p "$TREE"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
-[[ -f "$UDEV_RULE_SRC" ]] || die "udev rule is missing: $UDEV_RULE_SRC"
-[[ -f "$LIVE_INIT_SRC" ]] || die "live init script is missing: $LIVE_INIT_SRC"
-
-
-
-LIVE_TREE="$TREE"
-export LIVE_TREE BUILD_COMMIT ROOT_DIR
-
-# ---- main flow (skipped when sourced with --source-only) ----
-
 SSH_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()')"
 MONITOR="$WORK_DIR/monitor.sock"
 PIDFILE="$WORK_DIR/qemu.pid"
@@ -201,6 +199,23 @@ ssh_run() {
     -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -p "$SSH_PORT" "$SSH_USER@127.0.0.1" "$@"
 }
+
+printf '[live-convert] extracting ISO kernel RPMs\n'
+isoinfo -R -i "$BASE_ISO" -f > "$WORK_DIR/base-isol.txt" 2>/dev/null \
+  || die "could not list base ISO contents"
+ISO_KVER=""
+for rpm_kind in kernel-default kernel-default-extra; do
+  rpm_path="$(grep -E "/${rpm_kind}-[0-9][^/]*\\.x86_64\\.rpm\$" "$WORK_DIR/base-isol.txt" | head -n 1 || true)"
+  [[ -n "$rpm_path" ]] || die "$rpm_kind RPM not found on base ISO"
+  printf '[live-convert] staging RPM: %s\n' "$rpm_path"
+  isoinfo -R -i "$BASE_ISO" -x "$rpm_path" > "$WORK_DIR/${rpm_kind}.rpm" \
+    || die "could not extract $rpm_kind RPM"
+  if [[ -z "$ISO_KVER" ]]; then
+    rpm_file="$(basename "$rpm_path")"
+    ISO_KVER="$(printf '%s' "$rpm_file" | sed -e 's/^kernel-default-//' -e 's/\.x86_64\.rpm$//' -e 's/\.[0-9][0-9]*$//')-default"
+  fi
+done
+[[ -n "$ISO_KVER" ]] || die "could not determine ISO kernel version"
 
 printf '[live-convert] booting installed disk for extraction\n'
 qemu-system-x86_64 \
@@ -224,69 +239,66 @@ for _ in $(seq 1 120); do
 done
 ssh_run true >/dev/null 2>&1 || die "SSH to installed guest failed"
 
-printf '[live-convert] extracting filesystem over SSH\n'
-printf '%s\n' "$SSH_PASSWORD" | ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+# Extract, scrub, re-kernel, firmware-install and pack ALL as root in the
+# container (the tree contains root-owned files throughout). The SSH tar
+# stream feeds container stdin; outer SSH authenticates via askpass while
+# the piped account password feeds remote sudo -S.
+printf '[live-convert] extracting and converting inside container\n'
+printf '%s\n' "$SSH_PASSWORD" | SSH_ASKPASS="$ROOT_DIR/iso/agama-askpass.sh" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 \
+  FXROUTE_ASKPASS_PASSWORD="$SSH_PASSWORD" setsid ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no \
   -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -p "$SSH_PORT" "$SSH_USER@127.0.0.1" \
   "sudo -S tar -c --one-file-system --numeric-owner --same-permissions \
     --exclude=./proc/* --exclude=./sys/* --exclude=./dev/* \
     --exclude=./run/* --exclude=./tmp/* --exclude=./mnt/* \
     --exclude=./media/* --exclude=./var/tmp/* --directory=/ ." \
-  | tar -x -C "$TREE" --numeric-owner
-[[ -f "$TREE/etc/os-release" ]] || die "extraction failed (no $TREE/etc/os-release)"
-
-printf '[live-convert] scrubbing identity and secrets\n'
-scrub_tree
+| docker run --rm -i \
+  -v "$TREE:/t:z" \
+  -v "$WORK_DIR/kernel-default.rpm:/tmp/k-default.rpm:ro,z" \
+  -v "$WORK_DIR/kernel-default-extra.rpm:/tmp/k-extra.rpm:ro,z" \
+  -v "$UDEV_RULE_SRC:/tmp/live-udev.rules:ro,z" \
+  -v "$LIVE_INIT_SRC:/tmp/live-init.sh:ro,z" \
+  -e ISO_KVER="$ISO_KVER" \
+  -e BUILD_COMMIT="$BUILD_COMMIT" \
+  -e LIVE_EPOCH="$LIVE_EPOCH" \
+  "$DOCKER_IMAGE" bash -c '
+    set -Eeuo pipefail
+    tar -x -C /t --numeric-owner
+    [[ -f /t/etc/os-release ]] || { echo "[live-convert][error] extraction failed" >&2; exit 1; }
+    export LIVE_TREE=/t UDEV_RULE_SRC=/tmp/live-udev.rules LIVE_INIT_SRC=/tmp/live-init.sh
+    '"$(declare -f filter_fstab scrub_tree)"'
+    scrub_tree
+    for rpm in /tmp/k-default.rpm /tmp/k-extra.rpm; do
+      name="$(rpm -qp --queryformat "%{NAME}" "$rpm")"
+      case "$name" in kernel-default|kernel-default-extra) ;; *) echo "[live-convert][error] unexpected RPM: $name" >&2; exit 1;; esac
+      (cd /t && rpm2cpio "$rpm" | cpio -idm --quiet "./usr/lib/modules/*" "./boot/*")
+    done
+    [[ -d "/t/usr/lib/modules/$ISO_KVER" ]] || { echo "[live-convert][error] ISO modules missing" >&2; exit 1; }
+    for moddir in /t/usr/lib/modules/*; do
+      [[ "$(basename "$moddir")" == "$ISO_KVER" ]] || rm -rf -- "$moddir"
+    done
+    rm -rf -- /t/boot
+    mkdir -p /t/boot
+    zypper --non-interactive --root /t refresh >/dev/null 2>&1 || true
+    zypper --non-interactive install --no-recommends cpio kmod >/dev/null 2>&1 || true
+    zypper --non-interactive --root /t install --no-recommends \
+      kernel-firmware-iwlwifi kernel-firmware-ath10k kernel-firmware-ath11k \
+      kernel-firmware-ath12k kernel-firmware-atheros kernel-firmware-brcm \
+      kernel-firmware-mediatek kernel-firmware-realtek kernel-firmware-marvell \
+      wireless-regdb sof-firmware kernel-firmware-sound kernel-firmware-intel \
+      kernel-firmware-bluetooth
+    depmod -a -b /t "$ISO_KVER"
+    for mod in kernel/drivers/hid/usbhid/usbhid.ko kernel/drivers/net/wireless/intel/iwlwifi/iwlwifi.ko; do
+      compgen -G "/t/usr/lib/modules/$ISO_KVER/$mod*" > /dev/null \
+        || { echo "[live-convert][error] driver missing: $mod" >&2; exit 1; }
+    done
+  ' || die "extract/convert step failed"
 
 printf '[live-convert] powering off guest\n'
 printf '%s\n' "$SSH_PASSWORD" | ssh_run sudo -S -- systemctl poweroff >/dev/null 2>&1 || true
 for _ in $(seq 1 30); do kill -0 "$GUEST_PID" 2>/dev/null || break; sleep 1; done
 kill "$GUEST_PID" 2>/dev/null || true
 trap - EXIT
-
-printf '[live-convert] swapping in ISO kernel modules\n'
-isoinfo -R -i "$BASE_ISO" -f > "$WORK_DIR/base-isol.txt" 2>/dev/null \
-  || die "could not list base ISO contents"
-ISO_KVER=""
-for rpm_kind in kernel-default kernel-default-extra; do
-  rpm_path="$(grep -E "/${rpm_kind}-[0-9][^/]*\\.x86_64\\.rpm\$" "$WORK_DIR/base-isol.txt" | head -n 1 || true)"
-  [[ -n "$rpm_path" ]] || die "$rpm_kind RPM not found on base ISO"
-  printf '[live-convert] extracting modules: %s\n' "$rpm_path"
-  isoinfo -R -i "$BASE_ISO" -x "$rpm_path" > "$WORK_DIR/${rpm_kind}.rpm" \
-    || die "could not extract $rpm_kind RPM"
-  (cd "$TREE" && rpm2cpio "$WORK_DIR/${rpm_kind}.rpm" | cpio -idm --quiet './usr/lib/modules/*' './boot/*') \
-    || die "could not unpack $rpm_kind modules"
-  if [[ -z "$ISO_KVER" ]]; then
-    rpm_file="$(basename "$rpm_path")"
-    ISO_KVER="$(printf '%s' "$rpm_file" | sed -e 's/^kernel-default-//' -e 's/\.x86_64\.rpm$//' -e 's/\.[0-9][0-9]*$//')-default"
-  fi
-done
-[[ -d "$TREE/usr/lib/modules/$ISO_KVER" ]] || die "ISO kernel modules missing after unpack: $ISO_KVER"
-for moddir in "$TREE"/usr/lib/modules/*; do
-  [[ "$(basename "$moddir")" == "$ISO_KVER" ]] || rm -rf -- "$moddir"
-done
-rm -rf -- "$TREE/boot"
-mkdir -p "$TREE/boot"
-
-printf '[live-convert] firmware set and module deps inside container\n'
-docker run --rm \
-  -v "$TREE:/t:z" \
-  -e ISO_KVER="$ISO_KVER" \
-  "$DOCKER_IMAGE" bash -c '
-    set -Eeuo pipefail
-    zypper --non-interactive --root /t refresh >/dev/null 2>&1 || true
-    zypper --non-interactive --root /t install --no-recommends \
-      kernel-firmware-iwlwifi kernel-firmware-ath10k kernel-firmware-ath11k \
-      kernel-firmware-ath12k kernel-firmware-atheros kernel-firmware-brcm \
-      kernel-firmware-mediatek kernel-firmware-realtek kernel-firmware-marvell \
-      wireless-regdb sof-firmware kernel-firmware-sound kernel-firmware-intel \
-      kernel-firmware-bluetooth squashfs
-    depmod -a -b /t "$ISO_KVER"
-  ' || die "firmware/depmod step failed"
-for mod in kernel/drivers/hid/usbhid/usbhid.ko kernel/drivers/net/wireless/intel/iwlwifi/iwlwifi.ko; do
-  compgen -G "$TREE/usr/lib/modules/$ISO_KVER/$mod*" > /dev/null \
-    || die "driver module missing after swap: $mod"
-done
 
 printf '[live-convert] packing flat squash\n'
 docker run --rm \
@@ -295,6 +307,7 @@ docker run --rm \
   -e LIVE_EPOCH="$LIVE_EPOCH" \
   "$DOCKER_IMAGE" bash -c '
     set -Eeuo pipefail
+    command -v mksquashfs >/dev/null 2>&1 || zypper --non-interactive install --no-recommends squashfs >/dev/null 2>&1
     env -u SOURCE_DATE_EPOCH mksquashfs /t /o/squashfs.img -comp xz -noappend \
       -mkfs-time "$LIVE_EPOCH" -all-time "$LIVE_EPOCH" -no-xattrs -no-progress >/dev/null
   ' || die "mksquashfs failed"
