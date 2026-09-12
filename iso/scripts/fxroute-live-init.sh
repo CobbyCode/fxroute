@@ -9,7 +9,15 @@ export PATH
 
 [[ -f /etc/fxroute-live ]] || exit 0
 
-LIVE_USER="fxroute"
+# The account this session runs as: the converter records it in
+# /etc/fxroute-live-user, so the live root never depends on a fixed user name.
+LIVE_USER=""
+if [[ -r /etc/fxroute-live-user ]]; then
+  LIVE_USER="$(tr -d '[:space:]' < /etc/fxroute-live-user || true)"
+fi
+if [[ -z "$LIVE_USER" ]] || ! id -u "$LIVE_USER" >/dev/null 2>&1; then
+  LIVE_USER="fxroute"
+fi
 if ! id -u "$LIVE_USER" >/dev/null 2>&1; then
   # Fall back to the single regular user (same heuristic as first-boot).
   candidate="$(getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 && $6 ~ /^\// && $7 !~ /(nologin|false)$/ {print $1}' | head -n 1 || true)"

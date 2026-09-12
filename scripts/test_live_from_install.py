@@ -88,6 +88,110 @@ class LiveFromInstallTests(unittest.TestCase):
             self.assertNotIn("UUID=", fstab)
             self.assertIn("tmpfs /dev/shm", fstab)
 
+    def _conversion_fixture(self, tree):
+        """Minimal extracted-system tree with two regular accounts."""
+        (tree / "etc").mkdir()
+        (tree / "etc/passwd").write_text(
+            "root:x:0:0:root:/root:/bin/bash\n"
+            "sddm:x:471:471:Display Manager:/var/lib/sddm:/sbin/nologin\n"
+            "fxroute:x:1000:100:FXRoute:/home/fxroute:/bin/bash\n"
+            "other:x:1001:100:Other:/home/other:/bin/bash\n"
+        )
+        (tree / "etc/shadow").write_text(
+            "root:$6$root-hash:19000:0:99999:7:::\n"
+            "sddm:!:19000:0:99999:7:::\n"
+            "fxroute:$6$live-hash:19000:0:99999:7:::\n"
+            "other:$6$other-hash:19000:0:99999:7:::\n"
+        )
+        (tree / "etc/fstab").write_text("UUID=abc / btrfs defaults 0 0\n")
+        (tree / "etc/systemd/system/multi-user.target.wants").mkdir(parents=True)
+        for account in ("fxroute", "other"):
+            home = tree / "home" / account
+            (home / ".config/fxroute").mkdir(parents=True)
+            (home / ".config/fxroute/install-state.json").write_text("{}")
+            (home / ".local/share/fxroute").mkdir(parents=True)
+            (home / ".local/share/fxroute/appliance-ready").write_text("")
+            (home / ".config/spotifyd").mkdir(parents=True)
+            (home / ".config/spotifyd/spotifyd.conf").write_text("username=reference\n")
+            (home / ".mozilla/firefox/profile").mkdir(parents=True)
+            (home / ".mozilla/firefox/profile/places.sqlite").write_text("history")
+            (home / "Music").mkdir()
+            (home / "Music/album.flac").write_text("audio")
+            (home / ".bash_history").write_text("secret-cmd\n")
+        # Runtime configuration the live session needs must survive the scrub.
+        live = tree / "home/fxroute"
+        (live / ".lv2/calf.lv2").mkdir(parents=True)
+        (live / ".config/wireplumber").mkdir(parents=True)
+        (live / "Desktop").mkdir()
+        (live / "Desktop/FXRoute.desktop").write_text("[Desktop Entry]\n")
+
+    def _run_scrub(self, tree, live_user="fxroute"):
+        return subprocess.run(
+            ["bash", "-c",
+             "source iso/scripts/build-live-from-installed.sh --source-only 2>/dev/null;"
+             f" LIVE_TREE='{tree}' BUILD_COMMIT=test LIVE_USER={live_user} scrub_tree"],
+            capture_output=True, text=True, cwd=ROOT,
+        )
+
+    def test_converter_scrubs_password_hashes_of_every_account(self):
+        """No account hash of the reference system may reach the live image."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tree = Path(td)
+            self._conversion_fixture(tree)
+            proc = self._run_scrub(tree)
+            assert proc.returncode == 0, proc.stderr
+            shadow = {
+                row.split(":")[0]: row.split(":")
+                for row in (tree / "etc/shadow").read_text().splitlines()
+            }
+            # The live account logs in without a password; every other account
+            # loses its hash material but keeps the rest of its shadow line.
+            self.assertEqual(shadow["fxroute"][1], "")
+            self.assertEqual(shadow["other"][1], "!")
+            self.assertEqual(shadow["root"][1], "!")
+            self.assertEqual(shadow["sddm"][1], "!")
+            self.assertEqual(shadow["fxroute"][2], "19000", "last-change day must survive")
+            # sudo and the live init are bound to the resolved account.
+            self.assertEqual(
+                (tree / "etc/sudoers.d/99-fxroute-live").read_text(),
+                "fxroute ALL=(ALL) NOPASSWD:ALL\n",
+            )
+            self.assertEqual((tree / "etc/fxroute-live-user").read_text(), "fxroute\n")
+
+    def test_converter_scrubs_reference_user_state_but_keeps_live_runtime(self):
+        """Reference installer/user state must not ship; live runtime must."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tree = Path(td)
+            self._conversion_fixture(tree)
+            proc = self._run_scrub(tree)
+            assert proc.returncode == 0, proc.stderr
+            for account in ("fxroute", "other"):
+                home = tree / "home" / account
+                for gone in (".config/fxroute", ".local/share/fxroute", ".config/spotifyd",
+                             ".mozilla/firefox/profile/places.sqlite", "Music/album.flac",
+                             ".bash_history"):
+                    with self.subTest(account=account, path=gone):
+                        self.assertFalse((home / gone).exists())
+            live = tree / "home/fxroute"
+            for kept in (".lv2/calf.lv2", ".config/wireplumber", "Desktop/FXRoute.desktop"):
+                with self.subTest(path=kept):
+                    self.assertTrue((live / kept).exists())
+
+    def test_converter_refuses_a_live_account_that_is_not_in_the_system(self):
+        """A mismatched --ssh-user must fail loudly, never leak credentials."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tree = Path(td)
+            self._conversion_fixture(tree)
+            proc = self._run_scrub(tree, live_user="missing")
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("not a regular account", proc.stderr)
+            # The failed conversion must leave the tree untouched.
+            self.assertIn("$6$live-hash", (tree / "etc/shadow").read_text())
+            self.assertFalse((tree / "etc/sudoers.d/99-fxroute-live").exists())
+
     def test_converter_masks_first_boot_and_keeps_iso_kernel_modules(self):
         text = CONVERTER.read_text(encoding="utf-8")
         self.assertIn("fxroute-first-boot.service", text)

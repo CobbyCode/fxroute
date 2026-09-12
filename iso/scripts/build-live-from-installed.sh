@@ -27,21 +27,111 @@ filter_fstab() {
   awk '$1 ~ /^(UUID=|LABEL=|\/dev\/)/ {next} {print}'
 }
 
+# The account the live session runs as, set by scrub_tree and reused by
+# slim_tree. Empty only for a tree without /etc/passwd (fixture trees).
+LIVE_ACCOUNT=""
+
+# Regular (human) accounts of the extracted system.
+live_regular_accounts() {
+  local tree="$1"
+  [[ -f "$tree/etc/passwd" ]] || return 0
+  awk -F: '$3 >= 1000 && $3 < 60000 {print $1}' "$tree/etc/passwd"
+}
+
+# Resolve the live session's account instead of assuming a name: LIVE_USER is
+# the conversion's --ssh-user (passed by the host), otherwise the tree's own
+# account is used. A tree whose account differs from the requested one fails
+# loudly here instead of shipping that account's credentials.
+resolve_live_account() {
+  local tree="$1"
+  local requested="${LIVE_USER:-}"
+  local accounts
+  accounts="$(live_regular_accounts "$tree")"
+  if [[ -n "$requested" ]]; then
+    if ! grep -qxF "$requested" <<<"$accounts"; then
+      printf '[live-convert][error] live account %s is not a regular account of the extracted system\n' "$requested" >&2
+      return 1
+    fi
+    printf '%s\n' "$requested"
+    return 0
+  fi
+  local resolved
+  resolved="$(head -n 1 <<<"$accounts")"
+  if [[ -z "$resolved" ]]; then
+    printf '[live-convert][error] extracted system has no regular account for the live session\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved"
+}
+
+# No password material may ship, for any account. The live account logs in
+# through autologin and NOPASSWD sudo, so its field is emptied (same as
+# `passwd -d`; the test SSH hook sets a password at boot via chpasswd). Every
+# other account -- including root and the service accounts -- is locked with its
+# field *replaced*, so no real hash is recoverable from the public image. Only
+# the hash field is rewritten; the remaining shadow fields stay untouched.
+scrub_account_passwords() {
+  local tree="$1" live_account="$2"
+  [[ -f "$tree/etc/shadow" ]] || return 0
+  local account
+  while IFS= read -r account; do
+    [[ "$account" =~ ^[A-Za-z0-9_.-]+$ ]] || continue
+    if [[ -n "$live_account" && "$account" == "$live_account" ]]; then
+      sed -i "s|^${account}:[^:]*:|${account}::|" "$tree/etc/shadow"
+    else
+      sed -i "s|^${account}:[^:]*:|${account}:!:|" "$tree/etc/shadow"
+    fi
+  done < <(awk -F: '{print $1}' "$tree/etc/shadow")
+}
+
+# User-specific FXRoute and home state of the reference installation must not
+# reach a public image: it is not the user's data and may hold provider
+# credentials, measured IRs, saved logins or personal files. Runtime
+# configuration the live session needs (PipeWire/WirePlumber, the Calf LV2
+# plugins, the systemd user units, the desktop links) stays untouched.
+scrub_user_state() {
+  local tree="$1"
+  local home dir
+  for home in "$tree"/home/*; do
+    [[ -d "$home" ]] || continue
+    # FXRoute install/runtime state; the live session starts with defaults.
+    rm -rf "$home/.config/fxroute" "$home/.local/share/fxroute" "$home/.cache"
+    # Provider credentials/tokens belong to the reference account only.
+    rm -rf "$home/.config/spotifyd" "$home/.config/qbzd"
+    # Browser user data; the profile skeleton stays usable for the kiosk.
+    rm -rf "$home"/.mozilla/firefox/*/cache2 "$home"/.mozilla/firefox/*/startupCache
+    rm -f "$home"/.mozilla/firefox/*/places.sqlite* "$home"/.mozilla/firefox/*/cookies.sqlite* \
+      "$home"/.mozilla/firefox/*/logins.json* "$home"/.mozilla/firefox/*/key4.db* \
+      "$home"/.mozilla/firefox/*/formhistory.sqlite* "$home"/.mozilla/firefox/*/sessionstore*
+    rm -f "$home/.bash_history"
+    # Personal content directories (localized and English) start empty.
+    for dir in Music Musik Documents Dokumente Downloads Videos Bilder Pictures \
+               Vorlagen Templates Öffentlich Public; do
+      rm -rf "$home/$dir"/* "$home/$dir"/.[!.]* 2>/dev/null || true
+    done
+  done
+  rm -f "$tree/root/.bash_history"
+}
+
 # Scrub identity and secrets from the extracted tree. Everything here is
 # true live semantics: no credential or machine identity may ship.
 # Runs as root (container) in production; fixture tests run it as the
 # invoking user on user-owned trees.
 scrub_tree() {
   local tree="$LIVE_TREE"
+  # Resolve the live account first: every credential decision below is bound to
+  # this name instead of an assumed one.
+  local live_account=""
+  if [[ -f "$tree/etc/passwd" ]]; then
+    live_account="$(resolve_live_account "$tree")" || return 1
+  fi
+  LIVE_ACCOUNT="$live_account"
+  local live_home="$tree/home/${live_account:-fxroute}"
   rm -f "$tree/etc/ssh"/ssh_host_*
   rm -f "$tree/etc/NetworkManager"/system-connections/*
   rm -rf "$tree/var/log"/* "$tree/var/tmp"/* "$tree/var/cache/zypp"
-  rm -f "$tree/root/.bash_history" "$tree/home"/*/.bash_history
-  rm -rf "$tree/home/fxroute/.cache"
-  # User password must not ship: empty hash field (same as passwd -d).
-  if grep -q '^fxroute:' "$tree/etc/shadow" 2>/dev/null; then
-    sed -i 's/^fxroute:[^:]*:/fxroute::/' "$tree/etc/shadow"
-  fi
+  scrub_account_passwords "$tree" "$live_account"
+  scrub_user_state "$tree"
   : > "$tree/etc/machine-id"
   printf 'fxroute-live\n' > "$tree/etc/hostname"
   printf 'fxroute-live\n' > "$tree/etc/fxroute-live"
@@ -59,10 +149,14 @@ scrub_tree() {
     "$tree/var/lib/fxroute-iso/install-in-progress"
   filter_fstab < "$tree/etc/fstab" > "$tree/etc/fstab.live"
   mv "$tree/etc/fstab.live" "$tree/etc/fstab"
-  # Live sudo without credentials (helpers call sudo -n).
+  # Live sudo without credentials (helpers call sudo -n), granted to the
+  # account the live session actually runs as.
   mkdir -p "$tree/etc/sudoers.d"
-  printf 'fxroute ALL=(ALL) NOPASSWD:ALL\n' > "$tree/etc/sudoers.d/99-fxroute-live"
+  printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${live_account:-fxroute}" > "$tree/etc/sudoers.d/99-fxroute-live"
   chmod 440 "$tree/etc/sudoers.d/99-fxroute-live"
+  # Hand the resolved account to the live init instead of letting it guess.
+  printf '%s\n' "${live_account:-fxroute}" > "$tree/etc/fxroute-live-user"
+  chmod 644 "$tree/etc/fxroute-live-user"
   # Internal ATA/NVMe must not auto-mount live.
   mkdir -p "$tree/etc/udev/rules.d"
   cp -- "$UDEV_RULE_SRC" "$tree/etc/udev/rules.d/99-fxroute-live-nomount.rules"
@@ -94,15 +188,15 @@ UNIT_EOF
   mkdir -p "$tree/proc" "$tree/sys" "$tree/dev" "$tree/run" "$tree/tmp"
   chmod 1777 "$tree/tmp"
   # Live notice on the desktop next to the installed links.
-  if [[ -d "$tree/home/fxroute/Desktop" ]]; then
-    cat > "$tree/home/fxroute/Desktop/LIVE-MODE-README.txt" <<'README_EOF'
+  if [[ -d "$live_home/Desktop" ]]; then
+    cat > "$live_home/Desktop/LIVE-MODE-README.txt" <<'README_EOF'
 FXRoute Live Mode — changes and logins are not saved and will be lost after reboot.
 
 Try FXRoute directly from this USB/ISO medium. Network, audio, DSP,
 measurements and providers work in this session, but nothing is stored.
 Internal drives are not automatically mounted or changed.
 README_EOF
-    chmod 644 "$tree/home/fxroute/Desktop/LIVE-MODE-README.txt"
+    chmod 644 "$live_home/Desktop/LIVE-MODE-README.txt"
   fi
 }
 
@@ -127,12 +221,14 @@ slim_tree() {
   # Installer sources already consumed (working tree is ~/fxroute); the
   # small build-commit marker stays for traceability.
   rm -rf -- "$tree/opt/fxroute-iso-source.tar" "$tree/opt/fxroute-iso"
-  # VCS data and build/browser caches: the live session is volatile.
-  rm -rf -- "$tree/home/fxroute/fxroute/.git"
-  rm -rf -- "$tree/home/fxroute/.cache" "$tree/root/.cache"
-  rm -rf -- "$tree/home/fxroute/.mozilla/firefox"/*/cache2
-  rm -rf -- "$tree/home/fxroute/.mozilla/firefox"/*/startupCache
-  rm -rf -- "$tree/home/fxroute/.thumbnails"
+  # VCS data and build/browser caches: the live session is volatile. The home
+  # is the resolved live account's, not an assumed one.
+  local live_home="$tree/home/${LIVE_ACCOUNT:-fxroute}"
+  rm -rf -- "$live_home/fxroute/.git"
+  rm -rf -- "$live_home/.cache" "$tree/root/.cache"
+  rm -rf -- "$live_home/.mozilla/firefox"/*/cache2
+  rm -rf -- "$live_home/.mozilla/firefox"/*/startupCache
+  rm -rf -- "$live_home/.thumbnails"
   # Regenerable bytecode; interpreters recreate it on first import.
   find "$tree" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
   # Pure documentation payload; licenses stay for legal traceability.
@@ -308,6 +404,7 @@ printf '%s\n' "$SSH_PASSWORD" | SSH_ASKPASS="$ROOT_DIR/iso/agama-askpass.sh" SSH
   -v "$UDEV_RULE_SRC:/tmp/live-udev.rules:ro,z" \
   -v "$LIVE_INIT_SRC:/tmp/live-init.sh:ro,z" \
   -e ISO_KVER="$ISO_KVER" \
+  -e LIVE_USER="$SSH_USER" \
   -e BUILD_COMMIT="$BUILD_COMMIT" \
   -e LIVE_EPOCH="$LIVE_EPOCH" \
   "$DOCKER_IMAGE" bash -c '
@@ -316,7 +413,7 @@ printf '%s\n' "$SSH_PASSWORD" | SSH_ASKPASS="$ROOT_DIR/iso/agama-askpass.sh" SSH
     tar -x -C /t --numeric-owner
     [[ -f /t/etc/os-release ]] || { echo "[live-convert][error] extraction failed" >&2; exit 1; }
     export LIVE_TREE=/t UDEV_RULE_SRC=/tmp/live-udev.rules LIVE_INIT_SRC=/tmp/live-init.sh
-    '"$(declare -f filter_fstab scrub_tree slim_tree)"'
+    '"$(declare -f filter_fstab live_regular_accounts resolve_live_account scrub_account_passwords scrub_user_state scrub_tree slim_tree)"'
     scrub_tree
     for rpm in /tmp/k-default.rpm /tmp/k-extra.rpm; do
       name="$(rpm -qp --queryformat "%{NAME}" "$rpm")"
