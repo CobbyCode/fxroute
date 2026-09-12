@@ -37,6 +37,7 @@
 
 .measurement-card {
     min-height: 0;
+    min-width: 0;
 }
 
 .measurement-stack {
@@ -314,7 +315,9 @@
 
 .hybrid-wizard-grid {
     display: grid;
-    grid-template-columns: minmax(300px, 0.9fr) minmax(320px, 1.1fr);
+    /* Min tracks stay under the narrowest two-column container (>=600px) so
+       the wizard never overflows the dialog before it stacks on phones. */
+    grid-template-columns: minmax(240px, 0.9fr) minmax(240px, 1.1fr);
     gap: 1.25rem;
 }
 

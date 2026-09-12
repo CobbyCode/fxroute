@@ -907,6 +907,8 @@ body {
 .radio-manage-submit-row {
     display: flex;
     justify-content: center;
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
     margin-top: 0.1rem;
 }
 .radio-manage-submit-row .btn-primary {
@@ -1179,9 +1181,9 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    /* Wide enough for the now-playing cue; other toasts still shrink to
-       their text (the column is shrink-to-fit, capped here). */
-    max-width: 330px;
+    /* The column owns the width; every toast (incl. the now-playing cue)
+       fills it. Phones re-inset the column in _responsive.css. */
+    width: min(330px, calc(100% - 2rem));
 }
 .toast {
     padding: 0.85rem 1.1rem;
@@ -1201,10 +1203,9 @@ body {
     display: flex;
     align-items: center;
     gap: 0.8rem;
-    /* One component, no separate tablet variant: this fixed width serves as
-       the desktop target and tablets inherit the same value. Phones re-inset
-       it to the centered column in _responsive.css. */
-    width: 330px;
+    /* One component, no separate tablet variant: it takes the container's
+       width instead of carrying a second fixed value. */
+    width: 100%;
     min-width: 0;
     padding: 0.65rem 0.85rem;
 }
@@ -4271,6 +4272,7 @@ body {
 
 .measurement-card {
     min-height: 0;
+    min-width: 0;
 }
 
 .measurement-stack {
@@ -4548,7 +4550,9 @@ body {
 
 .hybrid-wizard-grid {
     display: grid;
-    grid-template-columns: minmax(300px, 0.9fr) minmax(320px, 1.1fr);
+    /* Min tracks stay under the narrowest two-column container (>=600px) so
+       the wizard never overflows the dialog before it stacks on phones. */
+    grid-template-columns: minmax(240px, 0.9fr) minmax(240px, 1.1fr);
     gap: 1.25rem;
 }
 
@@ -8507,10 +8511,6 @@ input[type="number"]::-webkit-outer-spin-button {
             width: calc(100% - 40px);
             max-width: 360px;
             transform: translateX(-50%);
-        }
-        .toast.now-playing-cue {
-            /* Fill the centered mobile column instead of the desktop width. */
-            width: 100%;
         }
 
     /* from _playback.css */

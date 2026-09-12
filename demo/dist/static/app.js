@@ -541,7 +541,6 @@ const elements = {
     playlistDetailInfo: document.getElementById('playlist-detail-info'),
     playlistDetailTracks: document.getElementById('playlist-detail-tracks'),
     deletePlaylistBtn: document.getElementById('delete-playlist'),
-    albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
     savePlaylistBtn: document.getElementById('save-playlist'),
@@ -5601,7 +5600,6 @@ function renderLibraryViewButtons() {
         elements.libraryViewAlbumsBtn.classList.toggle('active', active);
         elements.libraryViewAlbumsBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
-    updateAlbumFavoritesFilterButton();
 }
 function renderLibraryFolderPath() {
     if (!elements.libraryFolderPath) return;
@@ -6506,24 +6504,6 @@ function updateAlbumFavoriteButton(album) {
     elements.albumFavoriteToggle.title = favorite ? 'Remove from favorites' : 'Add to favorites';
 }
 
-function updateAlbumFavoritesFilterButton() {
-    if (!elements.albumFavoritesToggleBtn) return;
-    const isAlbumsMode = state.library.viewMode === 'albums';
-    const active = !!state.library.showFavoriteAlbums;
-    elements.albumFavoritesToggleBtn.classList.toggle('hidden', !isAlbumsMode);
-    elements.albumFavoritesToggleBtn.classList.toggle('active', active);
-    elements.albumFavoritesToggleBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    elements.albumFavoritesToggleBtn.textContent = active ? 'All albums' : 'Favorites';
-}
-
-function toggleAlbumFavoritesFilter() {
-    state.library.showFavoriteAlbums = !state.library.showFavoriteAlbums;
-    state.library.albumDetail = null;
-    state.library.playlistDetail = null;
-    updateAlbumFavoritesFilterButton();
-    renderAlbums();
-}
-
 async function toggleCurrentAlbumFavorite() {
     const detail = state.library.albumDetail;
     const album = detail?.album;
@@ -6542,7 +6522,6 @@ async function toggleCurrentAlbumFavorite() {
         const stored = (state.library.albums || []).find(item => item.id === album.id);
         if (stored) stored.favorite = album.favorite;
         updateAlbumFavoriteButton(album);
-        updateAlbumFavoritesFilterButton();
         showToast(album.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
     } catch (e) {
         showToast(e.message || 'Failed to update favorite', 'error');
@@ -6578,7 +6557,6 @@ async function toggleAlbumCardFavorite(albumId) {
             btn.setAttribute('aria-label', f ? 'Remove from favorites' : 'Add to favorites');
             btn.title = f ? 'Remove from favorites' : 'Add to favorites';
         });
-        updateAlbumFavoritesFilterButton();
         // The Favorites view must drop an unfavorited album immediately;
         // re-render the grid so the filter stays authoritative.
         if (state.library.showFavoriteAlbums && !state.library.albumDetail) {
@@ -6991,7 +6969,6 @@ function updateLibrarySelectionUI() {
             elements.selectAllTracksBtn.textContent = hasSearch ? 'Select visible' : 'Select all';
         }
     }
-    updateAlbumFavoritesFilterButton();
 
     // Download: visible in all modes when tracks selected
     if (elements.downloadSelectedTracksBtn) {
@@ -14593,9 +14570,6 @@ function setupLibraryActions() {
     }
     if (elements.selectAllTracksBtn) {
         elements.selectAllTracksBtn.addEventListener('click', toggleVisibleTrackSelection);
-    }
-    if (elements.albumFavoritesToggleBtn) {
-        elements.albumFavoritesToggleBtn.addEventListener('click', toggleAlbumFavoritesFilter);
     }
     if (elements.albumFavoriteToggle) {
         elements.albumFavoriteToggle.addEventListener('click', toggleCurrentAlbumFavorite);

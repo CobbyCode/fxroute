@@ -1377,10 +1377,6 @@
             max-width: 360px;
             transform: translateX(-50%);
         }
-        .toast.now-playing-cue {
-            /* Fill the centered mobile column instead of the desktop width. */
-            width: 100%;
-        }
 
     /* from _playback.css */
     .cover-detail-card {
