@@ -183,6 +183,71 @@ body {
     box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.22);
 }
 .offline-indicator.hidden { display: none; }
+/* Live mode notice: compact pill above the playback footer, mirroring the
+   web-demo banner (demo/demo.css). Only shown when /api/status reports
+   live:true (volatile Try session). Dismissible, auto-hides after a few
+   minutes, never covers header controls or the footer. */
+.live-banner {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--footer-height, 92px) + 12px);
+    transform: translateX(-50%);
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgba(13, 13, 15, 0.88);
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    color: var(--text-secondary, #cbd5e1);
+    font-size: 0.8rem;
+    line-height: 1.2;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    pointer-events: auto;
+    max-width: calc(100vw - 24px);
+}
+.live-banner strong { color: #fbbf24; }
+.live-banner-close {
+    display: inline-grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    margin-left: 2px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted, #848490);
+    font: inherit;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+.live-banner-close:hover,
+.live-banner-close:focus-visible { color: var(--text-primary, #ececf0); background: rgba(255,255,255,.08); }
+.live-banner-close:focus-visible { outline: 2px solid var(--accent, #6ee7b7); outline-offset: 2px; }
+.live-banner.is-hidden { display: none; }
+@media (max-width: 720px) {
+    .live-banner {
+        left: 12px;
+        right: 12px;
+        transform: none;
+        justify-content: center;
+        text-align: center;
+        flex-wrap: wrap;
+        bottom: calc(var(--footer-height, 150px) + 10px);
+        gap: 4px 10px;
+        padding: 7px 12px;
+        border-radius: 14px;
+        font-size: 0.76rem;
+        background: rgba(13, 13, 15, 0.92);
+        backdrop-filter: blur(10px) saturate(1.1);
+        -webkit-backdrop-filter: blur(10px) saturate(1.1);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+    }
+}
 .hidden { display: none !important; }
 @keyframes bannerSlide {
     from { transform: translateY(-100%); }
@@ -212,6 +277,13 @@ body {
 .track-fav:disabled,
 .streaming-fav:disabled{opacity:.45;cursor:wait}
 .track-row-favorite.active{ text-shadow:0 0 10px rgba(110,231,183,.18)}
+/* Favorite heart: one inline SVG painted from currentColor, so the muted /
+   accent colours above stay authoritative and no platform colour-emoji font
+   can repaint an active heart. Outline when idle, filled when the button
+   carries its active state. */
+.fav-heart{display:block;width:1em;height:1em;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linejoin:round;pointer-events:none}
+.active>.fav-heart,
+.is-active>.fav-heart{fill:currentColor}
 .track-add,
 .streaming-add{flex:0 0 auto;width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);font:inherit;font-size:1.05rem;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer;transition:color .12s var(--ease),border-color .12s var(--ease),background .12s var(--ease),transform .12s var(--ease);-webkit-tap-highlight-color:transparent}
 .track-add:hover,
@@ -835,6 +907,8 @@ body {
 .radio-manage-submit-row {
     display: flex;
     justify-content: center;
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
     margin-top: 0.1rem;
 }
 .radio-manage-submit-row .btn-primary {
@@ -1107,7 +1181,9 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    max-width: 320px;
+    /* The column owns the width; every toast (incl. the now-playing cue)
+       fills it. Phones re-inset the column in _responsive.css. */
+    width: min(330px, calc(100% - 2rem));
 }
 .toast {
     padding: 0.85rem 1.1rem;
@@ -1127,8 +1203,10 @@ body {
     display: flex;
     align-items: center;
     gap: 0.8rem;
-    min-width: min(320px, calc(100% - 2rem));
-    max-width: min(420px, calc(100% - 2rem));
+    /* One component, no separate tablet variant: it takes the container's
+       width instead of carrying a second fixed value. */
+    width: 100%;
+    min-width: 0;
     padding: 0.65rem 0.85rem;
 }
 .now-playing-cover {
@@ -1549,13 +1627,13 @@ body {
     -webkit-tap-highlight-color: transparent;
 }
 .album-favorite-toggle.active {
-    color: #facc15;
+    color: var(--accent);
 }
 .album-favorite-toggle:hover {
     color: var(--text-primary);
 }
 .album-favorite-toggle.active:hover {
-    color: #fde047;
+    color: var(--accent-hover);
 }
 .album-favorite-toggle:focus-visible {
     outline: 2px solid var(--accent);
@@ -3391,46 +3469,91 @@ body {
     display: none !important;
 }
 
-/* Empty / not-connected state */
+/* Empty / not-connected state — one shared disconnected card for
+   Spotify/Qobuz (.streaming-empty) and TIDAL (.streaming-auth--disconnected):
+   same width, padding, centering, heading/text sizes and primary button. */
+.streaming-empty,
+.streaming-auth--disconnected {
+    width: min(100%, 560px);
+    margin: 0 auto;
+    padding: 1.5rem 1.5rem 1.7rem;
+    text-align: center;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    /* Standby/disconnected is not an active state: neutral edge like the DSP cards. */
+    border-top: 3px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+}
 .streaming-empty {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    width: min(100%, 960px);
-    margin: 0 auto;
-    padding: 1.5rem 1.25rem;
-    text-align: center;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    /* Standby is not an active state: neutral edge like the DSP cards. */
-    border-top: 3px solid var(--border-strong);
-    border-radius: var(--radius-lg);
+}
+.streaming-auth--disconnected {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
 }
 .streaming-empty-icon {
     font-size: 2.25rem;
     margin-bottom: 0.5rem;
     opacity: 0.4;
 }
-.streaming-empty-title {
+.streaming-empty-title,
+.streaming-auth--disconnected .streaming-auth-title {
     font-size: 1.15rem;
     font-weight: 700;
     color: var(--text-primary);
     margin: 0;
 }
-.streaming-empty-msg {
+.streaming-empty-msg,
+.streaming-auth--disconnected .streaming-auth-hint {
     color: var(--text-muted);
     font-size: 0.88rem;
     margin: 0.3rem 0 0;
     line-height: 1.45;
     max-width: 34rem;
 }
-.streaming-empty-actions {
+.streaming-empty-actions,
+.streaming-auth--disconnected .streaming-auth-actions--primary {
     margin-top: 1rem;
     display: flex;
     gap: 0.6rem;
     flex-wrap: wrap;
     justify-content: center;
+    align-items: center;
+}
+/* Subordinate second login option: plain text action with a muted quality
+   note underneath — deliberately not a second equal-rank button. */
+.streaming-auth-alternative {
+    margin-top: 0.9rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+.streaming-auth-secondary {
+    background: transparent;
+    border: 0;
+    padding: 0.25rem 0.5rem;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.82rem;
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+    cursor: pointer;
+}
+.streaming-auth-secondary:hover { color: var(--text-secondary); }
+.streaming-auth-secondary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.streaming-auth-note {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1.45;
+    margin: 0;
+    max-width: 34rem;
 }
 
 /* Now-playing card — the shared player composition for Spotify/Qobuz. A
@@ -4143,12 +4266,22 @@ body {
     gap: 1rem;
 }
 
+.measurement-main.is-setup > :not(.measurement-card-setup) {
+    display: none;
+}
+
+#measurement-setup-back {
+    align-self: flex-start;
+    margin-bottom: 1rem;
+}
+
 .measurement-sidebar {
     display: none;
 }
 
 .measurement-card {
     min-height: 0;
+    min-width: 0;
 }
 
 .measurement-stack {
@@ -4229,10 +4362,15 @@ body {
     display: none;
 }
 
-.measurement-clear-btn {
-    min-height: 34px;
-    padding: 0.38rem 0.85rem;
+#measurement-setup-toggle,
+#measurement-clear {
+    flex: 0 0 auto;
+    width: 5.25rem;
+    height: 44px;
+    min-height: 44px;
+    padding: 0.5rem 0.85rem;
     white-space: nowrap;
+    justify-self: end;
 }
 
 .measurement-actions-top {
@@ -4254,6 +4392,13 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+}
+
+.measurement-workflow-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
 }
 
 .measurement-workflow-section + .measurement-workflow-section {
@@ -4353,11 +4498,6 @@ body {
     min-width: 0;
 }
 
-#measurement-setup-toggle {
-    align-self: flex-start;
-    min-width: 104px;
-}
-
 #measurement-repeat-start,
 #measurement-hybrid-open {
     min-height: 42px;
@@ -4426,7 +4566,9 @@ body {
 
 .hybrid-wizard-grid {
     display: grid;
-    grid-template-columns: minmax(300px, 0.9fr) minmax(320px, 1.1fr);
+    /* Min tracks stay under the narrowest two-column container (>=600px) so
+       the wizard never overflows the dialog before it stacks on phones. */
+    grid-template-columns: minmax(240px, 0.9fr) minmax(240px, 1.1fr);
     gap: 1.25rem;
 }
 
@@ -5583,14 +5725,20 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     align-self: end;
 }
 
-/* Subwoofer selects share the common #tab-effects control metrics; one
-   shared cap fits the widest option ("On") with generous room beside the
-   single-letter "N"/"I" polarity values, and centered text keeps the box
-   calm between heading and native arrow. The select type selector is
-   load-bearing: #tab-effects .url-input (equal specificity, later in the
-   file) would otherwise keep width:100% alive and stretch the selects back
-   across their grid tracks. */
-#tab-effects select.effects-subwoofer-compact-select,
+/* Subwoofer selects share the common #tab-effects control metrics; the
+   Main highpass cap (5.2rem) fits the widest option ("On"/"Off") with room
+   beside the native arrow on Android, where the narrower cap clipped "On".
+   The polarity selects keep the tighter 4.2rem cap beside the single-letter
+   "N"/"I" values. Centered text keeps the boxes calm between heading and
+   native arrow. The select type selectors are load-bearing: #tab-effects
+   .url-input (equal specificity, later in the file) would otherwise keep
+   width:100% alive and stretch the selects back across their grid tracks. */
+#tab-effects select.effects-subwoofer-compact-select {
+    width: min(100%, 5.2rem);
+    min-width: 0;
+    max-width: 100%;
+    text-align: center;
+}
 #tab-effects select.effects-subwoofer-polarity-select {
     width: min(100%, 4.2rem);
     min-width: 0;
@@ -7014,6 +7162,11 @@ input[type="number"]::-webkit-outer-spin-button {
     font-variant-numeric: tabular-nums;
     line-height: 1;
 }
+/* Leading number/play wrapper: transparent so both keep their own flex
+   slots on desktop; phones hide the play button and keep the number. */
+.track-numplay {
+    display: contents;
+}
 .track-info {
     flex: 1;
     min-width: 0;
@@ -7495,6 +7648,10 @@ input[type="number"]::-webkit-outer-spin-button {
         text-align: center;
         font-size: .59rem;
     }
+    #seek-duration {
+        text-align: right;
+        padding-right: .08rem;
+    }
     .seek-slider,
     .volume-slider {
         width: 100%;
@@ -7525,16 +7682,18 @@ input[type="number"]::-webkit-outer-spin-button {
         border-radius: 999px;
     }
     .output-level-badge { display: none; }
+    /* Phone: volume percent shares the seek duration right value column. */
     .playback-bar .controls {
-        width: min(100%, 430px);
+        width: 100%;
         max-width: none;
-        justify-self: center;
+        justify-self: stretch;
         padding: 0;
         margin: 0;
     }
     .volume-control {
         width: 100%;
-        grid-template-columns: 2.55rem minmax(0, 1fr) 2.55rem;
+        grid-template-columns: minmax(2.55rem, max-content) minmax(0, 1fr) minmax(2.55rem, max-content);
+        align-items: center;
         row-gap: .44rem;
         column-gap: .4rem;
     }
@@ -7560,9 +7719,11 @@ input[type="number"]::-webkit-outer-spin-button {
         width: 2.55rem;
         min-width: 2.55rem;
         justify-content: flex-end;
+        align-items: center;
         text-align: right;
         padding-right: .08rem;
         font-size: .64rem;
+        line-height: 1;
     }
     /* Phone: no-media fallback keeps track + volume only. */
     .playback-bar:not(.has-media) {
@@ -8033,11 +8194,6 @@ input[type="number"]::-webkit-outer-spin-button {
             justify-content: center;
         }
 
-        #measurement-setup-toggle {
-            align-self: stretch;
-            margin-top: 0.15rem;
-        }
-
         .measurement-card-setup,
         .measurement-card-setup .measurement-stack,
         .measurement-card-setup .field-group {
@@ -8067,8 +8223,7 @@ input[type="number"]::-webkit-outer-spin-button {
         .measurement-peq-editor-actions .btn-danger,
         .measurement-peq-take-row .btn-secondary,
         .measurement-save-row .btn-secondary,
-        #measurement-repeat-start,
-        #measurement-setup-toggle {
+        #measurement-repeat-start {
             width: 100%;
         }
 
@@ -8304,6 +8459,9 @@ input[type="number"]::-webkit-outer-spin-button {
             min-height: 44px;
         }
         .track-item { padding: 0.7rem 0.75rem; }
+        /* Phones: no separate play button in track rows; the row stays the tap trigger. */
+        .track-item .track-play,
+        .streaming-result .track-play { display: none; }
         /* Download */
         .playlist-save-row {
             flex-wrap: nowrap;
@@ -8371,9 +8529,14 @@ input[type="number"]::-webkit-outer-spin-button {
         .effects-actions-row .btn-secondary { width: 100%; min-width: unset; }
         .effects-actions-right { flex-direction: column; align-items: stretch; }
         .toast-container {
-            right: 0.5rem;
-            left: 0.5rem;
-            max-width: calc(100% - 1rem);
+            /* Limit the width instead of letting the toasts span nearly the
+               whole viewport: 20px each side, capped so the column does not
+               grow on wider phones, and centered exactly. */
+            left: 50%;
+            right: auto;
+            width: calc(100% - 40px);
+            max-width: 360px;
+            transform: translateX(-50%);
         }
 
     /* from _playback.css */
@@ -8861,6 +9024,9 @@ input[type="number"]::-webkit-outer-spin-button {
         .tab-btn { min-width: 74px; font-size: .78rem; gap: .22rem; }
         .tab-glyph { width: .8rem; font-size: .8rem; }
         .stations-grid { gap: .58rem; }
+
+    /* Very narrow phones: drop the row cover so its width serves title/artist. */
+    .track-thumb { display: none; }
 
 }
 

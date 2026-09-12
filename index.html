@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/fxroute/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/fxroute/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/fxroute/static/style.css?v=0.9.206">
+    <link rel="stylesheet" href="/fxroute/static/style.css?v=0.9.212">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -36,6 +36,10 @@
     <div id="offline-indicator" class="offline-indicator hidden">
         Disconnected from server
     </div>
+
+    <!-- Live mode notice (only visible in volatile Try FXRoute sessions).
+         Bottom pill above the playback footer, like the web-demo banner. -->
+    <div id="live-banner" class="live-banner is-hidden" role="status"><strong>Live Mode</strong><span> — changes and logins are not saved and will be lost after reboot.</span><button type="button" class="live-banner-close" aria-label="Hide live notice" title="Hide live notice">×</button></div>
 
     <!-- Main content -->
     <main id="app">
@@ -450,7 +454,7 @@
                         <div class="album-detail-meta detail-hero-meta">
                             <div class="album-detail-title-row detail-hero-title-row">
                                 <h2 id="album-detail-name" class="album-detail-name detail-hero-title"></h2>
-                                <button id="album-favorite-toggle" class="album-favorite-toggle" type="button" aria-label="Favorite album" title="Favorite album">♡</button>
+                                <button id="album-favorite-toggle" class="album-favorite-toggle" type="button" aria-label="Favorite album" title="Favorite album"><svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
                             </div>
                             <p id="album-detail-artist" class="album-detail-artist"></p>
                             <p id="album-detail-count" class="album-detail-count"></p>
@@ -664,9 +668,9 @@
                                         </div>
                                     </div>
                                     <div id="effects-subwoofer-derived-delays" class="effects-subwoofer-derived-delays hidden">
-                                        Derived: Main <span id="effects-subwoofer-dd-main">0.00</span> ms ·
-                                        Sub 1 <span id="effects-subwoofer-dd-sub1">0.00</span> ms ·
-                                        Sub 2 <span id="effects-subwoofer-dd-sub2">0.00</span> ms
+                                        Main: <span id="effects-subwoofer-dd-main">0.00</span> ms ·
+                                        Sub 1: <span id="effects-subwoofer-dd-sub1">0.00</span> ms ·
+                                        Sub 2: <span id="effects-subwoofer-dd-sub2">0.00</span> ms
                                     </div>
                                 </div>
                                 <div id="effects-subwoofer-feedback" class="effects-extras-feedback" aria-live="polite"></div>
@@ -727,6 +731,9 @@
                                                         <option value="-4">-4 dB</option>
                                                         <option value="-5">-5 dB</option>
                                                         <option value="-6">-6 dB</option>
+                                                        <option value="-7">-7 dB</option>
+                                                        <option value="-8">-8 dB</option>
+                                                        <option value="-9">-9 dB</option>
                                                     </select>
                                                 </label>
                                             </div>
@@ -914,12 +921,15 @@
                 </div>
                 <div class="measurement-layout">
                     <aside class="measurement-sidebar"></aside>
-                    <div class="measurement-main">
+                    <div id="measurement-main" class="measurement-main">
                         <section class="effects-card measurement-card measurement-card-controls">
                             <div class="measurement-actions measurement-actions-top">
                                 <div class="measurement-workflow-list">
                                     <div class="measurement-workflow-section">
-                                        <h4 class="measurement-workflow-label">Measurements</h4>
+                                        <div class="measurement-workflow-heading">
+                                            <h4 class="measurement-workflow-label">Measurements</h4>
+                                            <button id="measurement-setup-toggle" class="btn-secondary" type="button" aria-controls="measurement-setup-card">Setup</button>
+                                        </div>
                                         <div class="measurement-workflow-group measurement-workflow-menu-group">
                                             <div class="measurement-workflow-menu">
                                                 <button id="measurement-sweep-toggle" class="btn-primary" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="measurement-sweep-menu">Start Sweep</button>
@@ -959,11 +969,11 @@
                                         </div>
                                     </div>
                                 </div>
-                                <button id="measurement-setup-toggle" class="btn-secondary" type="button">Setup</button>
                             </div>
                             <div id="measurement-setup-status" class="effects-info measurement-inline-status"></div>
                         </section>
                         <section class="effects-card measurement-card measurement-card-setup hidden" id="measurement-setup-card">
+                            <button id="measurement-setup-back" class="btn-secondary" type="button">← Back to measurements</button>
                             <div class="effects-card-header">
                                 <h3>Setup</h3>
                                 <p>Mic input and calibration.</p>
@@ -1312,7 +1322,7 @@
                         <span class="sc-title" id="sc-title"></span>
                         <span class="sc-album" id="sc-album"></span>
                     </div>
-                    <button id="track-favorite-btn" class="track-favorite-btn hidden" type="button" aria-label="Add track to favorites" aria-pressed="false" title="Add track to favorites">♡</button>
+                    <button id="track-favorite-btn" class="track-favorite-btn hidden" type="button" aria-label="Add track to favorites" aria-pressed="false" title="Add track to favorites"><svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
                 </div>
                 <div class="playback-meta-row">
                     <div id="samplerate-status" class="samplerate-status hidden">44.1kHz</div>
@@ -1516,8 +1526,8 @@
     <script src="/fxroute/static/measurement_ui.js?v=0.9.16"></script>
     <script src="/fxroute/static/measurement_graph.js?v=0.9.16"></script>
     <script src="/fxroute/static/measurement_flows.js?v=0.9.20"></script>
-    <script src="/fxroute/static/radio.js?v=0.9.18"></script>
-    <script src="/fxroute/static/app.js?v=0.9.129"></script>
-    <script src="/fxroute/static/streaming.js?v=0.9.61"></script>
+    <script src="/fxroute/static/radio.js?v=0.9.19"></script>
+    <script src="/fxroute/static/app.js?v=0.9.136"></script>
+    <script src="/fxroute/static/streaming.js?v=0.9.64"></script>
 </body>
 </html>

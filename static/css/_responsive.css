@@ -11,6 +11,11 @@
     font-variant-numeric: tabular-nums;
     line-height: 1;
 }
+/* Leading number/play wrapper: transparent so both keep their own flex
+   slots on desktop; phones hide the play button and keep the number. */
+.track-numplay {
+    display: contents;
+}
 .track-info {
     flex: 1;
     min-width: 0;
@@ -492,6 +497,10 @@
         text-align: center;
         font-size: .59rem;
     }
+    #seek-duration {
+        text-align: right;
+        padding-right: .08rem;
+    }
     .seek-slider,
     .volume-slider {
         width: 100%;
@@ -522,16 +531,18 @@
         border-radius: 999px;
     }
     .output-level-badge { display: none; }
+    /* Phone: volume percent shares the seek duration right value column. */
     .playback-bar .controls {
-        width: min(100%, 430px);
+        width: 100%;
         max-width: none;
-        justify-self: center;
+        justify-self: stretch;
         padding: 0;
         margin: 0;
     }
     .volume-control {
         width: 100%;
-        grid-template-columns: 2.55rem minmax(0, 1fr) 2.55rem;
+        grid-template-columns: minmax(2.55rem, max-content) minmax(0, 1fr) minmax(2.55rem, max-content);
+        align-items: center;
         row-gap: .44rem;
         column-gap: .4rem;
     }
@@ -557,9 +568,11 @@
         width: 2.55rem;
         min-width: 2.55rem;
         justify-content: flex-end;
+        align-items: center;
         text-align: right;
         padding-right: .08rem;
         font-size: .64rem;
+        line-height: 1;
     }
     /* Phone: no-media fallback keeps track + volume only. */
     .playback-bar:not(.has-media) {
@@ -1030,11 +1043,6 @@
             justify-content: center;
         }
 
-        #measurement-setup-toggle {
-            align-self: stretch;
-            margin-top: 0.15rem;
-        }
-
         .measurement-card-setup,
         .measurement-card-setup .measurement-stack,
         .measurement-card-setup .field-group {
@@ -1064,8 +1072,7 @@
         .measurement-peq-editor-actions .btn-danger,
         .measurement-peq-take-row .btn-secondary,
         .measurement-save-row .btn-secondary,
-        #measurement-repeat-start,
-        #measurement-setup-toggle {
+        #measurement-repeat-start {
             width: 100%;
         }
 
@@ -1301,6 +1308,9 @@
             min-height: 44px;
         }
         .track-item { padding: 0.7rem 0.75rem; }
+        /* Phones: no separate play button in track rows; the row stays the tap trigger. */
+        .track-item .track-play,
+        .streaming-result .track-play { display: none; }
         /* Download */
         .playlist-save-row {
             flex-wrap: nowrap;
@@ -1368,9 +1378,14 @@
         .effects-actions-row .btn-secondary { width: 100%; min-width: unset; }
         .effects-actions-right { flex-direction: column; align-items: stretch; }
         .toast-container {
-            right: 0.5rem;
-            left: 0.5rem;
-            max-width: calc(100% - 1rem);
+            /* Limit the width instead of letting the toasts span nearly the
+               whole viewport: 20px each side, capped so the column does not
+               grow on wider phones, and centered exactly. */
+            left: 50%;
+            right: auto;
+            width: calc(100% - 40px);
+            max-width: 360px;
+            transform: translateX(-50%);
         }
 
     /* from _playback.css */
@@ -1858,6 +1873,9 @@
         .tab-btn { min-width: 74px; font-size: .78rem; gap: .22rem; }
         .tab-glyph { width: .8rem; font-size: .8rem; }
         .stations-grid { gap: .58rem; }
+
+    /* Very narrow phones: drop the row cover so its width serves title/artist. */
+    .track-thumb { display: none; }
 
 }
 

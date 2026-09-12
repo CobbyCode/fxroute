@@ -446,6 +446,7 @@ const MEASUREMENT_WINDOW_HEARTBEAT_INTERVAL_MS = 10000;
 // DOM elements
 const elements = {
     offlineIndicator: document.getElementById('offline-indicator'),
+    liveBanner: document.getElementById('live-banner'),
     settingsOpenBtn: document.getElementById('open-settings'),
     settingsPanel: document.getElementById('settings-panel'),
     settingsCloseBtn: document.getElementById('close-settings'),
@@ -540,7 +541,6 @@ const elements = {
     playlistDetailInfo: document.getElementById('playlist-detail-info'),
     playlistDetailTracks: document.getElementById('playlist-detail-tracks'),
     deletePlaylistBtn: document.getElementById('delete-playlist'),
-    albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
     savePlaylistBtn: document.getElementById('save-playlist'),
@@ -567,6 +567,8 @@ const elements = {
     measurementPanel: document.getElementById('measurement-panel'),
     measurementCloseBtn: document.getElementById('measurement-close'),
     measurementSetupCard: document.getElementById('measurement-setup-card'),
+    measurementMain: document.getElementById('measurement-main'),
+    measurementSetupBackBtn: document.getElementById('measurement-setup-back'),
     measurementSetupToggleBtn: document.getElementById('measurement-setup-toggle'),
     measurementModeNote: document.getElementById('measurement-mode-note'),
     measurementInputGroup: document.getElementById('measurement-input-group'),
@@ -996,6 +998,7 @@ document.addEventListener('DOMContentLoaded', () => {
             playStation: stationId => playRadio(stationId),
             showToast,
             escapeHtml,
+            favoriteHeartSvg,
             highlightActiveTrack,
             extractDroppedUrl,
         });
@@ -1004,13 +1007,16 @@ document.addEventListener('DOMContentLoaded', () => {
         window.FXRouteStreaming.init({
             showToast,
             escapeHtml,
+            favoriteHeartSvg,
             formatTime,
             artworkPlaceholderUrl,
+            formatTransitionErrorDetail,
             trackRowHtml: detailTrackRowHtml,
             factsHtml: detailFactsHtml,
             aboutHtml: detailAboutHtml,
             spotifyCommand,
             spotifySeek,
+            openQobuzLogin: () => void beginQobuzLogin(),
             openTidalLogin: () => void beginTidalLogin(),
         });
     } catch(e) { console.error('streaming module initialization crashed:', e); }
@@ -1168,6 +1174,62 @@ function scheduleOfflineIndicator() {
         elements.offlineIndicator.classList.remove('hidden');
     }, CONFIG.offlineIndicatorDelay);
 }
+// Volatile Try session hint, styled like the web-demo banner (demo/boot.js):
+// a compact pill parked above the playback footer. data.live (top-level)
+// or data.system.live. Dismissible via close button (session-scoped) and
+// auto-hidden after a few minutes so it never covers controls.
+const LIVE_BANNER_AUTOHIDE_MS = 3 * 60 * 1000;
+const LIVE_BANNER_STORAGE_KEY = 'fxroute-live-banner-hidden';
+let liveBannerWired = false;
+let liveBannerTimer = null;
+function positionLiveBanner() {
+    const banner = elements.liveBanner;
+    if (!banner || typeof banner.getBoundingClientRect !== 'function') return false;
+    const footer = document.getElementById('playback-bar');
+    if (!footer) return false;
+    const rect = footer.getBoundingClientRect();
+    const viewportH = window.innerHeight || document.documentElement.clientHeight;
+    banner.style.bottom = Math.max(10, viewportH - rect.top + 12) + 'px';
+    return true;
+}
+function updateLiveBanner(data) {
+    const banner = elements.liveBanner;
+    if (!banner) return;
+    const live = !!(data && (data.live === true || (data.system && data.system.live === true)));
+    if (!live) {
+        banner.classList.add('is-hidden');
+        return;
+    }
+    if (!liveBannerWired) {
+        liveBannerWired = true;
+        const closeBtn = banner.querySelector('.live-banner-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                banner.classList.add('is-hidden');
+                try { sessionStorage.setItem(LIVE_BANNER_STORAGE_KEY, '1'); } catch (e) {}
+            });
+        }
+        if (typeof window.addEventListener === 'function') {
+            window.addEventListener('resize', () => { positionLiveBanner(); });
+            window.addEventListener('load', () => { positionLiveBanner(); });
+        }
+        (function pollBanner() {
+            if (!positionLiveBanner() && typeof window.setTimeout === 'function') {
+                window.setTimeout(pollBanner, 120);
+            }
+        })();
+    }
+    let dismissed = false;
+    try { dismissed = sessionStorage.getItem(LIVE_BANNER_STORAGE_KEY) === '1'; } catch (e) {}
+    if (dismissed) return;
+    positionLiveBanner();
+    banner.classList.remove('is-hidden');
+    if (liveBannerTimer) return;
+    liveBannerTimer = setTimeout(() => {
+        liveBannerTimer = null;
+        banner.classList.add('is-hidden');
+    }, LIVE_BANNER_AUTOHIDE_MS);
+}
 async function resyncPlaybackAfterReconnect() {
     const generation = ++wsReconnectSyncGeneration;
     try {
@@ -1182,6 +1244,7 @@ async function resyncPlaybackAfterReconnect() {
 
         if (playback) {
             mergePlaybackState(playback);
+            updateLiveBanner(playback);
             syncFooterOwnershipFromPlayback(playback);
             syncLibraryStateFromPlaybackContext(true);
         }
@@ -1501,7 +1564,11 @@ function setupSettingsActions() {
 
 function normalizeSubwooferSettings(input = {}) {
     const frequency = Math.max(40, Math.min(200, Math.round(Number(input.crossover_frequency_hz ?? input.crossoverFrequencyHz ?? 80) || 80)));
-    const level = Math.max(-24, Math.min(12, Number(input.sub_level_db ?? input.subLevelDb ?? 0) || 0));
+    // -80 dB floor: 2.2 AutoSub mutes inactive subs to -80 (backend and DSP
+    // runtime accept -80..12 for 2.2; 2.1 persists clamp to -24 server-side,
+    // so a wider frontend clamp converges on save instead of silently
+    // raising a muted sub to -24 on display and re-save.
+    const level = Math.max(-80, Math.min(12, Number(input.sub_level_db ?? input.subLevelDb ?? 0) || 0));
     const alignment = Math.max(-40, Math.min(40, Number(input.sub_alignment_ms ?? input.subAlignmentMs ?? 0) || 0));
     const polarity = String(input.sub_polarity ?? input.subPolarity ?? 'normal').toLowerCase() === 'invert' ? 'invert' : 'normal';
     const roundedAlignment = Math.round(alignment * 100) / 100;
@@ -1516,7 +1583,10 @@ function normalizeSubwooferSettings(input = {}) {
 }
 
 function normalizeSingleSubwooferSettings(input = {}) {
-    const level = Math.max(-24, Math.min(12, Number(input.level_db ?? input.levelDb ?? 0) || 0));
+    // Same -80 dB floor as normalizeSubwooferSettings: must round-trip the
+    // 2.2 AutoSub mute level instead of clamping the display to -24 and
+    // unmuting (+56 dB) on the next UI save.
+    const level = Math.max(-80, Math.min(12, Number(input.level_db ?? input.levelDb ?? 0) || 0));
     const alignment = Math.max(-40, Math.min(40, Number(input.alignment_ms ?? input.alignmentMs ?? 0) || 0));
     const polarity = String(input.polarity ?? 'normal').toLowerCase() === 'invert' ? 'invert' : 'normal';
     return {
@@ -1552,6 +1622,31 @@ function normalizeSubwoofersSettings(subwoofers = {}, fallbackSubwoofer = {}) {
     return {
         sub1: normalizeSingleSubwooferSettings(subwoofers?.sub1 || fallbackSub),
         sub2: normalizeSingleSubwooferSettings(subwoofers?.sub2 || {}),
+    };
+}
+
+function applySubwooferDraftToOutputMode(draft = {}, settings = {}) {
+    // 2.2 keeps the global crossover/highpass both top-level (runtime and
+    // readback source of truth) and inside the legacy 2.1 `subwoofer` block.
+    // The draft must keep both in sync: getSubwooferGlobalSettings() prefers
+    // the top-level field, so a stale top-level snaps the Main-highpass
+    // select back to On (and the next save re-reads On) before Off is sent.
+    if (settings && typeof settings === 'object' && settings.subwoofers) {
+        const next = {
+            ...(draft || {}),
+            ...settings,
+        };
+        if (settings.subwoofer?.crossover_frequency_hz !== undefined) {
+            next.crossover_frequency_hz = settings.subwoofer.crossover_frequency_hz;
+        }
+        if (settings.subwoofer?.main_highpass_enabled !== undefined) {
+            next.main_highpass_enabled = settings.subwoofer.main_highpass_enabled;
+        }
+        return next;
+    }
+    return {
+        ...(draft || {}),
+        ...(settings?.subwoofers ? settings : { subwoofer: settings }),
     };
 }
 
@@ -1599,8 +1694,10 @@ function formatSampleRateKhz(rate) {
 }
 
 function formatTransitionErrorDetail(detail, fallback = 'Request failed') {
-    if (typeof detail === 'string' && detail.trim()) return detail;
-    if (detail && typeof detail === 'object') {
+    if (typeof detail === 'string') {
+        const trimmedDetail = detail.trim();
+        if (trimmedDetail) return trimmedDetail;
+    } else if (detail && typeof detail === 'object') {
         const message = typeof detail.message === 'string' ? detail.message.trim() : '';
         if (message) {
             const stage = typeof detail.stage === 'string' ? detail.stage.trim() : '';
@@ -1609,8 +1706,19 @@ function formatTransitionErrorDetail(detail, fallback = 'Request failed') {
             }
             return message;
         }
+        // Message-less structured details (FastAPI validation lists, status
+        // objects without a message) stay out of the UI: keep them for
+        // diagnosis via console.warn and fall through to the generic fallback
+        // so no internal fields leak into toasts or error states.
+        try {
+            if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+                console.warn('Suppressed message-less error detail:', detail);
+            }
+        } catch (_warnError) {
+            // Logging must never break error rendering.
+        }
     }
-    return fallback;
+    return typeof fallback === 'string' ? fallback : 'Request failed';
 }
 
 function formatRadioStreamLine(streamInfo, effectiveOutputRate = null) {
@@ -1706,11 +1814,12 @@ async function saveAudioOutputMode(mode, settings = null, options = {}) {
     const requestId = ++_audioOutputModeRequestId;
     const mutationGeneration = ++_audioOutputModeMutationGeneration;
     if (!modeOnly && !suppressApply) {
+        const bodySettings = ('subwoofers' in requestBody)
+            ? { subwoofer: requestBody.subwoofer, subwoofers: requestBody.subwoofers }
+            : (('subwoofer' in requestBody) ? requestBody.subwoofer : {});
         state.settings.audioOutputs.output_mode = {
-            ...(state.settings.audioOutputs.output_mode || {}),
+            ...applySubwooferDraftToOutputMode(state.settings.audioOutputs.output_mode || {}, bodySettings),
             mode: nextMode,
-            ...('subwoofer' in requestBody ? { subwoofer: requestBody.subwoofer } : {}),
-            ...('subwoofers' in requestBody ? { subwoofers: requestBody.subwoofers } : {}),
         };
         renderSettingsPanel();
     }
@@ -3652,7 +3761,6 @@ function initPlaybackFooterLayout() {
 
 function setFooterProgressState(available, readonly = false) {
     const showProgress = !!available;
-    elements.playbackBar?.classList.toggle('has-progress', showProgress);
     elements.playbackBar?.classList.toggle('progress-readonly', showProgress && !!readonly);
     elements.seekRow?.classList.toggle('hidden', !showProgress);
 }
@@ -4282,6 +4390,16 @@ function renderSamplerateUI() {
     elements.samplerateStatus.classList.remove('hidden');
 }
 
+// Favorite hearts render as one inline SVG instead of the Unicode hearts
+// (U+2665 / U+2661). In some browser/OS combinations those fall back to a
+// colour-emoji font, which paints an active heart red no matter what the
+// button's CSS colour says. The SVG is painted from currentColor, so the
+// existing muted / accent button states stay the single source of truth.
+function favoriteHeartSvg() {
+    return '<svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+        + '<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+}
+
 function renderTrackFavoriteButton(track = state.playback.current_track) {
     const button = elements.trackFavoriteBtn;
     if (!button) return;
@@ -4293,7 +4411,7 @@ function renderTrackFavoriteButton(track = state.playback.current_track) {
     button.classList.toggle('hidden', !available);
     if (!available) {
         button.disabled = true;
-        button.textContent = '♡';
+        button.innerHTML = favoriteHeartSvg();
         button.classList.remove('active');
         button.setAttribute('aria-pressed', 'false');
         return;
@@ -4308,7 +4426,7 @@ function renderTrackFavoriteButton(track = state.playback.current_track) {
             && window.FXRouteStreaming.isTidalFavorite);
         const favorite = ready ? window.FXRouteStreaming.isTidalFavorite('tracks', track.id) : false;
         button.disabled = inFlight || !ready;
-        button.textContent = favorite ? '♥' : '♡';
+        button.innerHTML = favoriteHeartSvg();
         button.classList.toggle('active', favorite);
         button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
         button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
@@ -4324,7 +4442,7 @@ function renderTrackFavoriteButton(track = state.playback.current_track) {
     // Local library track favorite (unchanged native path).
     button.disabled = inFlight;
     const favorite = !!track.favorite;
-    button.textContent = favorite ? '♥' : '♡';
+    button.innerHTML = favoriteHeartSvg();
     button.classList.toggle('active', favorite);
     button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
     button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
@@ -4354,7 +4472,7 @@ function syncTrackFavoriteRowButtons(trackId = null) {
         if (trackId && id !== trackId) return;
         const track = findTrackById(id);
         const favorite = !!track?.favorite;
-        button.textContent = favorite ? '♥' : '♡';
+        button.innerHTML = favoriteHeartSvg();
         button.classList.toggle('active', favorite);
         button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
         button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
@@ -5077,12 +5195,9 @@ function updatePlaybackUI() {
         highlightActiveTrack();
         return;
     }
-    // Source classes remain available to unrelated page features. The footer
-    // itself is laid out exclusively from the data-backed visibility classes.
+    // The footer is laid out exclusively from the data-backed visibility classes.
     const isRadio = current_track && current_track.source === 'radio';
     if (!freezeActive) {
-        document.body.classList.remove('source-local', 'source-radio');
-        document.body.classList.add(isRadio ? 'source-radio' : 'source-local');
         const radioMetadata = isRadio ? state.playback.radio_metadata : null;
         elements.playbackBar?.classList.toggle('has-media', !!current_track);
         // Track info
@@ -5256,6 +5371,7 @@ async function fetchPlaybackStatus() {
         if (!resp.ok) throw new Error('Failed to fetch playback status');
         const data = await resp.json();
         mergePlaybackState(data);
+        updateLiveBanner(data);
         syncFooterOwnershipFromPlayback(data);
         syncLibraryStateFromPlaybackContext(true);
         updatePlaybackUI();
@@ -5496,7 +5612,6 @@ function renderLibraryViewButtons() {
         elements.libraryViewAlbumsBtn.classList.toggle('active', active);
         elements.libraryViewAlbumsBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
-    updateAlbumFavoritesFilterButton();
 }
 function renderLibraryFolderPath() {
     if (!elements.libraryFolderPath) return;
@@ -5871,7 +5986,7 @@ function renderAlbums() {
     const playlistHtml = playlists.map(playlist => `
         <div class="album-card playlist-card" data-playlist-id="${escapeHtml(playlist.id)}" role="button" tabindex="0">
             <div class="album-art-wrap">${playlistCoverHtml(playlist)}</div>
-            <button type="button" class="album-card-fav is-active" data-playlist-fav="${escapeHtml(playlist.id)}" aria-label="Delete playlist" title="Delete playlist">♥</button>
+            <button type="button" class="album-card-fav is-active" data-playlist-fav="${escapeHtml(playlist.id)}" aria-label="Delete playlist" title="Delete playlist">${favoriteHeartSvg()}</button>
             <div class="album-name">${escapeHtml(playlist.name)}</div>
             <div class="album-artist">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
         </div>`).join('');
@@ -5888,7 +6003,7 @@ function renderAlbums() {
                      onload="this.classList.add('loaded')"
                      onerror="this.onerror=null;this.src='${fallbackSvg}'" />
             </div>
-            <button type="button" class="album-card-fav${favClass}" data-fav-id="${escapeHtml(album.id)}" aria-label="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}" title="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}">${album.favorite ? '♥' : '♡'}</button>
+            <button type="button" class="album-card-fav${favClass}" data-fav-id="${escapeHtml(album.id)}" aria-label="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}" title="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}">${favoriteHeartSvg()}</button>
             <div class="album-name">${escapeHtml(album.name)}</div>
             <div class="album-artist">${escapeHtml(album.artist)}</div>
         </div>`;
@@ -6341,7 +6456,7 @@ function renderAlbumDetailTracks() {
 }
 
 function libraryFavoriteButtonHtml(trackId, favorite) {
-    const heart = favorite ? '♥' : '♡';
+    const heart = favoriteHeartSvg();
     return '<button class="track-row-favorite' + (favorite ? ' active' : '') + '" data-track-favorite="' + escapeHtml(trackId) + '" type="button"' +
         ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
         ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
@@ -6349,7 +6464,7 @@ function libraryFavoriteButtonHtml(trackId, favorite) {
 }
 
 function detailFavoriteButtonHtml(trackId, favorite) {
-    const heart = favorite ? '♥' : '♡';
+    const heart = favoriteHeartSvg();
     return '<button class="track-fav' + (favorite ? ' active' : '') + '" data-track-favorite="' + escapeHtml(trackId) + '" type="button"' +
         ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
         ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
@@ -6367,11 +6482,16 @@ function librarySelectionButtonHtml(trackId, isSelected) {
 // Shared detail track-row body for the library list view, album / playlist
 // detail, and (via the init api) TIDAL detail rows.  One row language:
 // optional index, round play button, stacked title / sub, optional album
-// context, selection Plus, favorite, duration.
+// context, selection Plus, favorite, duration. Rows with an index wrap the
+// number and the play button in one leading element so narrow phones can
+// share a single slot; rows without an index keep a lone play button.
 function detailTrackRowHtml({ index, title, sub, album, favoriteButton, selectionButton, duration, thumb }) {
+    const playButton = '<button type="button" class="track-play" title="Play">▶</button>';
+    const lead = index != null
+        ? '<span class="track-numplay"><span class="track-index">' + index + '</span>' + playButton + '</span>'
+        : playButton;
     return (
-        (index != null ? '<span class="track-index">' + index + '</span>' : '') +
-        '<button type="button" class="track-play" title="Play">▶</button>' +
+        lead +
         (thumb || '') +
         '<div class="track-info">' +
             '<div class="track-title">' + title + '</div>' +
@@ -6394,29 +6514,11 @@ function updateAlbumFavoriteButton(album) {
     elements.albumFavoriteToggle.classList.remove('hidden');
     elements.albumFavoriteToggle.disabled = false;
     const favorite = !!album?.favorite;
-    elements.albumFavoriteToggle.textContent = favorite ? '♥' : '♡';
+    elements.albumFavoriteToggle.innerHTML = favoriteHeartSvg();
     elements.albumFavoriteToggle.classList.toggle('active', favorite);
     elements.albumFavoriteToggle.setAttribute('aria-pressed', favorite ? 'true' : 'false');
     elements.albumFavoriteToggle.setAttribute('aria-label', favorite ? 'Remove album from favorites' : 'Add album to favorites');
     elements.albumFavoriteToggle.title = favorite ? 'Remove from favorites' : 'Add to favorites';
-}
-
-function updateAlbumFavoritesFilterButton() {
-    if (!elements.albumFavoritesToggleBtn) return;
-    const isAlbumsMode = state.library.viewMode === 'albums';
-    const active = !!state.library.showFavoriteAlbums;
-    elements.albumFavoritesToggleBtn.classList.toggle('hidden', !isAlbumsMode);
-    elements.albumFavoritesToggleBtn.classList.toggle('active', active);
-    elements.albumFavoritesToggleBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    elements.albumFavoritesToggleBtn.textContent = active ? 'All albums' : 'Favorites';
-}
-
-function toggleAlbumFavoritesFilter() {
-    state.library.showFavoriteAlbums = !state.library.showFavoriteAlbums;
-    state.library.albumDetail = null;
-    state.library.playlistDetail = null;
-    updateAlbumFavoritesFilterButton();
-    renderAlbums();
 }
 
 async function toggleCurrentAlbumFavorite() {
@@ -6437,7 +6539,6 @@ async function toggleCurrentAlbumFavorite() {
         const stored = (state.library.albums || []).find(item => item.id === album.id);
         if (stored) stored.favorite = album.favorite;
         updateAlbumFavoriteButton(album);
-        updateAlbumFavoritesFilterButton();
         showToast(album.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
     } catch (e) {
         showToast(e.message || 'Failed to update favorite', 'error');
@@ -6469,11 +6570,10 @@ async function toggleAlbumCardFavorite(albumId) {
         document.querySelectorAll('.album-card-fav[data-fav-id="' + CSS.escape(albumId) + '"]').forEach((btn) => {
             const f = stored.favorite;
             btn.classList.toggle('is-active', f);
-            btn.innerHTML = f ? '♥' : '♡';
+            btn.innerHTML = favoriteHeartSvg();
             btn.setAttribute('aria-label', f ? 'Remove from favorites' : 'Add to favorites');
             btn.title = f ? 'Remove from favorites' : 'Add to favorites';
         });
-        updateAlbumFavoritesFilterButton();
         // The Favorites view must drop an unfavorited album immediately;
         // re-render the grid so the filter stays authoritative.
         if (state.library.showFavoriteAlbums && !state.library.albumDetail) {
@@ -6886,7 +6986,6 @@ function updateLibrarySelectionUI() {
             elements.selectAllTracksBtn.textContent = hasSearch ? 'Select visible' : 'Select all';
         }
     }
-    updateAlbumFavoritesFilterButton();
 
     // Download: visible in all modes when tracks selected
     if (elements.downloadSelectedTracksBtn) {
@@ -8498,6 +8597,8 @@ function clearMeasurementConvolverDraftForSettingsChange(notice = '') {
 function updateMeasurementConvolverField(field, value) {
     const conv = ensureMeasurementConvolverState();
     const previousPhaseMode = conv.phaseMode;
+    const previousIrLength = String(conv.irLength ?? '');
+    const previousSampleRate = String(state.measurement?.measurementSampleRate ?? '');
     if (field === 'targetCurve') {
         const nextTarget = getMeasurementConvolverCurveOptions().some((curve) => curve.key === value) ? value : conv.targetCurve;
         if (nextTarget !== conv.targetCurve) {
@@ -8542,6 +8643,9 @@ function updateMeasurementConvolverField(field, value) {
     }
     if (field === 'sampleRate') {
         state.measurement.measurementSampleRate = String(value || '48000');
+        if (String(state.measurement.measurementSampleRate) !== previousSampleRate) {
+            clearMeasurementConvolverDraftForSettingsChange('Sample rate changed. Take L/R again.');
+        }
         void saveMeasurementSetupSettings({ measurementSampleRate: Number(state.measurement.measurementSampleRate) });
     }
     if (field === 'phaseMode') conv.phaseMode = measurementConvolverPhaseModes.includes(String(value)) ? String(value) : conv.phaseMode;
@@ -8554,6 +8658,13 @@ function updateMeasurementConvolverField(field, value) {
         }
     }
     ensureMeasurementConvolverState();
+    // IR length is a generation input like the limits above: creating from a
+    // stale draft would silently ignore the newly selected taps. This also
+    // covers the legacy 'quality' path, which remaps taps without passing
+    // through the 'irLength' branch.
+    if (String(conv.irLength ?? '') !== previousIrLength) {
+        clearMeasurementConvolverDraftForSettingsChange('Convolver taps changed. Take L/R again.');
+    }
     if (field === 'phaseMode' || field === 'quality') {
         clearMeasurementConvolverDraftForPhaseChange(previousPhaseMode);
     }
@@ -10597,6 +10708,10 @@ function toggleMeasurementPanel(forceOpen = null) {
                     setMeasurementSweepMenuOpen(false);
                     return;
                 }
+                if (state.measurement.setupOpen) {
+                    setMeasurementSetupOpen(false);
+                    return;
+                }
                 toggleMeasurementPanel(false);
             },
         });
@@ -11499,11 +11614,17 @@ function renderMeasurementPanel() {
 }
 
 function renderMeasurementPanelSetupSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
+    elements.measurementMain?.classList.toggle('is-setup', measurementState.setupOpen);
+    const statusParent = measurementState.setupOpen
+        ? elements.measurementSetupCard
+        : elements.measurementSetupToggleBtn?.closest('.measurement-card-controls');
+    if (elements.measurementSetupStatus && statusParent && elements.measurementSetupStatus.parentElement !== statusParent) {
+        statusParent.appendChild(elements.measurementSetupStatus);
+    }
     if (elements.measurementSetupCard) {
         elements.measurementSetupCard.classList.toggle('hidden', !measurementState.setupOpen);
     }
     if (elements.measurementSetupToggleBtn) {
-        elements.measurementSetupToggleBtn.textContent = measurementState.setupOpen ? 'Close setup' : 'Setup';
         elements.measurementSetupToggleBtn.disabled = measurementState.startInFlight;
     }
     if (elements.measurementModeNote) {
@@ -12230,6 +12351,15 @@ function bindMeasurementPanelDelegation() {
     });
 }
 
+function setMeasurementSetupOpen(open) {
+    state.measurement.setupOpen = open;
+    setMeasurementSweepMenuOpen(false);
+    renderMeasurementPanel();
+    const focusTarget = open ? elements.measurementSetupBackBtn : elements.measurementSetupToggleBtn;
+    focusTarget?.focus();
+    if (open) elements.measurementPanel.querySelector('.measurement-dialog').scrollTop = 0;
+}
+
 function setupMeasurementActions() {
     if (!elements.measurementPanel || !elements.effectsMeasureOpenBtn || !elements.measurementCloseBtn) return;
     bindMeasurementPanelDelegation();
@@ -12242,10 +12372,10 @@ function setupMeasurementActions() {
     });
     if (elements.measurementSetupToggleBtn) {
         elements.measurementSetupToggleBtn.addEventListener('click', () => {
-            state.measurement.setupOpen = !state.measurement.setupOpen;
-            renderMeasurementPanel();
+            setMeasurementSetupOpen(true);
         });
     }
+    elements.measurementSetupBackBtn?.addEventListener('click', () => setMeasurementSetupOpen(false));
     if (elements.measurementSweepToggleBtn) {
         elements.measurementSweepToggleBtn.addEventListener('click', () => {
             if (state.measurement.startInFlight || hasActiveMeasurementJob()) {
@@ -13388,7 +13518,11 @@ async function switchEffectsPreset() {
 
 // Track which inputs are currently being edited by the user
 const _activeEditing = new Set();
-const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-1, -2, -3, -4, -5, -6]);
+// Offered values when headroom is enabled. 0 dB is deliberately NOT offered:
+// "no headroom" is the checkbox's job. 0 stays in the set anyway so a
+// previously stored 0 round-trips through render/collect instead of being
+// silently rewritten to the -3 dB fallback.
+const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-9, -8, -7, -6, -5, -4, -3, -2, -1, 0]);
 const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-12, -15, -18, -23]);
 const EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE = new Set([256, 512, 1024, 2048, 4096, 8192, 16384]);
 const EFFECTS_LOUDNESS_LEGACY_STRENGTHS = new Map([
@@ -13527,9 +13661,7 @@ function renderSubwooferPanel() {
     const is22Mode = isSubwoofer22Mode(mode);
     const is22StereoMode = mode === 'subwoofer-2.2-stereo';
     elements.effectsSubwooferCard?.classList.toggle('hidden', !isSubwooferMode);
-    elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-21', mode === 'subwoofer-2.1');
     elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-22', is22Mode);
-    elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-22-stereo', is22StereoMode);
     if (!isSubwooferMode) {
         setSubwooferFeedback('');
         return;
@@ -13562,7 +13694,7 @@ function renderSubwooferPanel() {
     if (elements.effectsSubwooferFrequencyNumber && !_activeEditing.has(elements.effectsSubwooferFrequencyNumber)) {
         elements.effectsSubwooferFrequencyNumber.value = String(subwoofer.crossover_frequency_hz);
     }
-    if (elements.effectsSubwooferMainHighpass) {
+    if (elements.effectsSubwooferMainHighpass && !_activeEditing.has(elements.effectsSubwooferMainHighpass)) {
         elements.effectsSubwooferMainHighpass.value = subwoofer.main_highpass_enabled ? 'on' : 'off';
     }
     if (elements.effectsSubwooferLevel && !_activeEditing.has(elements.effectsSubwooferLevel)) {
@@ -13749,10 +13881,10 @@ const SUBWOOFER_COMMIT_DEBOUNCE_MS = 600;
 function updateSubwooferDraftFromControls() {
     const mode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
     const settings = isSubwoofer22Mode(mode) ? collectSubwoofer22Settings() : collectSubwooferSettings();
-    state.settings.audioOutputs.output_mode = {
-        ...(state.settings.audioOutputs.output_mode || {}),
-        ...(settings.subwoofers ? settings : { subwoofer: settings }),
-    };
+    state.settings.audioOutputs.output_mode = applySubwooferDraftToOutputMode(
+        state.settings.audioOutputs.output_mode || {},
+        settings,
+    );
     renderSubwooferPanel();
     return settings;
 }
@@ -13827,10 +13959,10 @@ function saveSubwooferDebounced(delayMs = SUBWOOFER_COMMIT_DEBOUNCE_MS) {
     if (signature === _subwooferLastRequestedSignature) {
         return _subwooferSavePromise || Promise.resolve(null);
     }
-    state.settings.audioOutputs.output_mode = {
-        ...(state.settings.audioOutputs.output_mode || {}),
-        ...(settings.subwoofers ? settings : { subwoofer: settings }),
-    };
+    state.settings.audioOutputs.output_mode = applySubwooferDraftToOutputMode(
+        state.settings.audioOutputs.output_mode || {},
+        settings,
+    );
     const pending = createPendingSubwooferSave(mode, settings, signature);
     _subwooferPendingSave = pending;
     _subwooferSaveTimer = window.setTimeout(() => pending.start(), delayMs);
@@ -14377,7 +14509,7 @@ function showNowPlayingCue(track, message = 'Now playing') {
     }
     elements.toastContainer.querySelectorAll('.now-playing-cue').forEach(item => item.remove());
     const cue = document.createElement('div');
-    cue.className = 'toast info now-playing-cue no-cover';
+    cue.className = 'toast info now-playing-cue';
     const coverUrl = playbackArtworkUrl(track);
     cue.innerHTML = `
         <img class="now-playing-cover" alt="">
@@ -14472,9 +14604,6 @@ function setupLibraryActions() {
     }
     if (elements.selectAllTracksBtn) {
         elements.selectAllTracksBtn.addEventListener('click', toggleVisibleTrackSelection);
-    }
-    if (elements.albumFavoritesToggleBtn) {
-        elements.albumFavoritesToggleBtn.addEventListener('click', toggleAlbumFavoritesFilter);
     }
     if (elements.albumFavoriteToggle) {
         elements.albumFavoriteToggle.addEventListener('click', toggleCurrentAlbumFavorite);
@@ -14601,8 +14730,14 @@ async function apiFetchJson(url, options = {}) {
     const resp = await fetch(url, options);
     const data = await resp.json().catch(() => null);
     if (!resp.ok) {
+        // A transition failure carries a structured detail object
+        // ({ok, transition_id, stage, failure_latched, message}). Rendering it
+        // through String() would surface the useless "[object Object]"; the
+        // shared formatter keeps the backend message and stage visible, and
+        // maps message-less details to this generic fallback (diagnosed via
+        // console.warn) instead of leaking raw JSON into the UI.
         const detail = data && (data.detail || data.error || data.message);
-        throw new Error(detail || `HTTP ${resp.status} ${url}`);
+        throw new Error(formatTransitionErrorDetail(detail, `HTTP ${resp.status} ${url}`));
     }
     return data;
 }
@@ -15121,8 +15256,6 @@ function updateFooterForStreamingOwner(data) {
         }
         return;
     }
-    document.body.classList.remove('source-local', 'source-radio');
-    document.body.classList.add('source-local');
     if (elements.btnPlayPause) {
         elements.btnPlayPause.disabled = false;
         elements.btnPlayPause.textContent = data.status === 'Playing' ? '⏸' : '▶';

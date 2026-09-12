@@ -23,6 +23,13 @@
     let highlightActiveTrack;
     let extractDroppedUrl;
     let playRadio;
+    // Canonical favorite heart: one inline SVG painted from currentColor, so
+    // the muted / accent button states stay authoritative. app.js owns the
+    // implementation and injects it in init; the default keeps this module
+    // renderable standalone.
+    let favoriteHeartSvg = function () {
+        return '<svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+    };
 
     function init(interfaceApi) {
         if (initialized) return api.publicApi;
@@ -30,6 +37,7 @@
         api = interfaceApi;
         showToast = api.showToast;
         escapeHtml = api.escapeHtml;
+        if (typeof api.favoriteHeartSvg === 'function') favoriteHeartSvg = api.favoriteHeartSvg;
         highlightActiveTrack = api.highlightActiveTrack;
         extractDroppedUrl = api.extractDroppedUrl;
         playRadio = api.playStation;
@@ -212,7 +220,7 @@
 
     function stationFavButtonHtml(active, extraAttrs) {
         const cls = active ? 'station-card-fav is-active' : 'station-card-fav';
-        const heart = active ? '♥' : '♡';
+        const heart = favoriteHeartSvg();
         const pressed = active ? 'true' : 'false';
         const label = active ? 'Remove from My Stations' : 'Add to My Stations';
         return `<button type="button" class="${cls}" ${extraAttrs} aria-pressed="${pressed}" aria-label="${label}" title="${label}">${heart}</button>`;
@@ -221,7 +229,7 @@
     function updateStationFavButton(button, active) {
         if (!button) return;
         button.classList.toggle('is-active', !!active);
-        button.textContent = active ? '♥' : '♡';
+        button.innerHTML = favoriteHeartSvg();
         button.setAttribute('aria-pressed', active ? 'true' : 'false');
         const label = active ? 'Remove from My Stations' : 'Add to My Stations';
         button.setAttribute('aria-label', label);

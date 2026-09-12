@@ -18,6 +18,43 @@
     let api = null;
     let showToast = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
+    // Shared transition-error formatter injected by app.js. The local default
+    // mirrors the canonical app.js implementation so this module never renders
+    // "[object Object]" standalone: structured {message, stage} payloads keep
+    // message + stage, message-less details fall back to generic text (with a
+    // console.warn for diagnosis) instead of leaking raw JSON into the UI.
+    let formatTransitionErrorDetail = function (detail, fallback = 'Request failed') {
+        if (typeof detail === 'string') {
+            const trimmedDetail = detail.trim();
+            if (trimmedDetail) return trimmedDetail;
+        } else if (detail && typeof detail === 'object') {
+            const message = typeof detail.message === 'string' ? detail.message.trim() : '';
+            if (message) {
+                const stage = typeof detail.stage === 'string' ? detail.stage.trim() : '';
+                if (stage && !message.toLowerCase().includes(stage.toLowerCase())) {
+                    return message + ' (stage: ' + stage + ')';
+                }
+                return message;
+            }
+            // Message-less structured details stay out of the UI: keep them for
+            // diagnosis via console.warn and fall through to the generic fallback.
+            try {
+                if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+                    console.warn('Suppressed message-less error detail:', detail);
+                }
+            } catch (_warnError) {
+                // Logging must never break error rendering.
+            }
+        }
+        return typeof fallback === 'string' ? fallback : 'Request failed';
+    };
+    // Canonical favorite heart: one inline SVG painted from currentColor, so
+    // the muted / accent button states stay authoritative. app.js owns the
+    // implementation and injects it in init; the default keeps this module
+    // renderable standalone, exactly like escapeHtml above.
+    let favoriteHeartSvg = function () {
+        return '<svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+    };
 
     /* Line-icon variants for the loop transport (replaces color emojis). */
     const LOOP_ALL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>';
@@ -52,7 +89,7 @@
     // these copy/content flags key off the provider id.
     const PROVIDER_META = {
         spotify: { name: 'Spotify', canConnect: false },
-        qobuz: { name: 'Qobuz', canConnect: false },
+        qobuz: { name: 'Qobuz', canConnect: true },
         tidal: { name: 'Tidal', canConnect: true, catalog: true },
     };
 
@@ -124,6 +161,8 @@
         api = interfaceApi || {};
         if (typeof api.showToast === 'function') showToast = api.showToast;
         if (typeof api.escapeHtml === 'function') escapeHtml = api.escapeHtml;
+        if (typeof api.formatTransitionErrorDetail === 'function') formatTransitionErrorDetail = api.formatTransitionErrorDetail;
+        if (typeof api.favoriteHeartSvg === 'function') favoriteHeartSvg = api.favoriteHeartSvg;
         if (typeof api.formatTime === 'function') formatTime = api.formatTime;
         if (typeof api.artworkPlaceholderUrl === 'function') artworkPlaceholderUrl = api.artworkPlaceholderUrl;
         if (typeof api.trackRowHtml === 'function') trackRowHtml = api.trackRowHtml;
@@ -541,11 +580,22 @@
         els.emptyIcon.textContent = '';
         els.emptyActions.innerHTML = '';
         if (action === 'connect') {
+            // Disconnected account providers share one primary login action.
+            // The label/handler follows the card's own provider so Qobuz and
+            // TIDAL read as the same component with the same button style.
+            const providerId = entry.providerId || entry.root?.getAttribute?.('data-provider');
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'btn-primary';
-            btn.textContent = 'Connect TIDAL';
-            btn.addEventListener('click', () => openTidalLogin());
+            if (providerId === 'qobuz') {
+                btn.textContent = 'Start Qobuz Login';
+                btn.addEventListener('click', () => {
+                    if (typeof api.openQobuzLogin === 'function') api.openQobuzLogin();
+                });
+            } else {
+                btn.textContent = 'Start TIDAL Login';
+                btn.addEventListener('click', () => openTidalLogin());
+            }
             els.emptyActions.appendChild(btn);
         }
     }
@@ -586,7 +636,7 @@
     }
 
     function connectMessage(providerId) {
-        if (providerId === 'qobuz') return 'Sign in to Qobuz through qbzd to start playback.';
+        if (providerId === 'qobuz') return 'Sign in to Qobuz to start playback.';
         return 'Connect your TIDAL account to browse and play music.';
     }
 
@@ -769,12 +819,20 @@
     // Error normalization (provider-neutral user-facing text)
     // -----------------------------------------------------------------------
     function errorDetail(resp) {
-        return resp.json().then((d) => d?.detail || '').catch(() => '');
+        // Format through the shared formatter so objects never become
+        // "[object Object]". Message-less details fall back to '' (with a
+        // diagnostic console.warn); the caller maps that to generic UI text.
+        return resp.json().then((d) => formatTransitionErrorDetail(d?.detail, '')).catch(() => '');
     }
 
     function friendlyError(raw) {
-        const text = String(raw || '');
-        const lower = text.toLowerCase();
+        // The shared formatter already trims strings and extracts message +
+        // stage from objects; message-less details fall back to '' (with a
+        // diagnostic console.warn) so this never shows raw JSON or internal
+        // fields. No second raw-string fallback: it would let whitespace-only
+        // input through as a blank UI message.
+        const text = formatTransitionErrorDetail(raw, '');
+        const lower = (text || '').toLowerCase();
         if (lower.includes('not authenticated') || lower.includes('not eligible') || lower.includes('unauthorized')) {
             return 'You need to sign in to continue.';
         }
@@ -825,13 +883,20 @@
         content.hidden = false;
         if (state.tidal.view === 'pkce') { renderTidalPkce(content); return; }
         if (state.tidal.view === 'device') { renderTidalDevice(content); return; }
+        // Disconnected card shares the .streaming-empty geometry (same width,
+        // padding, centering, heading/text sizes, primary button). The browser
+        // login is the single primary action; device login stays available as
+        // a subordinate second option underneath with its quality note.
         content.innerHTML =
-            '<div class="streaming-auth">' +
-                '<h3 class="streaming-auth-title">Connect TIDAL</h3>' +
-                '<p class="streaming-auth-hint">For Lossless and Hi-Res, use the secure browser login.</p>' +
-                '<div class="streaming-auth-actions">' +
+            '<div class="streaming-auth streaming-auth--disconnected">' +
+                '<h2 class="streaming-auth-title">Connect TIDAL</h2>' +
+                '<p class="streaming-auth-hint">Sign in for lossless and Hi-Res playback.</p>' +
+                '<div class="streaming-auth-actions streaming-auth-actions--primary">' +
                     '<button type="button" class="btn-primary" id="tidal-auth-pkce">Start TIDAL Login</button>' +
-                    '<button type="button" class="btn-ghost" id="tidal-auth-device">Device login (limited to AAC 320 kbps)</button>' +
+                '</div>' +
+                '<div class="streaming-auth-alternative">' +
+                    '<button type="button" class="streaming-auth-secondary" id="tidal-auth-device">Use device login instead</button>' +
+                    '<p class="streaming-auth-note">Device login (limited to AAC 320 kbps).</p>' +
                 '</div>' +
             '</div>';
         content.querySelector('#tidal-auth-pkce').addEventListener('click', () => {
@@ -911,7 +976,7 @@
                     body: JSON.stringify({ redirect_url: url }),
                 });
                 const d = await resp.json().catch(() => null);
-                if (!resp.ok) throw new Error(d?.detail || 'Login failed');
+                if (!resp.ok) throw new Error(formatTransitionErrorDetail(d?.detail, 'Login failed'));
                 showToast('TIDAL connected', 'success');
                 state.tidal.view = null;
                 await refreshTidalStatus();
@@ -951,7 +1016,7 @@
             try {
                 const resp = await fetch('/api/streaming/tidal/auth/device/finish', { method: 'POST' });
                 const d = await resp.json().catch(() => null);
-                if (!resp.ok) throw new Error(d?.detail || 'Login failed');
+                if (!resp.ok) throw new Error(formatTransitionErrorDetail(d?.detail, 'Login failed'));
                 showToast('TIDAL connected', 'success');
                 state.tidal.view = null;
                 await refreshTidalStatus();
@@ -1599,7 +1664,7 @@
                 body: JSON.stringify({ name, track_ids: trackIds }),
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || 'Failed to save TIDAL playlist');
+            if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save TIDAL playlist'));
             clearTidalPlaylistSelection();
             showToast('Saved: ' + (data.name || name), 'success');
             // Refresh favorite ids so the new playlist heart renders active
@@ -1625,7 +1690,7 @@
                 body: JSON.stringify({ track_ids: trackIds }),
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || 'Failed to add tracks to TIDAL playlist');
+            if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to add tracks to TIDAL playlist'));
             clearTidalPlaylistSelection();
             const label = target.options?.[target.selectedIndex]?.textContent || 'playlist';
             showToast('Added ' + trackIds.length + ' track' + (trackIds.length === 1 ? '' : 's') + ' to ' + label, 'success');
@@ -1827,7 +1892,7 @@
             'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
             'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
             'title="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
-            (active ? '♥' : '♡') + '</button>';
+            favoriteHeartSvg() + '</button>';
     }
 
     function bindTidalFavoriteButtons(container) {
@@ -1844,7 +1909,7 @@
         const active = state.tidal.favoriteIds[type].has(idStr);
         document.querySelectorAll('.streaming-fav[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"], .track-fav[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"]').forEach((btn) => {
             btn.classList.toggle('is-active', active);
-            btn.innerHTML = active ? '♥' : '♡';
+            btn.innerHTML = favoriteHeartSvg();
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove from favorites' : 'Add to favorites');
             btn.title = active ? 'Remove from favorites' : 'Add to favorites';
@@ -1861,7 +1926,7 @@
             'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
             'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
             'title="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
-            (active ? '♥' : '♡') + '</button>';
+            favoriteHeartSvg() + '</button>';
     }
 
     function bindFavoriteDetailButtons(container) {
@@ -1878,7 +1943,7 @@
         const active = state.tidal.favoriteIds[type].has(idStr);
         document.querySelectorAll('.album-favorite-toggle[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"]').forEach((btn) => {
             btn.classList.toggle('active', active);
-            btn.textContent = active ? '♥' : '♡';
+            btn.innerHTML = favoriteHeartSvg();
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove from favorites' : 'Add to favorites');
             btn.title = active ? 'Remove from favorites' : 'Add to favorites';
@@ -1896,7 +1961,7 @@
                 body: JSON.stringify({ favorite: next }),
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || 'Failed to update favorite');
+            if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to update favorite'));
             if (data.favorite) state.tidal.favoriteIds[type].add(idStr);
             else state.tidal.favoriteIds[type].delete(idStr);
             syncTidalFavoriteButtons(type, idStr);
