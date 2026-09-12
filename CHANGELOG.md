@@ -1,5 +1,105 @@
 # Changelog
 
+## 1.0-beta5 (2026-09-12)
+
+Fifth public beta. Distribution channels unchanged: web demo on GitHub Pages,
+Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 ISO via
+SourceForge. Khadas/VIM1S stays internal and gets no public image. The ISO
+gains a third boot entry, `Try FXRoute` (non-persistent live mode).
+
+### Release provenance
+
+- Source stand: `main`. No Armbian or `install.sh` changes this cycle.
+- The x86_64 Leap 16 ISO and the Pi 4/Pi 5 images are built from the release
+  commit; their SHA-256 digests are recorded in this section once the builds
+  exist.
+- The web demo was rebuilt from the same stand with `scripts/build_demo.py`
+  and is in parity with `static/index.html` again.
+- Explicitly not included: the unmerged `feature/adaptive-headroom` work
+  (convolver headroom derived from the realized filter peak).
+
+### Try FXRoute (live mode, x86_64 ISO)
+- Third boot entry `Try FXRoute`: a non-persistent live session booted from
+  `/LiveFX/squashfs.img` with a RAM overlay, `graphical.target`, no Agama and
+  no installer (`systemd.mask=agama*`, no `inst.auto`), no
+  `fxroute-first-boot.service`, and a transient hostname/machine-id.
+- The live image is converted from a real desktop installation
+  (`iso/scripts/build-live-from-installed.sh`) instead of reimplementing the
+  install: packages, PipeWire/WirePlumber, Calf LV2 and the DSP come from the
+  installed system untouched, and only live semantics are applied (neutral
+  fstab, ISO-kernel modules, live marker, Btrfs subvolume traversal,
+  internal-disk protection, slimmed artifact tree).
+- No credentials and no reference-user state ship: every account loses its
+  password hash material, the sudo rule and `/etc/fxroute-live-user` follow
+  the account the conversion actually uses instead of an assumed one, a
+  mismatched `--ssh-user` fails the build, and user-specific
+  FXRoute/provider/browser/personal state is dropped while the live runtime
+  (PipeWire/WirePlumber, Calf LV2, systemd user units, desktop links) stays.
+- Live root additions: NetworkManager enabled, Konsole, WLAN/Bluetooth
+  firmware, Calf LV2 with audio unmuted at boot, privileged CIFS/provider
+  helpers, TIDAL no longer preinstalled.
+- The QEMU runner gained a `try`/`live` profile that verifies `live:true`,
+  `fxroute_dsp_sink`, the RAM overlay, reboot volatility and that internal
+  disks are not auto-mounted.
+
+### Installer / first boot
+- Desktop launcher: the backend wait is bounded by wall clock (~180 s) and
+  ends in a visible state (journal line, Desktop note, kiosk window) instead
+  of waiting indefinitely; healthy boots leave the loop in seconds.
+- Live boot fixes: pointer/input handling and live-notice placement.
+
+### Playback / DSP
+- The DSP link build resolves the selected sink's real playback ports
+  (`playback_FL/FR/RL/RR` or `playback_AUX0…`) instead of assuming the
+  semantic names; graph diagnosis, link repair and readback share that one
+  resolution, and a mode needing more hardware outputs than the device
+  exposes is rejected with a clear reason.
+- A stale native helper that pins the hardware sink at another rate is
+  rebuilt at the target rate: on play (coordinator target rate), on an idle
+  force-rate pin, and on measurement release, which no longer defers the
+  restore of the target rate forever.
+- MPV cold-start timeouts were widened so slow media or a cold live boot
+  still start playback.
+- External input (source mode) also pauses Qobuz playback.
+
+### Measurement
+- Measurement setup is integrated as an assistant subview instead of a
+  separate card.
+
+### Music library / streaming
+- Selection ZIP export and album ZIP extraction run on the existing
+  blocking-work path instead of the event loop.
+- Compilation detection is scoped to album name plus folder, so same-titled
+  albums by different artists are no longer merged into `Various Artists`.
+- M3U resolution prefers exact relative/absolute/URL matches, so a basename
+  collision can no longer shadow the path a playlist recorded.
+- SMB mount failures report the helper's cause instead of a bare
+  "not mounted".
+
+### UI
+- Favourite hearts are one inline SVG driven by `currentColor`, so the muted
+  and accent button states stay authoritative; the `radio.js` cache tag was
+  bumped for the changed asset.
+- Provider-disconnected cards are unified, and structured error details no
+  longer render as `[object Object]`.
+- Phone layout: the separate track-row play button is hidden (the row is the
+  tap trigger) while the number and the mobile volume/seek alignment were
+  fixed.
+- Effects polish: headroom offers -1…-9 dB with a stored 0 round-tripping,
+  plus the 2.2 mute floor, convolver draft and Main-highpass handling.
+
+### Internal maintenance
+- Regression coverage added for stale-helper rate recovery, hardware output
+  port resolution, the live-root image, the live-from-installed converter,
+  library ZIP blocking, playlist resolution, album identity and queue
+  transactionality.
+
+Public release artifact names (to be built from tag `v1.0-beta5`):
+
+- `fxroute-1.0-beta5-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta5-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta5-x86_64-leap16.iso` (SourceForge, + `.sha256`)
+
 ## 1.0-beta4 (2026-09-11)
 
 Fourth public beta, built from tag `v1.0-beta4` (commit `000129c`).
