@@ -19,27 +19,34 @@
     let showToast = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
     // Shared transition-error formatter injected by app.js. The local default
-    // still handles the structured {message, stage} payload -- and serializes a
-    // message-less structured detail (e.g. a FastAPI validation list) -- so this
-    // module never renders "[object Object]" or an empty text standalone.
-    let formatTransitionErrorDetail = function (detail, fallback) {
-        if (typeof detail === 'string' && detail.trim()) return detail.trim();
-        if (detail && typeof detail === 'object') {
+    // mirrors the canonical app.js implementation so this module never renders
+    // "[object Object]" standalone: structured {message, stage} payloads keep
+    // message + stage, message-less details fall back to generic text (with a
+    // console.warn for diagnosis) instead of leaking raw JSON into the UI.
+    let formatTransitionErrorDetail = function (detail, fallback = 'Request failed') {
+        if (typeof detail === 'string') {
+            const trimmedDetail = detail.trim();
+            if (trimmedDetail) return trimmedDetail;
+        } else if (detail && typeof detail === 'object') {
             const message = typeof detail.message === 'string' ? detail.message.trim() : '';
-            const stage = typeof detail.stage === 'string' ? detail.stage.trim() : '';
             if (message) {
-                return stage && !message.toLowerCase().includes(stage.toLowerCase())
-                    ? message + ' (stage: ' + stage + ')'
-                    : message;
+                const stage = typeof detail.stage === 'string' ? detail.stage.trim() : '';
+                if (stage && !message.toLowerCase().includes(stage.toLowerCase())) {
+                    return message + ' (stage: ' + stage + ')';
+                }
+                return message;
             }
+            // Message-less structured details stay out of the UI: keep them for
+            // diagnosis via console.warn and fall through to the generic fallback.
             try {
-                const serialized = JSON.stringify(detail);
-                if (serialized && serialized !== '{}' && serialized !== '[]') return serialized;
-            } catch (_error) {
-                // Circular or unserializable detail: fall through to the fallback.
+                if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+                    console.warn('Suppressed message-less error detail:', detail);
+                }
+            } catch (_warnError) {
+                // Logging must never break error rendering.
             }
         }
-        return fallback || '';
+        return typeof fallback === 'string' ? fallback : 'Request failed';
     };
     // Canonical favorite heart: one inline SVG painted from currentColor, so
     // the muted / accent button states stay authoritative. app.js owns the
@@ -812,17 +819,20 @@
     // Error normalization (provider-neutral user-facing text)
     // -----------------------------------------------------------------------
     function errorDetail(resp) {
-        // Keep the structured detail readable through the Error message: a raw
-        // object would otherwise become "[object Object]" in every caller.
+        // Format through the shared formatter so objects never become
+        // "[object Object]". Message-less details fall back to '' (with a
+        // diagnostic console.warn); the caller maps that to generic UI text.
         return resp.json().then((d) => formatTransitionErrorDetail(d?.detail, '')).catch(() => '');
     }
 
     function friendlyError(raw) {
-        // Provider/transition errors can be structured objects. Never stringify
-        // one blindly: that is what produced the bare "[object Object]" toast.
-        const text = formatTransitionErrorDetail(raw, '')
-            || (typeof raw === 'string' ? raw : '');
-        const lower = text.toLowerCase();
+        // The shared formatter already trims strings and extracts message +
+        // stage from objects; message-less details fall back to '' (with a
+        // diagnostic console.warn) so this never shows raw JSON or internal
+        // fields. No second raw-string fallback: it would let whitespace-only
+        // input through as a blank UI message.
+        const text = formatTransitionErrorDetail(raw, '');
+        const lower = (text || '').toLowerCase();
         if (lower.includes('not authenticated') || lower.includes('not eligible') || lower.includes('unauthorized')) {
             return 'You need to sign in to continue.';
         }
@@ -966,7 +976,7 @@
                     body: JSON.stringify({ redirect_url: url }),
                 });
                 const d = await resp.json().catch(() => null);
-                if (!resp.ok) throw new Error(d?.detail || 'Login failed');
+                if (!resp.ok) throw new Error(formatTransitionErrorDetail(d?.detail, 'Login failed'));
                 showToast('TIDAL connected', 'success');
                 state.tidal.view = null;
                 await refreshTidalStatus();
@@ -1006,7 +1016,7 @@
             try {
                 const resp = await fetch('/api/streaming/tidal/auth/device/finish', { method: 'POST' });
                 const d = await resp.json().catch(() => null);
-                if (!resp.ok) throw new Error(d?.detail || 'Login failed');
+                if (!resp.ok) throw new Error(formatTransitionErrorDetail(d?.detail, 'Login failed'));
                 showToast('TIDAL connected', 'success');
                 state.tidal.view = null;
                 await refreshTidalStatus();
@@ -1654,7 +1664,7 @@
                 body: JSON.stringify({ name, track_ids: trackIds }),
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || 'Failed to save TIDAL playlist');
+            if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save TIDAL playlist'));
             clearTidalPlaylistSelection();
             showToast('Saved: ' + (data.name || name), 'success');
             // Refresh favorite ids so the new playlist heart renders active
@@ -1680,7 +1690,7 @@
                 body: JSON.stringify({ track_ids: trackIds }),
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || 'Failed to add tracks to TIDAL playlist');
+            if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to add tracks to TIDAL playlist'));
             clearTidalPlaylistSelection();
             const label = target.options?.[target.selectedIndex]?.textContent || 'playlist';
             showToast('Added ' + trackIds.length + ' track' + (trackIds.length === 1 ? '' : 's') + ' to ' + label, 'success');
@@ -1951,7 +1961,7 @@
                 body: JSON.stringify({ favorite: next }),
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || 'Failed to update favorite');
+            if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to update favorite'));
             if (data.favorite) state.tidal.favoriteIds[type].add(idStr);
             else state.tidal.favoriteIds[type].delete(idStr);
             syncTidalFavoriteButtons(type, idStr);

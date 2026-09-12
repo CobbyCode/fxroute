@@ -1692,8 +1692,10 @@ function formatSampleRateKhz(rate) {
 }
 
 function formatTransitionErrorDetail(detail, fallback = 'Request failed') {
-    if (typeof detail === 'string' && detail.trim()) return detail;
-    if (detail && typeof detail === 'object') {
+    if (typeof detail === 'string') {
+        const trimmedDetail = detail.trim();
+        if (trimmedDetail) return trimmedDetail;
+    } else if (detail && typeof detail === 'object') {
         const message = typeof detail.message === 'string' ? detail.message.trim() : '';
         if (message) {
             const stage = typeof detail.stage === 'string' ? detail.stage.trim() : '';
@@ -1702,17 +1704,19 @@ function formatTransitionErrorDetail(detail, fallback = 'Request failed') {
             }
             return message;
         }
-        // A FastAPI validation payload (``detail: [...]``) or any other
-        // structured detail carries no ``message``. Serialize it so the failure
-        // stays readable instead of collapsing to an empty text.
+        // Message-less structured details (FastAPI validation lists, status
+        // objects without a message) stay out of the UI: keep them for
+        // diagnosis via console.warn and fall through to the generic fallback
+        // so no internal fields leak into toasts or error states.
         try {
-            const serialized = JSON.stringify(detail);
-            if (serialized && serialized !== '{}' && serialized !== '[]') return serialized;
-        } catch (_error) {
-            // Circular or unserializable detail: fall through to the fallback.
+            if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+                console.warn('Suppressed message-less error detail:', detail);
+            }
+        } catch (_warnError) {
+            // Logging must never break error rendering.
         }
     }
-    return fallback;
+    return typeof fallback === 'string' ? fallback : 'Request failed';
 }
 
 function formatRadioStreamLine(streamInfo, effectiveOutputRate = null) {
@@ -14703,7 +14707,9 @@ async function apiFetchJson(url, options = {}) {
         // A transition failure carries a structured detail object
         // ({ok, transition_id, stage, failure_latched, message}). Rendering it
         // through String() would surface the useless "[object Object]"; the
-        // shared formatter keeps the backend message and stage visible.
+        // shared formatter keeps the backend message and stage visible, and
+        // maps message-less details to this generic fallback (diagnosed via
+        // console.warn) instead of leaking raw JSON into the UI.
         const detail = data && (data.detail || data.error || data.message);
         throw new Error(formatTransitionErrorDetail(detail, `HTTP ${resp.status} ${url}`));
     }
