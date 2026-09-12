@@ -1368,9 +1368,18 @@
         .effects-actions-row .btn-secondary { width: 100%; min-width: unset; }
         .effects-actions-right { flex-direction: column; align-items: stretch; }
         .toast-container {
-            right: 0.5rem;
-            left: 0.5rem;
-            max-width: calc(100% - 1rem);
+            /* Limit the width instead of letting the toasts span nearly the
+               whole viewport: 20px each side, capped so the column does not
+               grow on wider phones, and centered exactly. */
+            left: 50%;
+            right: auto;
+            width: calc(100% - 40px);
+            max-width: 360px;
+            transform: translateX(-50%);
+        }
+        .toast.now-playing-cue {
+            /* Fill the centered mobile column instead of the desktop width. */
+            width: 100%;
         }
 
     /* from _playback.css */

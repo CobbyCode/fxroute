@@ -352,7 +352,9 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    max-width: 320px;
+    /* Wide enough for the now-playing cue; other toasts still shrink to
+       their text (the column is shrink-to-fit, capped here). */
+    max-width: 330px;
 }
 .toast {
     padding: 0.85rem 1.1rem;
@@ -372,8 +374,11 @@
     display: flex;
     align-items: center;
     gap: 0.8rem;
-    min-width: min(320px, calc(100% - 2rem));
-    max-width: min(420px, calc(100% - 2rem));
+    /* One component, no separate tablet variant: this fixed width serves as
+       the desktop target and tablets inherit the same value. Phones re-inset
+       it to the centered column in _responsive.css. */
+    width: 330px;
+    min-width: 0;
     padding: 0.65rem 0.85rem;
 }
 .now-playing-cover {

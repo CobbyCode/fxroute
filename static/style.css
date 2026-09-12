@@ -1179,7 +1179,9 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    max-width: 320px;
+    /* Wide enough for the now-playing cue; other toasts still shrink to
+       their text (the column is shrink-to-fit, capped here). */
+    max-width: 330px;
 }
 .toast {
     padding: 0.85rem 1.1rem;
@@ -1199,8 +1201,11 @@ body {
     display: flex;
     align-items: center;
     gap: 0.8rem;
-    min-width: min(320px, calc(100% - 2rem));
-    max-width: min(420px, calc(100% - 2rem));
+    /* One component, no separate tablet variant: this fixed width serves as
+       the desktop target and tablets inherit the same value. Phones re-inset
+       it to the centered column in _responsive.css. */
+    width: 330px;
+    min-width: 0;
     padding: 0.65rem 0.85rem;
 }
 .now-playing-cover {
@@ -8494,9 +8499,18 @@ input[type="number"]::-webkit-outer-spin-button {
         .effects-actions-row .btn-secondary { width: 100%; min-width: unset; }
         .effects-actions-right { flex-direction: column; align-items: stretch; }
         .toast-container {
-            right: 0.5rem;
-            left: 0.5rem;
-            max-width: calc(100% - 1rem);
+            /* Limit the width instead of letting the toasts span nearly the
+               whole viewport: 20px each side, capped so the column does not
+               grow on wider phones, and centered exactly. */
+            left: 50%;
+            right: auto;
+            width: calc(100% - 40px);
+            max-width: 360px;
+            transform: translateX(-50%);
+        }
+        .toast.now-playing-cue {
+            /* Fill the centered mobile column instead of the desktop width. */
+            width: 100%;
         }
 
     /* from _playback.css */
