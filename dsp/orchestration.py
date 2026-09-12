@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable
 import playback.state as playback_state
 import playback.source_policy as source_policy
 import audio.samplerate as samplerate
+import audio.samplerate_orchestration as samplerate_orchestration
 from dsp.runtime import BassManagementConfig
 
 logger = logging.getLogger(__name__)
@@ -72,9 +73,10 @@ class DspOrchestrationDeps:
     peak_monitor_restart_settle_ms: float
     sleep: Callable[[float], Awaitable[Any]]
     get_output_mode: Callable[[], str] | None = None
-    # Live force-rate writer used only by the deliberate stale-helper repair to
-    # drop a pin that contradicts the recovery target.
-    set_pipewire_force_rate: Callable[[int], None] | None = None
+    # Canonical bounded force-rate reconcile path (policy + write + alignment).
+    # The deliberate stale-helper repair retargets a contradicting pin through
+    # it rather than a bare pw-metadata write.
+    ensure_playback_samplerate_force: Callable[..., Awaitable[bool]] | None = None
 
 
 def helper_argument_sample_rate(snapshot: dict | None) -> int | None:
@@ -360,19 +362,27 @@ class DspOrchestrator:
             # No live helper, or it already runs at the target: not this state.
             return False
         force_rate = status.get("force_rate")
+        reconcile_force = getattr(self._deps, "ensure_playback_samplerate_force", None)
         if (
-            self._deps.set_pipewire_force_rate is not None
+            reconcile_force is not None
             and isinstance(force_rate, int)
             and force_rate > 0
             and force_rate != target_rate
         ):
             # A pin that contradicts the target would leave the graph resampling
             # to the stale rate even after the helper rebuild, so the recovery
-            # owns the pin too (same intent: the caller's target rate). This is
-            # the same canonical write the measurement session uses to restore
-            # its own force-rate, not a second pin owner.
+            # retargets it through the same bounded reconcile policy playback
+            # uses instead of a bare pw-metadata write.  Its bounded alignment
+            # attempt cannot succeed yet -- the stale helper still clocks the
+            # sink -- so its result is deliberately not treated as the verdict;
+            # the helper rebuild below is what releases the pin.
             try:
-                await asyncio.to_thread(self._deps.set_pipewire_force_rate, target_rate)
+                await reconcile_force(
+                    target_rate,
+                    f"stale-helper-pin:{reason}",
+                    allow_measurement_session=allow_measurement_graph_owned,
+                    policy=samplerate_orchestration.DEFAULT_POLICY,
+                )
             except Exception as exc:
                 logger.warning(
                     "Stale native DSP helper rebuild could not align the force-rate pin: "

@@ -13,9 +13,10 @@ rebuilt the helper.  The output-mode switch must not be the repair mechanism.
 
 Covers the recovery at all three layers:
 1. ``DspOrchestrator.sync_runtime_at_rate`` (measurement release) rebuilds the
-   stale helper instead of silently deferring the restore -- including while
-   the session still reports graph ownership, which is the production shape
-   (``owns_audio_graph`` stays true until the release returns).
+   stale helper instead of silently deferring the restore.  The cases mirror
+   the real call site: the session still reports graph ownership while the
+   release (and therefore the repair) runs, because ``owns_audio_graph`` stays
+   true until the release returns.
 2. ``_RuntimeSourceMixin.establish_target_rate`` recovers a stale helper
    before failing the transition, so a later play self-heals.
 3. The idle link-watch tick repairs a live force-rate pin the helper does not
@@ -85,6 +86,7 @@ class _OrchestratorDeps:
         self.pinned_rate = pinned_rate
         self.owned = owned
         self.force_rate_writes: list[int] = []
+        self.force_rate_kwargs: list[dict] = []
 
     # -- injected services -------------------------------------------------
     def get_dsp_runtime(self):
@@ -143,9 +145,13 @@ class _OrchestratorDeps:
     def create_lifecycle_background_task(self, *_args, **_kwargs):
         raise AssertionError("not used")
 
-    def set_pipewire_force_rate(self, rate: int) -> None:
+    async def ensure_playback_samplerate_force(self, rate, reason, **kwargs):
+        # Stand-in for the canonical bounded reconcile policy: it retargets the
+        # pin, but the stale helper still clocks the sink, so alignment fails.
         self.force_rate_writes.append(rate)
+        self.force_rate_kwargs.append(dict(kwargs))
         self.pinned_rate = rate
+        return False
 
     # -- awaited callbacks -------------------------------------------------
     async def wait_for_samplerate_alignment(self, rate, timeout_ms=0):
@@ -159,11 +165,16 @@ class _OrchestratorDeps:
 
 
 class MeasurementReleaseRecoveryTests(unittest.IsolatedAsyncioTestCase):
-    """Layer 1: the measurement release must not defer onto a stale helper."""
+    """Layer 1: the measurement release must not defer onto a stale helper.
+
+    Every case mirrors the real call site: the release runs inside the
+    sample-rate session, so ``measurement_audio_graph_owned()`` is true while
+    the re-sync -- and therefore the repair -- runs.
+    """
 
     async def test_release_rebuilds_stale_measurement_helper(self):
         runtime = _FakeDspRuntime(MEASUREMENT_RATE)
-        deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE)
+        deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE, owned=True)
         orchestrator = DspOrchestrator(deps)
 
         await orchestrator.sync_runtime_at_rate(TARGET_RATE, _rate_lock_held=True)
@@ -178,29 +189,30 @@ class MeasurementReleaseRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_release_aligns_a_pin_that_contradicts_the_restore_rate(self):
         runtime = _FakeDspRuntime(MEASUREMENT_RATE)
-        deps = _OrchestratorDeps(runtime, pinned_rate=MEASUREMENT_RATE)
+        deps = _OrchestratorDeps(runtime, pinned_rate=MEASUREMENT_RATE, owned=True)
         orchestrator = DspOrchestrator(deps)
 
         await orchestrator.sync_runtime_at_rate(TARGET_RATE, _rate_lock_held=True)
 
         self.assertEqual(runtime.helper_rate, TARGET_RATE)
         self.assertEqual(deps.force_rate_writes, [TARGET_RATE])
+        # The release holds the sample-rate lock, so the canonical reconcile
+        # path must be allowed past the measurement gate it would otherwise
+        # defer on.
+        self.assertTrue(deps.force_rate_kwargs[0].get("allow_measurement_session"))
 
-    async def test_release_repairs_while_the_session_still_owns_the_graph(self):
-        # Production shape: the release runs inside the sample-rate session
-        # (``active``/``owns_audio_graph`` stay true until it returns) and
-        # holds the lock, so the ownership guard must not abort the repair.
+    async def test_pin_retarget_respects_the_gate_without_measurement_ownership(self):
         runtime = _FakeDspRuntime(MEASUREMENT_RATE)
-        deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE, owned=True)
+        deps = _OrchestratorDeps(runtime, pinned_rate=MEASUREMENT_RATE, owned=False)
         orchestrator = DspOrchestrator(deps)
 
-        await orchestrator.sync_runtime_at_rate(TARGET_RATE, _rate_lock_held=True)
-
-        self.assertEqual(runtime.helper_rate, TARGET_RATE)
-        self.assertTrue(
-            runtime.sync_calls,
-            "an owned release must rebuild the stale helper, not defer",
+        recovered = await orchestrator.recover_stale_helper_samplerate(
+            TARGET_RATE, reason="test"
         )
+
+        self.assertTrue(recovered)
+        self.assertEqual(deps.force_rate_writes, [TARGET_RATE])
+        self.assertFalse(deps.force_rate_kwargs[0].get("allow_measurement_session"))
 
     async def test_owned_graph_is_never_repaired_without_the_session_lock(self):
         runtime = _FakeDspRuntime(MEASUREMENT_RATE)

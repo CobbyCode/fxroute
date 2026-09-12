@@ -19,8 +19,9 @@
     let showToast = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
     // Shared transition-error formatter injected by app.js. The local default
-    // still handles the structured {message, stage} payload so this module
-    // never renders "[object Object]" when used standalone.
+    // still handles the structured {message, stage} payload -- and serializes a
+    // message-less structured detail (e.g. a FastAPI validation list) -- so this
+    // module never renders "[object Object]" or an empty text standalone.
     let formatTransitionErrorDetail = function (detail, fallback) {
         if (typeof detail === 'string' && detail.trim()) return detail.trim();
         if (detail && typeof detail === 'object') {
@@ -30,6 +31,12 @@
                 return stage && !message.toLowerCase().includes(stage.toLowerCase())
                     ? message + ' (stage: ' + stage + ')'
                     : message;
+            }
+            try {
+                const serialized = JSON.stringify(detail);
+                if (serialized && serialized !== '{}' && serialized !== '[]') return serialized;
+            } catch (_error) {
+                // Circular or unserializable detail: fall through to the fallback.
             }
         }
         return fallback || '';

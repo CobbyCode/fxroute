@@ -2626,9 +2626,12 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         peak_monitor_restart_settle_ms=PEAK_MONITOR_RESTART_SETTLE_MS,
         sleep=lambda delay: asyncio.sleep(delay),
         get_output_mode=lambda: _current_output_mode(),
-        # Only the deliberate stale-helper repair writes the pin: it must not
-        # leave a pin contradicting the rate it just rebuilt the helper at.
-        set_pipewire_force_rate=lambda rate: samplerate.set_pipewire_force_rate(rate),
+        # Only the deliberate stale-helper repair retargets the pin, and it does
+        # so through the canonical bounded reconcile policy (same path playback
+        # uses) instead of a bare pw-metadata write.
+        ensure_playback_samplerate_force=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.ensure_playback_samplerate_force(
+            *a, measurement_blocks_rate=measurement_blocks_rate, **k
+        ),
     )
 
 

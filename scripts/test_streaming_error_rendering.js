@@ -56,6 +56,12 @@ const transitionFailure = {
     message: 'target hardware rate did not settle: expected=44100 active=48000 force=44100',
 };
 
+// FastAPI validation errors answer ``{"detail": [...]}``: structured, but with
+// no ``message`` to render. Those must not end up as an empty toast.
+const validationDetail = [
+    { loc: ['body', 'target_url'], msg: 'field required', type: 'value_error.missing' },
+];
+
 function appFetchScope(payload) {
     return load(extractFunction(appSource, 'apiFetchJson', 'app.js'), {
         formatTransitionErrorDetail: formatTransitionErrorDetail,
@@ -77,6 +83,18 @@ const formatTransitionErrorDetail = load(
     );
     assert.equal(formatTransitionErrorDetail({ message: 'Playback failed' }, 'fallback'), 'Playback failed');
     assert.equal(formatTransitionErrorDetail({}, 'fallback'), 'fallback');
+    // Message-less structured details are serialized, never dropped to ''.
+    assert.equal(
+        formatTransitionErrorDetail(validationDetail, 'fallback'),
+        JSON.stringify(validationDetail),
+    );
+    assert.equal(
+        formatTransitionErrorDetail({ ok: false, errors: ['a', 'b'] }, 'fallback'),
+        '{"ok":false,"errors":["a","b"]}',
+    );
+    const circularDetail = { ok: false };
+    circularDetail.self = circularDetail;
+    assert.equal(formatTransitionErrorDetail(circularDetail, 'fallback'), 'fallback');
 
     await assert.rejects(
         () => appFetchScope({ detail: transitionFailure }).apiFetchJson('/api/play', { method: 'POST' }),
@@ -108,8 +126,13 @@ const formatTransitionErrorDetail = load(
         friendlyError(transitionFailure),
         `${transitionFailure.message} (stage: target-rate)`,
     );
-    // A structured payload without a message must never degrade to the object.
-    assert.equal(friendlyError({ ok: false, stage: 'target-rate' }), 'Something went wrong.');
+    // A structured payload without a message must never degrade to the object
+    // (nor to an empty toast): it is serialized instead.
+    assert.equal(
+        friendlyError({ ok: false, stage: 'target-rate' }),
+        '{"ok":false,"stage":"target-rate"}',
+    );
+    assert.equal(friendlyError(validationDetail), JSON.stringify(validationDetail));
     // The provider-specific normalization stays intact.
     assert.equal(friendlyError('TIDAL is not authenticated'), 'You need to sign in to continue.');
     assert.equal(friendlyError({ message: 'This track is not available' }), 'This track is currently unavailable.');
@@ -124,6 +147,10 @@ const formatTransitionErrorDetail = load(
     assert.equal(
         await errorDetail({ json: async () => ({ detail: transitionFailure }) }),
         `${transitionFailure.message} (stage: target-rate)`,
+    );
+    assert.equal(
+        await errorDetail({ json: async () => ({ detail: validationDetail }) }),
+        JSON.stringify(validationDetail),
     );
     console.log('ok — streaming.js renders structured transition errors');
 })().catch((error) => {

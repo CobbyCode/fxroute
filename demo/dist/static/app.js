@@ -1702,6 +1702,15 @@ function formatTransitionErrorDetail(detail, fallback = 'Request failed') {
             }
             return message;
         }
+        // A FastAPI validation payload (``detail: [...]``) or any other
+        // structured detail carries no ``message``. Serialize it so the failure
+        // stays readable instead of collapsing to an empty text.
+        try {
+            const serialized = JSON.stringify(detail);
+            if (serialized && serialized !== '{}' && serialized !== '[]') return serialized;
+        } catch (_error) {
+            // Circular or unserializable detail: fall through to the fallback.
+        }
     }
     return fallback;
 }
