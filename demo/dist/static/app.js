@@ -3745,7 +3745,6 @@ function initPlaybackFooterLayout() {
 
 function setFooterProgressState(available, readonly = false) {
     const showProgress = !!available;
-    elements.playbackBar?.classList.toggle('has-progress', showProgress);
     elements.playbackBar?.classList.toggle('progress-readonly', showProgress && !!readonly);
     elements.seekRow?.classList.toggle('hidden', !showProgress);
 }
@@ -5180,12 +5179,9 @@ function updatePlaybackUI() {
         highlightActiveTrack();
         return;
     }
-    // Source classes remain available to unrelated page features. The footer
-    // itself is laid out exclusively from the data-backed visibility classes.
+    // The footer is laid out exclusively from the data-backed visibility classes.
     const isRadio = current_track && current_track.source === 'radio';
     if (!freezeActive) {
-        document.body.classList.remove('source-local', 'source-radio');
-        document.body.classList.add(isRadio ? 'source-radio' : 'source-local');
         const radioMetadata = isRadio ? state.playback.radio_metadata : null;
         elements.playbackBar?.classList.toggle('has-media', !!current_track);
         // Track info
@@ -13625,9 +13621,7 @@ function renderSubwooferPanel() {
     const is22Mode = isSubwoofer22Mode(mode);
     const is22StereoMode = mode === 'subwoofer-2.2-stereo';
     elements.effectsSubwooferCard?.classList.toggle('hidden', !isSubwooferMode);
-    elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-21', mode === 'subwoofer-2.1');
     elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-22', is22Mode);
-    elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-22-stereo', is22StereoMode);
     if (!isSubwooferMode) {
         setSubwooferFeedback('');
         return;
@@ -14475,7 +14469,7 @@ function showNowPlayingCue(track, message = 'Now playing') {
     }
     elements.toastContainer.querySelectorAll('.now-playing-cue').forEach(item => item.remove());
     const cue = document.createElement('div');
-    cue.className = 'toast info now-playing-cue no-cover';
+    cue.className = 'toast info now-playing-cue';
     const coverUrl = playbackArtworkUrl(track);
     cue.innerHTML = `
         <img class="now-playing-cover" alt="">
@@ -15216,8 +15210,6 @@ function updateFooterForStreamingOwner(data) {
         }
         return;
     }
-    document.body.classList.remove('source-local', 'source-radio');
-    document.body.classList.add('source-local');
     if (elements.btnPlayPause) {
         elements.btnPlayPause.disabled = false;
         elements.btnPlayPause.textContent = data.status === 'Playing' ? '⏸' : '▶';
