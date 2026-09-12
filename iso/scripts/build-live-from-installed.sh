@@ -99,8 +99,10 @@ scrub_user_state() {
     # Provider credentials/tokens belong to the reference account only.
     rm -rf "$home/.config/spotifyd" "$home/.config/qbzd"
     # Browser user data; the profile skeleton stays usable for the kiosk.
+    # Session state includes directories (sessionstore-backups/), so this
+    # must tolerate them; rm -rf is still a no-op for missing globs.
     rm -rf "$home"/.mozilla/firefox/*/cache2 "$home"/.mozilla/firefox/*/startupCache
-    rm -f "$home"/.mozilla/firefox/*/places.sqlite* "$home"/.mozilla/firefox/*/cookies.sqlite* \
+    rm -rf "$home"/.mozilla/firefox/*/places.sqlite* "$home"/.mozilla/firefox/*/cookies.sqlite* \
       "$home"/.mozilla/firefox/*/logins.json* "$home"/.mozilla/firefox/*/key4.db* \
       "$home"/.mozilla/firefox/*/formhistory.sqlite* "$home"/.mozilla/firefox/*/sessionstore*
     rm -f "$home/.bash_history"

@@ -179,6 +179,34 @@ class LiveFromInstallTests(unittest.TestCase):
                 with self.subTest(path=kept):
                     self.assertTrue((live / kept).exists())
 
+    def test_converter_scrubs_firefox_session_state_including_directories(self):
+        """Firefox session state ships neither as files nor as directories.
+
+        Regression: sessionstore-backups/ is a directory, and `rm -f`
+        refuses directories, which aborted the conversion under `set -e`.
+        """
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tree = Path(td)
+            self._conversion_fixture(tree)
+            profile = tree / "home/fxroute/.mozilla/firefox/profile"
+            (profile / "sessionstore-backups").mkdir()
+            (profile / "sessionstore-backups/recovery.jsonlz4").write_text("session")
+            (profile / "sessionstore.jsonlz4").write_text("session")
+            proc = subprocess.run(
+                ["bash", "-c",
+                 "set -Eeuo pipefail;"
+                 "source iso/scripts/build-live-from-installed.sh --source-only 2>/dev/null;"
+                 f" LIVE_TREE='{tree}' BUILD_COMMIT=test LIVE_USER=fxroute scrub_tree"],
+                capture_output=True, text=True, cwd=ROOT,
+            )
+            assert proc.returncode == 0, proc.stderr
+            self.assertFalse((profile / "sessionstore-backups").exists())
+            self.assertFalse((profile / "sessionstore.jsonlz4").exists())
+            # The profile skeleton itself stays usable for the kiosk.
+            self.assertTrue(profile.is_dir())
+
     def test_converter_refuses_a_live_account_that_is_not_in_the_system(self):
         """A mismatched --ssh-user must fail loudly, never leak credentials."""
         import tempfile
