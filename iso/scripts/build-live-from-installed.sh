@@ -253,10 +253,14 @@ printf '%s\n' "$SSH_PASSWORD" | SSH_ASKPASS="$ROOT_DIR/iso/agama-askpass.sh" SSH
   FXROUTE_ASKPASS_PASSWORD="$SSH_PASSWORD" setsid ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no \
   -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -p "$SSH_PORT" "$SSH_USER@127.0.0.1" \
-  "sudo -S tar -c --one-file-system --numeric-owner --same-permissions \
+  "sudo -S tar -c --numeric-owner --same-permissions \
     --exclude=./proc/* --exclude=./sys/* --exclude=./dev/* \
     --exclude=./run/* --exclude=./tmp/* --exclude=./mnt/* \
-    --exclude=./media/* --exclude=./var/tmp/* --directory=/ ." \
+    --exclude=./media/* --exclude=./var/tmp/* \
+    --exclude=./.snapshots --exclude=./.snapshots/* \
+    --exclude=./home/*/.snapshots --exclude=./home/*/.snapshots/* \
+    --exclude=./var/lib/snapper --exclude=./var/lib/snapper/* \
+    --directory=/ ." \
 | docker run --rm -i \
   -v "$TREE:/t:z" \
   -v "$WORK_DIR/kernel-default.rpm:/tmp/k-default.rpm:ro,z" \
