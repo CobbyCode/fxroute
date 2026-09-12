@@ -7162,8 +7162,8 @@ input[type="number"]::-webkit-outer-spin-button {
     font-variant-numeric: tabular-nums;
     line-height: 1;
 }
-/* Leading number/play wrapper: transparent on desktop so both keep their
-   own flex slots; narrow phones stack them into one slot. */
+/* Leading number/play wrapper: transparent so both keep their own flex
+   slots on desktop; phones hide the play button and keep the number. */
 .track-numplay {
     display: contents;
 }
@@ -8459,15 +8459,9 @@ input[type="number"]::-webkit-outer-spin-button {
             min-height: 44px;
         }
         .track-item { padding: 0.7rem 0.75rem; }
-        /* Narrow phones: number and play share one leading slot. */
-        .track-numplay {
-            display: inline-flex;
-            flex-direction: column;
-            align-items: center;
-            gap: .12rem;
-            flex: 0 0 auto;
-        }
-        .track-numplay .track-index { text-align: center; }
+        /* Phones: no separate play button in track rows; the row stays the tap trigger. */
+        .track-item .track-play,
+        .streaming-result .track-play { display: none; }
         /* Download */
         .playlist-save-row {
             flex-wrap: nowrap;
