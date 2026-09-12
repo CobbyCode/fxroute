@@ -13,6 +13,26 @@ class LiveNoticeTests(unittest.TestCase):
         self.assertIn("fxroute.live=1", src)
         self.assertIn('"live"', src)
 
+    def test_status_live_duplication_is_documented_as_contract(self):
+        """state["live"] AND state["system"]["live"] are both intentional.
+
+        The frontend banner accepts either shape (data.live === true ||
+        data.system.live === true) and demo/test transports synthesize one
+        or the other, so /api/status serves both keys on purpose. This test
+        keeps a future cleanup from "simplifying" one of them away.
+        """
+        src = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn('state["system"] = {"version": _read_version_file(), "live": is_live_mode()}', src)
+        self.assertIn('state["live"] = state["system"]["live"]', src)
+        # The both-shapes comment sits right above the assignment.
+        anchor = src.index('state["system"] = {"version": _read_version_file(), "live": is_live_mode()}')
+        comment_block = src[max(0, anchor - 900):anchor]
+        self.assertIn("intentionally provided twice", comment_block)
+        self.assertIn("data.system.live === true", comment_block)
+        self.assertIn("Do NOT remove either key", comment_block)
+        js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("data.live === true || (data.system && data.system.live === true)", js)
+
     def test_banner_in_frontend(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")

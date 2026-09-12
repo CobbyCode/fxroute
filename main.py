@@ -3562,10 +3562,18 @@ async def get_status():
         else:
             state["stream_info"] = None
             stream_info_ledger.reset()
+        # The live flag is intentionally provided twice: once top-level and
+        # once inside ``system``. Both shapes have existing consumers — the
+        # frontend banner accepts either (app.js updateLiveBanner:
+        # data.live === true || data.system.live === true) and demo/test
+        # transports synthesize one or the other. Do NOT remove either key
+        # without updating all of them; this duplication is contract, not
+        # accidental redundancy.
         state["system"] = {"version": _read_version_file(), "live": is_live_mode()}
         state["live"] = state["system"]["live"]
         return state
     live = is_live_mode()
+    # Same intentional duplication as above (see the comment there).
     return {"running": False, "system": {"version": _read_version_file(), "live": live}, "live": live}
 
 

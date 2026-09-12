@@ -497,10 +497,33 @@ EOF
   cat > "$launcher" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-until curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
-    http://127.0.0.1:8000/api/status >/dev/null; do
+# Wait for the FXRoute backend, but never unbounded: a backend that never
+# comes up must still produce a visible desktop state instead of leaving the
+# user on a seemingly dead desktop with no kiosk and no clue. 180s covers the
+# backend start plus several service restart attempts (RestartSec=10);
+# healthy boots leave the loop in seconds.
+status_url="http://127.0.0.1:8000/api/status"
+backend_ready=0
+for _ in $(seq 1 180); do
+  if curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
+      "$status_url" >/dev/null; then
+    backend_ready=1
+    break
+  fi
   sleep 1
 done
+if [[ "$backend_ready" != 1 ]]; then
+  logger -t fxroute-desktop-launcher \
+    "FXRoute backend not reachable after 180s; showing the error state" || true
+  # Visible failure state: a note on the Desktop plus the kiosk window with
+  # the browser's own "unable to connect" page instead of a bare desktop.
+  mkdir -p "$HOME/Desktop" 2>/dev/null || true
+  printf '%s\n' \
+    'FXRoute could not start: the backend did not come up on 127.0.0.1:8000.' \
+    'Diagnosis: journalctl --user -u fxroute -n 50' \
+    > "$HOME/Desktop/FXRoute-NOT-STARTED.txt" 2>/dev/null || true
+  exec firefox --kiosk http://127.0.0.1:8000/
+fi
 # First graphical login only: wallpaper + Firefox start bookmark.
 if [[ ! -f "$HOME/.local/share/fxroute/appliance-ready" ]]; then
   if [[ -x /usr/local/libexec/fxroute-appliance-session-init.sh ]]; then

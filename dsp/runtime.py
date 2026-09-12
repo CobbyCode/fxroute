@@ -19,7 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
-from audio.output_ports import HARDWARE_CHANNEL_ORDER, resolve_hardware_playback_ports
+from audio.output_ports import (
+    HARDWARE_CHANNEL_ORDER,
+    resolve_hardware_playback_ports,
+    warn_semantic_playback_fallback,
+)
 from audio.pw_link import stop_command_child_cancellation_safe
 
 DSP_NODE_NAME = "fxroute_dsp"
@@ -169,6 +173,13 @@ class BassManagementConfig:
                    channels, rate, frequency, highpass, levels[0], alignments[0], polarities[0], levels[1], alignments[1], polarities[1])
 
 
+# Internal sentinel for DSPRuntimeConfig.from_overview: a caller that only
+# needs the port topology (e.g. the hot-update capability probe) passes it so
+# the discovery-fallback path is skipped entirely and the semantic-fallback
+# warning is emitted by the real link-build path only.
+_TOPOLOGY_ONLY = "__fxroute_topology_only_probe__"
+
+
 @dataclass(frozen=True)
 class DSPRuntimeConfig:
     output_mode: str
@@ -180,12 +191,21 @@ class DSPRuntimeConfig:
     @classmethod
     def from_overview(cls, overview: dict[str, Any], *,
                       hardware_ports: Sequence[str] | None = None) -> "DSPRuntimeConfig":
+        # Internal sentinel: a caller that only needs the port topology
+        # (e.g. the hot-update capability probe) passes it to skip the
+        # discovery-fallback path entirely, so the semantic-fallback warning
+        # is emitted by the real link-build path only.
+        if isinstance(hardware_ports, str) and hardware_ports == _TOPOLOGY_ONLY:
+            hardware_ports = None
+            topology_only = True
+        else:
+            topology_only = False
         bass = BassManagementConfig.from_overview(overview)
         layout = [
             {"name": "FL", "routes": [{"input": 0, "gain": 1.0}]},
             {"name": "FR", "routes": [{"input": 1, "gain": 1.0}]},
         ]
-        ports = cls._resolve_ports(bass, hardware_ports)
+        ports = cls._resolve_ports(bass, hardware_ports, topology_only=topology_only)
         if bass.output_mode.startswith("subwoofer-2."):
             if bass.main_highpass_enabled:
                 for channel in layout:
@@ -216,7 +236,8 @@ class DSPRuntimeConfig:
 
     @staticmethod
     def _resolve_ports(bass: BassManagementConfig,
-                       hardware_ports: Sequence[str] | None) -> list[str]:
+                       hardware_ports: Sequence[str] | None,
+                       *, topology_only: bool = False) -> list[str]:
         """Map the DSP outputs onto the sink's real playback ports.
 
         The discovered list is ordered by the device's own channel order
@@ -242,6 +263,13 @@ class DSPRuntimeConfig:
                     f"hardware playback ports ({', '.join(resolved) or 'none'})"
                 )
             return resolved[:2] if bass.output_channels < 4 else resolved[:4]
+        # No discovered list: the historic semantic port names keep the
+        # configured topology working, but on a device that exposes only raw
+        # channels (playback_AUX0…) this fallback can never link. Announce it
+        # (rate-limited) so the rare path is visible for field diagnosis —
+        # except for topology-only probes, which never build links.
+        if not topology_only:
+            warn_semantic_playback_fallback(bass.output_key)
         ports = ["playback_FL", "playback_FR"]
         if bass.output_channels >= 4:
             ports.extend(("playback_RL", "playback_RR"))
@@ -463,7 +491,8 @@ class DSPRuntime:
                               before_ramp: Callable[[], Awaitable[Any]] | None = None,
                               before_rollback_ramp: Callable[[], Awaitable[Any]] | None = None) -> None:
         guard = max(-80.0, min(0.0, float(guard_db)))
-        hot_update = self._can_hot_update(DSPRuntimeConfig.from_overview(overview))
+        hot_update = self._can_hot_update(
+            DSPRuntimeConfig.from_overview(overview, hardware_ports=_TOPOLOGY_ONLY))
         settle_seconds = 0.0 if hot_update else settle_seconds
         async with self._measurement_scope_lock:
             if self._control_socket is not None:

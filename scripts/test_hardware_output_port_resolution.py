@@ -14,6 +14,7 @@ port models, including the natural channel order that keeps ``AUX10`` behind
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -29,6 +30,7 @@ from audio.output_ports import (
     order_hardware_playback_ports,
     playback_port_names,
     resolve_hardware_playback_ports,
+    warn_semantic_playback_fallback,
 )
 from audio.samplerate import overview as overview_module
 from dsp.manager import DSPManager
@@ -554,6 +556,181 @@ class HardwarePlaybackPortsFromModeTests(unittest.TestCase):
             hardware_playback_ports_from_mode({}, SEMANTIC_PORTS, count=4),
             SEMANTIC_PORTS,
         )
+
+
+class SemanticFallbackWarningTests(unittest.TestCase):
+    """A lost port discovery is announced, not silently substituted.
+
+    When neither the discovery payload nor the direct ``pw-link -io`` fallback
+    yields ports, consumers substitute the historic semantic names. On a
+    device that really exposes only raw channels (playback_AUX0…) that
+    topology can never link; the rate-limited warning makes that rare path
+    visible for field diagnosis without changing fallback behavior.
+    """
+
+    def setUp(self):
+        from audio import output_ports
+
+        output_ports._semantic_fallback_warned_at.clear()
+
+    def test_warning_fires_and_is_rate_limited_per_output_key(self):
+        from audio import output_ports
+
+        with self.assertLogs(output_ports.logger, level="WARNING") as captured:
+            warn_semantic_playback_fallback(SCARLETT)
+            warn_semantic_playback_fallback(SCARLETT)
+        self.assertEqual(len(captured.output), 1)
+        self.assertIn(SCARLETT, captured.output[0])
+        self.assertIn("playback_AUX0", captured.output[0])
+        # A different output key gets its own announcement.
+        with self.assertLogs(output_ports.logger, level="WARNING"):
+            warn_semantic_playback_fallback(UMC)
+
+    def test_rate_limit_window_and_reset(self):
+        from audio import output_ports
+
+        warn_semantic_playback_fallback(SCARLETT)
+        real_monotonic = output_ports.time.monotonic
+
+        class _FakeTime:
+            offset = 0.0
+
+            @classmethod
+            def monotonic(cls):
+                return real_monotonic() + cls.offset
+
+        with mock.patch.object(output_ports.time, "monotonic", _FakeTime.monotonic):
+            with self.assertNoLogs(output_ports.logger, level="WARNING"):
+                warn_semantic_playback_fallback(SCARLETT)  # inside window
+            _FakeTime.offset = output_ports.SEMANTIC_FALLBACK_WARN_INTERVAL_S + 1
+            with self.assertLogs(output_ports.logger, level="WARNING"):
+                warn_semantic_playback_fallback(SCARLETT)  # window elapsed
+
+    def test_dsp_runtime_config_warns_on_semantic_fallback(self):
+        manager = DSPManager(home=Path(tempfile.mkdtemp()))
+        manager.save_global_extras({"limiter": {"enabled": False}})
+        overview = {
+            "output_mode": {
+                "mode": "stereo",
+                "effective_output_key": SCARLETT,
+                "effective_output_channels": 18,
+                "effective_output_rate": 48000,
+            },
+            "selected_output": {"key": SCARLETT, "channels": 18},
+        }
+        with self.assertLogs("audio.output_ports", level="WARNING") as captured:
+            config = DSPRuntimeConfig.from_overview(overview)
+        # Legacy semantic fallback for an 18-channel device: FL/FR plus RL/RR.
+        self.assertEqual(
+            config.hardware_ports,
+            ("playback_FL", "playback_FR", "playback_RL", "playback_RR"),
+        )
+        self.assertEqual(len(captured.output), 1)
+
+    def test_topology_only_probe_stays_quiet(self):
+        """The guarded_rebuild hot-update probe never builds links.
+
+        It calls from_overview without a discovered port list; the sentinel
+        keeps that probe from emitting a fallback warning that would fire on
+        every rebuild even when the real link-build path resolves ports fine.
+        """
+        from dsp.runtime import _TOPOLOGY_ONLY
+
+        manager = DSPManager(home=Path(tempfile.mkdtemp()))
+        manager.save_global_extras({"limiter": {"enabled": False}})
+        overview = {
+            "output_mode": {
+                "mode": "stereo",
+                "effective_output_key": SCARLETT,
+                "effective_output_channels": 18,
+                "effective_output_rate": 48000,
+            },
+            "selected_output": {"key": SCARLETT, "channels": 18},
+        }
+        with self.assertNoLogs("audio.output_ports", level="WARNING"):
+            config = DSPRuntimeConfig.from_overview(overview, hardware_ports=_TOPOLOGY_ONLY)
+        self.assertEqual(
+            config.hardware_ports,
+            ("playback_FL", "playback_FR", "playback_RL", "playback_RR"),
+        )
+
+    def test_dsp_runtime_config_stays_quiet_with_discovered_ports(self):
+        manager = DSPManager(home=Path(tempfile.mkdtemp()))
+        manager.save_global_extras({"limiter": {"enabled": False}})
+        overview = {
+            "output_mode": {
+                "mode": "stereo",
+                "effective_output_key": SCARLETT,
+                "effective_output_channels": 18,
+                "effective_output_rate": 48000,
+                "hardware_playback_ports": list(AUX_PORTS),
+            },
+            "selected_output": {"key": SCARLETT, "channels": 18},
+        }
+        with self.assertNoLogs("audio.output_ports", level="WARNING"):
+            config = DSPRuntimeConfig.from_overview(overview, hardware_ports=AUX_PORTS)
+        self.assertEqual(config.hardware_ports, AUX_PORTS[:4])
+
+    def test_diagnosis_warns_only_when_both_sources_failed(self):
+        async def _diagnose(overview: dict, io_text: str) -> dict:
+            orchestrator = self._diagnosis_orchestrator(io_text, "")
+            return await orchestrator.playback_graph_diagnosis(overview, target_rate=44100)
+
+        # Discovery failed AND the live read found nothing → warn.
+        with self.assertLogs("audio.output_ports", level="WARNING"):
+            asyncio.run(_diagnose(self._diagnosis_overview(), ""))
+        # The live pw-link read resolves AUX ports → no warning.
+        with self.assertNoLogs("audio.output_ports", level="WARNING"):
+            asyncio.run(_diagnose(self._diagnosis_overview(), _io_listing(SCARLETT, AUX_PORTS)))
+        # The discovery payload carries ports → no warning even with empty io.
+        with self.assertNoLogs("audio.output_ports", level="WARNING"):
+            asyncio.run(_diagnose(self._diagnosis_overview(ports=AUX_PORTS), ""))
+
+    def test_silent_active_warns_when_payload_lacks_ports(self):
+        recovery = SilentActiveRecovery.__new__(SilentActiveRecovery)
+        output_mode = {"mode": "stereo", "effective_output_key": SCARLETT}
+        # The source→ingress link must be present so the watcher reaches the
+        # DSP→hardware port check; without it the method returns early.
+        links = f"\tmpv:output_FL\n  |-> {DSP_SINK}:playback_FL\n"
+        with self.assertLogs("audio.output_ports", level="WARNING"):
+            recovery._source_links_present("local", links, output_mode)
+        # A semantic device whose payload names the real FL/FR ports stays quiet.
+        with self.assertNoLogs("audio.output_ports", level="WARNING"):
+            recovery._source_links_present(
+                "local", links,
+                {"mode": "stereo", "effective_output_key": SCARLETT,
+                 "hardware_playback_ports": ["playback_FL", "playback_FR"]},
+            )
+
+    def _diagnosis_overview(self, ports=None) -> dict:
+        block = {"mode": "stereo", "effective_output_key": SCARLETT}
+        if ports is not None:
+            block["hardware_playback_ports"] = list(ports)
+        return {"output_mode": block}
+
+    def _diagnosis_orchestrator(self, io_text: str, links_text: str):
+        from types import SimpleNamespace
+
+        from dsp.runtime import _contains_link as real_contains_link
+
+        async def fake_pw_link(*args: str) -> str:
+            return io_text if args == ("-io",) else links_text
+
+        deps = SimpleNamespace(
+            run_pw_link_command=fake_pw_link,
+            output_mode_subwoofer_modes=frozenset({"subwoofer-2.1", "subwoofer-2.2"}),
+            output_mode_stereo="stereo",
+            get_dsp_snapshot=lambda: {"active": True},
+            helper_argument_sample_rate=lambda snapshot: 44100,
+            resolve_source_producer_ports=None,
+            contains_link=real_contains_link,
+        )
+        return type("_Orchestrator", (), {
+            "_deps": deps,
+            "playback_graph_diagnosis": playback_orchestration.PlaybackOrchestrator.playback_graph_diagnosis,
+            "missing_playback_graph_links": playback_orchestration.PlaybackOrchestrator.missing_playback_graph_links,
+        })()
+
 
 
 if __name__ == "__main__":

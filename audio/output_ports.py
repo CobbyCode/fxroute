@@ -17,8 +17,20 @@ never be described by two different port lists.
 
 from __future__ import annotations
 
+import logging
 import re
+import threading
+import time
 from typing import Any, Iterable, Mapping
+
+logger = logging.getLogger(__name__)
+
+# Rate limit for the semantic-fallback warning: the graph sync loop resolves
+# ports far more often than a user reads logs, so the state is announced once
+# per output key and re-announced after this interval.
+SEMANTIC_FALLBACK_WARN_INTERVAL_S = 300.0
+_warn_lock = threading.Lock()
+_semantic_fallback_warned_at: dict[str, float] = {}
 
 # The conventional hardware channel order FXRoute assigns to its DSP outputs:
 # Out 1 = Main L, Out 2 = Main R, Out 3 = Sub 1, Out 4 = Sub 2.
@@ -38,6 +50,35 @@ def natural_sort_key(name: str) -> list[tuple[int, Any]]:
         (0, int(part)) if part.isdigit() else (1, part.lower())
         for part in re.split(r"(\d+)", name)
     ]
+
+
+def warn_semantic_playback_fallback(output_key: str) -> None:
+    """Announce (rate-limited) that a sink's ports could not be discovered.
+
+    Both the discovery payload and the direct ``pw-link -io`` fallback failed
+    for ``output_key``, so the consumer substituted the historic semantic port
+    names (``playback_FL/FR/…``).  On a device that really exposes only raw
+    channels (``playback_AUX0…``) that topology can never link, and without
+    this warning the field symptom is only a stuck playback transition.  The
+    previous fallback behavior is unchanged; this only makes the rare path
+    visible in the logs.
+    """
+    key = str(output_key or "the selected output")
+    now = time.monotonic()
+    with _warn_lock:
+        last = _semantic_fallback_warned_at.get(key, 0.0)
+        if now - last < SEMANTIC_FALLBACK_WARN_INTERVAL_S:
+            return
+        _semantic_fallback_warned_at[key] = now
+    logger.warning(
+        "Hardware playback ports for %s could not be discovered "
+        "(no output-discovery payload, 'pw-link -io' unavailable or no "
+        "playback_ ports listed). Falling back to semantic port names "
+        "playback_FL/FR(/RL/RR); linking will fail on devices that expose "
+        "only raw channels (playback_AUX0…). Check the PipeWire port list "
+        "and the selected output device.",
+        key,
+    )
 
 
 def playback_port_names(io_text: str, node_name: str) -> tuple[str, ...]:

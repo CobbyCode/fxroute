@@ -496,6 +496,39 @@ class InstallIsoContractTests(unittest.TestCase):
         # The Plasma shell itself stays unlocked.
         self.assertIn("closing the window returns to the normal desktop", script)
 
+    def test_desktop_launcher_waits_bounded_and_fails_visibly(self):
+        """The kiosk launcher never waits unbounded for a dead backend.
+
+        A backend that never comes up used to leave the autostart loop
+        running forever: no kiosk window and a seemingly dead desktop with
+        no clue. Both launcher copies (installed first-boot and live root)
+        must wait bounded, log, drop a visible Desktop note and still open
+        the kiosk window on the (then failing) UI URL.
+        """
+        for path in (
+            "iso/scripts/first-boot-install.sh",
+            "iso/scripts/build-live-root.sh",
+        ):
+            script = self.read(path)
+            with self.subTest(script=path):
+                # The old unbounded pattern must be gone.
+                self.assertNotIn("until curl", script)
+                # Bounded wait: a counted loop, not an endless until.
+                self.assertIn("backend_ready=0", script)
+                self.assertIn("backend_ready=1", script)
+                self.assertIn("$(seq 1 180)", script)
+                # Failure path: journal line, visible Desktop note, kiosk.
+                self.assertIn("logger -t fxroute-desktop-launcher", script)
+                self.assertIn("FXRoute-NOT-STARTED.txt", script)
+                self.assertIn("journalctl --user -u fxroute", script)
+                self.assertIn("firefox --kiosk http://127.0.0.1:8000/", script)
+                # The failure branch precedes the first-login helper so a
+                # failed boot never marks the appliance as initialized.
+                self.assertLess(
+                    script.index("FXRoute-NOT-STARTED.txt"),
+                    script.index("appliance-ready"),
+                )
+
     def test_desktop_powerdevil_config_disables_idle_dim_off_and_suspend(self):
         script = self.read("iso/scripts/first-boot-install.sh")
 

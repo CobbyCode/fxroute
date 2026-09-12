@@ -19,7 +19,7 @@ from audio import pw_link
 from audio import sink_inputs
 from audio.samplerate import OUTPUT_MODE_STEREO, get_audio_output_overview
 from audio.system_volume import get_output_volume
-from audio.output_ports import hardware_playback_ports_from_mode
+from audio.output_ports import hardware_playback_ports_from_mode, warn_semantic_playback_fallback
 from dsp.runtime import _contains_link
 import playback.source_policy as source_policy
 from playback.state import is_local_playback_active, is_spotify_playback_active
@@ -80,6 +80,13 @@ class SilentActiveRecovery:
             output_mode, ("playback_FL", "playback_FR"), count=2)
         if len(ports) < 2:
             ports = ("playback_FL", "playback_FR")
+        # The watcher runs periodically, so a payload without a resolved port
+        # list (discovery failed) would silently check the semantic topology
+        # forever. Announce it once per interval; a payload whose list names
+        # the real FL/FR ports of a semantic device stays quiet.
+        discovered = output_mode.get("hardware_playback_ports")
+        if not (isinstance(discovered, (list, tuple)) and discovered):
+            warn_semantic_playback_fallback(output_key)
         return (
             _contains_link(links_text, "fxroute_dsp:output_1", f"{output_key}:{ports[0]}")
             and _contains_link(links_text, "fxroute_dsp:output_2", f"{output_key}:{ports[1]}")
