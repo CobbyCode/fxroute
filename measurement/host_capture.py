@@ -19,6 +19,17 @@ def _detailed_measurement_diagnostics_enabled() -> bool:
     return logging.getLogger("measurement").isEnabledFor(logging.DEBUG)
 
 
+def pw_record_channel_map(capture_channels: int) -> str:
+    """Explicit AUX channel map for index-linked electrical-reference captures.
+
+    PipeWire's default layout varies with the channel count (3 -> FL,FR,LFE;
+    5 -> FL,FR,FC,SL,SR), so the input_<position> port of a source channel is
+    not derivable from its index. Mapping every position to AUX gives each
+    source channel a stable ``input_AUX<n>`` target.
+    """
+    return ",".join(f"AUX{index}" for index in range(max(1, int(capture_channels))))
+
+
 class HostCaptureRunner:
     """Own process, routing, monitoring, and analysis work for one attempt."""
 
@@ -109,6 +120,13 @@ class HostCaptureRunner:
             "--format",
             "s16",
         ]
+        # Electrical-reference captures link specific source channels into the
+        # record stream by index. PipeWire's default channel layout changes with
+        # the channel count (3 -> FL,FR,LFE; 5 -> FL,FR,FC,SL,SR; ...), so the
+        # input_<position> ports are not derivable from the index alone. An
+        # explicit AUX map makes every position a stable input_AUX<n>.
+        if electrical_reference_channel_index is not None and store._pw_record_supports_option("--channel-map"):
+            record_command.extend(["--channel-map", pw_record_channel_map(capture_channels)])
         if store._pw_record_supports_option("--container"):
             record_command.extend(["--container", "wav"])
         if store._pw_record_supports_option("--sample-count"):

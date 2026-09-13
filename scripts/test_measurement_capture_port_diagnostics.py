@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from measurement.store import MeasurementStore
-from measurement.host_capture import HostCaptureRunner
+from measurement.host_capture import HostCaptureRunner, pw_record_channel_map
 
 
 class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
@@ -30,6 +30,20 @@ class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
             requested_channel="left",
             record_process=process,
         )
+
+    def test_electrical_reference_record_channels_use_stable_aux_map(self):
+        # PipeWire names a 3-channel stream FL,FR,LFE and a 5-channel stream
+        # FL,FR,FC,SL,SR, so the record port of a given source index cannot be
+        # derived from the index alone. The explicit AUX map keeps every
+        # position at input_AUX<index>, which the link fallback already knows.
+        self.assertEqual(pw_record_channel_map(3), "AUX0,AUX1,AUX2")
+        names = pw_record_channel_map(18).split(",")
+        self.assertEqual(len(names), 18)
+        self.assertEqual(names[0], "AUX0")
+        self.assertEqual(names[17], "AUX17")
+        self.assertEqual(pw_record_channel_map(1), "AUX0")
+        suffixes = self.store._routing._record_input_suffixes_for_channel_index(2)
+        self.assertIn(":input_AUX2", suffixes)
 
     def test_reports_missing_record_inputs_while_process_is_running(self):
         process = Mock()
