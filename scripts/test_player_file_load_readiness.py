@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 import playback.media_readiness as media_readiness
 from playback.player import MPVWrapper
+from playback.transition import TransitionRequest
+from playback_transition_test_support import make_transition_runtime
 
 
 async def _wait(expected_url, state, timeout_ms=60):
@@ -52,6 +54,84 @@ class WaitForPlayerCurrentFileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_url_or_player_is_not_ready(self):
         self.assertFalse(await _wait(None, {}))
+
+
+class RadioColdStartSettleBudgetTests(unittest.IsolatedAsyncioTestCase):
+    """A cold radio stream gets the radio settle budget, not the generic one.
+
+    Live .104 evidence: a cold SomaFM loadfile exceeded the generic 1600 ms
+    media-settle budget (stage ``target-rate-resolve`` took 1644.7 ms) and a
+    healthy stream turned into a hard 500 ("radio target stream did not
+    settle while paused"); the immediate retry succeeded.  The radio branch
+    must wait with the same ~4 s cold-start budget its PipeWire port
+    readiness wait already uses, while local files keep the short budget.
+    """
+
+    class _Player:
+        _running = True
+
+        def __init__(self) -> None:
+            self.state = {"current_file": None, "duration": 0.0, "file_loaded": False,
+                          "playing": False, "paused": True}
+
+        def set_pause(self, paused: bool) -> None:
+            self.state["paused"] = bool(paused)
+
+        def loadfile(self, path: str, *, mode=None, start_paused=False) -> None:
+            # Mirrors MPVWrapper: current_file is set optimistically before
+            # mpv confirms the load via file-loaded/duration.
+            self.state["current_file"] = path
+            self.state["file_loaded"] = False
+
+        def set_volume(self, volume: int) -> None:
+            self.volume = volume
+
+        def get_property(self, name: str):
+            return {"samplerate": 48000} if name == "audio-params" else None
+
+    async def _settled_with(self, request: TransitionRequest) -> int:
+        seen: list[int] = []
+
+        async def fake_settle(expected_url, timeout_ms=1600, **kwargs):
+            seen.append(timeout_ms)
+            return True
+
+        player = self._Player()
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            media_readiness, "wait_for_player_current_file", fake_settle
+        ):
+            runtime = make_transition_runtime()
+            await runtime.resolve_target_rate(request)
+        self.assertEqual(len(seen), 1)
+        return seen[0]
+
+    async def test_radio_cold_start_uses_radio_settle_budget(self):
+        request = TransitionRequest(
+            operation="play",
+            source="radio",
+            target_rate=None,
+            target_url="https://radio.example/slow-cold-start",
+            should_play=True,
+            reload_source=True,
+        )
+        timeout_ms = await self._settled_with(request)
+        self.assertEqual(timeout_ms, media_readiness.RADIO_LOAD_SETTLE_TIMEOUT_MS)
+        self.assertGreater(
+            timeout_ms,
+            1600,
+            "the generic media settle budget is too short for a cold stream",
+        )
+
+    async def test_local_reload_keeps_the_generic_settle_budget(self):
+        request = TransitionRequest(
+            operation="play",
+            source="local",
+            target_rate=None,
+            target_url="/music/slow-local.flac",
+            should_play=True,
+            reload_source=True,
+        )
+        self.assertEqual(await self._settled_with(request), 1600)
 
 
 class PlayerFileLoadedStateTests(unittest.TestCase):

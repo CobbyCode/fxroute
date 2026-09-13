@@ -16,6 +16,7 @@ from urllib.parse import unquote
 
 import audio.samplerate as samplerate
 import audio.samplerate_orchestration as samplerate_orchestration
+import playback.media_readiness as media_readiness
 import playback.source_policy as source_policy
 from streaming.spotify.provider import (
     play as spotify_play,
@@ -222,7 +223,10 @@ class _RuntimeSourceMixin:
         await self._deps.drain_worker(
             self._deps.load_player_paused, request.target_url
         )
-        if not await self._deps.wait_for_player_current_file(request.target_url):
+        # A cold network stream needs the radio-specific settle budget.
+        if not await self._deps.wait_for_player_current_file(
+            request.target_url, timeout_ms=media_readiness.RADIO_LOAD_SETTLE_TIMEOUT_MS
+        ):
             raise RuntimeError("radio target stream did not settle while paused")
         attempt_epoch = request.attempt_epoch
         if not isinstance(attempt_epoch, int):

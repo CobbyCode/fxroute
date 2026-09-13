@@ -44,6 +44,12 @@ RADIO_POST_LOAD_RATE_STABILITY_POLLS = 3
 # The MPV->DSP ingress link repair must never run while the ports are
 # absent; this is source-startup readiness, not a fixed sleep.
 RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS = 4500
+# The same cold radio loadfile must also settle (mpv reports file-loaded or a
+# duration) before the transition may continue.  A cold network stream needs
+# the same ~4 s budget as its ports above; the generic 1600 ms media settle
+# budget turned a slow-but-healthy cold start into a hard 500 ("radio target
+# stream did not settle while paused", measured stage 1644.7 ms on .104).
+RADIO_LOAD_SETTLE_TIMEOUT_MS = 4500
 
 
 def list_sink_inputs() -> list[dict]:
