@@ -339,10 +339,11 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
 
     // ── Device selection: Focusrite Scarlett 16i16 ───────────────────
     // The demo offers the Scarlett 16i16 next to the MOTU M4. Selecting it
-    // switches the measurement capture to the 18-channel Scarlett input, which
-    // is what makes the unchanged app.js render the split Electrical Ref L / R
-    // controls; every other (stereo) device keeps the 2-channel capture and the
-    // previous microphone Input 1 / Input 2 view.
+    // switches the measurement capture to the 18-channel Scarlett input.
+    // Both the 4-channel MOTU M4 capture and the 18-channel Scarlett capture
+    // render the split Electrical Ref L / R controls in the unchanged app.js
+    // (channel count >= 3); only smaller captures keep the single shared
+    // reference.
     const outputsGet = () => demoFetch('/api/audio/outputs').then((r) => r.json());
     const outputsPost = (key) => demoFetch('/api/audio/outputs',
         { method: 'POST', body: JSON.stringify({ key }) }).then((r) => r.json());
@@ -360,14 +361,14 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     assert.equal(scarlettOutput.channels, 18);
     assert.equal(scarlettOutput.selectable, true);
 
-    // Stereo device: 2-channel capture, one shared reference (unchanged view).
+    // MOTU M4: 4-channel capture -> split Electrical Ref L / R on line 3/4.
     await outputsPost(initialOutputs.outputs.find((o) => o.label === 'MOTU M4').key);
     const stereo = await captureState();
     const stereoSelected = stereo.inputs.inputs.find((i) => i.id === stereo.inputs.selection.input_id);
-    assert.equal(stereoSelected.channels, 2, 'normal devices keep the 2-channel capture');
+    assert.equal(stereoSelected.channels, 4, 'the MOTU M4 keeps its 4-channel capture');
     assert.equal(stereo.settings.selectedInputId, stereoSelected.id);
-    assert.equal(stereo.settings.selectedReferenceInputChannel, '2');
-    assert.equal(stereo.settings.selectedReferenceInputChannelLeft, '');
+    assert.equal(stereo.settings.selectedReferenceInputChannelLeft, '3');
+    assert.equal(stereo.settings.selectedReferenceInputChannelRight, '4');
 
     // Scarlett 16i16: 18-channel capture -> split Electrical Ref L / R.
     await outputsPost(scarlettOutput.key);

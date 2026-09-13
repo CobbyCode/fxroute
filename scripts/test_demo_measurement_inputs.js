@@ -70,15 +70,18 @@ function makeDemoContext() {
         assert.ok(!source.includes('Scarlett_4i4'), file + ' must not invent a 4i4 capture');
     }
 
-    // Capture list: UMIK-1 plus the output-derived stereo/multichannel
-    // captures only.
+    // Capture list: UMIK-1 plus the output-derived MOTU/Scarlett captures.
     const inputs = await (await demoFetch('/api/measurements/inputs')).json();
     assert.equal(inputs.capture_available, true);
     assert.equal(JSON.stringify(inputs.inputs.map((i) => i.id)),
-        JSON.stringify(['demo_mic', 'alsa_input.usb-MOTU_M4-00.analog-stereo', SCARLETT_SOURCE]));
+        JSON.stringify(['demo_mic', 'alsa_input.usb-MOTU_M4-00.analog-surround-40', SCARLETT_SOURCE]));
     const umik = inputs.inputs.find((i) => i.id === 'demo_mic');
     assert.equal(umik.label, 'UMIK-1');
     assert.equal(umik.channels, 1);
+    // MOTU M4: 4-channel capture with split Electrical Ref L / R, like the
+    // Scarlett — its line inputs 3/4 carry the reference pair.
+    const motu = inputs.inputs.find((i) => i.id === 'alsa_input.usb-MOTU_M4-00.analog-surround-40');
+    assert.equal(motu.channels, 4);
 
     // External-input selection: the Scarlett capture appears as its nine
     // adjacent stereo pairs, like the MOTU M4 pairs.
@@ -112,6 +115,15 @@ function makeDemoContext() {
     assert.equal(JSON.stringify(Array.from(selected.selected_input.pair_channels)), JSON.stringify([3, 4]));
     await demoFetch('/api/audio/source-mode',
         { method: 'POST', body: JSON.stringify({ mode: 'app-playback' }) });
+
+    // MOTU M4 measurement capture: split refs on line inputs 3/4 via the
+    // unchanged channel-count logic (no new device, no new channel model).
+    const motuSettings = await (await demoFetch('/api/measurements')).json();
+    const motuCapture = motuSettings.measurement_settings;
+    // Default output is the MOTU M4, so the default capture is its 4ch input.
+    assert.equal(motuCapture.selectedInputId, 'alsa_input.usb-MOTU_M4-00.analog-surround-40');
+    assert.equal(motuCapture.selectedReferenceInputChannelLeft, '3');
+    assert.equal(motuCapture.selectedReferenceInputChannelRight, '4');
 
     // The simulation itself is unchanged: sweeps start and carry UMIK-1 facts.
     const started = await (await demoFetch('/api/measurements/start',

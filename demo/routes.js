@@ -136,11 +136,11 @@
     // device, exactly like the real machine pairs the Focusrite Scarlett 16i16
     // multichannel output with its 18-channel capture input. The UMIK-1 USB
     // measurement microphone stays manually selectable in the measurement
-    // setup; interfaces below three capture channels keep the previous
-    // measurement view (microphone Input 1 / Input 2 plus one shared
-    // electrical reference); the split Electrical Ref L / R view belongs to
-    // the Scarlett alone and comes from the unchanged app.js logic, which
-    // switches on the capture channel count.
+    // setup; captures with three or more channels (MOTU M4 with its line
+    // inputs 3/4, Scarlett 16i16) show the split Electrical Ref L / R view,
+    // smaller captures keep the previous single shared reference. The split
+    // comes from the unchanged app.js logic, which switches on the capture
+    // channel count.
     const SCARLETT_OUTPUT_KEY = 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output';
     const UMIK1_CAPTURE_INPUT = {
         id: 'demo_mic',
@@ -154,17 +154,17 @@
         persistent_id: 'demo_mic',
     };
     const STEREO_CAPTURE_INPUT = {
-        id: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
+        id: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
         // Labels mirror the real capture list: the PipeWire node name, like the
         // .104 `alsa_input.usb-Focusrite_Scarlett_16i16...-multichannel-input`.
-        label: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
-        note: 'MOTU M4 analog inputs 1/2',
-        channels: 2,
+        label: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+        note: 'MOTU M4 analog inputs 1-4',
+        channels: 4,
         supported_rates: [44100, 48000, 88200, 96000, 176400, 192000],
         sample_rate: 48000,
         measurement_sample_rate: 48000,
-        node_name: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
-        persistent_id: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
+        node_name: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+        persistent_id: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
     };
     const MULTICHANNEL_CAPTURE_INPUT = {
         id: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
@@ -183,9 +183,9 @@
     }
     let measurementCaptureInput = captureInputForOutputKey(selectedOutputKeyCache);
     // Electrical reference channels the demo persists for the selected capture.
-    // The concrete channel mapping is irrelevant for the demo; what matters is
-    // that the multichannel interface exposes the split pair while every other
-    // device keeps its single shared reference.
+    // Captures with three or more channels (MOTU M4, Scarlett 16i16) expose
+    // the split Ref L / R pair on their line inputs 3/4; smaller captures
+    // keep the single shared reference.
     function measurementReferenceSettings() {
         if (measurementCaptureInput.channels >= 3) {
             return {
