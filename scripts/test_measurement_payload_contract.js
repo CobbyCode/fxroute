@@ -257,6 +257,9 @@ referenceEntries = runAppendReferenceFields(
 assert.deepStrictEqual(referenceEntries, { reference_input_channel: '2' });
 console.log('2-channel reference payload: ok');
 
+// The warning is an injected dependency here; the split L/R fields must still
+// go out unchanged while the shared field is gated. app.js only ever produces
+// the shared-reference message (a split conflict is cleared beforehand).
 referenceEntries = runAppendReferenceFields(
     {
         selectedMicInputChannel: '1',
@@ -265,7 +268,7 @@ referenceEntries = runAppendReferenceFields(
         selectedReferenceInputChannelRight: '3',
     },
     4,
-    'Electrical reference L disabled'
+    'Electrical reference disabled'
 );
 assert.strictEqual(referenceEntries.reference_input_channel, '', 'warning gates the shared field');
 assert.strictEqual(referenceEntries.reference_input_channel_left, '2');

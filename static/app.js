@@ -10801,23 +10801,17 @@ function normalizeMeasurementInputChannelSelections() {
 }
 
 function getMeasurementReferenceWarning() {
+    // A split L/R reference can never collide with the mic channel here:
+    // normalizeMeasurementInputChannelSelections() clears the affected side as
+    // soon as the input topology is known, so modelling that conflict would
+    // describe a state the UI cannot reach. The one reachable conflict is the
+    // shared reference while the topology is still unknown — that pass only
+    // validates persisted values and deliberately leaves their shape alone.
     const measurementState = state.measurement || {};
-    const channelCount = getSelectedMeasurementInputChannelCount();
-    if (channelCount >= 3) {
-        const warnings = [];
-        if (measurementState.selectedReferenceInputChannelLeft && measurementState.selectedReferenceInputChannelLeft === measurementState.selectedMicInputChannel) {
-            warnings.push('Electrical reference L disabled: mic and reference must use different input channels.');
-        }
-        if (measurementState.selectedReferenceInputChannelRight && measurementState.selectedReferenceInputChannelRight === measurementState.selectedMicInputChannel) {
-            warnings.push('Electrical reference R disabled: mic and reference must use different input channels.');
-        }
-        return warnings.join(' ');
-    }
-    if (!measurementState.selectedReferenceInputChannel) return '';
-    if (measurementState.selectedReferenceInputChannel === measurementState.selectedMicInputChannel) {
-        return 'Electrical reference disabled: mic and reference must use different input channels.';
-    }
-    return '';
+    const reference = String(measurementState.selectedReferenceInputChannel || '');
+    if (!reference) return '';
+    if (reference !== String(measurementState.selectedMicInputChannel || '')) return '';
+    return 'Electrical reference disabled: mic and reference must use different input channels.';
 }
 
 function appendMeasurementReferenceFields(formData) {

@@ -246,4 +246,50 @@ function assertSplitKept(context, label) {
     assert.equal(measurementReferencePayload(context).reference_input_channel_right, '4', 'other side is unaffected');
 }
 
+// 8. The reference warning only describes reachable states. A split conflict is
+//    resolved by the normalization before any render or payload, so no L/R
+//    warning exists; the only reachable conflict is the shared reference while
+//    the input topology is still unknown.
+{
+    const splitConflict = makeContext();
+    splitConflict.state.measurement.inputs = [MULTICHANNEL_INPUT('pw-source-166')];
+    splitConflict.state.measurement.selectedInputId = 'pw-source-166';
+    splitConflict.applyMeasurementSetupSettings({
+        selectedMicInputChannel: '1',
+        selectedReferenceInputChannelLeft: '1',
+        selectedReferenceInputChannelRight: '4',
+    });
+    assert.equal(
+        splitConflict.getMeasurementReferenceWarning(),
+        '',
+        'a split conflict is cleared before it could warn — no impossible L/R warning'
+    );
+
+    const unknownTopology = makeContext();
+    unknownTopology.applyMeasurementSetupSettings({
+        selectedMicInputChannel: '2',
+        selectedReferenceInputChannel: '2',
+    });
+    assert.deepEqual(referenceTriple(unknownTopology), ['2', '', ''], 'unknown topology preserves the persisted values');
+    assert.equal(
+        unknownTopology.getMeasurementReferenceWarning(),
+        'Electrical reference disabled: mic and reference must use different input channels.',
+        'the shared reference can still collide with the mic channel while the topology is unknown'
+    );
+
+    const knownStereo = makeContext();
+    knownStereo.state.measurement.inputs = [STEREO_INPUT('pw-source-65')];
+    knownStereo.state.measurement.selectedInputId = 'pw-source-65';
+    knownStereo.applyMeasurementSetupSettings({
+        selectedMicInputChannel: '2',
+        selectedReferenceInputChannel: '2',
+    });
+    assert.deepEqual(referenceTriple(knownStereo), ['', '', ''], 'known topology clears the colliding shared reference');
+    assert.equal(knownStereo.getMeasurementReferenceWarning(), '', 'a cleared reference does not warn');
+
+    const noReference = makeContext();
+    noReference.applyMeasurementSetupSettings({ selectedMicInputChannel: '1', selectedReferenceInputChannel: '' });
+    assert.equal(noReference.getMeasurementReferenceWarning(), '', 'no reference selected means no warning');
+}
+
 console.log('measurement reference split persistence: ok');
