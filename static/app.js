@@ -5931,8 +5931,13 @@ async function fetchAlbums() {
     try {
         const res = await fetch('/api/albums');
         if (!res.ok) return;
-        state.library.albums = await res.json();
-        state.library.albumsLoaded = true;
+        const albums = await res.json();
+        state.library.albums = albums;
+        // An empty list while the scan is still running is not an answer yet:
+        // keeping the view in its scan/loading state until a fetch lands after
+        // the scan finished stops the empty message from flashing while the
+        // albums are still arriving.
+        state.library.albumsLoaded = albums.length > 0 || !state.library.scanning;
         state.library.albumsCacheToken = Date.now();
         // Never clobber an open album/playlist detail with a background
         // re-render; the late init fetch would otherwise close the detail.

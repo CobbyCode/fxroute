@@ -119,6 +119,13 @@ def _run():
                 "scanning: albums view never claims there are no albums",
                 "No albums found" not in albums["text"],
             )
+            # The empty message must not flash between scan polls either: the
+            # view stays in its scan/loading state until the scan finished.
+            empty_samples = []
+            for _ in range(6):
+                page.wait_for_timeout(400)
+                empty_samples.append("content-state--empty" in content_state()["cls"])
+            check("scanning: no empty state at any sample while the scan runs", not any(empty_samples))
 
             # --- during the scan: tracks keep the scan status and the playlist
             page.evaluate("document.getElementById('library-view-tracks').click()")
