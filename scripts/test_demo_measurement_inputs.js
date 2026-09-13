@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
 // Measurement-setup capture inputs in the web demo: the demo microphone
-// presents as UMIK-1 (never "Demo Microphone"), a 4-channel Focusrite
-// capture is selectable so the mic channel offers the realistic
-// Input 1-4 range, and the simulation itself is unchanged.
+// presents as UMIK-1 (never "Demo Microphone"), no invented capture
+// devices exist, and the Focusrite Scarlett 16i16 external inputs appear
+// exclusively in the external-input selection as adjacent stereo pairs,
+// exactly like the real overview (audio/samplerate/overview.py) builds
+// them. The simulation itself is unchanged.
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -11,7 +13,21 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const root = path.join(__dirname, '..');
-const FOCUSRITE_4CH_ID = 'alsa_input.usb-Focusrite_Scarlett_4i4_4th_Gen-00.analog-surround-40';
+const SCARLETT_SOURCE = 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input';
+// Real positional channel suffixes (audio/output_ports.py
+// POSITIONAL_CHANNEL_SUFFIXES, then AUX<index>) for a map-less 18-channel
+// node, grouped as adjacent stereo pairs like the real overview.
+const SCARLETT_PAIRS = [
+    [[1, 2], 'FL', 'FR'],
+    [[3, 4], 'RL', 'RR'],
+    [[5, 6], 'FC', 'LFE'],
+    [[7, 8], 'SL', 'SR'],
+    [[9, 10], 'AUX0', 'AUX1'],
+    [[11, 12], 'AUX2', 'AUX3'],
+    [[13, 14], 'AUX4', 'AUX5'],
+    [[15, 16], 'AUX14', 'AUX15'],
+    [[17, 18], 'AUX16', 'AUX17'],
+];
 
 function makeDemoContext() {
     const ctx = {
@@ -41,48 +57,61 @@ function makeDemoContext() {
     return ctx;
 }
 
-// Mic channel options exactly like the frontend renders them
-// (static/app.js renderMeasurementPanelInputsSection).
-const micChannelOptions = (channelCount) =>
-    Array.from({ length: channelCount }, (_, index) => 'Input ' + (index + 1));
-
 (async () => {
     const ctx = makeDemoContext();
     const demoFetch = ctx.fetch;
     const state = ctx.FXROUTE_DEMO_STATE;
 
-    // No "Demo Microphone" label anywhere in the served demo layer.
+    // No "Demo Microphone" label and no invented 4i4 capture anywhere in
+    // the served demo layer.
     for (const file of ['demo/routes.js', 'demo/state.js']) {
         const source = fs.readFileSync(path.join(root, file), 'utf8');
         assert.ok(!source.includes('Demo Microphone'), file + ' must not mention Demo Microphone');
+        assert.ok(!source.includes('Scarlett_4i4'), file + ' must not invent a 4i4 capture');
     }
 
+    // Capture list: UMIK-1 plus the output-derived stereo/multichannel
+    // captures only.
     const inputs = await (await demoFetch('/api/measurements/inputs')).json();
     assert.equal(inputs.capture_available, true);
+    assert.equal(JSON.stringify(inputs.inputs.map((i) => i.id)),
+        JSON.stringify(['demo_mic', 'alsa_input.usb-MOTU_M4-00.analog-stereo', SCARLETT_SOURCE]));
     const umik = inputs.inputs.find((i) => i.id === 'demo_mic');
-    assert.ok(umik, 'UMIK-1 stays selectable under its stable demo_mic id');
     assert.equal(umik.label, 'UMIK-1');
     assert.equal(umik.channels, 1);
-    assert.deepEqual(micChannelOptions(umik.channels), ['Input 1']);
 
-    const focusrite = inputs.inputs.find((i) => i.id === FOCUSRITE_4CH_ID);
-    assert.ok(focusrite, 'a 4-channel Focusrite capture is offered');
-    assert.equal(focusrite.channels, 4);
-    assert.ok(String(focusrite.label).includes('Focusrite'), 'Focusrite label reads like the real capture list');
-    assert.deepEqual(micChannelOptions(focusrite.channels), ['Input 1', 'Input 2', 'Input 3', 'Input 4']);
+    // External-input selection: the Scarlett capture appears as its nine
+    // adjacent stereo pairs, like the MOTU M4 pairs.
+    const source = await (await demoFetch('/api/audio/source-mode')).json();
+    const scarlett = source.inputs.filter((i) => i.source_key === SCARLETT_SOURCE);
+    assert.equal(scarlett.length, 9, 'Scarlett offers nine stereo pairs');
+    scarlett.forEach((entry, index) => {
+        const [[left, right], leftChannel, rightChannel] = SCARLETT_PAIRS[index];
+        assert.equal(entry.key, SCARLETT_SOURCE + '::pair:' + left + '-' + right);
+        assert.equal(entry.device_label, 'Focusrite Scarlett 16i16');
+        assert.equal(entry.label, 'Focusrite Scarlett 16i16 · Input ' + left + '–' + right);
+        assert.equal(entry.channels, 18);
+        assert.equal(entry.pair_index, index);
+        assert.equal(entry.pair_count, 9);
+        assert.equal(JSON.stringify(Array.from(entry.pair_channels)), JSON.stringify([left, right]));
+        assert.equal(entry.left_channel, leftChannel);
+        assert.equal(entry.right_channel, rightChannel);
+        assert.equal(entry.selectable, true);
+    });
+    assert.ok(scarlett.every((entry) => entry.left_channel !== entry.right_channel),
+        'never duplicated onto both sides');
 
-    // The 4-channel Focusrite is selectable in the setup; the settings echo it.
-    const select = await demoFetch('/api/measurements/settings',
-        { method: 'POST', body: JSON.stringify({ selectedInputId: FOCUSRITE_4CH_ID }) });
-    assert.equal(select.status, 200);
-    const selected = await (await demoFetch('/api/measurements/inputs')).json();
-    assert.equal(selected.selection.input_id, FOCUSRITE_4CH_ID);
-    const settings = await (await demoFetch('/api/measurements')).json();
-    assert.equal(settings.measurement_settings.selectedInputId, FOCUSRITE_4CH_ID);
-    // Four channels use the split electrical reference pair, like every
-    // capture with three or more channels in the unchanged frontend logic.
-    assert.equal(settings.measurement_settings.selectedReferenceInputChannelLeft, '3');
-    assert.equal(settings.measurement_settings.selectedReferenceInputChannelRight, '4');
+    // A Scarlett pair is selectable as external input.
+    const selected = await (await demoFetch('/api/audio/source-mode', {
+        method: 'POST',
+        body: JSON.stringify({ mode: 'external-input', inputKey: SCARLETT_SOURCE + '::pair:3-4' }),
+    })).json();
+    assert.equal(selected.mode, 'external-input');
+    assert.equal(selected.selected_input.key, SCARLETT_SOURCE + '::pair:3-4');
+    assert.equal(selected.selected_input.label, 'Focusrite Scarlett 16i16 · Input 3–4');
+    assert.equal(JSON.stringify(Array.from(selected.selected_input.pair_channels)), JSON.stringify([3, 4]));
+    await demoFetch('/api/audio/source-mode',
+        { method: 'POST', body: JSON.stringify({ mode: 'app-playback' }) });
 
     // The simulation itself is unchanged: sweeps start and carry UMIK-1 facts.
     const started = await (await demoFetch('/api/measurements/start',
@@ -93,5 +122,5 @@ const micChannelOptions = (channelCount) =>
     assert.equal(sweep.input_device.id, 'demo_mic');
     state.stop();
 
-    console.log('ok demo measurement inputs (UMIK-1 + Focusrite Input 1-4)');
+    console.log('ok demo measurement inputs (UMIK-1 + Scarlett external-input pairs)');
 })();

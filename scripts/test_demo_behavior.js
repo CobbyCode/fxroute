@@ -283,6 +283,7 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     // ── Source mode: stereo-pair input simulation ────────────────────
     // Mirrors the real stereo-pair abstraction: the MOTU M4 multichannel
     // interface is offered as adjacent stereo pairs (never mono channels),
+    // the Focusrite Scarlett 16i16 capture as its nine adjacent pairs,
     // bluetooth-input lands on a genuinely active streaming source, and
     // switching modes/inputs keeps the overview consistent.
     const sourceGet = () => demoFetch('/api/audio/source-mode').then((r) => r.json());
@@ -293,12 +294,20 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     // JSON-stringify for cross-realm comparison: the demo VM hands back
     // live objects whose Array prototype differs from this realm's.
     assert.equal(JSON.stringify(initialSource.inputs.map((i) => i.label)),
-        JSON.stringify(['MOTU M4 · Input 1–2', 'MOTU M4 · Input 3–4', 'USB S/PDIF · Input']));
+        JSON.stringify(['MOTU M4 · Input 1–2', 'MOTU M4 · Input 3–4', 'USB S/PDIF · Input',
+            'Focusrite Scarlett 16i16 · Input 1–2', 'Focusrite Scarlett 16i16 · Input 3–4',
+            'Focusrite Scarlett 16i16 · Input 5–6', 'Focusrite Scarlett 16i16 · Input 7–8',
+            'Focusrite Scarlett 16i16 · Input 9–10', 'Focusrite Scarlett 16i16 · Input 11–12',
+            'Focusrite Scarlett 16i16 · Input 13–14', 'Focusrite Scarlett 16i16 · Input 15–16',
+            'Focusrite Scarlett 16i16 · Input 17–18']));
     assert.ok(initialSource.inputs.every((i) => Array.isArray(i.pair_channels) && i.pair_channels.length === 2));
     assert.ok(!initialSource.inputs.some((i) => /Input [12]$/.test(i.label)),
         'no single mono channel may appear as a stereo source');
     assert.equal(JSON.stringify(initialSource.inputs.map((i) => [i.left_channel, i.right_channel])),
-        JSON.stringify([['FL', 'FR'], ['RL', 'RR'], ['FL', 'FR']]));
+        JSON.stringify([['FL', 'FR'], ['RL', 'RR'], ['FL', 'FR'],
+            ['FL', 'FR'], ['RL', 'RR'], ['FC', 'LFE'], ['SL', 'SR'],
+            ['AUX0', 'AUX1'], ['AUX2', 'AUX3'], ['AUX4', 'AUX5'],
+            ['AUX14', 'AUX15'], ['AUX16', 'AUX17']]));
     assert.equal(initialSource.bluetooth.selectable, true);
     assert.equal(initialSource.bluetooth.state, 'streaming');
     assert.equal(initialSource.bluetooth.connected_device, 'Demo Phone');

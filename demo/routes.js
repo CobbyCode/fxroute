@@ -135,13 +135,12 @@
     // The demo reports the capture side that belongs to the selected output
     // device, exactly like the real machine pairs the Focusrite Scarlett 16i16
     // multichannel output with its 18-channel capture input. The UMIK-1 USB
-    // measurement microphone and the 4-channel Focusrite capture stay
-    // manually selectable in the measurement setup; interfaces below three
-    // capture channels keep the previous measurement view (microphone
-    // Input 1 / Input 2 plus one shared electrical reference); the split
-    // Electrical Ref L / R view belongs to captures with three or more
-    // channels and comes from the unchanged app.js logic, which switches on
-    // the capture channel count.
+    // measurement microphone stays manually selectable in the measurement
+    // setup; interfaces below three capture channels keep the previous
+    // measurement view (microphone Input 1 / Input 2 plus one shared
+    // electrical reference); the split Electrical Ref L / R view belongs to
+    // the Scarlett alone and comes from the unchanged app.js logic, which
+    // switches on the capture channel count.
     const SCARLETT_OUTPUT_KEY = 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output';
     const UMIK1_CAPTURE_INPUT = {
         id: 'demo_mic',
@@ -178,23 +177,7 @@
         node_name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
         persistent_id: 'device-serial:Focusrite_Scarlett_16i16_4th_Gen|node-name:alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
     };
-    // Four-channel Focusrite capture (Scarlett 4i4 class): manually
-    // selectable in the measurement setup so the mic channel offers the
-    // realistic Input 1-4 range. Simulation behavior is unchanged.
-    const FOCUSRITE_4CH_CAPTURE_INPUT = {
-        id: 'alsa_input.usb-Focusrite_Scarlett_4i4_4th_Gen-00.analog-surround-40',
-        // Labels mirror the real capture list: the PipeWire node name, like the
-        // .104 `alsa_input.usb-Focusrite_Scarlett_16i16...-multichannel-input`.
-        label: 'alsa_input.usb-Focusrite_Scarlett_4i4_4th_Gen-00.analog-surround-40',
-        note: 'Focusrite Scarlett 4i4 analog inputs 1-4',
-        channels: 4,
-        supported_rates: [44100, 48000],
-        sample_rate: 48000,
-        measurement_sample_rate: 48000,
-        node_name: 'alsa_input.usb-Focusrite_Scarlett_4i4_4th_Gen-00.analog-surround-40',
-        persistent_id: 'device-serial:Focusrite_Scarlett_4i4_4th_Gen|node-name:alsa_input.usb-Focusrite_Scarlett_4i4_4th_Gen-00.analog-surround-40',
-    };
-    const CAPTURE_INPUTS = [UMIK1_CAPTURE_INPUT, STEREO_CAPTURE_INPUT, FOCUSRITE_4CH_CAPTURE_INPUT, MULTICHANNEL_CAPTURE_INPUT];
+    const CAPTURE_INPUTS = [UMIK1_CAPTURE_INPUT, STEREO_CAPTURE_INPUT, MULTICHANNEL_CAPTURE_INPUT];
     function captureInputForOutputKey(key) {
         return key === SCARLETT_OUTPUT_KEY ? MULTICHANNEL_CAPTURE_INPUT : STEREO_CAPTURE_INPUT;
     }
@@ -313,7 +296,9 @@
     // (audio/samplerate/overview.py + audio/external_input.py):
     // multichannel capture interfaces are offered as adjacent stereo
     // pairs (Input 1-2, Input 3-4, ...), never as single mono channels
-    // and never duplicated onto both sides. Single-pair devices keep
+    // and never duplicated onto both sides. The MOTU M4 yields its two
+    // pairs, the Focusrite Scarlett 16i16 capture its nine pairs with
+    // the real positional channel suffixes. Single-pair devices keep
     // the plain device label, exactly like the real overview.
     // Module scope: the fetch handler below must observe mutations
     // across requests (selected pair, active mode).
@@ -389,6 +374,222 @@
             pair_channels: [1, 2],
             left_channel: 'FL',
             right_channel: 'FR',
+        },
+        {
+            id: 104,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:1-2',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 1–2',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 0,
+            pair_count: 9,
+            pair_label: 'Input 1–2',
+            pair_channels: [1, 2],
+            left_channel: 'FL',
+            right_channel: 'FR',
+        },
+        {
+            id: 105,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:3-4',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 3–4',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 1,
+            pair_count: 9,
+            pair_label: 'Input 3–4',
+            pair_channels: [3, 4],
+            left_channel: 'RL',
+            right_channel: 'RR',
+        },
+        {
+            id: 106,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:5-6',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 5–6',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 2,
+            pair_count: 9,
+            pair_label: 'Input 5–6',
+            pair_channels: [5, 6],
+            left_channel: 'FC',
+            right_channel: 'LFE',
+        },
+        {
+            id: 107,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:7-8',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 7–8',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 3,
+            pair_count: 9,
+            pair_label: 'Input 7–8',
+            pair_channels: [7, 8],
+            left_channel: 'SL',
+            right_channel: 'SR',
+        },
+        {
+            id: 108,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:9-10',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 9–10',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 4,
+            pair_count: 9,
+            pair_label: 'Input 9–10',
+            pair_channels: [9, 10],
+            left_channel: 'AUX0',
+            right_channel: 'AUX1',
+        },
+        {
+            id: 109,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:11-12',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 11–12',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 5,
+            pair_count: 9,
+            pair_label: 'Input 11–12',
+            pair_channels: [11, 12],
+            left_channel: 'AUX2',
+            right_channel: 'AUX3',
+        },
+        {
+            id: 110,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:13-14',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 13–14',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 6,
+            pair_count: 9,
+            pair_label: 'Input 13–14',
+            pair_channels: [13, 14],
+            left_channel: 'AUX4',
+            right_channel: 'AUX5',
+        },
+        {
+            id: 111,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:15-16',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 15–16',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 7,
+            pair_count: 9,
+            pair_label: 'Input 15–16',
+            pair_channels: [15, 16],
+            left_channel: 'AUX14',
+            right_channel: 'AUX15',
+        },
+        {
+            id: 112,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:17-18',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 17–18',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 8,
+            pair_count: 9,
+            pair_label: 'Input 17–18',
+            pair_channels: [17, 18],
+            left_channel: 'AUX16',
+            right_channel: 'AUX17',
         },
     ];
     // A connected phone streaming over A2DP: selecting bluetooth-input
