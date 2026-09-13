@@ -181,15 +181,27 @@ function runStreaming({ fetchImpl, cueCalls }) {
     };
     vm.createContext(sandbox);
     vm.runInContext(streamingJs, sandbox);
+    // The queue-started cue decision and its metadata mapping are owned by
+    // app.js and injected into streaming.js. Run the verbatim app.js functions
+    // here so the tab transport is exercised through the real implementation.
+    sandbox.showNowPlayingCue = (...a) => { cueCalls.push(a); };
+    for (const name of ['streamingCueTrack', 'streamingCueTrackId', 'streamingCueKey',
+        'lastPlayingQueueKey', 'recordPlayingQueueKey', 'showStreamingQueueStarted', 'maybeShowStreamingQueueCue']) {
+        vm.runInContext(extractFunction(appJs, name), sandbox);
+    }
     const api = {
-        showToast() {}, showNowPlayingCue: (...a) => { cueCalls.push(a); },
+        showToast() {}, showNowPlayingCue: sandbox.showNowPlayingCue,
+        maybeShowStreamingQueueCue: sandbox.maybeShowStreamingQueueCue,
         escapeHtml: (v) => String(v), formatTime: () => '0:00',
         trackRowHtml: ({ title, sub }) => `<button class="track-play">▶</button><div>${title}${sub || ''}</div>`,
         factsHtml: () => '', aboutHtml: () => '',
         spotifyCommand: async () => {}, spotifySeek: async () => {},
     };
     sandbox.window.FXRouteStreaming.init(api);
-    return { sandbox, shells, fetchCalls, createdEls, document, tidalBrowseBody };
+    // Mirrors app.js' WS-init snapshot handling: the first snapshot of a
+    // provider anchors its session track without cuing.
+    const seedSession = (provider, snapshot) => sandbox.maybeShowStreamingQueueCue(provider, null, snapshot);
+    return { sandbox, shells, fetchCalls, createdEls, document, tidalBrowseBody, seedSession };
 }
 
 (async () => {
@@ -240,8 +252,16 @@ function runStreaming({ fetchImpl, cueCalls }) {
         assert.ok(appJs.includes('async function qobuzCommand('), 'missing qobuzCommand');
         assert.ok(appJs.includes("maybeShowStreamingQueueCue('qobuz'"), 'qobuz paths must call the shared cue decision');
         assert.ok(appJs.includes('function handleIncomingQobuzState('), 'missing handleIncomingQobuzState');
-        assert.ok(streamingJs.includes('maybeShowProviderQueueStarted('), 'qobuz tab transport must call the shared cue decision');
-        assert.ok(streamingJs.includes('Number(data.queue_len || 0)'), 'qobuz cue must use the real queue_len');
+        assert.ok(streamingJs.includes("maybeShowStreamingQueueCue('qobuz'"), 'qobuz tab transport must call the shared cue decision');
+        assert.ok(appJs.includes('maybeShowStreamingQueueCue,'), 'app.js must inject the shared cue decision into streaming');
+        assert.ok(appJs.includes('Number(data?.queue_len || 0)'), 'the cue must use the real queue_len');
+        // One state machine only: the tab transport must not carry its own copy.
+        assert.ok(!streamingJs.includes('function maybeShowProviderQueueStarted('),
+            'streaming must not keep a second cue state machine');
+        assert.ok(!streamingJs.includes('function showProviderQueueStarted('),
+            'streaming must not keep a second cue metadata mapping');
+        assert.ok(!streamingJs.includes('function lastPlayingQueueKey(') && !streamingJs.includes('function recordPlayingQueueKey('),
+            'streaming must not keep its own session-track bookkeeping');
     });
 
     // 6. Decision semantics: the maybe-helper behaves like playLocal, and a
@@ -357,7 +377,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
     // 9. Functional: Qobuz tab toggle from Stopped shows Queue started with queue_len.
     await run('qobuz tab toggle shows Queue started with real queue_len', async () => {
         const cueCalls = [];
-        const { sandbox, shells } = runStreaming({
+        const { sandbox, shells, seedSession } = runStreaming({
             cueCalls,
             fetchImpl: async (u) => {
                 if (u === '/api/streaming/qobuz/toggle') return { ok: true, json: async () => ({ ...QOBUZ_FIXTURE }) };
@@ -367,6 +387,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
         });
         const stopped = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
         sandbox.window.FXRouteStreaming.renderProvider('qobuz', stopped);
+        seedSession('qobuz', stopped);       // app.js anchors on the initial snapshot
         shells.qobuz.querySelector('[data-action="toggle"]').click();
         await new Promise((r) => setTimeout(r, 0));
         assert.equal(cueCalls.length, 1, 'qobuz queue start must cue once');
@@ -382,7 +403,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
     await run('qobuz resume shows no cue (like local toggle)', async () => {
         const cueCalls = [];
         const pausedSame = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Paused', title: QOBUZ_FIXTURE.title, artist: QOBUZ_FIXTURE.artist, album: QOBUZ_FIXTURE.album, trackId: QOBUZ_FIXTURE.trackId, artUrl: QOBUZ_FIXTURE.artUrl, queue_len: 11, shuffle: false, loop: 'none', position: 10, duration: 200 };
-        const { sandbox, shells } = runStreaming({
+        const { sandbox, shells, seedSession } = runStreaming({
             cueCalls,
             fetchImpl: async (u) => {
                 if (u === '/api/streaming/qobuz/toggle') return { ok: true, json: async () => ({ ...QOBUZ_FIXTURE }) };
@@ -391,6 +412,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
             },
         });
         sandbox.window.FXRouteStreaming.renderProvider('qobuz', pausedSame);
+        seedSession('qobuz', pausedSame);     // app.js anchors on the initial snapshot
         shells.qobuz.querySelector('[data-action="toggle"]').click();
         await new Promise((r) => setTimeout(r, 0));
         assert.equal(cueCalls.length, 0, 'resume must not cue');
@@ -444,6 +466,138 @@ function runStreaming({ fetchImpl, cueCalls }) {
         assert.equal(sandbox.showStreamingQueueStartedCalls.length, 2);
         assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', playing({ trackId: 'split', status: 'Paused' }), playing({ trackId: 'split' })), true);
         assert.equal(sandbox.showStreamingQueueStartedCalls.length, 3);
+    });
+
+    // Shared decision sandbox for the longer state sequences.
+    function decisionSandbox() {
+        const sandbox = { window: {}, showStreamingQueueStartedCalls: [] };
+        vm.createContext(sandbox);
+        sandbox.showStreamingQueueStarted = (...a) => { sandbox.showStreamingQueueStartedCalls.push(a); };
+        for (const name of ['streamingCueTrackId', 'streamingCueKey', 'lastPlayingQueueKey', 'recordPlayingQueueKey', 'maybeShowStreamingQueueCue']) {
+            vm.runInContext(extractFunction(appJs, name), sandbox);
+        }
+        sandbox.cues = () => sandbox.showStreamingQueueStartedCalls.length;
+        sandbox.last = () => sandbox.showStreamingQueueStartedCalls[sandbox.showStreamingQueueStartedCalls.length - 1];
+        return sandbox;
+    }
+
+    // 13. The .104 reproduction: a provider Next while paused publishes the new
+    //     track while still Paused, and only the later Playing edge is the real
+    //     start. On a fresh page load no playing snapshot has been seen yet, so
+    //     the paused intermediate must not be mistaken for the session track
+    //     (which made the start silent).
+    await run('next-while-paused after a fresh load cues exactly once', async () => {
+        const sandbox = decisionSandbox();
+        const qobuz = (over = {}) => ({ ...QOBUZ_FIXTURE, ...over });
+        const oldTrack = qobuz({ status: 'Paused' });
+        const newTrackPaused = qobuz({ status: 'Paused', trackId: '46115440', title: 'Any Old Thing' });
+        const newTrackPlaying = qobuz({ trackId: '46115440', title: 'Any Old Thing' });
+        // Page load while paused: the first snapshot anchors the session track.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', null, oldTrack), false);
+        assert.equal(sandbox.cues(), 0);
+        // Next while paused: the new track arrives while still Paused (silent).
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', oldTrack, newTrackPaused), false);
+        assert.equal(sandbox.cues(), 0);
+        // Its Playing edge is a real start: exactly one cue with the new track.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', newTrackPaused, newTrackPlaying), true);
+        assert.equal(sandbox.cues(), 1);
+        assert.equal(sandbox.last()[0], 'qobuz');
+        assert.equal(sandbox.showStreamingQueueStartedCalls[0][1].title, 'Any Old Thing');
+        assert.equal(sandbox.showStreamingQueueStartedCalls[0][1].queue_len, 11);
+        // Resume of that track stays silent; poll repeats never double.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', qobuz({ trackId: '46115440', status: 'Paused' }), newTrackPlaying), false);
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', newTrackPlaying, newTrackPlaying), false);
+        assert.equal(sandbox.cues(), 1);
+    });
+
+    // 14. Provider switching both directions over several starts: each real
+    //     start cues exactly once, the switch itself never cues.
+    await run('spotify<->qobuz switching keeps exactly one cue per real start', async () => {
+        const sandbox = decisionSandbox();
+        const sp = (over = {}) => ({ ...SPOTIFY_FIXTURE, ...over });
+        const qb = (over = {}) => ({ ...QOBUZ_FIXTURE, ...over });
+        const spA = sp();
+        const spB = sp({ trackId: 'sp2', title: 'Second' });
+        const spC = sp({ trackId: 'sp3', title: 'Third' });
+        const qbA = qb({ status: 'Paused' });
+        const qbBp = qb({ trackId: 'qb2', title: 'Second Q' });
+        const qbB = { ...qbBp, status: 'Paused' };
+        const qbC = qb({ trackId: 'qb3', title: 'Third Q' });
+        // Page load: every provider anchors on its first snapshot.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', null, spA), false);
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', null, qbA), false);
+        assert.equal(sandbox.cues(), 0);
+        // Spotify: real start. The provider switch itself is not a start.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', spA, spB), true);
+        assert.equal(sandbox.cues(), 1);
+        assert.equal(sandbox.last()[0], 'spotify');
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', spB, spB), false);
+        // Qobuz: next while paused, then its start -> one cue.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', qbA, qbB), false);
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', qbB, qbBp), true);
+        assert.equal(sandbox.cues(), 2);
+        assert.equal(sandbox.last()[0], 'qobuz');
+        // Back to Spotify: another real start -> one cue; Qobuz resume is silent.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', spB, spC), true);
+        assert.equal(sandbox.cues(), 3);
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', qbB, qbBp), false);
+        // Qobuz next while playing -> one cue; Spotify/Qobuz repeats stay silent.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', qbBp, qbC), true);
+        assert.equal(sandbox.cues(), 4);
+        assert.equal(sandbox.last()[0], 'qobuz');
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', spC, spC), false);
+        assert.equal(sandbox.maybeShowStreamingQueueCue('qobuz', qbC, qbC), false);
+        assert.equal(sandbox.cues(), 4);
+        // Track titles carried by each cue belong to the starting provider.
+        assert.equal(sandbox.showStreamingQueueStartedCalls[1][1].title, 'Second Q');
+        assert.equal(sandbox.showStreamingQueueStartedCalls[2][1].title, 'Third');
+        assert.equal(sandbox.showStreamingQueueStartedCalls[3][1].title, 'Third Q');
+    });
+
+    // 15. Several track changes without a reload: one cue per start, none for
+    //     the repeated/late snapshots in between, none for a resume at the end.
+    await run('repeated track changes without reload cue once each', async () => {
+        const sandbox = decisionSandbox();
+        const sp = (over = {}) => ({ ...SPOTIFY_FIXTURE, ...over });
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', null, sp()), false);
+        for (let i = 1; i <= 5; i += 1) {
+            const prev = sp({ trackId: `t${i}`, title: `Track ${i}` });
+            const next = sp({ trackId: `t${i + 1}`, title: `Track ${i + 1}` });
+            assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', prev, next), true, `track ${i + 1} must cue`);
+            assert.equal(sandbox.cues(), i, `exactly one cue per start (iteration ${i})`);
+            // Poll refresh / duplicated broadcast of the same playing track.
+            assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', next, { ...next }), false);
+            assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', { ...next }, { ...next }), false);
+            assert.equal(sandbox.cues(), i);
+        }
+        // Pause and resume the current track: transport only, still silent.
+        const current = sp({ trackId: 't6', title: 'Track 6' });
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', { ...current, status: 'Paused' }, current), false);
+        assert.equal(sandbox.cues(), 5);
+        // A start after Stopped of the same track is a start again.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', { ...current, status: 'Stopped' }, current), true);
+        assert.equal(sandbox.cues(), 6);
+    });
+
+    // 16. Duplicated provider snapshots (poll refresh, repeated broadcast,
+    //     command echo) must not add cues; a genuinely different track is still
+    //     exactly one start.
+    await run('duplicated snapshots neither double nor swallow cues', async () => {
+        const sandbox = decisionSandbox();
+        const sp = (over = {}) => ({ ...SPOTIFY_FIXTURE, ...over });
+        const a = sp();
+        const b = sp({ trackId: 'other', title: 'Other' });
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', null, a), false);
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', a, b), true);
+        assert.equal(sandbox.cues(), 1);
+        // Late duplicate of the newly started track: no second cue.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', b, { ...b }), false);
+        assert.equal(sandbox.cues(), 1);
+        // A different track is still a start, and its own duplicates stay silent.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', { ...b }, sp({ trackId: 'third', title: 'Third' })), true);
+        assert.equal(sandbox.cues(), 2);
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', sp({ trackId: 'third', title: 'Third' }), sp({ trackId: 'third', title: 'Third' })), false);
+        assert.equal(sandbox.cues(), 2);
     });
 
     const failed = cases.filter((c) => !c.pass);

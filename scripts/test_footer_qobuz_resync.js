@@ -111,6 +111,9 @@ function makeSandbox({ footerSource = 'local', visibleTab = 'radio', owner = nul
         _footerContentFreezeUntil: 0,
         pendingFooterSingleTrackStart: null,
         footerDebug: () => {},
+        // handleIncomingQobuzState forwards every snapshot to the shared cue
+        // decision; the footer-resync contract under test is independent of it.
+        maybeShowStreamingQueueCue: () => false,
         stopPlaybackPositionPoll: () => {},
         startSpotifyPoll: () => {},
         shouldPollSpotify: () => false,

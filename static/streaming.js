@@ -18,6 +18,10 @@
     let api = null;
     let showToast = function () {};
     let showNowPlayingCue = function () {};
+    // The queue-started cue decision is owned by app.js and injected here, so
+    // the tab transport and the incoming-state/poll paths use one state
+    // machine instead of two copies that can drift apart.
+    let maybeShowStreamingQueueCue = function () { return false; };
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
     // Shared transition-error formatter injected by app.js. The local default
     // mirrors the canonical app.js implementation so this module never renders
@@ -162,6 +166,7 @@
         api = interfaceApi || {};
         if (typeof api.showToast === 'function') showToast = api.showToast;
         if (typeof api.showNowPlayingCue === 'function') showNowPlayingCue = api.showNowPlayingCue;
+        if (typeof api.maybeShowStreamingQueueCue === 'function') maybeShowStreamingQueueCue = api.maybeShowStreamingQueueCue;
         if (typeof api.escapeHtml === 'function') escapeHtml = api.escapeHtml;
         if (typeof api.formatTransitionErrorDetail === 'function') formatTransitionErrorDetail = api.formatTransitionErrorDetail;
         if (typeof api.favoriteHeartSvg === 'function') favoriteHeartSvg = api.favoriteHeartSvg;
@@ -655,69 +660,10 @@
         return parts.join(' · ');
     }
 
-    // Shared queue-started cue for provider queue starts. Reuses the injected
-    // app.js showNowPlayingCue (same component, content, presentation and
-    // duration as Local Library/Radio); only the metadata mapping lives here.
-    function streamingCueKey(data) {
-        if (!data || typeof data !== 'object') return '';
-        return [
-            String(data.trackId || data.trackid || data.id || ''),
-            data.title || '',
-            data.artist || '',
-            data.album || '',
-        ].join('|');
-    }
-    function showProviderQueueStarted(source, data) {
-        if (!data || typeof data !== 'object') return;
-        if (!data.title && !data.artist && !data.album) return;
-        const artworkUrl = data.artwork_url || data.artUrl || '';
-        const track = {
-            title: data.title || '',
-            artist: data.artist || '',
-            album: data.album || '',
-            source,
-            artwork_available: !!artworkUrl,
-            artwork_url: artworkUrl,
-            artwork_source: artworkUrl ? source : 'none',
-        };
-        const queueCount = Number(data.queue_len || 0);
-        showNowPlayingCue(track, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
-    }
-    // One cue decision for tab transport commands: immediate feedback on the
-    // click. The last *playing* key (not the previous snapshot) decides
-    // resume vs start, so a Next-from-paused split (new id while Paused,
-    // then the Playing edge) still cues, while poll refreshes stay silent.
-    function lastPlayingQueueKey(source) {
-        const known = window.__lastPlayingQueueKey;
-        return known && typeof known === 'object' ? known[source] || '' : '';
-    }
-    function recordPlayingQueueKey(source, data) {
-        if (!data || typeof data !== 'object') return '';
-        const key = `${source}|${streamingCueKey(data)}`;
-        if (!window.__lastPlayingQueueKey || typeof window.__lastPlayingQueueKey !== 'object') {
-            window.__lastPlayingQueueKey = {};
-        }
-        window.__lastPlayingQueueKey[source] = key;
-        return key;
-    }
-    function maybeShowProviderQueueStarted(source, prev, data) {
-        if (!data || data.status !== 'Playing') return false;
-        const key = `${source}|${streamingCueKey(data)}`;
-        if (!prev || typeof prev !== 'object' || !prev.status) {
-            recordPlayingQueueKey(source, data);
-            return false;
-        }
-        if (!lastPlayingQueueKey(source) && streamingCueKey(prev)) {
-            recordPlayingQueueKey(source, prev);
-        }
-        const resume = key === lastPlayingQueueKey(source)
-            && (prev.status === 'Paused' || prev.status === 'Playing');
-        if (resume) return false;
-        // Same one-cue-per-start contract as the app.js decision above.
-        showProviderQueueStarted(source, data);
-        recordPlayingQueueKey(source, data);
-        return true;
-    }
+    // Provider queue starts (tab transport) are decided by the injected app.js
+    // maybeShowStreamingQueueCue, which owns the session-track bookkeeping and
+    // reuses showStreamingQueueStarted -> showNowPlayingCue. Deliberately no
+    // local copy here: two implementations of the same state machine drift.
 
     // -----------------------------------------------------------------------
     // Now-playing transport wiring
@@ -793,7 +739,7 @@
                     ? resp.clone().json().catch(() => null)
                     : resp.json().catch(() => null));
                 if (data) {
-                    maybeShowProviderQueueStarted('qobuz', prev, data);
+                    maybeShowStreamingQueueCue('qobuz', prev, data);
                 }
             } catch (_cueError) {
                 // Cue must never break transport.
