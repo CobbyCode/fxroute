@@ -375,15 +375,16 @@ class PlaybackQueue:
         source = str(next_track.get("source") or "local")
         # Native streaming providers (TIDAL) carry short-lived stream URLs;
         # resolve them as late as possible, right before the transition.
+        # An unresolvable entry must not wipe the committed queue: the
+        # caller reports "unavailable" and the queue stays intact so the
+        # user can retry or pick another track.
         if source == "tidal" and self._deps.resolve_stream_url is not None:
             resolved = await self._deps.resolve_stream_url(next_track)
             if not resolved:
-                self.reset()
                 return False
             next_track["url"] = resolved
         target_url = str(next_track.get("url") or "")
         if not target_url:
-            self.reset()
             return False
         target_rate = self._deps.coordinator_target_rate(source, next_track)
         request = TransitionRequest(

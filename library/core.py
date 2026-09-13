@@ -986,13 +986,16 @@ def is_removable_artwork_file(path: Path) -> bool:
 def is_removable_metadata_sidecar(path: Path) -> bool:
     if not path.is_file() or path.suffix.lower() not in REMOVABLE_EMPTY_SIDECAR_SUFFIXES:
         return False
-    return True
+    try:
+        return path.stat().st_size == 0
+    except OSError:
+        return False
 
 
 def is_cleanup_only_file(path: Path) -> bool:
     if not path.is_file():
         return False
-    return path.suffix.lower() in REMOVABLE_ARTWORK_SUFFIXES or is_removable_metadata_sidecar(path)
+    return is_removable_artwork_file(path) or is_removable_metadata_sidecar(path)
 
 
 def folder_has_audio_files(folder: Path) -> bool:
