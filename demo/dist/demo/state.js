@@ -1165,6 +1165,10 @@
         const copy = JSON.parse(JSON.stringify(measurement));
         copy.channel = channel;
         copy.measurement_role = role;
+        // Simulated sweeps run on this box's demo capture (UMIK-1): the
+        // cloned .104 fixture datasets keep their traces, but the capture
+        // facts describe the demo setup, not the recording machine.
+        copy.input_device = { id: 'demo_mic', label: 'UMIK-1' };
         const tracePoints = (Array.isArray(copy.traces) && copy.traces[0] && Array.isArray(copy.traces[0].points))
             ? copy.traces[0].points
             : [];
@@ -1233,7 +1237,7 @@
             review_traces: [],
             analysis: {},
             summary: {},
-            input_device: { id: 'demo_mic', label: 'Demo Microphone' },
+            input_device: { id: 'demo_mic', label: 'UMIK-1' },
             input_channels: { mic: '1' },
             calibration: {},
             audio_output_context: { mode: opts.mode || 'stereo', sample_rate: 48000 },
@@ -1277,6 +1281,9 @@
         copy.measurement_kind = 'lr-repeat-summary';
         copy.measurement_role = '';
         copy.created_at = new Date().toISOString();
+        // Simulated on this box's demo capture (UMIK-1), like every other
+        // demo sweep cloned from a .104 fixture dataset.
+        copy.input_device = { id: 'demo_mic', label: 'UMIK-1' };
         const analysis = copy.analysis = copy.analysis || {};
         analysis.method = 'same-position-lr-repeat-paired-delta';
         analysis.sample_rate = 48000;

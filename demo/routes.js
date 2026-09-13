@@ -134,16 +134,19 @@
     // ── Measurement capture model ───────────────────────────────────────
     // The demo reports the capture side that belongs to the selected output
     // device, exactly like the real machine pairs the Focusrite Scarlett 16i16
-    // multichannel output with its 18-channel capture input. Interfaces below
-    // three capture channels keep the previous measurement view (microphone
+    // multichannel output with its 18-channel capture input. The UMIK-1 USB
+    // measurement microphone and the 4-channel Focusrite capture stay
+    // manually selectable in the measurement setup; interfaces below three
+    // capture channels keep the previous measurement view (microphone
     // Input 1 / Input 2 plus one shared electrical reference); the split
-    // Electrical Ref L / R view belongs to the Scarlett alone and comes from
-    // the unchanged app.js logic, which switches on the capture channel count.
+    // Electrical Ref L / R view belongs to captures with three or more
+    // channels and comes from the unchanged app.js logic, which switches on
+    // the capture channel count.
     const SCARLETT_OUTPUT_KEY = 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output';
-    const DEMO_MIC_CAPTURE_INPUT = {
+    const UMIK1_CAPTURE_INPUT = {
         id: 'demo_mic',
-        label: 'Demo Microphone',
-        note: 'simulated capture',
+        label: 'UMIK-1',
+        note: 'UMIK-1 USB measurement microphone (simulated)',
         channels: 1,
         supported_rates: [44100, 48000, 88200, 96000],
         sample_rate: 48000,
@@ -175,7 +178,23 @@
         node_name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
         persistent_id: 'device-serial:Focusrite_Scarlett_16i16_4th_Gen|node-name:alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
     };
-    const CAPTURE_INPUTS = [DEMO_MIC_CAPTURE_INPUT, STEREO_CAPTURE_INPUT, MULTICHANNEL_CAPTURE_INPUT];
+    // Four-channel Focusrite capture (Scarlett 4i4 class): manually
+    // selectable in the measurement setup so the mic channel offers the
+    // realistic Input 1-4 range. Simulation behavior is unchanged.
+    const FOCUSRITE_4CH_CAPTURE_INPUT = {
+        id: 'alsa_input.usb-Focusrite_Scarlett_4i4_4th_Gen-00.analog-surround-40',
+        // Labels mirror the real capture list: the PipeWire node name, like the
+        // .104 `alsa_input.usb-Focusrite_Scarlett_16i16...-multichannel-input`.
+        label: 'alsa_input.usb-Focusrite_Scarlett_4i4_4th_Gen-00.analog-surround-40',
+        note: 'Focusrite Scarlett 4i4 analog inputs 1-4',
+        channels: 4,
+        supported_rates: [44100, 48000],
+        sample_rate: 48000,
+        measurement_sample_rate: 48000,
+        node_name: 'alsa_input.usb-Focusrite_Scarlett_4i4_4th_Gen-00.analog-surround-40',
+        persistent_id: 'device-serial:Focusrite_Scarlett_4i4_4th_Gen|node-name:alsa_input.usb-Focusrite_Scarlett_4i4_4th_Gen-00.analog-surround-40',
+    };
+    const CAPTURE_INPUTS = [UMIK1_CAPTURE_INPUT, STEREO_CAPTURE_INPUT, FOCUSRITE_4CH_CAPTURE_INPUT, MULTICHANNEL_CAPTURE_INPUT];
     function captureInputForOutputKey(key) {
         return key === SCARLETT_OUTPUT_KEY ? MULTICHANNEL_CAPTURE_INPUT : STEREO_CAPTURE_INPUT;
     }
