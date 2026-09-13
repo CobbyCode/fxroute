@@ -1505,6 +1505,10 @@ async def _run_auto_sub_22_stereo_optimize(
         right_score_pct = round(right_score * 100.0, 1)
         overall_score_pct = round(overall_score * 100.0, 1)
         gate_action = (job.get("confirmation_gate") or {}).get("action", "final_kept")
+        if _auto_sub_cancel_requested(job):
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
         job["status"] = "completed"
         gate_suffix = {
             "winner_alignment_original_kept": "; original Gain dropped, selected alignment/polarity committed",

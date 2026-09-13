@@ -2,9 +2,16 @@
 
 Extracted verbatim from main.py (REFACTOR-008). Behavior is identical to the
 previous inline implementation: unique path/dir selection, ZIP path traversal
-protection, metadata filtering (__MACOSX, .DS_Store), allowed file types,
-extraction order, return payloads, exception types and HTTP status/messages are
-unchanged. No runtime globals are used.
+protection, metadata filtering (__MACOSX, .DS_Store), extraction order,
+return payloads, exception types and HTTP status/messages are unchanged.
+No runtime globals are used.
+
+Extraction contract: every member that passes the traversal / absolute /
+Windows-drive / UNC, symlink / special-file and encrypted checks is
+extracted, regardless of file type; audio and playlist members are
+additionally categorized into audio_files / playlist_files while all other
+types are preserved in extracted_files. Only __MACOSX parts and
+.DS_Store / Thumbs.db names are skipped as metadata.
 
 Hardening pass: every ZIP import is checked before any extraction - member
 count, total and per-member uncompressed size, traversal / absolute /

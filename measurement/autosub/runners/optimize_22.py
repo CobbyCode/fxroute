@@ -873,6 +873,11 @@ async def _run_auto_sub_22_optimize(
                 offset_db=_offset_db,
             )
 
+        if _auto_sub_cancel_requested(job):
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
+
         job["status"] = "completed"
         gate_action = (job.get("confirmation_gate") or {}).get("action", "final_kept")
         gate_reverted_to_incumbent = (
