@@ -185,12 +185,17 @@ function runStreaming({ fetchImpl, cueCalls }) {
     // app.js and injected into streaming.js. Run the verbatim app.js functions
     // here so the tab transport is exercised through the real implementation.
     sandbox.showNowPlayingCue = (...a) => { cueCalls.push(a); };
+    // The native (Library/Radio/TIDAL) track-change decision is owned by app.js
+    // too; run it verbatim so an explicit TIDAL play goes through the same state
+    // machine as the WebSocket playback frame reporting that same start.
     for (const name of ['streamingCueTrack', 'streamingCueTrackId', 'streamingCueKey',
-        'lastPlayingQueueKey', 'recordPlayingQueueKey', 'showStreamingQueueStarted', 'maybeShowStreamingQueueCue']) {
+        'lastPlayingQueueKey', 'recordPlayingQueueKey', 'showStreamingQueueStarted', 'maybeShowStreamingQueueCue',
+        'nativeTrackCueKey', 'maybeShowNativeTrackCue']) {
         vm.runInContext(extractFunction(appJs, name), sandbox);
     }
     const api = {
-        showToast() {}, showNowPlayingCue: sandbox.showNowPlayingCue,
+        showToast() {},
+        maybeShowNativeTrackCue: sandbox.maybeShowNativeTrackCue,
         maybeShowStreamingQueueCue: sandbox.maybeShowStreamingQueueCue,
         escapeHtml: (v) => String(v), formatTime: () => '0:00',
         trackRowHtml: ({ title, sub }) => `<button class="track-play">▶</button><div>${title}${sub || ''}</div>`,
@@ -208,16 +213,19 @@ function runStreaming({ fetchImpl, cueCalls }) {
     // 1. Local regression anchor: playLocal still uses the canonical cue.
     await run('local playLocal keeps the canonical queue-started cue', async () => {
         assert.ok(appJs.includes('async function playLocal('), 'missing playLocal');
-        assert.ok(appJs.includes("showNowPlayingCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing')"),
+        assert.ok(appJs.includes("maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing')"),
             'playLocal must keep the Queue started / Now playing cue');
     });
 
-    // 2. Architecture: no provider-specific toast, same injected path.
-    await run('streaming reuses the injected showNowPlayingCue (no provider toast)', async () => {
-        assert.ok(streamingJs.includes('let showNowPlayingCue = function () {};'), 'streaming must declare the injected cue');
-        assert.ok(streamingJs.includes("if (typeof api.showNowPlayingCue === 'function') showNowPlayingCue = api.showNowPlayingCue;"),
-            'streaming must accept the injected cue');
-        assert.ok(appJs.includes('showNowPlayingCue,'), 'app.js must inject showNowPlayingCue into streaming');
+    // 2. Architecture: no provider-specific toast, one injected decision per source.
+    await run('streaming reuses the injected cue decisions (no provider toast)', async () => {
+        assert.ok(streamingJs.includes('let maybeShowNativeTrackCue = function () { return false; };'),
+            'streaming must declare the injected native track-change cue');
+        assert.ok(streamingJs.includes("if (typeof api.maybeShowNativeTrackCue === 'function') maybeShowNativeTrackCue = api.maybeShowNativeTrackCue;"),
+            'streaming must accept the injected native cue');
+        assert.ok(appJs.includes('maybeShowNativeTrackCue,'), 'app.js must inject the native track-change cue into streaming');
+        assert.ok(!streamingJs.includes('showNowPlayingCue = api.showNowPlayingCue'),
+            'streaming must not wire the cue component directly: one decision per source');
         assert.ok(!/function\s+showSpotify.*Toast|function\s+showQobuz.*Toast|function\s+showTidal.*Toast/.test(streamingJs),
             'streaming must not build a provider-specific toast');
         assert.ok(!/function\s+showSpotify.*Toast|function\s+showQobuz.*Toast|function\s+showTidal.*Toast/.test(appJs),
@@ -227,8 +235,8 @@ function runStreaming({ fetchImpl, cueCalls }) {
     // 3. TIDAL wiring: playTidalTracks uses the shared cue with playback metadata.
     await run('tidal playTidalTracks calls the shared cue', async () => {
         assert.ok(streamingJs.includes('async function playTidalTracks('), 'missing playTidalTracks');
-        assert.ok(streamingJs.includes('showNowPlayingCue(playedTrack, queueCount > 1 ? `Queue started'),
-            'playTidalTracks must call the shared cue with the queue count');
+        assert.ok(streamingJs.includes('maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started'),
+            'playTidalTracks must call the shared native cue with the queue count');
         assert.ok(streamingJs.includes('data?.playback?.current_track'), 'tidal cue must use playback.current_track');
         assert.ok(streamingJs.includes('data?.playback?.queue?.count'), 'tidal cue must use playback.queue.count');
     });
@@ -598,6 +606,107 @@ function runStreaming({ fetchImpl, cueCalls }) {
         assert.equal(sandbox.cues(), 2);
         assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', sp({ trackId: 'third', title: 'Third' }), sp({ trackId: 'third', title: 'Third' })), false);
         assert.equal(sandbox.cues(), 2);
+    });
+
+    // Shared sandbox for the native (Library/Radio/TIDAL) track-change decision.
+    function nativeDecisionSandbox() {
+        const sandbox = { window: {}, showNowPlayingCueCalls: [] };
+        vm.createContext(sandbox);
+        sandbox.showNowPlayingCue = (...a) => { sandbox.showNowPlayingCueCalls.push(a); };
+        for (const name of ['nativeTrackCueKey', 'maybeShowNativeTrackCue', 'seedNativeTrackCueKey', 'maybeCueNativePlaybackTrack']) {
+            vm.runInContext(extractFunction(appJs, name), sandbox);
+        }
+        sandbox.cues = () => sandbox.showNowPlayingCueCalls.length;
+        sandbox.last = () => sandbox.showNowPlayingCueCalls[sandbox.showNowPlayingCueCalls.length - 1];
+        return sandbox;
+    }
+    const localTrack = (over = {}) => ({ id: 'local_1', title: 'Track One', artist: 'A', source: 'local', ...over });
+    const playbackFrame = (track, over = {}) => ({ current_track: track, playing: true, paused: false, ended: false, ...over });
+
+    // 17. Native player (Library/Radio/TIDAL): the WebSocket playback frame is the
+    //     authoritative track-change signal. One cue per change, silent on resume,
+    //     repeated frames and page-load/reconnect adoption.
+    await run('native track-change decision cues once per change', async () => {
+        const sandbox = nativeDecisionSandbox();
+        // Page load / reconnect adopt the running track without cuing.
+        sandbox.seedNativeTrackCueKey(localTrack());
+        assert.equal(sandbox.cues(), 0);
+        // Repeated frames of the same track (position updates, polls): silent.
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(localTrack()), { playing: true }), false);
+        assert.equal(sandbox.cues(), 0);
+        // Resume of the paused track: silent, exactly like a local toggle.
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(localTrack()), { playing: false, paused: true }), false);
+        assert.equal(sandbox.cues(), 0);
+        // Queue auto-advance to another track: exactly one cue.
+        const second = localTrack({ id: 'local_2', title: 'Track Two' });
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(second), { playing: true }), true);
+        assert.equal(sandbox.cues(), 1);
+        assert.equal(sandbox.last()[0].title, 'Track Two');
+        assert.equal(sandbox.last()[1], 'Now playing');
+        // Duplicate frame of the new track: no second cue.
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(second), { playing: true }), false);
+        assert.equal(sandbox.cues(), 1);
+        // A restart after the track ended is a start again.
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(second), { playing: false, ended: true }), true);
+        assert.equal(sandbox.cues(), 2);
+        // Paused/ended frames never cue.
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(localTrack({ id: 'local_3' }), { playing: false, paused: true }), { playing: true }), false);
+        assert.equal(sandbox.cues(), 2);
+        // Spotify/Qobuz frames belong to the streaming decision, not this one.
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame({ id: 'x', source: 'spotify' }), { playing: true }), false);
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame({ id: 'y', source: 'qobuz' }), { playing: true }), false);
+        assert.equal(sandbox.cues(), 2);
+        // Radio: the station is the track, so live metadata inside the stream is
+        // not a track change.
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame({ id: 'radio_groovesalad', source: 'radio', title: 'Groove Salad' }), { playing: true }), true);
+        assert.equal(sandbox.cues(), 3);
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame({ id: 'radio_groovesalad', source: 'radio', title: 'Song A' }), { playing: true }), false);
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame({ id: 'radio_groovesalad', source: 'radio', title: 'Song B' }), { playing: true }), false);
+        assert.equal(sandbox.cues(), 3);
+        // Another station is a track change.
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame({ id: 'radio_dronezone', source: 'radio', title: 'Drone Zone' }), { playing: true }), true);
+        assert.equal(sandbox.cues(), 4);
+        // TIDAL behaves exactly like the local player.
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame({ id: '175015095', source: 'tidal', title: 'Warning' }), { playing: true }), true);
+        assert.equal(sandbox.cues(), 5);
+        assert.equal(sandbox.last()[1], 'Now playing');
+    });
+
+    // 18. Wiring: the authoritative playback frame feeds the native decision, and
+    //     attaching to an already running player stays silent.
+    await run('native cue is wired to the authoritative playback frames', async () => {
+        assert.ok(appJs.includes('function maybeCueNativePlaybackTrack('), 'missing native playback cue gate');
+        assert.ok(appJs.includes('maybeCueNativePlaybackTrack(data, previousNativePlayback)'),
+            'WS playback frames must feed the native cue');
+        assert.ok(appJs.includes('const previousNativePlayback = { ...state.playback };'),
+            'the previous playback state must be captured before merging');
+        assert.ok(appJs.includes('seedNativeTrackCueKey(data.player.state.current_track)'),
+            'WS init must adopt the session track silently');
+        assert.ok(appJs.includes('seedNativeTrackCueKey(playback.current_track)'),
+            'reconnect resync must adopt the session track silently');
+        assert.ok(appJs.includes("['local', 'radio', 'tidal'].includes(track.source)"),
+            'only the native sources may use the native cue');
+    });
+
+    // 19. Local queue auto-advance over several tracks without a reload: one cue
+    //     per track, none for the duplicate frames in between, none for a resume.
+    await run('local queue auto-advance cues each track exactly once', async () => {
+        const sandbox = nativeDecisionSandbox();
+        const track = (n) => localTrack({ id: `local_${n}`, title: `Track ${n}` });
+        sandbox.seedNativeTrackCueKey(track(1));
+        for (let n = 2; n <= 6; n += 1) {
+            // The previous track ended, the next one starts: one cue.
+            assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(track(n)), { playing: false, ended: true }), true, `track ${n} must cue`);
+            assert.equal(sandbox.cues(), n - 1, `exactly one cue per track (iteration ${n})`);
+            // Late/duplicated frames of that track: silent.
+            assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(track(n)), { playing: true }), false);
+            assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(track(n)), { playing: true }), false);
+            assert.equal(sandbox.cues(), n - 1);
+        }
+        // Pause and resume the last track: transport only, still silent.
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(track(6), { playing: false, paused: true }), { playing: true }), false);
+        assert.equal(sandbox.maybeCueNativePlaybackTrack(playbackFrame(track(6)), { playing: false, paused: true }), false);
+        assert.equal(sandbox.cues(), 5);
     });
 
     const failed = cases.filter((c) => !c.pass);

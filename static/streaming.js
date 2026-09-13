@@ -17,7 +17,10 @@
 
     let api = null;
     let showToast = function () {};
-    let showNowPlayingCue = function () {};
+    // Track-change cue decision for the native player, owned by app.js and
+    // injected here, so an explicit TIDAL play and the WebSocket playback frame
+    // for that same start resolve through one state machine instead of two.
+    let maybeShowNativeTrackCue = function () { return false; };
     // The queue-started cue decision is owned by app.js and injected here, so
     // the tab transport and the incoming-state/poll paths use one state
     // machine instead of two copies that can drift apart.
@@ -165,7 +168,7 @@
         initialized = true;
         api = interfaceApi || {};
         if (typeof api.showToast === 'function') showToast = api.showToast;
-        if (typeof api.showNowPlayingCue === 'function') showNowPlayingCue = api.showNowPlayingCue;
+        if (typeof api.maybeShowNativeTrackCue === 'function') maybeShowNativeTrackCue = api.maybeShowNativeTrackCue;
         if (typeof api.maybeShowStreamingQueueCue === 'function') maybeShowStreamingQueueCue = api.maybeShowStreamingQueueCue;
         if (typeof api.escapeHtml === 'function') escapeHtml = api.escapeHtml;
         if (typeof api.formatTransitionErrorDetail === 'function') formatTransitionErrorDetail = api.formatTransitionErrorDetail;
@@ -2788,14 +2791,15 @@
                 showToast(friendlyError(data?.detail || 'Playback failed'), 'error');
                 return;
             }
-            // Same queue-started cue as Local Library playLocal: identical
-            // component, message, presentation and duration, with the real
-            // TIDAL metadata and queue count from the play response.
+            // Same track-change cue as Local Library playLocal, with the real
+            // TIDAL metadata and queue count from the play response. The shared
+            // decision deduplicates the WebSocket playback frame that reports
+            // the same start.
             try {
                 const playedTrack = data?.playback?.current_track || null;
                 const queueCount = Number(data?.playback?.queue?.count || (Array.isArray(trackIds) ? trackIds.length : 0) || 0);
                 if (playedTrack) {
-                    showNowPlayingCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+                    maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
                 }
             } catch (_cueError) {
                 // Cue must never break playback.

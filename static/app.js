@@ -1014,7 +1014,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
         window.FXRouteStreaming.init({
             showToast,
-            showNowPlayingCue,
+            maybeShowNativeTrackCue,
             maybeShowStreamingQueueCue,
             escapeHtml,
             favoriteHeartSvg,
@@ -1254,6 +1254,8 @@ async function resyncPlaybackAfterReconnect() {
 
         if (playback) {
             mergePlaybackState(playback);
+            // Reconnect: adopt the running track silently, never cue it.
+            seedNativeTrackCueKey(playback.current_track);
             updateLiveBanner(playback);
             syncFooterOwnershipFromPlayback(playback);
             syncLibraryStateFromPlaybackContext(true);
@@ -1287,6 +1289,9 @@ function handleWebSocketMessage(msg) {
             // Initial state
             if (data.player) {
                 mergePlaybackState(data.player.state);
+                // Page load: whatever already plays is the session track, not a
+                // track change, so attaching never cues.
+                seedNativeTrackCueKey(data.player.state.current_track);
                 syncFooterOwnershipFromPlayback(data.player.state);
                 syncLibraryStateFromPlaybackContext(true);
                 updatePlaybackUI();
@@ -1354,7 +1359,9 @@ function handleWebSocketMessage(msg) {
             });
             // Always process WebSocket state updates — they are the authoritative source of truth.
             // playActionInFlight guards are only for local fetch responses (see playRadio/playLocal).
+            const previousNativePlayback = { ...state.playback };
             mergePlaybackState(data);
+            maybeCueNativePlaybackTrack(data, previousNativePlayback);
             const clearFooterSingleTrackLockAfterSync = footerSingleTrackStartLockSatisfied(state.playback);
             syncFooterOwnershipFromPlayback(data);
             if (clearFooterSingleTrackLockAfterSync) {
@@ -7334,7 +7341,7 @@ async function playRadio(stationId) {
             artwork_url: station.image || station.image_url || station.custom_image_url || '',
             artwork_source: (station.image || station.image_url || station.custom_image_url) ? 'radio' : 'none',
         };
-        showNowPlayingCue(playedTrack, 'Now playing');
+        maybeShowNativeTrackCue(playedTrack, 'Now playing');
     } catch (e) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
@@ -7418,7 +7425,7 @@ async function playLocal(trackId, queueTrackIds = null) {
         updatePlaybackUI();
         triggerSamplerateBurstPolling();
         const queueCount = (((data || {}).playback || {}).queue || {}).count || 0;
-        showNowPlayingCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+        maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
     } catch (e) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
@@ -14697,6 +14704,55 @@ function maybeShowStreamingQueueCue(source, prev, next) {
     recordPlayingQueueKey(source, next);
     return true;
 }
+// ---------------------------------------------------------------------------
+// Native player (Library/Radio/TIDAL) track-change cue
+// ---------------------------------------------------------------------------
+// The native player plays exactly one track at a time whatever the source, so a
+// single session key covers all three. A radio station counts as the track:
+// live metadata changes inside the stream are not track changes.
+function nativeTrackCueKey(track) {
+    if (!track || typeof track !== 'object') return '';
+    const source = track.source || '';
+    // Identity first: the explicit play response and the WebSocket frame must
+    // resolve to the same key or the same start would cue twice.
+    const id = track.id || track.url || '';
+    if (id) return `${source}|${id}`;
+    return [source, track.title || '', track.artist || ''].join('|');
+}
+// One cue per real track change of the native player, whatever observed it: the
+// response of an explicit play (Library/Radio/TIDAL) or an authoritative
+// WebSocket playback frame (queue auto-advance, next/previous). The session
+// track is remembered, so a resume of a paused track, a repeated frame or a
+// burst of position updates never cues again. Mirrors
+// maybeShowStreamingQueueCue so every source behaves identically.
+function maybeShowNativeTrackCue(track, message = 'Now playing', previousPlayback = null) {
+    const key = nativeTrackCueKey(track);
+    if (!key) return false;
+    // A restart after the track ended is a start again even though the track is
+    // unchanged (same rule the streaming providers use).
+    const restartAfterStop = !!(
+        previousPlayback
+        && (previousPlayback.ended === true || previousPlayback.stopped === true)
+    );
+    if (key === window.__lastNativeTrackKey && !restartAfterStop) return false;
+    window.__lastNativeTrackKey = key;
+    showNowPlayingCue(track, message);
+    return true;
+}
+// Adopt the session track without cueing: used when the page (re)connects while
+// a track already plays, so attaching to a running player stays silent.
+function seedNativeTrackCueKey(track) {
+    window.__lastNativeTrackKey = nativeTrackCueKey(track);
+}
+// A WebSocket playback frame is the authoritative track change signal for the
+// native player. Spotify/Qobuz keep their own per-provider decision.
+function maybeCueNativePlaybackTrack(data, previousPlayback) {
+    const track = data?.current_track;
+    if (!track || typeof track !== 'object') return false;
+    if (!['local', 'radio', 'tidal'].includes(track.source)) return false;
+    if (!data?.playing || data?.ended) return false;
+    return maybeShowNativeTrackCue(track, 'Now playing', previousPlayback);
+}
 // Library actions
 function setupLibraryActions() {
     elements.refreshLibraryBtn.addEventListener('click', refreshLibrary);
@@ -15168,8 +15224,7 @@ function handleIncomingSpotifyState(data, options = {}) {
         if (spotifyTab && spotifyTab.classList.contains('active')) {
             renderSpotifyTab(mergedData);
         }
-    }
-    maybeShowStreamingQueueCue('spotify', previousData, mergedData);
+    }        maybeShowStreamingQueueCue('spotify', previousData, mergedData);
 }
 
 function renderSpotify(data) {
