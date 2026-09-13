@@ -188,7 +188,7 @@ function buildDom() {
 }
 
 function runStreaming(options = {}) {
-    const { document, shells, createdEls } = buildDom();
+    const { document, shells, tabButtons, tabPanels, createdEls } = buildDom();
     const fetchCalls = [];
     const spotifyCommandCalls = [];
     const spotifySeekCalls = [];
@@ -222,7 +222,9 @@ function runStreaming(options = {}) {
             const u = String(url);
             let body = {};
             let failed = false;
-            if (u.startsWith('/api/streaming/tidal/library/snapshot')) {
+            if (u === '/api/streaming/providers/discovery') {
+                body = { providers: options.discoveryProviders || [] };
+            } else if (u.startsWith('/api/streaming/tidal/library/snapshot')) {
                 const userMatch = u.match(/[?&]user=([^&]*)/);
                 const userId = userMatch ? decodeURIComponent(userMatch[1]) : '';
                 body = tidalSnapshots[userId] || tidalSnapshots['*'] || {};
@@ -326,7 +328,7 @@ function runStreaming(options = {}) {
         spotifySeek: (...a) => { spotifySeekCalls.push(a); return Promise.resolve(); },
     };
     sandbox.window.FXRouteStreaming.init(api);
-    return { sandbox, shells, fetchCalls, spotifyCommandCalls, spotifySeekCalls, createdEls };
+    return { sandbox, shells, tabButtons, tabPanels, fetchCalls, spotifyCommandCalls, spotifySeekCalls, createdEls };
 }
 
 const baseCaps = {
@@ -1348,6 +1350,61 @@ async function main() {
         assert.ok(info && info.innerHTML.includes('Featuring'),
             'a multi-artist playlist without description must render a featuring line');
     }
+
+// --- 20. provider tab visibility: a disabled provider stays hidden -----------
+//
+// Regression guard: a Spotify status payload carries `installed` only, and it
+// arrives far more often than discovery. The shared provider module is the one
+// owner of tab visibility, so no incoming state - playing, paused, stopped or
+// a discovery poll - may re-show the tab of a provider the user disabled.
+{
+    const discovery = (spotifyEnabled) => ([
+        { id: 'spotify', name: 'Spotify', implemented: true, installed: true, available: true, authenticated: null, enabled: spotifyEnabled },
+        { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: true, enabled: true },
+        { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: true, enabled: true },
+    ]);
+    const spotifyStatus = (status) => ({
+        installed: true, available: true, authenticated: null, capabilities: baseCaps,
+        status, title: 't', artist: 'a', album: 'b', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 100,
+    });
+
+    const providers = discovery(false);
+    const { sandbox, tabButtons, tabPanels } = runStreaming({ discoveryProviders: providers });
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const spotifyHidden = () => tabButtons.spotify.style.display === 'none'
+        && tabButtons.spotify.hidden === true
+        && tabButtons.spotify.classList.contains('hidden');
+
+    await tick();
+    await sandbox.window.FXRouteStreaming.refreshEnabledFlags();
+    assert.ok(spotifyHidden(), 'a disabled provider tab must be hidden');
+    assert.equal(tabPanels.spotify.hidden, true, 'a disabled provider panel must be hidden too');
+
+    for (const status of ['Paused', 'Playing', 'Playing', 'Stopped']) {
+        sandbox.window.FXRouteStreaming.renderProvider('spotify', spotifyStatus(status));
+        assert.ok(spotifyHidden(), `a disabled provider tab must stay hidden on an incoming ${status} state`);
+    }
+    await tick();
+    await sandbox.window.FXRouteStreaming.refreshEnabledFlags();
+    assert.ok(spotifyHidden(), 'a disabled provider tab must stay hidden across discovery polls');
+
+    // Re-enabling the provider brings the tab back.
+    providers[0].enabled = true;
+    await sandbox.window.FXRouteStreaming.refreshEnabledFlags();
+    sandbox.window.FXRouteStreaming.renderProvider('spotify', spotifyStatus('Playing'));
+    assert.ok(!spotifyHidden() && tabButtons.spotify.hidden === false,
+        're-enabling the provider must restore its tab');
+
+    // Hiding the tab the user is looking at hands the view back to radio.
+    const switched = [];
+    sandbox.switchTab = (id) => { switched.push(id); };
+    sandbox.window.__visibleTab = 'spotify';
+    providers[0].enabled = false;
+    await sandbox.window.FXRouteStreaming.refreshEnabledFlags();
+    assert.ok(spotifyHidden(), 'disabling the provider must hide its tab again');
+    assert.deepEqual(switched, ['radio'],
+        'hiding the active provider tab must switch back to radio');
+}
 }
 
 console.log('PASS  scripts/test_streaming_ui_actions.js');

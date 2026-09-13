@@ -15006,12 +15006,10 @@ function escapeHtml(text) {
 // =========================================================================
 // Spotify source (playerctl / MPRIS)
 // =========================================================================
-const spotifyElements = {
-    // The Spotify tab renders through the shared streaming shell
-    // (streaming.js .streaming-shell), so the legacy in-tab player DOM is gone;
-    // only the tab button still lives in this object.
-    tabBtn: document.querySelector('[data-tab="spotify"]'),
-};
+// The Spotify tab renders through the shared streaming shell
+// (streaming.js .streaming-shell) and its visibility is owned by streaming.js
+// too, so no legacy Spotify tab DOM lives here.
+let _spotifyInstalledKnown = null;
 
 let _spotifyPollTimer = null;
 let _spotifyCommandInFlight = false;
@@ -15134,24 +15132,16 @@ function shouldAdoptSpotifyUpdate(data) {
     return window.__footerSource === 'spotify';
 }
 
-function setSpotifyUiVisibility(installed) {
+// Provider tabs are owned by streaming.js, which derives their visibility from
+// the discovery payload (installed + enabled). Spotify status arrives far more
+// often than discovery, so this path must not write the tab DOM: a write here
+// re-shows the tab of a provider the user disabled. Only an installed <->
+// uninstalled transition is forwarded, so it lands without a discovery poll.
+function syncSpotifyTabAvailability(installed) {
     const available = installed === true;
-    const visible = available && !nonAppSourceModeActive();
-    const tabPanel = document.getElementById('tab-spotify');
-    if (spotifyElements.tabBtn) {
-        spotifyElements.tabBtn.hidden = !available;
-        spotifyElements.tabBtn.style.display = available ? '' : 'none';
-        spotifyElements.tabBtn.classList.toggle('hidden', !visible);
-        spotifyElements.tabBtn.setAttribute('aria-selected', visible && window.__visibleTab === 'spotify' ? 'true' : 'false');
-    }
-    if (tabPanel) {
-        tabPanel.hidden = !available;
-        tabPanel.classList.toggle('hidden', !visible);
-    }
-    updateTabsScrollAffordance();
-    if (!visible && window.__visibleTab === 'spotify') {
-        switchTab('radio');
-    }
+    if (_spotifyInstalledKnown === available) return;
+    _spotifyInstalledKnown = available;
+    void window.FXRouteStreaming?.refreshEnabledFlags?.();
 }
 
 function handleIncomingQobuzState(data, options = {}) {
@@ -15183,7 +15173,7 @@ function handleIncomingSpotifyState(data, options = {}) {
     const { renderTab = true, renderFooter = true } = options;
     const previousData = window.__spotifyLastData || {};
     const mergedData = mergeSpotifyState(data);
-    setSpotifyUiVisibility(mergedData.installed === true);
+    syncSpotifyTabAvailability(mergedData.installed === true);
     if (mergedData.installed !== true) {
         stopSpotifyPoll();
     }

@@ -740,5 +740,81 @@ class ProviderReinstallActivationTests(unittest.TestCase):
         self.assertIn('if provider_id not in {"spotify", "qobuz", "tidal"}:', body)
 
 
+class ProviderTabOwnershipTests(unittest.TestCase):
+    """Provider tab visibility has exactly one owner: streaming.js.
+
+    Regression guard for the Spotify tab flicker: the incoming Spotify status
+    used to write the tab DOM from app.js with ``installed`` only, ignoring the
+    provider's enabled flag. Because that status arrives far more often than
+    provider discovery, a disabled Spotify provider was re-shown a few hundred
+    milliseconds after the user disabled it, in a repeating hide/show loop.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app_js = (ROOT / "static" / "app.js").read_text()
+        cls.streaming_js = (ROOT / "static" / "streaming.js").read_text()
+
+    def _function_body(self, source: str, name: str) -> str:
+        """Return the body of ``function <name>(`` up to its closing brace.
+
+        The provider code is indented inside an IIFE, so the terminating brace
+        is found by counting instead of matching a column-0 ``}``.
+        """
+        start = source.index(f"function {name}(")
+        # Skip the parameter list before counting: a default value object such
+        # as ``options = {}`` would otherwise end the body immediately.
+        params_end = source.index(")", start)
+        depth = 0
+        for index in range(source.index("{", params_end), len(source)):
+            char = source[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[start:index]
+        raise AssertionError(f"unterminated function {name}")
+
+    def test_app_js_owns_no_spotify_tab_visibility_writer(self):
+        # The legacy writer (and the element cache only it used) must be gone;
+        # streaming.js derives tab visibility from installed + enabled.
+        self.assertNotIn("setSpotifyUiVisibility", self.app_js)
+        self.assertNotIn("spotifyElements", self.app_js)
+
+    def test_spotify_status_only_forwards_an_installed_transition(self):
+        body = self._function_body(self.app_js, "syncSpotifyTabAvailability")
+        for forbidden in ("tabBtn", "style.display", "classList", "getElementById", "hidden"):
+            self.assertNotIn(
+                forbidden,
+                body,
+                f"the Spotify availability path must not write the tab DOM ({forbidden})",
+            )
+        self.assertIn("window.FXRouteStreaming?.refreshEnabledFlags?.()", body)
+
+    def test_handle_incoming_spotify_state_writes_no_tab_visibility(self):
+        # This runs on every incoming Spotify state, i.e. far more often than
+        # provider discovery; a visibility write here is what re-showed a
+        # disabled Spotify provider tab.
+        body = self._function_body(self.app_js, "handleIncomingSpotifyState")
+        self.assertIn("syncSpotifyTabAvailability(mergedData.installed === true);", body)
+        for forbidden in ("style.display", "spotifyTab.hidden", "classList.toggle('hidden'"):
+            self.assertNotIn(forbidden, body, f"incoming Spotify state must not write {forbidden}")
+
+    def test_streaming_gates_tab_visibility_on_installed_and_enabled(self):
+        body = self._function_body(self.streaming_js, "applyTabVisibility")
+        self.assertIn("const enabled = state.enabled[providerId] !== false;", body)
+        self.assertIn("const available = data.installed === true;", body)
+        self.assertIn("const show = available && enabled;", body)
+
+    def test_hiding_the_active_provider_tab_switches_back_to_radio(self):
+        body = self._function_body(self.streaming_js, "applyTabVisibility")
+        self.assertIn(
+            "if (!show && window.__visibleTab === providerId && typeof switchTab === 'function')",
+            body,
+        )
+        self.assertIn("switchTab('radio');", body)
+
+
 if __name__ == "__main__":
     unittest.main()
