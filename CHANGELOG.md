@@ -1,5 +1,72 @@
 # Changelog
 
+## 1.0-beta6 (2026-09-13)
+
+Sixth public beta. Distribution channels unchanged: web demo on GitHub Pages,
+Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 ISO via
+SourceForge. Khadas/VIM1S stays internal and gets no public image.
+
+### Release provenance
+
+- Source stand: `main`. No Armbian, installer, or live-converter changes
+  this cycle.
+- The x86_64 Leap 16 ISO and the Pi 4/Pi 5 images are built from the release
+  commit; their SHA-256 digests are recorded in this section once the builds
+  exist.
+- The web demo snapshot was not refreshed this cycle (`demo/dist` parity is
+  pending, `static/app.js` and its asset tags moved on); GitHub Pages still
+  serves the beta5 snapshot.
+- Explicitly not included: the unmerged `feature/adaptive-headroom` work
+  (convolver headroom derived from the realized filter peak).
+
+### Playback / DSP
+- The DSP link diagnosis accepts muted sub links in stereo on multichannel
+  devices: the native engine keeps its 4-output topology with the subs at
+  gain 0.0, and a 2.2 to stereo switch no longer ends bypass-only with a
+  latched output gate.
+- The selected output stays authoritative after default drift and graph
+  rebuilds, and the sink's channel map is the fallback for its playback
+  ports.
+- The stale-helper rate repair keeps running until the sink aligns, with an
+  idle-sink nudge through the silent renegotiation trigger.
+- Footer: the 2 s play/VU flicker from the output-authority lock is gone; a
+  single bad VU sample is held instead of flashing the footer.
+- A cold radio stream gets the radio settle budget, and a measurement
+  releases the card nodes it leaves at its rate.
+- Every real track start is cued for the native player too; streaming track
+  changes cue while paused; Spotify/Qobuz starts cue from the incoming-state
+  path with a bounded wait for the Spotify Playing edge; the queue-start cue
+  anchors on the last playing key and is reused for Spotify, Qobuz and TIDAL.
+
+### Measurement
+- The electrical reference is split per side for multi-channel inputs, the
+  record-stream channel layout is pinned for electrical references, and
+  persisted split references survive while the topology is unknown.
+- Shared WAV encoding and AutoSub display adjustment; the unreachable split
+  reference warning is gone.
+
+### Music library / streaming
+- ZIP imports are preserved with the extraction contract documented, and
+  playlist paths resolve correctly.
+- The committed queue survives an unresolvable entry; library cleanup only
+  touches artwork and empty sidecars; scan status stays visible while the
+  library is still filling, and an empty album list is no longer reported as
+  a finished answer.
+- `streaming.js` owns provider tab visibility; provider rows track account
+  state (`Connect`/`Disconnect`); the demo ships the Scarlett 16i16 device
+  with one folder per album and shares one TIDAL track id space across
+  albums, playlists and top tracks.
+- AutoSub restores the original config on late cancel before completion, and
+  update restore handles untracked backups NUL-safe.
+
+### Demo sources (snapshot pending, see provenance)
+- MOTU M4 measurement capture with split Ref L/R on 3/4; Scarlett external
+  inputs as stereo pairs without invented 4i4 capture; measurement setup
+  shows UMIK-1 and Focusrite inputs 1-4.
+
+### Internal maintenance
+- Regression coverage hardened for the provider tab-ownership helpers.
+
 ## 1.0-beta5 (2026-09-12)
 
 Fifth public beta. Distribution channels unchanged: web demo on GitHub Pages,
