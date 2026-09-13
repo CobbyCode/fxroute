@@ -650,6 +650,7 @@ async def upload_track(file: UploadFile = File(...)):
     # target file they created themselves (a partial write), never a complete
     # upload that failed at a later phase (e.g. the library refresh).
     file_saved = False
+    album_saved = False
 
     try:
         if suffix == ".zip":
@@ -669,6 +670,8 @@ async def upload_track(file: UploadFile = File(...)):
                 if not audio_files and not playlist_files:
                     shutil.rmtree(album_dir, ignore_errors=True)
                     raise HTTPException(status_code=400, detail="ZIP contains no supported audio or playlist files")
+                # Complete audio survives later scan or playlist-import errors.
+                album_saved = bool(audio_files)
             except Exception:
                 shutil.rmtree(album_dir, ignore_errors=True)
                 raise
@@ -760,7 +763,7 @@ async def upload_track(file: UploadFile = File(...)):
             temp_zip_path.unlink(missing_ok=True)
         if not file_saved and target_path and target_path.exists():
             target_path.unlink(missing_ok=True)
-        if album_dir and album_dir.exists():
+        if not album_saved and album_dir and album_dir.exists():
             shutil.rmtree(album_dir, ignore_errors=True)
         raise
     except UploadTooLargeError as e:
@@ -769,14 +772,14 @@ async def upload_track(file: UploadFile = File(...)):
             temp_zip_path.unlink(missing_ok=True)
         if not file_saved and target_path and target_path.exists():
             target_path.unlink(missing_ok=True)
-        if album_dir and album_dir.exists():
+        if not album_saved and album_dir and album_dir.exists():
             shutil.rmtree(album_dir, ignore_errors=True)
         raise HTTPException(status_code=413, detail=str(e))
     except zip_album.ZipLimitError as e:
         logger.warning("ZIP upload rejected: %s", e)
         if temp_zip_path and temp_zip_path.exists():
             temp_zip_path.unlink(missing_ok=True)
-        if album_dir and album_dir.exists():
+        if not album_saved and album_dir and album_dir.exists():
             shutil.rmtree(album_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -791,7 +794,7 @@ async def upload_track(file: UploadFile = File(...)):
             temp_zip_path.unlink(missing_ok=True)
         if not file_saved and target_path and target_path.exists():
             target_path.unlink(missing_ok=True)
-        if album_dir and album_dir.exists():
+        if not album_saved and album_dir and album_dir.exists():
             shutil.rmtree(album_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail="Upload failed")
     finally:

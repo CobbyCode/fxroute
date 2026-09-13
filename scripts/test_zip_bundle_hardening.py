@@ -656,6 +656,41 @@ class LibraryUploadZipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(self.download_dir.iterdir()), [])
         self.assertTrue(all(not Path(path).exists() for path in self.created_temps))
 
+    async def test_zip_refresh_failure_keeps_complete_album(self):
+        def fail_refresh(*args, **kwargs):
+            raise RuntimeError("scan unavailable")
+
+        class Scanner:
+            refresh = staticmethod(fail_refresh)
+
+        library_api._library_runtime = lambda: (Scanner(), _FakeSettings(self.download_dir))
+        audio = b"COMPLETE-ALBUM-TRACK" * 32
+        upload = FakeUpload(write_zip([("track.flac", audio)]), filename="album.zip")
+        with self.assertRaises(HTTPException) as ctx:
+            await library_api.upload_track(upload)
+        self.assertEqual(ctx.exception.status_code, 500)
+        target = self.download_dir / "album" / "track.flac"
+        self.assertTrue(target.is_file(), "complete album must survive a failed refresh")
+        self.assertEqual(target.read_bytes(), audio)
+        self.assertFalse((self.download_dir / "album.zip").exists())
+
+    async def test_zip_refresh_cancellation_keeps_complete_album(self):
+        def cancel_refresh(*args, **kwargs):
+            raise asyncio.CancelledError()
+
+        class Scanner:
+            refresh = staticmethod(cancel_refresh)
+
+        library_api._library_runtime = lambda: (Scanner(), _FakeSettings(self.download_dir))
+        audio = b"COMPLETE-ALBUM-TRACK" * 32
+        upload = FakeUpload(write_zip([("track.flac", audio)]), filename="album.zip")
+        with self.assertRaises(asyncio.CancelledError):
+            await library_api.upload_track(upload)
+        target = self.download_dir / "album" / "track.flac"
+        self.assertTrue(target.is_file(), "complete album must survive a cancelled refresh")
+        self.assertEqual(target.read_bytes(), audio)
+        self.assertFalse((self.download_dir / "album.zip").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

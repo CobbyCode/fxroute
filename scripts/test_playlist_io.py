@@ -162,6 +162,40 @@ class PlaylistIOResolveTests(unittest.TestCase):
                 ["a"],
             )
 
+    def test_album_relative_entry_wins_over_library_root_track(self):
+        tracks = [
+            make_track("root", self.music_root / "song.flac"),
+            make_track("album", self.music_root / "album" / "song.flac"),
+        ]
+        self.assertEqual(
+            playlist_io.resolve_m3u_track_ids(
+                ["song.flac"], self.music_root,
+                base_dir=self.music_root / "album", tracks=tracks,
+            ),
+            ["album"],
+        )
+
+    def test_exported_literal_percent_filename_round_trips(self):
+        tracks = [
+            make_track("literal", self.music_root / "100%20Live.flac", title="Live"),
+            make_track("space", self.music_root / "100 Live.flac", title="Live"),
+        ]
+        playlist = SimpleNamespace(track_ids=["literal"])
+        content = playlist_io.build_m3u_for_playlist(playlist, tracks, self.music_root)
+        self.assertEqual(
+            playlist_io.resolve_m3u_track_ids(
+                playlist_io.parse_m3u_entries(content), self.music_root, tracks=tracks,
+            ),
+            ["literal"],
+        )
+        self.assertEqual(
+            playlist_io.resolve_m3u_track_ids(
+                [tracks[0].path.as_uri(), tracks[1].path.as_uri()],
+                self.music_root, tracks=tracks,
+            ),
+            ["literal", "space"],
+        )
+
     def test_resolve_windows_and_posix_variants(self):
         a = make_track("a", self.music_root / "album" / "song.flac")
         abs_a = str((self.music_root / "album" / "song.flac").resolve())

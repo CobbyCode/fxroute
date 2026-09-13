@@ -113,19 +113,29 @@ def resolve_m3u_track_ids(
     seen = set()
 
     for entry in entries:
-        value = unquote(entry.strip().strip('"'))
-        if value.lower().startswith("file://"):
-            value = value[7:]
-        value = value.replace("\\", "/")
-        candidates = [value]
-        if base_dir and not Path(value).is_absolute():
-            try:
-                resolved = (base_dir / value).resolve()
-                candidates.append(resolved.as_posix())
-                candidates.append(resolved.relative_to(music_root.resolve()).as_posix())
-            except Exception:
-                pass
-        candidates.append(Path(value).name)
+        raw_value = entry.strip().strip('"')
+        if raw_value.lower().startswith("file://"):
+            values = [unquote(raw_value[7:])]
+        else:
+            # Exported filesystem paths can contain literal percent escapes.
+            # Decode only as a fallback; file URIs always require decoding.
+            values = [raw_value]
+            decoded_value = unquote(raw_value)
+            if decoded_value != raw_value:
+                values.append(decoded_value)
+        candidates = []
+        for value in values:
+            value = value.replace("\\", "/")
+            # Entries in an album ZIP are relative to their playlist first.
+            if base_dir and not Path(value).is_absolute():
+                try:
+                    resolved = (base_dir / value).resolve()
+                    candidates.append(resolved.as_posix())
+                    candidates.append(resolved.relative_to(music_root.resolve()).as_posix())
+                except Exception:
+                    pass
+            candidates.append(value)
+            candidates.append(Path(value).name)
 
         # Exact identities win over bare filenames, so a recorded relative path
         # is never shadowed by another folder's same-named file.
