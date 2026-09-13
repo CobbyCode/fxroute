@@ -1225,11 +1225,20 @@
         }
 
         // ── Streaming providers ─────────────────────────────────────────
+        // Provider account state mirrors the real backend: an account provider
+        // (Qobuz/TIDAL) can be disconnected from Settings and only its auth
+        // endpoints flip it back. Spotify has no account login (installed
+        // spotifyd pairs from the Spotify app), so its flag stays null.
+        function demoProviderAccount() {
+            S.demoProviderAuthenticated = S.demoProviderAuthenticated || { qobuz: true, tidal: true };
+            return S.demoProviderAuthenticated;
+        }
         if (p === '/api/streaming/providers') {
+            const account = demoProviderAccount();
             return j({ providers: [
                 { id: 'spotify', name: 'Spotify', installed: true, available: true, authenticated: true, connected: true, capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
-                { id: 'qobuz', name: 'Qobuz', installed: true, available: true, authenticated: true, connected: true, capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
-                { id: 'tidal', name: 'Tidal', installed: true, available: true, authenticated: true, connected: true, capabilities: { catalog: true, cover: true, progress: true } },
+                { id: 'qobuz', name: 'Qobuz', installed: true, available: true, authenticated: account.qobuz, connected: true, capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
+                { id: 'tidal', name: 'Tidal', installed: true, available: true, authenticated: account.tidal, connected: true, capabilities: { catalog: true, cover: true, progress: true } },
             ] });
         }
         // The demo provider flags live on the shared state object so the
@@ -1239,23 +1248,26 @@
             // current frontend builds the provider tabs from this endpoint.
             S.demoProviderEnabled = S.demoProviderEnabled || { spotify: true, qobuz: true, tidal: true };
             const enabled = S.demoProviderEnabled;
+            const account = demoProviderAccount();
             return j({ providers: [
                 { id: 'spotify', name: 'Spotify', implemented: true, installed: true, available: true, authenticated: null, enabled: enabled.spotify !== false, connected: true, backend: 'spotifyd', capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
-                { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.qobuz !== false, connected: true, backend: 'qbzd', capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
-                { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.tidal !== false, connected: true, backend: 'tidalapi', capabilities: { catalog: true, cover: true, progress: true } },
+                { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: account.qobuz, enabled: enabled.qobuz !== false, connected: true, backend: 'qbzd', capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
+                { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: account.tidal, enabled: enabled.tidal !== false, connected: true, backend: 'tidalapi', capabilities: { catalog: true, cover: true, progress: true } },
             ] });
         }
         // Settings -> Providers admin (device name rides the same payload).
-        // Demo keeps all providers installed/connected; toggles only flip
-        // the local enabled flag so tabs hide/show like the real backend.
+        // Demo keeps every provider installed; the enabled and account flags are
+        // the local state the toggles and auth endpoints write, so tabs hide/show
+        // and the row reads Connect/Disconnect like the real backend.
         function demoProviderAdmin() {
             S.demoProviderEnabled = S.demoProviderEnabled || { spotify: true, qobuz: true, tidal: true };
             const enabled = S.demoProviderEnabled;
+            const account = demoProviderAccount();
             return {
                 providers: [
                     { id: 'spotify', name: 'Spotify', implemented: true, installed: true, available: true, authenticated: null, enabled: enabled.spotify !== false },
-                    { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.qobuz !== false },
-                    { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.tidal !== false },
+                    { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: account.qobuz, enabled: enabled.qobuz !== false },
+                    { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: account.tidal, enabled: enabled.tidal !== false },
                 ],
                 device_name: 'fxroute',
                 device_name_can_change: false,
@@ -1285,9 +1297,13 @@
         }
         if (p === '/api/streaming/qobuz/auth/login/cancel' && post) return j({ ok: true });
         if (p === '/api/streaming/qobuz/auth/login/finish' && post) {
+            demoProviderAccount().qobuz = true;
             return j({ success: true });
         }
-        if (p === '/api/streaming/qobuz/auth/logout' && post) return j({ success: true });
+        if (p === '/api/streaming/qobuz/auth/logout' && post) {
+            demoProviderAccount().qobuz = false;
+            return j({ success: true });
+        }
         if (p === '/api/spotify/status') return j(S.spotify.snapshot());
         const spotifyCmd = p.match(/^\/api\/spotify\/([a-z_]+)$/);
         if (spotifyCmd && post) {
@@ -1306,7 +1322,7 @@
             return j(sp.snapshot());
         }
         if (p === '/api/streaming/spotify/status') return j(S.spotify.snapshot());
-        if (p === '/api/streaming/qobuz/status') return j(S.qobuz.payload());
+        if (p === '/api/streaming/qobuz/status') return j({ ...S.qobuz.payload(), authenticated: demoProviderAccount().qobuz });
         const qobuzCmd = p.match(/^\/api\/streaming\/qobuz\/([a-z_]+)$/);
         if (qobuzCmd && post) {
             const cmd = qobuzCmd[1];
@@ -1328,7 +1344,7 @@
             return j({
                 installed: true,
                 available: true,
-                authenticated: true,
+                authenticated: demoProviderAccount().tidal,
                 connected: true,
                 status: (isTidal && ps.playing) ? 'Playing' : (isTidal ? 'Paused' : (ps.current_track ? 'Paused' : 'Stopped')),
                 title: ps.current_track ? ps.current_track.title : '',
@@ -1460,10 +1476,19 @@
             return j({ favorite: !!body.favorite });
         }
         if (p === '/api/streaming/tidal/auth/device' && post) return j({ device_code: 'DEMO42', user_code: 'DEMO-AUTH', verification_uri: 'https://link.tidal.com', verification_uri_complete: 'https://link.tidal.com/demo-auth' });
-        if (p === '/api/streaming/tidal/auth/device/finish' && post) return j({ success: true });
+        if (p === '/api/streaming/tidal/auth/device/finish' && post) {
+            demoProviderAccount().tidal = true;
+            return j({ success: true });
+        }
         if (p === '/api/streaming/tidal/auth/pkce' && post) return j({ url: 'https://link.tidal.com/demo-auth' });
-        if (p === '/api/streaming/tidal/auth/pkce/finish' && post) return j({ success: true });
-        if (p === '/api/streaming/tidal/auth/logout' && post) return j({ success: true });
+        if (p === '/api/streaming/tidal/auth/pkce/finish' && post) {
+            demoProviderAccount().tidal = true;
+            return j({ success: true });
+        }
+        if (p === '/api/streaming/tidal/auth/logout' && post) {
+            demoProviderAccount().tidal = false;
+            return j({ success: true });
+        }
 
         // ── Audio / settings ────────────────────────────────────────────
         if (p === '/api/audio/outputs') {

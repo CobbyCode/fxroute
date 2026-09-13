@@ -241,8 +241,13 @@ assert.doesNotMatch(streamingSource, /data\.demo_boot \? 'demo-start'/);
 // the current canonical idle wording for the provider cards.
 assert.match(streamingSource, /Spotify is not running/);
 assert.match(streamingSource, /Nothing is playing/);
-assert.match(routesSource, /id: 'spotify'[\s\S]*authenticated: true[\s\S]*connected: true/);
-assert.match(routesSource, /id: 'tidal'[\s\S]*authenticated: true[\s\S]*connected: true/);
+// Provider account state is dynamic: Qobuz/TIDAL follow the demo account
+// flags the Settings Connect/Disconnect actions write, Spotify stays
+// account-less (installed spotifyd pairs from the Spotify app).
+assert.match(routesSource, /demoProviderAuthenticated = S\.demoProviderAuthenticated \|\| \{ qobuz: true, tidal: true \}/);
+assert.match(routesSource, /id: 'qobuz'[\s\S]*authenticated: account\.qobuz[\s\S]*connected: true/);
+assert.match(routesSource, /id: 'tidal'[\s\S]*authenticated: account\.tidal[\s\S]*connected: true/);
+assert.match(routesSource, /id: 'spotify'[\s\S]*authenticated: null[\s\S]*connected: true/);
 // Demo DSP stock mirrors .104: the +3/+6 dB entries are real selectable
 // filter presets (no headroom), the convolver kernels ship as presets +
 // IRs, and the limiter default matches .104 (on, -1 dB).
@@ -963,6 +968,47 @@ const radio = state.getPlayback();
     assert.equal(sbBkOutputsAfter.output_mode.derived_sub2_delay_ms, autoSubSbBkDone.result.applied_sub2_alignment_ms);
     // Restore the demo's default 2.2 mode.
     await (await demoFetch('/api/audio/output-mode', { method: 'POST', body: JSON.stringify({ mode: 'subwoofer-2.2' }) })).json();
+
+    // ── Provider account state (Settings Connect/Disconnect) ────────────
+    // The real backend flips `authenticated` per account provider; the demo
+    // must mirror it, or the Settings row keeps reading "Disconnect" after a
+    // disconnect instead of offering Connect again.
+    {
+        const adminOf = async (id) => (await (await demoFetch('/api/streaming/providers/admin')).json())
+            .providers.find((p) => p.id === id);
+        const discoveryOf = async (id) => (await (await demoFetch('/api/streaming/providers/discovery')).json())
+            .providers.find((p) => p.id === id);
+        const assertDisconnected = async (provider) => {
+            assert.equal((await adminOf(provider)).authenticated, false,
+                `${provider} disconnect must flip the Settings row payload`);
+            assert.equal((await discoveryOf(provider)).authenticated, false,
+                `${provider} disconnect must flip the provider discovery payload`);
+            const status = await (await demoFetch(`/api/streaming/${provider}/status`)).json();
+            assert.equal(status.authenticated, false,
+                `${provider} disconnect must reach the tab status payload`);
+        };
+
+        assert.equal((await adminOf('qobuz')).authenticated, true, 'Qobuz starts connected in the demo');
+        await demoFetch('/api/streaming/qobuz/auth/logout', { method: 'POST' });
+        await assertDisconnected('qobuz');
+        await demoFetch('/api/streaming/qobuz/auth/login/finish', { method: 'POST' });
+        assert.equal((await adminOf('qobuz')).authenticated, true,
+            'finishing the Qobuz login must reconnect the account');
+
+        assert.equal((await adminOf('tidal')).authenticated, true, 'TIDAL starts connected in the demo');
+        await demoFetch('/api/streaming/tidal/auth/logout', { method: 'POST' });
+        await assertDisconnected('tidal');
+        await demoFetch('/api/streaming/tidal/auth/pkce/finish', { method: 'POST' });
+        assert.equal((await adminOf('tidal')).authenticated, true,
+            'the PKCE login must reconnect the TIDAL account');
+        await demoFetch('/api/streaming/tidal/auth/logout', { method: 'POST' });
+        await demoFetch('/api/streaming/tidal/auth/device/finish', { method: 'POST' });
+        assert.equal((await adminOf('tidal')).authenticated, true,
+            'the device-code login must reconnect the TIDAL account');
+
+        assert.equal((await adminOf('spotify')).authenticated, null,
+            'Spotify has no account login in the demo');
+    }
 
     // ── Demo stock reset/restore ───────────────────────────────────────
     // Playing around in a session (unfavoriting, deleting/creating

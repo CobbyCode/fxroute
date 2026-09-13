@@ -359,6 +359,11 @@
             entry.tabPanel.classList.toggle('hidden', !visible);
         }
         if (!show && state.polls[providerId]) stopPoll(providerId);
+        // A provider tab that just became hidden must not stay the active panel.
+        // The switch itself lives in app.js (same pattern as source mode).
+        if (!show && window.__visibleTab === providerId && typeof switchTab === 'function') {
+            switchTab('radio');
+        }
         if (typeof updateTabsScrollAffordance === 'function') updateTabsScrollAffordance();
     }
 
