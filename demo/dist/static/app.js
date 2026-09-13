@@ -10752,8 +10752,12 @@ function normalizeMeasurementInputChannelSelections() {
     const selectedInput = getSelectedMeasurementInput();
     const channelCountKnown = !!selectedInput;
     const channelCount = channelCountKnown ? Math.max(1, Number(selectedInput.channels || 1)) : 1;
-    const micChannel = Math.max(1, Math.min(channelCount, Number(measurementState.selectedMicInputChannel || 1)));
-    measurementState.selectedMicInputChannel = String(micChannel);
+    if (channelCountKnown) {
+        const micChannel = Math.max(1, Math.min(channelCount, Number(measurementState.selectedMicInputChannel || 1)));
+        measurementState.selectedMicInputChannel = String(micChannel);
+    } else if (!measurementState.selectedMicInputChannel) {
+        measurementState.selectedMicInputChannel = '1';
+    }
 
     const normalizeReferenceChannel = (value) => {
         if (!value) return '';
@@ -10763,7 +10767,21 @@ function normalizeMeasurementInputChannelSelections() {
             : '';
     };
 
-    const splitReferences = channelCountKnown && channelCount >= 3;
+    if (!channelCountKnown) {
+        // The input topology is still unknown: the settings response of
+        // /api/measurements can resolve before /api/measurements/inputs, so
+        // deciding between split and shared references here would be a guess.
+        // The persisted settings are authoritative — validate them and leave
+        // their shape alone. Collapsing a stored L/R pair (3/4) onto the shared
+        // value would silently lose Ref R for the rest of the session. The
+        // topology-aware pass below runs again once the input list is loaded.
+        measurementState.selectedReferenceInputChannelLeft = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelLeft);
+        measurementState.selectedReferenceInputChannelRight = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelRight);
+        measurementState.selectedReferenceInputChannel = normalizeReferenceChannel(measurementState.selectedReferenceInputChannel);
+        return;
+    }
+
+    const splitReferences = channelCount >= 3;
     let left = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelLeft);
     let right = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelRight);
     if (!splitReferences) {
