@@ -122,12 +122,81 @@
         { key: 'alsa_output.pci-0000_00_1f.3.analog-stereo', name: 'Built-in Audio', label: 'Built-in Audio', description: 'Analog Stereo', channels: 2, active_rate: 48000, selectable: true, default: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
         { key: 'alsa_output.usb-DEMO_DAC-00.analog-stereo', name: 'Demo USB DAC', label: 'Demo USB DAC', description: 'Hi-Res USB Audio', channels: 4, active_rate: 96000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
         { key: 'alsa_output.usb-MOTU_M4-00.analog-surround-40', name: 'MOTU M4', label: 'MOTU M4', description: '4-Channel USB Audio Interface', channels: 4, active_rate: 48000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000] },
+        { key: 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output', name: 'Focusrite Scarlett 16i16', label: 'Focusrite Scarlett 16i16', description: '18-Channel USB Audio Interface', channels: 18, active_rate: 44100, selectable: true, supported_rates: [44100, 48000] },
     ];
     // The demo starts on the 4-channel interface so the default 2.2 mode has
     // the channels it needs (Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2).
     let selectedOutputKeyCache = OUTPUTS[2].key;
     function selectedOutput() {
         return OUTPUTS.find(o => o.key === selectedOutputKeyCache) || OUTPUTS[0];
+    }
+
+    // ── Measurement capture model ───────────────────────────────────────
+    // The demo reports the capture side that belongs to the selected output
+    // device, exactly like the real machine pairs the Focusrite Scarlett 16i16
+    // multichannel output with its 18-channel capture input. Interfaces below
+    // three capture channels keep the previous measurement view (microphone
+    // Input 1 / Input 2 plus one shared electrical reference); the split
+    // Electrical Ref L / R view belongs to the Scarlett alone and comes from
+    // the unchanged app.js logic, which switches on the capture channel count.
+    const SCARLETT_OUTPUT_KEY = 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output';
+    const DEMO_MIC_CAPTURE_INPUT = {
+        id: 'demo_mic',
+        label: 'Demo Microphone',
+        note: 'simulated capture',
+        channels: 1,
+        supported_rates: [44100, 48000, 88200, 96000],
+        sample_rate: 48000,
+        measurement_sample_rate: 48000,
+        node_name: 'demo_mic',
+        persistent_id: 'demo_mic',
+    };
+    const STEREO_CAPTURE_INPUT = {
+        id: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
+        // Labels mirror the real capture list: the PipeWire node name, like the
+        // .104 `alsa_input.usb-Focusrite_Scarlett_16i16...-multichannel-input`.
+        label: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
+        note: 'MOTU M4 analog inputs 1/2',
+        channels: 2,
+        supported_rates: [44100, 48000, 88200, 96000, 176400, 192000],
+        sample_rate: 48000,
+        measurement_sample_rate: 48000,
+        node_name: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
+        persistent_id: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
+    };
+    const MULTICHANNEL_CAPTURE_INPUT = {
+        id: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+        label: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+        note: 'Scarlett 16i16 multichannel capture (18 channels)',
+        channels: 18,
+        supported_rates: [44100, 48000],
+        sample_rate: 48000,
+        measurement_sample_rate: 48000,
+        node_name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+        persistent_id: 'device-serial:Focusrite_Scarlett_16i16_4th_Gen|node-name:alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+    };
+    const CAPTURE_INPUTS = [DEMO_MIC_CAPTURE_INPUT, STEREO_CAPTURE_INPUT, MULTICHANNEL_CAPTURE_INPUT];
+    function captureInputForOutputKey(key) {
+        return key === SCARLETT_OUTPUT_KEY ? MULTICHANNEL_CAPTURE_INPUT : STEREO_CAPTURE_INPUT;
+    }
+    let measurementCaptureInput = captureInputForOutputKey(selectedOutputKeyCache);
+    // Electrical reference channels the demo persists for the selected capture.
+    // The concrete channel mapping is irrelevant for the demo; what matters is
+    // that the multichannel interface exposes the split pair while every other
+    // device keeps its single shared reference.
+    function measurementReferenceSettings() {
+        if (measurementCaptureInput.channels >= 3) {
+            return {
+                selectedReferenceInputChannel: '3',
+                selectedReferenceInputChannelLeft: '3',
+                selectedReferenceInputChannelRight: '4',
+            };
+        }
+        return {
+            selectedReferenceInputChannel: '2',
+            selectedReferenceInputChannelLeft: '',
+            selectedReferenceInputChannelRight: '',
+        };
     }
     let outputMode = {
         mode: 'subwoofer-2.2',
@@ -437,6 +506,14 @@
         }
         return null;
     }
+    // Track ids are paths relative to the music root ("local_<Album>/01 - X.flac"),
+    // so they carry "/" and spaces. Mirrors the real backend routes, which all
+    // declare {track_id:path} (library/api.py).
+    const TRACK_ID_PATH = '(.+)';
+    function pathId(value) {
+        try { return decodeURIComponent(value); } catch (_) { return value; }
+    }
+
     function findTrack(id) {
         for (const catalog of allCatalogs()) {
             const track = catalog.tracks.find(t => t.id === id);
@@ -1079,9 +1156,9 @@
             resolved.album.favorite = !!body.favorite;
             return j({ status: 'ok', album_id: resolved.album.id, favorite: resolved.album.favorite });
         }
-        const trackFavMatch = p.match(/^\/api\/tracks\/([^/]+)\/favorite$/);
+        const trackFavMatch = p.match(new RegExp('^/api/tracks/' + TRACK_ID_PATH + '/favorite$'));
         if (trackFavMatch) {
-            const resolved = findTrack(trackFavMatch[1]);
+            const resolved = findTrack(pathId(trackFavMatch[1]));
             if (!resolved) return err('Track not found');
             resolved.track.favorite = !!body.favorite;
             return j({ status: 'ok', track_id: resolved.track.id, favorite: resolved.track.favorite });
@@ -1092,14 +1169,14 @@
             const redirect = resolved ? resolved.album.coverUrl : lib.demoImage('album:' + (albumCoverMatch[1] || 'x'));
             return j({ redirect });
         }
-        const trackCoverMatch = p.match(/^\/api\/tracks\/cover\/([^/]+)$/);
+        const trackCoverMatch = p.match(new RegExp('^/api/tracks/cover/' + TRACK_ID_PATH + '$'));
         if (trackCoverMatch) {
-            const resolved = findTrack(trackCoverMatch[1]);
-            return j({ redirect: resolved ? resolved.track.cover_url : lib.demoImage('track:' + (trackCoverMatch[1] || 'x')) });
+            const resolved = findTrack(pathId(trackCoverMatch[1]));
+            return j({ redirect: resolved ? resolved.track.cover_url : lib.demoImage('track:' + pathId(trackCoverMatch[1] || 'x')) });
         }
-        const trackCoverInfoMatch = p.match(/^\/api\/tracks\/cover-info\/([^/]+)$/);
+        const trackCoverInfoMatch = p.match(new RegExp('^/api/tracks/cover-info/' + TRACK_ID_PATH + '$'));
         if (trackCoverInfoMatch) {
-            const resolved = findTrack(trackCoverInfoMatch[1]);
+            const resolved = findTrack(pathId(trackCoverInfoMatch[1]));
             return j({ cover_url: resolved ? resolved.track.cover_url : '', cover_available: !!resolved });
         }
         const albumDiscover = p.match(/^\/api\/albums\/([^/]+)\/discover$/);
@@ -1392,7 +1469,13 @@
         if (p === '/api/audio/outputs') {
             if (post) {
                 const key = String(body.key || '');
-                if (OUTPUTS.find(o => o.key === key)) selectedOutputKeyCache = key;
+                if (OUTPUTS.find(o => o.key === key)) {
+                    selectedOutputKeyCache = key;
+                    // The capture interface follows the selected device, so
+                    // picking the Scarlett 16i16 also switches the measurement
+                    // setup to its 18-channel capture (split Ref L / R).
+                    measurementCaptureInput = captureInputForOutputKey(key);
+                }
                 return j(outputsPayload());
             }
             return j(outputsPayload());
@@ -1667,33 +1750,25 @@
                 calibrations: [{ id: 'MM1CES_allein_00d.txt', filename: 'MM1CES_allein_00d.txt' }],
                 house_curves: [],
                 active_calibration_file_id: 'MM1CES_allein_00d.txt',
-                measurement_settings: { selectedInputId: 'demo_mic', selectedInputKey: 'demo_mic', selectedMicInputChannel: '1', selectedReferenceInputChannel: '2', measurementSampleRate: '48000' },
+                measurement_settings: {
+                    selectedInputId: measurementCaptureInput.id,
+                    selectedInputKey: measurementCaptureInput.persistent_id,
+                    selectedMicInputChannel: '1',
+                    ...measurementReferenceSettings(),
+                    measurementSampleRate: '48000',
+                },
                 scope_note: 'Ready for the first measurement.',
             });
         }
         if (p === '/api/measurements/inputs') {
             return j({
-                inputs: [{
-                    id: 'demo_mic',
-                    label: 'Demo Microphone',
-                    note: 'simulated capture',
-                    channels: 1,
-                    supported_rates: [44100, 48000, 88200, 96000],
-                    measurement_sample_rate: 48000,
-                    node_name: 'demo_mic',
-                    persistent_id: 'demo_mic',
-                }, {
-                    id: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
-                    label: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
-                    note: 'MOTU M4 analog inputs 1/2',
-                    channels: 2,
-                    supported_rates: [44100, 48000, 88200, 96000, 176400, 192000],
-                    measurement_sample_rate: 48000,
-                    node_name: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
-                    persistent_id: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
-                }],
+                inputs: CAPTURE_INPUTS.map(input => ({ ...input })),
                 capture_available: true,
-                selection: { input_id: 'demo_mic', persistent_id: 'demo_mic', configured: true },
+                selection: {
+                    input_id: measurementCaptureInput.id,
+                    persistent_id: measurementCaptureInput.persistent_id,
+                    configured: true,
+                },
                 scope_note: 'Ready for the first measurement.',
             });
         }
@@ -1739,7 +1814,14 @@
             const m = S.makeMeasurement({ name, id: 'demo_meas_merged_' + Date.now(), seed: 1 + Math.random() * 50 });
             return j({ measurement: S.addSavedMeasurement(m) });
         }
-        if (p === '/api/measurements/settings' && post) return j({ ok: true });
+        if (p === '/api/measurements/settings' && post) {
+            // A deliberate capture choice in the measurement setup wins over the
+            // device-derived default until the output device changes again.
+            const requestedId = String(body.selectedInputId || body.selected_input_id || '');
+            const requested = CAPTURE_INPUTS.find(input => input.id === requestedId);
+            if (requested) measurementCaptureInput = requested;
+            return j({ ok: true });
+        }
         // Calibration + house-curve files: the demo ships the .104 mic
         // calibration as the selected file; uploads/deletes only mutate the
         // in-memory option list and echo the applier shape

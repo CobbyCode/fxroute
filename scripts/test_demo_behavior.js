@@ -323,6 +323,91 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     const freshSource = await sourceGet();
     assert.equal(freshSource.mode, 'app-playback');
 
+    // ── Device selection: Focusrite Scarlett 16i16 ───────────────────
+    // The demo offers the Scarlett 16i16 next to the MOTU M4. Selecting it
+    // switches the measurement capture to the 18-channel Scarlett input, which
+    // is what makes the unchanged app.js render the split Electrical Ref L / R
+    // controls; every other (stereo) device keeps the 2-channel capture and the
+    // previous microphone Input 1 / Input 2 view.
+    const outputsGet = () => demoFetch('/api/audio/outputs').then((r) => r.json());
+    const outputsPost = (key) => demoFetch('/api/audio/outputs',
+        { method: 'POST', body: JSON.stringify({ key }) }).then((r) => r.json());
+    const captureState = async () => {
+        const inputs = await (await demoFetch('/api/measurements/inputs')).json();
+        const measurements = await (await demoFetch('/api/measurements')).json();
+        return { inputs, settings: measurements.measurement_settings };
+    };
+    const initialOutputs = await outputsGet();
+    const deviceLabels = initialOutputs.outputs.map((o) => o.label);
+    assert.ok(deviceLabels.includes('MOTU M4'), 'MOTU M4 must stay selectable');
+    assert.ok(deviceLabels.includes('Focusrite Scarlett 16i16'),
+        'the Focusrite Scarlett 16i16 must be selectable');
+    const scarlettOutput = initialOutputs.outputs.find((o) => o.label === 'Focusrite Scarlett 16i16');
+    assert.equal(scarlettOutput.channels, 18);
+    assert.equal(scarlettOutput.selectable, true);
+
+    // Stereo device: 2-channel capture, one shared reference (unchanged view).
+    await outputsPost(initialOutputs.outputs.find((o) => o.label === 'MOTU M4').key);
+    const stereo = await captureState();
+    const stereoSelected = stereo.inputs.inputs.find((i) => i.id === stereo.inputs.selection.input_id);
+    assert.equal(stereoSelected.channels, 2, 'normal devices keep the 2-channel capture');
+    assert.equal(stereo.settings.selectedInputId, stereoSelected.id);
+    assert.equal(stereo.settings.selectedReferenceInputChannel, '2');
+    assert.equal(stereo.settings.selectedReferenceInputChannelLeft, '');
+
+    // Scarlett 16i16: 18-channel capture -> split Electrical Ref L / R.
+    await outputsPost(scarlettOutput.key);
+    const split = await captureState();
+    const splitSelected = split.inputs.inputs.find((i) => i.id === split.inputs.selection.input_id);
+    assert.equal(splitSelected.channels, 18, 'the Scarlett must expose its 18-channel capture');
+    assert.equal(split.settings.selectedInputId, splitSelected.id);
+    assert.equal(split.settings.selectedReferenceInputChannelLeft, '3');
+    assert.equal(split.settings.selectedReferenceInputChannelRight, '4');
+
+    // A deliberate capture choice in the setup wins until the device changes.
+    const manualCapture = await demoFetch('/api/measurements/settings',
+        { method: 'POST', body: JSON.stringify({ selectedInputId: 'demo_mic' }) });
+    assert.equal(manualCapture.status, 200);
+    const manualState = await captureState();
+    assert.equal(manualState.inputs.selection.input_id, 'demo_mic');
+    assert.equal(manualState.inputs.inputs.find((i) => i.id === 'demo_mic').channels, 1);
+    // Selecting a device again re-derives the capture from that device.
+    await outputsPost(scarlettOutput.key);
+    const rederived = await captureState();
+    assert.equal(rederived.inputs.selection.input_id, splitSelected.id);
+    // Restore the demo's default device; later blocks assume the 4-channel
+    // interface with its 2.2 routing.
+    await outputsPost(initialOutputs.outputs.find((o) => o.label === 'MOTU M4').key);
+    const restored = await captureState();
+    assert.equal(restored.inputs.selection.input_id, stereoSelected.id);
+
+    // ── Folders view: one folder per album ────────────────────────────
+    // The real Folders view groups on the track path relative to the music
+    // root (`getTrackRelativePath`), which for local tracks is the id itself.
+    // Every album therefore needs its own folder with its tracks inside,
+    // instead of all album tracks sitting loosely at the root.
+    await demoFetch('/api/music-libraries/select', { method: 'POST', body: JSON.stringify({ id: 'local' }) });
+    const localTracks = await (await demoFetch('/api/tracks')).json();
+    const localAlbums = await (await demoFetch('/api/albums')).json();
+    const folders = new Map();
+    localTracks.forEach((track) => {
+        const rel = String(track.id).replace(/^local_/, '');
+        const parts = rel.split('/');
+        const folder = parts[0];
+        const file = parts.slice(1).join('/');
+        assert.ok(file && !file.includes('/'),
+            `track ${track.id} must live inside exactly one album folder`);
+        assert.equal(folder, track.album, 'the folder must be the album');
+        folders.set(folder, (folders.get(folder) || 0) + 1);
+    });
+    assert.ok(localTracks.length > 0, 'the local library must ship tracks');
+    assert.equal(folders.size, localAlbums.length, 'exactly one folder per album');
+    localAlbums.forEach((album) => {
+        assert.equal(folders.get(album.name), album.track_count,
+            `folder ${album.name} must hold every track of the album`);
+    });
+    assert.ok(!folders.has(''), 'no album track may sit directly under the root');
+
     assert.ok(state.stations.some((station) => station.id === 'groovesalad'));
 assert.ok(state.catalogStations.some((station) => station.id === 'rp-main'));
     assert.equal(state.catalogStations.some((station) => station.id === 'drumandbass'), false);

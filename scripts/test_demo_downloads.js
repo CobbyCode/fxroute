@@ -94,10 +94,10 @@ function post(fetch, url, body) {
     assert.equal(qStatus.status, 'Playing', 'qobuz demo_start starts playback');
 
     // ── Local stream facts: real per-track samplerate_hz ───────────────
-    await post(fetch, '/api/play', { track_id: 'local_demo_summer-on-the-block_1' });
+    await post(fetch, '/api/play', { track_id: 'local_Summer on the Block/01 - Beats Street.flac' });
     let st = (await (await fetch('/api/status')).json()).stream_info;
     assert.equal(st.samplerate_hz, 96000, 'hi-res local track reports 96 kHz');
-    await post(fetch, '/api/play', { track_id: 'local_demo_color-radio_1' });
+    await post(fetch, '/api/play', { track_id: 'local_Color Radio/01 - Cherry Postcard.flac' });
     st = (await (await fetch('/api/status')).json()).stream_info;
     assert.equal(st.samplerate_hz, 48000, '48 kHz local track reports 48 kHz');
     assert.equal(st.sample_rate, undefined, 'stream_info no longer carries the wrong field name');

@@ -88,10 +88,15 @@ class CatalogTest(unittest.TestCase):
             self.assertTrue(any(fav.values()) and not all(fav.values()))
             for key, value in fav.items():
                 kind, ident = key.split(":", 1)
-                self.assertTrue(ident.startswith(prefix), f"{key} wrong prefix")
                 if kind == "album":
+                    self.assertTrue(ident.startswith(prefix), f"{key} wrong prefix")
                     self.assertEqual(value, hash_code("fav-album:" + ident) % 3 == 0, key)
                 else:
+                    # Track ids are the path relative to the share root, exactly
+                    # like the real library (local_<Album>/<NN> - <Title>.flac),
+                    # which is what the Folders view groups on.
+                    self.assertTrue(ident.startswith("local_") and "/" in ident,
+                                    f"{key} must be a relative track path")
                     self.assertEqual(value, hash_code("fav-track:" + ident) % 4 == 0, key)
 
     def test_about_coverage(self):

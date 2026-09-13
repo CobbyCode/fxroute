@@ -51,6 +51,19 @@ async function checkCatalog(fetch, { selectId, albums, coverRe, label }) {
     const gotTracks = await (await fetch('/api/tracks')).json();
     assert.equal(gotAlbums.length, albums, `${label} serves ${albums} albums, got ` + gotAlbums.length);
     assert.ok(gotTracks.length > 0, label + ' serves tracks');
+    // Folders view: the id is the track's path relative to the music root
+    // ("local_<Album>/<NN> - <Title>.flac"), which getTrackRelativePath() strips
+    // to "<Album>/<NN> - <Title>.flac". So every track must sit inside its
+    // album's folder and no track may stay loose at the root.
+    const folderOf = t => t.id.slice('local_'.length).split('/').filter(Boolean).slice(0, -1).join('/');
+    assert.ok(gotTracks.every(t => t.id.startsWith('local_') && folderOf(t)),
+        label + ' track ids are album-relative paths');
+    const folders = new Set(gotTracks.map(folderOf));
+    const albumNames = new Set(gotAlbums.map(a => a.name));
+    assert.equal(folders.size, albumNames.size, label + ' has exactly one folder per album');
+    for (const folder of folders) {
+        assert.ok(albumNames.has(folder), label + ' folder matches the album name: ' + folder);
+    }
     const playlists = await (await fetch('/api/playlists')).json();
     assert.ok(playlists.length >= 2, label + ' has playlists');
     for (const pl of playlists) {

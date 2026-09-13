@@ -117,7 +117,7 @@ function makeDemoContext(bootArmed) {
             const c = makeDemoContext(false);
             const st = c.window.FXROUTE_DEMO_STATE;
             const post = (url, body) => c.fetch(url, { method: 'POST', body: JSON.stringify(body || {}) });
-            await post('/api/play', { track_id: 'd2-midnight-relay_01' });
+            await post('/api/play', { track_id: 'local_Midnight Relay/01 - Palm Nightcall.flac' });
             if (setup) await setup(post);
             let sum = 0, n = 0, tt = 0;
             for (let i = 0; i < ticks + 20; i += 1) {
@@ -155,7 +155,7 @@ function makeDemoContext(bootArmed) {
             const c = makeDemoContext(false);
             const st = c.window.FXROUTE_DEMO_STATE;
             const post = (url, body) => c.fetch(url, { method: 'POST', body: JSON.stringify(body || {}) });
-            await post('/api/play', { track_id: 'd2-midnight-relay_01' });
+            await post('/api/play', { track_id: 'local_Midnight Relay/01 - Palm Nightcall.flac' });
             if (setup) await setup(post);
             let hits = 0, max = -60, tt = 0;
             for (let i = 0; i < ticks + 20; i += 1) {
@@ -213,7 +213,7 @@ function makeDemoContext(bootArmed) {
             const c = makeDemoContext(false);
             const st = c.window.FXROUTE_DEMO_STATE;
             const post = (url, body) => c.fetch(url, { method: 'POST', body: JSON.stringify(body || {}) });
-            await post('/api/play', { track_id: 'd2-midnight-relay_01' });
+            await post('/api/play', { track_id: 'local_Midnight Relay/01 - Palm Nightcall.flac' });
             await post('/api/dsp/presets/load', { preset_name: '+6' });
             await post('/api/dsp/extras', { limiter_enabled: false });
             let tt = 0, hit = null;
