@@ -26,9 +26,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 import playback.orchestration as playback_orchestration
 from audio.output_ports import (
+    hardware_playback_port_fallback_from_mode,
     hardware_playback_ports_from_mode,
     order_hardware_playback_ports,
     playback_port_names,
+    playback_ports_from_channel_map,
     resolve_hardware_playback_ports,
     warn_semantic_playback_fallback,
 )
@@ -43,6 +45,10 @@ DSP_SINK = "fxroute_dsp_sink"
 
 AUX_PORTS = tuple(f"playback_AUX{index}" for index in range(18))
 SEMANTIC_PORTS = ("playback_FL", "playback_FR", "playback_RL", "playback_RR")
+# The Channel Map a raw-channel USB interface publishes (Scarlett 16i16).
+AUX_CHANNEL_MAP = ",".join(f"aux{index}" for index in range(18))
+# The Channel Map a device with a real channel layout publishes (UMC204HD).
+SEMANTIC_CHANNEL_MAP = "front-left,front-right,rear-left,rear-right"
 
 
 def _io_listing(name: str, ports) -> str:
@@ -53,14 +59,18 @@ def _short_line(sink_id: int, name: str, spec: str, state: str) -> str:
     return f"{sink_id}\t{name}\tPipeWire\t{spec}\t{state}"
 
 
-def _detailed_block(sink_id: int, name: str, description: str, spec: str, state: str) -> str:
-    return (
+def _detailed_block(sink_id: int, name: str, description: str, spec: str, state: str,
+                    channel_map: str | None = None) -> str:
+    block = (
         f"Sink #{sink_id}\n"
         f"\tState: {state}\n"
         f"\tName: {name}\n"
         f"\tDescription: {description}\n"
         f"\tSample Specification: {spec}\n"
     )
+    if channel_map is not None:
+        block += f"\tChannel Map: {channel_map}\n"
+    return block
 
 
 def _status(name: str) -> dict:
@@ -106,6 +116,58 @@ class PortResolutionTests(unittest.TestCase):
             order_hardware_playback_ports(("playback_AUX0", "playback_FL", "playback_FR")),
             ("playback_FL", "playback_FR", "playback_AUX0"),
         )
+
+
+class ChannelMapPlaybackPortTests(unittest.TestCase):
+    """A sink's channel map describes its real playback ports.
+
+    ``pactl list sinks`` publishes ``Channel Map:`` even while a suspended
+    device has not published any port yet, so this derivation is the fallback
+    that keeps the topology the device's own instead of the semantic
+    ``playback_FL/FR`` guess that can never link on a raw-channel interface.
+    """
+
+    def test_aux_channel_map_yields_aux_ports(self):
+        self.assertEqual(playback_ports_from_channel_map(AUX_CHANNEL_MAP, 18), AUX_PORTS)
+
+    def test_positional_channel_map_yields_semantic_ports(self):
+        self.assertEqual(
+            playback_ports_from_channel_map(SEMANTIC_CHANNEL_MAP, 4), SEMANTIC_PORTS
+        )
+
+    def test_channel_map_is_bounded_by_the_reported_channel_count(self):
+        self.assertEqual(
+            playback_ports_from_channel_map(AUX_CHANNEL_MAP, 2),
+            ("playback_AUX0", "playback_AUX1"),
+        )
+
+    def test_missing_positions_are_padded_in_channel_order(self):
+        self.assertEqual(
+            playback_ports_from_channel_map("front-left,front-right", 4),
+            ("playback_FL", "playback_FR", "playback_RL", "playback_RR"),
+        )
+
+    def test_map_accepts_an_already_split_designation_list(self):
+        self.assertEqual(
+            playback_ports_from_channel_map(["AUX0", " AUX1 "], 2),
+            ("playback_AUX0", "playback_AUX1"),
+        )
+
+    def test_without_a_channel_map_nothing_is_invented(self):
+        self.assertEqual(playback_ports_from_channel_map(None, None), ())
+        self.assertEqual(playback_ports_from_channel_map("", 18), ())
+        self.assertEqual(playback_ports_from_channel_map(AUX_CHANNEL_MAP, 0), ())
+
+    def test_mode_accessor_reads_the_payload_field(self):
+        mode = {"hardware_playback_ports_from_channel_map": list(AUX_PORTS)}
+        self.assertEqual(hardware_playback_port_fallback_from_mode(mode), AUX_PORTS)
+        self.assertEqual(
+            hardware_playback_port_fallback_from_mode(mode, count=2),
+            ("playback_AUX0", "playback_AUX1"),
+        )
+        # A payload without the derived list yields nothing, never a guess.
+        self.assertEqual(hardware_playback_port_fallback_from_mode({}), ())
+        self.assertEqual(hardware_playback_port_fallback_from_mode(None), ())
 
 
 class DSPRuntimeConfigPortTests(unittest.TestCase):
@@ -181,7 +243,7 @@ class DSPRuntimeAuxLinkTests(unittest.IsolatedAsyncioTestCase):
         self.manager = DSPManager(home=Path(tempfile.mkdtemp()))
         self.manager.save_global_extras({"limiter": {"enabled": False}})
 
-    def overview(self, mode: str, *, ports=None, channels: int = 18) -> dict:
+    def overview(self, mode: str, *, ports=None, channels: int = 18, derived=None) -> dict:
         block = {
             "mode": mode,
             "effective_output_key": SCARLETT,
@@ -190,6 +252,8 @@ class DSPRuntimeAuxLinkTests(unittest.IsolatedAsyncioTestCase):
         }
         if ports is not None:
             block["hardware_playback_ports"] = list(ports)
+        if derived is not None:
+            block["hardware_playback_ports_from_channel_map"] = list(derived)
         if mode == "subwoofer-2.1":
             block["subwoofer"] = {"crossover_frequency_hz": 80, "main_highpass_enabled": True,
                                   "sub_level_db": -2, "sub_alignment_ms": 0, "sub_polarity": "normal"}
@@ -268,13 +332,36 @@ class DSPRuntimeAuxLinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("fxroute_dsp:output_1", f"{SCARLETT}:playback_FL"), links)
         self.assertIn(("fxroute_dsp:output_2", f"{SCARLETT}:playback_FR"), links)
 
+    async def test_suspended_aux_device_links_its_channel_map_ports(self):
+        """A suspended sink publishes no ports; the channel map still wins.
+
+        Without the derived fallback this sync would link playback_FL/FR — a
+        topology the raw-channel interface never exposes — and the playback
+        transition would only stall.
+        """
+        overview = self.overview("stereo", derived=AUX_PORTS)
+        with self.assertNoLogs("audio.output_ports", level="WARNING"):
+            commands = await self._sync(overview)
+        links = self._links(commands)
+        self.assertIn(("fxroute_dsp:output_1", f"{SCARLETT}:playback_AUX0"), links)
+        self.assertIn(("fxroute_dsp:output_2", f"{SCARLETT}:playback_AUX1"), links)
+        self.assertNotIn(("fxroute_dsp:output_1", f"{SCARLETT}:playback_FL"), links)
+
+    async def test_suspended_aux_device_resolves_four_ports_for_subwoofer_mode(self):
+        overview = self.overview("subwoofer-2.1", derived=AUX_PORTS)
+        links = self._links(await self._sync(overview))
+        self.assertIn(("fxroute_dsp:output_3", f"{SCARLETT}:playback_AUX2"), links)
+        self.assertIn(("fxroute_dsp:output_4", f"{SCARLETT}:playback_AUX3"), links)
+
 
 class OutputDiscoveryPortTests(unittest.TestCase):
     """Output discovery carries the resolved list every consumer reuses."""
 
-    def _overview(self, name: str, io_listing: str) -> dict:
-        short = _short_line(1725, name, "s32le 18ch 44100Hz", "IDLE")
-        detailed = _detailed_block(1725, name, "Scarlett 16i16 4th Gen", "s32le 18ch 44100Hz", "IDLE")
+    def _overview(self, name: str, io_listing: str, *, channel_map: str | None = None,
+                  spec: str = "s32le 18ch 44100Hz") -> dict:
+        short = _short_line(1725, name, spec, "IDLE")
+        detailed = _detailed_block(1725, name, "Scarlett 16i16 4th Gen", spec, "IDLE",
+                                   channel_map=channel_map)
 
         def run(args: list[str]) -> str:
             if args[:1] == ["pactl"] and "short" in args:
@@ -304,6 +391,38 @@ class OutputDiscoveryPortTests(unittest.TestCase):
         payload = self._overview(UMC, _io_listing(UMC, SEMANTIC_PORTS))
         self.assertEqual(payload["output_mode"]["hardware_playback_ports"], list(SEMANTIC_PORTS))
 
+    def test_discovery_carries_the_channel_map_fallback(self):
+        payload = self._overview(SCARLETT, "", channel_map=AUX_CHANNEL_MAP)
+        mode = payload["output_mode"]
+        # The live listing had nothing, so the resolved list stays empty and
+        # the sink's own channel map describes the fallback topology.
+        self.assertEqual(mode["hardware_playback_ports"], [])
+        self.assertEqual(mode["hardware_playback_ports_from_channel_map"], list(AUX_PORTS))
+
+    def test_channel_map_fallback_describes_a_semantic_device_too(self):
+        payload = self._overview(UMC, "", channel_map=SEMANTIC_CHANNEL_MAP,
+                                 spec="s32le 4ch 44100Hz")
+        self.assertEqual(
+            payload["output_mode"]["hardware_playback_ports_from_channel_map"],
+            list(SEMANTIC_PORTS),
+        )
+
+    def test_discovery_without_a_channel_map_invents_nothing(self):
+        payload = self._overview(SCARLETT, "")
+        self.assertEqual(payload["output_mode"]["hardware_playback_ports"], [])
+        self.assertEqual(
+            payload["output_mode"]["hardware_playback_ports_from_channel_map"], []
+        )
+
+    def test_resolved_list_and_channel_map_fallback_coexist(self):
+        payload = self._overview(SCARLETT, _io_listing(SCARLETT, AUX_PORTS),
+                                 channel_map=AUX_CHANNEL_MAP)
+        self.assertEqual(payload["output_mode"]["hardware_playback_ports"], list(AUX_PORTS))
+        self.assertEqual(
+            payload["output_mode"]["hardware_playback_ports_from_channel_map"],
+            list(AUX_PORTS),
+        )
+
     def test_discovery_failure_degrades_to_empty_list(self):
         class Boom(RuntimeError):
             pass
@@ -318,6 +437,9 @@ class OutputDiscoveryPortTests(unittest.TestCase):
             if args[:2] == ["pw-cli", "ls"]:
                 return ""
             return ""
+
+        # No channel map in that fixture either: an output whose topology is
+        # completely unknown must stay empty instead of being guessed.
 
         with mock.patch.object(overview_module, "get_samplerate_status", return_value=_status(SCARLETT)), \
              mock.patch.object(overview_module, "get_bluetooth_audio_overview", return_value={"available": False}), \
@@ -353,10 +475,12 @@ class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
             "missing_playback_graph_links": playback_orchestration.PlaybackOrchestrator.missing_playback_graph_links,
         })()
 
-    def _overview(self, mode: str, ports=None) -> dict:
+    def _overview(self, mode: str, ports=None, derived=None) -> dict:
         block = {"mode": mode, "effective_output_key": SCARLETT}
         if ports is not None:
             block["hardware_playback_ports"] = list(ports)
+        if derived is not None:
+            block["hardware_playback_ports_from_channel_map"] = list(derived)
         return {"output_mode": block}
 
     async def test_stereo_diagnosis_tracks_aux_links(self):
@@ -438,6 +562,30 @@ class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
             [f"fxroute_dsp:output_2 -> {SCARLETT}:playback_AUX1"],
         )
 
+    async def test_diagnosis_uses_the_channel_map_when_nothing_is_published(self):
+        """Neither the payload nor the live read sees ports; the map decides."""
+        io_text = "\n".join([
+            f"{DSP_SINK}:monitor_FL", f"{DSP_SINK}:monitor_FR",
+            "fxroute_dsp:input_1", "fxroute_dsp:input_2",
+            "fxroute_dsp:output_1", "fxroute_dsp:output_2",
+        ])
+        links_text = "\n".join([
+            f"{DSP_SINK}:monitor_FL -> fxroute_dsp:input_1",
+            f"{DSP_SINK}:monitor_FR -> fxroute_dsp:input_2",
+            f"fxroute_dsp:output_1 -> {SCARLETT}:playback_AUX0",
+            f"fxroute_dsp:output_2 -> {SCARLETT}:playback_AUX1",
+        ])
+        orchestrator = self._orchestrator(io_text, links_text)
+        with self.assertNoLogs("audio.output_ports", level="WARNING"):
+            diagnosis = await orchestrator.playback_graph_diagnosis(
+                self._overview("stereo", derived=AUX_PORTS), target_rate=44100
+            )
+        self.assertEqual(
+            diagnosis["output_targets"],
+            (f"{SCARLETT}:playback_AUX0", f"{SCARLETT}:playback_AUX1"),
+        )
+        self.assertTrue(diagnosis["links_complete"])
+
     async def test_diagnosis_falls_back_to_live_port_resolution(self):
         io_text = _io_listing(SCARLETT, AUX_PORTS[:4]) + "\n" + "\n".join([
             f"{DSP_SINK}:monitor_FL", f"{DSP_SINK}:monitor_FR",
@@ -493,6 +641,24 @@ class SilentActiveAuxPortTests(unittest.TestCase):
             "hardware_playback_ports": list(AUX_PORTS),
         }
         self.assertFalse(self._recovery()._source_links_present("local", links, output_mode))
+
+    def test_aux_topology_recognized_from_the_channel_map_alone(self):
+        """The watcher must not check semantic names on a suspended AUX sink."""
+        links = (
+            "\tmpv:output_FL\n"
+            f"  |-> {DSP_SINK}:playback_FL\n"
+            "\tfxroute_dsp:output_1\n"
+            f"  |-> {SCARLETT}:playback_AUX0\n"
+            "\tfxroute_dsp:output_2\n"
+            f"  |-> {SCARLETT}:playback_AUX1\n"
+        )
+        output_mode = {
+            "mode": "stereo",
+            "effective_output_key": SCARLETT,
+            "hardware_playback_ports_from_channel_map": list(AUX_PORTS),
+        }
+        with self.assertNoLogs("audio.output_ports", level="WARNING"):
+            self.assertTrue(self._recovery()._source_links_present("local", links, output_mode))
 
     def test_semantic_topology_still_recognized_without_discovery(self):
         links = (
@@ -721,6 +887,24 @@ class SemanticFallbackWarningTests(unittest.TestCase):
         with self.assertNoLogs("audio.output_ports", level="WARNING"):
             asyncio.run(_diagnose(self._diagnosis_overview(ports=AUX_PORTS), ""))
 
+    def test_no_warning_when_only_the_channel_map_describes_the_sink(self):
+        async def _diagnose(overview: dict, io_text: str) -> dict:
+            orchestrator = self._diagnosis_orchestrator(io_text, "")
+            return await orchestrator.playback_graph_diagnosis(overview, target_rate=44100)
+
+        # The payload carries no resolved list but does carry the sink's own
+        # channel map, which is a real topology — not a semantic guess.
+        with self.assertNoLogs("audio.output_ports", level="WARNING"):
+            asyncio.run(_diagnose(self._diagnosis_overview(derived=AUX_PORTS), ""))
+        recovery = SilentActiveRecovery.__new__(SilentActiveRecovery)
+        links = f"\tmpv:output_FL\n  |-> {DSP_SINK}:playback_FL\n"
+        with self.assertNoLogs("audio.output_ports", level="WARNING"):
+            recovery._source_links_present(
+                "local", links,
+                {"mode": "stereo", "effective_output_key": SCARLETT,
+                 "hardware_playback_ports_from_channel_map": list(AUX_PORTS)},
+            )
+
     def test_silent_active_warns_when_payload_lacks_ports(self):
         recovery = SilentActiveRecovery.__new__(SilentActiveRecovery)
         output_mode = {"mode": "stereo", "effective_output_key": SCARLETT}
@@ -737,10 +921,12 @@ class SemanticFallbackWarningTests(unittest.TestCase):
                  "hardware_playback_ports": ["playback_FL", "playback_FR"]},
             )
 
-    def _diagnosis_overview(self, ports=None) -> dict:
+    def _diagnosis_overview(self, ports=None, derived=None) -> dict:
         block = {"mode": "stereo", "effective_output_key": SCARLETT}
         if ports is not None:
             block["hardware_playback_ports"] = list(ports)
+        if derived is not None:
+            block["hardware_playback_ports_from_channel_map"] = list(derived)
         return {"output_mode": block}
 
     def _diagnosis_orchestrator(self, io_text: str, links_text: str):

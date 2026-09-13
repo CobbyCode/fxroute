@@ -397,6 +397,7 @@ def _parse_pactl_sinks_detailed(output: str) -> dict[str, dict[str, Any]]:
                 'state': None,
                 'ports': [],
                 'active_port': None,
+                'channel_map': None,
             }
             in_ports = False
             continue
@@ -415,6 +416,13 @@ def _parse_pactl_sinks_detailed(output: str) -> dict[str, dict[str, Any]]:
             in_ports = False
         elif stripped.startswith('Sample Specification:'):
             current['sample_spec'] = stripped.split(':', 1)[1].strip()
+            in_ports = False
+        elif stripped.startswith('Channel Map:'):
+            # The sink's own channel designations. PipeWire names the playback
+            # ports after exactly these, and pactl publishes the map even while
+            # a suspended device has not published any port (see
+            # audio.output_ports.playback_ports_from_channel_map).
+            current['channel_map'] = stripped.split(':', 1)[1].strip()
             in_ports = False
         elif stripped.startswith('device.description = '):
             current['device_description'] = _strip_quoted_value(stripped)

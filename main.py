@@ -308,6 +308,7 @@ import dsp.orchestration as dsp_orchestration
 import dsp.preset_loading as preset_loading
 import playback.orchestration as playback_orchestration
 from audio import pw_link
+from audio.output_ports import hardware_playback_port_fallback_from_mode
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
 from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
@@ -1343,10 +1344,14 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
     dsp_out_2 = "fxroute_dsp:output_2"
     dsp_out_3 = "fxroute_dsp:output_3"
     dsp_out_4 = "fxroute_dsp:output_4"
-    # Read the hardware side back through the same discovery-resolved port
-    # list the DSP links against, so the dump never reports a playback_FL/FR
-    # topology the device does not actually expose (e.g. playback_AUX0…).
+    # Read the hardware side back through the same port list the DSP links
+    # against, so the dump never reports a playback_FL/FR topology the device
+    # does not actually expose (e.g. playback_AUX0…).  That list is the
+    # discovery-resolved one, the sink's own channel map when no port is
+    # published yet, and only then the historic semantic names.
     hardware_ports = [str(port) for port in (output_mode.get("hardware_playback_ports") or ())]
+    if not hardware_ports:
+        hardware_ports = list(hardware_playback_port_fallback_from_mode(output_mode))
     if not hardware_ports:
         hardware_ports = ["playback_FL", "playback_FR", "playback_RL", "playback_RR"]
     hw_targets = [f"{output_key}:{port}" for port in hardware_ports[:4]] if output_key else []

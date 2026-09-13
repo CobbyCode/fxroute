@@ -21,6 +21,7 @@ import playback.source_policy as source_policy
 import audio.samplerate as samplerate
 from audio.output_ports import (
     HARDWARE_CHANNEL_ORDER,
+    hardware_playback_port_fallback_from_mode,
     hardware_playback_ports_from_mode,
     resolve_hardware_playback_ports,
     warn_semantic_playback_fallback,
@@ -39,19 +40,25 @@ def _hardware_output_ports(output_mode: Mapping[str, Any], io_text: str, output_
     """Resolve the hardware playback ports for the mode's DSP outputs.
 
     The discovery payload carries the already resolved list; a direct
-    ``pw-link -io`` read is the fallback, and the historic semantic port names
-    are the last resort so a graph diagnosis never invents a port topology
-    that was not actually resolved.  Reaching the semantic names means both
-    live sources failed — announced (rate-limited) for field diagnosis.
+    ``pw-link -io`` read comes next, then the sink's own channel map (which is
+    known even while a suspended device publishes no ports), and only then the
+    historic semantic port names — so a graph diagnosis never invents a port
+    topology that was not actually resolved.  Reaching the semantic names
+    means every source failed — announced (rate-limited) for field diagnosis.
     """
-    fallback = (
+    live_ports = (
         resolve_hardware_playback_ports(io_text, output_key) if output_key else ()
-    ) or tuple(f"playback_{channel}" for channel in HARDWARE_CHANNEL_ORDER)
+    )
+    channel_map_ports = hardware_playback_port_fallback_from_mode(output_mode)
+    fallback = (
+        live_ports
+        or channel_map_ports
+        or tuple(f"playback_{channel}" for channel in HARDWARE_CHANNEL_ORDER)
+    )
     if output_key:
         discovered = (output_mode or {}).get("hardware_playback_ports")
         has_discovered = isinstance(discovered, (list, tuple)) and bool(discovered)
-        live_resolved = bool(resolve_hardware_playback_ports(io_text, output_key))
-        if not has_discovered and not live_resolved:
+        if not has_discovered and not live_ports and not channel_map_ports:
             warn_semantic_playback_fallback(output_key)
     return hardware_playback_ports_from_mode(output_mode, fallback, count=count)
 

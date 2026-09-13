@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from audio.output_ports import (
     HARDWARE_CHANNEL_ORDER,
+    hardware_playback_port_fallback_from_mode,
     resolve_hardware_playback_ports,
     warn_semantic_playback_fallback,
 )
@@ -554,20 +555,27 @@ class DSPRuntime:
         """Resolve the selected sink's real playback ports for this sync.
 
         Output discovery already resolved the ports; a direct ``pw-link -io``
-        read is the fallback so a sync never links against a hardcoded port
-        topology when the discovery payload is unavailable.
+        read is the fallback, and the sink's channel map is the last resort
+        before ``DSPRuntimeConfig`` substitutes the semantic port names — a
+        suspended raw-channel interface publishes no ports, yet its real
+        ``playback_AUX0…`` topology is still known and linking against the
+        semantic names could never succeed.
         """
         output_mode = overview.get("output_mode") or {}
         output_key = str(output_mode.get("effective_output_key") or "").strip()
         discovered = output_mode.get("hardware_playback_ports")
         if isinstance(discovered, (list, tuple)) and discovered:
             return tuple(str(port) for port in discovered)
-        if not output_key:
-            return None
-        result = await self._run(("pw-link", "-io"))
-        if result.returncode:
-            return None
-        return resolve_hardware_playback_ports(result.stdout, output_key) or None
+        if output_key:
+            result = await self._run(("pw-link", "-io"))
+            if not result.returncode:
+                live_ports = resolve_hardware_playback_ports(result.stdout, output_key)
+                if live_ports:
+                    return live_ports
+        # The full ordered list: the config maps its fixed Out 1/2 (and 3/4)
+        # onto the first entries itself, and rejects a mode that needs more
+        # ports than the device exposes with a clear reason.
+        return hardware_playback_port_fallback_from_mode(output_mode) or None
 
     async def _sync(self, overview: dict[str, Any], *, initial_output_gain_db: float = 0.0,
                     extras_override: dict[str, Any] | None = None) -> None:

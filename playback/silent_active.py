@@ -19,7 +19,11 @@ from audio import pw_link
 from audio import sink_inputs
 from audio.samplerate import OUTPUT_MODE_STEREO, get_audio_output_overview
 from audio.system_volume import get_output_volume
-from audio.output_ports import hardware_playback_ports_from_mode, warn_semantic_playback_fallback
+from audio.output_ports import (
+    hardware_playback_port_fallback_from_mode,
+    hardware_playback_ports_from_mode,
+    warn_semantic_playback_fallback,
+)
 from dsp.runtime import _contains_link
 import playback.source_policy as source_policy
 from playback.state import is_local_playback_active, is_spotify_playback_active
@@ -74,18 +78,21 @@ class SilentActiveRecovery:
         # Native stereo topology: the source reaches the DSP ingress sink and
         # the DSP output reaches the selected hardware output, whatever the
         # device calls its playback ports (playback_FL/FR or playback_AUX0/1).
-        # Discovery resolves the pair once; the semantic names are only the
-        # fallback for payloads built without port discovery (tests, legacy).
+        # Discovery resolves the pair once; the sink's own channel map covers
+        # the suspended case, and the semantic names are only the fallback for
+        # payloads without any topology (tests, legacy).
+        channel_map_ports = hardware_playback_port_fallback_from_mode(
+            output_mode, count=2)
         ports = hardware_playback_ports_from_mode(
-            output_mode, ("playback_FL", "playback_FR"), count=2)
+            output_mode, channel_map_ports or ("playback_FL", "playback_FR"), count=2)
         if len(ports) < 2:
-            ports = ("playback_FL", "playback_FR")
-        # The watcher runs periodically, so a payload without a resolved port
-        # list (discovery failed) would silently check the semantic topology
-        # forever. Announce it once per interval; a payload whose list names
-        # the real FL/FR ports of a semantic device stays quiet.
+            ports = channel_map_ports[:2] or ("playback_FL", "playback_FR")
+        # The watcher runs periodically, so a payload without any resolved port
+        # topology would silently check the semantic names forever. Announce it
+        # once per interval; a payload whose list (or channel map) names the
+        # real ports stays quiet.
         discovered = output_mode.get("hardware_playback_ports")
-        if not (isinstance(discovered, (list, tuple)) and discovered):
+        if not (isinstance(discovered, (list, tuple)) and discovered) and not channel_map_ports:
             warn_semantic_playback_fallback(output_key)
         return (
             _contains_link(links_text, "fxroute_dsp:output_1", f"{output_key}:{ports[0]}")

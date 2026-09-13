@@ -10,7 +10,12 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Mapping
 
-from audio.output_ports import resolve_hardware_playback_ports
+from audio.output_ports import (
+    channel_suffix_for_position,
+    parse_channel_map_positions,
+    playback_ports_from_channel_map,
+    resolve_hardware_playback_ports,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,48 +113,13 @@ def _split_source_selection_key(selection_key: str | None) -> tuple[str | None, 
     return source_name, port_key, pair
 
 
-# PipeWire channel designations (``audio.channel`` / ``Channel Map``) mapped
-# to the ``capture_<SUFFIX>`` port names external-input routing links.  The
-# live channel map of a source node always wins over positional guessing by
-# channel count; the positional table below is only the fallback when a node
-# reports no usable designations.
-_PIPEWIRE_CHANNEL_SUFFIX_BY_POSITION = {
-    "front-left": "FL",
-    "front-right": "FR",
-    "rear-left": "RL",
-    "rear-right": "RR",
-    "front-center": "FC",
-    "lfe": "LFE",
-    "side-left": "SL",
-    "side-right": "SR",
-    "mono": "MONO",
-}
-
-_POSITIONAL_CHANNEL_SUFFIXES = (
-    "FL", "FR", "RL", "RR", "FC", "LFE", "SL", "SR",
-    "AUX0", "AUX1", "AUX2", "AUX3", "AUX4", "AUX5",
-)
-
-
-def _parse_channel_map_positions(channel_map: str | None) -> list[str]:
-    tokens: list[str] = []
-    for raw_token in (channel_map or "").split(","):
-        token = raw_token.strip().lower()
-        if token:
-            tokens.append(token)
-    return tokens
-
-
-def _channel_suffix_for_position(token: str, index: int) -> str:
-    mapped = _PIPEWIRE_CHANNEL_SUFFIX_BY_POSITION.get(token)
-    if mapped:
-        return mapped
-    aux_match = re.match(r"^aux(\d+)$", token)
-    if aux_match:
-        return f"AUX{int(aux_match.group(1))}"
-    if 0 <= index < len(_POSITIONAL_CHANNEL_SUFFIXES):
-        return _POSITIONAL_CHANNEL_SUFFIXES[index]
-    return f"AUX{index}"
+# The channel-designation table (``Channel Map`` / ``audio.channel`` -> the
+# ``capture_<SUFFIX>`` port names external-input routing links) is shared with
+# the playback side, which needs the same designations for a sink's
+# ``playback_<SUFFIX>`` ports (see audio.output_ports).  The live channel map
+# of a node always wins over positional guessing by channel count; the
+# positional table is only the fallback when a node reports no usable
+# designations.
 
 
 def _ordered_capture_channel_suffixes(channel_map: str | None, channels: int | None) -> list[str]:
@@ -160,8 +130,8 @@ def _ordered_capture_channel_suffixes(channel_map: str | None, channels: int | N
     map nor a count is known, assume one plain stereo pair (legacy
     availability) instead of hiding the source.
     """
-    positions = _parse_channel_map_positions(channel_map)
-    suffixes = [_channel_suffix_for_position(token, index) for index, token in enumerate(positions)]
+    positions = parse_channel_map_positions(channel_map)
+    suffixes = [channel_suffix_for_position(token, index) for index, token in enumerate(positions)]
     if channels is None:
         return suffixes or ["FL", "FR"]
     try:
@@ -173,7 +143,7 @@ def _ordered_capture_channel_suffixes(channel_map: str | None, channels: int | N
     if len(suffixes) >= count:
         return suffixes[:count]
     return suffixes + [
-        _channel_suffix_for_position("", index)
+        channel_suffix_for_position("", index)
         for index in range(len(suffixes), count)
     ]
 
@@ -394,9 +364,20 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
     # discovery, so DSP link build, graph diagnosis, link repair/readback and
     # the silent-active watcher all describe the same port topology instead
     # of each assuming playback_FL/FR/RL/RR.
+    effective_output_key = str((effective_output or {}).get("key") or "")
     hardware_playback_ports = list(
-        resolve_hardware_playback_ports(port_listing, str((effective_output or {}).get("key") or ""))
+        resolve_hardware_playback_ports(port_listing, effective_output_key)
     )
+    # A suspended sink publishes no ports, so ``pw-link -io`` cannot describe
+    # it.  Its ``Channel Map:`` is still known from ``pactl list sinks``, and
+    # PipeWire names the ports after exactly those designations — deriving the
+    # list here keeps the fallback topology the device's own
+    # (``playback_AUX0…``) instead of the semantic names that can never link
+    # on a raw-channel interface.
+    channel_map_playback_ports = list(playback_ports_from_channel_map(
+        (sink_details.get(effective_output_key) or {}).get("channel_map"),
+        (effective_output or {}).get("channels"),
+    ))
     output_mode_available = bool((effective_output or {}).get("channels") and (effective_output or {}).get("channels") >= 4)
     if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and not output_mode_available:
         label = (
@@ -436,6 +417,7 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
             "available": output_mode_available,
             "required_channels": 4,
             "hardware_playback_ports": hardware_playback_ports,
+            "hardware_playback_ports_from_channel_map": channel_map_playback_ports,
             "effective_output_key": (effective_output or {}).get("key"),
             "effective_output_channels": (effective_output or {}).get("channels"),
             "effective_output_rate": (effective_output or {}).get("active_rate"),
@@ -488,6 +470,7 @@ def get_audio_source_overview() -> dict[str, Any]:
         sample_spec = details.get("sample_spec") or source.get("sample_spec")
         channels = _parse_sample_spec_channels(sample_spec)
         suffixes = _ordered_capture_channel_suffixes(details.get("channel_map"), channels)
+
         pairs = _stereo_pairs_for_suffixes(suffixes)
         if not pairs:
             # A lone mono channel is never a complete stereo input: offering
@@ -497,7 +480,7 @@ def get_audio_source_overview() -> dict[str, Any]:
             skipped_single_channel.append(device_label or name or "Unknown input")
             continue
         resolved_channels = len(suffixes) if suffixes else channels
-        channel_positions = _parse_channel_map_positions(details.get("channel_map")) or None
+        channel_positions = parse_channel_map_positions(details.get("channel_map")) or None
         ports = [port for port in (details.get("ports") or []) if port.get("available", True)]
         active_port_key = details.get("active_port")
         base_payload = {
