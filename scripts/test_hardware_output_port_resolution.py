@@ -382,6 +382,41 @@ class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(diagnosis["links_complete"])
         self.assertTrue(all(diagnosis["links"].values()))
 
+    async def test_diagnosis_rejects_additional_wrong_device(self):
+        io_text = _io_listing(SCARLETT, AUX_PORTS[:4]) + "\n" + "\n".join([
+            "fxroute_dsp:input_1", "fxroute_dsp:input_2",
+            "fxroute_dsp:output_1", "fxroute_dsp:output_2",
+        ])
+        links = "\n".join([
+            f"{DSP_SINK}:monitor_FL -> fxroute_dsp:input_1",
+            f"{DSP_SINK}:monitor_FR -> fxroute_dsp:input_2",
+            f"fxroute_dsp:output_1 -> {SCARLETT}:playback_AUX0",
+            f"fxroute_dsp:output_2 -> {SCARLETT}:playback_AUX1",
+            "fxroute_dsp:output_1 -> alsa_output.other:playback_FL",
+        ])
+        diagnosis = await self._orchestrator(io_text, links).playback_graph_diagnosis(
+            self._overview("stereo"), target_rate=44100)
+        self.assertFalse(diagnosis["links_complete"])
+        self.assertTrue(diagnosis["bypass_only"])
+
+    async def test_diagnosis_rejects_wrong_channel_on_selected_sink(self):
+        io_text = _io_listing(SCARLETT, AUX_PORTS[:4]) + "\n" + "\n".join([
+            "fxroute_dsp:input_1", "fxroute_dsp:input_2",
+            "fxroute_dsp:output_1", "fxroute_dsp:output_2",
+        ])
+        links = "\n".join([
+            f"{DSP_SINK}:monitor_FL -> fxroute_dsp:input_1",
+            f"{DSP_SINK}:monitor_FR -> fxroute_dsp:input_2",
+            f"fxroute_dsp:output_1 -> {SCARLETT}:playback_AUX0",
+            f"fxroute_dsp:output_2 -> {SCARLETT}:playback_AUX1",
+            f"fxroute_dsp:output_1 -> {SCARLETT}:playback_AUX1",
+        ])
+        diagnosis = await self._orchestrator(io_text, links).playback_graph_diagnosis(
+            self._overview("stereo"), target_rate=44100)
+        self.assertFalse(diagnosis["links_complete"])
+        self.assertIn(f"fxroute_dsp:output_1 -> {SCARLETT}:playback_AUX1",
+                      diagnosis["unexpected_output_links"])
+
     async def test_diagnosis_flags_a_missing_aux_link(self):
         io_text = _io_listing(SCARLETT, AUX_PORTS[:4]) + "\n" + "\n".join([
             f"{DSP_SINK}:monitor_FL", f"{DSP_SINK}:monitor_FR",

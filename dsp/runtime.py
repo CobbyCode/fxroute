@@ -89,6 +89,26 @@ def _contains_link(text: str, source: str, target: str) -> bool:
     return False
 
 
+def physical_output_links(text: str) -> set[PipeWireLink]:
+    """Read DSP-to-playback edges, preserving capture and post-effect taps."""
+    links = set()
+    current = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("|-> "):
+            source, target = current, line[4:].strip()
+        elif line.startswith("|<- "):
+            source, target = line[4:].strip(), current
+        elif " -> " in line:
+            source, target = line.split(" -> ", 1)
+        else:
+            current = line
+            continue
+        if re.fullmatch(r"fxroute_dsp:output_\d+", source) and ":playback_" in target:
+            links.add(PipeWireLink(source, target))
+    return links
+
+
 def _finite_number(value: Any, default: float = 0.0) -> float:
     try:
         parsed = float(value)
@@ -343,6 +363,8 @@ class DSPRuntime:
             return False
         async with self._lock:
             await self._remove_direct_source_links()
+            if self._config is not None:
+                await self._reconcile_output_links(self._config)
             if await self.verify():
                 return True
             if self._config is None:
@@ -366,8 +388,6 @@ class DSPRuntime:
                 ))
 
     async def reclean_direct_dsp_links(self) -> None:
-        if self._config is not None:
-            await self._reconcile_output_links(self._config)
         await self._reclean_guarded()
 
     def snapshot(self) -> dict[str, Any]:
@@ -583,6 +603,7 @@ class DSPRuntime:
             if self._can_hot_update(config):
                 try:
                     if await self._try_live_update(text):
+                        await self._reconcile_output_links(config)
                         Path(config_name).unlink(missing_ok=True)
                         self._config = config
                         self._config_text = text
@@ -624,13 +645,12 @@ class DSPRuntime:
                     PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[0]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[0]}"),
                     PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[1]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[1]}"),
                 ]
-                links.extend(PipeWireLink(f"{DSP_NODE_NAME}:output_{index + 1}", f"{config.output_key}:{port}")
-                             for index, port in enumerate(config.hardware_ports))
                 self._links = links
                 for link in links:
                     result = await self._run(("pw-link", link.source, link.target))
                     if result.returncode and "exists" not in (result.stderr or "").lower():
                         raise RuntimeError(result.stderr or f"Failed to link {link.source} -> {link.target}")
+                await self._reconcile_output_links(config)
                 self._error = None
             except Exception as exc:
                 try:
@@ -751,21 +771,28 @@ class DSPRuntime:
             return False
 
     async def _reconcile_output_links(self, config: DSPRuntimeConfig) -> None:
-        """Update only hardware links; native ports remain stable across modes."""
+        """Reconcile live hardware edges, including links created by other clients."""
         desired = [
             PipeWireLink(f"{DSP_NODE_NAME}:output_{index + 1}", f"{config.output_key}:{port}")
             for index, port in enumerate(config.hardware_ports)
         ]
-        for link in tuple(self._links):
-            if link.source.startswith(f"{DSP_NODE_NAME}:output_") and link not in desired:
-                await self._run(("pw-link", "-d", link.source, link.target))
-                self._links.remove(link)
+        result = await self._run(("pw-link", "-l"))
+        if result.returncode:
+            raise RuntimeError(result.stderr or "Cannot inspect DSP output links")
+        live = physical_output_links(result.stdout)
+        for link in live - set(desired):
+            result = await self._run(("pw-link", "-d", link.source, link.target))
+            if result.returncode:
+                # A disappearing device may already have removed this edge.
+                readback = await self._run(("pw-link", "-l"))
+                if readback.returncode or link in physical_output_links(readback.stdout):
+                    raise RuntimeError(result.stderr or "Cannot remove stale DSP output link")
+            logger.info("Removed stale DSP output link: %s -> %s", link.source, link.target)
         for link in desired:
-            if link not in self._links:
+            if link not in live:
                 result = await self._run(("pw-link", link.source, link.target))
                 if result.returncode and "exists" not in (result.stderr or "").lower():
                     raise RuntimeError(result.stderr or f"Failed to link {link.source} -> {link.target}")
-                self._links.append(link)
         self._links = [link for link in self._links if not link.source.startswith(f"{DSP_NODE_NAME}:output_")] + desired
 
     async def stop(self) -> None:
@@ -813,7 +840,10 @@ class DSPRuntime:
         if not self._links:
             return False
         result = await self._run(("pw-link", "-l"))
-        return result.returncode == 0 and all(_contains_link(result.stdout, link.source, link.target) for link in self._links)
+        desired = {link for link in self._links if link.source.startswith(f"{DSP_NODE_NAME}:output_")}
+        return (result.returncode == 0
+                and not (physical_output_links(result.stdout) - desired)
+                and all(_contains_link(result.stdout, link.source, link.target) for link in self._links))
 
     def stderr_tail(self) -> str:
         """Bounded engine stderr tail kept by the drain task, for diagnostics."""

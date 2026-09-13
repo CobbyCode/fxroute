@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Mapping
 
 from audio.output_ports import resolve_hardware_playback_ports
+
+logger = logging.getLogger(__name__)
 
 from .bluetooth import get_bluetooth_audio_overview
 from .constants import (
@@ -828,9 +831,34 @@ def apply_persisted_audio_output_selection() -> dict[str, Any] | None:
     except Exception:
         return None
 
+def reconcile_selected_output_default() -> str | None:
+    """Restore the saved sink's default without changing selection or mode.
+
+    Call under the audio configuration lock. Missing devices retain their
+    saved identity so the next device/graph watcher tick can recover them.
+    """
+    selected = _load_audio_output_selection().get("selected_key")
+    if not selected:
+        return None
+    sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
+    if not any(sink.get("name") == selected for sink in sinks):
+        return None
+    current = _run_command(["pactl", "get-default-sink"]).strip()
+    if current != selected:
+        _set_default_sink(selected)
+        logger.info("Restored selected output default: previous=%s selected=%s", current, selected)
+    return selected
+
+
 def _select_relevant_sink(default_sink: dict[str, Any], sinks: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not sinks:
         return None
+
+    selected = _load_audio_output_selection().get("selected_key")
+    if selected:
+        for sink in sinks:
+            if sink.get("name") == selected:
+                return sink
 
     running = [sink for sink in sinks if sink.get("state") == "RUNNING"]
     default_name = default_sink.get("name") if default_sink else None
@@ -1038,4 +1066,3 @@ def playback_rate_aligned(status: Mapping[str, Any] | None, target_rate: int | N
         status.get("active_rate") == target_rate
         and status.get("force_rate") in {None, 0, target_rate}
     )
-

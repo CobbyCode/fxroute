@@ -96,28 +96,43 @@ def volume_db_to_percent(volume_db: int | float) -> int:
     return max(0, min(100, round(100.0 * (gain ** (1.0 / 3.0)))))
 
 
-def _get_target_volume(target: str, *, clamp_upper: bool = True) -> int:
+def _selected_output_name() -> str | None:
+    from audio.samplerate.persistence import _load_audio_output_selection
+
+    return _load_audio_output_selection().get("selected_key")
+
+
+def _get_target_volume(target: str, *, clamp_upper: bool = True, sink: bool = False) -> int:
     """Live, timeout-bounded wpctl read (never served from a cache)."""
+    if sink:
+        output = _run_command(["pactl", "get-sink-volume", target])
+        channels = re.findall(r"/\s*([0-9]+)%", output)
+        if not channels:
+            raise SystemVolumeError(f"Unable to parse sink volume: {output!r}")
+        percent = max(map(int, channels))
+        return min(100, percent) if clamp_upper else percent
     output = _run_command(["wpctl", "get-volume", target])
     return _parse_wpctl_volume(output, clamp_upper=clamp_upper)
 
 
-def _set_target_volume(target: str, percent: int | float) -> int:
+def _set_target_volume(target: str, percent: int | float, *, sink: bool = False, master: bool = False) -> int:
     clamped = max(0, min(100, round(float(percent))))
+    publish_status = master or target == TARGET_SINK
     write_started_at = time.monotonic()
-    _run_command(["wpctl", "set-volume", target, f"{clamped}%"])
-    if target == TARGET_SINK:
+    command = ["pactl", "set-sink-volume"] if sink else ["wpctl", "set-volume"]
+    _run_command([*command, target, f"{clamped}%"])
+    if publish_status:
         # Publish the committed command value before verification so an
         # unreadable readback cannot make a later relative write reuse stale
         # status state.
         _publish_status_volume(clamped, write_started_at)
     try:
-        verified = _get_target_volume(target)
+        verified = _get_target_volume(target, sink=True) if sink else _get_target_volume(target)
     except Exception as exc:
         raise SystemVolumeReadbackError(
             f"Volume set completed but readback failed: {exc}"
         ) from exc
-    if target == TARGET_SINK:
+    if publish_status:
         _publish_status_volume(verified, time.monotonic())
     return verified
 
@@ -152,7 +167,10 @@ def _parse_wpctl_volume(output: str, *, clamp_upper: bool = True) -> int:
 
 
 def get_output_volume() -> int:
-    """Live system output volume (timeout-bounded wpctl read)."""
+    """Read the saved FXRoute sink by name, even if the system default drifted."""
+    selected = _selected_output_name()
+    if selected:
+        return _get_target_volume(selected, sink=True)
     return _get_target_volume(TARGET_SINK)
 
 
@@ -165,10 +183,17 @@ def get_output_volume_unclamped() -> int:
     percent. The canonical clamped :func:`get_output_volume` remains the
     UI/master value; change only the safety read, never the master limit.
     """
+    selected = _selected_output_name()
+    if selected:
+        return _get_target_volume(selected, clamp_upper=False, sink=True)
     return _get_target_volume(TARGET_SINK, clamp_upper=False)
 
 
 def set_output_volume(percent: int | float) -> int:
+    selected = _selected_output_name()
+    if selected:
+        # Keep write and readback on one stable name across node ID rebuilds.
+        return _set_target_volume(selected, percent, sink=True, master=True)
     return _set_target_volume(TARGET_SINK, percent)
 
 

@@ -356,15 +356,22 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 runtime._stop_orphan_helpers = lambda: complete()
                 runtime._wait_for_ports = lambda _config: complete()
                 runtime._remove_direct_source_links = lambda: complete()
-                runtime._reconcile_output_links = lambda _config: fail_reconcile()
+                reconcile = runtime._reconcile_output_links
+                failed = False
+
+                async def fail_once(config):
+                    nonlocal failed
+                    if not failed:
+                        failed = True
+                        raise RuntimeError("link failed")
+                    await reconcile(config)
+
+                runtime._reconcile_output_links = fail_once
                 await runtime.sync(self.overview("stereo"))
                 await runtime.stop()
 
         async def complete():
             return None
-
-        async def fail_reconcile():
-            raise RuntimeError("link failed")
 
         asyncio.run(exercise())
         launch_events = [event for event in events if event[0] == "launch"]

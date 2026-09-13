@@ -26,6 +26,7 @@ from audio.output_ports import (
     warn_semantic_playback_fallback,
 )
 from playback.transition import PlaybackTransitionFailure, TransitionRequest, stable_graph_readbacks
+from dsp.runtime import physical_output_links
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +425,7 @@ class PlaybackOrchestrator:
                   "helper_active": None, "helper_rate": None, "helper_rate_matches": None,
                   "links": {}, "source_links": {}, "source_links_complete": None,
                   "direct_source_to_hw_present": False, "output_targets": (),
+                  "unexpected_output_links": (),
                   "links_complete": False, "bypass_only": False,
                   "port_identities": {"source": (), "source_target": (), "dsp": (), "helper": (), "output": ()},
                   "signature": "unreadable"}
@@ -493,8 +495,14 @@ class PlaybackOrchestrator:
                                       "dsp": tuple(p for p in ingress_targets if p in io_text), "helper": tuple(p for p in dsp_ports if p in io_text),
                                       "output": tuple(p for p in output_targets if p in io_text)}
         native = bool(result["source_links_complete"] is not False and result["dsp_ports"] and result["helper_rate_matches"] and all(result["links"].values()))
-        result["bypass_only"] = bool(native and result["direct_source_to_hw_present"])
-        result["links_complete"] = bool(native and not result["direct_source_to_hw_present"])
+        desired_pairs = set(zip(dsp_ports, output_targets))
+        result["unexpected_output_links"] = tuple(sorted(
+            f"{link.source} -> {link.target}" for link in physical_output_links(link_text)
+            if (link.source, link.target) not in desired_pairs
+        ))
+        unwanted_links = result["direct_source_to_hw_present"] or result["unexpected_output_links"]
+        result["bypass_only"] = bool(native and unwanted_links)
+        result["links_complete"] = bool(native and not unwanted_links)
         result["signature"] = json.dumps(result, sort_keys=True, default=list)
         return result
 
@@ -822,7 +830,10 @@ class PlaybackOrchestrator:
                 if mode in self._deps.output_mode_subwoofer_modes:
                     await self.reconcile_subwoofer_links_only()
                 elif not diagnosis.get("links_complete"):
-                    await self.repair_stereo_output_links_once(diagnosis)
+                    if diagnosis.get("bypass_only"):
+                        await self.reconcile_subwoofer_links_only()
+                    else:
+                        await self.repair_stereo_output_links_once(diagnosis)
                 if manager is not None:
                     lock = self._deps.get_dsp_preset_load_lock()
                     if lock is None:
@@ -867,6 +878,7 @@ class PlaybackOrchestrator:
                     await self._deps.sync_runtime(**kwargs); helper_rebuilt = True
                 if helper_needs_sync or not diagnosis.get("links_complete"):
                     if mode in self._deps.output_mode_subwoofer_modes: await self.reconcile_subwoofer_links_only()
+                    elif diagnosis.get("bypass_only"): await self.reconcile_subwoofer_links_only()
                     else: await self.repair_stereo_output_links_once(diagnosis)
                     links_reconciled = True
         final = await self.playback_graph_diagnosis(overview, target_rate=target_rate)

@@ -132,6 +132,7 @@ from audio.samplerate.overview import (
     persist_audio_output_mode,
     playback_rate_aligned,
     prepare_audio_output_mode,
+    reconcile_selected_output_default,
     set_audio_output_mode,
     set_audio_output_selection,
     set_audio_source_selection,

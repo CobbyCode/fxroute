@@ -2626,6 +2626,8 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         peak_monitor_restart_settle_ms=PEAK_MONITOR_RESTART_SETTLE_MS,
         sleep=lambda delay: asyncio.sleep(delay),
         get_output_mode=lambda: _current_output_mode(),
+        reconcile_output_default=lambda: samplerate.reconcile_selected_output_default(),
+        get_coordinator_lock=lambda: getattr(playback_transition_coordinator, "lock", None),
         # Only the deliberate stale-helper repair retargets the pin, and it does
         # so through the canonical bounded reconcile policy (same path playback
         # uses) instead of a bare pw-metadata write.
@@ -3796,8 +3798,11 @@ async def save_audio_output_selection_route(request: Request):
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"key": <string>}')
 
     try:
-        result = set_audio_output_selection(output_key)
-        await dsp_orchestrator.sync_runtime(result, reason="output-selection", retry_on_stale=True)
+        async with measurement_sr_session.lock:
+            result = await asyncio.to_thread(set_audio_output_selection, output_key)
+            await dsp_orchestrator.sync_runtime(
+                result, reason="output-selection", retry_on_stale=True, _rate_lock_held=True,
+            )
         result = with_subwoofer_derived_delays(result)
         if runtime.dsp_runtime is not None:
             result["output_mode"] = {

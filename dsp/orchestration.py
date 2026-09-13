@@ -73,6 +73,8 @@ class DspOrchestrationDeps:
     peak_monitor_restart_settle_ms: float
     sleep: Callable[[float], Awaitable[Any]]
     get_output_mode: Callable[[], str] | None = None
+    reconcile_output_default: Callable[[], str | None] | None = None
+    get_coordinator_lock: Callable[[], Any] | None = None
     # Canonical bounded force-rate reconcile path (policy + write + alignment).
     # The deliberate stale-helper repair retargets a contradicting pin through
     # it rather than a bare pw-metadata write.
@@ -583,6 +585,69 @@ class DspOrchestrator:
             and diagnosis.get("helper_rate_matches") is False
         )
 
+    async def reconcile_output_authority(self) -> None:
+        """Repair output identity and edges in every mode, including idle stereo.
+
+        Holds the Coordinator lock for the whole repair so a transition can
+        neither start inside the default/link mutations nor commit under them.
+        Skips (never waits) when the Coordinator or the sample-rate session is
+        busy, so the watcher can neither stall playback nor deadlock against a
+        measurement entry that owns the session lock.
+        """
+        reconcile = self._deps.reconcile_output_default
+        if reconcile is None:
+            return
+        if self._deps.measurement_audio_graph_owned():
+            return
+
+        coord_lock = self._deps.get_coordinator_lock() if self._deps.get_coordinator_lock else None
+        if coord_lock is not None and coord_lock.locked():
+            return
+        session = self._deps.get_measurement_sr_session()
+        if session is not None and session.lock.locked():
+            return
+
+        async def repair_inner() -> None:
+            runtime = self._deps.get_dsp_runtime()
+            if runtime is not None and runtime.sync_in_progress:
+                return
+            selected = await asyncio.to_thread(reconcile)
+            if not selected or runtime is None:
+                return
+            snapshot = runtime.snapshot()
+            if not snapshot.get("active") or (snapshot.get("config") or {}).get("output_key") != selected:
+                await self.sync_runtime(reason="output-authority", _rate_lock_held=True)
+                return
+            if await runtime.verify():
+                return
+            try:
+                await runtime.reclean_direct_dsp_links()
+            except Exception as exc:
+                logger.warning("Output authority link repair failed, rebuilding helper: %s", exc)
+            if not await runtime.verify():
+                await self.sync_runtime(reason="output-authority-rebuild", _rate_lock_held=True)
+
+        if coord_lock is None:
+            if session is None:
+                await repair_inner()
+            else:
+                async with session.lock:
+                    await repair_inner()
+            return
+        await coord_lock.acquire()
+        try:
+            if self._deps.measurement_audio_graph_owned():
+                return
+            if session is None:
+                await repair_inner()
+            else:
+                if session.lock.locked():
+                    return
+                async with session.lock:
+                    await repair_inner()
+        finally:
+            coord_lock.release()
+
     async def runtime_link_watch_loop(self) -> None:
         while True:
             await self._deps.sleep(2.0)
@@ -590,6 +655,7 @@ class DspOrchestrator:
                 if self._deps.measurement_audio_graph_owned():
                     logger.debug("Subwoofer link watcher skipped while Measurement owns the audio graph")
                     continue
+                await self.reconcile_output_authority()
                 await self._deps.observe_playback_samplerate_drift()
                 dsp_runtime = self._deps.get_dsp_runtime()
                 if dsp_runtime is None:
