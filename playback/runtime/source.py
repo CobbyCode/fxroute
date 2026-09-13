@@ -32,6 +32,11 @@ from .helpers import RADIO_EXPECTED_SAMPLE_RATE_HZ, SOURCE_HANDOFF_SETTLE_MS
 # for the real Playing edge instead of trusting one immediate status read.
 QOBUZ_PLAYING_CONFIRM_TIMEOUT_S = 3.0
 
+# MPRIS play against a cross-device Spotify transfer still reports the stale
+# Paused state at the first readback (Playing only from +1s measured on .104
+# with qbzd playing); same bounded Playing-edge wait as Qobuz.
+SPOTIFY_PLAYING_CONFIRM_TIMEOUT_S = 3.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -434,6 +439,19 @@ class _RuntimeSourceMixin:
                 data = await spotify_previous()
             elif request.should_play:
                 data = await spotify_play()
+                if data.get("status") not in {"Playing", "playing"}:
+                    # MPRIS start is asynchronous like the qbzd resume: a
+                    # cross-device transfer still reports the stale Paused
+                    # state at the first readback, so wait bounded for the
+                    # real Playing edge instead of failing a start that
+                    # settles a second later (mirrors the MPV IPC readback
+                    # loop and the Qobuz confirm loop above).
+                    deadline = time.monotonic() + SPOTIFY_PLAYING_CONFIRM_TIMEOUT_S
+                    while time.monotonic() <= deadline:
+                        data = await self._deps.get_spotify_ui_state()
+                        if data.get("status") in {"Playing", "playing"}:
+                            break
+                        await asyncio.sleep(0.05)
             else:
                 await self._deps.spotify_pause()
                 data = {"status": "Paused"}
