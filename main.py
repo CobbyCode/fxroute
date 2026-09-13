@@ -2634,6 +2634,9 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         ensure_playback_samplerate_force=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.ensure_playback_samplerate_force(
             *a, measurement_blocks_rate=measurement_blocks_rate, **k
         ),
+        # Idle-graph renegotiation trigger for the stale-helper sink nudge: a
+        # fully idle sink ignores force-rate writes and suspend/resume pulses.
+        trigger_idle_sink_renegotiation=lambda *a, **k: samplerate.trigger_idle_sink_renegotiation(*a, **k),
     )
 
 

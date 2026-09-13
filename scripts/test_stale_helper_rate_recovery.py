@@ -104,6 +104,11 @@ class _OrchestratorDeps:
         self.sink_follows_nudge = True
         self.nudges_before_sink_settles = 1
         self.nudge_calls = 0
+        # A fully idle sink ignores the pin and the pulse; the silent stream is
+        # the documented trigger that moves it then.
+        self.sink_follows_trigger = True
+        self.triggers_before_sink_settles = 1
+        self.trigger_calls = 0
         self.sink_rate = runtime.helper_rate
         runtime.on_sync = self._helper_rebuilt
 
@@ -177,6 +182,14 @@ class _OrchestratorDeps:
         self.pinned_rate = rate
         self.nudge_calls += 1
         if self.sink_follows_nudge and self.nudge_calls >= self.nudges_before_sink_settles:
+            self.sink_rate = rate
+            return True
+        return False
+
+    async def trigger_idle_sink_renegotiation(self, rate):
+        # Stand-in for the silent-stream trigger of an idle hardware sink.
+        self.trigger_calls += 1
+        if self.sink_follows_trigger and self.trigger_calls >= self.triggers_before_sink_settles:
             self.sink_rate = rate
             return True
         return False
@@ -318,6 +331,7 @@ class BoundedReRepairTests(unittest.IsolatedAsyncioTestCase):
         runtime = _FakeDspRuntime(MEASUREMENT_RATE)
         deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE, owned=True)
         deps.sink_follows_rebuild = False
+        deps.sink_follows_trigger = False
         deps.nudges_before_sink_settles = 2  # only the second round moves it
         orchestrator = DspOrchestrator(deps)
 
@@ -365,11 +379,33 @@ class BoundedReRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.sync_calls, [], "the helper already runs at the target")
         self.assertEqual(deps.sink_rate, TARGET_RATE)
 
+    async def test_idle_sink_is_nudged_with_the_silent_trigger(self):
+        # An idle hardware sink ignores the pin and the pulse; the silent
+        # stream trigger is the documented way to move it.
+        runtime = _FakeDspRuntime(TARGET_RATE)
+        deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE, owned=True)
+        deps.sink_follows_rebuild = False
+        deps.sink_follows_nudge = False
+        deps.sink_rate = MEASUREMENT_RATE
+        orchestrator = DspOrchestrator(deps)
+
+        recovered = await orchestrator.recover_stale_helper_samplerate(
+            TARGET_RATE,
+            reason="measurement-release",
+            _rate_lock_held=True,
+            allow_measurement_graph_owned=True,
+        )
+
+        self.assertTrue(recovered)
+        self.assertEqual(deps.trigger_calls, 1)
+        self.assertEqual(deps.sink_rate, TARGET_RATE)
+
     async def test_repair_reports_failure_and_keeps_the_rebuilt_helper(self):
         runtime = _FakeDspRuntime(MEASUREMENT_RATE)
         deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE, owned=True)
         deps.sink_follows_rebuild = False
         deps.sink_follows_nudge = False
+        deps.sink_follows_trigger = False
         orchestrator = DspOrchestrator(deps)
 
         recovered = await orchestrator.recover_stale_helper_samplerate(
@@ -475,6 +511,7 @@ class IdleLinkWatcherRepairTests(unittest.IsolatedAsyncioTestCase):
         deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE)
         deps.sink_follows_rebuild = False
         deps.sink_follows_nudge = False
+        deps.sink_follows_trigger = False
         orchestrator = DspOrchestrator(deps)
 
         with patch("dsp.orchestration.IDLE_STALE_HELPER_REPAIR_COOLDOWN_S", 0.0):

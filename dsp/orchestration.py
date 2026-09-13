@@ -89,6 +89,11 @@ class DspOrchestrationDeps:
     # The deliberate stale-helper repair retargets a contradicting pin through
     # it rather than a bare pw-metadata write.
     ensure_playback_samplerate_force: Callable[..., Awaitable[bool]] | None = None
+    # Silent-stream trigger for a fully idle hardware sink: such a sink ignores
+    # force-rate writes and suspend/resume pulses, so this is the documented
+    # renegotiation trigger the stale-helper repair nudges with as its last
+    # bounded step.
+    trigger_idle_sink_renegotiation: Callable[..., Awaitable[bool]] | None = None
 
 
 def helper_argument_sample_rate(snapshot: dict | None) -> int | None:
