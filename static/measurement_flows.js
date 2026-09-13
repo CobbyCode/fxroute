@@ -32,6 +32,10 @@
         formatTransitionErrorDetail: (d, m) => m,
         fetchAudioOutputOverview: async () => {},
         getMeasurementReferenceWarning: () => '',
+        appendMeasurementReferenceFields: (formData) => {
+            deps.normalizeMeasurementInputChannelSelections();
+            formData.append('reference_input_channel', deps.getMeasurementReferenceWarning() ? '' : (deps.getState().measurement.selectedReferenceInputChannel || ''));
+        },
         normalizeOutputModeName: (m) => m || 'stereo',
         getMeasurementJobStatus: () => 'unknown',
         normalizeMeasurementEntry: (m) => m,
@@ -118,7 +122,7 @@ async function startAutoSubOptimize() {
         formData.append('channel', measurementState.selectedChannel || 'left');
         deps.normalizeMeasurementInputChannelSelections();
         formData.append('mic_input_channel', measurementState.selectedMicInputChannel || '1');
-        formData.append('reference_input_channel', measurementState.selectedReferenceInputChannel || '');
+        deps.appendMeasurementReferenceFields(formData);
         formData.append('calibration_ref', measurementState.selectedCalibrationRef || '');
         const targetCurveSnapshot = deps.getAutoSubTargetCurveSnapshot();
         formData.append('target_curve_snapshot', targetCurveSnapshot ? JSON.stringify(targetCurveSnapshot) : '');
@@ -695,7 +699,7 @@ function buildHybridMeasurementForm(step) {
     formData.append('channel', step.channel);
     formData.append('measurement_role', step.role);
     formData.append('mic_input_channel', deps.getState().measurement.selectedMicInputChannel || '1');
-    formData.append('reference_input_channel', deps.getMeasurementReferenceWarning() ? '' : (deps.getState().measurement.selectedReferenceInputChannel || ''));
+    deps.appendMeasurementReferenceFields(formData);
     const calibrationFile = deps.getElements().measurementCalibrationFile?.files?.[0];
     if (calibrationFile) formData.append('calibration_file', calibrationFile);
     else if (deps.getState().measurement.selectedCalibrationRef) formData.append('calibration_ref', deps.getState().measurement.selectedCalibrationRef);

@@ -644,17 +644,60 @@
         return chosen;
     }
 
+    // Single global TIDAL track identity like the real provider boundary:
+    // one track id resolves identically from albums, playlists, search,
+    // favorites and top tracks. Album/playlist fixtures share the
+    // t_album_XX_tN ids, so the pool covers every surface; the album and
+    // playlist fallbacks below only guard against a fixture that ever
+    // emits an id outside the pool.
+    function tidalTrackById(id) {
+        const key = String(id);
+        const direct = (tidalTracksLib || []).find(t => String(t.id) === key);
+        if (direct) return direct;
+        for (const album of (tidalAlbumsLib || [])) {
+            const t = ((album && album.tracks) || []).find(x => String(x.id) === key);
+            if (t) {
+                return {
+                    id: t.id,
+                    title: t.title,
+                    artist: album.artist,
+                    album: album.title,
+                    duration: t.duration,
+                    track_number: t.trackNumber,
+                    audio_quality: album.audio_quality,
+                    art_url: album.cover_url,
+                };
+            }
+        }
+        for (const pl of (tidalPlaylistsLib || [])) {
+            const t = ((pl && pl.tracks) || []).find(x => String(x.id) === key);
+            if (t) return t;
+        }
+        return null;
+    }
+
     function playTidal(trackId, queueIds) {
         const pool = tidalTracksLib || [];
-        const chosen = pool.find(t => t.id === trackId) || pool[0] || null;
+        if (!trackId) {
+            const fallback = pool[0] || null;
+            if (!fallback) return null;
+            const tidalTracks = pool.map(t => ({ ...t, source: 'tidal' }));
+            startTrack({ ...fallback, source: 'tidal' }, 'tidal', tidalTracks, 0);
+            return tidalTracks[0];
+        }
+        const chosen = tidalTrackById(trackId);
+        // An explicit unknown id must never silently play another song.
         if (!chosen) return null;
-        let tracks = pool;
+        let tracks;
         if (Array.isArray(queueIds)) {
-            const idxMap = new Map(pool.map(t => [t.id, t]));
-            tracks = queueIds.map(id => idxMap.get(id)).filter(Boolean);
+            tracks = queueIds.map(tidalTrackById).filter(Boolean);
+            if (!tracks.length) tracks = [{ ...chosen }];
+            else if (!tracks.some(t => String(t.id) === String(chosen.id))) tracks.unshift({ ...chosen });
+        } else {
+            tracks = pool.length ? pool.map(t => ({ ...t })) : [{ ...chosen }];
         }
         const tidalTracks = tracks.map(t => ({ ...t, source: 'tidal' }));
-        let idx = Math.max(0, tidalTracks.findIndex(t => String(t.id) === String(trackId)));
+        let idx = tidalTracks.findIndex(t => String(t.id) === String(chosen.id));
         if (idx < 0) idx = 0;
         startTrack({ ...chosen, source: 'tidal' }, 'tidal', tidalTracks, idx);
         return tidalTracks[idx];
@@ -1122,6 +1165,10 @@
         const copy = JSON.parse(JSON.stringify(measurement));
         copy.channel = channel;
         copy.measurement_role = role;
+        // Simulated sweeps run on this box's demo capture (UMIK-1): the
+        // cloned .104 fixture datasets keep their traces, but the capture
+        // facts describe the demo setup, not the recording machine.
+        copy.input_device = { id: 'demo_mic', label: 'UMIK-1' };
         const tracePoints = (Array.isArray(copy.traces) && copy.traces[0] && Array.isArray(copy.traces[0].points))
             ? copy.traces[0].points
             : [];
@@ -1190,7 +1237,7 @@
             review_traces: [],
             analysis: {},
             summary: {},
-            input_device: { id: 'demo_mic', label: 'Demo Microphone' },
+            input_device: { id: 'demo_mic', label: 'UMIK-1' },
             input_channels: { mic: '1' },
             calibration: {},
             audio_output_context: { mode: opts.mode || 'stereo', sample_rate: 48000 },
@@ -1234,6 +1281,9 @@
         copy.measurement_kind = 'lr-repeat-summary';
         copy.measurement_role = '';
         copy.created_at = new Date().toISOString();
+        // Simulated on this box's demo capture (UMIK-1), like every other
+        // demo sweep cloned from a .104 fixture dataset.
+        copy.input_device = { id: 'demo_mic', label: 'UMIK-1' };
         const analysis = copy.analysis = copy.analysis || {};
         analysis.method = 'same-position-lr-repeat-paired-delta';
         analysis.sample_rate = 48000;

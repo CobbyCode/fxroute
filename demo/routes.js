@@ -122,12 +122,83 @@
         { key: 'alsa_output.pci-0000_00_1f.3.analog-stereo', name: 'Built-in Audio', label: 'Built-in Audio', description: 'Analog Stereo', channels: 2, active_rate: 48000, selectable: true, default: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
         { key: 'alsa_output.usb-DEMO_DAC-00.analog-stereo', name: 'Demo USB DAC', label: 'Demo USB DAC', description: 'Hi-Res USB Audio', channels: 4, active_rate: 96000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
         { key: 'alsa_output.usb-MOTU_M4-00.analog-surround-40', name: 'MOTU M4', label: 'MOTU M4', description: '4-Channel USB Audio Interface', channels: 4, active_rate: 48000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000] },
+        { key: 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output', name: 'Focusrite Scarlett 16i16', label: 'Focusrite Scarlett 16i16', description: '18-Channel USB Audio Interface', channels: 18, active_rate: 44100, selectable: true, supported_rates: [44100, 48000] },
     ];
     // The demo starts on the 4-channel interface so the default 2.2 mode has
     // the channels it needs (Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2).
     let selectedOutputKeyCache = OUTPUTS[2].key;
     function selectedOutput() {
         return OUTPUTS.find(o => o.key === selectedOutputKeyCache) || OUTPUTS[0];
+    }
+
+    // ── Measurement capture model ───────────────────────────────────────
+    // The demo reports the capture side that belongs to the selected output
+    // device, exactly like the real machine pairs the Focusrite Scarlett 16i16
+    // multichannel output with its 18-channel capture input. The UMIK-1 USB
+    // measurement microphone stays manually selectable in the measurement
+    // setup; captures with three or more channels (MOTU M4 with its line
+    // inputs 3/4, Scarlett 16i16) show the split Electrical Ref L / R view,
+    // smaller captures keep the previous single shared reference. The split
+    // comes from the unchanged app.js logic, which switches on the capture
+    // channel count.
+    const SCARLETT_OUTPUT_KEY = 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output';
+    const UMIK1_CAPTURE_INPUT = {
+        id: 'demo_mic',
+        label: 'UMIK-1',
+        note: 'UMIK-1 USB measurement microphone (simulated)',
+        channels: 1,
+        supported_rates: [44100, 48000, 88200, 96000],
+        sample_rate: 48000,
+        measurement_sample_rate: 48000,
+        node_name: 'demo_mic',
+        persistent_id: 'demo_mic',
+    };
+    const STEREO_CAPTURE_INPUT = {
+        id: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+        // Labels mirror the real capture list: the PipeWire node name, like the
+        // .104 `alsa_input.usb-Focusrite_Scarlett_16i16...-multichannel-input`.
+        label: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+        note: 'MOTU M4 analog inputs 1-4',
+        channels: 4,
+        supported_rates: [44100, 48000, 88200, 96000, 176400, 192000],
+        sample_rate: 48000,
+        measurement_sample_rate: 48000,
+        node_name: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+        persistent_id: 'alsa_input.usb-MOTU_M4-00.analog-surround-40',
+    };
+    const MULTICHANNEL_CAPTURE_INPUT = {
+        id: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+        label: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+        note: 'Scarlett 16i16 multichannel capture (18 channels)',
+        channels: 18,
+        supported_rates: [44100, 48000],
+        sample_rate: 48000,
+        measurement_sample_rate: 48000,
+        node_name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+        persistent_id: 'device-serial:Focusrite_Scarlett_16i16_4th_Gen|node-name:alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+    };
+    const CAPTURE_INPUTS = [UMIK1_CAPTURE_INPUT, STEREO_CAPTURE_INPUT, MULTICHANNEL_CAPTURE_INPUT];
+    function captureInputForOutputKey(key) {
+        return key === SCARLETT_OUTPUT_KEY ? MULTICHANNEL_CAPTURE_INPUT : STEREO_CAPTURE_INPUT;
+    }
+    let measurementCaptureInput = captureInputForOutputKey(selectedOutputKeyCache);
+    // Electrical reference channels the demo persists for the selected capture.
+    // Captures with three or more channels (MOTU M4, Scarlett 16i16) expose
+    // the split Ref L / R pair on their line inputs 3/4; smaller captures
+    // keep the single shared reference.
+    function measurementReferenceSettings() {
+        if (measurementCaptureInput.channels >= 3) {
+            return {
+                selectedReferenceInputChannel: '3',
+                selectedReferenceInputChannelLeft: '3',
+                selectedReferenceInputChannelRight: '4',
+            };
+        }
+        return {
+            selectedReferenceInputChannel: '2',
+            selectedReferenceInputChannelLeft: '',
+            selectedReferenceInputChannelRight: '',
+        };
     }
     let outputMode = {
         mode: 'subwoofer-2.2',
@@ -225,7 +296,9 @@
     // (audio/samplerate/overview.py + audio/external_input.py):
     // multichannel capture interfaces are offered as adjacent stereo
     // pairs (Input 1-2, Input 3-4, ...), never as single mono channels
-    // and never duplicated onto both sides. Single-pair devices keep
+    // and never duplicated onto both sides. The MOTU M4 yields its two
+    // pairs, the Focusrite Scarlett 16i16 capture its nine pairs with
+    // the real positional channel suffixes. Single-pair devices keep
     // the plain device label, exactly like the real overview.
     // Module scope: the fetch handler below must observe mutations
     // across requests (selected pair, active mode).
@@ -301,6 +374,222 @@
             pair_channels: [1, 2],
             left_channel: 'FL',
             right_channel: 'FR',
+        },
+        {
+            id: 104,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:1-2',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 1–2',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 0,
+            pair_count: 9,
+            pair_label: 'Input 1–2',
+            pair_channels: [1, 2],
+            left_channel: 'FL',
+            right_channel: 'FR',
+        },
+        {
+            id: 105,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:3-4',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 3–4',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 1,
+            pair_count: 9,
+            pair_label: 'Input 3–4',
+            pair_channels: [3, 4],
+            left_channel: 'RL',
+            right_channel: 'RR',
+        },
+        {
+            id: 106,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:5-6',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 5–6',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 2,
+            pair_count: 9,
+            pair_label: 'Input 5–6',
+            pair_channels: [5, 6],
+            left_channel: 'FC',
+            right_channel: 'LFE',
+        },
+        {
+            id: 107,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:7-8',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 7–8',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 3,
+            pair_count: 9,
+            pair_label: 'Input 7–8',
+            pair_channels: [7, 8],
+            left_channel: 'SL',
+            right_channel: 'SR',
+        },
+        {
+            id: 108,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:9-10',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 9–10',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 4,
+            pair_count: 9,
+            pair_label: 'Input 9–10',
+            pair_channels: [9, 10],
+            left_channel: 'AUX0',
+            right_channel: 'AUX1',
+        },
+        {
+            id: 109,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:11-12',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 11–12',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 5,
+            pair_count: 9,
+            pair_label: 'Input 11–12',
+            pair_channels: [11, 12],
+            left_channel: 'AUX2',
+            right_channel: 'AUX3',
+        },
+        {
+            id: 110,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:13-14',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 13–14',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 6,
+            pair_count: 9,
+            pair_label: 'Input 13–14',
+            pair_channels: [13, 14],
+            left_channel: 'AUX4',
+            right_channel: 'AUX5',
+        },
+        {
+            id: 111,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:15-16',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 15–16',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 7,
+            pair_count: 9,
+            pair_label: 'Input 15–16',
+            pair_channels: [15, 16],
+            left_channel: 'AUX14',
+            right_channel: 'AUX15',
+        },
+        {
+            id: 112,
+            key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input::pair:17-18',
+            source_key: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            name: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+            device_label: 'Focusrite Scarlett 16i16',
+            port_key: null,
+            port_label: null,
+            label: 'Focusrite Scarlett 16i16 · Input 17–18',
+            sample_spec: 's32le 18ch 48000Hz',
+            channels: 18,
+            channel_map: null,
+            active_rate: 48000,
+            state: 'IDLE',
+            is_default: false,
+            selectable: true,
+            is_active_port: true,
+            pair_index: 8,
+            pair_count: 9,
+            pair_label: 'Input 17–18',
+            pair_channels: [17, 18],
+            left_channel: 'AUX16',
+            right_channel: 'AUX17',
         },
     ];
     // A connected phone streaming over A2DP: selecting bluetooth-input
@@ -437,6 +726,14 @@
         }
         return null;
     }
+    // Track ids are paths relative to the music root ("local_<Album>/01 - X.flac"),
+    // so they carry "/" and spaces. Mirrors the real backend routes, which all
+    // declare {track_id:path} (library/api.py).
+    const TRACK_ID_PATH = '(.+)';
+    function pathId(value) {
+        try { return decodeURIComponent(value); } catch (_) { return value; }
+    }
+
     function findTrack(id) {
         for (const catalog of allCatalogs()) {
             const track = catalog.tracks.find(t => t.id === id);
@@ -894,7 +1191,9 @@
                 return j({ status: 'playing', url: (track && track.url) || '', track: track || {}, playback: S.getPlayback() });
             }
             if (src === 'tidal') {
-                const track = S.playTidal(String(body.track_id || ''), body.queue_track_ids);
+                const tid = String(body.track_id || '');
+                const track = S.playTidal(tid, body.queue_track_ids);
+                if (!track && tid) return err('Track not found', 404);
                 return j({ status: 'playing', url: (track && track.url) || '', track: track || {}, playback: S.getPlayback() });
             }
             const track = S.playLocal(String(body.track_id || ''), body.queue_track_ids);
@@ -1079,9 +1378,9 @@
             resolved.album.favorite = !!body.favorite;
             return j({ status: 'ok', album_id: resolved.album.id, favorite: resolved.album.favorite });
         }
-        const trackFavMatch = p.match(/^\/api\/tracks\/([^/]+)\/favorite$/);
+        const trackFavMatch = p.match(new RegExp('^/api/tracks/' + TRACK_ID_PATH + '/favorite$'));
         if (trackFavMatch) {
-            const resolved = findTrack(trackFavMatch[1]);
+            const resolved = findTrack(pathId(trackFavMatch[1]));
             if (!resolved) return err('Track not found');
             resolved.track.favorite = !!body.favorite;
             return j({ status: 'ok', track_id: resolved.track.id, favorite: resolved.track.favorite });
@@ -1092,14 +1391,14 @@
             const redirect = resolved ? resolved.album.coverUrl : lib.demoImage('album:' + (albumCoverMatch[1] || 'x'));
             return j({ redirect });
         }
-        const trackCoverMatch = p.match(/^\/api\/tracks\/cover\/([^/]+)$/);
+        const trackCoverMatch = p.match(new RegExp('^/api/tracks/cover/' + TRACK_ID_PATH + '$'));
         if (trackCoverMatch) {
-            const resolved = findTrack(trackCoverMatch[1]);
-            return j({ redirect: resolved ? resolved.track.cover_url : lib.demoImage('track:' + (trackCoverMatch[1] || 'x')) });
+            const resolved = findTrack(pathId(trackCoverMatch[1]));
+            return j({ redirect: resolved ? resolved.track.cover_url : lib.demoImage('track:' + pathId(trackCoverMatch[1] || 'x')) });
         }
-        const trackCoverInfoMatch = p.match(/^\/api\/tracks\/cover-info\/([^/]+)$/);
+        const trackCoverInfoMatch = p.match(new RegExp('^/api/tracks/cover-info/' + TRACK_ID_PATH + '$'));
         if (trackCoverInfoMatch) {
-            const resolved = findTrack(trackCoverInfoMatch[1]);
+            const resolved = findTrack(pathId(trackCoverInfoMatch[1]));
             return j({ cover_url: resolved ? resolved.track.cover_url : '', cover_available: !!resolved });
         }
         const albumDiscover = p.match(/^\/api\/albums\/([^/]+)\/discover$/);
@@ -1148,11 +1447,20 @@
         }
 
         // ── Streaming providers ─────────────────────────────────────────
+        // Provider account state mirrors the real backend: an account provider
+        // (Qobuz/TIDAL) can be disconnected from Settings and only its auth
+        // endpoints flip it back. Spotify has no account login (installed
+        // spotifyd pairs from the Spotify app), so its flag stays null.
+        function demoProviderAccount() {
+            S.demoProviderAuthenticated = S.demoProviderAuthenticated || { qobuz: true, tidal: true };
+            return S.demoProviderAuthenticated;
+        }
         if (p === '/api/streaming/providers') {
+            const account = demoProviderAccount();
             return j({ providers: [
                 { id: 'spotify', name: 'Spotify', installed: true, available: true, authenticated: true, connected: true, capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
-                { id: 'qobuz', name: 'Qobuz', installed: true, available: true, authenticated: true, connected: true, capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
-                { id: 'tidal', name: 'Tidal', installed: true, available: true, authenticated: true, connected: true, capabilities: { catalog: true, cover: true, progress: true } },
+                { id: 'qobuz', name: 'Qobuz', installed: true, available: true, authenticated: account.qobuz, connected: true, capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
+                { id: 'tidal', name: 'Tidal', installed: true, available: true, authenticated: account.tidal, connected: true, capabilities: { catalog: true, cover: true, progress: true } },
             ] });
         }
         // The demo provider flags live on the shared state object so the
@@ -1162,23 +1470,26 @@
             // current frontend builds the provider tabs from this endpoint.
             S.demoProviderEnabled = S.demoProviderEnabled || { spotify: true, qobuz: true, tidal: true };
             const enabled = S.demoProviderEnabled;
+            const account = demoProviderAccount();
             return j({ providers: [
                 { id: 'spotify', name: 'Spotify', implemented: true, installed: true, available: true, authenticated: null, enabled: enabled.spotify !== false, connected: true, backend: 'spotifyd', capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
-                { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.qobuz !== false, connected: true, backend: 'qbzd', capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
-                { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.tidal !== false, connected: true, backend: 'tidalapi', capabilities: { catalog: true, cover: true, progress: true } },
+                { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: account.qobuz, enabled: enabled.qobuz !== false, connected: true, backend: 'qbzd', capabilities: { transport: true, cover: true, progress: true, seek: true, shuffle: true, loop: true } },
+                { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: account.tidal, enabled: enabled.tidal !== false, connected: true, backend: 'tidalapi', capabilities: { catalog: true, cover: true, progress: true } },
             ] });
         }
         // Settings -> Providers admin (device name rides the same payload).
-        // Demo keeps all providers installed/connected; toggles only flip
-        // the local enabled flag so tabs hide/show like the real backend.
+        // Demo keeps every provider installed; the enabled and account flags are
+        // the local state the toggles and auth endpoints write, so tabs hide/show
+        // and the row reads Connect/Disconnect like the real backend.
         function demoProviderAdmin() {
             S.demoProviderEnabled = S.demoProviderEnabled || { spotify: true, qobuz: true, tidal: true };
             const enabled = S.demoProviderEnabled;
+            const account = demoProviderAccount();
             return {
                 providers: [
                     { id: 'spotify', name: 'Spotify', implemented: true, installed: true, available: true, authenticated: null, enabled: enabled.spotify !== false },
-                    { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.qobuz !== false },
-                    { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: true, enabled: enabled.tidal !== false },
+                    { id: 'qobuz', name: 'Qobuz', implemented: true, installed: true, available: true, authenticated: account.qobuz, enabled: enabled.qobuz !== false },
+                    { id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, authenticated: account.tidal, enabled: enabled.tidal !== false },
                 ],
                 device_name: 'fxroute',
                 device_name_can_change: false,
@@ -1208,9 +1519,13 @@
         }
         if (p === '/api/streaming/qobuz/auth/login/cancel' && post) return j({ ok: true });
         if (p === '/api/streaming/qobuz/auth/login/finish' && post) {
+            demoProviderAccount().qobuz = true;
             return j({ success: true });
         }
-        if (p === '/api/streaming/qobuz/auth/logout' && post) return j({ success: true });
+        if (p === '/api/streaming/qobuz/auth/logout' && post) {
+            demoProviderAccount().qobuz = false;
+            return j({ success: true });
+        }
         if (p === '/api/spotify/status') return j(S.spotify.snapshot());
         const spotifyCmd = p.match(/^\/api\/spotify\/([a-z_]+)$/);
         if (spotifyCmd && post) {
@@ -1229,7 +1544,7 @@
             return j(sp.snapshot());
         }
         if (p === '/api/streaming/spotify/status') return j(S.spotify.snapshot());
-        if (p === '/api/streaming/qobuz/status') return j(S.qobuz.payload());
+        if (p === '/api/streaming/qobuz/status') return j({ ...S.qobuz.payload(), authenticated: demoProviderAccount().qobuz });
         const qobuzCmd = p.match(/^\/api\/streaming\/qobuz\/([a-z_]+)$/);
         if (qobuzCmd && post) {
             const cmd = qobuzCmd[1];
@@ -1251,7 +1566,7 @@
             return j({
                 installed: true,
                 available: true,
-                authenticated: true,
+                authenticated: demoProviderAccount().tidal,
                 connected: true,
                 status: (isTidal && ps.playing) ? 'Playing' : (isTidal ? 'Paused' : (ps.current_track ? 'Paused' : 'Stopped')),
                 title: ps.current_track ? ps.current_track.title : '',
@@ -1347,8 +1662,8 @@
             const album = tidalAlbums().find(a => a.id === tidalAlbumTracks[1]);
             if (!album) return j([]);
             // Normalized track dicts like the real provider boundary
-            // (id/title/artist/album/art_url/duration): the album track
-            // rows render thumb + subtitle from the track itself.
+            // (id/title/artist/album/art_url/duration/audio_quality): the
+            // album track rows render thumb + subtitle from the track itself.
             return j(album.tracks.map(t => ({
                 id: t.id,
                 title: t.title,
@@ -1356,6 +1671,7 @@
                 album: album.title,
                 duration: t.duration,
                 track_number: t.trackNumber,
+                audio_quality: album.audio_quality,
                 art_url: album.cover_url,
             })));
         }
@@ -1367,7 +1683,7 @@
             return j({
                 ...artist,
                 albums: albums.map(a => ({ id: a.id, title: a.title, artist: artist.name, year: a.year, audio_quality: a.audio_quality, num_tracks: a.num_tracks, art_url: a.cover_url })),
-                top_tracks: albums.flatMap(a => a.tracks.slice(0, 3).map((t, i) => ({ ...t, id: a.id + '_top' + i, artist: artist.name, album: a.title, art_url: a.cover_url }))).slice(0, 10),
+                top_tracks: albums.flatMap(a => a.tracks.slice(0, 3).map(t => ({ id: t.id, title: t.title, artist: artist.name, album: a.title, duration: t.duration, track_number: t.trackNumber, audio_quality: a.audio_quality, art_url: a.cover_url }))).slice(0, 10),
                 enrichment: tidalArtistEnrichment(artist),
             });
         }
@@ -1383,16 +1699,31 @@
             return j({ favorite: !!body.favorite });
         }
         if (p === '/api/streaming/tidal/auth/device' && post) return j({ device_code: 'DEMO42', user_code: 'DEMO-AUTH', verification_uri: 'https://link.tidal.com', verification_uri_complete: 'https://link.tidal.com/demo-auth' });
-        if (p === '/api/streaming/tidal/auth/device/finish' && post) return j({ success: true });
+        if (p === '/api/streaming/tidal/auth/device/finish' && post) {
+            demoProviderAccount().tidal = true;
+            return j({ success: true });
+        }
         if (p === '/api/streaming/tidal/auth/pkce' && post) return j({ url: 'https://link.tidal.com/demo-auth' });
-        if (p === '/api/streaming/tidal/auth/pkce/finish' && post) return j({ success: true });
-        if (p === '/api/streaming/tidal/auth/logout' && post) return j({ success: true });
+        if (p === '/api/streaming/tidal/auth/pkce/finish' && post) {
+            demoProviderAccount().tidal = true;
+            return j({ success: true });
+        }
+        if (p === '/api/streaming/tidal/auth/logout' && post) {
+            demoProviderAccount().tidal = false;
+            return j({ success: true });
+        }
 
         // ── Audio / settings ────────────────────────────────────────────
         if (p === '/api/audio/outputs') {
             if (post) {
                 const key = String(body.key || '');
-                if (OUTPUTS.find(o => o.key === key)) selectedOutputKeyCache = key;
+                if (OUTPUTS.find(o => o.key === key)) {
+                    selectedOutputKeyCache = key;
+                    // The capture interface follows the selected device, so
+                    // picking the Scarlett 16i16 also switches the measurement
+                    // setup to its 18-channel capture (split Ref L / R).
+                    measurementCaptureInput = captureInputForOutputKey(key);
+                }
                 return j(outputsPayload());
             }
             return j(outputsPayload());
@@ -1667,33 +1998,25 @@
                 calibrations: [{ id: 'MM1CES_allein_00d.txt', filename: 'MM1CES_allein_00d.txt' }],
                 house_curves: [],
                 active_calibration_file_id: 'MM1CES_allein_00d.txt',
-                measurement_settings: { selectedInputId: 'demo_mic', selectedInputKey: 'demo_mic', selectedMicInputChannel: '1', selectedReferenceInputChannel: '2', measurementSampleRate: '48000' },
+                measurement_settings: {
+                    selectedInputId: measurementCaptureInput.id,
+                    selectedInputKey: measurementCaptureInput.persistent_id,
+                    selectedMicInputChannel: '1',
+                    ...measurementReferenceSettings(),
+                    measurementSampleRate: '48000',
+                },
                 scope_note: 'Ready for the first measurement.',
             });
         }
         if (p === '/api/measurements/inputs') {
             return j({
-                inputs: [{
-                    id: 'demo_mic',
-                    label: 'Demo Microphone',
-                    note: 'simulated capture',
-                    channels: 1,
-                    supported_rates: [44100, 48000, 88200, 96000],
-                    measurement_sample_rate: 48000,
-                    node_name: 'demo_mic',
-                    persistent_id: 'demo_mic',
-                }, {
-                    id: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
-                    label: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
-                    note: 'MOTU M4 analog inputs 1/2',
-                    channels: 2,
-                    supported_rates: [44100, 48000, 88200, 96000, 176400, 192000],
-                    measurement_sample_rate: 48000,
-                    node_name: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
-                    persistent_id: 'alsa_input.usb-MOTU_M4-00.analog-stereo',
-                }],
+                inputs: CAPTURE_INPUTS.map(input => ({ ...input })),
                 capture_available: true,
-                selection: { input_id: 'demo_mic', persistent_id: 'demo_mic', configured: true },
+                selection: {
+                    input_id: measurementCaptureInput.id,
+                    persistent_id: measurementCaptureInput.persistent_id,
+                    configured: true,
+                },
                 scope_note: 'Ready for the first measurement.',
             });
         }
@@ -1739,7 +2062,14 @@
             const m = S.makeMeasurement({ name, id: 'demo_meas_merged_' + Date.now(), seed: 1 + Math.random() * 50 });
             return j({ measurement: S.addSavedMeasurement(m) });
         }
-        if (p === '/api/measurements/settings' && post) return j({ ok: true });
+        if (p === '/api/measurements/settings' && post) {
+            // A deliberate capture choice in the measurement setup wins over the
+            // device-derived default until the output device changes again.
+            const requestedId = String(body.selectedInputId || body.selected_input_id || '');
+            const requested = CAPTURE_INPUTS.find(input => input.id === requestedId);
+            if (requested) measurementCaptureInput = requested;
+            return j({ ok: true });
+        }
         // Calibration + house-curve files: the demo ships the .104 mic
         // calibration as the selected file; uploads/deletes only mutate the
         // in-memory option list and echo the applier shape

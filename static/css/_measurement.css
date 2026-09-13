@@ -73,6 +73,11 @@
     gap: 10px;
 }
 
+/* Multi-channel interfaces add a separate electrical reference per side. */
+.measurement-input-channel-grid.is-split {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .measurement-list-title a,
 .effects-compare-active a,
 .effects-compare-chain a {

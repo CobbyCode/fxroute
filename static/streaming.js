@@ -17,6 +17,14 @@
 
     let api = null;
     let showToast = function () {};
+    // Track-change cue decision for the native player, owned by app.js and
+    // injected here, so an explicit TIDAL play and the WebSocket playback frame
+    // for that same start resolve through one state machine instead of two.
+    let maybeShowNativeTrackCue = function () { return false; };
+    // The queue-started cue decision is owned by app.js and injected here, so
+    // the tab transport and the incoming-state/poll paths use one state
+    // machine instead of two copies that can drift apart.
+    let maybeShowStreamingQueueCue = function () { return false; };
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
     // Shared transition-error formatter injected by app.js. The local default
     // mirrors the canonical app.js implementation so this module never renders
@@ -160,6 +168,8 @@
         initialized = true;
         api = interfaceApi || {};
         if (typeof api.showToast === 'function') showToast = api.showToast;
+        if (typeof api.maybeShowNativeTrackCue === 'function') maybeShowNativeTrackCue = api.maybeShowNativeTrackCue;
+        if (typeof api.maybeShowStreamingQueueCue === 'function') maybeShowStreamingQueueCue = api.maybeShowStreamingQueueCue;
         if (typeof api.escapeHtml === 'function') escapeHtml = api.escapeHtml;
         if (typeof api.formatTransitionErrorDetail === 'function') formatTransitionErrorDetail = api.formatTransitionErrorDetail;
         if (typeof api.favoriteHeartSvg === 'function') favoriteHeartSvg = api.favoriteHeartSvg;
@@ -349,6 +359,11 @@
             entry.tabPanel.classList.toggle('hidden', !visible);
         }
         if (!show && state.polls[providerId]) stopPoll(providerId);
+        // A provider tab that just became hidden must not stay the active panel.
+        // The switch itself lives in app.js (same pattern as source mode).
+        if (!show && window.__visibleTab === providerId && typeof switchTab === 'function') {
+            switchTab('radio');
+        }
         if (typeof updateTabsScrollAffordance === 'function') updateTabsScrollAffordance();
     }
 
@@ -653,6 +668,11 @@
         return parts.join(' · ');
     }
 
+    // Provider queue starts (tab transport) are decided by the injected app.js
+    // maybeShowStreamingQueueCue, which owns the session-track bookkeeping and
+    // reuses showStreamingQueueStarted -> showNowPlayingCue. Deliberately no
+    // local copy here: two implementations of the same state machine drift.
+
     // -----------------------------------------------------------------------
     // Now-playing transport wiring
     // -----------------------------------------------------------------------
@@ -703,6 +723,9 @@
     }
 
     async function remoteTransportCommand(adapter, action, extra) {
+        const prev = state.lastData.qobuz && typeof state.lastData.qobuz === 'object'
+            ? { ...state.lastData.qobuz }
+            : null;
         const mapped = adapter.action[action] || action;
         let resp;
         if (action === 'seek') {
@@ -715,6 +738,21 @@
             resp = await fetch(adapter.base + '/' + mapped, { method: 'POST' });
         }
         if (!resp.ok) throw new Error(await errorDetail(resp));
+        // Queue starts (play/toggle into Playing with a new track/queue) reuse
+        // the shared now-playing cue with the real Qobuz metadata and queue
+        // count; later poll refreshes stay silent via the last-playing key.
+        if (action === 'play' || action === 'toggle') {
+            try {
+                const data = await (typeof resp.clone === 'function'
+                    ? resp.clone().json().catch(() => null)
+                    : resp.json().catch(() => null));
+                if (data) {
+                    maybeShowStreamingQueueCue('qobuz', prev, data);
+                }
+            } catch (_cueError) {
+                // Cue must never break transport.
+            }
+        }
         // Remote state settles asynchronously; refresh once and shortly after.
         void refreshProvider('qobuz');
     }
@@ -2757,6 +2795,19 @@
             if (!resp.ok) {
                 showToast(friendlyError(data?.detail || 'Playback failed'), 'error');
                 return;
+            }
+            // Same track-change cue as Local Library playLocal, with the real
+            // TIDAL metadata and queue count from the play response. The shared
+            // decision deduplicates the WebSocket playback frame that reports
+            // the same start.
+            try {
+                const playedTrack = data?.playback?.current_track || null;
+                const queueCount = Number(data?.playback?.queue?.count || (Array.isArray(trackIds) ? trackIds.length : 0) || 0);
+                if (playedTrack) {
+                    maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+                }
+            } catch (_cueError) {
+                // Cue must never break playback.
             }
             void refreshTidalStatus();
         } catch (err) {

@@ -189,6 +189,8 @@ let state = {
         selectedInputUnavailable: false,
         selectedMicInputChannel: '1',
         selectedReferenceInputChannel: '',
+        selectedReferenceInputChannelLeft: '',
+        selectedReferenceInputChannelRight: '',
         selectedChannel: 'left',
         cancelRequested: false,
         repeatJobActive: false,
@@ -574,8 +576,14 @@ const elements = {
     measurementInputGroup: document.getElementById('measurement-input-group'),
     measurementInputSelect: document.getElementById('measurement-input-select'),
     measurementInputRefreshBtn: document.getElementById('measurement-input-refresh'),
+    measurementInputChannelGrid: document.getElementById('measurement-input-channel-grid'),
     measurementMicInputChannelSelect: document.getElementById('measurement-mic-input-channel-select'),
+    measurementReferenceSingleGroup: document.getElementById('measurement-reference-single'),
     measurementReferenceInputChannelSelect: document.getElementById('measurement-reference-input-channel-select'),
+    measurementReferenceLeftGroup: document.getElementById('measurement-reference-left'),
+    measurementReferenceRightGroup: document.getElementById('measurement-reference-right'),
+    measurementReferenceInputChannelLeftSelect: document.getElementById('measurement-reference-input-channel-left-select'),
+    measurementReferenceInputChannelRightSelect: document.getElementById('measurement-reference-input-channel-right-select'),
     measurementReferenceWarning: document.getElementById('measurement-reference-warning'),
     measurementCalibrationSelect: document.getElementById('measurement-calibration-select'),
     measurementCalibrationFile: document.getElementById('measurement-calibration-file'),
@@ -1006,6 +1014,8 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
         window.FXRouteStreaming.init({
             showToast,
+            maybeShowNativeTrackCue,
+            maybeShowStreamingQueueCue,
             escapeHtml,
             favoriteHeartSvg,
             formatTime,
@@ -1244,6 +1254,8 @@ async function resyncPlaybackAfterReconnect() {
 
         if (playback) {
             mergePlaybackState(playback);
+            // Reconnect: adopt the running track silently, never cue it.
+            seedNativeTrackCueKey(playback.current_track);
             updateLiveBanner(playback);
             syncFooterOwnershipFromPlayback(playback);
             syncLibraryStateFromPlaybackContext(true);
@@ -1277,6 +1289,9 @@ function handleWebSocketMessage(msg) {
             // Initial state
             if (data.player) {
                 mergePlaybackState(data.player.state);
+                // Page load: whatever already plays is the session track, not a
+                // track change, so attaching never cues.
+                seedNativeTrackCueKey(data.player.state.current_track);
                 syncFooterOwnershipFromPlayback(data.player.state);
                 syncLibraryStateFromPlaybackContext(true);
                 updatePlaybackUI();
@@ -1344,7 +1359,9 @@ function handleWebSocketMessage(msg) {
             });
             // Always process WebSocket state updates — they are the authoritative source of truth.
             // playActionInFlight guards are only for local fetch responses (see playRadio/playLocal).
+            const previousNativePlayback = { ...state.playback };
             mergePlaybackState(data);
+            maybeCueNativePlaybackTrack(data, previousNativePlayback);
             const clearFooterSingleTrackLockAfterSync = footerSingleTrackStartLockSatisfied(state.playback);
             syncFooterOwnershipFromPlayback(data);
             if (clearFooterSingleTrackLockAfterSync) {
@@ -4561,6 +4578,9 @@ async function toggleCurrentTrackFavorite() {
 }
 
 function meterLitCount(db, segmentCount) {
+    // A missing sample (null/undefined/'') is not 0 dB: Number(null) is 0
+    // and would light the meter full-scale on every stale snapshot.
+    if (db === null || db === undefined || db === '') return 0;
     const value = Number(db);
     if (!Number.isFinite(value)) return 0;
     const normalized = Math.max(0, Math.min(1, (value + 60) / 60));
@@ -4595,13 +4615,47 @@ function renderMeterChannel(container, db, detected) {
     });
 }
 
+// Last valid VU level: a single missing/invalid sample (stale poll,
+// dropped WS frame, monitor rearm gap) must not blank the meter. The cache
+// holds only the slow VU level, never the fast peak flags.
+let lastValidVuSnapshot = null;
+const VU_HOLDOVER_MS = 2000;
+
+function isFiniteVuDb(value) {
+    if (value === null || value === undefined || value === '') return false;
+    return Number.isFinite(Number(value));
+}
+
+function rememberValidVu(warning, active) {
+    if (!active || !warning?.available || warning?.vu_fresh !== true) return;
+    if (!isFiniteVuDb(warning.vu_db) || !isFiniteVuDb(warning.vu_db_l) || !isFiniteVuDb(warning.vu_db_r)) return;
+    lastValidVuSnapshot = {
+        vu_db: Number(warning.vu_db),
+        vu_db_l: Number(warning.vu_db_l),
+        vu_db_r: Number(warning.vu_db_r),
+        at: Date.now(),
+    };
+}
+
+function heldVuSnapshot() {
+    if (!lastValidVuSnapshot) return null;
+    if (Date.now() - lastValidVuSnapshot.at > VU_HOLDOVER_MS) {
+        lastValidVuSnapshot = null;
+        return null;
+    }
+    return lastValidVuSnapshot;
+}
+
 function renderStereoMeter(warning, active) {
     if (!elements.playbackMeter) return;
-    const fresh = !!warning?.available && warning?.vu_fresh === true && !!active;
-    elements.playbackMeter.classList.toggle('is-active', fresh);
+    const playbackActive = !!active;
+    rememberValidVu(warning, playbackActive);
+    const liveFresh = !!warning?.available && warning?.vu_fresh === true && playbackActive;
+    const held = !liveFresh && playbackActive ? heldVuSnapshot() : null;
+    elements.playbackMeter.classList.toggle('is-active', liveFresh || !!held);
     elements.playbackMeter.classList.toggle('is-peak', !!(warning?.detected_l || warning?.detected_r || warning?.detected));
-    renderMeterChannel(elements.meterLeft, fresh ? warning?.vu_db_l : null, fresh && !!warning?.detected_l);
-    renderMeterChannel(elements.meterRight, fresh ? warning?.vu_db_r : null, fresh && !!warning?.detected_r);
+    renderMeterChannel(elements.meterLeft, liveFresh ? warning?.vu_db_l : (held ? held.vu_db_l : null), liveFresh && !!warning?.detected_l);
+    renderMeterChannel(elements.meterRight, liveFresh ? warning?.vu_db_r : (held ? held.vu_db_r : null), liveFresh && !!warning?.detected_r);
 }
 
 function formatOutputLevelBadgeDb(level) {
@@ -4616,15 +4670,21 @@ function formatOutputLevelBadgeDb(level) {
 function renderPeakWarningBadge(activeOverride = null) {
     const warning = state.playback.output_peak_warning || {};
     const title = warning.target?.description || warning.target?.source_name || 'DSP output monitor';
-    const vuDb = Number.isFinite(Number(warning.vu_db)) ? Number(warning.vu_db) : null;
+    const vuDb = isFiniteVuDb(warning.vu_db) ? Number(warning.vu_db) : null;
     const playbackActive = activeOverride === null
         ? (isStreamingFooterSource(window.__footerSource)
             ? streamingFooterData()?.status === 'Playing'
             : !!state.playback.playing && !state.playback.paused)
         : !!activeOverride;
     const showPeak = !!warning.detected && playbackActive;
-    const showVu = !!warning.available && warning.vu_fresh === true
+    const liveShowVu = !!warning.available && warning.vu_fresh === true
         && playbackActive && vuDb !== null;
+    rememberValidVu(warning, playbackActive);
+    // Single invalid sample while playing: hold the last valid dB text
+    // instead of hiding the badge. Peak keeps its live-only fallback.
+    const held = !liveShowVu && playbackActive && !showPeak ? heldVuSnapshot() : null;
+    const showVu = liveShowVu || !!held;
+    const effVuDb = liveShowVu ? vuDb : (held ? held.vu_db : null);
 
     if (elements.outputLevelBadge) {
         elements.outputLevelBadge.classList.toggle('hidden', !(showPeak || showVu));
@@ -4632,7 +4692,7 @@ function renderPeakWarningBadge(activeOverride = null) {
         elements.outputLevelBadge.classList.toggle('is-peak', showPeak);
         /* Peak only recolors the badge: keep the exact VU text/format so the
            display never changes width when the peak state toggles. */
-        const vuText = showVu ? formatOutputLevelBadgeDb(vuDb) : '';
+        const vuText = showVu ? formatOutputLevelBadgeDb(effVuDb) : '';
         elements.outputLevelBadge.textContent = showPeak
             ? (vuText || formatOutputLevelBadgeDb(0))
             : vuText;
@@ -5678,9 +5738,15 @@ function renderTracks() {
     const scanText = formatLibraryScanStatus();
     const hasSearch = !!(state.library.searchQuery || '').trim();
 
-    if (allTracks.length === 0 && (!hasSearch || filteredPlaylists.length === 0)) {
+    // Playlists count as library content: an empty track list must not wipe
+    // them, because a running scan (or a library whose first scan is still
+    // filling the cache) would otherwise read as "nothing here". The shared
+    // scan status renders above the list until the scan finished.
+    if (allTracks.length === 0 && filteredPlaylists.length === 0) {
         window.FXRouteContentState.set(loadingEl, scanText ? 'loading' : 'empty',
-            scanText || 'No tracks yet. Import a file or URL to get started.');
+            scanText || (hasSearch
+                ? 'No matching tracks or playlists. Try a broader search.'
+                : 'No tracks yet. Import a file or URL to get started.'));
         elements.tracksList.innerHTML = '';
         updateLibrarySelectionUI();
         return;
@@ -5908,8 +5974,13 @@ async function fetchAlbums() {
     try {
         const res = await fetch('/api/albums');
         if (!res.ok) return;
-        state.library.albums = await res.json();
-        state.library.albumsLoaded = true;
+        const albums = await res.json();
+        state.library.albums = albums;
+        // An empty list while the scan is still running is not an answer yet:
+        // keeping the view in its scan/loading state until a fetch lands after
+        // the scan finished stops the empty message from flashing while the
+        // albums are still arriving.
+        state.library.albumsLoaded = albums.length > 0 || !state.library.scanning;
         state.library.albumsCacheToken = Date.now();
         // Never clobber an open album/playlist detail with a background
         // re-render; the late init fetch would otherwise close the detail.
@@ -5938,8 +6009,10 @@ function renderAlbums() {
     if (elements.libraryFolderPath) elements.libraryFolderPath.classList.add('hidden');
 
     if (!state.library.albumsLoaded) {
-        // Albums not yet loaded — show loading state and trigger fetch
-        window.FXRouteContentState.set(loadingEl, 'loading', 'Loading albums…');
+        // Albums not yet loaded — show loading state and trigger fetch. A
+        // running scan reports its progress here for the same reason as in
+        // the tracks view: the albums arrive when it is done.
+        window.FXRouteContentState.set(loadingEl, 'loading', formatLibraryScanStatus() || 'Loading albums…');
         elements.albumsGrid.classList.add('hidden');
         fetchAlbums();
         return;
@@ -5958,10 +6031,17 @@ function renderAlbums() {
     const playlists = showSmartFavorites ? getFilteredPlaylists() : [];
 
     if (albums.length === 0 && playlists.length === 0 && !showSmartFavorites) {
-        window.FXRouteContentState.set(loadingEl, 'empty',
-            state.library.showFavoriteAlbums
-                ? 'No favorite albums.'
-                : query ? 'No matching albums.' : 'No albums found. Import music with album tags.');
+        // A running scan is not an empty library: the shared library scan
+        // status stays visible until the scan actually finished, so the empty
+        // message never reports "no albums" while the scan is still filling
+        // the cache. The scan poll re-renders this view as tracks arrive.
+        const scanText = formatLibraryScanStatus();
+        if (scanText) {
+            window.FXRouteContentState.set(loadingEl, 'loading', scanText);
+        } else {
+            window.FXRouteContentState.set(loadingEl, 'empty',
+                query ? 'No matching albums.' : 'No albums found. Import music with album tags.');
+        }
         elements.albumsGrid.innerHTML = '';
         elements.albumsGrid.classList.remove('hidden');
         return;
@@ -7324,7 +7404,7 @@ async function playRadio(stationId) {
             artwork_url: station.image || station.image_url || station.custom_image_url || '',
             artwork_source: (station.image || station.image_url || station.custom_image_url) ? 'radio' : 'none',
         };
-        showNowPlayingCue(playedTrack, 'Now playing');
+        maybeShowNativeTrackCue(playedTrack, 'Now playing');
     } catch (e) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
@@ -7408,7 +7488,7 @@ async function playLocal(trackId, queueTrackIds = null) {
         updatePlaybackUI();
         triggerSamplerateBurstPolling();
         const queueCount = (((data || {}).playback || {}).queue || {}).count || 0;
-        showNowPlayingCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+        maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
     } catch (e) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
@@ -10480,6 +10560,12 @@ function applyMeasurementSetupSettings(settings = {}, fields = null) {
     if (applies('selectedReferenceInputChannel') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannel')) {
         state.measurement.selectedReferenceInputChannel = String(settings.selectedReferenceInputChannel || '');
     }
+    if (applies('selectedReferenceInputChannelLeft') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannelLeft')) {
+        state.measurement.selectedReferenceInputChannelLeft = String(settings.selectedReferenceInputChannelLeft || '');
+    }
+    if (applies('selectedReferenceInputChannelRight') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannelRight')) {
+        state.measurement.selectedReferenceInputChannelRight = String(settings.selectedReferenceInputChannelRight || '');
+    }
     if (applies('measurementSampleRate') && Object.prototype.hasOwnProperty.call(settings, 'measurementSampleRate')) {
         state.measurement.measurementSampleRate = String(settings.measurementSampleRate || '48000');
     }
@@ -10571,6 +10657,8 @@ function applyMeasurementInputSelection(inputId) {
         selectedInputKey: state.measurement.selectedInputKey,
         selectedMicInputChannel: state.measurement.selectedMicInputChannel || '1',
         selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
+        selectedReferenceInputChannelLeft: state.measurement.selectedReferenceInputChannelLeft || '',
+        selectedReferenceInputChannelRight: state.measurement.selectedReferenceInputChannelRight || '',
     });
     renderMeasurementPanel();
 }
@@ -10735,26 +10823,76 @@ function normalizeMeasurementInputChannelSelections() {
     const selectedInput = getSelectedMeasurementInput();
     const channelCountKnown = !!selectedInput;
     const channelCount = channelCountKnown ? Math.max(1, Number(selectedInput.channels || 1)) : 1;
-    const micChannel = Math.max(1, Math.min(channelCount, Number(measurementState.selectedMicInputChannel || 1)));
-    measurementState.selectedMicInputChannel = String(micChannel);
-    if (measurementState.selectedReferenceInputChannel) {
-        const referenceChannel = Number(measurementState.selectedReferenceInputChannel);
-        measurementState.selectedReferenceInputChannel = Number.isFinite(referenceChannel) && referenceChannel >= 1 && (!channelCountKnown || referenceChannel <= channelCount)
+    if (channelCountKnown) {
+        const micChannel = Math.max(1, Math.min(channelCount, Number(measurementState.selectedMicInputChannel || 1)));
+        measurementState.selectedMicInputChannel = String(micChannel);
+    } else if (!measurementState.selectedMicInputChannel) {
+        measurementState.selectedMicInputChannel = '1';
+    }
+
+    const normalizeReferenceChannel = (value) => {
+        if (!value) return '';
+        const referenceChannel = Number(value);
+        return Number.isFinite(referenceChannel) && referenceChannel >= 1 && (!channelCountKnown || referenceChannel <= channelCount)
             ? String(referenceChannel)
             : '';
+    };
+
+    if (!channelCountKnown) {
+        // The input topology is still unknown: the settings response of
+        // /api/measurements can resolve before /api/measurements/inputs, so
+        // deciding between split and shared references here would be a guess.
+        // The persisted settings are authoritative — validate them and leave
+        // their shape alone. Collapsing a stored L/R pair (3/4) onto the shared
+        // value would silently lose Ref R for the rest of the session. The
+        // topology-aware pass below runs again once the input list is loaded.
+        measurementState.selectedReferenceInputChannelLeft = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelLeft);
+        measurementState.selectedReferenceInputChannelRight = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelRight);
+        measurementState.selectedReferenceInputChannel = normalizeReferenceChannel(measurementState.selectedReferenceInputChannel);
+        return;
     }
-    if (measurementState.selectedReferenceInputChannel === measurementState.selectedMicInputChannel) {
-        measurementState.selectedReferenceInputChannel = '';
+
+    const splitReferences = channelCount >= 3;
+    let left = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelLeft);
+    let right = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelRight);
+    if (!splitReferences) {
+        // 2-channel (and single-channel) interfaces keep one shared reference.
+        left = normalizeReferenceChannel(measurementState.selectedReferenceInputChannel);
+        right = left;
+    } else if (!left && !right) {
+        // Seed the split fields from a previously selected shared reference.
+        left = right = normalizeReferenceChannel(measurementState.selectedReferenceInputChannel);
     }
+    if (left === measurementState.selectedMicInputChannel) left = '';
+    if (right === measurementState.selectedMicInputChannel) right = '';
+    measurementState.selectedReferenceInputChannelLeft = left;
+    measurementState.selectedReferenceInputChannelRight = right;
+    // Shared field: the single 2-channel selection, or the common L/R value.
+    measurementState.selectedReferenceInputChannel = left && left === right ? left : (left || right || '');
 }
 
 function getMeasurementReferenceWarning() {
+    // A split L/R reference can never collide with the mic channel here:
+    // normalizeMeasurementInputChannelSelections() clears the affected side as
+    // soon as the input topology is known, so modelling that conflict would
+    // describe a state the UI cannot reach. The one reachable conflict is the
+    // shared reference while the topology is still unknown — that pass only
+    // validates persisted values and deliberately leaves their shape alone.
     const measurementState = state.measurement || {};
-    if (!measurementState.selectedReferenceInputChannel) return '';
-    if (measurementState.selectedReferenceInputChannel === measurementState.selectedMicInputChannel) {
-        return 'Electrical reference disabled: mic and reference must use different input channels.';
+    const reference = String(measurementState.selectedReferenceInputChannel || '');
+    if (!reference) return '';
+    if (reference !== String(measurementState.selectedMicInputChannel || '')) return '';
+    return 'Electrical reference disabled: mic and reference must use different input channels.';
+}
+
+function appendMeasurementReferenceFields(formData) {
+    normalizeMeasurementInputChannelSelections();
+    const measurementState = state.measurement || {};
+    if (getSelectedMeasurementInputChannelCount() >= 3) {
+        formData.append('reference_input_channel_left', measurementState.selectedReferenceInputChannelLeft || '');
+        formData.append('reference_input_channel_right', measurementState.selectedReferenceInputChannelRight || '');
     }
-    return '';
+    formData.append('reference_input_channel', getMeasurementReferenceWarning() ? '' : (measurementState.selectedReferenceInputChannel || ''));
 }
 
 function scheduleMeasurementGraphRender() {
@@ -11026,10 +11164,8 @@ async function startHostMeasurement(jobGeneration = state.measurement.jobGenerat
     formData.append('input_id', state.measurement.selectedInputId);
     formData.append('input_key', state.measurement.selectedInputKey || '');
     formData.append('channel', state.measurement.selectedChannel || 'left');
-    normalizeMeasurementInputChannelSelections();
-    const referenceWarning = getMeasurementReferenceWarning();
     formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
-    formData.append('reference_input_channel', referenceWarning ? '' : (state.measurement.selectedReferenceInputChannel || ''));
+    appendMeasurementReferenceFields(formData);
     const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
     if (calibrationFile) {
         formData.append('calibration_file', calibrationFile);
@@ -11070,10 +11206,8 @@ async function startLrRepeatMeasurement(jobGeneration = state.measurement.jobGen
     formData.append('input_id', state.measurement.selectedInputId);
     formData.append('input_key', state.measurement.selectedInputKey || '');
     formData.append('base_name', state.measurement.currentMeasurementName || '');
-    normalizeMeasurementInputChannelSelections();
-    const referenceWarning = getMeasurementReferenceWarning();
     formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
-    formData.append('reference_input_channel', referenceWarning ? '' : (state.measurement.selectedReferenceInputChannel || ''));
+    appendMeasurementReferenceFields(formData);
     const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
     if (calibrationFile) {
         formData.append('calibration_file', calibrationFile);
@@ -11674,19 +11808,35 @@ function renderMeasurementPanelInputsSection({ measurementState, current, measur
     }
     const inputChannelCount = getSelectedMeasurementInputChannelCount();
     const inputChannelOptions = Array.from({ length: inputChannelCount }, (_, index) => String(index + 1));
+    const splitReferences = inputChannelCount >= 3;
+    const renderReferenceSelect = (select, selectedValue) => {
+        if (!select || isSelectFocused(select)) return;
+        select.innerHTML = [''].concat(inputChannelOptions)
+            .map(value => `<option value="${value}" ${value === (selectedValue || '') ? 'selected' : ''}>${value ? `Input ${value}` : 'None'}</option>`)
+            .join('');
+        select.disabled = measurementState.startInFlight || !measurementModeReady();
+    };
+    if (elements.measurementInputChannelGrid) {
+        elements.measurementInputChannelGrid.classList.toggle('is-split', splitReferences);
+    }
+    if (elements.measurementReferenceSingleGroup) {
+        elements.measurementReferenceSingleGroup.classList.toggle('hidden', splitReferences);
+    }
+    if (elements.measurementReferenceLeftGroup) {
+        elements.measurementReferenceLeftGroup.classList.toggle('hidden', !splitReferences);
+    }
+    if (elements.measurementReferenceRightGroup) {
+        elements.measurementReferenceRightGroup.classList.toggle('hidden', !splitReferences);
+    }
     if (elements.measurementMicInputChannelSelect && !isSelectFocused(elements.measurementMicInputChannelSelect)) {
         elements.measurementMicInputChannelSelect.innerHTML = inputChannelOptions
             .map(value => `<option value="${value}" ${value === measurementState.selectedMicInputChannel ? 'selected' : ''}>Input ${value}</option>`)
             .join('');
         elements.measurementMicInputChannelSelect.disabled = measurementState.startInFlight || !measurementModeReady();
     }
-    if (elements.measurementReferenceInputChannelSelect && !isSelectFocused(elements.measurementReferenceInputChannelSelect)) {
-        const referenceOptions = [''].concat(inputChannelOptions);
-        elements.measurementReferenceInputChannelSelect.innerHTML = referenceOptions
-            .map(value => `<option value="${value}" ${value === (measurementState.selectedReferenceInputChannel || '') ? 'selected' : ''}>${value ? `Input ${value}` : 'None'}</option>`)
-            .join('');
-        elements.measurementReferenceInputChannelSelect.disabled = measurementState.startInFlight || !measurementModeReady();
-    }
+    renderReferenceSelect(elements.measurementReferenceInputChannelSelect, measurementState.selectedReferenceInputChannel);
+    renderReferenceSelect(elements.measurementReferenceInputChannelLeftSelect, measurementState.selectedReferenceInputChannelLeft);
+    renderReferenceSelect(elements.measurementReferenceInputChannelRightSelect, measurementState.selectedReferenceInputChannelRight);
     if (elements.measurementReferenceWarning) {
         const referenceWarning = getMeasurementReferenceWarning();
         elements.measurementReferenceWarning.textContent = referenceWarning;
@@ -12414,25 +12564,34 @@ function setupMeasurementActions() {
             void fetchMeasurementInputs();
         });
     }
+    const saveMeasurementReferenceSelections = () => {
+        void saveMeasurementSetupSettings({
+            selectedMicInputChannel: state.measurement.selectedMicInputChannel,
+            selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
+            selectedReferenceInputChannelLeft: state.measurement.selectedReferenceInputChannelLeft || '',
+            selectedReferenceInputChannelRight: state.measurement.selectedReferenceInputChannelRight || '',
+        });
+    };
     if (elements.measurementMicInputChannelSelect) {
         elements.measurementMicInputChannelSelect.addEventListener('change', (event) => {
             state.measurement.selectedMicInputChannel = event.target.value || '1';
             normalizeMeasurementInputChannelSelections();
-            void saveMeasurementSetupSettings({
-                selectedMicInputChannel: state.measurement.selectedMicInputChannel,
-                selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
-            });
+            saveMeasurementReferenceSelections();
             renderMeasurementPanel();
         });
     }
-    if (elements.measurementReferenceInputChannelSelect) {
-        elements.measurementReferenceInputChannelSelect.addEventListener('change', (event) => {
-            state.measurement.selectedReferenceInputChannel = event.target.value || '';
+    const bindReferenceInputChannelSelect = (select, stateKey) => {
+        if (!select) return;
+        select.addEventListener('change', (event) => {
+            state.measurement[stateKey] = event.target.value || '';
             normalizeMeasurementInputChannelSelections();
             renderMeasurementPanel();
-            void saveMeasurementSetupSettings({ selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '' });
+            saveMeasurementReferenceSelections();
         });
-    }
+    };
+    bindReferenceInputChannelSelect(elements.measurementReferenceInputChannelSelect, 'selectedReferenceInputChannel');
+    bindReferenceInputChannelSelect(elements.measurementReferenceInputChannelLeftSelect, 'selectedReferenceInputChannelLeft');
+    bindReferenceInputChannelSelect(elements.measurementReferenceInputChannelRightSelect, 'selectedReferenceInputChannelRight');
     document.querySelectorAll('[data-measurement-channel]').forEach((button) => {
         button.addEventListener('click', () => {
             if (state.measurement.startInFlight || hasActiveMeasurementJob()) return;
@@ -14524,6 +14683,139 @@ function showNowPlayingCue(track, message = 'Now playing') {
     const img = cue.querySelector('.now-playing-cover');
     revealNowPlayingCoverWhenReady(cue, img, coverUrl, playbackArtworkKnownAvailable(track) ? '' : trackCoverInfoUrl(track));
 }
+// Shared queue-started cue for external streaming providers (Spotify/Qobuz).
+// Uses the same showNowPlayingCue path as Local Library/Radio: identical
+// content, presentation and duration, only the metadata source differs.
+function streamingCueTrack(data, source) {
+    if (!data || typeof data !== 'object') return null;
+    const artworkUrl = data.artwork_url || data.artUrl || '';
+    return {
+        title: data.title || '',
+        artist: data.artist || '',
+        album: data.album || '',
+        source,
+        artwork_available: !!artworkUrl,
+        artwork_url: artworkUrl,
+        artwork_source: artworkUrl ? source : 'none',
+    };
+}
+function streamingCueTrackId(data) {
+    if (!data || typeof data !== 'object') return '';
+    return String(data.trackId || data.trackid || data.id || '');
+}
+function streamingCueKey(data) {
+    if (!data || typeof data !== 'object') return '';
+    return [
+        streamingCueTrackId(data),
+        data.title || '',
+        data.artist || '',
+        data.album || '',
+    ].join('|');
+}
+function showStreamingQueueStarted(source, data) {
+    const track = streamingCueTrack(data, source);
+    if (!track || (!track.title && !track.artist && !track.album)) return;
+    const queueCount = Number(data?.queue_len || 0);
+    showNowPlayingCue(track, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+}
+// Single cue decision for every provider playback start, whatever observed it
+// (FXRoute transport response, provider tab transport, status poll, WS
+// broadcast or an out-of-band external start). New track/queue -> exactly one
+// cue; resume of the session track -> silent; first snapshot after page load
+// or provider switch -> silent. Poll/broadcast refreshes re-observe the same
+// track and stay silent, so there is no time-based suppression that could
+// swallow a rapid same-track restart.
+//
+// `known` is the session track of the provider: the track its playback session
+// is already on, seeded from the first snapshot seen for that provider and
+// advanced by every cue. It is deliberately NOT "the previous snapshot": a
+// provider Next while paused publishes the new track while still Paused and
+// only the later Playing edge is the real start, so the intermediate Paused
+// snapshot must never become the track whose start is treated as a resume.
+// (Comparing against it is what keeps Paused-old -> Paused-new -> Playing-new
+// cueing, while a plain Paused -> Playing of the same track stays silent.)
+function lastPlayingQueueKey(source) {
+    const known = window.__lastPlayingQueueKey;
+    return known && typeof known === 'object' ? known[source] || '' : '';
+}
+function recordPlayingQueueKey(source, next) {
+    if (!next || typeof next !== 'object') return '';
+    const key = `${source}|${streamingCueKey(next)}`;
+    if (!window.__lastPlayingQueueKey || typeof window.__lastPlayingQueueKey !== 'object') {
+        window.__lastPlayingQueueKey = {};
+    }
+    window.__lastPlayingQueueKey[source] = key;
+    return key;
+}
+function maybeShowStreamingQueueCue(source, prev, next) {
+    if (!next || typeof next !== 'object') return false;
+    const previous = prev && typeof prev === 'object' && prev.status ? prev : null;
+    if (!lastPlayingQueueKey(source) || !previous) {
+        // No session track for this provider yet (page load, provider switch)
+        // or no usable previous snapshot: adopt the current track silently.
+        // Adopting also from a Paused/Stopped snapshot is what makes the later
+        // start of a track selected while paused a real start.
+        recordPlayingQueueKey(source, next);
+        return false;
+    }
+    if (next.status !== 'Playing') return false;    // Paused/Stopped never cues
+    const key = `${source}|${streamingCueKey(next)}`;
+    // Same session track: a Paused/Playing edge is a resume or a poll refresh
+    // (silent); only a start after Stopped is a start again.
+    if (key === lastPlayingQueueKey(source) && previous.status !== 'Stopped') return false;
+    showStreamingQueueStarted(source, next);
+    recordPlayingQueueKey(source, next);
+    return true;
+}
+// ---------------------------------------------------------------------------
+// Native player (Library/Radio/TIDAL) track-change cue
+// ---------------------------------------------------------------------------
+// The native player plays exactly one track at a time whatever the source, so a
+// single session key covers all three. A radio station counts as the track:
+// live metadata changes inside the stream are not track changes.
+function nativeTrackCueKey(track) {
+    if (!track || typeof track !== 'object') return '';
+    const source = track.source || '';
+    // Identity first: the explicit play response and the WebSocket frame must
+    // resolve to the same key or the same start would cue twice.
+    const id = track.id || track.url || '';
+    if (id) return `${source}|${id}`;
+    return [source, track.title || '', track.artist || ''].join('|');
+}
+// One cue per real track change of the native player, whatever observed it: the
+// response of an explicit play (Library/Radio/TIDAL) or an authoritative
+// WebSocket playback frame (queue auto-advance, next/previous). The session
+// track is remembered, so a resume of a paused track, a repeated frame or a
+// burst of position updates never cues again. Mirrors
+// maybeShowStreamingQueueCue so every source behaves identically.
+function maybeShowNativeTrackCue(track, message = 'Now playing', previousPlayback = null) {
+    const key = nativeTrackCueKey(track);
+    if (!key) return false;
+    // A restart after the track ended is a start again even though the track is
+    // unchanged (same rule the streaming providers use).
+    const restartAfterStop = !!(
+        previousPlayback
+        && (previousPlayback.ended === true || previousPlayback.stopped === true)
+    );
+    if (key === window.__lastNativeTrackKey && !restartAfterStop) return false;
+    window.__lastNativeTrackKey = key;
+    showNowPlayingCue(track, message);
+    return true;
+}
+// Adopt the session track without cueing: used when the page (re)connects while
+// a track already plays, so attaching to a running player stays silent.
+function seedNativeTrackCueKey(track) {
+    window.__lastNativeTrackKey = nativeTrackCueKey(track);
+}
+// A WebSocket playback frame is the authoritative track change signal for the
+// native player. Spotify/Qobuz keep their own per-provider decision.
+function maybeCueNativePlaybackTrack(data, previousPlayback) {
+    const track = data?.current_track;
+    if (!track || typeof track !== 'object') return false;
+    if (!['local', 'radio', 'tidal'].includes(track.source)) return false;
+    if (!data?.playing || data?.ended) return false;
+    return maybeShowNativeTrackCue(track, 'Now playing', previousPlayback);
+}
 // Library actions
 function setupLibraryActions() {
     elements.refreshLibraryBtn.addEventListener('click', refreshLibrary);
@@ -14777,12 +15069,10 @@ function escapeHtml(text) {
 // =========================================================================
 // Spotify source (playerctl / MPRIS)
 // =========================================================================
-const spotifyElements = {
-    // The Spotify tab renders through the shared streaming shell
-    // (streaming.js .streaming-shell), so the legacy in-tab player DOM is gone;
-    // only the tab button still lives in this object.
-    tabBtn: document.querySelector('[data-tab="spotify"]'),
-};
+// The Spotify tab renders through the shared streaming shell
+// (streaming.js .streaming-shell) and its visibility is owned by streaming.js
+// too, so no legacy Spotify tab DOM lives here.
+let _spotifyInstalledKnown = null;
 
 let _spotifyPollTimer = null;
 let _spotifyCommandInFlight = false;
@@ -14905,24 +15195,16 @@ function shouldAdoptSpotifyUpdate(data) {
     return window.__footerSource === 'spotify';
 }
 
-function setSpotifyUiVisibility(installed) {
+// Provider tabs are owned by streaming.js, which derives their visibility from
+// the discovery payload (installed + enabled). Spotify status arrives far more
+// often than discovery, so this path must not write the tab DOM: a write here
+// re-shows the tab of a provider the user disabled. Only an installed <->
+// uninstalled transition is forwarded, so it lands without a discovery poll.
+function syncSpotifyTabAvailability(installed) {
     const available = installed === true;
-    const visible = available && !nonAppSourceModeActive();
-    const tabPanel = document.getElementById('tab-spotify');
-    if (spotifyElements.tabBtn) {
-        spotifyElements.tabBtn.hidden = !available;
-        spotifyElements.tabBtn.style.display = available ? '' : 'none';
-        spotifyElements.tabBtn.classList.toggle('hidden', !visible);
-        spotifyElements.tabBtn.setAttribute('aria-selected', visible && window.__visibleTab === 'spotify' ? 'true' : 'false');
-    }
-    if (tabPanel) {
-        tabPanel.hidden = !available;
-        tabPanel.classList.toggle('hidden', !visible);
-    }
-    updateTabsScrollAffordance();
-    if (!visible && window.__visibleTab === 'spotify') {
-        switchTab('radio');
-    }
+    if (_spotifyInstalledKnown === available) return;
+    _spotifyInstalledKnown = available;
+    void window.FXRouteStreaming?.refreshEnabledFlags?.();
 }
 
 function handleIncomingQobuzState(data, options = {}) {
@@ -14931,6 +15213,9 @@ function handleIncomingQobuzState(data, options = {}) {
     // streaming.js.
     if (!data) return;
     const { renderFooter = true } = options;
+    const previousQobuzData = window.__qobuzLastData && typeof window.__qobuzLastData === 'object'
+        ? { ...window.__qobuzLastData }
+        : null;
     // Volume-domain guard: GET /api/streaming/qobuz/status returns the raw
     // qbzd engine snapshot (unity-pinned 100%, no source_volume), while WS
     // broadcasts, init and Qobuz actions carry normalized UI state with
@@ -14943,6 +15228,7 @@ function handleIncomingQobuzState(data, options = {}) {
     if (renderFooter && window.__footerSource === 'qobuz') {
         updateFooterForStreamingOwner(normalized);
     }
+    maybeShowStreamingQueueCue('qobuz', previousQobuzData, normalized);
 }
 
 function handleIncomingSpotifyState(data, options = {}) {
@@ -14950,7 +15236,7 @@ function handleIncomingSpotifyState(data, options = {}) {
     const { renderTab = true, renderFooter = true } = options;
     const previousData = window.__spotifyLastData || {};
     const mergedData = mergeSpotifyState(data);
-    setSpotifyUiVisibility(mergedData.installed === true);
+    syncSpotifyTabAvailability(mergedData.installed === true);
     if (mergedData.installed !== true) {
         stopSpotifyPoll();
     }
@@ -14991,7 +15277,7 @@ function handleIncomingSpotifyState(data, options = {}) {
         if (spotifyTab && spotifyTab.classList.contains('active')) {
             renderSpotifyTab(mergedData);
         }
-    }
+    }        maybeShowStreamingQueueCue('spotify', previousData, mergedData);
 }
 
 function renderSpotify(data) {
@@ -15038,11 +15324,17 @@ async function forceSpotifyRefreshBurst() {
 }
 
 async function qobuzCommand(action) {
+    const prev = window.__qobuzLastData && typeof window.__qobuzLastData === 'object'
+        ? { ...window.__qobuzLastData }
+        : null;
     try {
         const data = await apiPostJson(`/api/streaming/qobuz/${action}`);
         window.__qobuzLastData = data;
         reconcileFooterSource();
         updateFooterForStreamingOwner(data);
+        if (action === 'play' || action === 'toggle') {
+            maybeShowStreamingQueueCue('qobuz', prev, data);
+        }
         return data;
     } catch (e) {
         showToast('Qobuz transport failed', 'error');
