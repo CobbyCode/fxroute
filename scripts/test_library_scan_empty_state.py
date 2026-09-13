@@ -18,7 +18,8 @@ import sys
 import threading
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PORT = 8211
+# Unique within scripts/ so two servers never share a port when the suite runs.
+PORT = 8207
 
 try:
     from playwright.sync_api import sync_playwright

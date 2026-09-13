@@ -755,25 +755,57 @@ class ProviderTabOwnershipTests(unittest.TestCase):
         cls.app_js = (ROOT / "static" / "app.js").read_text()
         cls.streaming_js = (ROOT / "static" / "streaming.js").read_text()
 
-    def _function_body(self, source: str, name: str) -> str:
-        """Return the body of ``function <name>(`` up to its closing brace.
+    @staticmethod
+    def _function_body(source: str, name: str) -> str:
+        """Return ``function <name>(`` up to its matching closing brace.
 
-        The provider code is indented inside an IIFE, so the terminating brace
-        is found by counting instead of matching a column-0 ``}``.
+        The streaming module wraps its functions in an IIFE (app.js declares
+        its own at column 0), so the terminating brace is found by counting.
+        Braces inside strings and comments are skipped: counting them would end
+        the body too early and let a forbidden write slip past ``assertNotIn``.
         """
         start = source.index(f"function {name}(")
         # Skip the parameter list before counting: a default value object such
         # as ``options = {}`` would otherwise end the body immediately.
         params_end = source.index(")", start)
+        index = source.index("{", params_end)
         depth = 0
-        for index in range(source.index("{", params_end), len(source)):
+        quote = ""
+        escaped = False
+        line_comment = False
+        block_comment = False
+        while index < len(source):
             char = source[index]
-            if char == "{":
+            following = source[index + 1] if index + 1 < len(source) else ""
+            if line_comment:
+                if char == "\n":
+                    line_comment = False
+            elif block_comment:
+                if char == "*" and following == "/":
+                    block_comment = False
+                    index += 1
+            elif quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+            elif char == "/" and following == "/":
+                line_comment = True
+                index += 1
+            elif char == "/" and following == "*":
+                block_comment = True
+                index += 1
+            elif char in ("'", '"', "`"):
+                quote = char
+            elif char == "{":
                 depth += 1
             elif char == "}":
                 depth -= 1
                 if depth == 0:
                     return source[start:index]
+            index += 1
         raise AssertionError(f"unterminated function {name}")
 
     def test_app_js_owns_no_spotify_tab_visibility_writer(self):
