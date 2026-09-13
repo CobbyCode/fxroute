@@ -257,6 +257,65 @@ class PeakMonitorRebuildSurvivalTests(unittest.IsolatedAsyncioTestCase):
         await self._feed(self.procs[1])
         self.assertTrue(monitor.snapshot()["vu_fresh"])
 
+    async def test_capture_rearms_when_the_live_policy_rate_moves(self):
+        # A measurement session pinned 48 kHz when the capture was armed; after
+        # its release the live rate is 44.1 kHz again.  A capture that kept
+        # streaming at 48 kHz itself would hold that rate in the graph, so it
+        # must be rearmed at the freshly resolved rate.
+        monitor = self.monitor
+        monitor._target = MonitorTarget("fxroute_dsp", 77, "fxroute_dsp", serial=100)
+        self.samplerate_status = {
+            "force_rate": 48000, "active_rate": 48000,
+            "configured_default_rate": 44100, "clock_rate": 44100,
+        }
+        task = asyncio.create_task(monitor._run())
+        monitor._task = task
+        await self._wait_for(lambda: len(self.created) == 1)
+        self.assertEqual(monitor._capture_rate, 48000)
+
+        self.samplerate_status = {
+            "force_rate": 44100, "active_rate": 44100,
+            "configured_default_rate": 44100, "clock_rate": 44100,
+        }
+        await self._wait_for(lambda: len(self.created) >= 2, timeout=3.0)
+        self.assertEqual(monitor._capture_rate, 44100)
+        self.assertIs(monitor._proc, self.procs[1])
+
+        await self._feed(self.procs[1])
+        self.assertTrue(monitor.snapshot()["vu_fresh"])
+
+    async def test_capture_rate_move_defers_until_the_sink_settles(self):
+        monitor = self.monitor
+        monitor._target = MonitorTarget("fxroute_dsp", 77, "fxroute_dsp", serial=100)
+        self.samplerate_status = {
+            "force_rate": 0, "active_rate": 48000,
+            "configured_default_rate": 48000, "clock_rate": 48000,
+        }
+        task = asyncio.create_task(monitor._run())
+        monitor._task = task
+        await self._wait_for(lambda: len(self.created) == 1)
+        self.assertEqual(monitor._capture_rate, 48000)
+
+        with patch.object(peak_monitor, "CAPTURE_NO_DATA_TIMEOUT", 5.0):
+            # The release pins 44.1 kHz while the hardware node still runs at
+            # 48 kHz: rearming now would relaunch at the unsettled rate.
+            self.samplerate_status = {
+                "force_rate": 44100, "active_rate": 48000,
+                "configured_default_rate": 44100, "clock_rate": 44100,
+            }
+            await asyncio.sleep(0.6)
+            self.assertEqual(
+                len(self.created), 1,
+                "the rearm must wait until the sink settled on the pinned rate",
+            )
+
+            self.samplerate_status = {
+                "force_rate": 44100, "active_rate": 44100,
+                "configured_default_rate": 44100, "clock_rate": 44100,
+            }
+            await self._wait_for(lambda: len(self.created) >= 2, timeout=3.0)
+            self.assertEqual(monitor._capture_rate, 44100)
+
     async def test_clean_settle_capture_does_not_rearm(self):
         monitor = self.monitor
         monitor._settle_until = time.monotonic() + 0.6

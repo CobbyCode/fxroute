@@ -173,6 +173,11 @@ class DSPPeakMonitor:
         self._last_error: Optional[str] = None
         self._consecutive_hits = 0
         self._capture_node_name: Optional[str] = None
+        # Rate the running capture was launched at: a capture that keeps
+        # streaming at a rate the graph no longer holds (e.g. the measurement
+        # rate after its release) must be rearmed instead of holding that rate
+        # alive in the graph.
+        self._capture_rate: Optional[int] = None
         self._vu_db: Optional[float] = None
         self._last_vu_update_at: Optional[float] = None
         self._last_audio_sample_at: Optional[float] = None
@@ -399,6 +404,7 @@ class DSPPeakMonitor:
         capture_node_name = f"{CAPTURE_NODE_NAME}_{next(CAPTURE_NODE_SEQUENCE)}"
         capture_rate = _resolve_capture_rate()
         self._capture_node_name = capture_node_name
+        self._capture_rate = capture_rate
         self._last_audio_sample_at = None
         self._pending_frame_bytes = b""
         cmd = [
@@ -528,6 +534,17 @@ class DSPPeakMonitor:
                             )
                         if current_target is not None and current_target == self._target:
                             self._stable_target_checks += 1
+                        # The graph rate can move while this capture keeps
+                        # streaming (measurement release, helper rebuild).  A
+                        # capture armed at the old rate would keep that rate in
+                        # the graph, so rearm at the freshly resolved rate once
+                        # the graph is no longer mid-renegotiation.
+                        live_rate = await asyncio.to_thread(_resolve_capture_rate)
+                        if live_rate != capture_rate and not await self._rate_change_in_progress():
+                            raise RuntimeError(
+                                "Peak monitor capture rate moved from "
+                                f"{capture_rate} Hz to {live_rate} Hz; rearming capture"
+                            )
                     no_data_timeout = (
                         REBUILD_SETTLE_GRACE_SECONDS
                         if now < self._settle_until else CAPTURE_NO_DATA_TIMEOUT
@@ -565,6 +582,7 @@ class DSPPeakMonitor:
                     self._proc.kill()
             self._proc = None
             self._capture_node_name = None
+            self._capture_rate = None
 
     async def _rate_change_in_progress(self) -> bool:
         """True while the sink rate lags the authoritative rate.
