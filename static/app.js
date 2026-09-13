@@ -14554,21 +14554,6 @@ function streamingCueKey(data) {
         data.album || '',
     ].join('|');
 }
-function isStreamingQueueStart(prev, next) {
-    if (!next || next.status !== 'Playing') return false;
-    if (!prev || typeof prev !== 'object') return true;
-    // A different track while Playing is a new queue start no matter how it
-    // was observed (FXRoute transport, status poll or an external client):
-    // provider track changes keep the Playing status, so Stopped is not on
-    // the path. Identical keys keep the old semantics below.
-    if (streamingCueKey(prev) !== streamingCueKey(next)) return true;
-    if (prev.status === 'Playing') return false;
-    // Paused resume of the identical track is transport-only, like the local
-    // toggle path which never shows the cue. Stopped -> Playing of the same
-    // track is a fresh start.
-    if (prev.status === 'Paused') return false;
-    return true;
-}
 function showStreamingQueueStarted(source, data) {
     const track = streamingCueTrack(data, source);
     if (!track || (!track.title && !track.artist && !track.album)) return;
@@ -14577,20 +14562,52 @@ function showStreamingQueueStarted(source, data) {
 }
 // Single cue decision for every provider playback start, whatever path
 // observed it (FXRoute transport response, status poll or out-of-band
-// external start). New track/queue -> cue; resume of the identical paused
-// track -> silent; first snapshot after page load -> silent. The shared
-// window.__lastQueueCue record dedupes the immediate command-path cue
-// against the poll refresh that re-observes the same start seconds later
-// (streaming.js tab transport shares the same record).
-function maybeShowStreamingQueueCue(source, prev, next) {
-    if (!isStreamingQueueStart(prev, next)) return false;
-    if (!prev || typeof prev !== 'object' || !prev.status) return false;
+// external start). New track/queue -> exactly one cue; resume of the last
+// playing paused track -> silent; first snapshot after page load -> silent.
+// Poll refreshes re-observe the same playing key and stay silent, so no
+// time-based suppression exists that could swallow a rapid same-track
+// restart.
+// Last track key observed Playing per provider (shared with the streaming.js
+// tab transport). A provider Next while paused arrives split across two
+// snapshots -- new track id while still Paused, then the Playing edge with
+// the same id -- so resume-silence must compare against the last *playing*
+// key, not the immediately previous snapshot (which already carries the new
+// id and would misread the start as a resume).
+function lastPlayingQueueKey(source) {
+    const known = window.__lastPlayingQueueKey;
+    return known && typeof known === 'object' ? known[source] || '' : '';
+}
+function recordPlayingQueueKey(source, next) {
+    if (!next || typeof next !== 'object') return '';
     const key = `${source}|${streamingCueKey(next)}`;
-    const last = window.__lastQueueCue;
-    const now = Date.now();
-    if (last && last.key === key && now - last.at < 8000) return false;
+    if (!window.__lastPlayingQueueKey || typeof window.__lastPlayingQueueKey !== 'object') {
+        window.__lastPlayingQueueKey = {};
+    }
+    window.__lastPlayingQueueKey[source] = key;
+    return key;
+}
+function maybeShowStreamingQueueCue(source, prev, next) {
+    if (!next || next.status !== 'Playing') return false;
+    const key = `${source}|${streamingCueKey(next)}`;
+    if (!prev || typeof prev !== 'object' || !prev.status) {
+        // First snapshot after page load: anchor the playing key, stay silent.
+        recordPlayingQueueKey(source, next);
+        return false;
+    }
+    if (!lastPlayingQueueKey(source) && streamingCueKey(prev)) {
+        // First observed transition out of a paused/stopped track: that track
+        // is the known session track, so its resume stays silent.
+        recordPlayingQueueKey(source, prev);
+    }
+    const resume = key === lastPlayingQueueKey(source)
+        && (prev.status === 'Paused' || prev.status === 'Playing');
+    if (resume) return false;
+    // A new track since the last playing snapshot, or a fresh start after
+    // Stopped: exactly one cue per start. Poll refreshes re-observe the same
+    // playing key and stay silent above, so no time-based suppression is
+    // needed (and none may swallow a rapid same-track restart).
     showStreamingQueueStarted(source, next);
-    window.__lastQueueCue = { key, at: now };
+    recordPlayingQueueKey(source, next);
     return true;
 }
 // Library actions
