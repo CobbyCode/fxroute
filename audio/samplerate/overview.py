@@ -833,6 +833,32 @@ def reconcile_selected_output_default() -> str | None:
     return selected
 
 
+def selected_output_default_state() -> tuple[str | None, bool]:
+    """Read (selected_key, drifted) for the saved output default without writing.
+
+    Returns the saved selection key and whether PipeWire's default currently
+    differs while the selected device is present, i.e. exactly when
+    reconcile_selected_output_default() would write. Lets background
+    watchers diagnose drift without holding the Coordinator lock; the
+    mutating reconcile stays on the locked repair path. Read failures
+    report no drift so a watcher never repairs from untrusted state.
+    """
+    selected = _load_audio_output_selection().get("selected_key")
+    if not selected:
+        return None, False
+    try:
+        sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
+    except Exception:
+        return selected, False
+    if not any(sink.get("name") == selected for sink in sinks):
+        return selected, False
+    try:
+        current = _run_command(["pactl", "get-default-sink"]).strip()
+    except Exception:
+        return selected, False
+    return selected, bool(current) and current != selected
+
+
 def _select_relevant_sink(default_sink: dict[str, Any], sinks: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not sinks:
         return None

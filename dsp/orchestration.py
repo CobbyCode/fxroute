@@ -85,6 +85,10 @@ class DspOrchestrationDeps:
     get_output_mode: Callable[[], str] | None = None
     reconcile_output_default: Callable[[], str | None] | None = None
     get_coordinator_lock: Callable[[], Any] | None = None
+    # Read-only (selected_key, drifted) for the saved output default. Used
+    # for the lock-free steady-state diagnosis below; when absent the watcher
+    # conservatively assumes drift and keeps the previous always-locked path.
+    read_output_default_state: Callable[[], tuple[str | None, bool]] | None = None
     # Canonical bounded force-rate reconcile path (policy + write + alignment).
     # The deliberate stale-helper repair retargets a contradicting pin through
     # it rather than a bare pw-metadata write.
@@ -698,11 +702,15 @@ class DspOrchestrator:
     async def reconcile_output_authority(self) -> None:
         """Repair output identity and edges in every mode, including idle stereo.
 
-        Holds the Coordinator lock for the whole repair so a transition can
-        neither start inside the default/link mutations nor commit under them.
-        Skips (never waits) when the Coordinator or the sample-rate session is
-        busy, so the watcher can neither stall playback nor deadlock against a
-        measurement entry that owns the session lock.
+        The Coordinator lock is held only while a diagnosed repair mutates
+        the graph. The steady-state diagnosis (default-drift read, runtime
+        snapshot, link verify) runs lock-free, so status polls never observe
+        a spurious transition while the watcher ticks every 2 s: holding the
+        lock for the read-only check forced playing=false/safe_muted in the
+        status payload and flickered the footer play state and VU meter.
+        Skips (never waits) when the Coordinator or the sample-rate session
+        is busy, so the watcher can neither stall playback nor deadlock
+        against a measurement entry that owns the session lock.
         """
         reconcile = self._deps.reconcile_output_default
         if reconcile is None:
@@ -716,6 +724,47 @@ class DspOrchestrator:
         session = self._deps.get_measurement_sr_session()
         if session is not None and session.lock.locked():
             return
+
+        if await self._output_authority_needs_repair():
+            await self._repair_output_authority_locked(coord_lock, session)
+
+    async def _output_authority_needs_repair(self) -> bool:
+        """Lock-free steady-state diagnosis: True only when a repair is due.
+
+        Reads the saved-default drift state, the runtime snapshot and the
+        link verify without holding the Coordinator lock. Any read failure
+        reports no repair so the watcher never mutates from untrusted
+        state; the next 2 s tick retries.
+        """
+        runtime = self._deps.get_dsp_runtime()
+        if runtime is not None and runtime.sync_in_progress:
+            return False
+        read_state = self._deps.read_output_default_state
+        if read_state is None:
+            return True
+        try:
+            selected, drifted = await asyncio.to_thread(read_state)
+        except Exception:
+            return False
+        if drifted:
+            return True
+        if not selected or runtime is None:
+            return False
+        try:
+            snapshot = runtime.snapshot()
+        except Exception:
+            return False
+        if not snapshot.get("active") or (snapshot.get("config") or {}).get("output_key") != selected:
+            return True
+        try:
+            return not await runtime.verify()
+        except Exception:
+            return False
+
+    async def _repair_output_authority_locked(self, coord_lock: Any, session: Any) -> None:
+        """Run the mutating output-authority repair under the Coordinator lock."""
+        reconcile = self._deps.reconcile_output_default
+        assert reconcile is not None
 
         async def repair_inner() -> None:
             runtime = self._deps.get_dsp_runtime()

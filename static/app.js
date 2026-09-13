@@ -4578,6 +4578,9 @@ async function toggleCurrentTrackFavorite() {
 }
 
 function meterLitCount(db, segmentCount) {
+    // A missing sample (null/undefined/'') is not 0 dB: Number(null) is 0
+    // and would light the meter full-scale on every stale snapshot.
+    if (db === null || db === undefined || db === '') return 0;
     const value = Number(db);
     if (!Number.isFinite(value)) return 0;
     const normalized = Math.max(0, Math.min(1, (value + 60) / 60));
@@ -4612,13 +4615,47 @@ function renderMeterChannel(container, db, detected) {
     });
 }
 
+// Last valid VU level: a single missing/invalid sample (stale poll,
+// dropped WS frame, monitor rearm gap) must not blank the meter. The cache
+// holds only the slow VU level, never the fast peak flags.
+let lastValidVuSnapshot = null;
+const VU_HOLDOVER_MS = 2000;
+
+function isFiniteVuDb(value) {
+    if (value === null || value === undefined || value === '') return false;
+    return Number.isFinite(Number(value));
+}
+
+function rememberValidVu(warning, active) {
+    if (!active || !warning?.available || warning?.vu_fresh !== true) return;
+    if (!isFiniteVuDb(warning.vu_db) || !isFiniteVuDb(warning.vu_db_l) || !isFiniteVuDb(warning.vu_db_r)) return;
+    lastValidVuSnapshot = {
+        vu_db: Number(warning.vu_db),
+        vu_db_l: Number(warning.vu_db_l),
+        vu_db_r: Number(warning.vu_db_r),
+        at: Date.now(),
+    };
+}
+
+function heldVuSnapshot() {
+    if (!lastValidVuSnapshot) return null;
+    if (Date.now() - lastValidVuSnapshot.at > VU_HOLDOVER_MS) {
+        lastValidVuSnapshot = null;
+        return null;
+    }
+    return lastValidVuSnapshot;
+}
+
 function renderStereoMeter(warning, active) {
     if (!elements.playbackMeter) return;
-    const fresh = !!warning?.available && warning?.vu_fresh === true && !!active;
-    elements.playbackMeter.classList.toggle('is-active', fresh);
+    const playbackActive = !!active;
+    rememberValidVu(warning, playbackActive);
+    const liveFresh = !!warning?.available && warning?.vu_fresh === true && playbackActive;
+    const held = !liveFresh && playbackActive ? heldVuSnapshot() : null;
+    elements.playbackMeter.classList.toggle('is-active', liveFresh || !!held);
     elements.playbackMeter.classList.toggle('is-peak', !!(warning?.detected_l || warning?.detected_r || warning?.detected));
-    renderMeterChannel(elements.meterLeft, fresh ? warning?.vu_db_l : null, fresh && !!warning?.detected_l);
-    renderMeterChannel(elements.meterRight, fresh ? warning?.vu_db_r : null, fresh && !!warning?.detected_r);
+    renderMeterChannel(elements.meterLeft, liveFresh ? warning?.vu_db_l : (held ? held.vu_db_l : null), liveFresh && !!warning?.detected_l);
+    renderMeterChannel(elements.meterRight, liveFresh ? warning?.vu_db_r : (held ? held.vu_db_r : null), liveFresh && !!warning?.detected_r);
 }
 
 function formatOutputLevelBadgeDb(level) {
@@ -4633,15 +4670,21 @@ function formatOutputLevelBadgeDb(level) {
 function renderPeakWarningBadge(activeOverride = null) {
     const warning = state.playback.output_peak_warning || {};
     const title = warning.target?.description || warning.target?.source_name || 'DSP output monitor';
-    const vuDb = Number.isFinite(Number(warning.vu_db)) ? Number(warning.vu_db) : null;
+    const vuDb = isFiniteVuDb(warning.vu_db) ? Number(warning.vu_db) : null;
     const playbackActive = activeOverride === null
         ? (isStreamingFooterSource(window.__footerSource)
             ? streamingFooterData()?.status === 'Playing'
             : !!state.playback.playing && !state.playback.paused)
         : !!activeOverride;
     const showPeak = !!warning.detected && playbackActive;
-    const showVu = !!warning.available && warning.vu_fresh === true
+    const liveShowVu = !!warning.available && warning.vu_fresh === true
         && playbackActive && vuDb !== null;
+    rememberValidVu(warning, playbackActive);
+    // Single invalid sample while playing: hold the last valid dB text
+    // instead of hiding the badge. Peak keeps its live-only fallback.
+    const held = !liveShowVu && playbackActive && !showPeak ? heldVuSnapshot() : null;
+    const showVu = liveShowVu || !!held;
+    const effVuDb = liveShowVu ? vuDb : (held ? held.vu_db : null);
 
     if (elements.outputLevelBadge) {
         elements.outputLevelBadge.classList.toggle('hidden', !(showPeak || showVu));
@@ -4649,7 +4692,7 @@ function renderPeakWarningBadge(activeOverride = null) {
         elements.outputLevelBadge.classList.toggle('is-peak', showPeak);
         /* Peak only recolors the badge: keep the exact VU text/format so the
            display never changes width when the peak state toggles. */
-        const vuText = showVu ? formatOutputLevelBadgeDb(vuDb) : '';
+        const vuText = showVu ? formatOutputLevelBadgeDb(effVuDb) : '';
         elements.outputLevelBadge.textContent = showPeak
             ? (vuText || formatOutputLevelBadgeDb(0))
             : vuText;

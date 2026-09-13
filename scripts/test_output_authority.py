@@ -223,5 +223,66 @@ class OutputAuthorityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rebuilds, [True])
 
 
+    def test_default_state_read_is_read_only(self):
+        state = getattr(overview, "selected_output_default_state", None)
+        self.assertTrue(callable(state), "Read-only output default state is required")
+        self.assertEqual(state(), ("alsa_output.A", True))
+        self.assertEqual(self.default, "alsa_output.B")
+        self.default = "alsa_output.A"
+        self.assertEqual(state(), ("alsa_output.A", False))
+        del self.volumes["alsa_output.A"]
+        self.assertEqual(state(), ("alsa_output.A", False))
+
+    async def test_steady_tick_holds_no_coordinator_lock(self):
+        # Healthy graph: saved default already authoritative, helper active
+        # on the selected output, links verify. The 2 s tick must return
+        # without touching the Coordinator lock, so status polls never
+        # observe a spurious transition (playing=false + hidden VU meter).
+        self.default = "alsa_output.A"
+        self.links = self.desired | {self.tap}
+
+        class RecordingLock(asyncio.Lock):
+            def __init__(self):
+                super().__init__()
+                self.acquires = 0
+
+            async def acquire(self):
+                self.acquires += 1
+                return await super().acquire()
+
+        coord_lock = RecordingLock()
+        deps = _watcher_deps(SimpleNamespace(
+            sleep=lambda _d: None, get_dsp_runtime=lambda: self.runtime,
+            get_audio_output_overview=lambda: self.fail("steady stereo needs no overview"),
+            observe_playback_samplerate_drift=mock.AsyncMock(), get_output_mode=lambda: "stereo"))
+        deps = replace(deps, reconcile_output_default=overview.reconcile_selected_output_default,
+                       read_output_default_state=overview.selected_output_default_state,
+                       playback_transition_is_active=lambda: coord_lock.locked(),
+                       get_coordinator_lock=lambda: coord_lock,
+                       get_measurement_sr_session=lambda: SimpleNamespace(lock=asyncio.Lock()))
+        await DspOrchestrator(deps).reconcile_output_authority()
+        self.assertEqual(coord_lock.acquires, 0)
+        self.assertFalse(coord_lock.locked())
+        self.assertEqual(self.default, "alsa_output.A")
+        self.assertEqual(self.links, self.desired | {self.tap})
+
+    async def test_drifted_tick_still_repairs_under_lock(self):
+        self.links -= self.desired
+        coord_lock = asyncio.Lock()
+        deps = _watcher_deps(SimpleNamespace(
+            sleep=lambda _d: None, get_dsp_runtime=lambda: self.runtime,
+            get_audio_output_overview=lambda: self.fail("must skip"),
+            observe_playback_samplerate_drift=mock.AsyncMock(), get_output_mode=lambda: "stereo"))
+        deps = replace(deps, reconcile_output_default=overview.reconcile_selected_output_default,
+                       read_output_default_state=overview.selected_output_default_state,
+                       playback_transition_is_active=lambda: coord_lock.locked(),
+                       get_coordinator_lock=lambda: coord_lock,
+                       get_measurement_sr_session=lambda: SimpleNamespace(lock=asyncio.Lock()))
+        await DspOrchestrator(deps).reconcile_output_authority()
+        self.assertFalse(coord_lock.locked())
+        self.assertEqual(self.default, "alsa_output.A")
+        self.assertEqual(self.links, self.desired | {self.tap})
+
+
 if __name__ == "__main__":
     unittest.main()

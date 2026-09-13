@@ -2643,6 +2643,7 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         sleep=lambda delay: asyncio.sleep(delay),
         get_output_mode=lambda: _current_output_mode(),
         reconcile_output_default=lambda: samplerate.reconcile_selected_output_default(),
+        read_output_default_state=lambda: samplerate.selected_output_default_state(),
         get_coordinator_lock=lambda: getattr(playback_transition_coordinator, "lock", None),
         # Only the deliberate stale-helper repair retargets the pin, and it does
         # so through the canonical bounded reconcile policy (same path playback

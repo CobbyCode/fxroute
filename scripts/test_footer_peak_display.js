@@ -52,9 +52,13 @@ function makeClassList() {
 }
 
 function makeMeter() {
+    const segments = Array.from({ length: 6 }, () => ({ classList: makeClassList() }));
     return {
         querySelectorAll() {
-            return Array.from({ length: 6 }, () => ({ classList: makeClassList() }));
+            return segments;
+        },
+        litCount() {
+            return segments.filter(segment => segment.classList.contains('is-lit')).length;
         },
     };
 }
@@ -85,8 +89,19 @@ const sandbox = {
     responsiveMeterSegmentCount: () => 6,
 };
 
+function extractDeclaration(pattern) {
+    const match = appSource.match(pattern);
+    assert.ok(match, `missing declaration ${pattern}`);
+    return match[0];
+}
+
 vm.createContext(sandbox);
 vm.runInContext([
+    extractDeclaration(/let lastValidVuSnapshot = null;/),
+    extractDeclaration(/const VU_HOLDOVER_MS = \d+;/),
+    extractFunction('isFiniteVuDb'),
+    extractFunction('rememberValidVu'),
+    extractFunction('heldVuSnapshot'),
     extractFunction('meterLitCount'),
     extractFunction('renderMeterChannel'),
     extractFunction('renderStereoMeter'),
@@ -153,5 +168,87 @@ assert.match(badge.title, /peak detected/i, 'fresh peak must explain the state')
 
 assert.match(playbackCss, /\.output-level-badge\.is-peak\s*\{[\s\S]*?color:\s*#ff5a5f/,
     'peak badge must use the existing meter red');
+
+/* Regression: a missing sample is silence on the meter, never full-scale.
+   Number(null) is 0 (0 dB), so the guard must catch nullish values before
+   the numeric conversion. */
+assert.equal(sandbox.meterLitCount(null, 6), 0, 'null level must light no segments');
+assert.equal(sandbox.meterLitCount(undefined, 6), 0, 'undefined level must light no segments');
+assert.equal(sandbox.meterLitCount('', 6), 0, 'empty level must light no segments');
+assert.equal(sandbox.meterLitCount(-60, 6), 0, 'silence floor must light no segments');
+assert.ok(sandbox.meterLitCount(-6, 6) > 0, 'normal level must light segments');
+
+/* Regression: a single invalid sample must not blank the meter. While
+   playback stays active the last valid VU level bridges the gap. */
+renderWarning({
+    available: true,
+    detected: false,
+    vu_db: -14,
+    vu_db_l: -14,
+    vu_db_r: -15,
+    vu_fresh: true,
+    detected_l: false,
+    detected_r: false,
+});
+assert.equal(badge.textContent, '-14 dB', 'valid VU must render before the dropout');
+const heldLit = sandbox.elements.meterLeft.litCount();
+assert.ok(heldLit > 0, 'valid VU must light meter segments');
+
+renderWarning({
+    available: true,
+    detected: false,
+    vu_db: -14,
+    vu_db_l: -14,
+    vu_db_r: -15,
+    vu_fresh: false,
+    detected_l: false,
+    detected_r: false,
+});
+assert.equal(badge.textContent, '-14 dB', 'single stale sample must hold the dB text');
+assert.equal(badge.classList.contains('hidden'), false, 'single stale sample must not hide the badge');
+assert.equal(sandbox.elements.meterLeft.litCount(), heldLit, 'single stale sample must hold the bars');
+
+renderWarning({
+    available: false,
+    detected: false,
+    vu_db: null,
+    vu_db_l: null,
+    vu_db_r: null,
+    vu_fresh: false,
+    detected_l: false,
+    detected_r: false,
+});
+assert.equal(badge.textContent, '-14 dB', 'single unavailable snapshot must hold the dB text');
+assert.equal(sandbox.elements.meterLeft.litCount(), heldLit, 'single unavailable snapshot must hold the bars');
+
+/* The holdover is bounded: a sustained outage must hide the meter again. */
+vm.runInContext('lastValidVuSnapshot.at -= 5000;', sandbox);
+renderWarning({
+    available: true,
+    detected: false,
+    vu_db: -14,
+    vu_db_l: -14,
+    vu_db_r: -15,
+    vu_fresh: false,
+    detected_l: false,
+    detected_r: false,
+});
+assert.equal(badge.classList.contains('hidden'), true, 'sustained stale state must hide the badge again');
+assert.equal(sandbox.elements.meterLeft.litCount(), 0, 'sustained stale state must clear the bars');
+
+/* Silence is a valid sample: the -60 dB floor stays visible, not hidden. */
+renderWarning({
+    available: true,
+    detected: false,
+    vu_db: -60,
+    vu_db_l: -60,
+    vu_db_r: -60,
+    vu_fresh: true,
+    detected_l: false,
+    detected_r: false,
+});
+assert.equal(badge.textContent, '-60 dB', 'silence floor must keep its dB text');
+assert.equal(badge.classList.contains('hidden'), false, 'silence floor must stay visible');
+assert.equal(sandbox.elements.meterLeft.litCount(), 0, 'silence floor lights no segments');
 
 console.log('PASS  scripts/test_footer_peak_display.js (normal and peak states)');
