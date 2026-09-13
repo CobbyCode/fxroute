@@ -210,6 +210,31 @@ def _auto_sub_anchor_shifted_points(points: list, reference_db: float | None) ->
         return points
     return [[point[0], point[1] + shift] for point in points]
 
+
+def _auto_sub_anchor_adjusted_combined_sweep(
+    sweep: dict[str, Any] | None, reference_db: float | None,
+) -> dict[str, Any] | None:
+    """Copy a combined sweep with per-side display correction and shift metadata."""
+    if not sweep:
+        return sweep
+    adjusted = dict(sweep)
+    adjusted["points_left"] = _auto_sub_anchor_shifted_points(
+        sweep.get("points_left") or [], reference_db,
+    )
+    adjusted["points_right"] = _auto_sub_anchor_shifted_points(
+        sweep.get("points_right") or [], reference_db,
+    )
+    # Record applied per-side shifts so the frontend can place the
+    # scored target in the exact display coordinate of each trace.
+    adjusted["display_anchor_shift_db_left"] = _auto_sub_applied_anchor_shift(
+        sweep.get("points_left") or [], reference_db,
+    )
+    adjusted["display_anchor_shift_db_right"] = _auto_sub_applied_anchor_shift(
+        sweep.get("points_right") or [], reference_db,
+    )
+    return adjusted
+
+
 def _auto_sub_result_meta(
     job: dict[str, Any], mode: str, final_levels_db: dict[str, float],
     *, target_vertical_offset_db: float | None = None,

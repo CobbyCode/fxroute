@@ -58,8 +58,7 @@ from ..measurement import (
     _measure_auto_sub_combined_candidate,
 )
 from ..scoring import (
-    _auto_sub_anchor_shifted_points,
-    _auto_sub_applied_anchor_shift,
+    _auto_sub_anchor_adjusted_combined_sweep,
     _auto_sub_candidate_ledger,
     _auto_sub_display_anchor_reference_db,
     _auto_sub_gate_candidate_rows,
@@ -851,28 +850,12 @@ async def _run_auto_sub_22_optimize(
             for points in (sweep.get("points_left") or [], sweep.get("points_right") or [])
         ])
 
-        def _anchor_adjusted_combined_sweep(sweep: dict[str, Any] | None) -> dict[str, Any] | None:
-            if not sweep:
-                return sweep
-            adjusted = dict(sweep)
-            adjusted["points_left"] = _auto_sub_anchor_shifted_points(
-                sweep.get("points_left") or [], _display_anchor_reference_db,
-            )
-            adjusted["points_right"] = _auto_sub_anchor_shifted_points(
-                sweep.get("points_right") or [], _display_anchor_reference_db,
-            )
-            # Record applied per-side shifts so the frontend can place the
-            # scored target in the exact display coordinate of each trace.
-            adjusted["display_anchor_shift_db_left"] = _auto_sub_applied_anchor_shift(
-                sweep.get("points_left") or [], _display_anchor_reference_db,
-            )
-            adjusted["display_anchor_shift_db_right"] = _auto_sub_applied_anchor_shift(
-                sweep.get("points_right") or [], _display_anchor_reference_db,
-            )
-            return adjusted
-
-        baseline_22_sweep = _anchor_adjusted_combined_sweep(baseline_22_sweep)
-        confirm_22_sweep = _anchor_adjusted_combined_sweep(confirm_22_sweep)
+        baseline_22_sweep = _auto_sub_anchor_adjusted_combined_sweep(
+            baseline_22_sweep, _display_anchor_reference_db,
+        )
+        confirm_22_sweep = _auto_sub_anchor_adjusted_combined_sweep(
+            confirm_22_sweep, _display_anchor_reference_db,
+        )
         _offset_db = _auto_sub_shared_bass_offset(
             baseline_22_sweep.get("points_left") if baseline_22_sweep else [],
             baseline_22_sweep.get("points_right") if baseline_22_sweep else [],

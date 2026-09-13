@@ -53,8 +53,7 @@ from ..measurement import (
     _measure_auto_sub_combined_candidate,
 )
 from ..scoring import (
-    _auto_sub_anchor_shifted_points,
-    _auto_sub_applied_anchor_shift,
+    _auto_sub_anchor_adjusted_combined_sweep,
     _auto_sub_best_scan_result,
     _auto_sub_candidate_ledger,
     _auto_sub_display_anchor_reference_db,
@@ -1010,27 +1009,9 @@ async def _run_auto_sub_optimize(
             for points in (sweep.get("points_left") or [], sweep.get("points_right") or [])
         ])
 
-        def _anchor_adjusted_combined_sweep(sweep: dict[str, Any] | None) -> dict[str, Any] | None:
-            if not sweep:
-                return sweep
-            adjusted = dict(sweep)
-            adjusted["points_left"] = _auto_sub_anchor_shifted_points(
-                sweep.get("points_left") or [], _display_anchor_reference_db,
-            )
-            adjusted["points_right"] = _auto_sub_anchor_shifted_points(
-                sweep.get("points_right") or [], _display_anchor_reference_db,
-            )
-            # Record applied per-side shifts so the frontend can place the
-            # scored target in the exact display coordinate of each trace.
-            adjusted["display_anchor_shift_db_left"] = _auto_sub_applied_anchor_shift(
-                sweep.get("points_left") or [], _display_anchor_reference_db,
-            )
-            adjusted["display_anchor_shift_db_right"] = _auto_sub_applied_anchor_shift(
-                sweep.get("points_right") or [], _display_anchor_reference_db,
-            )
-            return adjusted
-
-        baseline_sweep = _anchor_adjusted_combined_sweep(baseline_sweep)
+        baseline_sweep = _auto_sub_anchor_adjusted_combined_sweep(
+            baseline_sweep, _display_anchor_reference_db,
+        )
         _offset_db = _auto_sub_shared_bass_offset(
             baseline_sweep.get("points_left") if baseline_sweep else [],
             baseline_sweep.get("points_right") if baseline_sweep else [],
@@ -1053,7 +1034,9 @@ async def _run_auto_sub_optimize(
         confirmation_sweep = _points_sweep(final_gain_sweep) or _points_sweep(
             _auto_sub_result_for_delay(all_sweep_results, confirm_delay)
         )
-        confirmation_sweep = _anchor_adjusted_combined_sweep(confirmation_sweep)
+        confirmation_sweep = _auto_sub_anchor_adjusted_combined_sweep(
+            confirmation_sweep, _display_anchor_reference_db,
+        )
         if confirmation_sweep:
             sweep_delay = confirmation_sweep.get("delay_ms")
             if sweep_delay is not None:

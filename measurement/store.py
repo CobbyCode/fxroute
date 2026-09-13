@@ -30,7 +30,7 @@ from measurement.host_capture import HostCaptureRunner
 from measurement.capture_policy import MeasurementCapturePolicyRunner
 from measurement.persistence import MeasurementPersistence
 from measurement.routing import MeasurementRouting
-from measurement.signal import write_sweep_file
+from measurement.signal import _write_wav, write_sweep_file
 from measurement.job_runner import MeasurementJobRunner
 from measurement.repeat_runner import MeasurementRepeatRunner
 from measurement.analyzer import MeasurementAnalyzer
@@ -1761,14 +1761,7 @@ class MeasurementStore:
         return {"status": status, "items": items}
 
     def _write_wav(self, path: Path, samples: np.ndarray, sample_rate: int) -> None:
-        clipped = np.clip(samples, -1.0, 1.0)
-        int_samples = np.round(clipped * 32767.0).astype(np.int16)
-        with wave.open(str(path), "wb") as handle:
-            channels = 1 if int_samples.ndim == 1 else int_samples.shape[1]
-            handle.setnchannels(channels)
-            handle.setsampwidth(2)
-            handle.setframerate(sample_rate)
-            handle.writeframes(int_samples.tobytes())
+        _write_wav(path, samples, sample_rate)
 
     def _store_calibration_file(self, filename: str, data: bytes) -> dict[str, Any]:
         return self._file_store._store_calibration_file(filename, data)
