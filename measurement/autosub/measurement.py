@@ -472,11 +472,21 @@ async def _measure_auto_sub_candidate(
         if _dsp_runtime() is None:
             raise RuntimeError("Native DSP output peak capture unavailable")
         await _dsp_runtime().reset_output_peaks()
+        # Per-side references travel on the job so the single sweep funnel
+        # stays signature-compatible with every Auto-Sub runner.
+        configured_reference_channels = job.get("reference_channels")
+        if isinstance(configured_reference_channels, dict):
+            sweep_reference_left = configured_reference_channels.get("left") or ""
+            sweep_reference_right = configured_reference_channels.get("right") or ""
+        else:
+            sweep_reference_left = sweep_reference_right = reference_input_channel
         sweep_job = await measurement_store.start_measurement(
             input_id=input_id,
             channel=channel,
             mic_input_channel=mic_input_channel,
             reference_input_channel=reference_input_channel,
+            reference_input_channel_left=sweep_reference_left,
+            reference_input_channel_right=sweep_reference_right,
             calibration_ref=calibration_ref,
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,

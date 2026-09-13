@@ -1049,7 +1049,8 @@
             min-width: 0;
         }
 
-        .measurement-input-channel-grid {
+        .measurement-input-channel-grid,
+        .measurement-input-channel-grid.is-split {
             grid-template-columns: 1fr;
         }
 

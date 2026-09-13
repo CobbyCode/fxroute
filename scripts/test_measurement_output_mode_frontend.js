@@ -98,6 +98,9 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         function setRunningSave(value) { _subwooferSavePromise = value; }
         function normalizeMeasurementInputChannelSelections() {}
         function getMeasurementReferenceWarning() { return false; }
+        function appendMeasurementReferenceFields(formData) {
+            formData.append('reference_input_channel', state.measurement.selectedReferenceInputChannel || '');
+        }
         function formatMeasurementJobStatusText() { return 'Preparing sweep…'; }
         function normalizeMeasurementKind(value) { return value; }
         function postRuntimeDebugSnapshot() {

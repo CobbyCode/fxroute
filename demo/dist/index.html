@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.212">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.213">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -987,16 +987,28 @@
                                     </select>
                                     <button id="measurement-input-refresh" class="btn-secondary hidden" type="button">Detect / refresh host microphones</button>
                                 </div>
-                                <div class="measurement-input-channel-grid">
+                                <div id="measurement-input-channel-grid" class="measurement-input-channel-grid">
                                     <div class="field-group">
                                         <label for="measurement-mic-input-channel-select">Mic input channel</label>
                                         <select id="measurement-mic-input-channel-select" class="url-input">
                                             <option value="1">Input 1</option>
                                         </select>
                                     </div>
-                                    <div class="field-group">
+                                    <div class="field-group" id="measurement-reference-single">
                                         <label for="measurement-reference-input-channel-select">Electrical reference input</label>
                                         <select id="measurement-reference-input-channel-select" class="url-input">
+                                            <option value="">None</option>
+                                        </select>
+                                    </div>
+                                    <div class="field-group hidden" id="measurement-reference-left">
+                                        <label for="measurement-reference-input-channel-left-select">Electrical Ref L</label>
+                                        <select id="measurement-reference-input-channel-left-select" class="url-input">
+                                            <option value="">None</option>
+                                        </select>
+                                    </div>
+                                    <div class="field-group hidden" id="measurement-reference-right">
+                                        <label for="measurement-reference-input-channel-right-select">Electrical Ref R</label>
+                                        <select id="measurement-reference-input-channel-right-select" class="url-input">
                                             <option value="">None</option>
                                         </select>
                                     </div>
@@ -1525,9 +1537,9 @@
     <script src="/static/hybrid_measurement.js?v=0.9.15"></script>
     <script src="/static/measurement_ui.js?v=0.9.16"></script>
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
-    <script src="/static/measurement_flows.js?v=0.9.20"></script>
+    <script src="/static/measurement_flows.js?v=0.9.21"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.139"></script>
+    <script src="/static/app.js?v=0.9.140"></script>
     <script src="/static/streaming.js?v=0.9.67"></script>
 </body>
 </html>

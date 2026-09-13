@@ -124,6 +124,29 @@ normalized = runNormalize(
 );
 assert.strictEqual(normalized.selectedMicInputChannel, '1');
 assert.strictEqual(normalized.selectedReferenceInputChannel, '2', 'distinct valid pair survives');
+
+// A previously shared reference seeds both split fields on a multi-channel
+// interface; two distinct L/R values stay distinct and keep L as the summary.
+normalized = runNormalize(
+    { selectedMicInputChannel: '1', selectedReferenceInputChannel: '2' }, 4
+);
+assert.strictEqual(normalized.selectedReferenceInputChannelLeft, '2', 'shared ref seeds Ref L');
+assert.strictEqual(normalized.selectedReferenceInputChannelRight, '2', 'shared ref seeds Ref R');
+assert.strictEqual(normalized.selectedReferenceInputChannel, '2', 'identical L/R keeps the shared summary');
+
+normalized = runNormalize(
+    { selectedMicInputChannel: '1', selectedReferenceInputChannelLeft: '2', selectedReferenceInputChannelRight: '3' }, 4
+);
+assert.strictEqual(normalized.selectedReferenceInputChannelLeft, '2');
+assert.strictEqual(normalized.selectedReferenceInputChannelRight, '3');
+assert.strictEqual(normalized.selectedReferenceInputChannel, '2', 'split keeps the left reference as the shared summary');
+
+// The 2-channel path still collapses to one shared reference.
+normalized = runNormalize(
+    { selectedMicInputChannel: '1', selectedReferenceInputChannelLeft: '2', selectedReferenceInputChannelRight: '3' }, 2
+);
+assert.strictEqual(normalized.selectedReferenceInputChannelLeft, '', 'out-of-range Ref L clears on 2-channel');
+assert.strictEqual(normalized.selectedReferenceInputChannelRight, '', 'out-of-range Ref R clears on 2-channel');
 console.log('channel normalization choke point: ok');
 
 // --- Part 2: hybrid builder field snapshot -------------------------------
@@ -184,5 +207,69 @@ assert.strictEqual(entries.reference_input_channel, '', 'warning gates the refer
 assert.strictEqual(entries.mic_input_channel, '1');
 assert.strictEqual(entries.measurement_role, 'secondary');
 console.log('hybrid payload gated reference: ok');
+
+// --- Part 3: per-side reference fields -----------------------------------
+function runAppendReferenceFields(state, channelCount, warning) {
+    const sandbox = {
+        state: { measurement: state },
+        FormData,
+        normalizeMeasurementInputChannelSelections: () => {},
+        getSelectedMeasurementInputChannelCount: () => channelCount,
+        getMeasurementReferenceWarning: () => warning,
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(
+        extractGlobalFunction(appSource, 'appendMeasurementReferenceFields'),
+        sandbox
+    );
+    sandbox.fd = new FormData();
+    vm.runInContext('appendMeasurementReferenceFields(fd)', sandbox);
+    return formEntries(sandbox.fd);
+}
+
+let referenceEntries = runAppendReferenceFields(
+    {
+        selectedMicInputChannel: '1',
+        selectedReferenceInputChannel: '2',
+        selectedReferenceInputChannelLeft: '2',
+        selectedReferenceInputChannelRight: '3',
+    },
+    4,
+    ''
+);
+assert.deepStrictEqual(referenceEntries, {
+    reference_input_channel_left: '2',
+    reference_input_channel_right: '3',
+    reference_input_channel: '2',
+});
+console.log('split reference payload: ok');
+
+referenceEntries = runAppendReferenceFields(
+    {
+        selectedMicInputChannel: '1',
+        selectedReferenceInputChannel: '2',
+        selectedReferenceInputChannelLeft: '2',
+        selectedReferenceInputChannelRight: '2',
+    },
+    2,
+    ''
+);
+assert.deepStrictEqual(referenceEntries, { reference_input_channel: '2' });
+console.log('2-channel reference payload: ok');
+
+referenceEntries = runAppendReferenceFields(
+    {
+        selectedMicInputChannel: '1',
+        selectedReferenceInputChannel: '2',
+        selectedReferenceInputChannelLeft: '2',
+        selectedReferenceInputChannelRight: '3',
+    },
+    4,
+    'Electrical reference L disabled'
+);
+assert.strictEqual(referenceEntries.reference_input_channel, '', 'warning gates the shared field');
+assert.strictEqual(referenceEntries.reference_input_channel_left, '2');
+assert.strictEqual(referenceEntries.reference_input_channel_right, '3');
+console.log('split reference payload gated: ok');
 
 console.log('measurement payload contracts: ok');

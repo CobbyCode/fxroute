@@ -492,10 +492,35 @@ class MeasurementPersistence:
             normalized_mic_input_channel = max(1, int(input_channels.get("mic") or 1))
         except (TypeError, ValueError):
             normalized_mic_input_channel = 1
-        try:
-            normalized_reference_input_channel = int(input_channels["electrical_reference"]) if input_channels.get("electrical_reference") else None
-        except (TypeError, ValueError):
-            normalized_reference_input_channel = None
+        def _normalize_optional_channel(raw_value: Any) -> int | None:
+            try:
+                return int(raw_value) if raw_value else None
+            except (TypeError, ValueError):
+                return None
+
+        normalized_reference_input_channel = _normalize_optional_channel(input_channels.get("electrical_reference"))
+        normalized_input_channels: dict[str, Any] = {
+            "mic": normalized_mic_input_channel,
+            "electrical_reference": normalized_reference_input_channel,
+            "reference_disabled_reason": str(input_channels.get("reference_disabled_reason") or ""),
+        }
+        # Keep the per-side references only when the payload actually carries
+        # them, so older saved measurements normalize exactly as before.
+        if "electrical_reference_left" in input_channels or "electrical_reference_right" in input_channels:
+            normalized_input_channels["electrical_reference_left"] = _normalize_optional_channel(
+                input_channels.get("electrical_reference_left")
+            )
+            normalized_input_channels["electrical_reference_right"] = _normalize_optional_channel(
+                input_channels.get("electrical_reference_right")
+            )
+        if "reference_disabled_reason_left" in input_channels:
+            normalized_input_channels["reference_disabled_reason_left"] = str(
+                input_channels.get("reference_disabled_reason_left") or ""
+            )
+        if "reference_disabled_reason_right" in input_channels:
+            normalized_input_channels["reference_disabled_reason_right"] = str(
+                input_channels.get("reference_disabled_reason_right") or ""
+            )
 
         result = {
             "id": measurement_id,
@@ -505,11 +530,7 @@ class MeasurementPersistence:
                 "id": str(input_device.get("id") or "capture-input"),
                 "label": str(input_device.get("label") or "Capture input"),
             },
-            "input_channels": {
-                "mic": normalized_mic_input_channel,
-                "electrical_reference": normalized_reference_input_channel,
-                "reference_disabled_reason": str(input_channels.get("reference_disabled_reason") or ""),
-            },
+            "input_channels": normalized_input_channels,
             "channel": str(payload.get("channel") or "left").lower(),
             "calibration": {
                 "filename": str(calibration.get("filename") or ""),

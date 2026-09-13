@@ -67,6 +67,8 @@ async def start_auto_sub_optimize(
     channel: str = Form("left"),
     mic_input_channel: str = Form("1"),
     reference_input_channel: str = Form(""),
+    reference_input_channel_left: str = Form(""),
+    reference_input_channel_right: str = Form(""),
     calibration_ref: str = Form(""),
     target_curve_snapshot: str = Form(""),
     calibration_file: UploadFile | None = File(None),
@@ -174,6 +176,13 @@ async def start_auto_sub_optimize(
                 "reason": target_curve_error or "Vertical Main/Target level reference has not passed its mandatory gate",
             },
             "playback_gain": auto_sub_playback_gain,
+            # Per-side electrical references for the sweeps this job runs. The
+            # single candidate funnel reads them so two references never need
+            # threading through every Auto-Sub runner signature.
+            "reference_channels": {
+                "left": reference_input_channel_left,
+                "right": reference_input_channel_right,
+            },
             "current_sweep_id": "",
             "cancel_requested": False,
             "cancelled_at": None,

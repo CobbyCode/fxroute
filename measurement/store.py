@@ -307,6 +307,8 @@ class MeasurementStore:
         mic_input_channel: str | int | None,
         reference_input_channel: str | int | None,
         calibration_filename: str | None,
+        reference_input_channel_left: str | int | None = None,
+        reference_input_channel_right: str | int | None = None,
         calibration_bytes: bytes | None,
         calibration_ref: str | None,
         measurement_scope: str,
@@ -361,15 +363,55 @@ class MeasurementStore:
             default=0,
             field_name="mic_input_channel",
         )
-        reference_input_channel_index = self._parse_optional_input_channel_index(
+        shared_reference_input_channel_index = self._parse_optional_input_channel_index(
             reference_input_channel,
             channel_count=input_channel_count,
             field_name="reference_input_channel",
         )
-        reference_disabled_reason = ""
-        if reference_input_channel_index is not None and reference_input_channel_index == mic_input_channel_index:
-            reference_disabled_reason = "Mic input and electrical reference input are the same channel; reference compensation disabled."
-            reference_input_channel_index = None
+        reference_input_channel_left_index = self._parse_optional_input_channel_index(
+            reference_input_channel_left,
+            channel_count=input_channel_count,
+            field_name="reference_input_channel_left",
+        )
+        reference_input_channel_right_index = self._parse_optional_input_channel_index(
+            reference_input_channel_right,
+            channel_count=input_channel_count,
+            field_name="reference_input_channel_right",
+        )
+        if reference_input_channel_left_index is None and reference_input_channel_right_index is None:
+            # Legacy and 2-channel path: one shared electrical reference for both sides.
+            reference_input_channel_left_index = shared_reference_input_channel_index
+            reference_input_channel_right_index = shared_reference_input_channel_index
+
+        # The reference may not share the microphone channel. Disable only the
+        # affected side; the other side keeps its reference.
+        shared_reference_channels = (
+            reference_input_channel_left_index is not None
+            and reference_input_channel_left_index == reference_input_channel_right_index
+        )
+        reference_disabled_reason_left = ""
+        reference_disabled_reason_right = ""
+        if reference_input_channel_left_index is not None and reference_input_channel_left_index == mic_input_channel_index:
+            reference_disabled_reason_left = (
+                "Mic input and electrical reference input are the same channel; reference compensation disabled."
+                if shared_reference_channels
+                else "Mic input and electrical reference L input are the same channel; reference compensation disabled."
+            )
+            reference_input_channel_left_index = None
+        if reference_input_channel_right_index is not None and reference_input_channel_right_index == mic_input_channel_index:
+            reference_disabled_reason_right = (
+                "Mic input and electrical reference input are the same channel; reference compensation disabled."
+                if shared_reference_channels
+                else "Mic input and electrical reference R input are the same channel; reference compensation disabled."
+            )
+            reference_input_channel_right_index = None
+        reference_disabled_reason = " ".join(
+            dict.fromkeys(
+                reason
+                for reason in (reference_disabled_reason_left, reference_disabled_reason_right)
+                if reason
+            )
+        )
 
         calibration_meta = self._file_store.resolve_calibration_meta(
             calibration_filename=calibration_filename,
@@ -396,8 +438,20 @@ class MeasurementStore:
             },
             "input_channels": {
                 "mic": mic_input_channel_index + 1,
-                "electrical_reference": reference_input_channel_index + 1 if reference_input_channel_index is not None else None,
+                "electrical_reference": (
+                    reference_input_channel_left_index + 1
+                    if reference_input_channel_left_index is not None
+                    else (reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None)
+                ),
+                "electrical_reference_left": (
+                    reference_input_channel_left_index + 1 if reference_input_channel_left_index is not None else None
+                ),
+                "electrical_reference_right": (
+                    reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None
+                ),
                 "reference_disabled_reason": reference_disabled_reason,
+                "reference_disabled_reason_left": reference_disabled_reason_left,
+                "reference_disabled_reason_right": reference_disabled_reason_right,
             },
             "calibration": calibration_meta or {"filename": "", "applied": False},
             "scope_note": MEASUREMENT_SCOPE_NOTE,
@@ -431,6 +485,8 @@ class MeasurementStore:
         channel: str,
         mic_input_channel: str | int | None = "1",
         reference_input_channel: str | int | None = "",
+        reference_input_channel_left: str | int | None = None,
+        reference_input_channel_right: str | int | None = None,
         calibration_filename: str | None = None,
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
@@ -445,6 +501,8 @@ class MeasurementStore:
             input_key=input_key,
             mic_input_channel=mic_input_channel,
             reference_input_channel=reference_input_channel,
+            reference_input_channel_left=reference_input_channel_left,
+            reference_input_channel_right=reference_input_channel_right,
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
@@ -483,6 +541,8 @@ class MeasurementStore:
         base_name: str = "",
         mic_input_channel: str | int | None = "1",
         reference_input_channel: str | int | None = "",
+        reference_input_channel_left: str | int | None = None,
+        reference_input_channel_right: str | int | None = None,
         calibration_filename: str | None = None,
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
@@ -494,6 +554,8 @@ class MeasurementStore:
             input_key=input_key,
             mic_input_channel=mic_input_channel,
             reference_input_channel=reference_input_channel,
+            reference_input_channel_left=reference_input_channel_left,
+            reference_input_channel_right=reference_input_channel_right,
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
@@ -708,11 +770,8 @@ class MeasurementStore:
 
         sample_rate = int(selected_input.get("measurement_sample_rate") or selected_input.get("sample_rate") or MEASUREMENT_DEFAULT_SAMPLE_RATE)
         repeat_profile = job.get("capture_profile") == "lr-repeat"
-        er_preavg_requested = (
-            repeat_profile
-            and input_channels.get("electrical_reference") is not None
-            and input_channels.get("reference_disabled_reason", "") in ("", None)
-        )
+        resolved_electrical_reference_input_channel = self._resolve_electrical_reference_input_channel(input_channels, channel)
+        er_preavg_requested = repeat_profile and resolved_electrical_reference_input_channel is not None
         # Default L/R Repeat intentionally uses the same full sweep profile as
         # Single Sweep. This keeps Acoustic-only Repeat, ER Repeat, and Single
         # Sweep directly comparable in low-frequency magnitude. A shorter
@@ -741,9 +800,9 @@ class MeasurementStore:
             tail_seconds, record_preroll_seconds, record_postroll_seconds, record_duration_seconds,
         )
         mic_input_channel_index = max(0, int(input_channels.get("mic") or 1) - 1)
-        electrical_reference_input_channel = input_channels.get("electrical_reference")
+        electrical_reference_input_channel = resolved_electrical_reference_input_channel
         electrical_reference_channel_index = (
-            max(0, int(electrical_reference_input_channel) - 1)
+            max(0, electrical_reference_input_channel - 1)
             if electrical_reference_input_channel is not None
             else None
         )
@@ -798,7 +857,7 @@ class MeasurementStore:
             "applied": calibration_applied,
         }
 
-        reference_warning = str(input_channels.get("reference_disabled_reason") or "").strip()
+        reference_warning = self._electrical_reference_disabled_reason(input_channels, channel)
         mic_target = str(selected_input.get("node_serial") or source_node_name).strip()
         cj["targets"] = time.monotonic()
         direct_pair = measurement_role == "direct"
@@ -865,7 +924,11 @@ class MeasurementStore:
             input_channels={
                 "mic": mic_input_channel_index + 1,
                 "electrical_reference": electrical_reference_channel_index + 1 if use_electrical_reference else None,
-                "reference_disabled_reason": str(input_channels.get("reference_disabled_reason") or ""),
+                "electrical_reference_left": input_channels.get("electrical_reference_left"),
+                "electrical_reference_right": input_channels.get("electrical_reference_right"),
+                "reference_disabled_reason": self._electrical_reference_disabled_reason(input_channels, channel),
+                "reference_disabled_reason_left": str(input_channels.get("reference_disabled_reason_left") or ""),
+                "reference_disabled_reason_right": str(input_channels.get("reference_disabled_reason_right") or ""),
             },
             measurement_role=str(job.get("measurement_role") or ""),
         )
@@ -1506,6 +1569,42 @@ class MeasurementStore:
         if not raw_value:
             return None
         return self._parse_input_channel_index(raw_value, channel_count=channel_count, default=0, field_name=field_name)
+
+    @staticmethod
+    def _electrical_reference_side(channel: str | None) -> str:
+        """Map a capture side to its reference side (stereo uses the left)."""
+        return "right" if str(channel or "").strip().lower() == "right" else "left"
+
+    @classmethod
+    def _resolve_electrical_reference_input_channel(
+        cls,
+        input_channels: dict[str, Any],
+        channel: str | None,
+    ) -> int | None:
+        """Return the configured 1-based electrical reference channel for one capture side."""
+        if "electrical_reference_left" in input_channels or "electrical_reference_right" in input_channels:
+            candidate = input_channels.get(f"electrical_reference_{cls._electrical_reference_side(channel)}")
+        else:
+            # Legacy jobs only carry one shared reference that serves both sides.
+            candidate = input_channels.get("electrical_reference")
+        if candidate is None:
+            return None
+        try:
+            parsed = int(candidate)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 1 else None
+
+    @classmethod
+    def _electrical_reference_disabled_reason(
+        cls,
+        input_channels: dict[str, Any],
+        channel: str | None,
+    ) -> str:
+        side = cls._electrical_reference_side(channel)
+        if f"reference_disabled_reason_{side}" in input_channels:
+            return str(input_channels.get(f"reference_disabled_reason_{side}") or "").strip()
+        return str(input_channels.get("reference_disabled_reason") or "").strip()
 
     def _select_analysis_channel(self, raw_signal: np.ndarray, *, channel: str, channel_index: int | None = None) -> np.ndarray:
         if raw_signal.ndim == 1 or raw_signal.shape[1] == 1:
@@ -2500,6 +2599,12 @@ def measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[st
     reference_input_channel = measure_settings.get("selectedReferenceInputChannel")
     if reference_input_channel is None:
         reference_input_channel = measure_settings.get("reference_input_channel")
+    reference_input_channel_left = measure_settings.get("selectedReferenceInputChannelLeft")
+    if reference_input_channel_left is None:
+        reference_input_channel_left = measure_settings.get("reference_input_channel_left")
+    reference_input_channel_right = measure_settings.get("selectedReferenceInputChannelRight")
+    if reference_input_channel_right is None:
+        reference_input_channel_right = measure_settings.get("reference_input_channel_right")
     try:
         measurement_rate = int(measure_settings.get("measurementSampleRate") or MEASUREMENT_DEFAULT_SAMPLE_RATE)
     except (TypeError, ValueError):
@@ -2516,5 +2621,7 @@ def measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[st
             measure_settings.get("selectedMicInputChannel")
         ) or "1",
         "selectedReferenceInputChannel": normalize_measurement_optional_input_channel(reference_input_channel),
+        "selectedReferenceInputChannelLeft": normalize_measurement_optional_input_channel(reference_input_channel_left),
+        "selectedReferenceInputChannelRight": normalize_measurement_optional_input_channel(reference_input_channel_right),
         "measurementSampleRate": measurement_rate,
     }

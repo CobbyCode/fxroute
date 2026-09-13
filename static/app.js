@@ -189,6 +189,8 @@ let state = {
         selectedInputUnavailable: false,
         selectedMicInputChannel: '1',
         selectedReferenceInputChannel: '',
+        selectedReferenceInputChannelLeft: '',
+        selectedReferenceInputChannelRight: '',
         selectedChannel: 'left',
         cancelRequested: false,
         repeatJobActive: false,
@@ -574,8 +576,14 @@ const elements = {
     measurementInputGroup: document.getElementById('measurement-input-group'),
     measurementInputSelect: document.getElementById('measurement-input-select'),
     measurementInputRefreshBtn: document.getElementById('measurement-input-refresh'),
+    measurementInputChannelGrid: document.getElementById('measurement-input-channel-grid'),
     measurementMicInputChannelSelect: document.getElementById('measurement-mic-input-channel-select'),
+    measurementReferenceSingleGroup: document.getElementById('measurement-reference-single'),
     measurementReferenceInputChannelSelect: document.getElementById('measurement-reference-input-channel-select'),
+    measurementReferenceLeftGroup: document.getElementById('measurement-reference-left'),
+    measurementReferenceRightGroup: document.getElementById('measurement-reference-right'),
+    measurementReferenceInputChannelLeftSelect: document.getElementById('measurement-reference-input-channel-left-select'),
+    measurementReferenceInputChannelRightSelect: document.getElementById('measurement-reference-input-channel-right-select'),
     measurementReferenceWarning: document.getElementById('measurement-reference-warning'),
     measurementCalibrationSelect: document.getElementById('measurement-calibration-select'),
     measurementCalibrationFile: document.getElementById('measurement-calibration-file'),
@@ -10481,6 +10489,12 @@ function applyMeasurementSetupSettings(settings = {}, fields = null) {
     if (applies('selectedReferenceInputChannel') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannel')) {
         state.measurement.selectedReferenceInputChannel = String(settings.selectedReferenceInputChannel || '');
     }
+    if (applies('selectedReferenceInputChannelLeft') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannelLeft')) {
+        state.measurement.selectedReferenceInputChannelLeft = String(settings.selectedReferenceInputChannelLeft || '');
+    }
+    if (applies('selectedReferenceInputChannelRight') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannelRight')) {
+        state.measurement.selectedReferenceInputChannelRight = String(settings.selectedReferenceInputChannelRight || '');
+    }
     if (applies('measurementSampleRate') && Object.prototype.hasOwnProperty.call(settings, 'measurementSampleRate')) {
         state.measurement.measurementSampleRate = String(settings.measurementSampleRate || '48000');
     }
@@ -10572,6 +10586,8 @@ function applyMeasurementInputSelection(inputId) {
         selectedInputKey: state.measurement.selectedInputKey,
         selectedMicInputChannel: state.measurement.selectedMicInputChannel || '1',
         selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
+        selectedReferenceInputChannelLeft: state.measurement.selectedReferenceInputChannelLeft || '',
+        selectedReferenceInputChannelRight: state.measurement.selectedReferenceInputChannelRight || '',
     });
     renderMeasurementPanel();
 }
@@ -10738,24 +10754,62 @@ function normalizeMeasurementInputChannelSelections() {
     const channelCount = channelCountKnown ? Math.max(1, Number(selectedInput.channels || 1)) : 1;
     const micChannel = Math.max(1, Math.min(channelCount, Number(measurementState.selectedMicInputChannel || 1)));
     measurementState.selectedMicInputChannel = String(micChannel);
-    if (measurementState.selectedReferenceInputChannel) {
-        const referenceChannel = Number(measurementState.selectedReferenceInputChannel);
-        measurementState.selectedReferenceInputChannel = Number.isFinite(referenceChannel) && referenceChannel >= 1 && (!channelCountKnown || referenceChannel <= channelCount)
+
+    const normalizeReferenceChannel = (value) => {
+        if (!value) return '';
+        const referenceChannel = Number(value);
+        return Number.isFinite(referenceChannel) && referenceChannel >= 1 && (!channelCountKnown || referenceChannel <= channelCount)
             ? String(referenceChannel)
             : '';
+    };
+
+    const splitReferences = channelCountKnown && channelCount >= 3;
+    let left = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelLeft);
+    let right = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelRight);
+    if (!splitReferences) {
+        // 2-channel (and single-channel) interfaces keep one shared reference.
+        left = normalizeReferenceChannel(measurementState.selectedReferenceInputChannel);
+        right = left;
+    } else if (!left && !right) {
+        // Seed the split fields from a previously selected shared reference.
+        left = right = normalizeReferenceChannel(measurementState.selectedReferenceInputChannel);
     }
-    if (measurementState.selectedReferenceInputChannel === measurementState.selectedMicInputChannel) {
-        measurementState.selectedReferenceInputChannel = '';
-    }
+    if (left === measurementState.selectedMicInputChannel) left = '';
+    if (right === measurementState.selectedMicInputChannel) right = '';
+    measurementState.selectedReferenceInputChannelLeft = left;
+    measurementState.selectedReferenceInputChannelRight = right;
+    // Shared field: the single 2-channel selection, or the common L/R value.
+    measurementState.selectedReferenceInputChannel = left && left === right ? left : (left || right || '');
 }
 
 function getMeasurementReferenceWarning() {
     const measurementState = state.measurement || {};
+    const channelCount = getSelectedMeasurementInputChannelCount();
+    if (channelCount >= 3) {
+        const warnings = [];
+        if (measurementState.selectedReferenceInputChannelLeft && measurementState.selectedReferenceInputChannelLeft === measurementState.selectedMicInputChannel) {
+            warnings.push('Electrical reference L disabled: mic and reference must use different input channels.');
+        }
+        if (measurementState.selectedReferenceInputChannelRight && measurementState.selectedReferenceInputChannelRight === measurementState.selectedMicInputChannel) {
+            warnings.push('Electrical reference R disabled: mic and reference must use different input channels.');
+        }
+        return warnings.join(' ');
+    }
     if (!measurementState.selectedReferenceInputChannel) return '';
     if (measurementState.selectedReferenceInputChannel === measurementState.selectedMicInputChannel) {
         return 'Electrical reference disabled: mic and reference must use different input channels.';
     }
     return '';
+}
+
+function appendMeasurementReferenceFields(formData) {
+    normalizeMeasurementInputChannelSelections();
+    const measurementState = state.measurement || {};
+    if (getSelectedMeasurementInputChannelCount() >= 3) {
+        formData.append('reference_input_channel_left', measurementState.selectedReferenceInputChannelLeft || '');
+        formData.append('reference_input_channel_right', measurementState.selectedReferenceInputChannelRight || '');
+    }
+    formData.append('reference_input_channel', getMeasurementReferenceWarning() ? '' : (measurementState.selectedReferenceInputChannel || ''));
 }
 
 function scheduleMeasurementGraphRender() {
@@ -11027,10 +11081,8 @@ async function startHostMeasurement(jobGeneration = state.measurement.jobGenerat
     formData.append('input_id', state.measurement.selectedInputId);
     formData.append('input_key', state.measurement.selectedInputKey || '');
     formData.append('channel', state.measurement.selectedChannel || 'left');
-    normalizeMeasurementInputChannelSelections();
-    const referenceWarning = getMeasurementReferenceWarning();
     formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
-    formData.append('reference_input_channel', referenceWarning ? '' : (state.measurement.selectedReferenceInputChannel || ''));
+    appendMeasurementReferenceFields(formData);
     const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
     if (calibrationFile) {
         formData.append('calibration_file', calibrationFile);
@@ -11071,10 +11123,8 @@ async function startLrRepeatMeasurement(jobGeneration = state.measurement.jobGen
     formData.append('input_id', state.measurement.selectedInputId);
     formData.append('input_key', state.measurement.selectedInputKey || '');
     formData.append('base_name', state.measurement.currentMeasurementName || '');
-    normalizeMeasurementInputChannelSelections();
-    const referenceWarning = getMeasurementReferenceWarning();
     formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
-    formData.append('reference_input_channel', referenceWarning ? '' : (state.measurement.selectedReferenceInputChannel || ''));
+    appendMeasurementReferenceFields(formData);
     const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
     if (calibrationFile) {
         formData.append('calibration_file', calibrationFile);
@@ -11675,19 +11725,35 @@ function renderMeasurementPanelInputsSection({ measurementState, current, measur
     }
     const inputChannelCount = getSelectedMeasurementInputChannelCount();
     const inputChannelOptions = Array.from({ length: inputChannelCount }, (_, index) => String(index + 1));
+    const splitReferences = inputChannelCount >= 3;
+    const renderReferenceSelect = (select, selectedValue) => {
+        if (!select || isSelectFocused(select)) return;
+        select.innerHTML = [''].concat(inputChannelOptions)
+            .map(value => `<option value="${value}" ${value === (selectedValue || '') ? 'selected' : ''}>${value ? `Input ${value}` : 'None'}</option>`)
+            .join('');
+        select.disabled = measurementState.startInFlight || !measurementModeReady();
+    };
+    if (elements.measurementInputChannelGrid) {
+        elements.measurementInputChannelGrid.classList.toggle('is-split', splitReferences);
+    }
+    if (elements.measurementReferenceSingleGroup) {
+        elements.measurementReferenceSingleGroup.classList.toggle('hidden', splitReferences);
+    }
+    if (elements.measurementReferenceLeftGroup) {
+        elements.measurementReferenceLeftGroup.classList.toggle('hidden', !splitReferences);
+    }
+    if (elements.measurementReferenceRightGroup) {
+        elements.measurementReferenceRightGroup.classList.toggle('hidden', !splitReferences);
+    }
     if (elements.measurementMicInputChannelSelect && !isSelectFocused(elements.measurementMicInputChannelSelect)) {
         elements.measurementMicInputChannelSelect.innerHTML = inputChannelOptions
             .map(value => `<option value="${value}" ${value === measurementState.selectedMicInputChannel ? 'selected' : ''}>Input ${value}</option>`)
             .join('');
         elements.measurementMicInputChannelSelect.disabled = measurementState.startInFlight || !measurementModeReady();
     }
-    if (elements.measurementReferenceInputChannelSelect && !isSelectFocused(elements.measurementReferenceInputChannelSelect)) {
-        const referenceOptions = [''].concat(inputChannelOptions);
-        elements.measurementReferenceInputChannelSelect.innerHTML = referenceOptions
-            .map(value => `<option value="${value}" ${value === (measurementState.selectedReferenceInputChannel || '') ? 'selected' : ''}>${value ? `Input ${value}` : 'None'}</option>`)
-            .join('');
-        elements.measurementReferenceInputChannelSelect.disabled = measurementState.startInFlight || !measurementModeReady();
-    }
+    renderReferenceSelect(elements.measurementReferenceInputChannelSelect, measurementState.selectedReferenceInputChannel);
+    renderReferenceSelect(elements.measurementReferenceInputChannelLeftSelect, measurementState.selectedReferenceInputChannelLeft);
+    renderReferenceSelect(elements.measurementReferenceInputChannelRightSelect, measurementState.selectedReferenceInputChannelRight);
     if (elements.measurementReferenceWarning) {
         const referenceWarning = getMeasurementReferenceWarning();
         elements.measurementReferenceWarning.textContent = referenceWarning;
@@ -12415,25 +12481,34 @@ function setupMeasurementActions() {
             void fetchMeasurementInputs();
         });
     }
+    const saveMeasurementReferenceSelections = () => {
+        void saveMeasurementSetupSettings({
+            selectedMicInputChannel: state.measurement.selectedMicInputChannel,
+            selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
+            selectedReferenceInputChannelLeft: state.measurement.selectedReferenceInputChannelLeft || '',
+            selectedReferenceInputChannelRight: state.measurement.selectedReferenceInputChannelRight || '',
+        });
+    };
     if (elements.measurementMicInputChannelSelect) {
         elements.measurementMicInputChannelSelect.addEventListener('change', (event) => {
             state.measurement.selectedMicInputChannel = event.target.value || '1';
             normalizeMeasurementInputChannelSelections();
-            void saveMeasurementSetupSettings({
-                selectedMicInputChannel: state.measurement.selectedMicInputChannel,
-                selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
-            });
+            saveMeasurementReferenceSelections();
             renderMeasurementPanel();
         });
     }
-    if (elements.measurementReferenceInputChannelSelect) {
-        elements.measurementReferenceInputChannelSelect.addEventListener('change', (event) => {
-            state.measurement.selectedReferenceInputChannel = event.target.value || '';
+    const bindReferenceInputChannelSelect = (select, stateKey) => {
+        if (!select) return;
+        select.addEventListener('change', (event) => {
+            state.measurement[stateKey] = event.target.value || '';
             normalizeMeasurementInputChannelSelections();
             renderMeasurementPanel();
-            void saveMeasurementSetupSettings({ selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '' });
+            saveMeasurementReferenceSelections();
         });
-    }
+    };
+    bindReferenceInputChannelSelect(elements.measurementReferenceInputChannelSelect, 'selectedReferenceInputChannel');
+    bindReferenceInputChannelSelect(elements.measurementReferenceInputChannelLeftSelect, 'selectedReferenceInputChannelLeft');
+    bindReferenceInputChannelSelect(elements.measurementReferenceInputChannelRightSelect, 'selectedReferenceInputChannelRight');
     document.querySelectorAll('[data-measurement-channel]').forEach((button) => {
         button.addEventListener('click', () => {
             if (state.measurement.startInFlight || hasActiveMeasurementJob()) return;

@@ -59,6 +59,8 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
                 "selectedInputConfigured": False,
                 "selectedMicInputChannel": "1",
                 "selectedReferenceInputChannel": "",
+                "selectedReferenceInputChannelLeft": "",
+                "selectedReferenceInputChannelRight": "",
                 "measurementSampleRate": 48000,
             },
         )
@@ -73,6 +75,8 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
                     "selectedInputConfigured": False,
                     "selectedMicInputChannel": "1",
                     "selectedReferenceInputChannel": "",
+                    "selectedReferenceInputChannelLeft": "",
+                    "selectedReferenceInputChannelRight": "",
                     "measurementSampleRate": 48000,
                 },
             )
@@ -93,6 +97,8 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
                 "selectedInputConfigured": True,
                 "selectedMicInputChannel": "3",
                     "selectedReferenceInputChannel": "2",
+                    "selectedReferenceInputChannelLeft": "",
+                    "selectedReferenceInputChannelRight": "",
                     "measurementSampleRate": 48000,
                 },
         )
@@ -111,6 +117,28 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
         payload = {"measure": {"selectedReferenceInputChannel": None, "reference_input_channel": "9"}}
         result = measurement_setup_settings_from_payload(payload)
         self.assertEqual(result["selectedReferenceInputChannel"], "9")
+
+    def test_split_reference_channels_normalized(self):
+        payload = {
+            "measure": {
+                "selectedReferenceInputChannelLeft": "2",
+                "selectedReferenceInputChannelRight": "3",
+            }
+        }
+        result = measurement_setup_settings_from_payload(payload)
+        self.assertEqual(result["selectedReferenceInputChannelLeft"], "2")
+        self.assertEqual(result["selectedReferenceInputChannelRight"], "3")
+
+    def test_split_reference_channels_ignore_invalid_values(self):
+        payload = {
+            "measure": {
+                "selectedReferenceInputChannelLeft": 0,
+                "selectedReferenceInputChannelRight": "abc",
+            }
+        }
+        result = measurement_setup_settings_from_payload(payload)
+        self.assertEqual(result["selectedReferenceInputChannelLeft"], "")
+        self.assertEqual(result["selectedReferenceInputChannelRight"], "")
 
     def test_invalid_channel_values_handled(self):
         payload = {

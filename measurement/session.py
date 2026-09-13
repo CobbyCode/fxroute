@@ -1162,6 +1162,12 @@ def _update_measurement_setup_settings(patch: dict[str, Any]) -> dict[str, Any]:
     if "selectedReferenceInputChannel" in patch or "reference_input_channel" in patch:
         raw_reference = patch.get("selectedReferenceInputChannel", patch.get("reference_input_channel"))
         measure_settings["selectedReferenceInputChannel"] = _normalize_measurement_optional_input_channel(raw_reference)
+    if "selectedReferenceInputChannelLeft" in patch or "reference_input_channel_left" in patch:
+        raw_reference_left = patch.get("selectedReferenceInputChannelLeft", patch.get("reference_input_channel_left"))
+        measure_settings["selectedReferenceInputChannelLeft"] = _normalize_measurement_optional_input_channel(raw_reference_left)
+    if "selectedReferenceInputChannelRight" in patch or "reference_input_channel_right" in patch:
+        raw_reference_right = patch.get("selectedReferenceInputChannelRight", patch.get("reference_input_channel_right"))
+        measure_settings["selectedReferenceInputChannelRight"] = _normalize_measurement_optional_input_channel(raw_reference_right)
     if "measurementSampleRate" in patch or "measurement_sample_rate" in patch:
         try:
             rate = int(patch.get("measurementSampleRate", patch.get("measurement_sample_rate")))
@@ -1415,6 +1421,8 @@ async def start_measurement(
     channel: str = Form("left"),
     mic_input_channel: str = Form("1"),
     reference_input_channel: str = Form(""),
+    reference_input_channel_left: str = Form(""),
+    reference_input_channel_right: str = Form(""),
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
     measurement_role: str = Form(""),
@@ -1452,6 +1460,8 @@ async def start_measurement(
                 channel=channel,
                 mic_input_channel=mic_input_channel,
                 reference_input_channel=reference_input_channel,
+                reference_input_channel_left=reference_input_channel_left,
+                reference_input_channel_right=reference_input_channel_right,
                 calibration_filename=calibration_filename,
                 calibration_bytes=calibration_bytes,
                 calibration_ref=calibration_ref,
@@ -1477,6 +1487,8 @@ async def start_lr_repeat_measurement(
     base_name: str = Form(""),
     mic_input_channel: str = Form("1"),
     reference_input_channel: str = Form(""),
+    reference_input_channel_left: str = Form(""),
+    reference_input_channel_right: str = Form(""),
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
 ):
@@ -1513,6 +1525,8 @@ async def start_lr_repeat_measurement(
                 base_name=base_name,
                 mic_input_channel=mic_input_channel,
                 reference_input_channel=reference_input_channel,
+                reference_input_channel_left=reference_input_channel_left,
+                reference_input_channel_right=reference_input_channel_right,
                 calibration_filename=calibration_filename,
                 calibration_bytes=calibration_bytes,
                 calibration_ref=calibration_ref,
