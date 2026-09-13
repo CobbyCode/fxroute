@@ -670,8 +670,11 @@
     function isStreamingQueueStart(prev, next) {
         if (!next || next.status !== 'Playing') return false;
         if (!prev || typeof prev !== 'object') return true;
+        // A different track while Playing is a new queue start no matter how
+        // it was observed: provider track changes keep the Playing status.
+        if (streamingCueKey(prev) !== streamingCueKey(next)) return true;
         if (prev.status === 'Playing') return false;
-        if (prev.status === 'Paused' && streamingCueKey(prev) === streamingCueKey(next)) return false;
+        if (prev.status === 'Paused') return false;
         return true;
     }
     function showProviderQueueStarted(source, data) {
@@ -689,6 +692,20 @@
         };
         const queueCount = Number(data.queue_len || 0);
         showNowPlayingCue(track, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+    }
+    // One cue decision for tab transport commands: immediate feedback on the
+    // click, sharing app.js's window.__lastQueueCue record so the poll
+    // refresh that re-observes the same start never double-toasts.
+    function maybeShowProviderQueueStarted(source, prev, data) {
+        if (!isStreamingQueueStart(prev, data)) return false;
+        if (!prev || typeof prev !== 'object' || !prev.status) return false;
+        const key = `${source}|${streamingCueKey(data)}`;
+        const last = window.__lastQueueCue;
+        const now = Date.now();
+        if (last && last.key === key && now - last.at < 8000) return false;
+        showProviderQueueStarted(source, data);
+        window.__lastQueueCue = { key, at: now };
+        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -756,15 +773,16 @@
             resp = await fetch(adapter.base + '/' + mapped, { method: 'POST' });
         }
         if (!resp.ok) throw new Error(await errorDetail(resp));
-        // Queue starts (play/toggle out of Stopped into Playing) reuse the
-        // shared now-playing cue with the real Qobuz metadata and queue count.
+        // Queue starts (play/toggle into Playing with a new track/queue) reuse
+        // the shared now-playing cue with the real Qobuz metadata and queue
+        // count; the later poll refresh is deduped via window.__lastQueueCue.
         if (action === 'play' || action === 'toggle') {
             try {
                 const data = await (typeof resp.clone === 'function'
                     ? resp.clone().json().catch(() => null)
                     : resp.json().catch(() => null));
-                if (data && isStreamingQueueStart(prev, data)) {
-                    showProviderQueueStarted('qobuz', data);
+                if (data) {
+                    maybeShowProviderQueueStarted('qobuz', prev, data);
                 }
             } catch (_cueError) {
                 // Cue must never break transport.

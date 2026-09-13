@@ -221,19 +221,25 @@ function runStreaming({ fetchImpl, cueCalls }) {
         assert.ok(streamingJs.includes('data?.playback?.queue?.count'), 'tidal cue must use playback.queue.count');
     });
 
-    // 4. Spotify wiring in app.js.
-    await run('spotify command reuses the shared cue on queue start', async () => {
+    // 4. Spotify wiring in app.js: the incoming-state path cues (covers the
+    // FXRoute transport response, poll refreshes and out-of-band starts).
+    await run('spotify incoming state reuses the shared cue on queue start', async () => {
+        assert.ok(appJs.includes('function handleIncomingSpotifyState('), 'missing handleIncomingSpotifyState');
+        assert.ok(appJs.includes("maybeShowStreamingQueueCue('spotify'"), 'spotify incoming state must call the shared streaming cue');
         assert.ok(appJs.includes('async function spotifyCommand('), 'missing spotifyCommand');
-        assert.ok(appJs.includes("showStreamingQueueStarted('spotify'"), 'spotify must call the shared streaming cue');
+        assert.ok(appJs.includes('handleIncomingSpotifyState(data, { renderTab: true, renderFooter: true })'),
+            'spotifyCommand must route responses through the incoming-state path');
         assert.ok(appJs.includes('function showStreamingQueueStarted('), 'missing showStreamingQueueStarted helper');
         assert.ok(appJs.includes('function isStreamingQueueStart('), 'missing isStreamingQueueStart helper');
     });
 
-    // 5. Qobuz wiring in app.js + streaming tab transport.
-    await run('qobuz command and tab transport reuse the shared cue', async () => {
+    // 5. Qobuz wiring: footer command, tab transport and incoming state reuse
+    // the shared cue (immediate command feedback + poll/out-of-band starts).
+    await run('qobuz command, tab transport and incoming state reuse the shared cue', async () => {
         assert.ok(appJs.includes('async function qobuzCommand('), 'missing qobuzCommand');
-        assert.ok(appJs.includes("showStreamingQueueStarted('qobuz'"), 'qobuz footer command must call the shared cue');
-        assert.ok(streamingJs.includes("showProviderQueueStarted('qobuz'"), 'qobuz tab transport must call the shared cue');
+        assert.ok(appJs.includes("maybeShowStreamingQueueCue('qobuz'"), 'qobuz paths must call the shared cue decision');
+        assert.ok(appJs.includes('function handleIncomingQobuzState('), 'missing handleIncomingQobuzState');
+        assert.ok(streamingJs.includes('maybeShowProviderQueueStarted('), 'qobuz tab transport must call the shared cue decision');
         assert.ok(streamingJs.includes('Number(data.queue_len || 0)'), 'qobuz cue must use the real queue_len');
     });
 
@@ -395,8 +401,35 @@ function runStreaming({ fetchImpl, cueCalls }) {
         assert.equal(track.artwork_url, SPOTIFY_FIXTURE.artUrl);
     });
 
+    // 12. Incoming-path decision: out-of-band track starts cue exactly once,
+    // resumes and first snapshots stay silent, repeats are deduped.
+    await run('incoming queue-start decision cues new tracks, dedupes repeats', async () => {
+        const sandbox = { window: {}, showStreamingQueueStartedCalls: [] };
+        vm.createContext(sandbox);
+        sandbox.showStreamingQueueStarted = (...a) => { sandbox.showStreamingQueueStartedCalls.push(a); };
+        for (const name of ['streamingCueTrackId', 'streamingCueKey', 'isStreamingQueueStart', 'maybeShowStreamingQueueCue']) {
+            vm.runInContext(extractFunction(appJs, name), sandbox);
+        }
+        const playing = (over = {}) => ({ ...SPOTIFY_FIXTURE, ...over });
+        // Playing -> Playing with a new track (external next): cue once.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', playing(), playing({ trackId: 'other' })), true);
+        assert.equal(sandbox.showStreamingQueueStartedCalls.length, 1);
+        assert.equal(sandbox.showStreamingQueueStartedCalls[0][0], 'spotify');
+        // Same poll result again (command echo / refresh): deduped, no second cue.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', playing(), playing({ trackId: 'other' })), false);
+        assert.equal(sandbox.showStreamingQueueStartedCalls.length, 1);
+        // Resume of the identical paused track: no cue.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', playing({ status: 'Paused' }), playing()), false);
+        // First snapshot after page load (no previous status): no cue.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', {}, playing()), false);
+        // Paused -> Playing with a different track: cue.
+        assert.equal(sandbox.maybeShowStreamingQueueCue('spotify', playing({ status: 'Paused' }), playing({ trackId: 'next' })), true);
+        assert.equal(sandbox.showStreamingQueueStartedCalls.length, 2);
+    });
+
     const failed = cases.filter((c) => !c.pass);
     for (const c of failed) console.error(`FAIL ${c.label}:`, c.err);
     console.log(`ok — ${cases.length - failed.length}/${cases.length} queue-started cue cases`);
     if (failed.length) process.exit(1);
 })();
+

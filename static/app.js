@@ -14557,11 +14557,16 @@ function streamingCueKey(data) {
 function isStreamingQueueStart(prev, next) {
     if (!next || next.status !== 'Playing') return false;
     if (!prev || typeof prev !== 'object') return true;
+    // A different track while Playing is a new queue start no matter how it
+    // was observed (FXRoute transport, status poll or an external client):
+    // provider track changes keep the Playing status, so Stopped is not on
+    // the path. Identical keys keep the old semantics below.
+    if (streamingCueKey(prev) !== streamingCueKey(next)) return true;
     if (prev.status === 'Playing') return false;
     // Paused resume of the identical track is transport-only, like the local
-    // toggle path which never shows the cue. Any other non-playing -> playing
-    // transition (Stopped, or a different track) is a queue start.
-    if (prev.status === 'Paused' && streamingCueKey(prev) === streamingCueKey(next)) return false;
+    // toggle path which never shows the cue. Stopped -> Playing of the same
+    // track is a fresh start.
+    if (prev.status === 'Paused') return false;
     return true;
 }
 function showStreamingQueueStarted(source, data) {
@@ -14569,6 +14574,24 @@ function showStreamingQueueStarted(source, data) {
     if (!track || (!track.title && !track.artist && !track.album)) return;
     const queueCount = Number(data?.queue_len || 0);
     showNowPlayingCue(track, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+}
+// Single cue decision for every provider playback start, whatever path
+// observed it (FXRoute transport response, status poll or out-of-band
+// external start). New track/queue -> cue; resume of the identical paused
+// track -> silent; first snapshot after page load -> silent. The shared
+// window.__lastQueueCue record dedupes the immediate command-path cue
+// against the poll refresh that re-observes the same start seconds later
+// (streaming.js tab transport shares the same record).
+function maybeShowStreamingQueueCue(source, prev, next) {
+    if (!isStreamingQueueStart(prev, next)) return false;
+    if (!prev || typeof prev !== 'object' || !prev.status) return false;
+    const key = `${source}|${streamingCueKey(next)}`;
+    const last = window.__lastQueueCue;
+    const now = Date.now();
+    if (last && last.key === key && now - last.at < 8000) return false;
+    showStreamingQueueStarted(source, next);
+    window.__lastQueueCue = { key, at: now };
+    return true;
 }
 // Library actions
 function setupLibraryActions() {
@@ -14977,6 +15000,9 @@ function handleIncomingQobuzState(data, options = {}) {
     // streaming.js.
     if (!data) return;
     const { renderFooter = true } = options;
+    const previousQobuzData = window.__qobuzLastData && typeof window.__qobuzLastData === 'object'
+        ? { ...window.__qobuzLastData }
+        : null;
     // Volume-domain guard: GET /api/streaming/qobuz/status returns the raw
     // qbzd engine snapshot (unity-pinned 100%, no source_volume), while WS
     // broadcasts, init and Qobuz actions carry normalized UI state with
@@ -14989,6 +15015,7 @@ function handleIncomingQobuzState(data, options = {}) {
     if (renderFooter && window.__footerSource === 'qobuz') {
         updateFooterForStreamingOwner(normalized);
     }
+    maybeShowStreamingQueueCue('qobuz', previousQobuzData, normalized);
 }
 
 function handleIncomingSpotifyState(data, options = {}) {
@@ -15038,6 +15065,7 @@ function handleIncomingSpotifyState(data, options = {}) {
             renderSpotifyTab(mergedData);
         }
     }
+    maybeShowStreamingQueueCue('spotify', previousData, mergedData);
 }
 
 function renderSpotify(data) {
@@ -15092,8 +15120,8 @@ async function qobuzCommand(action) {
         window.__qobuzLastData = data;
         reconcileFooterSource();
         updateFooterForStreamingOwner(data);
-        if ((action === 'play' || action === 'toggle') && isStreamingQueueStart(prev, data)) {
-            showStreamingQueueStarted('qobuz', data);
+        if (action === 'play' || action === 'toggle') {
+            maybeShowStreamingQueueCue('qobuz', prev, data);
         }
         return data;
     } catch (e) {
@@ -15121,9 +15149,6 @@ async function spotifyCommand(action) {
         armSpotifyTakeover();
     }
     const gen = _spotifyPollGeneration;
-    const prev = window.__spotifyLastData && typeof window.__spotifyLastData === 'object'
-        ? { ...window.__spotifyLastData }
-        : null;
     _spotifyCommandInFlight = true;
     try {
         const data = await apiPostJson(`/api/spotify/${action}`);
@@ -15132,9 +15157,6 @@ async function spotifyCommand(action) {
         if ((data || {}).status === 'Playing') {
             syncSpotifySourceOwnership(data);
             startSpotifyPoll();
-        }
-        if ((action === 'play' || action === 'toggle') && isStreamingQueueStart(prev, data)) {
-            showStreamingQueueStarted('spotify', data);
         }
         if (interactiveTakeover) {
             forceSpotifyRefreshBurst();
@@ -15147,9 +15169,6 @@ async function spotifyCommand(action) {
         if ((fresh || {}).status === 'Playing') {
             syncSpotifySourceOwnership(fresh);
             startSpotifyPoll();
-        }
-        if ((action === 'play' || action === 'toggle') && isStreamingQueueStart(prev, fresh)) {
-            showStreamingQueueStarted('spotify', fresh);
         }
         if (interactiveTakeover) {
             forceSpotifyRefreshBurst();
