@@ -17,6 +17,7 @@
 
     let api = null;
     let showToast = function () {};
+    let showNowPlayingCue = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
     // Shared transition-error formatter injected by app.js. The local default
     // mirrors the canonical app.js implementation so this module never renders
@@ -160,6 +161,7 @@
         initialized = true;
         api = interfaceApi || {};
         if (typeof api.showToast === 'function') showToast = api.showToast;
+        if (typeof api.showNowPlayingCue === 'function') showNowPlayingCue = api.showNowPlayingCue;
         if (typeof api.escapeHtml === 'function') escapeHtml = api.escapeHtml;
         if (typeof api.formatTransitionErrorDetail === 'function') formatTransitionErrorDetail = api.formatTransitionErrorDetail;
         if (typeof api.favoriteHeartSvg === 'function') favoriteHeartSvg = api.favoriteHeartSvg;
@@ -653,6 +655,42 @@
         return parts.join(' · ');
     }
 
+    // Shared queue-started cue for provider queue starts. Reuses the injected
+    // app.js showNowPlayingCue (same component, content, presentation and
+    // duration as Local Library/Radio); only the metadata mapping lives here.
+    function streamingCueKey(data) {
+        if (!data || typeof data !== 'object') return '';
+        return [
+            String(data.trackId || data.trackid || data.id || ''),
+            data.title || '',
+            data.artist || '',
+            data.album || '',
+        ].join('|');
+    }
+    function isStreamingQueueStart(prev, next) {
+        if (!next || next.status !== 'Playing') return false;
+        if (!prev || typeof prev !== 'object') return true;
+        if (prev.status === 'Playing') return false;
+        if (prev.status === 'Paused' && streamingCueKey(prev) === streamingCueKey(next)) return false;
+        return true;
+    }
+    function showProviderQueueStarted(source, data) {
+        if (!data || typeof data !== 'object') return;
+        if (!data.title && !data.artist && !data.album) return;
+        const artworkUrl = data.artwork_url || data.artUrl || '';
+        const track = {
+            title: data.title || '',
+            artist: data.artist || '',
+            album: data.album || '',
+            source,
+            artwork_available: !!artworkUrl,
+            artwork_url: artworkUrl,
+            artwork_source: artworkUrl ? source : 'none',
+        };
+        const queueCount = Number(data.queue_len || 0);
+        showNowPlayingCue(track, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+    }
+
     // -----------------------------------------------------------------------
     // Now-playing transport wiring
     // -----------------------------------------------------------------------
@@ -703,6 +741,9 @@
     }
 
     async function remoteTransportCommand(adapter, action, extra) {
+        const prev = state.lastData.qobuz && typeof state.lastData.qobuz === 'object'
+            ? { ...state.lastData.qobuz }
+            : null;
         const mapped = adapter.action[action] || action;
         let resp;
         if (action === 'seek') {
@@ -715,6 +756,20 @@
             resp = await fetch(adapter.base + '/' + mapped, { method: 'POST' });
         }
         if (!resp.ok) throw new Error(await errorDetail(resp));
+        // Queue starts (play/toggle out of Stopped into Playing) reuse the
+        // shared now-playing cue with the real Qobuz metadata and queue count.
+        if (action === 'play' || action === 'toggle') {
+            try {
+                const data = await (typeof resp.clone === 'function'
+                    ? resp.clone().json().catch(() => null)
+                    : resp.json().catch(() => null));
+                if (data && isStreamingQueueStart(prev, data)) {
+                    showProviderQueueStarted('qobuz', data);
+                }
+            } catch (_cueError) {
+                // Cue must never break transport.
+            }
+        }
         // Remote state settles asynchronously; refresh once and shortly after.
         void refreshProvider('qobuz');
     }
@@ -2757,6 +2812,18 @@
             if (!resp.ok) {
                 showToast(friendlyError(data?.detail || 'Playback failed'), 'error');
                 return;
+            }
+            // Same queue-started cue as Local Library playLocal: identical
+            // component, message, presentation and duration, with the real
+            // TIDAL metadata and queue count from the play response.
+            try {
+                const playedTrack = data?.playback?.current_track || null;
+                const queueCount = Number(data?.playback?.queue?.count || (Array.isArray(trackIds) ? trackIds.length : 0) || 0);
+                if (playedTrack) {
+                    showNowPlayingCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+                }
+            } catch (_cueError) {
+                // Cue must never break playback.
             }
             void refreshTidalStatus();
         } catch (err) {

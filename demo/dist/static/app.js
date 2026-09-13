@@ -1006,6 +1006,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
         window.FXRouteStreaming.init({
             showToast,
+            showNowPlayingCue,
             escapeHtml,
             favoriteHeartSvg,
             formatTime,
@@ -14524,6 +14525,51 @@ function showNowPlayingCue(track, message = 'Now playing') {
     const img = cue.querySelector('.now-playing-cover');
     revealNowPlayingCoverWhenReady(cue, img, coverUrl, playbackArtworkKnownAvailable(track) ? '' : trackCoverInfoUrl(track));
 }
+// Shared queue-started cue for external streaming providers (Spotify/Qobuz).
+// Uses the same showNowPlayingCue path as Local Library/Radio: identical
+// content, presentation and duration, only the metadata source differs.
+function streamingCueTrack(data, source) {
+    if (!data || typeof data !== 'object') return null;
+    const artworkUrl = data.artwork_url || data.artUrl || '';
+    return {
+        title: data.title || '',
+        artist: data.artist || '',
+        album: data.album || '',
+        source,
+        artwork_available: !!artworkUrl,
+        artwork_url: artworkUrl,
+        artwork_source: artworkUrl ? source : 'none',
+    };
+}
+function streamingCueTrackId(data) {
+    if (!data || typeof data !== 'object') return '';
+    return String(data.trackId || data.trackid || data.id || '');
+}
+function streamingCueKey(data) {
+    if (!data || typeof data !== 'object') return '';
+    return [
+        streamingCueTrackId(data),
+        data.title || '',
+        data.artist || '',
+        data.album || '',
+    ].join('|');
+}
+function isStreamingQueueStart(prev, next) {
+    if (!next || next.status !== 'Playing') return false;
+    if (!prev || typeof prev !== 'object') return true;
+    if (prev.status === 'Playing') return false;
+    // Paused resume of the identical track is transport-only, like the local
+    // toggle path which never shows the cue. Any other non-playing -> playing
+    // transition (Stopped, or a different track) is a queue start.
+    if (prev.status === 'Paused' && streamingCueKey(prev) === streamingCueKey(next)) return false;
+    return true;
+}
+function showStreamingQueueStarted(source, data) {
+    const track = streamingCueTrack(data, source);
+    if (!track || (!track.title && !track.artist && !track.album)) return;
+    const queueCount = Number(data?.queue_len || 0);
+    showNowPlayingCue(track, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+}
 // Library actions
 function setupLibraryActions() {
     elements.refreshLibraryBtn.addEventListener('click', refreshLibrary);
@@ -15038,11 +15084,17 @@ async function forceSpotifyRefreshBurst() {
 }
 
 async function qobuzCommand(action) {
+    const prev = window.__qobuzLastData && typeof window.__qobuzLastData === 'object'
+        ? { ...window.__qobuzLastData }
+        : null;
     try {
         const data = await apiPostJson(`/api/streaming/qobuz/${action}`);
         window.__qobuzLastData = data;
         reconcileFooterSource();
         updateFooterForStreamingOwner(data);
+        if ((action === 'play' || action === 'toggle') && isStreamingQueueStart(prev, data)) {
+            showStreamingQueueStarted('qobuz', data);
+        }
         return data;
     } catch (e) {
         showToast('Qobuz transport failed', 'error');
@@ -15069,6 +15121,9 @@ async function spotifyCommand(action) {
         armSpotifyTakeover();
     }
     const gen = _spotifyPollGeneration;
+    const prev = window.__spotifyLastData && typeof window.__spotifyLastData === 'object'
+        ? { ...window.__spotifyLastData }
+        : null;
     _spotifyCommandInFlight = true;
     try {
         const data = await apiPostJson(`/api/spotify/${action}`);
@@ -15077,6 +15132,9 @@ async function spotifyCommand(action) {
         if ((data || {}).status === 'Playing') {
             syncSpotifySourceOwnership(data);
             startSpotifyPoll();
+        }
+        if ((action === 'play' || action === 'toggle') && isStreamingQueueStart(prev, data)) {
+            showStreamingQueueStarted('spotify', data);
         }
         if (interactiveTakeover) {
             forceSpotifyRefreshBurst();
@@ -15089,6 +15147,9 @@ async function spotifyCommand(action) {
         if ((fresh || {}).status === 'Playing') {
             syncSpotifySourceOwnership(fresh);
             startSpotifyPoll();
+        }
+        if ((action === 'play' || action === 'toggle') && isStreamingQueueStart(prev, fresh)) {
+            showStreamingQueueStarted('spotify', fresh);
         }
         if (interactiveTakeover) {
             forceSpotifyRefreshBurst();
