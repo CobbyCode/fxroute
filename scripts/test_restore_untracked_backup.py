@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Restore must back up untracked user files instead of deleting them.
 
-Contract for restore_main in scripts/update_fxroute.sh (no production code
-changed here):
+Contract for restore_main in scripts/update_fxroute.sh:
 
 - a dirty tree (tracked modification + untracked user files) restores to
   origin/main: the tracked diff lands in backups/*.patch (existing
@@ -70,6 +69,8 @@ def make_repo(root: Path) -> Path:
     (work / "main.py").write_text("print('fxroute')\n")
     (work / "requirements.txt").write_text("fastapi\n")
     (work / "VERSION").write_text("9.9.9\n")
+    # Production ignores backups; a new patch must not mask an empty file list.
+    (work / ".gitignore").write_text("backups/\n")
     subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(work), "commit", "-qm", "base"], check=True)
     subprocess.run(
@@ -105,6 +106,96 @@ printf 'harness-alive\\n'
 
 
 class RestoreUntrackedBackupTests(unittest.TestCase):
+    def assert_tracked_backup_restores_change(self, work: Path, expected: str):
+        patches = sorted((work / "backups").glob("local-changes-*.patch"))
+        self.assertEqual(len(patches), 1, "tracked diff must be saved as patch")
+        subprocess.run(
+            ["git", "-C", str(work), "apply", str(patches[0])],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual((work / "main.py").read_text(), expected)
+
+    def assert_untracked_backup_restores_files(self, work: Path, expected: dict):
+        archives = sorted((work / "backups").glob("local-untracked-*.tar.gz"))
+        self.assertEqual(len(archives), 1, "untracked files must have one backup")
+        with tarfile.open(archives[0], "r:gz") as archive:
+            self.assertEqual(set(archive.getnames()), set(expected))
+        recovered = work.parent / "recovered"
+        recovered.mkdir()
+        subprocess.run(
+            ["tar", "-xzf", str(archives[0]), "-C", str(recovered)],
+            check=True, capture_output=True, text=True,
+        )
+        for name, content in expected.items():
+            self.assertFalse((work / name).exists(), "restore must clean the checkout")
+            self.assertEqual((recovered / name).read_bytes(), content)
+
+    def test_tracked_only_restore_handles_empty_untracked_list(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = make_repo(Path(td))
+            modified = "print('fxroute')\nprint('local change')\n"
+            (work / "main.py").write_text(modified)
+
+            result = run_restore(work)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((work / "main.py").read_text(), "print('fxroute')\n")
+            self.assertEqual(list((work / "backups").glob("local-untracked-*.tar.gz")), [])
+            self.assert_tracked_backup_restores_change(work, modified)
+
+    def test_untracked_filename_with_spaces_is_recoverable(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = make_repo(Path(td))
+            (work / "my notes.txt").write_bytes(b"mix settings 42\n")
+
+            result = run_restore(work)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((work / "main.py").read_text(), "print('fxroute')\n")
+            self.assertEqual(list((work / "backups").glob("local-changes-*.patch")), [])
+            self.assert_untracked_backup_restores_files(work, {"my notes.txt": b"mix settings 42\n"})
+
+    def test_untracked_special_filenames_are_preserved_verbatim(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = make_repo(Path(td))
+            files = {
+                "line\nbreak.txt": b"newline filename\n",
+                "tab\tname.txt": b"tab filename\n",
+                '--file=notes.txt': b"leading option filename\n",
+                'quote"and\\slash.txt': b"quote and backslash filename\n",
+                "caf\u00e9.txt": b"unicode filename\n",
+            }
+            for name, content in files.items():
+                (work / name).write_bytes(content)
+
+            result = run_restore(work)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assert_untracked_backup_restores_files(work, files)
+
+    def test_runtime_only_files_need_no_untracked_archive(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = make_repo(Path(td))
+            files = {
+                ".env": b"SETTING=value\n",
+                ".env.local": b"LOCAL=value\n",
+                ".venv/marker": b"venv\n",
+                "media/cache/cover.bin": b"cover\n",
+                "backups/previous.txt": b"old backup\n",
+                "BUILD_ID": b"test-build\n",
+            }
+            for name, content in files.items():
+                path = work / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+
+            result = run_restore(work)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(list((work / "backups").glob("local-untracked-*.tar.gz")), [])
+            for name, content in files.items():
+                self.assertEqual((work / name).read_bytes(), content)
+
     def test_dirty_tree_restore_preserves_untracked_user_files(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -155,6 +246,13 @@ class RestoreUntrackedBackupTests(unittest.TestCase):
             # Tracked modification is gone (reset worked).
             self.assertNotIn(
                 "local hack", (work / "main.py").read_text()
+            )
+            self.assert_untracked_backup_restores_files(work, {
+                "my-notes.txt": b"mix settings 42\n",
+                "recordings/take1.txt": b"take one\n",
+            })
+            self.assert_tracked_backup_restores_change(
+                work, "print('fxroute')\nprint('local hack')\n",
             )
 
 

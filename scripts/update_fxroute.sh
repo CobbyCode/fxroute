@@ -385,17 +385,20 @@ restore_main() {
     # clean below would delete them (except the documented runtime
     # excludes). Archive exactly the set the clean is about to remove so
     # no user data is lost silently; the listing mirrors the clean's
-    # exclude list.
+    # exclude list. The list is NUL-separated straight from git, so spaces,
+    # newlines, quotes and leading dashes in filenames survive verbatim. An
+    # empty list is a regular no-op: no grep sits in the pipeline, so set -e
+    # with pipefail cannot abort on "no match".
     untracked_archive="$backup_dir/local-untracked-$(date -u +%Y%m%d-%H%M%S).tar.gz"
     untracked_list="$(mktemp)"
-    git status --porcelain=v1 --untracked-files=all | grep -E '^\?\? ' | cut -c 4- | while IFS= read -r path; do
+    git ls-files --others --exclude-standard -z | while IFS= read -r -d '' path; do
       case "$path" in
         media/cache|media/cache/*|.env|.env.local|.venv|.venv/*|backups|backups/*|BUILD_ID) ;;
-        *) printf '%s\n' "$path" ;;
+        *) printf '%s\0' "$path" ;;
       esac
     done > "$untracked_list"
     if [[ -s "$untracked_list" ]]; then
-      tar -czf "$untracked_archive" -T "$untracked_list"
+      tar --null -czf "$untracked_archive" --files-from="$untracked_list"
       log "Restore: untracked user files saved to $untracked_archive."
     else
       log "Restore: no untracked user files to save."
