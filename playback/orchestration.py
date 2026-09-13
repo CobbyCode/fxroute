@@ -464,7 +464,15 @@ class PlaybackOrchestrator:
             source_ports = source_policy.graph_port_names(source) or ()
         source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
         snapshot = dict(self._deps.get_dsp_snapshot() or {}) if self._deps.get_dsp_snapshot else {}
-        output_count = 4 if mode in self._deps.output_mode_subwoofer_modes else 2
+        # The native engine keeps its 4-output topology in stereo on
+        # multichannel devices (subs muted); the expected link count follows
+        # the runtime config, but never drops below the mode minimum — a
+        # stale/smaller config must not turn required outputs into bypass.
+        # Counting bare mode outputs would flag the muted sub links as
+        # bypass and latch every stereo switch on such devices.
+        mode_minimum = 4 if mode in self._deps.output_mode_subwoofer_modes else 2
+        cfg_ports = ((snapshot.get("config") or {}).get("hardware_ports") or ())
+        output_count = max(mode_minimum, len(cfg_ports)) if cfg_ports else mode_minimum
         # Resolve the device's real playback ports (playback_FL/FR/RL/RR or
         # playback_AUX0…) for the mode's DSP outputs.  The diagnosis, the
         # repair path and the DSP link build then all describe one topology.
@@ -687,7 +695,7 @@ class PlaybackOrchestrator:
         return bool(missing) and missing.issubset(repairable)
 
     def log_playback_graph_diagnosis(self, diagnosis: dict, *, target_rate: int, reason: str, detail: str) -> None:
-        logger.warning("Playback handoff graph incomplete: mode=%s output_key=%s target_rate=%s dsp_ports=%s helper_ports=%s helper_active=%s helper_rate=%s bypass_only=%s source_links=%s missing_links=%s reason=%s detail=%s", diagnosis.get("mode"), diagnosis.get("output_key"), target_rate, diagnosis.get("dsp_ports"), diagnosis.get("helper_ports"), diagnosis.get("helper_active"), diagnosis.get("helper_rate"), diagnosis.get("bypass_only"), diagnosis.get("source_links_complete"), self.missing_playback_graph_links(diagnosis), reason, detail)
+        logger.warning("Playback handoff graph incomplete: mode=%s output_key=%s target_rate=%s dsp_ports=%s helper_ports=%s helper_active=%s helper_rate=%s bypass_only=%s source_links=%s missing_links=%s unexpected_links=%s reason=%s detail=%s", diagnosis.get("mode"), diagnosis.get("output_key"), target_rate, diagnosis.get("dsp_ports"), diagnosis.get("helper_ports"), diagnosis.get("helper_active"), diagnosis.get("helper_rate"), diagnosis.get("bypass_only"), diagnosis.get("source_links_complete"), self.missing_playback_graph_links(diagnosis), diagnosis.get("unexpected_output_links"), reason, detail)
 
     async def repair_stereo_output_links_once(self, diagnosis: dict) -> None:
         if self._deps.repair_stereo_output_links is not None:

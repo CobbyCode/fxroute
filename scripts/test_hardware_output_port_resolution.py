@@ -452,7 +452,7 @@ class OutputDiscoveryPortTests(unittest.TestCase):
 class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
     """The graph diagnosis verifies the same resolved hardware links."""
 
-    def _orchestrator(self, io_text: str, links_text: str):
+    def _orchestrator(self, io_text: str, links_text: str, snapshot=None):
         from types import SimpleNamespace
 
         from dsp.runtime import _contains_link as real_contains_link
@@ -464,7 +464,7 @@ class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
             run_pw_link_command=fake_pw_link,
             output_mode_subwoofer_modes=frozenset({"subwoofer-2.1", "subwoofer-2.2"}),
             output_mode_stereo="stereo",
-            get_dsp_snapshot=lambda: {"active": True},
+            get_dsp_snapshot=lambda: {"active": True} if snapshot is None else snapshot,
             helper_argument_sample_rate=lambda snapshot: 44100,
             resolve_source_producer_ports=None,
             contains_link=real_contains_link,
@@ -604,6 +604,70 @@ class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
             diagnosis["output_targets"],
             (f"{SCARLETT}:playback_AUX0", f"{SCARLETT}:playback_AUX1"),
         )
+
+    async def test_stereo_with_four_port_helper_config_accepts_muted_sub_links(self):
+        """Stereo on a multichannel device keeps 4 linked helper outputs.
+
+        The native engine holds its 4-output topology in stereo (subs
+        muted), so the diagnosis must follow the runtime config instead of
+        flagging output_3/4 as bypass — otherwise every 2.2->stereo switch
+        on such a device fails and latches the output gate.
+        """
+        io_text = _io_listing(SCARLETT, AUX_PORTS[:4]) + "\n" + "\n".join([
+            f"{DSP_SINK}:monitor_FL", f"{DSP_SINK}:monitor_FR",
+            "fxroute_dsp:input_1", "fxroute_dsp:input_2",
+            "fxroute_dsp:output_1", "fxroute_dsp:output_2",
+            "fxroute_dsp:output_3", "fxroute_dsp:output_4",
+        ])
+        links_text = "\n".join([
+            f"{DSP_SINK}:monitor_FL -> fxroute_dsp:input_1",
+            f"{DSP_SINK}:monitor_FR -> fxroute_dsp:input_2",
+            f"fxroute_dsp:output_1 -> {SCARLETT}:playback_AUX0",
+            f"fxroute_dsp:output_2 -> {SCARLETT}:playback_AUX1",
+            f"fxroute_dsp:output_3 -> {SCARLETT}:playback_AUX2",
+            f"fxroute_dsp:output_4 -> {SCARLETT}:playback_AUX3",
+        ])
+        snapshot = {
+            "active": True,
+            "config": {
+                "output_mode": "stereo",
+                "output_key": SCARLETT,
+                "hardware_ports": list(AUX_PORTS[:4]),
+            },
+        }
+        orchestrator = self._orchestrator(io_text, links_text, snapshot=snapshot)
+        diagnosis = await orchestrator.playback_graph_diagnosis(
+            self._overview("stereo", ports=AUX_PORTS), target_rate=44100
+        )
+        self.assertEqual(
+            diagnosis["output_targets"],
+            tuple(f"{SCARLETT}:{port}" for port in AUX_PORTS[:4]),
+        )
+        self.assertTrue(diagnosis["links_complete"])
+        self.assertFalse(diagnosis["bypass_only"])
+
+    async def test_stereo_without_helper_config_stays_strict(self):
+        """Without a runtime config the mode default still applies."""
+        io_text = _io_listing(SCARLETT, AUX_PORTS[:4]) + "\n" + "\n".join([
+            f"{DSP_SINK}:monitor_FL", f"{DSP_SINK}:monitor_FR",
+            "fxroute_dsp:input_1", "fxroute_dsp:input_2",
+            "fxroute_dsp:output_1", "fxroute_dsp:output_2",
+            "fxroute_dsp:output_3", "fxroute_dsp:output_4",
+        ])
+        links_text = "\n".join([
+            f"{DSP_SINK}:monitor_FL -> fxroute_dsp:input_1",
+            f"{DSP_SINK}:monitor_FR -> fxroute_dsp:input_2",
+            f"fxroute_dsp:output_1 -> {SCARLETT}:playback_AUX0",
+            f"fxroute_dsp:output_2 -> {SCARLETT}:playback_AUX1",
+            f"fxroute_dsp:output_3 -> {SCARLETT}:playback_AUX2",
+            f"fxroute_dsp:output_4 -> {SCARLETT}:playback_AUX3",
+        ])
+        orchestrator = self._orchestrator(io_text, links_text)
+        diagnosis = await orchestrator.playback_graph_diagnosis(
+            self._overview("stereo", ports=AUX_PORTS), target_rate=44100
+        )
+        self.assertFalse(diagnosis["links_complete"])
+        self.assertTrue(diagnosis["bypass_only"])
 
 
 class SilentActiveAuxPortTests(unittest.TestCase):
