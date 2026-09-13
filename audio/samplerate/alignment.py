@@ -13,12 +13,14 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 from audio import samplerate_orchestration
+from .constants import COMMAND_TIMEOUT_SECONDS
 
 from .overview import (
     get_audio_output_overview,
     get_samplerate_status,
     playback_rate_aligned,
 )
+from .parsing import _parse_pactl_card_active_profile, _run_command
 from audio.tool_env import c_locale_env
 from .persistence import load_sample_rate_policy
 
@@ -27,6 +29,8 @@ logger = logging.getLogger(__name__)
 SAMPLERATE_ALIGNMENT_TIMEOUT_MS = 900
 SAMPLERATE_ALIGNMENT_POLL_INTERVAL_MS = 50
 RATE_RENEGOTIATION_TRIGGER_WAIT_MS = 2500
+CARD_RECYCLE_WAIT_MS = 4000
+CARD_RECYCLE_SETTLE_SECONDS = 0.6
 SINK_SUSPEND_COOLDOWN_SECONDS = 3.0
 
 _last_sink_suspend_at: float = 0.0
@@ -317,7 +321,145 @@ def ensure_rate_renegotiation_trigger_file(sample_rate: int) -> Path | None:
         return None
     return path
 
-async def trigger_idle_sink_renegotiation(sample_rate: int) -> bool:
+
+def effective_output_key() -> str:
+    """Return the selected playback output key from the live overview."""
+    try:
+        overview = get_audio_output_overview()
+    except Exception:
+        return ""
+    output_mode = overview.get("output_mode") if isinstance(overview, Mapping) else None
+    return str((output_mode or {}).get("effective_output_key") or "").strip()
+
+
+def card_name_for_output(output_key: str) -> str | None:
+    """Return the ALSA card backing an ALSA output key.
+
+    PipeWire names an ALSA device's nodes ``alsa_output.<device>.<profile>``
+    and ``alsa_input.<device>.<profile>`` and its card ``alsa_card.<device>``.
+    """
+    key = (output_key or "").strip()
+    if not key.startswith("alsa_output."):
+        return None
+    device = key[len("alsa_output."):].rsplit(".", 1)[0]
+    if not device:
+        return None
+    return f"alsa_card.{device}"
+
+
+def active_card_profile(card_name: str) -> str | None:
+    """Return the active profile of one card from ``pactl list cards``."""
+    try:
+        output = _run_command(["pactl", "list", "cards"])
+    except Exception as exc:
+        logger.warning("Card rate recycle profile lookup failed: %s", exc)
+        return None
+    return _parse_pactl_card_active_profile(output, card_name)
+
+
+def recycle_card_profile(card_name: str, profile: str, reason: str) -> bool:
+    """Cycle a card's profile off/on so its ALSA nodes reopen at the pin rate.
+
+    A node that a measurement opened at the measurement rate keeps that rate
+    while it stays alive: ``clock.force-rate`` writes, sink suspend/resume
+    pulses, silent streams, capture streams at the target rate and DSP-helper
+    rebuilds all leave the device there, and the next transition fails its
+    target-rate stage.  Releasing the card's nodes is what lets the device
+    reopen at the pinned rate, and the profile cycle is that release at the
+    PulseAudio level.  ``off`` first, then the profile that was active, so the
+    card ends in exactly the state it had.
+    """
+    for target_profile in ("off", profile):
+        try:
+            completed = subprocess.run(
+                ["pactl", "set-card-profile", card_name, target_profile],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=COMMAND_TIMEOUT_SECONDS,
+                env=c_locale_env(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Card rate recycle failed: card=%s profile=%s reason=%s error=%s",
+                card_name, target_profile, reason, exc,
+            )
+            return False
+        if completed.returncode != 0:
+            logger.warning(
+                "Card rate recycle rejected: card=%s profile=%s reason=%s error=%s",
+                card_name,
+                target_profile,
+                reason,
+                (completed.stderr or "").strip(),
+            )
+            return False
+        time.sleep(CARD_RECYCLE_SETTLE_SECONDS)
+    logger.info(
+        "Card rate recycle completed: card=%s profile=%s reason=%s",
+        card_name, profile, reason,
+    )
+    return True
+
+
+async def trigger_card_rate_recycle(sample_rate: int, *, reason: str = "") -> bool:
+    """Recycle the selected output's card so its nodes reopen at the target rate.
+
+    Last resort of the graph renegotiation ladder: it is disruptive for every
+    other client of that card, so it only runs once the silent-stream trigger
+    has already failed to move the sink.  Returns whether the sink aligned at
+    ``sample_rate`` afterwards.
+    """
+    if not isinstance(sample_rate, int) or sample_rate <= 0:
+        return False
+    output_key = await asyncio.to_thread(effective_output_key)
+    card_name = card_name_for_output(output_key)
+    if card_name is None:
+        logger.info(
+            "Card rate recycle skipped: selected output is not an ALSA card key=%s rate=%s",
+            output_key, sample_rate,
+        )
+        return False
+    profile = await asyncio.to_thread(active_card_profile, card_name)
+    if not profile or profile == "off":
+        logger.info(
+            "Card rate recycle skipped: card=%s has no active profile to restore",
+            card_name,
+        )
+        return False
+    recycled = await asyncio.to_thread(
+        recycle_card_profile, card_name, profile, reason or "graph-trigger"
+    )
+    if not recycled:
+        return False
+    return await wait_for_samplerate_alignment(
+        sample_rate, timeout_ms=CARD_RECYCLE_WAIT_MS
+    )
+
+
+async def trigger_idle_sink_renegotiation(
+    sample_rate: int, *, allow_card_recycle: bool = True
+) -> bool:
+    """Renegotiate the live graph onto the forced rate with a stream trigger.
+
+    Two device states hold the rate: a suspended output node that ignores
+    ``clock.force-rate`` (released by the silent sink stream below) and a card
+    whose ALSA node still runs at the rate a finished measurement negotiated
+    (only released by recycling the card's nodes).  The sink stream runs first
+    because it is the non-disruptive path.
+
+    ``allow_card_recycle`` is False for the measurement *entry* preflight: it
+    runs with the measurement's own capture already open, so tearing the card
+    down there would break the session that asked for the rate.
+    """
+    if await _trigger_silent_sink_stream(sample_rate):
+        return True
+    if not allow_card_recycle:
+        return False
+    return await trigger_card_rate_recycle(sample_rate)
+
+
+async def _trigger_silent_sink_stream(sample_rate: int) -> bool:
     """Renegotiate an idle/suspended sink to the forced rate with a silent stream."""
     path = await asyncio.to_thread(ensure_rate_renegotiation_trigger_file, sample_rate)
     if path is None:
@@ -366,7 +508,11 @@ async def reconcile_transition_sink_rate(
         measurement_blocks_rate=measurement_blocks_rate,
     )
     if not aligned:
-        aligned = await trigger_idle_sink_renegotiation(target_rate)
+        # Measurement entry preflight: the session's own capture is already
+        # open, so the card must not be recycled underneath it.
+        aligned = await trigger_idle_sink_renegotiation(
+            target_rate, allow_card_recycle=False
+        )
     if not aligned:
         return False
     try:

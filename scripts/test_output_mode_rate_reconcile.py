@@ -55,7 +55,7 @@ async def main_async() -> None:
 
     # 3. Reconcile: stuck sink, force fails, silent trigger aligns -> True
     status_3 = stuck_status(44100, 48000)
-    async def trigger_3(_rate):
+    async def trigger_3(_rate, **_kwargs):
         status_3.update(stuck_status(48000, 48000))
         return True
     trigger_3_mock = mock.AsyncMock(side_effect=trigger_3)
@@ -64,7 +64,9 @@ async def main_async() -> None:
          mock.patch.object(samplerate.alignment, "trigger_idle_sink_renegotiation", new=trigger_3_mock) as trigger:
         assert await samplerate.reconcile_transition_sink_rate(48000, reason="test") is True
         force.assert_awaited_once()
-        trigger.assert_awaited_once_with(48000)
+        # Measurement-entry preflight: the card must not be recycled while the
+        # session's own capture is open.
+        trigger.assert_awaited_once_with(48000, allow_card_recycle=False)
 
     # 4. Reconcile: force alone aligns -> trigger must not run
     status_4 = stuck_status(44100, 48000)
@@ -90,7 +92,7 @@ async def main_async() -> None:
     # 6. establish_target_rate: stuck sink, trigger aligns -> no raise
     request = TransitionRequest(operation="measurement-entry", source="local", target_rate=48000)
     status_6 = stuck_status(44100, 48000)
-    async def trigger_6(_rate):
+    async def trigger_6(_rate, **_kwargs):
         status_6.update(stuck_status(48000, 48000))
         return True
     trigger_6_mock = mock.AsyncMock(side_effect=trigger_6)

@@ -449,6 +449,20 @@ def _parse_pactl_sinks_detailed(output: str) -> dict[str, dict[str, Any]]:
 
     return sinks
 
+def _parse_pactl_card_active_profile(output: str, card_name: str) -> str | None:
+    """Return the active profile of one card from ``pactl list cards``."""
+    current: str | None = None
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if line.startswith("Name:"):
+            current = line[len("Name:"):].strip()
+            continue
+        if current == card_name and line.startswith("Active Profile:"):
+            profile = line[len("Active Profile:"):].strip()
+            return profile or None
+    return None
+
+
 def _parse_pactl_sources_detailed(output: str) -> dict[str, dict[str, Any]]:
     sources: dict[str, dict[str, Any]] = {}
     current: dict[str, Any] | None = None

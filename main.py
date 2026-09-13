@@ -187,6 +187,17 @@ def _measurement_blocks_playback_rate(expected_rate: Optional[int]) -> Optional[
     return measurement_sr_session.blocks_playback_rate(expected_rate)
 
 
+def _measurement_session_owns_live_rate() -> bool:
+    """Return whether an open measurement window owns the live sample rate.
+
+    Idle playback paths must not clear the force-rate pin then: the sweep runs
+    at the measurement rate, and the session release is the owner that
+    restores or clears the pin.
+    """
+    session = measurement_sr_session
+    return session is not None and session.owns_audio_graph
+
+
 def _is_local_playback_active(state: dict | None) -> bool:
     return playback_state_helpers.is_local_playback_active(state)
 
@@ -3337,15 +3348,25 @@ async def stop_playback():
         # that rate (and previously misreported mode=fixed).  Clear it so the
         # graph is unpinned and the payload reflects the auto policy.  Fixed
         # policies keep their pin (they intentionally hold the configured rate).
-        try:
-            status = await asyncio.to_thread(get_samplerate_status)
-        except Exception:
-            status = None
-        samplerate.clear_auto_policy_force_rate(
-            int((status or {}).get("active_rate") or 0),
-            status=status,
-            idle=True,
-        )
+        # An open measurement window owns the live rate (its sweep runs at the
+        # measurement rate): clearing the pin there unpins the graph mid-window
+        # and makes the session release read its own pin as an external change,
+        # so the playback rate is never restored.  The release clears it.
+        if _measurement_session_owns_live_rate():
+            logger.info(
+                "Stop skipped the auto-policy force-rate clear: "
+                "measurement session owns the audio graph"
+            )
+        else:
+            try:
+                status = await asyncio.to_thread(get_samplerate_status)
+            except Exception:
+                status = None
+            samplerate.clear_auto_policy_force_rate(
+                int((status or {}).get("active_rate") or 0),
+                status=status,
+                idle=True,
+            )
     return {"status": "stopped"}
 
 @app.post("/api/volume")
