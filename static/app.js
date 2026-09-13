@@ -5695,9 +5695,15 @@ function renderTracks() {
     const scanText = formatLibraryScanStatus();
     const hasSearch = !!(state.library.searchQuery || '').trim();
 
-    if (allTracks.length === 0 && (!hasSearch || filteredPlaylists.length === 0)) {
+    // Playlists count as library content: an empty track list must not wipe
+    // them, because a running scan (or a library whose first scan is still
+    // filling the cache) would otherwise read as "nothing here". The shared
+    // scan status renders above the list until the scan finished.
+    if (allTracks.length === 0 && filteredPlaylists.length === 0) {
         window.FXRouteContentState.set(loadingEl, scanText ? 'loading' : 'empty',
-            scanText || 'No tracks yet. Import a file or URL to get started.');
+            scanText || (hasSearch
+                ? 'No matching tracks or playlists. Try a broader search.'
+                : 'No tracks yet. Import a file or URL to get started.'));
         elements.tracksList.innerHTML = '';
         updateLibrarySelectionUI();
         return;
@@ -5955,8 +5961,10 @@ function renderAlbums() {
     if (elements.libraryFolderPath) elements.libraryFolderPath.classList.add('hidden');
 
     if (!state.library.albumsLoaded) {
-        // Albums not yet loaded — show loading state and trigger fetch
-        window.FXRouteContentState.set(loadingEl, 'loading', 'Loading albums…');
+        // Albums not yet loaded — show loading state and trigger fetch. A
+        // running scan reports its progress here for the same reason as in
+        // the tracks view: the albums arrive when it is done.
+        window.FXRouteContentState.set(loadingEl, 'loading', formatLibraryScanStatus() || 'Loading albums…');
         elements.albumsGrid.classList.add('hidden');
         fetchAlbums();
         return;
@@ -5975,10 +5983,17 @@ function renderAlbums() {
     const playlists = showSmartFavorites ? getFilteredPlaylists() : [];
 
     if (albums.length === 0 && playlists.length === 0 && !showSmartFavorites) {
-        window.FXRouteContentState.set(loadingEl, 'empty',
-            state.library.showFavoriteAlbums
-                ? 'No favorite albums.'
-                : query ? 'No matching albums.' : 'No albums found. Import music with album tags.');
+        // A running scan is not an empty library: the shared library scan
+        // status stays visible until the scan actually finished, so the empty
+        // message never reports "no albums" while the scan is still filling
+        // the cache. The scan poll re-renders this view as tracks arrive.
+        const scanText = formatLibraryScanStatus();
+        if (scanText) {
+            window.FXRouteContentState.set(loadingEl, 'loading', scanText);
+        } else {
+            window.FXRouteContentState.set(loadingEl, 'empty',
+                query ? 'No matching albums.' : 'No albums found. Import music with album tags.');
+        }
         elements.albumsGrid.innerHTML = '';
         elements.albumsGrid.classList.remove('hidden');
         return;
