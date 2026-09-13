@@ -378,15 +378,14 @@ LIBRARY_JS_TEMPLATE = _pct("""// Demo music catalog fixtures: local library, TID
             tracks,
         };
     });
-    // Tracks view: the opener of every album plus the second track of the
-    // first half of the catalog — a curated selection so the Tracks tab
-    // feels like a real library while Albums carries the full catalog.
+    // Full TIDAL track catalog: every album track in album/track order,
+    // sharing the album track ids (t_album_XX_tN) like the real provider
+    // boundary, where one TIDAL track id resolves identically from albums,
+    // playlists, search, favorites and top tracks. A curated subset would
+    // break detail playback, favorites and search for deeper album tracks.
     const tidalTracks = [];
-    tidalAlbums.forEach((album, albumIndex) => {
-        if (!album.tracks.length) return;
-        const picks = albumIndex < Math.ceil(tidalAlbums.length / 2) ? Math.min(2, album.tracks.length) : 1;
-        for (let index = 0; index < picks; index += 1) {
-            const t = album.tracks[index];
+    tidalAlbums.forEach((album) => {
+        album.tracks.forEach((t) => {
             tidalTracks.push({
                 id: t.id,
                 title: t.title,
@@ -400,23 +399,32 @@ LIBRARY_JS_TEMPLATE = _pct("""// Demo music catalog fixtures: local library, TID
                 audio_quality: album.audio_quality,
                 art_url: album.cover_url,
             });
-        }
+        });
     });
 
     const TIDAL_PLAYLIST_SEEDS = %s;
     const tidalPlaylists = TIDAL_PLAYLIST_SEEDS.map((seed, idx) => {
         const [id, name, description, albumIds] = seed;
-        const tracks = albumIds.flatMap(aid => {
+        // Playlist tracks reuse the album track ids in member-album/track
+        // order, like the real TIDAL provider where one track id resolves
+        // identically from every surface. Playlist-local ids would collide
+        // across member albums and never resolve in playback/search.
+        const tracks = [];
+        albumIds.forEach((aid) => {
             const album = tidalAlbums.find(a => a.id === aid);
-            return album ? album.tracks.map((t, index) => ({
-                id: id + '_t' + index,
-                title: t.title,
-                artist: album.artist,
-                album: album.title,
-                duration: t.duration,
-                track_number: index + 1,
-                art_url: album.cover_url,
-            })) : [];
+            if (!album) return;
+            album.tracks.forEach((t) => {
+                tracks.push({
+                    id: t.id,
+                    title: t.title,
+                    artist: album.artist,
+                    album: album.title,
+                    duration: t.duration,
+                    track_number: tracks.length + 1,
+                    audio_quality: album.audio_quality,
+                    art_url: album.cover_url,
+                });
+            });
         });
         // Playlist cover mirrors the local collage: a pre-rendered montage
         // of the member album covers (see build_demo_catalogs.py), not a

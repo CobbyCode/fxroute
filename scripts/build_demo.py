@@ -45,13 +45,13 @@ DEMO_STYLES = """    <link rel="stylesheet" href="./demo/demo.css?v=8">
 """
 
 DEMO_PRE_SCRIPTS = """    <!-- Demo transport: must load before the real app scripts -->
-    <script src="./demo/data/library.js?v=6"></script>
+    <script src="./demo/data/library.js?v=7"></script>
     <script src="./demo/data/library2.js?v=2"></script>
     <script src="./demo/data/library3.js?v=1"></script>
     <script src="./demo/data/radio.js?v=3"></script>
     <script src="./demo/data/measurements.js?v=1"></script>
-    <script src="./demo/state.js?v=16"></script>
-    <script src="./demo/routes.js?v=16"></script>
+    <script src="./demo/state.js?v=17"></script>
+    <script src="./demo/routes.js?v=17"></script>
     <script src="./demo/streaming.js?v=1"></script>
     <script src="./demo/ws.js?v=1"></script>
     <script src="./demo/boot.js?v=8"></script>

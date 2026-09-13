@@ -644,17 +644,60 @@
         return chosen;
     }
 
+    // Single global TIDAL track identity like the real provider boundary:
+    // one track id resolves identically from albums, playlists, search,
+    // favorites and top tracks. Album/playlist fixtures share the
+    // t_album_XX_tN ids, so the pool covers every surface; the album and
+    // playlist fallbacks below only guard against a fixture that ever
+    // emits an id outside the pool.
+    function tidalTrackById(id) {
+        const key = String(id);
+        const direct = (tidalTracksLib || []).find(t => String(t.id) === key);
+        if (direct) return direct;
+        for (const album of (tidalAlbumsLib || [])) {
+            const t = ((album && album.tracks) || []).find(x => String(x.id) === key);
+            if (t) {
+                return {
+                    id: t.id,
+                    title: t.title,
+                    artist: album.artist,
+                    album: album.title,
+                    duration: t.duration,
+                    track_number: t.trackNumber,
+                    audio_quality: album.audio_quality,
+                    art_url: album.cover_url,
+                };
+            }
+        }
+        for (const pl of (tidalPlaylistsLib || [])) {
+            const t = ((pl && pl.tracks) || []).find(x => String(x.id) === key);
+            if (t) return t;
+        }
+        return null;
+    }
+
     function playTidal(trackId, queueIds) {
         const pool = tidalTracksLib || [];
-        const chosen = pool.find(t => t.id === trackId) || pool[0] || null;
+        if (!trackId) {
+            const fallback = pool[0] || null;
+            if (!fallback) return null;
+            const tidalTracks = pool.map(t => ({ ...t, source: 'tidal' }));
+            startTrack({ ...fallback, source: 'tidal' }, 'tidal', tidalTracks, 0);
+            return tidalTracks[0];
+        }
+        const chosen = tidalTrackById(trackId);
+        // An explicit unknown id must never silently play another song.
         if (!chosen) return null;
-        let tracks = pool;
+        let tracks;
         if (Array.isArray(queueIds)) {
-            const idxMap = new Map(pool.map(t => [t.id, t]));
-            tracks = queueIds.map(id => idxMap.get(id)).filter(Boolean);
+            tracks = queueIds.map(tidalTrackById).filter(Boolean);
+            if (!tracks.length) tracks = [{ ...chosen }];
+            else if (!tracks.some(t => String(t.id) === String(chosen.id))) tracks.unshift({ ...chosen });
+        } else {
+            tracks = pool.length ? pool.map(t => ({ ...t })) : [{ ...chosen }];
         }
         const tidalTracks = tracks.map(t => ({ ...t, source: 'tidal' }));
-        let idx = Math.max(0, tidalTracks.findIndex(t => String(t.id) === String(trackId)));
+        let idx = tidalTracks.findIndex(t => String(t.id) === String(chosen.id));
         if (idx < 0) idx = 0;
         startTrack({ ...chosen, source: 'tidal' }, 'tidal', tidalTracks, idx);
         return tidalTracks[idx];

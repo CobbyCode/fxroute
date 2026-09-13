@@ -971,7 +971,9 @@
                 return j({ status: 'playing', url: (track && track.url) || '', track: track || {}, playback: S.getPlayback() });
             }
             if (src === 'tidal') {
-                const track = S.playTidal(String(body.track_id || ''), body.queue_track_ids);
+                const tid = String(body.track_id || '');
+                const track = S.playTidal(tid, body.queue_track_ids);
+                if (!track && tid) return err('Track not found', 404);
                 return j({ status: 'playing', url: (track && track.url) || '', track: track || {}, playback: S.getPlayback() });
             }
             const track = S.playLocal(String(body.track_id || ''), body.queue_track_ids);
@@ -1440,8 +1442,8 @@
             const album = tidalAlbums().find(a => a.id === tidalAlbumTracks[1]);
             if (!album) return j([]);
             // Normalized track dicts like the real provider boundary
-            // (id/title/artist/album/art_url/duration): the album track
-            // rows render thumb + subtitle from the track itself.
+            // (id/title/artist/album/art_url/duration/audio_quality): the
+            // album track rows render thumb + subtitle from the track itself.
             return j(album.tracks.map(t => ({
                 id: t.id,
                 title: t.title,
@@ -1449,6 +1451,7 @@
                 album: album.title,
                 duration: t.duration,
                 track_number: t.trackNumber,
+                audio_quality: album.audio_quality,
                 art_url: album.cover_url,
             })));
         }
@@ -1460,7 +1463,7 @@
             return j({
                 ...artist,
                 albums: albums.map(a => ({ id: a.id, title: a.title, artist: artist.name, year: a.year, audio_quality: a.audio_quality, num_tracks: a.num_tracks, art_url: a.cover_url })),
-                top_tracks: albums.flatMap(a => a.tracks.slice(0, 3).map((t, i) => ({ ...t, id: a.id + '_top' + i, artist: artist.name, album: a.title, art_url: a.cover_url }))).slice(0, 10),
+                top_tracks: albums.flatMap(a => a.tracks.slice(0, 3).map(t => ({ id: t.id, title: t.title, artist: artist.name, album: a.title, duration: t.duration, track_number: t.trackNumber, audio_quality: a.audio_quality, art_url: a.cover_url }))).slice(0, 10),
                 enrichment: tidalArtistEnrichment(artist),
             });
         }
