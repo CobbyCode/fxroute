@@ -15,8 +15,15 @@ import time
 from pathlib import Path
 from typing import Callable
 
+import logging
+
 from audio.device_profiles import profile_id
 from audio.samplerate.parsing import _parse_pactl_card_active_profile, _run_command
+
+logger = logging.getLogger(__name__)
+
+TIER_REOPEN_TIMEOUT_SECONDS = 25.0
+TIER_REOPEN_POLL_SECONDS = 0.5
 from audio.samplerate.persistence import (
     _audio_source_selection_path,
     _load_audio_output_selection,
@@ -116,16 +123,24 @@ class ChannelTierChange:
         self.run(["pw-metadata", "-n", "settings", "0", "clock.force-rate", str(rate)])
 
     def _reopen(self, key: str, profile: str, channels: int) -> None:
+        logger.info("Channel-tier reprobe start: key=%s profile=%s channels=%s rate=%s",
+                    key, profile, channels, self.target_rate)
         self.run(["systemctl", "--user", "restart", "wireplumber.service"])
-        deadline = time.monotonic() + 15.0
-        profile_set = False
+        deadline = time.monotonic() + TIER_REOPEN_TIMEOUT_SECONDS
+        last_profile_set = 0.0
+        iterations = 0
         while time.monotonic() < deadline:
+            iterations += 1
             try:
-                if not profile_set:
+                # The profile switch can race the WirePlumber restart (the
+                # card is briefly gone); retry it while the sink is absent.
+                if time.monotonic() - last_profile_set >= 3.0:
                     self.run(["pactl", "set-card-profile", self.card, profile])
-                    profile_set = True
+                    last_profile_set = time.monotonic()
                 sink = next((item for item in self._sinks() if item.get("name") == key), None)
                 if sink is not None:
+                    logger.info("Channel-tier sink present after %s polls: key=%s spec=%s",
+                                iterations, key, sink.get("sample_specification") or sink.get("sample_spec"))
                     self.run(["pactl", "set-sink-mute", key, "1"])
                     self.run(["pactl", "set-sink-volume", key, f"{self.volume}%"])
                     if self._spec(sink)[0] != channels:
@@ -135,11 +150,15 @@ class ChannelTierChange:
                         raise ValueError("Recreated sink did not retain the output gate and volume")
                     self.run(["pactl", "set-default-sink", key])
                     _save_audio_output_selection(key)
+                    logger.info("Channel-tier reprobe done: key=%s polls=%s", key, iterations)
                     return
-            except RuntimeError:
-                pass
-            time.sleep(0.15)
-        raise RuntimeError("Hardware sink did not return after channel-tier reprobe")
+            except RuntimeError as exc:
+                logger.info("Channel-tier reprobe poll %s waiting: %s", iterations, exc)
+            time.sleep(TIER_REOPEN_POLL_SECONDS)
+        raise RuntimeError(
+            f"Hardware sink {key} did not return within {TIER_REOPEN_TIMEOUT_SECONDS:.0f}s "
+            f"after channel-tier reprobe (polls={iterations})"
+        )
 
     def apply(self) -> None:
         if not self.captured:
