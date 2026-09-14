@@ -3889,7 +3889,7 @@ async def save_audio_output_routing_route(request: Request):
 
 @app.post("/api/audio/channel-tier")
 async def save_audio_channel_tier_route(request: Request):
-    from audio.device_profiles import rate_in_tier
+    from audio.device_profiles import cumulative_rates, rate_in_tier
 
     if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
         raise HTTPException(status_code=423, detail="Measurement is active; channel-tier switch is locked")
@@ -3909,7 +3909,8 @@ async def save_audio_channel_tier_route(request: Request):
         source = str(context.get("source") or "local")
         policy = samplerate.load_sample_rate_policy()
         source_rate = playback_orchestration.configured().coordinator_source_rate(source, context.get("target_track"))
-        target_rate = rate_in_tier(policy.get("rate") or source_rate or output.get("active_rate"), tier["rates"])
+        destination_rates = cumulative_rates(profile.get("tiers", []), tier["id"]) or list(tier["rates"])
+        target_rate = rate_in_tier(policy.get("rate") or source_rate or output.get("active_rate"), destination_rates)
         if policy.get("mode") == "fixed":
             policy = {"mode": "fixed", "rate": target_rate}
         await _run_coordinated_transition(TransitionRequest(
@@ -3917,7 +3918,7 @@ async def save_audio_channel_tier_route(request: Request):
             target_url=context.get("target_url"), target_track=dict(context.get("target_track") or {}),
             should_play=bool(context.get("should_play")), reload_source=bool(context.get("target_url")),
             rate_change=True, detail="api-audio-channel-tier", sample_rate_policy=policy,
-            channel_tier={"key": output["key"], "tier": dict(tier)},
+            channel_tier={"key": output["key"], "tier": dict(tier), "rates": list(destination_rates)},
             **(playback_queue.queue.native_request_fields() if source == "local" else {}),
         ))
         return await audio_output_overview()

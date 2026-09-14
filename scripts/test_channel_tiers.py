@@ -139,6 +139,28 @@ class HardwareTierTests(unittest.TestCase):
             96000, run=self.run_command,
         )
 
+    def test_lower_rate_accepted_inside_smaller_tier(self):
+        change = channel_tiers.ChannelTierChange(
+            self.old_key,
+            {"id": "10ch", "channels": 10, "rates": [176400, 192000], "probe_rate": 192000},
+            48000, run=self.run_command,
+            tiers=[
+                {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+                {"id": "10ch", "channels": 10, "rates": [176400, 192000], "probe_rate": 192000},
+            ],
+        )
+        self.assertEqual(change.target_rate, 48000)
+        with self.assertRaisesRegex(ValueError, "not available"):
+            channel_tiers.ChannelTierChange(
+                self.old_key,
+                {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+                96000, run=self.run_command,
+                tiers=[
+                    {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+                    {"id": "10ch", "channels": 10, "rates": [176400, 192000], "probe_rate": 192000},
+                ],
+            )
+
     def test_recreated_sink_is_gated_and_volume_restored_before_selection(self):
         change = self.change()
         change.capture()

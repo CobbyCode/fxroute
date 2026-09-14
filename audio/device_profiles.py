@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from audio.output_routing import device_key
 
@@ -40,6 +40,26 @@ def playback_tiers(text: str) -> list[dict[str, Any]]:
             for count, rates in sorted(by_channels.items(), reverse=True)]
 
 
+def cumulative_rates(tiers: Sequence[Mapping], active_id: str | None) -> list[int]:
+    """All selectable rates of one tier, including every lower band.
+
+    A smaller channel inventory never takes rates away: the 14-channel tier
+    still offers 44.1/48 kHz, the 10-channel tier everything below it.
+    """
+    bands = [tier for tier in tiers if isinstance(tier, Mapping)]
+    active = next((tier for tier in bands if tier.get("id") == active_id), None)
+    if active is None:
+        return []
+    ceiling = max(int(tier.get("channels") or 0) for tier in bands)
+    floor = int(active.get("channels") or 0)
+    rates: set[int] = set()
+    for tier in bands:
+        channels = int(tier.get("channels") or 0)
+        if floor <= channels <= ceiling:
+            rates.update(int(rate) for rate in tier.get("rates") or [])
+    return sorted(rates)
+
+
 def rate_in_tier(rate: int | None, rates: Sequence[int]) -> int:
     """Keep the rate family where possible; an unknown source uses 48 kHz family."""
     if not rates:
@@ -66,7 +86,7 @@ def discover_profile(output_key: str, details: dict, channels: int | None) -> di
     if not tiers:
         return None
     active = next((tier for tier in tiers if tier["channels"] == channels), None)
-    _active_rates[device_key(output_key)] = tuple(active["rates"]) if active else ()
+    _active_rates[device_key(output_key)] = tuple(cumulative_rates(tiers, active["id"])) if active else ()
     return {"id": profile, "tiers": tiers, "active_tier": active["id"] if active else None,
             "source": "alsa-usb-playback", "manual": True}
 

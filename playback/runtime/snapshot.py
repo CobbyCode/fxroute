@@ -123,6 +123,7 @@ class _RuntimeSnapshotMixin:
             tiers = (output.get("device_profile") or {}).get("tiers") or []
             largest = max([int(item.get("channels") or 0) for item in tiers if isinstance(item, dict)] or [0])
             change = ChannelTierChange(output["key"], selected_tier, request.target_rate,
+                                       tiers=list(tiers),
                                        default_tier=bool(tiers) and int(selected_tier.get("channels") or 0) >= largest)
             await self._deps.drain_worker(change.capture)
             snapshot["channel_tier_change"] = change

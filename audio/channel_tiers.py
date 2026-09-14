@@ -17,7 +17,7 @@ from typing import Callable
 
 import logging
 
-from audio.device_profiles import profile_id
+from audio.device_profiles import cumulative_rates, profile_id
 from audio.samplerate.parsing import _parse_pactl_card_active_profile, _run_command
 
 logger = logging.getLogger(__name__)
@@ -61,10 +61,11 @@ def default_output_profile(cards_output: str, card_name: str) -> str | None:
 
 class ChannelTierChange:
     def __init__(self, output_key: str, tier: dict, target_rate: int, *, run: Callable = _run_command,
-                 default_tier: bool = False):
+                 default_tier: bool = False, tiers: list | None = None):
         if not profile_id(output_key) or not output_key.startswith("alsa_output."):
             raise ValueError("Selected output has no supported channel-tier profile")
-        if target_rate not in tier.get("rates", []):
+        allowed = cumulative_rates(tiers, tier.get("id")) if tiers else list(tier.get("rates", []))
+        if target_rate not in allowed:
             raise ValueError("Target rate is not available in the selected channel tier")
         self.old_key = output_key
         self.default_tier = bool(default_tier)

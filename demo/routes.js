@@ -126,6 +126,14 @@
     const SCARLETT_KEY = 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output';
     let scarlettTierId = '18ch';
     function scarlettTier() { return SCARLETT_TIERS.find(t => t.id === scarlettTierId) || SCARLETT_TIERS[0]; }
+    function scarlettCumulativeRates(tierId) {
+        const active = SCARLETT_TIERS.find(t => t.id === tierId) || SCARLETT_TIERS[0];
+        const rates = [];
+        for (const tier of SCARLETT_TIERS) {
+            if (tier.channels >= active.channels) rates.push(...tier.rates);
+        }
+        return [...new Set(rates)].sort((a, b) => a - b);
+    }
     function rateInTier(rate, rates) {
         if (!rates.length) throw new Error('Channel tier has no rates');
         if (rates.includes(rate)) return rate;
@@ -271,7 +279,7 @@
     function scarlettOutputEntry() {
         const tier = scarlettTier();
         const base = OUTPUTS.find(o => o.key === SCARLETT_KEY);
-        return { ...base, channels: tier.channels, active_rate: samplerate.active_rate, supported_rates: tier.rates.slice(),
+        return { ...base, channels: tier.channels, active_rate: samplerate.active_rate, supported_rates: scarlettCumulativeRates(tier.id),
             device_profile: { id: 'scarlett-16i16-4th-gen', tiers: SCARLETT_TIERS.map(x => ({ ...x, rates: x.rates.slice() })), active_tier: tier.id, source: 'alsa-usb-playback', manual: true } };
     }
     function outputEntry(out) {
@@ -1797,7 +1805,7 @@
                 const tier = SCARLETT_TIERS.find(x => x.id === String(body.tier || ''));
                 if (!tier) return err('Selected output has no such channel tier', 400);
                 scarlettTierId = tier.id;
-                samplerate.active_rate = rateInTier(samplerate.policy?.rate || out.active_rate || 48000, tier.rates);
+                samplerate.active_rate = rateInTier(samplerate.policy?.rate || out.active_rate || 48000, scarlettCumulativeRates(tier.id));
                 if (samplerate.policy?.mode === 'fixed') samplerate.policy = { mode: 'fixed', rate: samplerate.active_rate };
                 return j(outputsPayload());
             }
@@ -1836,7 +1844,7 @@
                 const mode = String(body.mode || 'auto');
                 const rate = Number(body.rate || 0);
                 const out = outputEntry(selectedOutput());
-                const tierRates = out.key === SCARLETT_KEY ? scarlettTier().rates : out.supported_rates;
+                const tierRates = out.key === SCARLETT_KEY ? scarlettCumulativeRates(scarlettTierId) : out.supported_rates;
                 if (mode === 'fixed' && rate && !tierRates.includes(rate)) return err('Selected output does not support this sample rate', 400);
                 samplerate = {
                     ...samplerate,

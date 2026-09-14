@@ -28,9 +28,11 @@ async function request(url, body) {
     await request('/api/audio/samplerate', { mode: 'fixed', rate: 44100 });
     output = await request('/api/audio/channel-tier', { key: scarlett.key, tier: '10ch' });
     assert.equal(output.selected_output.channels, 10);
-    assert.deepEqual(output.selected_output.supported_rates, [176400, 192000]);
+    assert.deepEqual(output.selected_output.supported_rates, [44100, 48000, 88200, 96000, 176400, 192000]);
     assert.deepEqual(output.output_mode.output_routing.inactive_assignments, [18]);
-    assert.deepEqual((await request('/api/audio/samplerate')).policy, { mode: 'fixed', rate: 176400 });
+    assert.deepEqual((await request('/api/audio/samplerate')).policy, { mode: 'fixed', rate: 44100 });
+    output = await request('/api/audio/channel-tier', { key: scarlett.key, tier: '14ch' });
+    assert.deepEqual(output.selected_output.supported_rates, [44100, 48000, 88200, 96000]);
     output = await request('/api/audio/channel-tier', { key: scarlett.key, tier: '18ch' });
     assert.deepEqual(output.output_mode.output_routing.assignments, assignments);
     output = await request('/api/audio/outputs', { key: stereo.key });

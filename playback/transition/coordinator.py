@@ -192,7 +192,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
         ]
         channel_tier = getattr(request, "channel_tier", None) or {}
         if channel_tier:
-            supported = list((channel_tier.get("tier") or {}).get("rates") or [])
+            supported = list(channel_tier.get("rates") or (channel_tier.get("tier") or {}).get("rates") or [])
             if not supported:
                 raise UnsupportedTransitionRateError("Channel-tier transition has no destination rates")
         if not supported:
