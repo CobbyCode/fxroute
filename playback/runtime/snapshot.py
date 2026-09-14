@@ -87,7 +87,7 @@ class _RuntimeSnapshotMixin:
         if request.operation == "sample-rate-policy":
             snapshot["sample_rate_policy"] = samplerate.load_sample_rate_policy()
         if request.operation == "output-mode-switch":
-            if request.output_routing_config:
+            if getattr(request, "output_routing_config", None):
                 from audio.output_routing import saved_routing_state
                 snapshot["output_routing_state"] = saved_routing_state(str(request.output_routing_config["key"]))
             snapshot["output_mode_overview"] = copy.deepcopy(
@@ -113,11 +113,12 @@ class _RuntimeSnapshotMixin:
                     self._deps.get_audio_output_overview, overview_status
                 )
             )
-        if request.channel_tier:
+        channel_tier = getattr(request, "channel_tier", None) or {}
+        if channel_tier:
             from audio.channel_tiers import ChannelTierChange
             output = (snapshot.get("audio_overview") or {}).get("selected_output") or {}
-            selected_tier = dict(request.channel_tier.get("tier") or {})
-            if output.get("key") != request.channel_tier.get("key") or selected_tier not in (output.get("device_profile") or {}).get("tiers", []):
+            selected_tier = dict(channel_tier.get("tier") or {})
+            if output.get("key") != channel_tier.get("key") or selected_tier not in (output.get("device_profile") or {}).get("tiers", []):
                 raise ValueError("Selected output or channel tiers changed; refresh audio settings")
             tiers = (output.get("device_profile") or {}).get("tiers") or []
             largest = max([int(item.get("channels") or 0) for item in tiers if isinstance(item, dict)] or [0])

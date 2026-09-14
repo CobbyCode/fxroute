@@ -229,7 +229,7 @@ class _TransitionCleanupMixin:
         either restore the output gate (recovered source) or latch a failure.
         Returns the actual final failure_latched state.
         """
-        if request.channel_tier and not snapshot:
+        if getattr(request, "channel_tier", None) and not snapshot:
             return False
         try:
             await self.runtime.set_source_volume(0, transition_id)
@@ -239,7 +239,7 @@ class _TransitionCleanupMixin:
             await self.runtime.pause_source_after_failure(request)
         except Exception:
             pass
-        if request.channel_tier:
+        if getattr(request, "channel_tier", None):
             try:
                 restored = await self.runtime.rollback_channel_tier(request, snapshot, transition_id)
                 if not restored:

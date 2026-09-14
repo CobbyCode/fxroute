@@ -692,7 +692,14 @@ class PlaybackOrchestrator:
         if diagnosis.get("helper_ports") is not True or diagnosis.get("helper_active") is not True or diagnosis.get("helper_rate_matches") is not True or diagnosis.get("helper_rate") != target_rate:
             return False
         missing = set(self.missing_playback_graph_links(diagnosis))
-        repairable = set((diagnosis.get("links") or {}).keys())
+        # Only ingress and DSP-output edges are in repair scope: an unknown
+        # producer (or any link the diagnosis does not model) must keep the
+        # verdict unrepairable even though it appears in the links map.
+        repairable = {
+            link
+            for link in (diagnosis.get("links") or {}).keys()
+            if link.startswith(("fxroute_dsp_sink:monitor_", "fxroute_dsp:output_"))
+        }
         return bool(missing) and missing.issubset(repairable)
 
     def log_playback_graph_diagnosis(self, diagnosis: dict, *, target_rate: int, reason: str, detail: str) -> None:

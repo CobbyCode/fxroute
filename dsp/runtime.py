@@ -310,6 +310,19 @@ class DSPRuntimeConfig:
         return ports
 
 
+
+def config_route_pairs(config: Any) -> tuple[tuple[int, str], ...]:
+    """Physical (signal, port) edges for a runtime config object.
+
+    Duck-typed configs in older tests carry only ``hardware_ports``; those
+    keep the historic positional mapping instead of failing on the missing
+    ``route_pairs`` attribute.
+    """
+    routes = getattr(config, "route_pairs", None)
+    if routes is not None:
+        return routes
+    return tuple(enumerate(getattr(config, "hardware_ports", ()), 1))
+
 class DSPRuntime:
     def __init__(self, manager: Any, *, binary: str | Path | None = None,
                  command_runner: Callable[[Sequence[str]], Awaitable[CommandResult]] | None = None,
@@ -412,7 +425,7 @@ class DSPRuntime:
                 "config": {"sample_rate": self._config.sample_rate, "output_mode": self._config.output_mode,
                             "output_key": self._config.output_key,
                             "hardware_ports": list(self._config.hardware_ports),
-                            "output_routes": list(self._config.route_pairs),
+                            "output_routes": list(config_route_pairs(self._config)),
                             "layout": [dict(channel) for channel in getattr(self._config, "layout", ())]} if self._config else None,
                 "last_error": self._error, "last_started_at": self._started_at,
                 "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
@@ -796,7 +809,7 @@ class DSPRuntime:
         """Reconcile live hardware edges, including links created by other clients."""
         desired = [
             PipeWireLink(f"{DSP_NODE_NAME}:output_{signal}", f"{config.output_key}:{port}")
-            for signal, port in config.route_pairs
+            for signal, port in config_route_pairs(config)
         ]
         result = await self._run(("pw-link", "-l"))
         if result.returncode:
