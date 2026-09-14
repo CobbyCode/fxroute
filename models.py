@@ -1,18 +1,10 @@
 """Data models for the FXRoute."""
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel
-
-
-class PlaybackState(str, Enum):
-    PLAYING = "playing"
-    PAUSED = "paused"
-    STOPPED = "stopped"
 
 
 @dataclass
@@ -51,48 +43,6 @@ class Track:
             "path": str(self.path) if self.path else None,
             "sample_rate_hz": self.sample_rate_hz,
             "favorite": self.favorite,
-        }
-
-
-@dataclass
-class PlaybackStateData:
-    """Current playback state."""
-    state: PlaybackState = PlaybackState.STOPPED
-    current_track: Optional[Track] = None
-    position: float = 0.0  # seconds
-    duration: float = 0.0
-    volume: int = 100  # 0-100
-    error: Optional[str] = None
-
-    def to_dict(self):
-        return {
-            "state": self.state.value,
-            "current_track": self.current_track.to_dict() if self.current_track else None,
-            "position": self.position,
-            "duration": self.duration,
-            "volume": self.volume,
-            "error": self.error,
-        }
-
-
-@dataclass
-class DownloadProgress:
-    """Download progress information."""
-    url: str
-    filename: str
-    progress_percent: float = 0.0
-    status: str = "downloading"  # "downloading", "complete", "error"
-    error: Optional[str] = None
-    started_at: datetime = field(default_factory=datetime.now)
-
-    def to_dict(self):
-        return {
-            "url": self.url,
-            "filename": self.filename,
-            "progress_percent": self.progress_percent,
-            "status": self.status,
-            "error": self.error,
-            "started_at": self.started_at.isoformat(),
         }
 
 

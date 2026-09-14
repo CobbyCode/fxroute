@@ -8,7 +8,6 @@ adapter instance and reads the attributes declared on the class below.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import logging
 from dataclasses import replace

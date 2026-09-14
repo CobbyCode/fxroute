@@ -18,7 +18,6 @@ semantics: this test snapshots today's cross-file consistency.
 import json
 import re
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path

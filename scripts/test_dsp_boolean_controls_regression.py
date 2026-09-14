@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.samplerate import persistence as persistence
 from dsp.effects_extras import merge_effects_extras_from_json
-from dsp.runtime import BassManagementConfig, DSPRuntimeConfig
+from dsp.runtime import DSPRuntimeConfig
 
 
 def _with_temp_home(fn) -> None:

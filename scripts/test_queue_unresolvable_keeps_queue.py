@@ -4,7 +4,6 @@
 load_track() returning False maps to advance() "unavailable", whose contract
 is "no navigation was possible and no authoritative queue state was changed".
 """
-import asyncio
 import sys
 import unittest
 from pathlib import Path

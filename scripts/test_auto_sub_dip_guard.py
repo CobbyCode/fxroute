@@ -8,7 +8,6 @@ better winner (65.2% vs 26.8%, +38 pp, L -7.65 / R +3.39) on a single-side
 gain should still veto.
 """
 
-import math
 import sys
 import unittest
 from pathlib import Path

@@ -6,7 +6,6 @@
 # startup, and the tone_effect "off" normalization must match the old
 # pre-native-DSP contract.
 
-import json
 import sys
 import tempfile
 import unittest

@@ -5,7 +5,6 @@ import asyncio
 import pathlib
 import subprocess
 import sys
-import tempfile
 import threading
 import unittest
 from unittest import mock

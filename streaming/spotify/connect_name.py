@@ -31,7 +31,6 @@ CONNECT_NAME_MAX_LABEL_CHARS = 20
 
 # Image installs derive the hostname as fxroute-<6 machine-id chars>.
 AUTO_HOSTNAME_RE = re.compile(r"^fxroute-([0-9a-f]{6})$")
-_HEX_RE = re.compile(r"^[0-9a-f]+$")
 _PERSISTED_SUFFIX_RE = re.compile(r"^[0-9A-F]{4}$")
 _DEVICE_NAME_LINE_RE = re.compile(r"""^(?P<prefix>\s*device_name\s*=\s*)(?P<quote>["'])(?P<value>.*?)(?P=quote)(?P<rest>.*)$""")
 

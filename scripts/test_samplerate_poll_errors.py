@@ -15,7 +15,6 @@ Contracts (no production code changed here):
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
 import sys
 import unittest

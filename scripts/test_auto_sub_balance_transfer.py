@@ -17,7 +17,6 @@ against an exact synthetic two-path room (|Main + Sub * e^{j w d}|).
 
 Same-configuration jobs keep the existing fine-trim behaviour.
 """
-import json
 import math
 import sys
 import unittest

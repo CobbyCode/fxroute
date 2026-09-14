@@ -120,17 +120,6 @@ def _track(track_id, name="Track"):
     )
 
 
-def _album(album_id, name="Album"):
-    return SimpleNamespace(
-        id=album_id, name=name, title=name, artist=SimpleNamespace(id=7, name="Artist"),
-        image=lambda size=640: "", num_tracks=10, audio_quality="LOSSLESS",
-        available=True, year=1996,
-    )
-
-
-def _artist(artist_id, name="Artist"):
-    return SimpleNamespace(id=artist_id, name=name, picture=None)
-
 
 def _playlist(playlist_id, name="Mix"):
     return SimpleNamespace(

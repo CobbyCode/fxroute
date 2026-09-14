@@ -2,7 +2,6 @@
 """Temporary WAV lifecycle: captures/playbacks are removed on success,
 failure and cancel, and jobs never touch another job's files."""
 
-import asyncio
 import json
 import os
 import sys

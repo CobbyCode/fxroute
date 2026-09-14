@@ -27,7 +27,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 
@@ -38,8 +37,6 @@ POLKIT_TEMPLATE = ROOT / "assets" / "polkit" / "50-fxroute-power.rules"
 INDEX_HTML = ROOT / "static" / "index.html"
 APP_JS = ROOT / "static" / "app.js"
 STYLE_CSS = ROOT / "static" / "style.css"
-POWER_PY = ROOT / "audio" / "power.py"
-
 
 def _assert_node_available() -> str:
     """Locate the node binary; skip the JS-syntax tests when missing.

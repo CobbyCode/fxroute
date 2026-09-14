@@ -14,10 +14,8 @@ tests; a controlled ``return 1`` prints the warning and lets the harness
 continue.
 """
 
-import hashlib
 import re
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path

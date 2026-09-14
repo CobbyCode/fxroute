@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Regression coverage for the authoritative 2.2-stereo AutoSub commit."""
 
-import asyncio
 import copy
 import sys
 import unittest

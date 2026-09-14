@@ -12,7 +12,6 @@ though pairing works and the receiver looks ready.
 from __future__ import annotations
 
 import asyncio
-import logging
 import stat
 import subprocess
 import sys

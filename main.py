@@ -50,7 +50,6 @@ _LOCAL_HOSTNAME_RESERVED = {"localhost"}
 
 # Cooldown to prevent rapid mpv IPC flooding (ms)
 PLAY_COMMAND_COOLDOWN_MS = 400
-LOCAL_TRACK_SWITCH_SETTLE_MS = 260
 # Bounded window for the idempotent MPV->DSP ingress link reconciliation
 # after the source ports appeared (link creation plus readback confirm).
 MPV_LINK_REPAIR_TIMEOUT_MS = 1500
@@ -375,13 +374,11 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
-    OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_MODES,
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
     apply_persisted_audio_output_selection,
-    disconnect_connected_bluetooth_audio_sources,
     get_audio_output_overview,
     get_audio_source_overview,
     get_bluetooth_audio_overview,

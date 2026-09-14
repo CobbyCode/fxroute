@@ -817,9 +817,6 @@ class LibraryScanner:
                 result.append(track)
         return sorted(result, key=_track_sort_key)
 
-    def get_album_metadata(self, album_id: str) -> Dict[str, Any]:
-        return self.metadata_store.get_album(album_id)
-
     def get_album_external_cover(self, album_id: str) -> Optional[Path]:
         return self.metadata_store.external_cover_path(album_id)
 

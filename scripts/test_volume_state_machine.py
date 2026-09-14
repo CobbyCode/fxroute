@@ -9,7 +9,6 @@ from, or promoted to, the master.  These tests pin that separation.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import sys
 import unittest

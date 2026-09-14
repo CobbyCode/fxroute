@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Regression tests for the official Armbian image build path."""
 
-import json
-import re
 import subprocess
 import unittest
 from pathlib import Path

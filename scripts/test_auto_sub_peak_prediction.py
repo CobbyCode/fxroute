@@ -13,7 +13,6 @@ Regression coverage:
 * a repeat with unchanged state skips the filter computation entirely.
 """
 
-import asyncio
 import sys
 import threading
 import unittest

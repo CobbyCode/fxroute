@@ -8,7 +8,6 @@ with lightweight fakes.  They cover stream/audio-info normalization, catalog
 normalization, error mapping, provider state and the registry.
 """
 
-import asyncio
 import json
 import sys
 import tempfile

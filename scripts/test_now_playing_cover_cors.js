@@ -123,14 +123,6 @@ function makeHarness({ decode, supportDecode = true, fetchImpl, realTimers = fal
     return { sandbox, calls, flushTimers, makeImg, makeCue };
 }
 
-function okFetch() {
-    return async (url, opts) => {
-        // default stub recorded per-harness via calls in the factory closure;
-        // this variant is replaced below per test where needed.
-        throw new Error('stub not wired');
-    };
-}
-
 const cases = [];
 
 async function run(label, fn) {

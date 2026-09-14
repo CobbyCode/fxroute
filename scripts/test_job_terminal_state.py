@@ -2,7 +2,6 @@
 """Job-state invariants: exactly one terminal state, no overwrite after
 terminal, cancel vs worker-end determinism, cleanup exactly once."""
 
-import asyncio
 import os
 import sys
 import tempfile

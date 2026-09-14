@@ -8,7 +8,6 @@ Covers the bf217b7b318a regression chain under summation-first:
   the incumbent pair while suggested_* keeps the rejected winner.
 """
 
-import asyncio
 import copy
 import sys
 import unittest

@@ -15,7 +15,6 @@ Scenario under test:
   -> final runtime rate matches the restored rate.
 """
 
-import asyncio
 import sys
 import unittest
 from pathlib import Path

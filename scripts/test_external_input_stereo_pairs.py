@@ -7,7 +7,6 @@ designations; a lone mono channel must never appear as a full stereo input
 or be duplicated onto both sides.
 """
 
-import asyncio
 import pathlib
 import sys
 import unittest

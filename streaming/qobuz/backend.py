@@ -14,8 +14,6 @@ import asyncio
 import logging
 import shutil
 from pathlib import Path
-from typing import Any
-
 import requests
 
 logger = logging.getLogger(__name__)

@@ -1,13 +1,11 @@
 """YouTube audio downloader using yt-dlp with progress tracking."""
 
-import json
 import logging
 import os
 import re
 import subprocess
 import sys
 import threading
-import time
 import asyncio
 from datetime import datetime
 from pathlib import Path
@@ -394,11 +392,3 @@ class Downloader:
         """Get current active download state."""
         with self._lock:
             return self._active_download.copy() if self._active_download else None
-
-    @property
-    def download_dir_exists(self) -> bool:
-        """Check if download directory exists and is writable."""
-        try:
-            return self.download_dir.exists() and os.access(self.download_dir, os.W_OK)
-        except:
-            return False

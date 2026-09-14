@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from dsp.manager import DSPManager, build_wav_bytes
+from dsp.manager import DSPManager
 
 
 def write_wav(path, frames=b"\x00\x00\x00\x00", channels=1, rate=48000):

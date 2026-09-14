@@ -30,10 +30,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import measurement.spl_calibration as spl_calibration
-from measurement.spl_calibration import _SplCalibrationOperation
 
-
-CAL_ID = "680d1373e3-7148364"
 
 
 def umik_input(**updates):

@@ -15,7 +15,6 @@ available on the host.
 """
 
 import http.server
-import os
 import pathlib
 import sys
 import threading

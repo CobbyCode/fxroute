@@ -72,15 +72,6 @@ def _can_reply(value: str) -> str:
     )
 
 
-def _can_reply_legacy(value: str) -> str:
-    """Build the legacy ``Properties.Get`` reply shape for fallback tests."""
-
-    return (
-        'method_return time=1700000000.000000 serial=17 reply_serial=2\n'
-        f'   variant       string "{value}"\n'
-    )
-
-
 UNKNOWN_METHOD = (
     "Error org.freedesktop.DBus.Error.UnknownMethod: "
     "Method 'CanSuspend' with interface 'org.freedesktop.login1.Manager' "

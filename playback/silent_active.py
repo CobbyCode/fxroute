@@ -15,7 +15,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from audio import pw_link
 from audio import sink_inputs
 from audio.samplerate import OUTPUT_MODE_STEREO, get_audio_output_overview
 from audio.system_volume import get_output_volume

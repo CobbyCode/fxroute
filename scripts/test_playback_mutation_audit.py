@@ -49,7 +49,6 @@ AUDIT_FILES = (
 )
 SOURCES = {name: (ROOT / name).read_text() for name in AUDIT_FILES}
 TREES = {name: ast.parse(source) for name, source in SOURCES.items()}
-MAIN_SOURCE = SOURCES["main.py"]
 TREE = TREES["main.py"]
 
 OLD_HANDOFF_NAMES = {

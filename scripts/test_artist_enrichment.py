@@ -9,7 +9,6 @@ enrichment composition and the guarantee that enrichment failures/refreshes
 never disturb TIDAL catalog data.
 """
 
-import json
 import sqlite3
 import sys
 import tempfile

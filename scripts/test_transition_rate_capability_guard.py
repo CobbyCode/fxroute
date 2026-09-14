@@ -14,7 +14,6 @@ rejection of target rates the selected output cannot carry:
 
 from __future__ import annotations
 
-import asyncio
 import pathlib
 import sys
 import unittest

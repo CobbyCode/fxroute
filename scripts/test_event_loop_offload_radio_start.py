@@ -39,24 +39,6 @@ from playback.transition import TransitionRequest
 MAIN_THREAD = threading.current_thread()
 
 
-def _assert_off_loop(self, fn):
-    """Wrap fn so the test fails if it runs on the event-loop thread."""
-
-    def probe(*args, **kwargs):
-        self.assertNotEqual(
-            threading.current_thread(),
-            MAIN_THREAD,
-            "heavy audio builder ran on the event-loop thread",
-        )
-        self.assertIsInstance(
-            threading.current_thread().name,
-            str,
-        )
-        return {"output_mode": {}, "notes": []}
-
-    return probe
-
-
 class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
     async def test_pause_route_runs_mpv_command_off_loop(self):
         seen = []

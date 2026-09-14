@@ -12,7 +12,6 @@ alignments, levels, polarities, crossover, main high-pass) and raise instead
 of syncing a stale or incumbent topology.
 """
 
-import asyncio
 import sys
 import unittest
 from pathlib import Path

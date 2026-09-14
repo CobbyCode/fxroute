@@ -12,7 +12,6 @@ memory; no network access.
 import asyncio
 import io
 import json
-import os
 import stat
 import struct
 import sys

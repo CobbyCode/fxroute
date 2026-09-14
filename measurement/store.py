@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 import json
 import logging
 import math
 import os
 import re
-import shlex
-import shutil
 import subprocess
 import threading
 import time
 import wave
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -51,17 +48,12 @@ from measurement.constants import (
     TERMINAL_JOB_STATUSES,
 )
 from audio.samplerate import (
-    OUTPUT_MODE_SUBWOOFER_21,
-    OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
-    OUTPUT_MODE_SUBWOOFER_22_STEREO,
-    OUTPUT_MODE_SUBWOOFER_MODES,
     get_audio_output_overview,
-    get_samplerate_status,
     SAMPLE_RATE_CANDIDATES,
     _parse_enum_format_supported_rates,
 )
-from audio.system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_node_volume, set_output_volume
+from audio.system_volume import SystemVolumeError, get_node_volume, set_node_volume
 
 logger = logging.getLogger(__name__)
 
@@ -70,18 +62,13 @@ MEASUREMENT_DEFAULT_SAMPLE_RATE = 48_000
 LR_REPEAT_SWEEP_SECONDS = 6.0
 LR_REPEAT_LEAD_IN_SECONDS = 0.2
 LR_REPEAT_TAIL_SECONDS = 0.75
-LR_REPEAT_RECORD_PREROLL_SECONDS = 0.3
-LR_REPEAT_RECORD_POSTROLL_SECONDS = 0.35
 HOST_SWEEP_PEAK_SCALE = 0.8
-SWEEP_TIMING_RESIDUAL_TOLERANCE_SECONDS = 0.04
-IR_DIRECT_CONFIDENCE_FALLBACK_THRESHOLD = 0.30
 HOST_SWEEP_RECORD_PREROLL_SECONDS = 0.75
 HOST_SWEEP_RECORD_POSTROLL_SECONDS = 0.75
 HOST_SWEEP_MAX_ATTEMPTS = 3
 HOST_SWEEP_RETRY_DELAY_SECONDS = 0.4
 HOST_SWEEP_AUTO_GAIN_RETRY_ATTEMPT = 1
 HOST_SWEEP_AUTO_GAIN_TARGET_PERCENT = 100
-PRIME_TIMEOUT_MARGIN_SECONDS = 10.0
 ALIGNMENT_SCORE_FAIL_THRESHOLD = 0.90
 ALIGNMENT_SCORE_WARN_THRESHOLD = 0.94
 HOST_ALIGNMENT_SCORE_FAIL_THRESHOLD = 0.84
@@ -1040,130 +1027,6 @@ class MeasurementStore:
         error_codes.discard("")
         return error_codes
 
-    def _run_measurement_prime(
-        self,
-        *,
-        prime_id: str,
-        mic_source_node_name: str,
-        channel: str,
-        capture_channels: int,
-        playback_path: Path,
-        playback_target: dict[str, Any],
-        sample_rate: int,
-        sweep_seconds: float,
-        lead_in_seconds: float,
-        tail_seconds: float,
-        record_preroll_seconds: float,
-        record_postroll_seconds: float,
-        record_duration_seconds: float,
-    ) -> None:
-        """Run a throwaway prime sweep after 2.1 DSP reconfig.
-
-        Exercises the full play-through-helper → output → mic-capture
-        pipeline so the first real capture starts with settled PipeWire
-        buffer state and helper DSP history.
-        """
-        prime_capture = self.captures_dir / f"{prime_id}-prime.wav"
-        record_node = f"fxroute-measure-record-{prime_id}"
-        play_node = f"fxroute-measure-play-{prime_id}"
-        sample_count = int(round(sample_rate * record_duration_seconds))
-
-        record_cmd = [
-            "pw-record",
-            "-P", "node.autoconnect=false",
-            "-P", f"node.name={record_node}",
-            "--target", "0",
-            "--rate", str(sample_rate),
-            "--channels", str(capture_channels),
-            "--format", "s16",
-        ]
-        if self._pw_record_supports_option("--container"):
-            record_cmd.extend(["--container", "wav"])
-        if self._pw_record_supports_option("--sample-count"):
-            record_cmd.extend(["--sample-count", str(sample_count)])
-        record_cmd.append(str(prime_capture))
-
-        playback_route = self._routing._build_measurement_playback_route(play_node, playback_target)
-        play_cmd = self._routing._build_measurement_play_command(
-            play_node_name=play_node,
-            playback_path=playback_path,
-            playback_target=playback_target,
-            playback_route=playback_route,
-        )
-        playback_route_diagnostics = self._routing._new_measurement_playback_route_diagnostics(playback_route)
-
-        logger.info(
-            "Measurement prime sweep starting: prime_id=%s mic=%s channels=%d sample_rate=%d",
-            prime_id, mic_source_node_name, capture_channels, sample_rate,
-        )
-
-        record_proc = subprocess.Popen(record_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try:
-            self._routing._cleanup_fxroute_links(
-                source_node_name=mic_source_node_name,
-                record_node_name=record_node,
-            )
-            self._routing._link_host_reference_capture(
-                reference_source_node_name=mic_source_node_name,
-                mic_source_node_name=mic_source_node_name,
-                record_node_name=record_node,
-                requested_channel=channel,
-                mic_input_channel_index=0,
-                record_process=record_proc,
-            )
-            time.sleep(record_preroll_seconds)
-            play_proc = subprocess.Popen(play_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if playback_route["route"] == "direct-sink":
-                playback_route_diagnostics = self._routing._link_measurement_playback_to_direct_sink(
-                    play_node_name=play_node,
-                    playback_target=playback_target,
-                    playback_route=playback_route,
-                )
-            try:
-                play_stdout, play_stderr = play_proc.communicate(
-                    timeout=record_duration_seconds + PRIME_TIMEOUT_MARGIN_SECONDS
-                )
-            except subprocess.TimeoutExpired:
-                logger.warning("Prime sweep pw-play timed out for %s, killing", prime_id)
-                try:
-                    play_proc.kill()
-                except Exception:
-                    pass
-                play_proc.wait(timeout=5)
-            record_proc.terminate()
-            try:
-                record_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logger.warning("Prime sweep pw-record did not exit for %s, killing", prime_id)
-                record_proc.kill()
-                record_proc.wait(timeout=5)
-        finally:
-            try:
-                record_proc.kill()
-            except Exception:
-                pass
-            try:
-                record_proc.wait(timeout=3)
-            except Exception:
-                pass
-            try:
-                prime_capture.unlink(missing_ok=True)
-            except OSError:
-                pass
-            self._routing._cleanup_measurement_playback_links(
-                play_node_name=play_node,
-                temporary_links=playback_route_diagnostics.get("temporary_playback_links", []),
-            )
-            self._routing._cleanup_fxroute_links(
-                source_node_name=mic_source_node_name,
-                record_node_name=record_node,
-            )
-
-        logger.info(
-            "Measurement prime sweep completed: prime_id=%s",
-            prime_id,
-        )
-
     def _is_measurement_cancelled(self, job_id: str, exc = None):
         """Return True if the job is cancelled or the exception is a cancellation signal."""
         if job_id in self._cancelled_jobs:
@@ -1684,7 +1547,6 @@ class MeasurementStore:
             items.append({"level": level, "code": code, "message": message})
 
         capture_subject = capture_label if capture_label else "Capture"
-        capture_subject_lower = capture_subject[:1].lower() + capture_subject[1:] if capture_subject else "capture"
         playback_subject = "capture/playback"
         if peak_dbfs >= CAPTURE_CLIP_FAIL_DBFS:
             add("error", "capture-clipped", f"Recorded sweep clipped at {peak_dbfs:.2f} dBFS.")
@@ -1771,19 +1633,6 @@ class MeasurementStore:
 
     def _write_settings(self, settings: dict[str, Any]) -> None:
         self._file_store._write_settings(settings)
-
-    def _resolve_calibration_meta(
-        self,
-        *,
-        calibration_filename: str | None = None,
-        calibration_bytes: bytes | None = None,
-        calibration_ref: str | None = None,
-    ) -> dict[str, Any] | None:
-        return self._file_store.resolve_calibration_meta(
-            calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes,
-            calibration_ref=calibration_ref,
-        )
 
     def _list_calibration_files(self) -> list[dict[str, Any]]:
         return self._file_store._list_calibration_files()

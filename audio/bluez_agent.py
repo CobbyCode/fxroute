@@ -16,7 +16,6 @@ from gi.repository import GLib
 BUS_NAME = "org.bluez"
 AGENT_INTERFACE = "org.bluez.Agent1"
 AGENT_MANAGER_INTERFACE = "org.bluez.AgentManager1"
-PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
 AGENT_PATH = "/fxroute/agent"
 CAPABILITY = "DisplayYesNo"
 

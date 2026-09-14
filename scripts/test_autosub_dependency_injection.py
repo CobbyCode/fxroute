@@ -8,7 +8,6 @@ module imports only ``autosub`` (plus the stdlib); it never imports ``main``,
 and ``autosub`` itself must not pull ``main`` into ``sys.modules``.
 """
 
-import asyncio
 import sys
 import unittest
 from pathlib import Path

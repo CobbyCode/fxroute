@@ -2,7 +2,6 @@
 """Focused tests for the diagnostic-only AutoSub Main/Target anchor gate."""
 
 import copy
-import math
 import sys
 import unittest
 from pathlib import Path

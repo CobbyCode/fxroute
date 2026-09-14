@@ -19,7 +19,6 @@ decisions are pinned. No production code changed here.
 
 import re
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path

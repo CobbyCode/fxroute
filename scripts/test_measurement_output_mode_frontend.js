@@ -95,7 +95,6 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
             return ['subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'].includes(mode);
         }
         function setPendingSave(value) { _subwooferPendingSave = value; }
-        function setRunningSave(value) { _subwooferSavePromise = value; }
         function normalizeMeasurementInputChannelSelections() {}
         function getMeasurementReferenceWarning() { return false; }
         function appendMeasurementReferenceFields(formData) {

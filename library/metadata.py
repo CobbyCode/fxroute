@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 from urllib.parse import quote
 
-import requests
-
 from safe_http import COVER_ART_MAX_BYTES, ENRICHMENT_JSON_MAX_BYTES, safe_get
 
 logger = logging.getLogger(__name__)
@@ -25,7 +23,6 @@ logger = logging.getLogger(__name__)
 from artist_enrichment import (
     DISCOVER_COOLDOWN_SECONDS,
     FETCH_COOLDOWN_SECONDS,
-    LISTENBRAINZ_API,
     TRANSIENT_ERROR_RETRY_SECONDS,
     USER_AGENT,
     ArtistEnrichmentService,
@@ -407,40 +404,6 @@ class LibraryMetadataStore:
             return []
         return self.artist_enrichment.similar_artists(str(seed_id), seed_artist_name or "")
 
-    def _listenbrainz_recording_metadata(self, recording_ids: list[str]) -> dict[str, dict[str, str]]:
-        ids = [str(item or "").strip() for item in recording_ids if str(item or "").strip()]
-        if not ids:
-            return {}
-        payload = self._request_json(
-            f"{LISTENBRAINZ_API}/metadata/recording/",
-            {"recording_mbids": ",".join(ids[:25])},
-        )
-        results: dict[str, dict[str, str]] = {}
-        for recording_id, item in (payload or {}).items():
-            if not isinstance(item, dict):
-                continue
-            recording = item.get("recording") or {}
-            title = str(recording.get("name") or "").strip()
-            artist = self._recording_artist_name(recording)
-            if title:
-                results[str(recording_id)] = {"title": title, "artist": artist}
-        return results
-
-    @staticmethod
-    def _recording_artist_name(recording: dict[str, Any]) -> str:
-        artists = []
-        for relation in recording.get("rels") or []:
-            if not isinstance(relation, dict):
-                continue
-            if relation.get("type") not in {"artist", "performer", "vocal", "instrument"}:
-                continue
-            name = str(relation.get("artist_name") or "").strip()
-            if name and name != "[unknown]" and name not in artists:
-                artists.append(name)
-            if len(artists) >= 2:
-                break
-        return " / ".join(artists)
-
     def get_cached_track(self, rel_path: str, mtime_ns: int, size_bytes: int) -> Optional[dict[str, Any]]:
         rel_path = str(rel_path or "").strip()
         if not rel_path:
@@ -748,15 +711,6 @@ class LibraryMetadataStore:
         if not match.get("mb_release_id"):
             return None
         return match
-
-    def _fetch_artist_description(self, artist_id: Any) -> Optional[str]:
-        artist_id = str(artist_id or "").strip()
-        if not artist_id:
-            return None
-        return self.artist_enrichment.artist_description(artist_id)
-
-    def _fetch_release_group_description(self, release_group_id: Any, payload: dict[str, Any] | None = None) -> Optional[str]:
-        return self.artist_enrichment._release_group_description(release_group_id, payload)
 
     def _fetch_cover(
         self,
