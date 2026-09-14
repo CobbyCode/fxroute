@@ -3480,7 +3480,10 @@ async function saveSampleRatePolicy(value) {
         if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save sample-rate policy'));
         state.samplerate = { ...state.samplerate, ...data, pending: false };
         renderSamplerateUI();
-        renderSettingsPanel();
+        // A rate change can switch the channel inventory server-side; pull
+        // the fresh output overview so channel count, tier note and routing
+        // matrix update without reopening settings.
+        await fetchAudioOutputOverview();
         triggerSamplerateBurstPolling();
         showToast('Sample-rate policy updated', 'success');
     } catch (error) {

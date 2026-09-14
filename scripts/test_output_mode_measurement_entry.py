@@ -1083,6 +1083,13 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("_transition_sample_rate_policy", inspect.getsource(main.save_audio_samplerate_policy))
         self.assertIn("run_transition", inspect.getsource(main._transition_sample_rate_policy))
         self.assertIn("/api/audio/samplerate", app)
+        save_policy_source = app.split("async function saveSampleRatePolicy", 1)[1].split(
+            "function applyAudioOutputOverview", 1)[0]
+        self.assertIn("function applyAudioOutputOverview", app)
+        # A rate change can switch the channel inventory server-side; the
+        # settings matrix must refresh from the backend without reopening.
+        self.assertIn("fetch('/api/audio/samplerate'", save_policy_source)
+        self.assertIn("fetchAudioOutputOverview", save_policy_source)
 
 
 class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
