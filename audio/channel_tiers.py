@@ -9,26 +9,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import time
 from pathlib import Path
 from typing import Callable
 
-import logging
-
 from audio.device_profiles import cumulative_rates, profile_id
 from audio.samplerate.parsing import _parse_pactl_card_active_profile, _run_command
-
-logger = logging.getLogger(__name__)
-
-TIER_REOPEN_TIMEOUT_SECONDS = 25.0
-TIER_REOPEN_POLL_SECONDS = 0.5
 from audio.samplerate.persistence import (
     _audio_source_selection_path,
     _load_audio_output_selection,
     _save_audio_output_selection,
 )
+
+logger = logging.getLogger(__name__)
+
+TIER_REOPEN_TIMEOUT_SECONDS = 25.0
+TIER_REOPEN_POLL_SECONDS = 0.5
 
 
 def default_output_profile(cards_output: str, card_name: str) -> str | None:

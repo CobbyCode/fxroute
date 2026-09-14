@@ -99,17 +99,6 @@ def required_tier_switch(selected_output: Mapping, target_rate: int | None) -> d
     }
 
 
-def rate_in_tier(rate: int | None, rates: Sequence[int]) -> int:
-    """Keep the rate family where possible; an unknown source uses 48 kHz family."""
-    if not rates:
-        raise ValueError("Channel tier has no supported sample rates")
-    if rate in rates:
-        return int(rate)
-    family = 44100 if rate and rate % 44100 == 0 else 48000
-    candidates = [value for value in rates if value % family == 0] or list(rates)
-    return min(candidates, key=lambda value: abs(value - (rate or 48000)))
-
-
 def discover_profile(output_key: str, details: dict, channels: int | None) -> dict | None:
     profile = profile_id(output_key)
     card = str(details.get("alsa_card") or "")

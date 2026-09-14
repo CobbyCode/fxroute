@@ -91,15 +91,6 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles.device_rates(selected["device_profile"]["tiers"]),
                          [44100, 48000, 88200, 96000])
 
-    def test_rate_selection_preserves_family_without_switching_tiers(self):
-        for source, rates, expected in [
-            (44100, [176400, 192000], 176400), (48000, [176400, 192000], 192000),
-            (96000, [44100, 48000], 48000), (88200, [44100, 48000], 44100),
-            (None, [88200, 96000], 96000), (32000, [88200, 96000], 96000),
-        ]:
-            with self.subTest(source=source, rates=rates):
-                self.assertEqual(profiles.rate_in_tier(source, rates), expected)
-
 
 class HardwareTierTests(unittest.TestCase):
     def setUp(self):
@@ -255,7 +246,7 @@ class HardwareTierTests(unittest.TestCase):
             return real_run(command)
 
         change.run = flaky
-        with __import__("unittest.mock", fromlist=["patch"]).patch("time.sleep", return_value=None):
+        with patch("time.sleep", return_value=None):
             change.apply()
         self.assertEqual(self.volume, original_volume)
         self.assertTrue(self.mute)

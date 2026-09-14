@@ -134,14 +134,6 @@
     function scarlettNativeTierForRate(rate) {
         return SCARLETT_TIERS.find(t => t.rates.includes(rate)) || null;
     }
-    function rateInTier(rate, rates) {
-        if (!rates.length) throw new Error('Channel tier has no rates');
-        if (rates.includes(rate)) return rate;
-        const family = rate && rate % 44100 === 0 ? 44100 : 48000;
-        const candidates = rates.filter(v => v % family === 0);
-        const pool = candidates.length ? candidates : rates;
-        return pool.slice().sort((a, b) => Math.abs(a - (rate || 48000)) - Math.abs(b - (rate || 48000)))[0];
-    }
     const ROUTING_SIGNALS = ['Off', 'Main L', 'Main R', 'Sub 1', 'Sub 2'];
     const routingStore = {};
     function routingAssignments(key, channels) {
