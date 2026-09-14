@@ -33,10 +33,17 @@ from audio.samplerate.persistence import (
 
 def default_output_profile(cards_output: str, card_name: str) -> str | None:
     """Return the card's stock multichannel output profile, if advertised."""
+    current: str | None = None
     in_profiles = False
     candidates: list[str] = []
     for raw_line in (cards_output or "").splitlines():
         line = raw_line.strip()
+        if line.startswith("Name:"):
+            current = line[len("Name:"):].strip()
+            in_profiles = False
+            continue
+        if current is not None and current != card_name:
+            continue
         if line == "Profiles:":
             in_profiles = True
             continue

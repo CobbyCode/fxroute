@@ -160,6 +160,16 @@ class HardwareTierTests(unittest.TestCase):
         self.assertEqual(default_output_profile(cards, self.card),
                          "output:multichannel-output+input:multichannel-input")
         self.assertIsNone(default_output_profile("Profiles:\n  pro-audio: Pro Audio (sinks: 1, sources: 1, priority: 1, available: yes)\n", self.card))
+        multi = ("Card #1\n\tName: alsa_card.usb-OTHER-00\n\tProfiles:\n"
+                 "\t\toff: Off (sinks: 0, sources: 0, priority: 0, available: yes)\n"
+                 "\tActive Profile: off\n"
+                 "Card #2\n\tName: " + self.card + "\n\tProfiles:\n"
+                 "\t\toff: Off (sinks: 0, sources: 0, priority: 0, available: yes)\n"
+                 "\t\toutput:multichannel-output+input:multichannel-input: Multichannel Duplex (sinks: 1, sources: 1, priority: 101, available: yes)\n"
+                 "\tActive Profile: pro-audio\n")
+        self.assertEqual(default_output_profile(multi, self.card),
+                         "output:multichannel-output+input:multichannel-input")
+        self.assertIsNone(default_output_profile(multi, "alsa_card.usb-OTHER-00"))
         # Currently on the small tier; switching back removes the rule file,
         # restores the stock profile and migrates the sink identity back.
         self.key, self.channels, self.rate = self.new_key, 14, 96000
