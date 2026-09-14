@@ -12,15 +12,9 @@ No new hardware? Try the [web demo](#web-demo) first. Already running Linux on t
 
 ## Web demo
 
-Try the interface without any audio hardware. The demo is the real FXRoute frontend — same checkout, same UI — with some simulated backend for playback, DSP, radio, and measurement, so every view is explorable in a normal browser.
+Try the interface without any audio hardware, directly in your browser: https://cobbycode.github.io/fxroute/
 
-Try it live: https://cobbycode.github.io/fxroute/ — or run it locally:
-
-```bash
-git clone https://github.com/CobbyCode/fxroute.git
-cd fxroute
-python3 scripts/serve_demo.py     # then open http://127.0.0.1:8765
-```
+The demo is the real FXRoute frontend — same UI — with simulated backend state for playback, DSP, radio, and measurement, so every view is explorable in a normal browser.
 
 <p align="center">
   <img src="media/screenshots/radio-overview.png" width="32%" alt="FXRoute radio catalog with a station playing">
