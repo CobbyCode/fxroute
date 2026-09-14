@@ -38,6 +38,10 @@ class _RuntimeOutputModeMixin:
         if not request.output_mode_config:
             raise RuntimeError("output-mode transition has no durable target config")
         result = self._deps.persist_audio_output_mode(request.output_mode_config)
+        if request.output_routing_config:
+            from audio.output_routing import save_assignments
+            routing = request.output_routing_config
+            save_assignments(str(routing["key"]), list(routing["assignments"]), int(routing["channels"]))
         return {
             "output_mode_persisted": True,
             "output_mode": dict(result.get("output_mode") or {}),
@@ -105,6 +109,9 @@ class _RuntimeOutputModeMixin:
     ) -> None:
         """Restore the old mode graph/config while the failure gate is closed."""
         snapshot = snapshot or {}
+        if request.output_routing_config:
+            from audio.output_routing import restore_routing_state
+            restore_routing_state(str(request.output_routing_config["key"]), snapshot.get("output_routing_state"))
         old_overview = snapshot.get("output_mode_overview")
         old_config = snapshot.get("output_mode_config")
         if not isinstance(old_overview, Mapping):

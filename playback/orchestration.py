@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 import playback.source_policy as source_policy
 import audio.samplerate as samplerate
+from audio.output_routing import output_route_pairs
 from audio.output_ports import (
     HARDWARE_CHANNEL_ORDER,
     hardware_playback_port_fallback_from_mode,
@@ -476,9 +477,12 @@ class PlaybackOrchestrator:
         # Resolve the device's real playback ports (playback_FL/FR/RL/RR or
         # playback_AUX0…) for the mode's DSP outputs.  The diagnosis, the
         # repair path and the DSP link build then all describe one topology.
+        if output_mode.get("output_routing", {}).get("available"):
+            output_count = int(output_mode.get("effective_output_channels") or output_count)
         hardware_ports = _hardware_output_ports(output_mode, io_text, output_key, output_count)
-        output_targets = tuple(f"{output_key}:{port}" for port in hardware_ports)
-        dsp_ports = tuple(f"fxroute_dsp:output_{i + 1}" for i in range(len(hardware_ports)))
+        route_pairs = output_route_pairs(output_mode, hardware_ports)
+        output_targets = tuple(f"{output_key}:{port}" for _, port in route_pairs)
+        dsp_ports = tuple(f"fxroute_dsp:output_{signal}" for signal, _ in route_pairs)
         result["output_targets"] = output_targets
         ingress_sources = ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR")
         ingress_targets = ("fxroute_dsp:input_1", "fxroute_dsp:input_2")
@@ -497,10 +501,11 @@ class PlaybackOrchestrator:
         for node in dict.fromkeys(source_policy.GRAPH_NODE_BY_SOURCE.values()):
             for channel in HARDWARE_CHANNEL_ORDER:
                 bypass_ports.extend((f"{node}:output_{channel}", f"{node}:playback_{channel}"))
+        all_hardware_targets = tuple(f"{output_key}:{port}" for port in hardware_ports)
         result["direct_source_to_hw_present"] = any(
             self._deps.contains_link(link_text, port, target)
             for port in bypass_ports
-            for target in output_targets
+            for target in all_hardware_targets or output_targets
         )
         result["links"] = {
             **{f"{p} -> {t}": self._deps.contains_link(link_text, p, t) for p, t in zip(ingress_sources, ingress_targets)},
@@ -687,11 +692,7 @@ class PlaybackOrchestrator:
         if diagnosis.get("helper_ports") is not True or diagnosis.get("helper_active") is not True or diagnosis.get("helper_rate_matches") is not True or diagnosis.get("helper_rate") != target_rate:
             return False
         missing = set(self.missing_playback_graph_links(diagnosis))
-        targets = tuple(diagnosis.get("output_targets") or ()) or tuple(
-            f"{output_key}:playback_{channel}"
-            for channel in HARDWARE_CHANNEL_ORDER[:4 if diagnosis.get("mode") in self._deps.output_mode_subwoofer_modes else 2]
-        )
-        repairable = {"fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1", "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2", *(f"fxroute_dsp:output_{i + 1} -> {target}" for i, target in enumerate(targets))}
+        repairable = set((diagnosis.get("links") or {}).keys())
         return bool(missing) and missing.issubset(repairable)
 
     def log_playback_graph_diagnosis(self, diagnosis: dict, *, target_rate: int, reason: str, detail: str) -> None:
@@ -705,11 +706,17 @@ class PlaybackOrchestrator:
         if not output_key:
             raise RuntimeError("Playback handoff repair failed: missing stereo output target")
         links = await self._deps.run_pw_link_command("-l")
-        targets = tuple(diagnosis.get("output_targets") or ()) or tuple(
-            f"{output_key}:playback_{channel}" for channel in HARDWARE_CHANNEL_ORDER[:2]
-        )
-        for index, target in enumerate(targets[:2]):
-            source = f"fxroute_dsp:output_{index + 1}"
+        expected = [link for link in (diagnosis.get("links") or {}).keys() if link.startswith("fxroute_dsp:output_")]
+        if not expected:
+            targets = tuple(diagnosis.get("output_targets") or ()) or tuple(
+                f"{output_key}:playback_{channel}" for channel in HARDWARE_CHANNEL_ORDER[:2]
+            )
+            expected = [f"fxroute_dsp:output_{index + 1} -> {target}" for index, target in enumerate(targets[:2])]
+        for link in expected:
+            try:
+                source, target = link.split(" -> ", 1)
+            except ValueError:
+                continue
             if not self._deps.contains_link(links, source, target):
                 await self._deps.connect_ports((source,), target)
 

@@ -99,6 +99,8 @@ class TransitionRequest:
     # data so runtime mutations cannot escape the gate-owned state machine.
     output_mode_target: Mapping[str, Any] = field(default_factory=dict)
     output_mode_config: Mapping[str, Any] = field(default_factory=dict)
+    output_routing_config: Mapping[str, Any] = field(default_factory=dict)
+    channel_tier: Mapping[str, Any] = field(default_factory=dict)
     sample_rate_policy: Mapping[str, Any] = field(default_factory=dict)
     # Runtime-captured output overview, frozen at transition start and reused
     # by every graph-diagnosis stage so the expensive pactl/pw-cli enumeration
@@ -131,4 +133,3 @@ class TransitionResult:
     source: str
     target_rate: int | None
     state: Mapping[str, Any]
-

@@ -458,6 +458,12 @@ const elements = {
     settingsOutputModeHint: document.getElementById('settings-output-mode-hint'),
     settingsSamplerateSelect: document.getElementById('settings-samplerate-select'),
     settingsSamplerateHint: document.getElementById('settings-samplerate-hint'),
+    settingsChannelTierGroup: document.getElementById('settings-channel-tier-group'),
+    settingsChannelTierSelect: document.getElementById('settings-channel-tier-select'),
+    settingsChannelTierHint: document.getElementById('settings-channel-tier-hint'),
+    settingsRoutingGroup: document.getElementById('settings-routing-group'),
+    settingsRoutingGrid: document.getElementById('settings-routing-grid'),
+    settingsRoutingHint: document.getElementById('settings-routing-hint'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
@@ -1517,6 +1523,18 @@ function setupSettingsActions() {
             void saveSampleRatePolicy(event.target.value || 'auto');
         });
     }
+    if (elements.settingsChannelTierSelect) {
+        elements.settingsChannelTierSelect.addEventListener('change', (event) => {
+            const tier = event.target.value || '';
+            if (tier) void saveChannelTier(tier);
+        });
+    }
+    if (elements.settingsRoutingGrid) {
+        elements.settingsRoutingGrid.addEventListener('change', (event) => {
+            if (!event.target || event.target.tagName !== 'SELECT') return;
+            void saveOutputRouting();
+        });
+    }
     if (elements.settingsSourceSelect) {
         elements.settingsSourceSelect.addEventListener('change', (event) => {
             const value = event.target.value || 'app-playback';
@@ -1816,6 +1834,8 @@ function buildAudioOutputModeRequest(mode, settings = null, options = {}) {
 let _audioOutputModeRequestId = 0;
 let _audioOutputModeMutationGeneration = 0;
 let _audioOutputModeSwitchInProgress = false;
+let _audioRoutingInProgress = false;
+let _channelTierInProgress = false;
 function getAudioOutputModeSignature(mode, settings = null, options = {}) {
     return JSON.stringify(buildAudioOutputModeRequest(mode, settings, options));
 }
@@ -3091,7 +3111,7 @@ function renderSettingsPanel() {
             elements.settingsOutputModeSelect.innerHTML = optionsHtml;
         }
         elements.settingsOutputModeSelect.value = mode;
-        elements.settingsOutputModeSelect.disabled = !overview.available || _audioOutputModeSwitchInProgress;
+        elements.settingsOutputModeSelect.disabled = !overview.available || _audioOutputModeSwitchInProgress || _audioRoutingInProgress || _channelTierInProgress;
     }
     if (elements.settingsOutputModeHint) {
         const channels = outputMode.effective_output_channels;
@@ -3130,6 +3150,69 @@ function renderSettingsPanel() {
         elements.settingsSamplerateHint.textContent = sampleRatePolicy.mode === 'fixed'
             ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}.`
             : 'Follows the effective playback sample rate.';
+    }
+
+    const deviceProfile = selectedOutput?.device_profile || null;
+    const tiers = Array.isArray(deviceProfile?.tiers) ? deviceProfile.tiers : [];
+    if (elements.settingsChannelTierGroup) {
+        elements.settingsChannelTierGroup.classList.toggle('hidden', tiers.length < 2);
+    }
+    if (elements.settingsChannelTierSelect && !isSelectFocused(elements.settingsChannelTierSelect)) {
+        elements.settingsChannelTierSelect.innerHTML = tiers.map((tier) => {
+            const rates = Array.isArray(tier.rates) ? tier.rates.map((rate) => formatSampleRateKhz(rate)).join(' / ') : '';
+            return `<option value="${escapeHtml(tier.id || '')}">${escapeHtml(`${tier.channels} channels · ${rates}`)}</option>`;
+        }).join('');
+        elements.settingsChannelTierSelect.value = deviceProfile?.active_tier || '';
+        elements.settingsChannelTierSelect.disabled = !overview.available || _channelTierInProgress || _audioOutputModeSwitchInProgress;
+    }
+    if (elements.settingsChannelTierHint) {
+        if (_channelTierInProgress) {
+            elements.settingsChannelTierHint.textContent = 'Switching channel tier…';
+            elements.settingsChannelTierHint.classList.add('switching');
+        } else {
+            elements.settingsChannelTierHint.classList.remove('switching');
+            const active = tiers.find((tier) => tier.id === deviceProfile?.active_tier);
+            elements.settingsChannelTierHint.textContent = active
+                ? `Hardware channels follow the selected tier. Sample-rate changes stay inside ${active.channels} channels.`
+                : '';
+        }
+    }
+
+    const outputRouting = outputMode.output_routing || {};
+    const routingChannels = Number(outputMode.effective_output_channels || 0);
+    const routingAvailable = !!outputRouting.available && routingChannels > 2;
+    if (elements.settingsRoutingGroup) {
+        elements.settingsRoutingGroup.classList.toggle('hidden', !routingAvailable);
+    }
+    if (routingAvailable && elements.settingsRoutingGrid) {
+        const signals = Array.isArray(outputRouting.signals) ? outputRouting.signals : [];
+        const assignments = Array.isArray(outputRouting.assignments) ? outputRouting.assignments : [];
+        const busy = _audioRoutingInProgress || _channelTierInProgress || _audioOutputModeSwitchInProgress;
+        const focusedValue = document.activeElement && document.activeElement.tagName === 'SELECT' && document.activeElement.dataset.routingOutput
+            ? { index: Number(document.activeElement.dataset.routingOutput), value: document.activeElement.value } : null;
+        elements.settingsRoutingGrid.innerHTML = assignments.map((signal, index) => {
+            const options = signals.map((entry) => `<option value="${entry.id}">${escapeHtml(entry.label)}</option>`).join('');
+            return `<div class="settings-routing-cell"><label for="settings-routing-out-${index + 1}">Out ${index + 1}</label>`
+                + `<select id="settings-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="Output ${index + 1} signal"${busy ? ' disabled' : ''}>${options}</select></div>`;
+        }).join('');
+        Array.from(elements.settingsRoutingGrid.querySelectorAll('select')).forEach((sel, index) => {
+            sel.value = String(assignments[index] ?? 0);
+        });
+        if (focusedValue && elements.settingsRoutingGrid.querySelector(`[data-routing-output="${focusedValue.index}"]`)) {
+            elements.settingsRoutingGrid.querySelector(`[data-routing-output="${focusedValue.index}"]`).value = focusedValue.value;
+        }
+    }
+    if (elements.settingsRoutingHint) {
+        if (_audioRoutingInProgress) {
+            elements.settingsRoutingHint.textContent = 'Saving output routing…';
+            elements.settingsRoutingHint.classList.add('switching');
+        } else {
+            elements.settingsRoutingHint.classList.remove('switching');
+            const inactive = Array.isArray(outputRouting.inactive_assignments) ? outputRouting.inactive_assignments : [];
+            elements.settingsRoutingHint.textContent = inactive.length
+                ? `Saved assignments for output${inactive.length === 1 ? '' : 's'} ${inactive.join(', ')} are inactive in this tier and kept.`
+                : 'Assign Main L/R and Sub 1/2 to hardware outputs. Off leaves an output silent.';
+        }
     }
 
     const sourceOverview = state.settings?.sourceMode || {};
@@ -3380,7 +3463,7 @@ async function fetchAudioOutputOverview() {
         const resp = await fetch('/api/audio/outputs');
         if (!resp.ok) throw new Error('Failed to fetch audio outputs');
         const data = await resp.json();
-        if (mutationGeneration !== _audioOutputModeMutationGeneration || _audioOutputModeSwitchInProgress) return;
+        if (mutationGeneration !== _audioOutputModeMutationGeneration || _audioOutputModeSwitchInProgress || _audioRoutingInProgress || _channelTierInProgress) return;
         state.settings.audioOutputs = {
             loaded: true,
             available: !!data.available,
@@ -3435,6 +3518,81 @@ async function saveSampleRatePolicy(value) {
         state.samplerate.pending = false;
         renderSettingsPanel();
         showToast(error.message || 'Failed to save sample-rate policy', 'error');
+    }
+}
+
+function applyAudioOutputOverview(data) {
+    state.settings.audioOutputs = {
+        loaded: true,
+        available: !!data.available,
+        default_output: data.default_output || null,
+        selected_output: data.selected_output || null,
+        current_output: data.current_output || null,
+        outputs: Array.isArray(data.outputs) ? data.outputs : [],
+        notes: Array.isArray(data.notes) ? data.notes : [],
+        pendingSelectionKey: null,
+        output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
+    };
+    renderSettingsPanel();
+}
+
+async function saveChannelTier(tier) {
+    const overview = state.settings?.audioOutputs || {};
+    const key = overview.selected_output?.key || '';
+    if (!key || !tier || _channelTierInProgress) return;
+    _channelTierInProgress = true;
+    renderSettingsPanel();
+    try {
+        const resp = await fetch('/api/audio/channel-tier', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key, tier }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to switch channel tier'));
+        applyAudioOutputOverview(data);
+        await fetchSamplerateStatus();
+        showToast('Channel tier updated', 'success');
+    } catch (error) {
+        renderSettingsPanel();
+        showToast(error.message || 'Failed to switch channel tier', 'error');
+    } finally {
+        _channelTierInProgress = false;
+        renderSettingsPanel();
+    }
+}
+
+async function saveOutputRouting() {
+    const overview = state.settings?.audioOutputs || {};
+    const outputMode = overview.output_mode || {};
+    const routing = outputMode.output_routing || {};
+    const key = overview.selected_output?.key || '';
+    const channels = Number(outputMode.effective_output_channels || 0);
+    if (!key || !routing.available || _audioRoutingInProgress) return;
+    const selects = elements.settingsRoutingGrid ? elements.settingsRoutingGrid.querySelectorAll('select') : [];
+    const assignments = Array.from(selects).map((sel) => Number(sel.value || 0));
+    if (assignments.length !== channels || assignments.some((v) => !Number.isInteger(v) || v < 0 || v > 4)) {
+        showToast('Assign one signal to each available hardware output', 'error');
+        return;
+    }
+    _audioRoutingInProgress = true;
+    renderSettingsPanel();
+    try {
+        const resp = await fetch('/api/audio/output-routing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key, assignments }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save output routing'));
+        applyAudioOutputOverview(data);
+        showToast('Output routing updated', 'success');
+    } catch (error) {
+        renderSettingsPanel();
+        showToast(error.message || 'Failed to save output routing', 'error');
+    } finally {
+        _audioRoutingInProgress = false;
+        renderSettingsPanel();
     }
 }
 

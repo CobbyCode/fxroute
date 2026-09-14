@@ -87,6 +87,9 @@ class _RuntimeSnapshotMixin:
         if request.operation == "sample-rate-policy":
             snapshot["sample_rate_policy"] = samplerate.load_sample_rate_policy()
         if request.operation == "output-mode-switch":
+            if request.output_routing_config:
+                from audio.output_routing import saved_routing_state
+                snapshot["output_routing_state"] = saved_routing_state(str(request.output_routing_config["key"]))
             snapshot["output_mode_overview"] = copy.deepcopy(
                 await asyncio.to_thread(
                     self._deps.get_audio_output_overview, overview_status
@@ -110,6 +113,15 @@ class _RuntimeSnapshotMixin:
                     self._deps.get_audio_output_overview, overview_status
                 )
             )
+        if request.channel_tier:
+            from audio.channel_tiers import ChannelTierChange
+            output = (snapshot.get("audio_overview") or {}).get("selected_output") or {}
+            selected_tier = dict(request.channel_tier.get("tier") or {})
+            if output.get("key") != request.channel_tier.get("key") or selected_tier not in (output.get("device_profile") or {}).get("tiers", []):
+                raise ValueError("Selected output or channel tiers changed; refresh audio settings")
+            change = ChannelTierChange(output["key"], selected_tier, request.target_rate)
+            await self._deps.drain_worker(change.capture)
+            snapshot["channel_tier_change"] = change
         return snapshot
 
     def target_source_staged(self, request: TransitionRequest) -> bool:

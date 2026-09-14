@@ -9,6 +9,7 @@ from typing import Any
 from playback.transition import TransitionRuntime
 
 from .deps import PlaybackRuntimeDependencies
+from .channel_tier import _RuntimeChannelTierMixin
 from .mute import _RuntimeMuteMixin
 from .output_mode import _RuntimeOutputModeMixin
 from .snapshot import _RuntimeSnapshotMixin
@@ -17,6 +18,7 @@ from .verification import _RuntimeVerificationMixin
 
 
 class FxrouteTransitionRuntime(
+    _RuntimeChannelTierMixin,
     _RuntimeMuteMixin,
     _RuntimeSnapshotMixin,
     _RuntimeSourceMixin,
@@ -46,4 +48,3 @@ class FxrouteTransitionRuntime(
     def _dsp_runtime(self) -> Any:
         """Subwoofer helper runtime resolved late-bound through the wiring."""
         return self._deps.dsp_runtime()
-

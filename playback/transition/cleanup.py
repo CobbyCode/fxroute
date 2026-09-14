@@ -229,6 +229,8 @@ class _TransitionCleanupMixin:
         either restore the output gate (recovered source) or latch a failure.
         Returns the actual final failure_latched state.
         """
+        if request.channel_tier and not snapshot:
+            return False
         try:
             await self.runtime.set_source_volume(0, transition_id)
         except Exception:
@@ -237,6 +239,20 @@ class _TransitionCleanupMixin:
             await self.runtime.pause_source_after_failure(request)
         except Exception:
             pass
+        if request.channel_tier:
+            try:
+                restored = await self.runtime.rollback_channel_tier(request, snapshot, transition_id)
+                if not restored:
+                    raise RuntimeError("Previous channel-tier graph could not be restored")
+                if self.gate.closed:
+                    await self.ensure_output_gate_closed(transition_id, stage="channel-tier-rollback")
+                    await self._hold_gate_after_verification()
+                    await self._restore_gate(transition_id, audible_output=bool(request.should_play))
+                return False
+            except Exception:
+                logger.warning("Channel-tier rollback failed", exc_info=True)
+                await self._latch_failure(transition_id)
+                return True
         if request.operation == "output-mode-switch":
             try:
                 await self.runtime.rollback_output_mode_runtime(request, snapshot)

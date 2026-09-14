@@ -140,9 +140,13 @@ Autogain and Loudness can run together; the limiter stays the final stage.
 
 The **Crossover / Subwoofer** card on the DSP page shows the active routing, a crossover preview, the crossover frequency (40–200 Hz, LR24), the main highpass, and per-sub level, alignment, and polarity. In the 2.2 modes, Sub 1 and Sub 2 are set separately; the derived Main/Sub delays are shown for reference. Subwoofer modes need an output device with at least four channels.
 
+On devices with more than two outputs, **Output Routing** assigns the logical signals Main L, Main R, Sub 1, and Sub 2 to hardware outputs. Each output carries one signal or stays silent (Off); one signal may feed several outputs. The default keeps Main L/R on Out 1/2 and Sub 1/2 on Out 3/4. Assignments are stored per device and survive tier changes: outputs that do not exist in the active tier keep their saved assignment and are marked inactive until the tier returns.
+
 ### 5.4 Sample rate
 
 **Sample Rate** defaults to **Auto**: the PipeWire graph and DAC follow the effective playback rate of the current source (local files, radio, Spotify, Bluetooth can differ). A fixed rate forces one clock; FXRoute rejects rates the selected output does not support and caps processing at 384 kHz. Switching policy can restart the audio path, so stop playback first and re-check the output afterwards. Use Auto when sources with different native rates play together; use a fixed rate when the DAC, DSP chain, or external hardware needs one clock.
+
+Some USB interfaces offer fewer hardware channels at higher rates. For known profiles (Scarlett 16i16, 18i16, and 18i20 4th Gen), **Channel Tier** selects the channel inventory explicitly — for example 18 channels at 44.1/48 kHz, 14 at 88.2/96 kHz, 10 at 176.4/192 kHz on the 16i16. Sample-rate changes always stay inside the selected tier; they never switch tiers by themselves. Switching tiers reprobes the device, so stop playback first. A fixed rate that the new tier does not offer moves to the same rate family inside that tier.
 
 ## 6. Measurement assistant
 
@@ -197,7 +201,7 @@ The aligned modes need separate saved L/R measurements with valid direct-arrival
 The FXRoute logo opens **Technical settings**:
 
 - **Providers** — install or remove each streaming backend, show/hide its tab, and connect or disconnect accounts
-- **Audio Output** — output device, **Output Mode** (Stereo, 2.1, 2.2, 2.2 Stereo Bass), and **Sample Rate** policy
+- **Audio Output** — output device, **Output Mode** (Stereo, 2.1, 2.2, 2.2 Stereo Bass), **Sample Rate** policy, **Channel Tier** (on supported interfaces), and **Output Routing** (on devices with more than two outputs)
 - **Music Library** — local folder or a discovered/entered SMB share
 - **Source** — active input mode and Bluetooth status
 - **Device Name** — the `<name>.local` address on the LAN

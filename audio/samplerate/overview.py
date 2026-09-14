@@ -192,6 +192,7 @@ def _build_selected_output_payload(selected_key: str | None, current_name: str |
                 "is_default": selected_output.get("is_default", False),
                 "sample_spec": selected_output.get("sample_spec"),
                 "channels": selected_output.get("channels"),
+                "device_profile": selected_output.get("device_profile"),
                 "active_rate": selected_output.get("active_rate"),
                 "supported_rates": list(selected_output.get("supported_rates") or []),
             }
@@ -318,13 +319,17 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
         # native_supported_rates is the raw hardware/PipeWire capability;
         # supported_rates is capped at the FXRoute DSP processing maximum and
         # is the only list the API/UI may offer for FXRoute playback.
+        channels = _parse_sample_spec_channels(details.get("sample_spec")) or sink.get("channels")
+        from audio.device_profiles import discover_profile
+        device_profile = discover_profile(str(name or ""), details, channels)
         explicit_outputs.append({
             "id": sink.get("id"),
             "key": name,
             "name": name,
             "label": label,
             "sample_spec": details.get("sample_spec") or sink.get("sample_spec"),
-            "channels": _parse_sample_spec_channels(details.get("sample_spec")) or sink.get("channels"),
+            "channels": channels,
+            "device_profile": device_profile,
             "active_rate": sink.get("active_rate"),
             "supported_rates": effective_supported_rates(native_supported_rates),
             "native_supported_rates": native_supported_rates,
@@ -365,6 +370,8 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
     # the silent-active watcher all describe the same port topology instead
     # of each assuming playback_FL/FR/RL/RR.
     effective_output_key = str((effective_output or {}).get("key") or "")
+    from audio.output_routing import routing_payload
+    output_routing = routing_payload(effective_output_key, (effective_output or {}).get("channels"))
     hardware_playback_ports = list(
         resolve_hardware_playback_ports(port_listing, effective_output_key)
     )
@@ -409,6 +416,7 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
         "outputs": explicit_outputs,
         "output_mode": {
             **output_mode,
+            "output_routing": output_routing,
             "routing": {
                 "main_pair": [1, 2],
                 "sub_pair": [3, 4],

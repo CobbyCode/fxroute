@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
+from audio.output_routing import output_route_pairs
 from audio.output_ports import (
     HARDWARE_CHANNEL_ORDER,
     hardware_playback_port_fallback_from_mode,
@@ -208,6 +209,13 @@ class DSPRuntimeConfig:
     sample_rate: int
     hardware_ports: tuple[str, ...]
     layout: tuple[dict[str, Any], ...]
+    output_routes: tuple[tuple[int, str], ...] | None = None
+
+    @property
+    def route_pairs(self) -> tuple[tuple[int, str], ...]:
+        if self.output_routes is not None:
+            return self.output_routes
+        return tuple(enumerate(self.hardware_ports, 1))
 
     @classmethod
     def from_overview(cls, overview: dict[str, Any], *,
@@ -253,7 +261,12 @@ class DSPRuntimeConfig:
                 {"name": "SUB1", "routes": [{"input": 0, "gain": 0.0}]},
                 {"name": "SUB2", "routes": [{"input": 1, "gain": 0.0}]},
             ))
-        return cls(bass.output_mode, bass.output_key, bass.sample_rate, tuple(ports), tuple(layout))
+        mode = overview.get("output_mode") or {}
+        routes = None
+        if mode.get("output_routing") and bass.output_channels > 2:
+            ports = list(hardware_ports or mode.get("hardware_playback_ports") or ports)
+            routes = output_route_pairs(mode, ports)
+        return cls(bass.output_mode, bass.output_key, bass.sample_rate, tuple(ports), tuple(layout), routes)
 
     @staticmethod
     def _resolve_ports(bass: BassManagementConfig,
@@ -381,12 +394,12 @@ class DSPRuntime:
         # the hardware side is resolved, so a direct source→sink link is
         # removed no matter how the device names its playback ports.
         for node in ("mpv", "spotify"):
-            for index, port in enumerate(self._config.hardware_ports):
-                channel = HARDWARE_CHANNEL_ORDER[index] if index < len(HARDWARE_CHANNEL_ORDER) else index + 1
-                await self._run((
-                    "pw-link", "-d", f"{node}:output_{channel}",
-                    f"{self._config.output_key}:{port}",
-                ))
+            for port in self._config.hardware_ports:
+                for channel in HARDWARE_CHANNEL_ORDER:
+                    await self._run((
+                        "pw-link", "-d", f"{node}:output_{channel}",
+                        f"{self._config.output_key}:{port}",
+                    ))
 
     async def reclean_direct_dsp_links(self) -> None:
         await self._reclean_guarded()
@@ -399,6 +412,7 @@ class DSPRuntime:
                 "config": {"sample_rate": self._config.sample_rate, "output_mode": self._config.output_mode,
                             "output_key": self._config.output_key,
                             "hardware_ports": list(self._config.hardware_ports),
+                            "output_routes": list(self._config.route_pairs),
                             "layout": [dict(channel) for channel in getattr(self._config, "layout", ())]} if self._config else None,
                 "last_error": self._error, "last_started_at": self._started_at,
                 "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
@@ -781,8 +795,8 @@ class DSPRuntime:
     async def _reconcile_output_links(self, config: DSPRuntimeConfig) -> None:
         """Reconcile live hardware edges, including links created by other clients."""
         desired = [
-            PipeWireLink(f"{DSP_NODE_NAME}:output_{index + 1}", f"{config.output_key}:{port}")
-            for index, port in enumerate(config.hardware_ports)
+            PipeWireLink(f"{DSP_NODE_NAME}:output_{signal}", f"{config.output_key}:{port}")
+            for signal, port in config.route_pairs
         ]
         result = await self._run(("pw-link", "-l"))
         if result.returncode:

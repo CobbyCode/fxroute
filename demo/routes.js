@@ -118,11 +118,39 @@
     }
 
     // ── Audio output model ──────────────────────────────────────────────
+    const SCARLETT_TIERS = [
+        { id: '18ch', channels: 18, rates: [44100, 48000], probe_rate: 48000 },
+        { id: '14ch', channels: 14, rates: [88200, 96000], probe_rate: 96000 },
+        { id: '10ch', channels: 10, rates: [176400, 192000], probe_rate: 192000 },
+    ];
+    const SCARLETT_KEY = 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output';
+    let scarlettTierId = '18ch';
+    function scarlettTier() { return SCARLETT_TIERS.find(t => t.id === scarlettTierId) || SCARLETT_TIERS[0]; }
+    function rateInTier(rate, rates) {
+        if (!rates.length) throw new Error('Channel tier has no rates');
+        if (rates.includes(rate)) return rate;
+        const family = rate && rate % 44100 === 0 ? 44100 : 48000;
+        const candidates = rates.filter(v => v % family === 0);
+        const pool = candidates.length ? candidates : rates;
+        return pool.slice().sort((a, b) => Math.abs(a - (rate || 48000)) - Math.abs(b - (rate || 48000)))[0];
+    }
+    const ROUTING_SIGNALS = ['Off', 'Main L', 'Main R', 'Sub 1', 'Sub 2'];
+    const routingStore = {};
+    function routingAssignments(key, channels) {
+        const saved = routingStore[key];
+        const base = Array.isArray(saved) ? saved.slice() : [1, 2, 3, 4];
+        while (base.length < channels) base.push(0);
+        return {
+            assignments: base.slice(0, channels),
+            inactive: base.map((v, i) => (i >= channels && v ? i + 1 : 0)).filter(Boolean),
+            full: base,
+        };
+    }
     const OUTPUTS = [
         { key: 'alsa_output.pci-0000_00_1f.3.analog-stereo', name: 'Built-in Audio', label: 'Built-in Audio', description: 'Analog Stereo', channels: 2, active_rate: 48000, selectable: true, default: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
         { key: 'alsa_output.usb-DEMO_DAC-00.analog-stereo', name: 'Demo USB DAC', label: 'Demo USB DAC', description: 'Hi-Res USB Audio', channels: 4, active_rate: 96000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
         { key: 'alsa_output.usb-MOTU_M4-00.analog-surround-40', name: 'MOTU M4', label: 'MOTU M4', description: '4-Channel USB Audio Interface', channels: 4, active_rate: 48000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000] },
-        { key: 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output', name: 'Focusrite Scarlett 16i16', label: 'Focusrite Scarlett 16i16', description: '18-Channel USB Audio Interface', channels: 18, active_rate: 44100, selectable: true, supported_rates: [44100, 48000] },
+        { key: SCARLETT_KEY, name: 'Focusrite Scarlett 16i16', label: 'Focusrite Scarlett 16i16', description: '18-Channel USB Audio Interface', channels: 18, active_rate: 44100, selectable: true, supported_rates: [44100, 48000] },
     ];
     // The demo starts on the 4-channel interface so the default 2.2 mode has
     // the channels it needs (Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2).
@@ -240,17 +268,32 @@
         return ['stereo', 'subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'].includes(mode) ? mode : 'stereo';
     }
 
+    function scarlettOutputEntry() {
+        const tier = scarlettTier();
+        const base = OUTPUTS.find(o => o.key === SCARLETT_KEY);
+        return { ...base, channels: tier.channels, active_rate: samplerate.active_rate, supported_rates: tier.rates.slice(),
+            device_profile: { id: 'scarlett-16i16-4th-gen', tiers: SCARLETT_TIERS.map(x => ({ ...x, rates: x.rates.slice() })), active_tier: tier.id, source: 'alsa-usb-playback', manual: true } };
+    }
+    function outputEntry(out) {
+        if (out.key === SCARLETT_KEY) return scarlettOutputEntry();
+        return { ...out };
+    }
     function outputsPayload() {
-        const out = selectedOutput();
+        const out = outputEntry(selectedOutput());
+        const routing = routingAssignments(out.key, out.channels);
+        const mode = { ...outputMode, effective_output_channels: out.channels,
+            output_routing: { available: out.channels > 2, device_key: out.key, assignments: routing.assignments,
+                customized: Object.hasOwn(routingStore, out.key),
+                signals: ROUTING_SIGNALS.map((label, id) => ({ id, label })), inactive_assignments: routing.inactive } };
         return {
             loaded: true,
             available: true,
             default_output: { key: OUTPUTS[0].key, target_name: OUTPUTS[0].name, target_label: OUTPUTS[0].label },
-            selected_output: { key: out.key, label: out.name, channels: out.channels, active_rate: out.active_rate, supported_rates: out.supported_rates },
+            selected_output: { key: out.key, label: out.name, channels: out.channels, active_rate: out.active_rate, supported_rates: out.supported_rates, device_profile: out.device_profile },
             current_output: { key: out.key, label: out.name, channels: out.channels, active_rate: out.active_rate },
-            outputs: OUTPUTS.map(o => ({ ...o })),
+            outputs: OUTPUTS.map(o => outputEntry(o)),
             notes: [],
-            output_mode: outputMode,
+            output_mode: mode,
         };
     }
 
@@ -1728,6 +1771,38 @@
             }
             return j(outputsPayload());
         }
+        if (p === '/api/audio/output-routing') {
+            if (post) {
+                const key = String(body.key || '');
+                const out = outputEntry(selectedOutput());
+                if (key !== out.key) return err('Selected output changed; refresh audio settings', 400);
+                const values = body.assignments;
+                if (!Array.isArray(values) || values.length !== out.channels || values.some(v => !Number.isInteger(v) || v < 0 || v > 4)) {
+                    return err('Assign one signal (0-4) to each available hardware output', 400);
+                }
+                const prev = routingStore[key];
+                const full = values.slice();
+                if (Array.isArray(prev) && prev.length > full.length) full.push(...prev.slice(full.length));
+                routingStore[key] = full;
+                return j(outputsPayload());
+            }
+            return j(outputsPayload());
+        }
+        if (p === '/api/audio/channel-tier') {
+            if (post) {
+                const key = String(body.key || '');
+                const out = outputEntry(selectedOutput());
+                if (key !== out.key) return err('Selected output changed; refresh audio settings', 400);
+                if (key !== SCARLETT_KEY) return err('Selected output has no supported channel-tier profile', 400);
+                const tier = SCARLETT_TIERS.find(x => x.id === String(body.tier || ''));
+                if (!tier) return err('Selected output has no such channel tier', 400);
+                scarlettTierId = tier.id;
+                samplerate.active_rate = rateInTier(samplerate.policy?.rate || out.active_rate || 48000, tier.rates);
+                if (samplerate.policy?.mode === 'fixed') samplerate.policy = { mode: 'fixed', rate: samplerate.active_rate };
+                return j(outputsPayload());
+            }
+            return j(outputsPayload());
+        }
         if (p === '/api/audio/output-mode') {
             if (post) {
                 const mode = normalizeOutputModeName(String(body.mode || 'stereo'));
@@ -1760,6 +1835,9 @@
             if (post) {
                 const mode = String(body.mode || 'auto');
                 const rate = Number(body.rate || 0);
+                const out = outputEntry(selectedOutput());
+                const tierRates = out.key === SCARLETT_KEY ? scarlettTier().rates : out.supported_rates;
+                if (mode === 'fixed' && rate && !tierRates.includes(rate)) return err('Selected output does not support this sample rate', 400);
                 samplerate = {
                     ...samplerate,
                     mode: mode === 'fixed' ? 'fixed' : 'auto',

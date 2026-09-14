@@ -426,6 +426,8 @@ def _parse_pactl_sinks_detailed(output: str) -> dict[str, dict[str, Any]]:
             in_ports = False
         elif stripped.startswith('device.description = '):
             current['device_description'] = _strip_quoted_value(stripped)
+        elif stripped.startswith(('alsa.card = ', 'api.alsa.card = ')):
+            current['alsa_card'] = _strip_quoted_value(stripped)
         elif stripped == 'Ports:':
             in_ports = True
         elif stripped.startswith('Active Port:'):
@@ -630,4 +632,3 @@ def _safe_int(value: str | None) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-

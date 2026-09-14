@@ -867,6 +867,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         playback_graph_links_complete=lambda *a, **k: playback_orchestration.configured().playback_graph_links_complete(*a, **k),
         log_playback_graph_diagnosis=lambda *a, **k: playback_orchestration.configured().log_playback_graph_diagnosis(*a, **k),
         coordinator_reconcile_post_start_graph=lambda *a, **k: playback_orchestration.configured().reconcile_post_start_graph(*a, **k),
+        audio_configuration_lock=lambda: measurement_sr_session.lock,
     )
 
 
@@ -3845,6 +3846,85 @@ async def save_audio_output_selection_route(request: Request):
         raise bad_request(exc)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to switch audio output: {exc}")
+
+
+@app.post("/api/audio/output-routing")
+async def save_audio_output_routing_route(request: Request):
+    from audio.output_routing import validate_assignments
+
+    if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
+        raise HTTPException(status_code=423, detail="Measurement is active; output routing is locked")
+    try:
+        body = await request.json()
+        overview = await asyncio.to_thread(get_audio_output_overview)
+        output = overview.get("selected_output") or {}
+        if body.get("key") != output.get("key"):
+            raise ValueError("Selected output changed; refresh audio settings")
+        channels = int(output.get("channels") or 0)
+        assignments = validate_assignments(body.get("assignments"), channels)
+        target = copy.deepcopy(overview)
+        target["output_mode"]["output_routing"]["assignments"] = assignments
+        context = await _coordinator_current_playback_context()
+        status = get_samplerate_status()
+        target_rate = status.get("active_rate")
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            target_rate = status.get("force_rate")
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            raise RuntimeError("current hardware sample rate is unavailable")
+        await _run_coordinated_transition(TransitionRequest(
+            operation="output-mode-switch", source=str(context.get("source") or "local"),
+            target_rate=target_rate, target_url=context.get("target_url"),
+            target_track=dict(context.get("target_track") or {}),
+            should_play=bool(context.get("should_play")), reload_source=False,
+            detail="api-audio-output-routing", output_mode_target=target,
+            output_mode_config=samplerate._load_audio_output_mode(),
+            output_routing_config={"key": output["key"], "channels": channels, "assignments": assignments},
+        ))
+        return await audio_output_overview()
+    except (ValueError, TypeError, KeyError) as exc:
+        raise bad_request(exc) from exc
+    except PlaybackTransitionFailure as exc:
+        raise _transition_error_http(exc) from exc
+
+
+@app.post("/api/audio/channel-tier")
+async def save_audio_channel_tier_route(request: Request):
+    from audio.device_profiles import rate_in_tier
+
+    if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
+        raise HTTPException(status_code=423, detail="Measurement is active; channel-tier switch is locked")
+    try:
+        body = await request.json()
+        overview = await asyncio.to_thread(get_audio_output_overview)
+        output = overview.get("selected_output") or {}
+        if body.get("key") != output.get("key"):
+            raise ValueError("Selected output changed; refresh audio settings")
+        profile = output.get("device_profile") or {}
+        tier = next((item for item in profile.get("tiers", []) if item["id"] == body.get("tier")), None)
+        if tier is None:
+            raise ValueError("Selected output has no such channel tier")
+        if tier["id"] == profile.get("active_tier"):
+            return await audio_output_overview()
+        context = await _coordinator_current_playback_context()
+        source = str(context.get("source") or "local")
+        policy = samplerate.load_sample_rate_policy()
+        source_rate = playback_orchestration.configured().coordinator_source_rate(source, context.get("target_track"))
+        target_rate = rate_in_tier(policy.get("rate") or source_rate or output.get("active_rate"), tier["rates"])
+        if policy.get("mode") == "fixed":
+            policy = {"mode": "fixed", "rate": target_rate}
+        await _run_coordinated_transition(TransitionRequest(
+            operation="sample-rate-policy", source=source, target_rate=target_rate,
+            target_url=context.get("target_url"), target_track=dict(context.get("target_track") or {}),
+            should_play=bool(context.get("should_play")), reload_source=bool(context.get("target_url")),
+            rate_change=True, detail="api-audio-channel-tier", sample_rate_policy=policy,
+            channel_tier={"key": output["key"], "tier": dict(tier)},
+            **(playback_queue.queue.native_request_fields() if source == "local" else {}),
+        ))
+        return await audio_output_overview()
+    except (ValueError, TypeError, KeyError) as exc:
+        raise bad_request(exc) from exc
+    except PlaybackTransitionFailure as exc:
+        raise _transition_error_http(exc) from exc
 
 
 @app.post("/api/audio/output-mode")

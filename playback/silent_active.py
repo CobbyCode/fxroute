@@ -19,6 +19,7 @@ from audio import pw_link
 from audio import sink_inputs
 from audio.samplerate import OUTPUT_MODE_STEREO, get_audio_output_overview
 from audio.system_volume import get_output_volume
+from audio.output_routing import output_route_pairs
 from audio.output_ports import (
     hardware_playback_port_fallback_from_mode,
     hardware_playback_ports_from_mode,
@@ -81,10 +82,11 @@ class SilentActiveRecovery:
         # Discovery resolves the pair once; the sink's own channel map covers
         # the suspended case, and the semantic names are only the fallback for
         # payloads without any topology (tests, legacy).
+        count = int(output_mode.get("effective_output_channels") or 2)
         channel_map_ports = hardware_playback_port_fallback_from_mode(
-            output_mode, count=2)
+            output_mode, count=count)
         ports = hardware_playback_ports_from_mode(
-            output_mode, channel_map_ports or ("playback_FL", "playback_FR"), count=2)
+            output_mode, channel_map_ports or ("playback_FL", "playback_FR"), count=count)
         if len(ports) < 2:
             ports = channel_map_ports[:2] or ("playback_FL", "playback_FR")
         # The watcher runs periodically, so a payload without any resolved port
@@ -94,9 +96,9 @@ class SilentActiveRecovery:
         discovered = output_mode.get("hardware_playback_ports")
         if not (isinstance(discovered, (list, tuple)) and discovered) and not channel_map_ports:
             warn_semantic_playback_fallback(output_key)
-        return (
-            _contains_link(links_text, "fxroute_dsp:output_1", f"{output_key}:{ports[0]}")
-            and _contains_link(links_text, "fxroute_dsp:output_2", f"{output_key}:{ports[1]}")
+        return all(
+            _contains_link(links_text, f"fxroute_dsp:output_{signal}", f"{output_key}:{port}")
+            for signal, port in output_route_pairs(output_mode, ports) if signal <= 2
         )
 
     def _snapshot(
