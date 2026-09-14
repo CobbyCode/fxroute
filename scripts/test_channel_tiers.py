@@ -96,7 +96,11 @@ class HardwareTierTests(unittest.TestCase):
             return json.dumps([{"name": self.key, "sample_specification": f"s32le {self.channels}ch {self.rate}Hz",
                                 "volume": {"aux0": {"value_percent": f"{self.volume}%"}}, "mute": self.mute}])
         if command == ["pactl", "list", "cards"]:
-            return f"Name: {self.card}\nActive Profile: {self.profile}\n"
+            return (f"Name: {self.card}\nProfiles:\n"
+                    "  off: Off (sinks: 0, sources: 0, priority: 0, available: yes)\n"
+                    "  output:multichannel-output+input:multichannel-input: Multichannel Duplex (sinks: 1, sources: 1, priority: 101, available: yes)\n"
+                    "  pro-audio: Pro Audio (sinks: 1, sources: 1, priority: 1, available: yes)\n"
+                    f"Active Profile: {self.profile}\n")
         if command[:2] == ["pw-metadata", "-n"]:
             self.assertEqual(self.profile, "off", "Release the device before changing the probe rate")
             self.force_rate = int(command[-1])
@@ -145,6 +149,34 @@ class HardwareTierTests(unittest.TestCase):
         rule = change.rule_path.read_text()
         self.assertIn('"api.acp.pro-channels": 14', rule)
         self.assertIn('"api.acp.probe-rate": 96000', rule)
+
+    def test_default_tier_removes_rule_and_restores_multichannel_profile(self):
+        from audio.channel_tiers import default_output_profile
+        cards = ("Profiles:\n"
+                 "  off: Off (sinks: 0, sources: 0, priority: 0, available: yes)\n"
+                 "  output:multichannel-output+input:multichannel-input: Multichannel Duplex (sinks: 1, sources: 1, priority: 101, available: yes)\n"
+                 "  pro-audio: Pro Audio (sinks: 1, sources: 1, priority: 1, available: yes)\n"
+                 "Active Profile: pro-audio\n")
+        self.assertEqual(default_output_profile(cards, self.card),
+                         "output:multichannel-output+input:multichannel-input")
+        self.assertIsNone(default_output_profile("Profiles:\n  pro-audio: Pro Audio (sinks: 1, sources: 1, priority: 1, available: yes)\n", self.card))
+        # Currently on the small tier; switching back removes the rule file,
+        # restores the stock profile and migrates the sink identity back.
+        self.key, self.channels, self.rate = self.new_key, 14, 96000
+        self.profile = "pro-audio"
+        from audio.samplerate.persistence import _save_audio_output_selection
+        _save_audio_output_selection(self.new_key)
+        change = channel_tiers.ChannelTierChange(
+            self.new_key, {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+            48000, run=self.run_command, default_tier=True,
+        )
+        change.rule_path.parent.mkdir(parents=True, exist_ok=True)
+        change.rule_path.write_text("stale rule")
+        change.capture()
+        change.apply()
+        self.assertFalse(change.rule_path.exists())
+        self.assertEqual(_load_audio_output_selection()["selected_key"] if False else __import__("audio.samplerate.persistence", fromlist=["_load_audio_output_selection"])._load_audio_output_selection()["selected_key"], self.old_key)
+        self.assertEqual((self.channels, self.rate, self.profile), (18, 48000, "output:multichannel-output+input:multichannel-input"))
 
     def test_reprobe_failure_restores_old_rule_selection_rate_and_volume(self):
         change = self.change()

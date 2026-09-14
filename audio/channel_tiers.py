@@ -24,14 +24,41 @@ from audio.samplerate.persistence import (
 )
 
 
+def default_output_profile(cards_output: str, card_name: str) -> str | None:
+    """Return the card's stock multichannel output profile, if advertised."""
+    in_profiles = False
+    candidates: list[str] = []
+    for raw_line in (cards_output or "").splitlines():
+        line = raw_line.strip()
+        if line == "Profiles:":
+            in_profiles = True
+            continue
+        if in_profiles and (line.startswith("Active Profile:") or line.startswith("Ports:")):
+            break
+        if in_profiles and "multichannel-output" in line and "available: yes" in line:
+            match = re.match(r"^(\S+):\s", line)
+            if match:
+                candidates.append(match.group(1))
+    for candidate in candidates:
+        if "+input:" in candidate:
+            return candidate
+    return candidates[0] if candidates else None
+
+
 class ChannelTierChange:
-    def __init__(self, output_key: str, tier: dict, target_rate: int, *, run: Callable = _run_command):
+    def __init__(self, output_key: str, tier: dict, target_rate: int, *, run: Callable = _run_command,
+                 default_tier: bool = False):
         if not profile_id(output_key) or not output_key.startswith("alsa_output."):
             raise ValueError("Selected output has no supported channel-tier profile")
         if target_rate not in tier.get("rates", []):
             raise ValueError("Target rate is not available in the selected channel tier")
         self.old_key = output_key
-        self.new_key = output_key.rsplit(".", 1)[0] + ".pro-output-0"
+        self.default_tier = bool(default_tier)
+        prefix = output_key.rsplit(".", 1)[0]
+        if self.default_tier:
+            self.new_key = prefix + ".multichannel-output" if output_key.endswith(".pro-output-0") else output_key
+        else:
+            self.new_key = prefix + ".pro-output-0"
         self.card = output_key.replace("alsa_output.", "alsa_card.", 1).rsplit(".", 1)[0]
         self.tier, self.target_rate, self.run = dict(tier), target_rate, run
         root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
@@ -66,7 +93,8 @@ class ChannelTierChange:
             raise RuntimeError("Selected hardware sink is unavailable")
         self.old_channels, self.old_rate = self._spec(sink)
         self.volume = self._volume(sink)
-        self.old_profile = _parse_pactl_card_active_profile(self.run(["pactl", "list", "cards"]), self.card)
+        self.cards_text = self.run(["pactl", "list", "cards"])
+        self.old_profile = _parse_pactl_card_active_profile(self.cards_text, self.card)
         if not self.old_profile or self.old_profile == "off":
             raise RuntimeError("Selected hardware card has no active profile")
         self.old_rule = self.rule_path.read_bytes() if self.rule_path.exists() else None
@@ -118,19 +146,28 @@ class ChannelTierChange:
             raise RuntimeError("Channel-tier change has no hardware snapshot")
         self.started = True
         self._release_and_pin(self.target_rate)
-        rule = {"monitor.alsa.rules": [{
-            "matches": [{"device.name": self.card}],
-            "actions": {"update-props": {
-                "api.acp.pro-channels": self.tier["channels"],
-                "api.acp.probe-rate": self.tier["probe_rate"],
-                "device.profile": "pro-audio",
-            }},
-        }]}
-        self._write_rule((json.dumps(rule, indent=2) + "\n").encode())
-        self._reopen(self.new_key, "pro-audio", self.tier["channels"])
+        if self.default_tier:
+            profile = default_output_profile(self.cards_text, self.card)
+            if profile is None:
+                raise RuntimeError("Selected hardware card has no multichannel output profile")
+            self._write_rule(None)
+            self._reopen(self.new_key, profile, self.tier["channels"])
+            old_suffix, new_suffix = ".pro-input-0", ".multichannel-input"
+        else:
+            rule = {"monitor.alsa.rules": [{
+                "matches": [{"device.name": self.card}],
+                "actions": {"update-props": {
+                    "api.acp.pro-channels": self.tier["channels"],
+                    "api.acp.probe-rate": self.tier["probe_rate"],
+                    "device.profile": "pro-audio",
+                }},
+            }]}
+            self._write_rule((json.dumps(rule, indent=2) + "\n").encode())
+            self._reopen(self.new_key, "pro-audio", self.tier["channels"])
+            old_suffix, new_suffix = ".multichannel-input", ".pro-input-0"
         if self.old_source_selection:
-            old_source = self.old_key.replace("alsa_output.", "alsa_input.", 1).rsplit(".", 1)[0] + ".multichannel-input"
-            new_source = old_source.rsplit(".", 1)[0] + ".pro-input-0"
+            old_source = self.old_key.replace("alsa_output.", "alsa_input.", 1).rsplit(".", 1)[0] + old_suffix
+            new_source = self.new_key.replace("alsa_output.", "alsa_input.", 1).rsplit(".", 1)[0] + new_suffix
             _audio_source_selection_path().write_bytes(self.old_source_selection.replace(old_source.encode(), new_source.encode()))
 
     def rollback(self) -> None:

@@ -119,7 +119,10 @@ class _RuntimeSnapshotMixin:
             selected_tier = dict(request.channel_tier.get("tier") or {})
             if output.get("key") != request.channel_tier.get("key") or selected_tier not in (output.get("device_profile") or {}).get("tiers", []):
                 raise ValueError("Selected output or channel tiers changed; refresh audio settings")
-            change = ChannelTierChange(output["key"], selected_tier, request.target_rate)
+            tiers = (output.get("device_profile") or {}).get("tiers") or []
+            largest = max([int(item.get("channels") or 0) for item in tiers if isinstance(item, dict)] or [0])
+            change = ChannelTierChange(output["key"], selected_tier, request.target_rate,
+                                       default_tier=bool(tiers) and int(selected_tier.get("channels") or 0) >= largest)
             await self._deps.drain_worker(change.capture)
             snapshot["channel_tier_change"] = change
         return snapshot
