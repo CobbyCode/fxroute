@@ -203,11 +203,43 @@ class BashParityTests(unittest.TestCase):
                 self.assertTrue(name.startswith("FXRoute "))
                 self.assertNotIn(".local", name)
 
+    def test_bash_empty_args_match_python_fallback(self):
+        # An explicitly empty hostname/machine-id stays empty in both
+        # implementations (only an unset argument falls back to the system
+        # value); both sides then consult the same suffix file.
+        from streaming.spotify import connect_name as py_connect
+        with tempfile.TemporaryDirectory() as td:
+            suffix = Path(td) / "device-suffix"
+            suffix.write_text("ab12\n", encoding="utf-8")
+            for hostname in ("fxroute", "localhost", ""):
+                with self.subTest(hostname=hostname):
+                    expected = py_connect.derive_spotify_connect_name(hostname, "", "ab12")
+                    self.assertEqual(expected, "FXRoute AB12")
+                    self.assertEqual(self._bash_name_with_suffix(hostname, "", suffix), expected)
+
+    def _bash_name_with_suffix(self, hostname: str, machine_id: str, suffix: Path) -> str:
+        code = (
+            f"{self.helpers}\n"
+            'fxroute_spotify_connect_name "$FX_HOST" "$FX_MID" "$FX_SUFFIX"\n'
+        )
+        result = subprocess.run(
+            ["bash", "-c", code],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "FX_HOST": hostname, "FX_MID": machine_id,
+                 "FX_SUFFIX": str(suffix)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
     def test_bash_persisted_suffix_is_stable(self):
         with tempfile.TemporaryDirectory() as td:
             suffix = f"{td}/device-suffix"
             code = (
                 f"{self.helpers}\n"
+                # Same passthrough stub as the installer-sync test below:
+                # persisting the suffix must actually write the file.
+                "run_as_target_user() { \"$@\"; }\n"
                 "a=\"$(fxroute_spotify_connect_name fxroute '' \"$FX_SUFFIX\")\"\n"
                 "b=\"$(fxroute_spotify_connect_name fxroute '' \"$FX_SUFFIX\")\"\n"
                 "printf '%s\\n%s\\n' \"$a\" \"$b\"\n"

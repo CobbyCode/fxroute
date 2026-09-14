@@ -3061,8 +3061,12 @@ fxroute_spotify_persistent_suffix() {
 fxroute_spotify_connect_name() {
   # Short unique Spotify Connect name from hostname/machine-id (read-only).
   # Never touches hostname, Avahi, Caddy, or DNS; never prints .local.
-  local host="${1:-$(hostname 2>/dev/null || true)}"
-  local mid="${2:-$(cat /etc/machine-id 2>/dev/null || true)}"
+  # An explicitly empty hostname/machine-id stays empty (only an unset
+  # argument falls back to the system value), mirroring the Python
+  # implementation; the suffix file keeps :- since both sides treat an
+  # empty path as missing.
+  local host="${1-$(hostname 2>/dev/null || true)}"
+  local mid="${2-$(cat /etc/machine-id 2>/dev/null || true)}"
   local suffix_file="${3:-$HOME/.config/fxroute/device-suffix}"
   local rest="" label="" clean="" suffix=""
   host="$(printf '%s' "$host" | tr 'A-Z' 'a-z' | sed -e 's/^[[:space:]]*//; s/[[:space:]]*$//; s/\.local$//; s/\.*$//')"

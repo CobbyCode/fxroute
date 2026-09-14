@@ -34,7 +34,10 @@ class MeasurementPersistence:
 
     def __init__(self, store):
         self._store = store
-        self._last_retention_run_monotonic = 0.0
+        # Never ran: the first retention scan must not be throttled away.
+        # (0.0 wrongly throttles it on hosts with uptime below the throttle
+        # interval, since monotonic time starts near zero at boot.)
+        self._last_retention_run_monotonic = -float("inf")
 
     def list_measurements(self) -> dict[str, Any]:
         measurements = []
