@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import audio.samplerate as samplerate
 import measurement.autosub as autosub
+import measurement.autosub.deps as autosub_deps
+import measurement.autosub.runners as autosub_runners
 import main
 import measurement.session as measurement_session
 import measurement.spl_calibration as spl_calibration
@@ -312,14 +314,14 @@ class MeasurementEntryEpochTests(unittest.IsolatedAsyncioTestCase):
             "error": None,
             "message": "",
         }
-        autosub._AUTO_SUB_JOBS[job_id] = job
-        if not autosub._auto_sub_lock.locked():
-            await autosub._auto_sub_lock.acquire()
+        autosub_deps._AUTO_SUB_JOBS[job_id] = job
+        if not autosub_deps._auto_sub_lock.locked():
+            await autosub_deps._auto_sub_lock.acquire()
         try:
             with patch.object(main, "measurement_sr_session", self.session), patch.object(
                 autosub.runners.optimize_22, "_finish_auto_sub_worker", new=AsyncMock()
             ) as finish:
-                await autosub._run_auto_sub_22_optimize(
+                await autosub_runners._run_auto_sub_22_optimize(
                     job_id=job_id,
                     input_id="mic-1",
                     mic_input_channel="1",
@@ -336,9 +338,9 @@ class MeasurementEntryEpochTests(unittest.IsolatedAsyncioTestCase):
                 )
             finish.assert_awaited_once_with(job, job_id)
         finally:
-            if autosub._auto_sub_lock.locked():
-                autosub._auto_sub_lock.release()
-            autosub._AUTO_SUB_JOBS.pop(job_id, None)
+            if autosub_deps._auto_sub_lock.locked():
+                autosub_deps._auto_sub_lock.release()
+            autosub_deps._AUTO_SUB_JOBS.pop(job_id, None)
 
         self.assertEqual(job["status"], "cancelled")
         self.assertIn("measurement window was closed", job["message"])

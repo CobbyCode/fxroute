@@ -9,7 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import main
-import measurement.autosub as autosub
+import measurement.autosub.jobs as autosub_jobs
+import measurement.autosub.measurement as autosub_measurement
+import measurement.autosub.scoring as autosub_scoring
 import measurement.analyzer as measurement_analyzer
 
 
@@ -35,7 +37,7 @@ class MainTargetAnchorTests(unittest.TestCase):
         self.target = {"key": "house", "label": "House", "provenance": "uploaded", "points": [[20, 4], [80, 2], [320, 0], [20000, -2]]}
 
     def analyze(self, refs=None, target=None, hp=True):
-        return autosub._analyze_auto_sub_main_target_anchor(
+        return autosub_measurement._analyze_auto_sub_main_target_anchor(
             target_curve=self.target if target is None else target,
             main_references=references(hp=hp) if refs is None else refs,
             crossover_hz=80, main_highpass_enabled=hp,
@@ -56,7 +58,7 @@ class MainTargetAnchorTests(unittest.TestCase):
         self.assertEqual(measurement_analyzer.measurement_level_reference_db(points), -10.0)
 
     def test_log_frequency_interpolation_is_exact_at_geometric_midpoint(self):
-        interpolated = autosub._auto_sub_log_interpolate_points([[100, 0], [400, 12]], [200])
+        interpolated = autosub_measurement._auto_sub_log_interpolate_points([[100, 0], [400, 12]], [200])
         self.assertEqual(interpolated, [[200.0, 6.0]])
 
     def test_target_is_interpolated_on_each_real_main_raster_without_extrapolation(self):
@@ -94,7 +96,7 @@ class MainTargetAnchorTests(unittest.TestCase):
         ]
         frequencies = [point[0] for point in log_points()]
         for target in targets:
-            target_values = dict(autosub._auto_sub_log_interpolate_points(target["points"], frequencies))
+            target_values = dict(autosub_measurement._auto_sub_log_interpolate_points(target["points"], frequencies))
             measured = [
                 [frequency, target_values[frequency] - 24.0 + (12.0 if 130 <= frequency <= 300 else 0.0)]
                 for frequency in frequencies
@@ -109,7 +111,7 @@ class MainTargetAnchorTests(unittest.TestCase):
         refs = references()
         target_before, refs_before = copy.deepcopy(target), copy.deepcopy(refs)
         first = self.analyze(refs=refs, target=target)
-        autosub._auto_sub_shared_bass_offset({"points": [[20, -1], [80, 1]]})
+        autosub_scoring._auto_sub_shared_bass_offset({"points": [[20, -1], [80, 1]]})
         second = self.analyze(refs=refs, target=target)
         self.assertEqual(target, target_before)
         self.assertEqual(refs, refs_before)
@@ -129,7 +131,7 @@ class MainTargetAnchorTests(unittest.TestCase):
             "auto_gain": {"available": False}, "main_references": references(),
             "main_target_anchor": anchor,
         }
-        autosub._finalize_autosub_job(job, "test-job")
+        autosub_jobs._finalize_autosub_job(job, "test-job")
         anchor["sides"]["left"]["aligned_points"][0][1] = 999
         self.assertNotEqual(job["result"]["main_target_anchor"]["sides"]["left"]["aligned_points"][0][1], 999)
 

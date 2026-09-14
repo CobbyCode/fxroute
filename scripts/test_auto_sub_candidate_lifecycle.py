@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import measurement.autosub as autosub
+import measurement.autosub.candidates as autosub_candidates
 
 
 class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -24,7 +25,7 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "sub2": {"level_db": 0.4, "alignment_ms": -2.54, "polarity": "normal"},
             },
         }
-        self.assertTrue(autosub._auto_sub_22_verify_subwoofers(
+        self.assertTrue(autosub_candidates._auto_sub_22_verify_subwoofers(
             persisted, expected, "subwoofer-2.2-stereo",
         ))
 
@@ -37,15 +38,15 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(sub=sub_key, field=field):
                 changed = copy.deepcopy(persisted)
                 changed["subwoofers"][sub_key][field] = value
-                self.assertFalse(autosub._auto_sub_22_verify_subwoofers(
+                self.assertFalse(autosub_candidates._auto_sub_22_verify_subwoofers(
                     changed, expected, "subwoofer-2.2-stereo",
                 ))
 
-        self.assertFalse(autosub._auto_sub_22_verify_subwoofers(
+        self.assertFalse(autosub_candidates._auto_sub_22_verify_subwoofers(
             {"mode": "subwoofer-2.2-stereo"}, expected, "subwoofer-2.2-stereo",
         ))
         for wrong_mode in ("stereo", "subwoofer-2.2"):
-            self.assertFalse(autosub._auto_sub_22_verify_subwoofers(
+            self.assertFalse(autosub_candidates._auto_sub_22_verify_subwoofers(
                 {**persisted, "mode": wrong_mode}, expected, "subwoofer-2.2-stereo",
             ))
 
@@ -69,7 +70,7 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
              patch.object(autosub.candidates, "_auto_sub_sync_dsp_runtime", new=AsyncMock()) as sync, \
              patch.object(autosub.candidates, "get_audio_output_overview", return_value=live), \
              patch.object(autosub.candidates.asyncio, "sleep", side_effect=wait):
-            result = await autosub._auto_sub_apply_candidate(
+            result = await autosub_candidates._auto_sub_apply_candidate(
                 output_mode="subwoofer-2.2",
                 global_config={"crossover_frequency_hz": 80},
                 subwoofers_config={"sub1": {"alignment_ms": 8.0}},
@@ -89,7 +90,7 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
              patch.object(autosub.candidates, "_dsp_runtime", return_value=AsyncMock()), \
              patch.object(autosub.candidates.logger, "exception"), \
              patch.object(autosub.candidates, "asyncio") as asyncio_mock:
-            result = await autosub._auto_sub_apply_candidate(
+            result = await autosub_candidates._auto_sub_apply_candidate(
                 output_mode="subwoofer-2.1",
                 global_config={},
                 subwoofers_config=None,
@@ -111,7 +112,7 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "sub_polarity": "normal",
             },
         }
-        self.assertTrue(autosub._auto_sub_21_verify_restored(copy.deepcopy(snapshot), snapshot))
+        self.assertTrue(autosub_candidates._auto_sub_21_verify_restored(copy.deepcopy(snapshot), snapshot))
         drifts = [
             ("mode", "subwoofer-2.2"),
             ("sub_alignment_ms", 0.0),
@@ -127,7 +128,7 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     drifted["mode"] = value
                 else:
                     drifted["subwoofer"][key] = value
-                self.assertFalse(autosub._auto_sub_21_verify_restored(drifted, snapshot))
+                self.assertFalse(autosub_candidates._auto_sub_21_verify_restored(drifted, snapshot))
 
     async def test_restore_21_reapplies_once_on_transient_mismatch(self):
         """A transient read-back mismatch re-applies the restore once."""
@@ -148,7 +149,7 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
             return len(calls) == 2  # first read-back lags, second matches
 
         with patch.object(autosub.candidates, "_auto_sub_apply_candidate", side_effect=fake_apply):
-            restored = await autosub._restore_auto_sub_original_config(snapshot)
+            restored = await autosub_candidates._restore_auto_sub_original_config(snapshot)
         self.assertTrue(restored)
         self.assertEqual(len(calls), 2)
         mode, global_config, subwoofers_config, verify = calls[0]
@@ -170,7 +171,7 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
             return False
 
         with patch.object(autosub.candidates, "_auto_sub_apply_candidate", side_effect=always_fail):
-            restored = await autosub._restore_auto_sub_original_config(snapshot)
+            restored = await autosub_candidates._restore_auto_sub_original_config(snapshot)
         self.assertFalse(restored)
         self.assertEqual(len(calls), 2)
 
@@ -193,7 +194,7 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         with patch.object(autosub.candidates, "_auto_sub_apply_candidate", side_effect=fake_apply):
-            restored = await autosub._restore_auto_sub_original_config(snapshot)
+            restored = await autosub_candidates._restore_auto_sub_original_config(snapshot)
         self.assertTrue(restored)
         self.assertEqual(captured["mode"], "subwoofer-2.2")
         # Both subs are restored at their original alignments and polarities.

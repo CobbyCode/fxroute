@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import audio.samplerate as samplerate
-import measurement.autosub as autosub
+import measurement.autosub.scoring as autosub_scoring
 from measurement.autosub.runners import optimize as runner
 
 
@@ -54,7 +54,7 @@ def make_score_fn(scores_by_delay, default=0.1):
             "runner_up": results[1] if len(results) > 1 else None,
             "results": results,
             "scored_candidates": rows,
-            "confidence": autosub._auto_sub_scoring_confidence(results),
+            "confidence": autosub_scoring._auto_sub_scoring_confidence(results),
         }
 
     return score

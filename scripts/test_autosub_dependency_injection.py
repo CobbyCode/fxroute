@@ -18,6 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import measurement.autosub as autosub
+import measurement.autosub.candidates as autosub_candidates
+import measurement.autosub.deps as autosub_deps
+import measurement.autosub.jobs as autosub_jobs
 
 
 def overview_21(alignment=2.34, mode="subwoofer-2.1", fc=80, level=-3.0,
@@ -72,13 +75,13 @@ def _configure(*, dsp_runtime=None, store=None, session=None, manager=None):
 
 class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
-        autosub._AUTO_SUB_JOBS.clear()
-        autosub._AUTO_SUB_WORKER_TASKS.clear()
-        for task in list(autosub._AUTO_SUB_CLEANUP_TASKS):
+        autosub_deps._AUTO_SUB_JOBS.clear()
+        autosub_deps._AUTO_SUB_WORKER_TASKS.clear()
+        for task in list(autosub_deps._AUTO_SUB_CLEANUP_TASKS):
             task.cancel()
-        autosub._AUTO_SUB_CLEANUP_TASKS.clear()
+        autosub_deps._AUTO_SUB_CLEANUP_TASKS.clear()
         try:
-            autosub._auto_sub_lock.release()
+            autosub_deps._auto_sub_lock.release()
         except RuntimeError:
             pass
 
@@ -90,7 +93,7 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
         _configure(dsp_runtime=runtime)
         persisted = overview_21()
         with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
-            await autosub._auto_sub_sync_dsp_runtime(
+            await autosub_candidates._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=persisted)
         runtime.sync.assert_awaited_once()
 
@@ -101,7 +104,7 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
         _configure(dsp_runtime=replacement)
         persisted = overview_21()
         with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
-            await autosub._auto_sub_sync_dsp_runtime(
+            await autosub_candidates._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=persisted)
         replacement.sync.assert_awaited_once()
         first.sync.assert_not_awaited()
@@ -109,13 +112,13 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_none_dsp_runtime_is_a_noop(self):
         _configure(dsp_runtime=None)
         with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
-            await autosub._auto_sub_sync_dsp_runtime(
+            await autosub_candidates._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=overview_21())
 
     async def test_shutdown_uses_injected_measurement_store(self):
         store = FakeStore()
         _configure(store=store)
-        autosub._AUTO_SUB_JOBS["j1"] = {
+        autosub_deps._AUTO_SUB_JOBS["j1"] = {
             "id": "j1",
             "status": "running",
             "cancel_requested": False,
@@ -129,16 +132,16 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
             "loudness": {"enabled": True, "params": {"volumeDb": -20.0}},
         })
         _configure(manager=manager)
-        captured = autosub._capture_auto_sub_playback_gain()
+        captured = autosub_jobs._capture_auto_sub_playback_gain()
         self.assertEqual(captured["volume_db"], -20.0)
         self.assertEqual(captured["source"], "loudness.params.volumeDb")
 
     async def test_finish_worker_uses_injected_measurement_session(self):
         session = FakeSession()
         _configure(session=session)
-        await autosub._auto_sub_lock.acquire()
+        await autosub_deps._auto_sub_lock.acquire()
         job = {"id": "j1", "status": "failed", "cancel_requested": False}
-        await autosub._finish_auto_sub_worker(job, "j1")
+        await autosub_jobs._finish_auto_sub_worker(job, "j1")
         session.unregister_auto_sub.assert_awaited_once_with("j1")
 
 

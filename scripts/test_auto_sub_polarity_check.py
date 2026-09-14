@@ -7,21 +7,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-import measurement.autosub as autosub
+import measurement.autosub.candidates as autosub_candidates
 
 
 class AutoSubPolarityTests(unittest.TestCase):
     def test_opposite_polarity(self):
-        self.assertEqual(autosub._auto_sub_opposite_polarity("normal"), "invert")
-        self.assertEqual(autosub._auto_sub_opposite_polarity("invert"), "normal")
+        self.assertEqual(autosub_candidates._auto_sub_opposite_polarity("normal"), "invert")
+        self.assertEqual(autosub_candidates._auto_sub_opposite_polarity("invert"), "normal")
 
     def test_incumbent_is_protected_for_unclear_gain(self):
-        result = autosub._auto_sub_polarity_decision({"score": 0.70}, {"score": 0.729})
+        result = autosub_candidates._auto_sub_polarity_decision({"score": 0.70}, {"score": 0.729})
         self.assertFalse(result["accepted"])
         self.assertEqual(result["reason"], "incumbent_protected_unclear_advantage")
 
     def test_clear_measured_gain_is_accepted(self):
-        result = autosub._auto_sub_polarity_decision({"score": 0.70}, {"score": 0.731})
+        result = autosub_candidates._auto_sub_polarity_decision({"score": 0.70}, {"score": 0.731})
         self.assertTrue(result["accepted"])
         self.assertEqual(result["reason"], "alternative_clearly_better")
 
@@ -30,7 +30,7 @@ class AutoSubPolarityTests(unittest.TestCase):
             "sub1": {"level_db": -3.0, "alignment_ms": 1.0, "polarity": "normal"},
             "sub2": {"level_db": -5.0, "alignment_ms": 2.0, "polarity": "invert"},
         }}
-        result = autosub._auto_sub_22_candidate_subwoofers(
+        result = autosub_candidates._auto_sub_22_candidate_subwoofers(
             snapshot, sub1_alignment_ms=3.0, sub2_alignment_ms=4.0,
             active_subs=("sub1", "sub2"), sub1_polarity="invert", sub2_polarity="normal",
         )
@@ -39,7 +39,7 @@ class AutoSubPolarityTests(unittest.TestCase):
 
     def test_inactive_sub_level_rule_remains_unchanged(self):
         snapshot = {"subwoofers": {"sub1": {}, "sub2": {}}}
-        result = autosub._auto_sub_22_candidate_subwoofers(
+        result = autosub_candidates._auto_sub_22_candidate_subwoofers(
             snapshot, sub1_alignment_ms=0, sub2_alignment_ms=0,
             active_subs=("sub1",), sub1_polarity="invert", sub2_polarity="invert",
         )

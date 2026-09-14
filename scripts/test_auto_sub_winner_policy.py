@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import measurement.autosub as autosub
+import measurement.autosub.scoring as autosub_scoring
 
 
 def scored(delay_ms, score, **extra):
@@ -27,7 +28,7 @@ class AutoSubWinnerPolicyTests(unittest.TestCase):
         incumbent = scored(0.0, 0.800)
         candidate = scored(1.0, 0.805)
 
-        decision = autosub._auto_sub_select_accepted_winner(
+        decision = autosub_scoring._auto_sub_select_accepted_winner(
             coarse_winner=candidate,
             fine_winner=None,
             incumbent_winner=incumbent,
@@ -39,7 +40,7 @@ class AutoSubWinnerPolicyTests(unittest.TestCase):
         incumbent = scored(0.0, 0.800)
         candidate = scored(1.0, 0.811)
 
-        decision = autosub._auto_sub_select_accepted_winner(
+        decision = autosub_scoring._auto_sub_select_accepted_winner(
             coarse_winner=candidate,
             fine_winner=None,
             incumbent_winner=incumbent,
@@ -54,7 +55,7 @@ class AutoSubWinnerPolicyTests(unittest.TestCase):
         ]
 
         with patch.object(autosub.scoring, "score_sub_alignment_candidates", side_effect=self._matrix_scores(0.800, 0.805)):
-            result = autosub._score_auto_sub_matrix_candidates(
+            result = autosub_scoring._score_auto_sub_matrix_candidates(
                 candidates,
                 crossover_hz=80,
                 original_sub1_alignment_ms=0.0,
@@ -72,7 +73,7 @@ class AutoSubWinnerPolicyTests(unittest.TestCase):
         ]
 
         with patch.object(autosub.scoring, "score_sub_alignment_candidates", side_effect=self._matrix_scores(0.800, 0.811)):
-            result = autosub._score_auto_sub_matrix_candidates(
+            result = autosub_scoring._score_auto_sub_matrix_candidates(
                 candidates,
                 crossover_hz=80,
                 original_sub1_alignment_ms=0.0,

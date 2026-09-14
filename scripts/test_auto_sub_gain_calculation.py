@@ -8,7 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-import measurement.autosub as autosub
+import measurement.autosub.measurement as autosub_measurement
+import measurement.autosub.scoring as autosub_scoring
 
 
 def curve(offset=0.0, dip=False):
@@ -34,11 +35,11 @@ class GainCalculationTests(unittest.TestCase):
                 "right": {"target_delta_db": None},
             }
         }
-        self.assertIsNone(autosub._auto_sub_gain_log_score(diagnostics))
+        self.assertIsNone(autosub_measurement._auto_sub_gain_log_score(diagnostics))
 
     def calculate(self, mode=main.OUTPUT_MODE_SUBWOOFER_21, left=-20.0, right=-20.0, **kwargs):
         curves = kwargs.pop("winner_curves", {"left": curve(left), "right": curve(right)})
-        return autosub._calculate_auto_sub_gain(
+        return autosub_measurement._calculate_auto_sub_gain(
             mode=mode, target_curve=kwargs.pop("target", self.target),
             anchor=kwargs.pop("anchor", self.anchor), winner_curves=curves, crossover_hz=80,
         )
@@ -77,7 +78,7 @@ class GainCalculationTests(unittest.TestCase):
     def test_display_offset_and_inputs_do_not_affect_or_mutate_result(self):
         target, anchor = copy.deepcopy(self.target), copy.deepcopy(self.anchor)
         before = self.calculate(target=target, anchor=anchor)
-        autosub._auto_sub_shared_bass_offset({"points": [[20, -200], [80, 200]]})
+        autosub_scoring._auto_sub_shared_bass_offset({"points": [[20, -200], [80, 200]]})
         after = self.calculate(target=target, anchor=anchor)
         self.assertEqual(before, after)
         self.assertEqual(target, self.target)

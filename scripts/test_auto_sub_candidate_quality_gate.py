@@ -561,8 +561,9 @@ def patch_logger():
 
 def main_autosub_ledger(*args, **kwargs):
     import measurement.autosub as autosub
+    import measurement.autosub.scoring as autosub_scoring
 
-    return autosub._auto_sub_candidate_ledger(*args, **kwargs)
+    return autosub_scoring._auto_sub_candidate_ledger(*args, **kwargs)
 
 
 if __name__ == "__main__":

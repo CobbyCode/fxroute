@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import measurement.autosub as autosub
+import measurement.autosub.scoring as autosub_scoring
 
 
 def scored(delay_ms, score, **extra):
@@ -49,7 +49,7 @@ class FineWinnerReachesConfirmationTests(unittest.TestCase):
         fine = scored(-3.71, 0.677, xo_score=0.80, timing_band_score=0.85)
         incumbent = scored(0.0, 0.592, xo_score=0.85, timing_band_score=0.85)
 
-        decision = autosub._auto_sub_select_accepted_winner(
+        decision = autosub_scoring._auto_sub_select_accepted_winner(
             coarse_winner=coarse,
             fine_winner=fine,
             incumbent_winner=incumbent,
@@ -66,7 +66,7 @@ class FineWinnerReachesConfirmationTests(unittest.TestCase):
         fine = scored(-3.71, 0.699)
         incumbent = scored(0.0, 0.500)
 
-        decision = autosub._auto_sub_select_accepted_winner(
+        decision = autosub_scoring._auto_sub_select_accepted_winner(
             coarse_winner=coarse,
             fine_winner=fine,
             incumbent_winner=incumbent,
@@ -84,7 +84,7 @@ class FineWinnerReachesConfirmationTests(unittest.TestCase):
         fine = scored(-3.71, 0.510)
         incumbent = scored(0.0, 0.600)
 
-        decision = autosub._auto_sub_select_accepted_winner(
+        decision = autosub_scoring._auto_sub_select_accepted_winner(
             coarse_winner=coarse,
             fine_winner=fine,
             incumbent_winner=incumbent,
@@ -101,7 +101,7 @@ class FineWinnerReachesConfirmationTests(unittest.TestCase):
         fine = scored(-3.71, 0.677)
         incumbent = scored(0.0, 0.600)
 
-        decision = autosub._auto_sub_select_accepted_winner(
+        decision = autosub_scoring._auto_sub_select_accepted_winner(
             coarse_winner=coarse,
             fine_winner=fine,
             incumbent_winner=incumbent,

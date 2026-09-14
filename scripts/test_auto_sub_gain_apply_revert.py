@@ -9,6 +9,8 @@ sys.path.insert(0, str(ROOT))
 import main
 from dsp.runtime import BassManagementConfig
 import measurement.autosub as autosub
+import measurement.autosub.jobs as autosub_jobs
+import measurement.autosub.measurement as autosub_measurement
 
 
 def diagnostic(left, right, calculated=True):
@@ -29,53 +31,53 @@ class AutoGainApplyRevertTests(unittest.TestCase):
 
     def test_21_and_22_mono_use_same_common_delta(self):
         source = diagnostic(2.0, 4.0)
-        self.assertEqual(autosub._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_21), {"left": 3.0, "right": 3.0})
-        self.assertEqual(autosub._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_22), {"left": 3.0, "right": 3.0})
+        self.assertEqual(autosub_measurement._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_21), {"left": 3.0, "right": 3.0})
+        self.assertEqual(autosub_measurement._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_22), {"left": 3.0, "right": 3.0})
 
     def test_22_stereo_preserves_separate_deltas(self):
         self.assertEqual(
-            autosub._auto_sub_gain_deltas(diagnostic(2.0, -1.0), main.OUTPUT_MODE_SUBWOOFER_22_STEREO),
+            autosub_measurement._auto_sub_gain_deltas(diagnostic(2.0, -1.0), main.OUTPUT_MODE_SUBWOOFER_22_STEREO),
             {"left": 2.0, "right": -1.0},
         )
 
     def test_second_feedback_step_is_limited_to_one_db(self):
         self.assertEqual(
-            autosub._auto_sub_gain_deltas(diagnostic(-9.0, -7.0), main.OUTPUT_MODE_SUBWOOFER_21, max_abs_db=1.0),
+            autosub_measurement._auto_sub_gain_deltas(diagnostic(-9.0, -7.0), main.OUTPUT_MODE_SUBWOOFER_21, max_abs_db=1.0),
             {"left": -1.0, "right": -1.0},
         )
 
     def test_22_snapshot_applies_equal_delta_and_preserves_relative_gain(self):
         snapshot = {"subwoofers": {"sub1": {"level_db": -5.0}, "sub2": {"level_db": -2.0}}}
-        updated = autosub._auto_sub_22_snapshot_with_gain(snapshot, left_delta_db=3.0, right_delta_db=3.0)
+        updated = autosub_measurement._auto_sub_22_snapshot_with_gain(snapshot, left_delta_db=3.0, right_delta_db=3.0)
         self.assertEqual(updated["subwoofers"]["sub1"]["level_db"], -2.0)
         self.assertEqual(updated["subwoofers"]["sub2"]["level_db"], 1.0)
         self.assertEqual(updated["subwoofers"]["sub2"]["level_db"] - updated["subwoofers"]["sub1"]["level_db"], 3.0)
         self.assertEqual(snapshot["subwoofers"]["sub1"]["level_db"], -5.0)
 
     def test_verification_accepts_improvement(self):
-        verdict = autosub._auto_sub_gain_verdict(diagnostic(3.0, -2.0), diagnostic(0.4, -0.2), main.OUTPUT_MODE_SUBWOOFER_21)
+        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(3.0, -2.0), diagnostic(0.4, -0.2), main.OUTPUT_MODE_SUBWOOFER_21)
         self.assertTrue(verdict["accepted"])
 
     def test_verification_reverts_when_either_channel_is_worse(self):
-        verdict = autosub._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 2.1), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
+        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 2.1), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
         self.assertFalse(verdict["accepted"])
         self.assertFalse(verdict["channels"]["right"]["accepted"])
 
     def test_verification_tolerates_sub_noise_floor_residual_growth(self):
         # The residual metric's run-to-run spread is ~0.5 dB; growth below the
         # 1.0 dB tolerance is measurement noise, not a harmful Gain step.
-        verdict = autosub._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 1.4), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
+        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 1.4), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
         self.assertTrue(verdict["accepted"])
-        verdict = autosub._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(1.24, 1.25), main.OUTPUT_MODE_SUBWOOFER_21)
+        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(1.24, 1.25), main.OUTPUT_MODE_SUBWOOFER_21)
         self.assertTrue(verdict["accepted"])
 
     def test_unavailable_diagnostics_never_apply(self):
-        self.assertEqual(autosub._auto_sub_gain_deltas(diagnostic(1, 1, calculated=False), main.OUTPUT_MODE_SUBWOOFER_21), {})
-        verdict = autosub._auto_sub_gain_verdict(diagnostic(1, 1, calculated=False), diagnostic(0, 0), main.OUTPUT_MODE_SUBWOOFER_21)
+        self.assertEqual(autosub_measurement._auto_sub_gain_deltas(diagnostic(1, 1, calculated=False), main.OUTPUT_MODE_SUBWOOFER_21), {})
+        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1, 1, calculated=False), diagnostic(0, 0), main.OUTPUT_MODE_SUBWOOFER_21)
         self.assertFalse(verdict["accepted"])
 
     def test_response_correction_uses_measured_sensitivity(self):
-        correction = autosub._auto_sub_gain_response_correction(
+        correction = autosub_measurement._auto_sub_gain_response_correction(
             diagnostic(-2.0, -2.4), diagnostic(-1.0, -1.2),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_21,
         )
@@ -84,7 +86,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertEqual(correction["deltas_db"], {"left": -2.0, "right": -2.0})
 
     def test_response_correction_preserves_sub_two_db_value(self):
-        correction = autosub._auto_sub_gain_response_correction(
+        correction = autosub_measurement._auto_sub_gain_response_correction(
             diagnostic(-3.704, -3.704), diagnostic(-1.704, -1.704),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_21,
         )
@@ -93,7 +95,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertEqual(correction["applied_deltas_db"], {"left": -1.704, "right": -1.704})
 
     def test_response_correction_keeps_total_search_within_six_db(self):
-        correction = autosub._auto_sub_gain_response_correction(
+        correction = autosub_measurement._auto_sub_gain_response_correction(
             diagnostic(-5.725, -5.725), diagnostic(-3.725, -3.725),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_22,
         )
@@ -104,7 +106,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
 
     def test_default_first_step_supports_full_six_db_range(self):
         self.assertEqual(
-            autosub._auto_sub_gain_deltas(diagnostic(9.0, 9.0), main.OUTPUT_MODE_SUBWOOFER_21),
+            autosub_measurement._auto_sub_gain_deltas(diagnostic(9.0, 9.0), main.OUTPUT_MODE_SUBWOOFER_21),
             {"left": 6.0, "right": 6.0},
         )
 
@@ -122,10 +124,10 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         unsafe_config = BassManagementConfig(
             **{**safe_config.__dict__, "sub_level_db": 6.0, "sub2_level_db": 6.0},
         )
-        safe = autosub._auto_sub_stage_peak_prediction(
+        safe = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="stereo", config=safe_config,
         )
-        unsafe = autosub._auto_sub_stage_peak_prediction(
+        unsafe = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="stereo", config=unsafe_config,
         )
         self.assertTrue(safe["safe"])
@@ -144,10 +146,10 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             main_highpass_enabled=True, sub_level_db=0.0, sub_alignment_ms=0.0,
             sub_polarity="normal",
         )
-        full = autosub._auto_sub_stage_peak_prediction(
+        full = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="stereo", config=config,
         )
-        quiet = autosub._auto_sub_stage_peak_prediction(
+        quiet = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="stereo", config=config,
             sink_gain=0.31,
         )
@@ -170,7 +172,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         # The stereo-bass routing feeds the full channel amplitude to the sub.
         # At reduced master volume the +2 dB candidate is safely below the
         # DAC full-scale (the user scenario: loud listening volume turned down).
-        at_31 = autosub._auto_sub_stage_peak_prediction(
+        at_31 = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="left", config=config,
             sink_gain=0.31,
         )
@@ -178,7 +180,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertLess(at_31["maximum_dbfs"], 0.0)
         # The same candidate must also be safe at full master volume: the
         # LR24 lowpass peak of the short sweep stays under full-scale.
-        at_full = autosub._auto_sub_stage_peak_prediction(
+        at_full = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="left", config=config,
         )
         self.assertTrue(at_full["safe"])
@@ -212,27 +214,27 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         )
         # At reduced master the real cubic sink gain leaves plenty of
         # headroom (31% -> 0.31**3 = 0.0298): +6 dB stays far below 0 dBFS.
-        moderate = autosub._auto_sub_stage_peak_prediction(
+        moderate = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="left", config=config,
             sink_gain=autosub.auto_sub_sink_gain_from_master_percent(31),
         )
         self.assertTrue(moderate["safe"])
         # At full master volume the same +6 dB candidate genuinely clips the
         # float→integer conversion and must stay blocked.
-        full = autosub._auto_sub_stage_peak_prediction(
+        full = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="left", config=config,
         )
         self.assertFalse(full["safe"])
         # The same candidate is also unsafe at 90% master (0.9**3 = 0.729):
         # 0.8 * 1.995 * 0.729 = 1.16 exceeds 0 dBFS at the DAC.
-        near_full = autosub._auto_sub_stage_peak_prediction(
+        near_full = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="left", config=config,
             sink_gain=autosub.auto_sub_sink_gain_from_master_percent(90),
         )
         self.assertFalse(near_full["safe"])
         # At 70% master (0.7**3 = 0.343) the same candidate is safe:
         # 0.8 * 1.995 * 0.343 = 0.55 (-5.2 dBFS).
-        reduced = autosub._auto_sub_stage_peak_prediction(
+        reduced = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="left", config=config,
             sink_gain=autosub.auto_sub_sink_gain_from_master_percent(70),
         )
@@ -243,7 +245,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             "dbfs": {"output_1": -12.0, "output_2": -12.0, "output_3": -12.0, "output_4": -12.0},
         }
         measured = {key: 10.0 ** (db / 20.0) for key, db in predicted["dbfs"].items()}
-        comparison = autosub._auto_sub_stage_peak_comparison(predicted, measured, sink_gain=0.31)
+        comparison = autosub_jobs._auto_sub_stage_peak_comparison(predicted, measured, sink_gain=0.31)
         self.assertTrue(comparison["measured_safe"])
         for key, db in comparison["measured"]["dbfs"].items():
             self.assertAlmostEqual(db, -12.0 + 20.0 * math.log10(0.31), places=3)
@@ -256,11 +258,11 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             key: 10.0 ** (db / 20.0)
             for key, db in predicted["dbfs"].items()
         }
-        comparison = autosub._auto_sub_stage_peak_comparison(predicted, measured)
+        comparison = autosub_jobs._auto_sub_stage_peak_comparison(predicted, measured)
         self.assertEqual(set(comparison["measured"]["dbfs"]), {"output_1", "output_2", "output_3", "output_4"})
         self.assertFalse(comparison["relevant_mismatch"])
     def test_response_correction_still_rejects_values_above_six_db(self):
-        correction = autosub._auto_sub_gain_response_correction(
+        correction = autosub_measurement._auto_sub_gain_response_correction(
             diagnostic(-9.0, -9.0), diagnostic(-7.0, -7.0),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_22_STEREO,
         )
@@ -270,7 +272,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertEqual(correction["reason"], "Measured final Gain correction is implausible")
 
     def test_response_correction_rejects_wrong_direction(self):
-        correction = autosub._auto_sub_gain_response_correction(
+        correction = autosub_measurement._auto_sub_gain_response_correction(
             diagnostic(-2.0, -2.0), diagnostic(-3.0, -3.0),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_21,
         )
@@ -282,10 +284,10 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         anchor = {"status": "ready", "target_vertical_offset_db": 0.0}
         broad_peak = self._curve(lambda index: 11.0 if 14 <= index <= 30 else 0.0)
         narrow_peak = self._curve(lambda index: 20.0 if index == 24 else 0.0)
-        broad = autosub._auto_sub_stereo_corridor_violation(
+        broad = autosub_measurement._auto_sub_stereo_corridor_violation(
             points=broad_peak, target_curve=target, anchor=anchor, crossover_hz=80, direction=-1.0,
         )
-        narrow = autosub._auto_sub_stereo_corridor_violation(
+        narrow = autosub_measurement._auto_sub_stereo_corridor_violation(
             points=narrow_peak, target_curve=target, anchor=anchor, crossover_hz=80, direction=-1.0,
         )
         self.assertTrue(broad["relevant"])
@@ -304,7 +306,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
                 "right": {"response_change_per_db": 0.628},
             },
         }
-        plan = autosub._auto_sub_stereo_probe_plan(
+        plan = autosub_measurement._auto_sub_stereo_probe_plan(
             correction_plan=correction_plan, gain_after=diagnostic(-0.476, -4.77),
             gain_deltas={"left": -0.714, "right": -2.0},
             accepted_step1_sides={"left": True, "right": True},

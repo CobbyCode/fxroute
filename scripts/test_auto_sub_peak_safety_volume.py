@@ -23,6 +23,8 @@ sys.path.insert(0, str(ROOT))
 import main
 import measurement.session as measurement_session
 import measurement.autosub as autosub
+import measurement.autosub.jobs as autosub_jobs
+import measurement.autosub.measurement as autosub_measurement
 from dsp.runtime import BassManagementConfig
 
 
@@ -40,7 +42,7 @@ class AutoSubFreshMasterReadTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             autosub.measurement, "get_output_volume_unclamped", return_value=62,
         ) as live:
-            self.assertEqual(await autosub.measurement._auto_sub_fresh_master_percent(), 62)
+            self.assertEqual(await autosub_measurement._auto_sub_fresh_master_percent(), 62)
         live.assert_called_once_with()
 
     async def test_failed_live_read_conservatively_assumes_100(self):
@@ -48,13 +50,13 @@ class AutoSubFreshMasterReadTests(unittest.IsolatedAsyncioTestCase):
             autosub.measurement, "get_output_volume_unclamped",
             side_effect=RuntimeError("wpctl wedged"),
         ):
-            self.assertEqual(await autosub.measurement._auto_sub_fresh_master_percent(), 100)
+            self.assertEqual(await autosub_measurement._auto_sub_fresh_master_percent(), 100)
 
     async def test_above_100_percent_master_is_passed_through(self):
         with patch.object(
             autosub.measurement, "get_output_volume_unclamped", return_value=125,
         ):
-            self.assertEqual(await autosub.measurement._auto_sub_fresh_master_percent(), 125)
+            self.assertEqual(await autosub_measurement._auto_sub_fresh_master_percent(), 125)
 
     def test_sink_gain_unclamped_above_100(self):
         self.assertEqual(
@@ -156,7 +158,7 @@ class AutoSubCandidateSafetyVolumeTests(unittest.IsolatedAsyncioTestCase):
             for patcher in self._harness(job, runtime, store, sweep_profile):
                 stack.enter_context(patcher)
             self.last_job = job
-            return job, await autosub._measure_auto_sub_candidate(
+            return job, await autosub_measurement._measure_auto_sub_candidate(
                         delay_ms=2.0, job=job, candidate_index=1, total=2,
                         stage="safety", fc=80, input_id="mic", channel="left",
                         mic_input_channel="1", reference_input_channel="", calibration_ref="",
@@ -168,7 +170,7 @@ class AutoSubCandidateSafetyVolumeTests(unittest.IsolatedAsyncioTestCase):
 
     def _engine_prediction(self, sweep_profile, sink_gain=1.0):
         """Engine-output level prediction (before the sink gain is folded in)."""
-        return autosub._auto_sub_stage_peak_prediction(
+        return autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=sweep_profile, sample_rate=48_000, channel="left",
             config=runtime_config(), sink_gain=sink_gain,
         )
@@ -226,7 +228,7 @@ class AutoSubCandidateSafetyVolumeTests(unittest.IsolatedAsyncioTestCase):
             side_effect=RuntimeError("wpctl wedged"),
         ):
             self.assertEqual(
-                await autosub.measurement._auto_sub_fresh_master_percent(),
+                await autosub_measurement._auto_sub_fresh_master_percent(),
                 100,
             )
 

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 from dsp.runtime import BassManagementConfig
-import measurement.autosub as autosub
+import measurement.autosub.jobs as autosub_jobs
 from measurement.store import MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER
 from measurement.routing import MeasurementRouting
 
@@ -39,7 +39,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
         with patch.object(main, "dsp_manager", manager), patch.object(
             main, "set_output_volume"
         ) as set_output_volume:
-            captured = autosub._capture_auto_sub_playback_gain()
+            captured = autosub_jobs._capture_auto_sub_playback_gain()
 
         self.assertEqual(captured["linear"], 1.0)
         self.assertEqual(captured["volume_db"], 0.0)
@@ -60,7 +60,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
             "loudness": {"enabled": True, "params": {"volumeDb": -20.0}},
         })
         with patch.object(main, "dsp_manager", manager):
-            captured = autosub._capture_auto_sub_playback_gain()
+            captured = autosub_jobs._capture_auto_sub_playback_gain()
 
         self.assertAlmostEqual(captured["linear"], 0.1, places=12)
         self.assertEqual(captured["volume_db"], -20.0)
@@ -83,14 +83,14 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
             "sweep_seconds": 0.1,
             "tail_seconds": 0.1,
         }
-        full = autosub._auto_sub_stage_peak_prediction(
+        full = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile,
             sample_rate=48000,
             channel="stereo",
             config=runtime_config(),
             playback_gain=1.0,
         )
-        quiet = autosub._auto_sub_stage_peak_prediction(
+        quiet = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile,
             sample_rate=48000,
             channel="stereo",
@@ -119,9 +119,9 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
         self.assertNotIn("--volume=", with_gain)
 
     def test_old_jobs_default_to_unity_gain(self):
-        self.assertEqual(autosub._auto_sub_job_playback_gain({}), 1.0)
+        self.assertEqual(autosub_jobs._auto_sub_job_playback_gain({}), 1.0)
         self.assertAlmostEqual(
-            autosub._auto_sub_job_playback_gain({"playback_gain": {"linear": 0.1}}),
+            autosub_jobs._auto_sub_job_playback_gain({"playback_gain": {"linear": 0.1}}),
             0.1,
         )
 

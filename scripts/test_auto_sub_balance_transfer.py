@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import measurement.autosub as autosub
+import measurement.autosub.measurement as autosub_measurement
 from measurement.autosub.measurement import _auto_sub_target_residual_raw_db
 
 FREQ = [20.0 * (2.0 ** (k / 12.0)) for k in range(60)]  # 20..~640 Hz, 1/12 oct
@@ -62,7 +62,7 @@ class BalanceTransferMathTests(unittest.TestCase):
                 incumbent_residual = residual(two_path_curve(mag_main, mag_sub, balance, 0.0))
                 true_single_stage = residual(two_path_curve(mag_main, mag_sub, 0.0, delay_ms))
 
-                transfer = autosub._auto_sub_balance_transfer_deltas(
+                transfer = autosub_measurement._auto_sub_balance_transfer_deltas(
                     balance_deltas_db={"left": balance, "right": balance},
                     winner_residuals_db={"left": winner_residual, "right": winner_residual},
                     incumbent_residuals_db={"left": incumbent_residual, "right": incumbent_residual},
@@ -105,7 +105,7 @@ class BalanceTransferMathTests(unittest.TestCase):
         # level, incumbent candidate (0.0 ms) residual -1.136 dB at the same
         # level. The transfer must land near -3.05 dB; the old accumulation
         # produced -4.183 dB.
-        transfer = autosub._auto_sub_balance_transfer_deltas(
+        transfer = autosub_measurement._auto_sub_balance_transfer_deltas(
             balance_deltas_db={"left": -0.359, "right": -2.889},
             winner_residuals_db={"left": -0.282, "right": -1.294},
             incumbent_residuals_db={"left": -0.186, "right": -1.136},
@@ -132,7 +132,7 @@ class BalanceTransferMathTests(unittest.TestCase):
         # Without an alignment change the existing behaviour applies: the
         # residual of the SAME configuration is applied on top of the
         # balance trim.
-        transfer = autosub._auto_sub_balance_transfer_deltas(
+        transfer = autosub_measurement._auto_sub_balance_transfer_deltas(
             balance_deltas_db={"left": -0.359, "right": -2.889},
             winner_residuals_db={"left": -0.282, "right": -0.113},
             incumbent_residuals_db={"left": -0.282, "right": -0.113},
@@ -142,7 +142,7 @@ class BalanceTransferMathTests(unittest.TestCase):
         self.assertEqual(transfer["reason"], "Accepted alignment matches the balance configuration; transfer not applicable")
 
     def test_mixed_sides_transfer_only_changed_side(self):
-        transfer = autosub._auto_sub_balance_transfer_deltas(
+        transfer = autosub_measurement._auto_sub_balance_transfer_deltas(
             balance_deltas_db={"left": -0.359, "right": -2.889},
             winner_residuals_db={"left": -0.282, "right": -1.294},
             incumbent_residuals_db={"left": -0.282, "right": -1.136},
@@ -155,7 +155,7 @@ class BalanceTransferMathTests(unittest.TestCase):
         self.assertAlmostEqual(transfer["deltas_db"]["right"], -0.158, places=3)
 
     def test_missing_incumbent_residual_falls_back_to_balance_trim(self):
-        transfer = autosub._auto_sub_balance_transfer_deltas(
+        transfer = autosub_measurement._auto_sub_balance_transfer_deltas(
             balance_deltas_db={"left": -2.889, "right": -2.889},
             winner_residuals_db={"left": -1.294, "right": -1.294},
             incumbent_residuals_db={"left": None, "right": None},
@@ -168,7 +168,7 @@ class BalanceTransferMathTests(unittest.TestCase):
             self.assertAlmostEqual(transfer["channels"][side]["implied_total_db"], -2.889, places=3)
 
     def test_missing_winner_residual_is_unavailable(self):
-        transfer = autosub._auto_sub_balance_transfer_deltas(
+        transfer = autosub_measurement._auto_sub_balance_transfer_deltas(
             balance_deltas_db={"left": -2.889, "right": -2.889},
             winner_residuals_db={"left": None, "right": None},
             incumbent_residuals_db={"left": -1.136, "right": -1.136},
@@ -178,7 +178,7 @@ class BalanceTransferMathTests(unittest.TestCase):
         self.assertIn("winner residual", transfer["reason"])
 
     def test_transfer_result_is_clamped_to_bound(self):
-        transfer = autosub._auto_sub_balance_transfer_deltas(
+        transfer = autosub_measurement._auto_sub_balance_transfer_deltas(
             balance_deltas_db={"left": -5.8, "right": -5.8},
             winner_residuals_db={"left": -6.9, "right": -6.9},
             incumbent_residuals_db={"left": -0.1, "right": -0.1},
