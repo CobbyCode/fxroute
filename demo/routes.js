@@ -163,8 +163,11 @@
     // A deliberate device switch derives the mode from the actually
     // available output channel count, never from the device name: a
     // subwoofer mode on a device with fewer than 4 channels falls back to
-    // Stereo, and the last valid mode per device is restored when the
-    // device can carry it again.
+    // Stereo, and a mode remembered for this device is restored when the
+    // device can carry it. Like the backend's persisted per-device memory,
+    // a mode is only remembered when it is actually applied for that device
+    // (mode change or an explicit mode request), never on a switch whose
+    // effective mode already matches the current one.
     const OUTPUT_MODES = ['stereo', 'subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'];
     const SUBWOOFER_MODES = ['subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'];
     const deviceOutputModes = { [OUTPUTS[2].key]: 'subwoofer-2.2' };
@@ -309,12 +312,6 @@
         // the device name: subwoofer modes need at least 4 channels.
         outputMode.available = channels >= 4;
         outputMode.effective_output_channels = channels;
-        if (!outputMode.available && isSubwooferOutputModeName(outputMode.mode)) {
-            outputMode.mode = 'stereo';
-            outputMode.required_channels = 2;
-            outputMode.routing = { ...(outputMode.routing || {}), status: routingStatusForOutputMode('stereo') };
-            deviceOutputModes[out.key] = 'stereo';
-        }
         const routing = routingAssignments(out.key, channels);
         const mode = { ...outputMode, effective_output_channels: channels,
             output_routing: { available: channels > 2, device_key: out.key, assignments: routing.assignments,
@@ -358,8 +355,6 @@
                 ? `Output mode switched to ${outputModeLabel(effective)} — selected device supports ${count} channels.`
                 : `Output mode restored to ${outputModeLabel(effective)} — last used with this device.`;
             adjustment = { adjusted: true, previous_mode: previous, mode: effective, reason, message };
-        } else {
-            deviceOutputModes[deviceKey] = effective;
         }
         outputMode.available = count >= 4;
         outputMode.effective_output_channels = count;

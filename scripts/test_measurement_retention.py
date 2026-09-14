@@ -22,6 +22,16 @@ from measurement.store import (
 )
 
 
+class _FreshBootClock:
+    """Monotonic clock of a host whose uptime is below the throttle interval."""
+
+    def __init__(self, value: float):
+        self._value = value
+
+    def monotonic(self) -> float:
+        return self._value
+
+
 def _old_timestamp(days_ago: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days_ago)).replace(
         microsecond=0
@@ -411,6 +421,43 @@ class MeasurementRetentionTests(unittest.TestCase):
             )
             store._persistence._retain_job_history()
             self.assertFalse(target.exists())
+
+    def test_first_scan_runs_on_low_uptime_host(self):
+        # The throttle state starts as never-ran, not as time zero: on a host
+        # whose monotonic clock is still below the throttle interval (fresh
+        # boot) the first scan must delete the stale record anyway.  Under a
+        # 0.0 sentinel this scan was throttled away and the record survived.
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            old_id = "measurement-job-low-uptime"
+            record = {
+                "id": old_id,
+                "status": "completed",
+                "created_at": _old_timestamp(JOB_RECORD_RETENTION_DAYS + 1),
+                "updated_at": _old_timestamp(JOB_RECORD_RETENTION_DAYS + 1),
+                "message": "old",
+                "result": None,
+                "error": None,
+            }
+            target = store.job_records_dir / f"{old_id}.json"
+            stale_mtime = time.time() - (JOB_RECORD_RETENTION_DAYS + 1) * 86400
+
+            def write_stale_record():
+                target.write_text(json.dumps(record))
+                os.utime(target, (stale_mtime, stale_mtime))
+
+            write_stale_record()
+            with patch("measurement.persistence.time", _FreshBootClock(5.0)):
+                store._persistence._retain_job_history()
+            self.assertFalse(target.exists())
+
+            # The throttle itself still holds inside the interval on that clock.
+            write_stale_record()
+            with patch("measurement.persistence.time", _FreshBootClock(6.0)):
+                store._persistence._retain_job_history()
+            self.assertTrue(target.exists())
 
     def test_retention_mtime_prefilter_skips_fresh_files_without_reading(self):
         with tempfile.TemporaryDirectory() as tempdir, patch.dict(
