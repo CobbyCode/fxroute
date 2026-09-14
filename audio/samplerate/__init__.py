@@ -56,7 +56,6 @@ from audio.samplerate.parsing import (
     _infer_bluetooth_codec,
     _is_bluetooth_sink_name,
     _is_bluetooth_source_name,
-    _normalize_pipewire_default_rate,
     _parse_active_rate,
     _parse_bluetoothctl_devices,
     _parse_bluetoothctl_info,
@@ -76,15 +75,12 @@ from audio.samplerate.parsing import (
     _parse_wpctl_inspect,
     _parse_wpctl_status_bluetooth_streams,
     _pipewire_bluez_plugin_available,
-    _prefer_output_port_label,
     _run_command,
     _safe_int,
-    _strip_quoted_value,
 )
 
 from audio.samplerate.persistence import (
     _audio_output_mode_path,
-    _audio_output_selection_path,
     _audio_source_selection_path,
     _build_audio_output_mode_payload,
     _load_audio_output_mode,
@@ -93,14 +89,9 @@ from audio.samplerate.persistence import (
     _load_device_output_modes,
     _load_pipewire_clock_rate_config,
     _load_raw_audio_output_mode,
-    _normalize_single_sub_config,
-    _normalize_subwoofer_22_config,
-    _normalize_subwoofer_config,
-    _pipewire_clock_rate_dropin_path,
     _sample_rate_policy_path,
     _save_audio_output_selection,
     _save_audio_source_selection,
-    _subwoofer_22_storage_key,
     effective_playback_rate,
     load_sample_rate_policy,
     normalize_sample_rate_policy,
@@ -114,9 +105,7 @@ from audio.samplerate.bluetooth import (
 )
 
 from audio.samplerate.overview import (
-    _build_selected_output_payload,
     _build_source_selection_key,
-    _parse_default_source_name,
     _select_relevant_sink,
     _set_default_sink,
     _set_source_port,
@@ -145,8 +134,6 @@ from audio.samplerate.alignment import (
     SAMPLERATE_ALIGNMENT_POLL_INTERVAL_MS,
     SAMPLERATE_ALIGNMENT_TIMEOUT_MS,
     SINK_SUSPEND_COOLDOWN_SECONDS,
-    _last_sink_suspend_at,
-    _last_sink_suspend_reason,
     active_card_profile,
     card_name_for_output,
     clear_auto_policy_force_rate,
