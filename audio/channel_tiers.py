@@ -164,13 +164,28 @@ class ChannelTierChange:
                 if sink is not None:
                     logger.info("Channel-tier sink present after %s polls: key=%s spec=%s",
                                 iterations, key, sink.get("sample_specification") or sink.get("sample_spec"))
-                    self.run(["pactl", "set-sink-mute", key, "1"])
-                    self.run(["pactl", "set-sink-volume", key, f"{self.volume}%"])
-                    if self._spec(sink)[0] != channels:
-                        raise ValueError(f"Channel-tier readback mismatch: expected {channels}, got {self._spec(sink)[0]}")
-                    confirmed = next(item for item in self._sinks() if item.get("name") == key)
-                    if not confirmed.get("mute") or abs(self._volume(confirmed) - self.volume) > 1:
-                        raise ValueError("Recreated sink did not retain the output gate and volume")
+                    # A just-created node still settles (mute/volume writes and
+                    # reads can race its appearance): settle, then confirm the
+                    # gate with bounded retries instead of failing the whole
+                    # reprobe on one transient readback.
+                    time.sleep(0.5)
+                    last_error: Exception | None = None
+                    for attempt in range(3):
+                        try:
+                            self.run(["pactl", "set-sink-mute", key, "1"])
+                            self.run(["pactl", "set-sink-volume", key, f"{self.volume}%"])
+                            if self._spec(sink)[0] != channels:
+                                raise ValueError(f"Channel-tier readback mismatch: expected {channels}, got {self._spec(sink)[0]}")
+                            confirmed = next(item for item in self._sinks() if item.get("name") == key)
+                            if not confirmed.get("mute") or abs(self._volume(confirmed) - self.volume) > 1:
+                                raise ValueError("Recreated sink did not retain the output gate and volume")
+                            break
+                        except (RuntimeError, ValueError, KeyError) as exc:
+                            last_error = exc
+                            logger.info("Channel-tier gate confirm attempt %s waiting: %s", attempt + 1, exc)
+                            time.sleep(0.5)
+                    else:
+                        raise last_error or RuntimeError("Recreated sink did not retain the output gate and volume")
                     self.run(["pactl", "set-default-sink", key])
                     _save_audio_output_selection(key)
                     logger.info("Channel-tier reprobe done: key=%s polls=%s", key, iterations)

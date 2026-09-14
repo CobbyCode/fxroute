@@ -241,6 +241,25 @@ class HardwareTierTests(unittest.TestCase):
         self.assertEqual(_load_audio_output_selection()["selected_key"], self.old_key)
         self.assertEqual((self.channels, self.rate, self.profile), (18, 48000, "output:multichannel-output+input:multichannel-input"))
 
+    def test_transient_gate_readback_is_retried_not_failed(self):
+        change = self.change()
+        change.capture()
+        self.flaky_confirm = True
+        original_volume = self.volume
+        real_run = self.run_command
+
+        def flaky(command):
+            if command[:2] == ["pactl", "set-sink-volume"] and self.flaky_confirm:
+                self.flaky_confirm = False
+                return ""
+            return real_run(command)
+
+        change.run = flaky
+        with __import__("unittest.mock", fromlist=["patch"]).patch("time.sleep", return_value=None):
+            change.apply()
+        self.assertEqual(self.volume, original_volume)
+        self.assertTrue(self.mute)
+
     def test_reprobe_failure_restores_old_rule_selection_rate_and_volume(self):
         change = self.change()
         change.capture()
