@@ -61,6 +61,36 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles.playback_tiers(DESCRIPTORS.split("Capture:")[1]), [])
         self.assertEqual(profiles.playback_tiers("Playback:\n  Interface 1\n    Channels: 4\n    Rates: 44100, 48000, 96000"), [])
 
+    def test_native_tier_lookup_identifies_the_carrying_inventory(self):
+        tiers = [
+            {"id": "18ch", "channels": 18, "rates": [44100, 48000]},
+            {"id": "14ch", "channels": 14, "rates": [88200, 96000]},
+        ]
+        self.assertEqual(profiles.native_tier_for_rate(tiers, 48000)["id"], "18ch")
+        self.assertEqual(profiles.native_tier_for_rate(tiers, 96000)["id"], "14ch")
+        self.assertIsNone(profiles.native_tier_for_rate(tiers, 192000))
+        self.assertIsNone(profiles.native_tier_for_rate([], 48000))
+
+    def test_required_tier_switch_points_at_the_carrying_inventory(self):
+        selected = {
+            "key": "alsa_output.scarlett",
+            "device_profile": {
+                "active_tier": "14ch",
+                "tiers": [
+                    {"id": "18ch", "channels": 18, "rates": [44100, 48000]},
+                    {"id": "14ch", "channels": 14, "rates": [88200, 96000]},
+                ],
+            },
+        }
+        switch = profiles.required_tier_switch(selected, 48000)
+        self.assertEqual(switch["tier"]["id"], "18ch")
+        self.assertEqual(switch["key"], "alsa_output.scarlett")
+        self.assertIsNone(profiles.required_tier_switch(selected, 96000))
+        self.assertIsNone(profiles.required_tier_switch(selected, 32000))
+        self.assertIsNone(profiles.required_tier_switch({"key": "x"}, 48000))
+        self.assertEqual(profiles.device_rates(selected["device_profile"]["tiers"]),
+                         [44100, 48000, 88200, 96000])
+
     def test_rate_selection_preserves_family_without_switching_tiers(self):
         for source, rates, expected in [
             (44100, [176400, 192000], 176400), (48000, [176400, 192000], 192000),
@@ -207,7 +237,8 @@ class HardwareTierTests(unittest.TestCase):
         change.capture()
         change.apply()
         self.assertFalse(change.rule_path.exists())
-        self.assertEqual(_load_audio_output_selection()["selected_key"] if False else __import__("audio.samplerate.persistence", fromlist=["_load_audio_output_selection"])._load_audio_output_selection()["selected_key"], self.old_key)
+        from audio.samplerate.persistence import _load_audio_output_selection
+        self.assertEqual(_load_audio_output_selection()["selected_key"], self.old_key)
         self.assertEqual((self.channels, self.rate, self.profile), (18, 48000, "output:multichannel-output+input:multichannel-input"))
 
     def test_reprobe_failure_restores_old_rule_selection_rate_and_volume(self):
@@ -224,6 +255,21 @@ class HardwareTierTests(unittest.TestCase):
 
 
 class TierCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    """Rate-to-tier injection: the coordinator reprobes with no per-caller wiring."""
+
+    PROFILE_18 = {
+        "key": "alsa_output.scarlett",
+        "supported_rates": [44100, 48000],
+        "device_profile": {
+            "id": "scarlett-16i16-4th-gen",
+            "active_tier": "18ch",
+            "tiers": [
+                {"id": "18ch", "channels": 18, "rates": [44100, 48000]},
+                {"id": "14ch", "channels": 14, "rates": [88200, 96000]},
+            ],
+        },
+    }
+
     async def test_tier_reprobe_precedes_rate_and_replaces_old_capabilities(self):
         from test_playback_transition_coordinator import FakeRuntime
         from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
@@ -233,6 +279,7 @@ class TierCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 self.events.append("tier")
                 if not self.muted or not self.paused:
                     raise AssertionError("Tier changed before source and hardware were quiet")
+                assert (request.channel_tier or {})["tier"]["id"] == "14ch", request.channel_tier
                 return {"selected_output": {"supported_rates": [88200, 96000]}}
 
             async def establish_target_rate(self, request):
@@ -248,14 +295,32 @@ class TierCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         result = await coordinator.execute(TransitionRequest(
             operation="sample-rate-policy", source="local", target_rate=96000,
             target_url="/music/target.flac", should_play=True, rate_change=True,
-            channel_tier={"key": "test", "tier": {"rates": [88200, 96000]}},
-            audio_overview={"selected_output": {"supported_rates": [44100, 48000]}},
+            audio_overview={"selected_output": dict(self.PROFILE_18)},
             sample_rate_policy={"mode": "fixed", "rate": 96000},
         ))
         self.assertTrue(result.committed)
         self.assertLess(runtime.events.index("quiet"), runtime.events.index("tier"))
         self.assertLess(runtime.events.index("tier"), runtime.events.index("rate"))
         self.assertFalse(runtime.muted)
+
+    async def test_same_tier_rate_needs_no_reprobe(self):
+        from test_playback_transition_coordinator import FakeRuntime
+        from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
+
+        class TierRuntime(FakeRuntime):
+            async def commit_sample_rate_policy(self, request):
+                return {"sample_rate_policy": dict(request.sample_rate_policy)}
+
+        runtime = TierRuntime()
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        result = await coordinator.execute(TransitionRequest(
+            operation="sample-rate-policy", source="local", target_rate=48000,
+            target_url="/music/target.flac", should_play=True, rate_change=True,
+            audio_overview={"selected_output": dict(self.PROFILE_18)},
+            sample_rate_policy={"mode": "fixed", "rate": 48000},
+        ))
+        self.assertTrue(result.committed)
+        self.assertNotIn("tier", runtime.events)
 
     async def test_verified_idle_rollback_releases_failed_transition_mute(self):
         from test_playback_transition_coordinator import FakeRuntime
@@ -278,7 +343,7 @@ class TierCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             await coordinator.execute(TransitionRequest(
                 operation="sample-rate-policy", source="local", target_rate=96000,
                 should_play=False, reload_source=False, rate_change=True,
-                channel_tier={"key": "test", "tier": {"rates": [88200, 96000]}},
+                audio_overview={"selected_output": dict(self.PROFILE_18)},
                 sample_rate_policy={"mode": "fixed", "rate": 96000},
             ))
         self.assertFalse(failure.exception.failure_latched)

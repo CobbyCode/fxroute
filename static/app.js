@@ -458,9 +458,6 @@ const elements = {
     settingsOutputModeHint: document.getElementById('settings-output-mode-hint'),
     settingsSamplerateSelect: document.getElementById('settings-samplerate-select'),
     settingsSamplerateHint: document.getElementById('settings-samplerate-hint'),
-    settingsChannelTierGroup: document.getElementById('settings-channel-tier-group'),
-    settingsChannelTierSelect: document.getElementById('settings-channel-tier-select'),
-    settingsChannelTierHint: document.getElementById('settings-channel-tier-hint'),
     settingsRoutingGroup: document.getElementById('settings-routing-group'),
     settingsRoutingGrid: document.getElementById('settings-routing-grid'),
     settingsRoutingHint: document.getElementById('settings-routing-hint'),
@@ -1523,12 +1520,6 @@ function setupSettingsActions() {
             void saveSampleRatePolicy(event.target.value || 'auto');
         });
     }
-    if (elements.settingsChannelTierSelect) {
-        elements.settingsChannelTierSelect.addEventListener('change', (event) => {
-            const tier = event.target.value || '';
-            if (tier) void saveChannelTier(tier);
-        });
-    }
     if (elements.settingsRoutingGrid) {
         elements.settingsRoutingGrid.addEventListener('change', (event) => {
             if (!event.target || event.target.tagName !== 'SELECT') return;
@@ -1835,7 +1826,6 @@ let _audioOutputModeRequestId = 0;
 let _audioOutputModeMutationGeneration = 0;
 let _audioOutputModeSwitchInProgress = false;
 let _audioRoutingInProgress = false;
-let _channelTierInProgress = false;
 function getAudioOutputModeSignature(mode, settings = null, options = {}) {
     return JSON.stringify(buildAudioOutputModeRequest(mode, settings, options));
 }
@@ -3111,7 +3101,7 @@ function renderSettingsPanel() {
             elements.settingsOutputModeSelect.innerHTML = optionsHtml;
         }
         elements.settingsOutputModeSelect.value = mode;
-        elements.settingsOutputModeSelect.disabled = !overview.available || _audioOutputModeSwitchInProgress || _audioRoutingInProgress || _channelTierInProgress;
+        elements.settingsOutputModeSelect.disabled = !overview.available || _audioOutputModeSwitchInProgress || _audioRoutingInProgress;
     }
     if (elements.settingsOutputModeHint) {
         const channels = outputMode.effective_output_channels;
@@ -3134,6 +3124,10 @@ function renderSettingsPanel() {
         }
     }
 
+    const deviceProfile = selectedOutput?.device_profile || null;
+    const tiers = Array.isArray(deviceProfile?.tiers) ? deviceProfile.tiers : [];
+    const activeTier = tiers.find((tier) => tier.id === deviceProfile?.active_tier) || null;
+
     const sampleRatePolicy = state.samplerate?.policy || { mode: 'auto', rate: null };
     const supportedRates = Array.isArray(selectedOutput?.supported_rates) ? selectedOutput.supported_rates : [];
     if (elements.settingsSamplerateSelect && !isSelectFocused(elements.settingsSamplerateSelect)) {
@@ -3147,35 +3141,10 @@ function renderSettingsPanel() {
         elements.settingsSamplerateSelect.disabled = !!state.samplerate?.pending || !overview.available;
     }
     if (elements.settingsSamplerateHint) {
+        const tierNote = activeTier ? ` · ${activeTier.channels} channels active` : '';
         elements.settingsSamplerateHint.textContent = sampleRatePolicy.mode === 'fixed'
-            ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}.`
-            : 'Follows the effective playback sample rate.';
-    }
-
-    const deviceProfile = selectedOutput?.device_profile || null;
-    const tiers = Array.isArray(deviceProfile?.tiers) ? deviceProfile.tiers : [];
-    if (elements.settingsChannelTierGroup) {
-        elements.settingsChannelTierGroup.classList.toggle('hidden', tiers.length < 2);
-    }
-    if (elements.settingsChannelTierSelect && !isSelectFocused(elements.settingsChannelTierSelect)) {
-        elements.settingsChannelTierSelect.innerHTML = tiers.map((tier) => {
-            const rates = Array.isArray(tier.rates) ? tier.rates.map((rate) => formatSampleRateKhz(rate)).join(' / ') : '';
-            return `<option value="${escapeHtml(tier.id || '')}">${escapeHtml(`${tier.channels} channels · ${rates}`)}</option>`;
-        }).join('');
-        elements.settingsChannelTierSelect.value = deviceProfile?.active_tier || '';
-        elements.settingsChannelTierSelect.disabled = !overview.available || _channelTierInProgress || _audioOutputModeSwitchInProgress;
-    }
-    if (elements.settingsChannelTierHint) {
-        if (_channelTierInProgress) {
-            elements.settingsChannelTierHint.textContent = 'Switching channel tier…';
-            elements.settingsChannelTierHint.classList.add('switching');
-        } else {
-            elements.settingsChannelTierHint.classList.remove('switching');
-            const active = tiers.find((tier) => tier.id === deviceProfile?.active_tier);
-            elements.settingsChannelTierHint.textContent = active
-                ? `Hardware channels follow the selected tier. Sample-rate changes stay inside ${active.channels} channels.`
-                : '';
-        }
+            ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}${tierNote}.`
+            : `Follows the effective playback sample rate${activeTier ? '; the device switches channel inventory automatically' : ''}.`;
     }
 
     const outputRouting = outputMode.output_routing || {};
@@ -3187,7 +3156,7 @@ function renderSettingsPanel() {
     if (routingAvailable && elements.settingsRoutingGrid) {
         const signals = Array.isArray(outputRouting.signals) ? outputRouting.signals : [];
         const assignments = Array.isArray(outputRouting.assignments) ? outputRouting.assignments : [];
-        const busy = _audioRoutingInProgress || _channelTierInProgress || _audioOutputModeSwitchInProgress;
+        const busy = _audioRoutingInProgress || _audioOutputModeSwitchInProgress;
         const focusedValue = document.activeElement && document.activeElement.tagName === 'SELECT' && document.activeElement.dataset.routingOutput
             ? { index: Number(document.activeElement.dataset.routingOutput), value: document.activeElement.value } : null;
         elements.settingsRoutingGrid.innerHTML = assignments.map((signal, index) => {
@@ -3463,7 +3432,7 @@ async function fetchAudioOutputOverview() {
         const resp = await fetch('/api/audio/outputs');
         if (!resp.ok) throw new Error('Failed to fetch audio outputs');
         const data = await resp.json();
-        if (mutationGeneration !== _audioOutputModeMutationGeneration || _audioOutputModeSwitchInProgress || _audioRoutingInProgress || _channelTierInProgress) return;
+        if (mutationGeneration !== _audioOutputModeMutationGeneration || _audioOutputModeSwitchInProgress || _audioRoutingInProgress) return;
         state.settings.audioOutputs = {
             loaded: true,
             available: !!data.available,
@@ -3534,32 +3503,6 @@ function applyAudioOutputOverview(data) {
         output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
     };
     renderSettingsPanel();
-}
-
-async function saveChannelTier(tier) {
-    const overview = state.settings?.audioOutputs || {};
-    const key = overview.selected_output?.key || '';
-    if (!key || !tier || _channelTierInProgress) return;
-    _channelTierInProgress = true;
-    renderSettingsPanel();
-    try {
-        const resp = await fetch('/api/audio/channel-tier', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key, tier }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to switch channel tier'));
-        applyAudioOutputOverview(data);
-        await fetchSamplerateStatus();
-        showToast('Channel tier updated', 'success');
-    } catch (error) {
-        renderSettingsPanel();
-        showToast(error.message || 'Failed to switch channel tier', 'error');
-    } finally {
-        _channelTierInProgress = false;
-        renderSettingsPanel();
-    }
 }
 
 async function saveOutputRouting() {

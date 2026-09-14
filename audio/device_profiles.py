@@ -7,9 +7,6 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from audio.output_routing import device_key
-
-_active_rates: dict[str, tuple[int, ...]] = {}
 _MODEL = re.compile(r"Focusrite[ _]Scarlett[ _](16i16|18i16|18i20)[ _]4th[ _]Gen(?:[ _.-]|$)", re.I)
 _RATES = {44100, 48000, 88200, 96000, 176400, 192000}
 
@@ -60,6 +57,48 @@ def cumulative_rates(tiers: Sequence[Mapping], active_id: str | None) -> list[in
     return sorted(rates)
 
 
+def native_tier_for_rate(tiers: Sequence[Mapping], rate: int | None) -> dict | None:
+    """The tier whose native band carries ``rate``, if any.
+
+    Native bands are disjoint per device, so this identifies at most one
+    tier: the only inventory on which the rate runs without resampling.
+    """
+    for tier in tiers:
+        if isinstance(tier, Mapping) and rate in (tier.get("rates") or []):
+            return dict(tier)
+    return None
+
+
+def device_rates(tiers: Sequence[Mapping]) -> list[int]:
+    """Every rate the profiled device offers across all tiers."""
+    rates: set[int] = set()
+    for tier in tiers:
+        if isinstance(tier, Mapping):
+            rates.update(int(rate) for rate in tier.get("rates") or [])
+    return sorted(rates)
+
+
+def required_tier_switch(selected_output: Mapping, target_rate: int | None) -> dict | None:
+    """The tier switch a rate needs, or None when the active tier carries it.
+
+    Returns ``{"key", "tier", "rates"}`` with the destination tier's native
+    rates when ``target_rate`` runs natively on another tier, otherwise None
+    (same tier, unknown profile, or unrepresentable rate).
+    """
+    profile = selected_output.get("device_profile") or {}
+    tiers = [tier for tier in profile.get("tiers") or [] if isinstance(tier, dict)]
+    if not tiers or not isinstance(target_rate, int) or target_rate <= 0:
+        return None
+    destination = native_tier_for_rate(tiers, target_rate)
+    if destination is None or destination.get("id") == profile.get("active_tier"):
+        return None
+    return {
+        "key": selected_output.get("key"),
+        "tier": destination,
+        "rates": list(destination.get("rates") or []),
+    }
+
+
 def rate_in_tier(rate: int | None, rates: Sequence[int]) -> int:
     """Keep the rate family where possible; an unknown source uses 48 kHz family."""
     if not rates:
@@ -86,12 +125,5 @@ def discover_profile(output_key: str, details: dict, channels: int | None) -> di
     if not tiers:
         return None
     active = next((tier for tier in tiers if tier["channels"] == channels), None)
-    _active_rates[device_key(output_key)] = tuple(cumulative_rates(tiers, active["id"])) if active else ()
     return {"id": profile, "tiers": tiers, "active_tier": active["id"] if active else None,
             "source": "alsa-usb-playback", "manual": True}
-
-
-def selected_tier_rates() -> tuple[int, ...]:
-    from audio.samplerate.persistence import _load_audio_output_selection
-    key = str(_load_audio_output_selection().get("selected_key") or "")
-    return _active_rates.get(device_key(key), ()) if profile_id(key) else ()

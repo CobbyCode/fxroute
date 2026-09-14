@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from .cleanup import _TransitionCleanupMixin
 from .gate import _OutputGateMixin
+from audio.device_profiles import device_rates, required_tier_switch
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
 import playback.source_policy as source_policy
 
@@ -185,16 +186,26 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             )
         overview = request.audio_overview or {}
         selected = overview.get("selected_output") or overview.get("current_output") or {}
-        supported = [
-            rate
-            for rate in (selected.get("supported_rates") or [])
-            if isinstance(rate, int) and rate > 0
-        ]
-        channel_tier = getattr(request, "channel_tier", None) or {}
-        if channel_tier:
-            supported = list(channel_tier.get("rates") or (channel_tier.get("tier") or {}).get("rates") or [])
+        profile = selected.get("device_profile") or {}
+        tiers = [tier for tier in profile.get("tiers") or [] if isinstance(tier, dict)]
+        if tiers:
+            # A profiled inventory runs every band natively on its own tier;
+            # the rate-to-tier injection below guarantees the destination, so
+            # validation admits the whole device capability here.
+            supported = list(device_rates(tiers))
             if not supported:
                 raise UnsupportedTransitionRateError("Channel-tier transition has no destination rates")
+        else:
+            supported = [
+                rate
+                for rate in (selected.get("supported_rates") or [])
+                if isinstance(rate, int) and rate > 0
+            ]
+            channel_tier = getattr(request, "channel_tier", None) or {}
+            if channel_tier:
+                supported = list(channel_tier.get("rates") or (channel_tier.get("tier") or {}).get("rates") or [])
+                if not supported:
+                    raise UnsupportedTransitionRateError("Channel-tier transition has no destination rates")
         if not supported:
             # Capability unknown (no selected output or enumeration failed):
             # do not block on a list we cannot trust.
@@ -686,14 +697,6 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
 
                 await self._stage(stages, "quiet-old-source", lambda: self.runtime.quiet_old_source(request))
 
-                if getattr(active_request, "channel_tier", None):
-                    overview = await self._stage(
-                        stages, "channel-tier-reprobe",
-                        lambda: self.runtime.apply_channel_tier(active_request, snapshot),
-                        gate_check="after-channel-tier-reprobe",
-                    )
-                    active_request = replace(active_request, audio_overview=overview, output_mode_target=overview)
-
                 if (
                     active_request.operation == "measurement-restore"
                     and active_request.restore_intent
@@ -740,6 +743,40 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                                 and snapshot_force_rate in {None, 0, active_request.target_rate}
                             ),
                         )
+                    # A profiled inventory runs each band on its own tier:
+                    # when the resolved rate belongs to another tier, reprobe
+                    # into it here (still under the closed gate) so the rate
+                    # stage below always pins a natively supported rate.  The
+                    # tier rides on the request before the stage runs, so a
+                    # reprobe failure still reaches the tier rollback below.
+                    if (
+                        active_request.operation not in {"measurement-entry", "measurement-restore"}
+                        and isinstance(active_request.target_rate, int)
+                        and active_request.target_rate > 0
+                    ):
+                        tier_overview = active_request.audio_overview or {}
+                        tier_selected = (
+                            tier_overview.get("selected_output")
+                            or tier_overview.get("current_output")
+                            or {}
+                        )
+                        tier_switch = required_tier_switch(tier_selected, active_request.target_rate)
+                        existing_tier = (getattr(active_request, "channel_tier", None) or {}).get("tier") or {}
+                        if (
+                            tier_switch is not None
+                            and existing_tier.get("id") != tier_switch["tier"].get("id")
+                        ):
+                            active_request = replace(active_request, channel_tier=tier_switch)
+                            tier_overview = await self._stage(
+                                stages, "channel-tier-reprobe",
+                                lambda: self.runtime.apply_channel_tier(active_request, snapshot),
+                                gate_check="after-channel-tier-reprobe",
+                            )
+                            active_request = replace(
+                                active_request,
+                                audio_overview=tier_overview,
+                                output_mode_target=tier_overview,
+                            )
                     # Re-validate against the resolved rate.  The output gate
                     # is already closed and the old source quieted at this
                     # point, so a rejection must run the failure-restore

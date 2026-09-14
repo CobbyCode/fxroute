@@ -373,6 +373,9 @@ class PlaybackOrchestrator:
             )
             if isinstance(live_rate, int) and live_rate > 0:
                 source_rate = live_rate
+        # Tier switches are injected centrally by the coordinator
+        # (rate-to-tier is unambiguous per device profile), so every
+        # rate-targeted operation funnels through one reprobe path.
         target_rate = samplerate.effective_playback_rate(source_rate, policy)
         if not isinstance(target_rate, int) or target_rate <= 0:
             status = await asyncio.to_thread(self._deps.get_samplerate_status)

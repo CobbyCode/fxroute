@@ -3887,47 +3887,6 @@ async def save_audio_output_routing_route(request: Request):
         raise _transition_error_http(exc) from exc
 
 
-@app.post("/api/audio/channel-tier")
-async def save_audio_channel_tier_route(request: Request):
-    from audio.device_profiles import cumulative_rates, rate_in_tier
-
-    if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
-        raise HTTPException(status_code=423, detail="Measurement is active; channel-tier switch is locked")
-    try:
-        body = await request.json()
-        overview = await asyncio.to_thread(get_audio_output_overview)
-        output = overview.get("selected_output") or {}
-        if body.get("key") != output.get("key"):
-            raise ValueError("Selected output changed; refresh audio settings")
-        profile = output.get("device_profile") or {}
-        tier = next((item for item in profile.get("tiers", []) if item["id"] == body.get("tier")), None)
-        if tier is None:
-            raise ValueError("Selected output has no such channel tier")
-        if tier["id"] == profile.get("active_tier"):
-            return await audio_output_overview()
-        context = await _coordinator_current_playback_context()
-        source = str(context.get("source") or "local")
-        policy = samplerate.load_sample_rate_policy()
-        source_rate = playback_orchestration.configured().coordinator_source_rate(source, context.get("target_track"))
-        destination_rates = cumulative_rates(profile.get("tiers", []), tier["id"]) or list(tier["rates"])
-        target_rate = rate_in_tier(policy.get("rate") or source_rate or output.get("active_rate"), destination_rates)
-        if policy.get("mode") == "fixed":
-            policy = {"mode": "fixed", "rate": target_rate}
-        await _run_coordinated_transition(TransitionRequest(
-            operation="sample-rate-policy", source=source, target_rate=target_rate,
-            target_url=context.get("target_url"), target_track=dict(context.get("target_track") or {}),
-            should_play=bool(context.get("should_play")), reload_source=bool(context.get("target_url")),
-            rate_change=True, detail="api-audio-channel-tier", sample_rate_policy=policy,
-            channel_tier={"key": output["key"], "tier": dict(tier), "rates": list(destination_rates)},
-            **(playback_queue.queue.native_request_fields() if source == "local" else {}),
-        ))
-        return await audio_output_overview()
-    except (ValueError, TypeError, KeyError) as exc:
-        raise bad_request(exc) from exc
-    except PlaybackTransitionFailure as exc:
-        raise _transition_error_http(exc) from exc
-
-
 @app.post("/api/audio/output-mode")
 async def save_audio_output_mode_route(request: Request):
     try:

@@ -320,12 +320,11 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
         # supported_rates is capped at the FXRoute DSP processing maximum and
         # is the only list the API/UI may offer for FXRoute playback.
         channels = _parse_sample_spec_channels(details.get("sample_spec")) or sink.get("channels")
-        from audio.device_profiles import cumulative_rates, discover_profile
+        from audio.device_profiles import device_rates, discover_profile
         device_profile = discover_profile(str(name or ""), details, channels)
         tier_offered_rates: list[int] = []
         if device_profile:
-            tier_offered_rates = cumulative_rates(device_profile.get("tiers") or [],
-                                                  device_profile.get("active_tier"))
+            tier_offered_rates = device_rates(device_profile.get("tiers") or [])
         explicit_outputs.append({
             "id": sink.get("id"),
             "key": name,

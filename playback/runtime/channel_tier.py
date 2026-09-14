@@ -25,7 +25,27 @@ class _RuntimeChannelTierMixin:
         return await asyncio.to_thread(self._deps.get_audio_output_overview)
 
     async def apply_channel_tier(self, request, snapshot):
-        return await self._change_tier_hardware(snapshot["channel_tier_change"])
+        change = (snapshot or {}).get("channel_tier_change")
+        if change is None:
+            # Coordinator-injected switches arrive without a pre-built change
+            # (the target rate only resolves mid-transition): capture now,
+            # still under the closed gate, and keep it for a later rollback.
+            from audio.channel_tiers import prepare_change
+            tiers = ((request.audio_overview or {}).get("selected_output") or {}).get(
+                "device_profile", {}).get("tiers") or []
+            selected_tier = dict((request.channel_tier or {}).get("tier") or {})
+            if not selected_tier or selected_tier not in tiers:
+                raise ValueError("Channel-tier transition has no known destination tier")
+            change = prepare_change(
+                str((request.channel_tier or {}).get("key") or ""),
+                selected_tier, request.target_rate, tiers,
+            )
+            await self._deps.drain_worker(change.capture)
+            try:
+                snapshot["channel_tier_change"] = change
+            except TypeError:
+                pass
+        return await self._change_tier_hardware(change)
 
     async def rollback_channel_tier(self, request, snapshot, transition_id):
         snapshot = snapshot or {}

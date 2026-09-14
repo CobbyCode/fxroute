@@ -59,6 +59,21 @@ def default_output_profile(cards_output: str, card_name: str) -> str | None:
     return candidates[0] if candidates else None
 
 
+def prepare_change(output_key: str, tier: dict, target_rate: int, tiers: list) -> "ChannelTierChange":
+    """Build an uncaptured tier change, flagging the stock-profile return.
+
+    The largest inventory is the device's stock multichannel profile (no rule
+    file); smaller ones go through the pro-audio rule.
+    """
+    bands = [item for item in tiers if isinstance(item, dict)]
+    largest = max([int(item.get("channels") or 0) for item in bands] or [0])
+    return ChannelTierChange(
+        output_key, dict(tier), target_rate,
+        default_tier=bool(bands) and int(tier.get("channels") or 0) >= largest,
+        tiers=list(bands),
+    )
+
+
 class ChannelTierChange:
     def __init__(self, output_key: str, tier: dict, target_rate: int, *, run: Callable = _run_command,
                  default_tier: bool = False, tiers: list | None = None):

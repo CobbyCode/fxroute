@@ -87,12 +87,11 @@ def persist_sample_rate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 def effective_playback_rate(source_rate: int | None, policy: Mapping[str, Any] | None = None) -> int | None:
+    # Rate decides, tier follows: the coordinator reprobes profiled devices
+    # into the target rate's native tier, so auto keeps the raw source rate
+    # instead of mapping it into the current band.
     current = dict(policy or load_sample_rate_policy())
     fixed_rate = current.get("rate") if current.get("mode") == "fixed" else None
-    from audio.device_profiles import rate_in_tier, selected_tier_rates
-    tier_rates = selected_tier_rates()
-    if tier_rates:
-        return rate_in_tier(fixed_rate or source_rate, tier_rates)
     if isinstance(fixed_rate, int) and fixed_rate > 0:
         return fixed_rate
     return source_rate if isinstance(source_rate, int) and source_rate > 0 else None
