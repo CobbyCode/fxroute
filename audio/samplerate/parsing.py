@@ -556,7 +556,9 @@ def _prefer_output_port_label(port_label: str | None, fallback_label: str | None
         return 'Headphones'
     if 'hdmi' in lowered or 'displayport' in lowered or 'display port' in lowered:
         return 'HDMI'
-    if cleaned_port.lower() in {'analog output', 'line out', 'speaker'}:
+    if lowered in {'analog output', 'line out', 'speaker', 'digital output'}:
+        return fallback_label or cleaned_port
+    if lowered.startswith('digital output ('):
         return fallback_label or cleaned_port
     return cleaned_port
 
