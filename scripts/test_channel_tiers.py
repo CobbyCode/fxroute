@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -386,6 +387,56 @@ class TierCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(coordinator.transition_blocked)
         self.assertFalse(runtime.muted)
         self.assertEqual(runtime.rate, 44100)
+
+
+class TierApplySnapshotTests(unittest.IsolatedAsyncioTestCase):
+    """apply_channel_tier stores the captured change on the snapshot for rollback."""
+
+    TIER = {"id": "14ch", "channels": 14, "rates": [88200, 96000], "probe_rate": 96000}
+    KEY = "alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen_SERIAL-00.multichannel-output"
+
+    def _runtime(self, drained):
+        from playback.runtime.channel_tier import _RuntimeChannelTierMixin
+
+        class TierRuntime(_RuntimeChannelTierMixin):
+            def __init__(self, deps):
+                self._deps = deps
+                self.applied = None
+
+            async def _change_tier_hardware(self, change, *, rollback=False):
+                self.applied = change
+                return {"selected_output": {}}
+
+        async def drain_worker(change_step):
+            # The mixin test targets the snapshot store, not the hardware read:
+            # record the step (a bound method, as the real drain receives it).
+            drained.append(change_step.__name__)
+
+        return TierRuntime(SimpleNamespace(drain_worker=drain_worker))
+
+    def _request(self):
+        return SimpleNamespace(
+            audio_overview={"selected_output": {"device_profile": {"tiers": [dict(self.TIER)]}}},
+            channel_tier={"key": self.KEY, "tier": dict(self.TIER)},
+            target_rate=96000,
+        )
+
+    async def test_dict_snapshot_stores_the_change_for_rollback(self):
+        drained = []
+        runtime = self._runtime(drained)
+        snapshot = {}
+        overview = await runtime.apply_channel_tier(self._request(), snapshot)
+        self.assertIs(snapshot["channel_tier_change"], runtime.applied)
+        self.assertEqual(drained, ["capture"])
+        self.assertIn("selected_output", overview)
+
+    async def test_immutable_snapshot_still_applies_but_warns_about_rollback(self):
+        runtime = self._runtime([])
+        snapshot = MappingProxyType({})
+        with self.assertLogs("playback.runtime.channel_tier", level="WARNING") as logs:
+            await runtime.apply_channel_tier(self._request(), snapshot)
+        self.assertTrue(any("rollback will be unavailable" in message for message in logs.output))
+        self.assertIsNotNone(runtime.applied, "the unstoraged change must still drive the hardware stage")
 
 
 if __name__ == "__main__":

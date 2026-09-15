@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import nullcontext
 from dataclasses import replace
 
 import audio.samplerate as samplerate
+
+logger = logging.getLogger(__name__)
 
 
 class _RuntimeChannelTierMixin:
@@ -44,7 +47,12 @@ class _RuntimeChannelTierMixin:
             try:
                 snapshot["channel_tier_change"] = change
             except TypeError:
-                pass
+                # An immutable snapshot cannot carry the change: rollback later
+                # finds nothing and reports False. Never seen with the current
+                # dict snapshot; log so a lost rollback change is visible.
+                logger.warning(
+                    "Channel-tier change could not be stored on the transition snapshot; rollback will be unavailable"
+                )
         return await self._change_tier_hardware(change)
 
     async def rollback_channel_tier(self, request, snapshot, transition_id):
