@@ -8,6 +8,7 @@ import asyncio
 import logging
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -35,6 +36,24 @@ SINK_SUSPEND_COOLDOWN_SECONDS = 3.0
 
 _last_sink_suspend_at: float = 0.0
 _last_sink_suspend_reason: str = ""
+_sink_suspend_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+_sink_suspend_locks_guard = threading.Lock()
+
+
+def _sink_suspend_lock() -> asyncio.Lock:
+    """One lock per event loop, created lazily under a threading guard.
+
+    The loop key keeps fresh loops (tests) from inheriting a lock bound to a
+    finished loop; the threading guard keeps concurrent creations from
+    racing on the dict itself.
+    """
+    loop = asyncio.get_running_loop()
+    with _sink_suspend_locks_guard:
+        lock = _sink_suspend_locks.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _sink_suspend_locks[loop] = lock
+        return lock
 
 
 def pulse_suspend_sink_for_samplerate(output_key: str, reason: str) -> None:
@@ -122,32 +141,36 @@ async def suspend_resume_playback_sink(
     Returns True if suspend/resume completed.
     """
     global _last_sink_suspend_at, _last_sink_suspend_reason
-    now = time.monotonic()
-    elapsed = now - _last_sink_suspend_at
-    if not force and _last_sink_suspend_at > 0 and elapsed < SINK_SUSPEND_COOLDOWN_SECONDS:
-        logger.warning(
-            "Sink suspend/resume SKIPPED (cooldown %.1fs): reason=%s last_reason=%s",
-            elapsed, reason, _last_sink_suspend_reason,
-        )
-        return False
-    if output_key is None:
-        overview = get_audio_output_overview()
-        output_mode = overview.get("output_mode") or {}
-        output_key = str(output_mode.get("effective_output_key") or "").strip()
-    if not output_key:
-        logger.warning("Sink suspend/resume SKIPPED: no output_key (reason=%s)", reason)
-        return False
-    logger.info("Sink suspend/resume START: reason=%s output_key=%s", reason, output_key)
-    try:
-        # pactl suspend pulses and the settle sleep run in a worker thread.
-        await asyncio.to_thread(pulse_suspend_sink_for_samplerate, output_key, reason)
-    except Exception as exc:
-        logger.error("Sink suspend/resume FAILED: reason=%s output_key=%s error=%s", reason, output_key, exc)
-        return False
-    _last_sink_suspend_at = time.monotonic()
-    _last_sink_suspend_reason = reason
-    logger.info("Sink suspend/resume DONE: reason=%s output_key=%s", reason, output_key)
-    return True
+    # Serialize cooldown check, pactl pulse and timestamp write: the check
+    # used to race the post-pulse write, so two concurrent callers could both
+    # pass the 3 s window and double-pulse the sink.
+    async with _sink_suspend_lock():
+        now = time.monotonic()
+        elapsed = now - _last_sink_suspend_at
+        if not force and _last_sink_suspend_at > 0 and elapsed < SINK_SUSPEND_COOLDOWN_SECONDS:
+            logger.warning(
+                "Sink suspend/resume SKIPPED (cooldown %.1fs): reason=%s last_reason=%s",
+                elapsed, reason, _last_sink_suspend_reason,
+            )
+            return False
+        if output_key is None:
+            overview = get_audio_output_overview()
+            output_mode = overview.get("output_mode") or {}
+            output_key = str(output_mode.get("effective_output_key") or "").strip()
+        if not output_key:
+            logger.warning("Sink suspend/resume SKIPPED: no output_key (reason=%s)", reason)
+            return False
+        logger.info("Sink suspend/resume START: reason=%s output_key=%s", reason, output_key)
+        try:
+            # pactl suspend pulses and the settle sleep run in a worker thread.
+            await asyncio.to_thread(pulse_suspend_sink_for_samplerate, output_key, reason)
+        except Exception as exc:
+            logger.error("Sink suspend/resume FAILED: reason=%s output_key=%s error=%s", reason, output_key, exc)
+            return False
+        _last_sink_suspend_at = time.monotonic()
+        _last_sink_suspend_reason = reason
+        logger.info("Sink suspend/resume DONE: reason=%s output_key=%s", reason, output_key)
+        return True
 
 def clear_auto_policy_force_rate(
     expected_rate: int,

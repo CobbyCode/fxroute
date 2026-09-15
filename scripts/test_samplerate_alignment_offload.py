@@ -128,6 +128,53 @@ class AlignmentOffloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(completed)
         _assert_all_off_loop(self, seen, "suspend_resume_playback_sink pactl pulse")
 
+    async def test_concurrent_suspend_resume_callers_respect_cooldown(self):
+        """A caller reaching the lock mid-pulse must not double-pulse the sink.
+
+        The cooldown timestamp is written only after the pactl pulse, so two
+        nearly simultaneous callers used to both pass the 3 s check before
+        either write landed and pulsed twice.  The second caller must instead
+        block on the suspend lock and be cooldown-skipped once the first
+        finished.
+        """
+        pulses: list[str] = []
+        in_pulse = threading.Event()
+        release = threading.Event()
+
+        def pulse(output_key, reason):
+            pulses.append(reason)
+            in_pulse.set()
+            release.wait(2)
+
+        saved_at = alignment._last_sink_suspend_at
+        try:
+            alignment._last_sink_suspend_at = 0.0
+            with (
+                patch.object(alignment, "pulse_suspend_sink_for_samplerate", pulse),
+                patch.object(
+                    alignment, "get_audio_output_overview",
+                    return_value={"output_mode": {"effective_output_key": "alsa_output.test"}},
+                ),
+            ):
+                first = asyncio.create_task(
+                    alignment.suspend_resume_playback_sink(reason="first", output_key="alsa_output.test")
+                )
+                while not in_pulse.is_set():
+                    await asyncio.sleep(0.01)
+                second = asyncio.create_task(
+                    alignment.suspend_resume_playback_sink(reason="second", output_key="alsa_output.test")
+                )
+                await asyncio.sleep(0.05)
+                self.assertFalse(second.done(), "second caller must wait on the suspend lock")
+                self.assertEqual(pulses, ["first"], "second caller must not pulse while the first is running")
+                release.set()
+                results = await asyncio.gather(first, second)
+        finally:
+            release.set()
+            alignment._last_sink_suspend_at = saved_at
+        self.assertEqual(results, [True, False], "the late caller must be cooldown-skipped")
+        self.assertEqual(pulses, ["first"])
+
     async def test_trigger_idle_sink_renegotiation_generates_file_off_loop(self):
         gen_seen = []
         status_seen = []
