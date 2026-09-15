@@ -17,7 +17,7 @@ import shlex
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
 
 from audio.output_routing import output_route_pairs
 from audio.output_ports import (
@@ -28,6 +28,8 @@ from audio.output_ports import (
 )
 from audio.pw_link import stop_command_child_cancellation_safe
 
+# Sources that must reach the hardware only through the DSP output stage.
+DIRECT_SOURCE_NODES = ("mpv", "spotify")
 DSP_NODE_NAME = "fxroute_dsp"
 DSP_INGRESS_MONITOR_NODE = "fxroute_dsp_sink"
 DSP_INGRESS_PORTS = ("monitor_FL", "monitor_FR")
@@ -91,24 +93,35 @@ def _contains_link(text: str, source: str, target: str) -> bool:
     return False
 
 
-def physical_output_links(text: str) -> set[PipeWireLink]:
-    """Read DSP-to-playback edges, preserving capture and post-effect taps."""
-    links = set()
+def iter_pw_links(text: str) -> Iterator[tuple[str, str]]:
+    """Yield ``(source, target)`` for every edge in ``pw-link -l`` text.
+
+    Each non-link line is the current port header, each ``|->``/``|<-`` line a
+    link of that port; the ``source -> target`` form is accepted as well.  One
+    parser for the command's output keeps every consumer's view of the live
+    graph identical.
+    """
     current = ""
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("|-> "):
-            source, target = current, line[4:].strip()
+            yield current, line[4:].strip()
         elif line.startswith("|<- "):
-            source, target = line[4:].strip(), current
+            yield line[4:].strip(), current
         elif " -> " in line:
             source, target = line.split(" -> ", 1)
+            yield source.strip(), target.strip()
         else:
             current = line
-            continue
-        if re.fullmatch(r"fxroute_dsp:output_\d+", source) and ":playback_" in target:
-            links.add(PipeWireLink(source, target))
-    return links
+
+
+def physical_output_links(text: str) -> set[PipeWireLink]:
+    """Read DSP-to-playback edges, preserving capture and post-effect taps."""
+    return {
+        PipeWireLink(source, target)
+        for source, target in iter_pw_links(text)
+        if re.fullmatch(r"fxroute_dsp:output_\d+", source) and ":playback_" in target
+    }
 
 
 def _finite_number(value: Any, default: float = 0.0) -> float:
@@ -406,13 +419,23 @@ class DSPRuntime:
         # The source nodes keep their fixed output_FL/FR/RL/RR naming; only
         # the hardware side is resolved, so a direct source→sink link is
         # removed no matter how the device names its playback ports.
-        for node in ("mpv", "spotify"):
-            for port in self._config.hardware_ports:
-                for channel in HARDWARE_CHANNEL_ORDER:
-                    await self._run((
-                        "pw-link", "-d", f"{node}:output_{channel}",
-                        f"{self._config.output_key}:{port}",
-                    ))
+        candidates = {
+            PipeWireLink(f"{node}:output_{channel}", f"{self._config.output_key}:{port}")
+            for node in DIRECT_SOURCE_NODES
+            for port in self._config.hardware_ports
+            for channel in HARDWARE_CHANNEL_ORDER
+        }
+        # Disconnecting the whole candidate matrix costs one failing `pw-link
+        # -d` subprocess per combination (144 on an 18-channel device) and
+        # every one of them is a no-op on a healthy graph.  Read the live graph
+        # once instead and only disconnect edges that actually exist, which is
+        # the same set but a single `pw-link -l` on the common path.
+        result = await self._run(("pw-link", "-l"))
+        if result.returncode:
+            raise RuntimeError(result.stderr or "Cannot inspect direct source links")
+        live = {PipeWireLink(source, target) for source, target in iter_pw_links(result.stdout)}
+        for link in live & candidates:
+            await self._run(("pw-link", "-d", link.source, link.target))
 
     async def reclean_direct_dsp_links(self) -> None:
         await self._reclean_guarded()

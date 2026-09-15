@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import os
+import re
 import signal
 import socket
 import sys
@@ -16,7 +17,8 @@ from dsp.manager import DSPManager
 from dsp.runtime import (CommandResult, DSPRuntime, DSPRuntimeConfig, PipeWireLink,
                          CONTROL_REPLY_MAX_BYTES, DSP_INGRESS_MONITOR_NODE,
                          RUNTIME_COMMAND_TIMEOUT_RETURNCODE,
-                         RUNTIME_COMMAND_TIMEOUT_SECONDS, _contains_link)
+                         RUNTIME_COMMAND_TIMEOUT_SECONDS, _contains_link,
+                         iter_pw_links, physical_output_links)
 
 class FakeProcess:
     def __init__(self):
@@ -569,16 +571,51 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
     def test_reclean_removes_direct_player_hardware_links(self):
         commands = []
+        live = "\n".join((
+            "mpv:output_FL\n  |-> hw:playback_FL",
+            "spotify:output_RR\n  |-> hw:playback_RR",
+        ))
 
         async def run(command):
             commands.append(tuple(command))
-            return CommandResult(0)
+            return CommandResult(0, live if tuple(command) == ("pw-link", "-l") else "")
 
         runtime = DSPRuntime(self.manager, command_runner=run)
         runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
         asyncio.run(runtime._remove_direct_source_links())
         self.assertIn(("pw-link", "-d", "mpv:output_FL", "hw:playback_FL"), commands)
         self.assertIn(("pw-link", "-d", "spotify:output_RR", "hw:playback_RR"), commands)
+        # Only edges that really exist are disconnected: probing the whole
+        # candidate matrix would cost one failing `pw-link -d` per combination
+        # (2 sources x ports x channels) on a healthy graph.
+        self.assertEqual(
+            sorted(command for command in commands if command[:2] == ("pw-link", "-d")),
+            [
+                ("pw-link", "-d", "mpv:output_FL", "hw:playback_FL"),
+                ("pw-link", "-d", "spotify:output_RR", "hw:playback_RR"),
+            ],
+        )
+
+    def test_reclean_removes_an_existing_direct_link_on_a_multichannel_device(self):
+        commands = []
+        live = "\n".join(
+            f"mpv:output_FR\n  |-> hw:playback_AUX{index}" for index in range(18)
+        )
+
+        async def run(command):
+            commands.append(tuple(command))
+            return CommandResult(0, live if tuple(command) == ("pw-link", "-l") else "")
+
+        runtime = DSPRuntime(self.manager, command_runner=run)
+        runtime._config = DSPRuntimeConfig(
+            "subwoofer-2.2", "hw", 48000,
+            tuple(f"playback_AUX{index}" for index in range(18)), (),
+        )
+        asyncio.run(runtime._remove_direct_source_links())
+        self.assertEqual(
+            sorted(command for command in commands if command[:2] == ("pw-link", "-d")),
+            sorted(("pw-link", "-d", "mpv:output_FR", f"hw:playback_AUX{index}") for index in range(18)),
+        )
 
     def test_reclean_reconciles_stable_native_sub_output_links(self):
         commands = []
@@ -976,6 +1013,68 @@ class ContainsLinkTests(unittest.TestCase):
     def test_arrow_text_form_is_still_recognized(self):
         self.assertTrue(_contains_link("mpv:output_FL -> fxroute_dsp_sink:playback_FL",
                                        "mpv:output_FL", "fxroute_dsp_sink:playback_FL"))
+
+
+class PwLinkParsingTests(unittest.TestCase):
+    """One parser feeds every consumer of the live `pw-link -l` graph."""
+
+    TEXT = (
+        "fxroute_dsp_sink:monitor_FL\n"
+        "  |-> fxroute_dsp:input_1\n"
+        "spotify:output_FL\n"
+        "  |-> fxroute_dsp_sink:playback_FL\n"
+        "  |-> alsa_output.hw:playback_AUX0\n"
+        "fxroute_dsp:output_1\n"
+        "  |-> alsa_output.hw:playback_AUX0\n"
+        "alsa_output.hw:playback_AUX0\n"
+        "  |<- fxroute_dsp:output_1\n"
+    )
+
+    def test_every_edge_is_yielded_with_its_port_header(self):
+        self.assertEqual(list(iter_pw_links(self.TEXT)), [
+            ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp:input_1"),
+            ("spotify:output_FL", "fxroute_dsp_sink:playback_FL"),
+            ("spotify:output_FL", "alsa_output.hw:playback_AUX0"),
+            ("fxroute_dsp:output_1", "alsa_output.hw:playback_AUX0"),
+            ("fxroute_dsp:output_1", "alsa_output.hw:playback_AUX0"),
+        ])
+
+    def test_arrow_text_form_is_yielded(self):
+        self.assertEqual(
+            list(iter_pw_links("a:out -> b:in\n")),
+            [("a:out", "b:in")],
+        )
+
+    def test_physical_output_links_keeps_only_dsp_to_playback_edges(self):
+        self.assertEqual(
+            physical_output_links(self.TEXT),
+            {PipeWireLink("fxroute_dsp:output_1", "alsa_output.hw:playback_AUX0")},
+        )
+
+    def test_physical_output_links_matches_the_pre_extraction_parse(self):
+        # Guard the shared parser extraction: the blank-line handling must stay
+        # byte-for-byte the historic behavior for the diagnosis/readback paths.
+        def historic(text):
+            links = set()
+            current = ""
+            for raw in text.splitlines():
+                line = raw.strip()
+                if line.startswith("|-> "):
+                    source, target = current, line[4:].strip()
+                elif line.startswith("|<- "):
+                    source, target = line[4:].strip(), current
+                elif " -> " in line:
+                    source, target = line.split(" -> ", 1)
+                else:
+                    current = line
+                    continue
+                if re.fullmatch(r"fxroute_dsp:output_\d+", source) and ":playback_" in target:
+                    links.add(PipeWireLink(source, target))
+            return links
+
+        for text in (self.TEXT, "", "a:x\n\n  |-> b:y\n",
+                     "fxroute_dsp:output_1\n  |-> hw:playback_AUX0"):
+            self.assertEqual(physical_output_links(text), historic(text))
 
 
 class ControlReplyTruncationTests(unittest.TestCase):
