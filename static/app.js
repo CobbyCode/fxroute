@@ -3157,18 +3157,27 @@ function renderSettingsPanel() {
         const signals = Array.isArray(outputRouting.signals) ? outputRouting.signals : [];
         const assignments = Array.isArray(outputRouting.assignments) ? outputRouting.assignments : [];
         const busy = _audioRoutingInProgress || _audioOutputModeSwitchInProgress;
-        const focusedValue = document.activeElement && document.activeElement.tagName === 'SELECT' && document.activeElement.dataset.routingOutput
-            ? { index: Number(document.activeElement.dataset.routingOutput), value: document.activeElement.value } : null;
-        elements.settingsRoutingGrid.innerHTML = assignments.map((signal, index) => {
+        const routingHtml = assignments.map((signal, index) => {
             const options = signals.map((entry) => `<option value="${entry.id}">${escapeHtml(entry.label)}</option>`).join('');
             return `<div class="settings-routing-cell"><label for="settings-routing-out-${index + 1}">Out ${index + 1}</label>`
                 + `<select id="settings-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="Output ${index + 1} signal"${busy ? ' disabled' : ''}>${options}</select></div>`;
         }).join('');
-        Array.from(elements.settingsRoutingGrid.querySelectorAll('select')).forEach((sel, index) => {
-            sel.value = String(assignments[index] ?? 0);
-        });
-        if (focusedValue && elements.settingsRoutingGrid.querySelector(`[data-routing-output="${focusedValue.index}"]`)) {
-            elements.settingsRoutingGrid.querySelector(`[data-routing-output="${focusedValue.index}"]`).value = focusedValue.value;
+        // Replacing the <select> nodes closes an open native dropdown, so the
+        // grid is only touched when its rendered matrix really differs and no
+        // routing select is being operated. Rebuilding on every render tore the
+        // grid down under the user: the periodic settings refresh (2.5 s status
+        // poll) closed the dropdown within one poll interval. The signature
+        // carries the assignments and the in-flight flag too, since those are
+        // applied to the selects rather than to the options markup.
+        const routingSignature = [routingHtml, assignments.join(','), busy ? 'busy' : 'idle'].join('|');
+        const routingSelectActive = !!document.activeElement
+            && elements.settingsRoutingGrid.contains(document.activeElement);
+        if (!routingSelectActive && elements.settingsRoutingGrid.dataset.routingSignature !== routingSignature) {
+            elements.settingsRoutingGrid.innerHTML = routingHtml;
+            elements.settingsRoutingGrid.dataset.routingSignature = routingSignature;
+            Array.from(elements.settingsRoutingGrid.querySelectorAll('select')).forEach((sel, index) => {
+                sel.value = String(assignments[index] ?? 0);
+            });
         }
     }
     if (elements.settingsRoutingHint) {
