@@ -31,6 +31,9 @@ EXPECTED_SNIPPETS = (
     "monitor.bluez.seat-monitoring = disabled",
     "wireplumber.profiles",
     "main = {",
+    "monitor.bluez.rules",
+    "bluez_input",
+    "node.autoconnect = false",
 )
 
 
@@ -106,6 +109,26 @@ class WireplumberBluetoothDropinTests(unittest.TestCase):
             for snippet in EXPECTED_SNIPPETS:
                 self.assertIn(snippet, content)
             self.assertIn("restart wireplumber.service", calls.read_text())
+
+    def test_dropin_disables_autoconnect_only_for_capture_nodes(self) -> None:
+        configure = extract_function(self.install, "configure_wireplumber_bluetooth")
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            calls = home / "systemctl-calls"
+            proc = run_harness(
+                "run_as_target_user() { \"$@\"; }\n"
+                f"user_systemctl() {{ printf '%s\\n' \"$*\" >> {calls}; }}\n"
+                "pass() { :; }\n"
+                "warn() { :; }\n",
+                f"{configure}\nconfigure_wireplumber_bluetooth",
+                home,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            content = (home / DROPIN_RELPATH).read_text()
+            match_lines = [line for line in content.splitlines() if "node.name" in line]
+            self.assertTrue(match_lines, "rule matches no node names")
+            for line in match_lines:
+                self.assertNotIn("bluez_output", line)
 
     def test_remove_deletes_dropin_and_restarts_wireplumber(self) -> None:
         remove = extract_function(self.uninstall, "remove_wireplumber_bluetooth_config")

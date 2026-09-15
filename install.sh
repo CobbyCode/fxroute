@@ -4442,6 +4442,27 @@ wireplumber.profiles = {
     monitor.bluez.seat-monitoring = disabled
   }
 }
+# FXRoute links Bluetooth capture sources to the DSP ingress sink itself
+# (audio/bluetooth.py). WirePlumber would otherwise also autoconnect every
+# new bluez_input node to the default hardware sink (standard policy for
+# node.autoconnect streams), producing a second, undelayed direct path next
+# to the DSP path: the same audio plays twice, offset by the DSP latency.
+# Disable autoconnect for Bluetooth capture nodes so exactly one path
+# (Bluetooth -> fxroute_dsp_sink -> DSP -> hardware) exists. Playback sinks
+# (bluez_output.*) keep autoconnect so Bluetooth speakers stay usable.
+monitor.bluez.rules = [
+  {
+    matches = [
+      { node.name = "~bluez_input.*" }
+      { node.name = "~bluez_source.*" }
+    ]
+    actions = {
+      update-props = {
+        node.autoconnect = false
+      }
+    }
+  }
+]
 EOF
   if user_systemctl restart wireplumber.service; then
     pass "WirePlumber Bluetooth monitor configured without seat activation"
