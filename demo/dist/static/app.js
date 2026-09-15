@@ -10921,6 +10921,26 @@ function stopMeasurementWindowHeartbeat(keepalive = false) {
     void sendMeasurementWindowHeartbeat(false, keepalive);
 }
 
+const MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT = 'Scans sub delay around crossover, picks best alignment.';
+
+function resetMeasurementTransientStatus() {
+    // A cancelled/completed/failed AutoSub (or sweep) leaves its statusText
+    // and the directly written AutoSub inline status behind; no render pass
+    // ever restores them, so reopening the panel would show stale
+    // cancelled/completed/error/progress/result state until a page refresh.
+    // Unsaved measurement data (autoSubMeasurements, currentMeasurement) is
+    // deliberately kept: it is saveable content, not transient status.
+    const measurementState = state.measurement || {};
+    if (measurementState.autoSubInFlight || measurementState.startInFlight
+        || measurementState.activeJobId || measurementState.autoSubJobId
+        || measurementState.activeMeasurementKind) return;
+    measurementState.statusText = '';
+    measurementState.autoSubResult = null;
+    if (elements.measurementAutoSubStatus) {
+        elements.measurementAutoSubStatus.textContent = MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT;
+    }
+}
+
 function toggleMeasurementPanel(forceOpen = null) {
     if (!elements.measurementPanel) return;
     state.measurement.modeNote = measurementModeNoteText();
@@ -10934,6 +10954,7 @@ function toggleMeasurementPanel(forceOpen = null) {
     if (shouldOpen) {
         startMeasurementWindowHeartbeat();
         measurementInputScanOnFocusDone = false;
+        resetMeasurementTransientStatus();
         renderMeasurementPanel();
         void fetchMeasurementInputs();
         scheduleMeasurementGraphRender();
