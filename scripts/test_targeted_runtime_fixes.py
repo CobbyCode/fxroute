@@ -64,10 +64,11 @@ class PeakMonitorTests(unittest.IsolatedAsyncioTestCase):
 
     def test_initial_link_failure_has_initialized_no_data_clock(self):
         source = (Path(__file__).resolve().parents[1] / "dsp/peak_monitor.py").read_text()
-        spawn_end = source.index("assert self._proc.stdout is not None")
-        loop_start = source.index("try:\n            try:", spawn_end)
+        # dff1015 replaced the spawn assert with an explicit invariant check.
+        spawn_end = source.index('raise RuntimeError("Peak monitor pw-record spawned without a stdout pipe")')
+        link = source.index("await self._link_capture_stream(target, capture_node_name)", spawn_end)
         clock = source.index("last_data_at = time.monotonic()", spawn_end)
-        self.assertLess(clock, loop_start)
+        self.assertLess(clock, link)
 
 
 class MPVCommandTests(unittest.TestCase):
