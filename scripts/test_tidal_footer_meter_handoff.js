@@ -161,6 +161,7 @@ const SPOTIFY_IDLE = { available: true, status: 'Stopped', title: '', artist: ''
 const QOBUZ_IDLE = { available: false, status: 'Stopped' };
 const TIDAL_TRACK = { source: 'tidal', id: '175015094', title: 'Respect (2005 Remaster)', url: '/home/paul/.cache/fxroute/tidal/tidal-052c2f7bd01c.mp4' };
 const LOCAL_TRACK = { source: 'local', id: 'track-1', title: 'Local Song', url: '/music/a.flac' };
+const RADIO_TRACK = { id: 'radio_fip-hiphop', title: 'FIP Hip-Hop', artist: 'Radio', source: 'radio', url: 'https://icecast.radiofrance.fr/fiphiphop-midfi.mp3' };
 
 const cases = [
     // Reported bug shapes: live TIDAL playback must own the footer, never a
@@ -188,6 +189,108 @@ for (const c of cases) {
     if (!ok) failures += 1;
     console.log(`${ok ? 'ok' : 'FAIL'}  ${c.name}: footer=${got} (want ${c.want})`);
 }
+
+// --- radio /api/play response commit -----------------------------------------
+// playRadio commits through applyNativePlayResponse. Run the VERBATIM helper
+// and merge against a stale cached Spotify owner (the missed-broadcast class
+// the shared path must heal) and assert the same postconditions playRadio's
+// old inline block guaranteed: payload merged, Spotify Playing edge demoted,
+// poll demoted when Spotify must not be polled, UI refreshed once.
+const RADIO_PLAY_RESPONSE = {
+    status: 'playing',
+    playback: {
+        _seq: 3701,
+        playback_owner: 'radio',
+        current_track: RADIO_TRACK,
+        playing: true,
+        paused: false,
+        ended: false,
+    },
+};
+
+function runRadioResponseCase({ spotify, ownerCache }) {
+    const sandbox = {
+        window: {
+            __footerSource: 'spotify',
+            __spotifyLastData: spotify,
+            __qobuzLastData: QOBUZ_IDLE,
+            __visibleTab: 'radio',
+        },
+        state: {
+            playback: {
+                playback_owner: ownerCache,
+                current_track: null,
+                playing: false,
+                paused: false,
+                ended: false,
+            },
+        },
+        _spotifyTakeoverUntil: 12345, // stale takeover arm from the old owner
+        _spotifyPollGeneration: 0,
+        _localFooterHoldUntil: 0,
+        pendingFooterSingleTrackStart: null,
+        lastRadioTrack: null,
+        footerDebug: () => {},
+        stopPlaybackPositionPoll: () => {},
+        startSpotifyPoll: () => {},
+        stopSpotifyPoll: () => { sandbox.stopSpotifyPollCalls += 1; },
+        stopSpotifyPollCalls: 0,
+        startQobuzPoll: () => {},
+        stopQobuzPoll: () => {},
+        shouldPollSpotify: () => false,
+        shouldPollQobuz: () => false,
+        applyRemoteVolume: () => {},
+        updatePlaybackUI: () => { sandbox.updatePlaybackUICalls += 1; },
+        updatePlaybackUICalls: 0,
+        console,
+    };
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    vm.runInContext(
+        `${fns}\n${extractFunction(appJs, 'mergePlaybackState')}\n`
+        + `${extractFunction(appJs, 'rememberLastRadioTrack')}\n${extractFunction(appJs, 'applyNativePlayResponse')}\n`
+        + 'this.__run = () => { applyNativePlayResponse(' + JSON.stringify(RADIO_PLAY_RESPONSE) + '); return state.playback; };',
+        sandbox,
+    );
+    vm.runInContext('__run()', sandbox);
+    return sandbox;
+}
+
+// Stale Spotify Playing owns the footer before the commit; the response owner
+// is 'radio' (as /api/play answered on .104). The commit must heal the footer.
+{
+    const s = runRadioResponseCase({ spotify: SPOTIFY_PLAYING_STALE, ownerCache: 'spotify' });
+    const pb = vm.runInContext('state.playback', s);
+    const checks = [
+        ['owner merged', pb.playback_owner === 'radio'],
+        ['track merged', pb.current_track?.id === 'radio_fip-hiphop'],
+        ['takeover reset', s._spotifyTakeoverUntil === 0],
+        ['stale Playing edge demoted', s.window.__spotifyLastData.status === 'Paused'],
+        // The sync's local-owner branch and the helper tail both demote the
+        // poll (the production UI refresh would add more); the invariant is
+        // that it IS demoted, not how many sites did it.
+        ['spotify poll demoted', s.stopSpotifyPollCalls >= 1 && s._spotifyPollGeneration >= 1],
+        ['ui refreshed once', s.updatePlaybackUICalls === 1],
+        ['radio track remembered', s.lastRadioTrack?.id === 'radio_fip-hiphop'],
+    ];
+    const bad = checks.filter(([, ok]) => !ok);
+    if (bad.length) failures += 1;
+    console.log(`${bad.length ? 'FAIL' : 'ok'}  radio response commit heals stale spotify owner${bad.length ? ': ' + bad.map(([n]) => n).join(', ') : ''}`);
+}
+// Idle Spotify must not be rewritten by the commit (no fake Paused state).
+{
+    const s = runRadioResponseCase({ spotify: SPOTIFY_IDLE, ownerCache: null });
+    const pb = vm.runInContext('state.playback', s);
+    const checks = [
+        ['owner merged', pb.playback_owner === 'radio'],
+        ['idle spotify untouched', s.window.__spotifyLastData.status === 'Stopped'],
+        ['ui refreshed once', s.updatePlaybackUICalls === 1],
+    ];
+    const bad = checks.filter(([, ok]) => !ok);
+    if (bad.length) failures += 1;
+    console.log(`${bad.length ? 'FAIL' : 'ok'}  radio response commit leaves idle spotify untouched${bad.length ? ': ' + bad.map(([n]) => n).join(', ') : ''}`);
+}
+
 if (failures) {
     console.error(`${failures} case(s) failed`);
     process.exit(1);
