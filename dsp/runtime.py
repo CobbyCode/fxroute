@@ -115,6 +115,39 @@ def iter_pw_links(text: str) -> Iterator[tuple[str, str]]:
             current = line
 
 
+# A `pw-link -l` port header: "<node>:<port>" with no spaces.  Real output
+# names every port this way (ALSA keys carry dots/dashes but no spaces);
+# error text and unknown future formats do not.
+_PW_LINK_PORT_RE = re.compile(r"^\S+:\S+$")
+
+
+def pw_link_output_unrecognized(text: str, edges: Sequence[tuple[str, str]]) -> bool:
+    """Return whether `pw-link -l` text has no recognizable graph shape.
+
+    Empty output is the normal "no links" shape.  Otherwise at least one
+    port header or one well-formed edge (both sides "<node>:<port>") must be
+    present; anything else is error text or an unknown format, where an
+    absent candidate proves nothing and the caller must not treat the graph
+    as clean.
+    """
+    if not text.strip():
+        return False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("|-> ") or stripped.startswith("|<- "):
+            continue
+        if " -> " in stripped:
+            continue
+        if _PW_LINK_PORT_RE.match(stripped):
+            return False
+    return not any(
+        source and target and ":" in source and ":" in target
+        for source, target in edges
+    )
+
+
 def physical_output_links(text: str) -> set[PipeWireLink]:
     """Read DSP-to-playback edges, preserving capture and post-effect taps."""
     return {
@@ -433,7 +466,21 @@ class DSPRuntime:
         result = await self._run(("pw-link", "-l"))
         if result.returncode:
             raise RuntimeError(result.stderr or "Cannot inspect direct source links")
-        live = {PipeWireLink(source, target) for source, target in iter_pw_links(result.stdout)}
+        parsed = list(iter_pw_links(result.stdout))
+        if pw_link_output_unrecognized(result.stdout, parsed):
+            # Fail-safe: the output has no recognizable graph shape, so an
+            # absent candidate proves nothing.  Remove the whole matrix as
+            # before the single-read optimization; never taken on success.
+            logger.warning("Direct source link inspection unrecognized; removing full candidate matrix")
+            for node in DIRECT_SOURCE_NODES:
+                for port in self._config.hardware_ports:
+                    for channel in HARDWARE_CHANNEL_ORDER:
+                        await self._run((
+                            "pw-link", "-d", f"{node}:output_{channel}",
+                            f"{self._config.output_key}:{port}",
+                        ))
+            return
+        live = {PipeWireLink(source, target) for source, target in parsed}
         for link in live & candidates:
             await self._run(("pw-link", "-d", link.source, link.target))
 

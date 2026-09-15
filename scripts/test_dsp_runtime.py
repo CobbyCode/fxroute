@@ -18,7 +18,8 @@ from dsp.runtime import (CommandResult, DSPRuntime, DSPRuntimeConfig, PipeWireLi
                          CONTROL_REPLY_MAX_BYTES, DSP_INGRESS_MONITOR_NODE,
                          RUNTIME_COMMAND_TIMEOUT_RETURNCODE,
                          RUNTIME_COMMAND_TIMEOUT_SECONDS, _contains_link,
-                         iter_pw_links, physical_output_links)
+                         iter_pw_links, physical_output_links,
+                         pw_link_output_unrecognized)
 
 class FakeProcess:
     def __init__(self):
@@ -1075,6 +1076,133 @@ class PwLinkParsingTests(unittest.TestCase):
         for text in (self.TEXT, "", "a:x\n\n  |-> b:y\n",
                      "fxroute_dsp:output_1\n  |-> hw:playback_AUX0"):
             self.assertEqual(physical_output_links(text), historic(text))
+
+
+class PwLinkLiveShapeTests(unittest.TestCase):
+    """Pin iter_pw_links against the real `pw-link -l` output of .104.
+
+    Snapshot taken on .104 (PipeWire 1.6.8) with a healthy subwoofer-2.2
+    graph: spotify playing through the helper to a Scarlett 16i16.  Every
+    edge appears twice (once `|->` under the source port, once `|<-` under
+    the target port); the parser must yield both so the set dedupes them.
+    """
+
+    HW = "alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen_S63ZKU25B036F6-00.multichannel-output"
+
+    LIVE_104 = (
+        "fxroute_dsp_sink:monitor_FL\n"
+        "  |-> fxroute_dsp:input_1\n"
+        "fxroute_dsp_sink:monitor_FR\n"
+        "  |-> fxroute_dsp:input_2\n"
+        "fxroute_dsp_sink:playback_FL\n"
+        "  |<- spotify:output_FL\n"
+        "fxroute_dsp_sink:playback_FR\n"
+        "  |<- spotify:output_FR\n"
+        "spotify:output_FL\n"
+        "  |-> fxroute_dsp_sink:playback_FL\n"
+        "spotify:output_FR\n"
+        "  |-> fxroute_dsp_sink:playback_FR\n"
+        f"{HW}:playback_AUX0\n"
+        "  |<- fxroute_dsp:output_1\n"
+        f"{HW}:playback_AUX1\n"
+        "  |<- fxroute_dsp:output_2\n"
+        f"{HW}:playback_AUX2\n"
+        "  |<- fxroute_dsp:output_3\n"
+        f"{HW}:playback_AUX3\n"
+        "  |<- fxroute_dsp:output_4\n"
+        "fxroute_dsp:output_1\n"
+        f"  |-> {HW}:playback_AUX0\n"
+        "fxroute_dsp:output_2\n"
+        f"  |-> {HW}:playback_AUX1\n"
+        "fxroute_dsp:output_3\n"
+        f"  |-> {HW}:playback_AUX2\n"
+        "fxroute_dsp:output_4\n"
+        f"  |-> {HW}:playback_AUX3\n"
+        "fxroute_dsp:input_1\n"
+        "  |<- fxroute_dsp_sink:monitor_FL\n"
+        "fxroute_dsp:input_2\n"
+        "  |<- fxroute_dsp_sink:monitor_FR\n"
+    )
+
+    def test_live_output_yields_both_directions(self):
+        edges = set(iter_pw_links(self.LIVE_104))
+        self.assertIn(("spotify:output_FL", "fxroute_dsp_sink:playback_FL"), edges)
+        self.assertIn(("spotify:output_FR", "fxroute_dsp_sink:playback_FR"), edges)
+        self.assertIn(("fxroute_dsp:output_1", f"{self.HW}:playback_AUX0"), edges)
+        self.assertIn(("fxroute_dsp_sink:monitor_FL", "fxroute_dsp:input_1"), edges)
+        # 16 link lines, 8 distinct edges each seen twice.
+        self.assertEqual(len(list(iter_pw_links(self.LIVE_104))), 16)
+        self.assertEqual(len(edges), 8)
+
+    def test_live_output_is_recognized(self):
+        self.assertFalse(pw_link_output_unrecognized(self.LIVE_104, list(iter_pw_links(self.LIVE_104))))
+
+    def test_live_output_physical_links(self):
+        self.assertEqual(
+            physical_output_links(self.LIVE_104),
+            {PipeWireLink(f"fxroute_dsp:output_{index}", f"{self.HW}:playback_AUX{index - 1}")
+             for index in (1, 2, 3, 4)},
+        )
+
+    def test_empty_output_is_recognized_as_no_links(self):
+        self.assertEqual(list(iter_pw_links("")), [])
+        self.assertFalse(pw_link_output_unrecognized("", []))
+
+    def test_headers_only_are_recognized(self):
+        text = "some:port\nanother:port\n"
+        self.assertEqual(list(iter_pw_links(text)), [])
+        self.assertFalse(pw_link_output_unrecognized(text, []))
+
+    def test_arrow_form_is_recognized(self):
+        edges = list(iter_pw_links("a:out -> b:in\n"))
+        self.assertFalse(pw_link_output_unrecognized("a:out -> b:in\n", edges))
+
+    def test_garbage_without_ports_is_unrecognized(self):
+        for text in ("something broke\ntry again\n", "Error: host is down\n", "  |-> foo:bar\n"):
+            with self.subTest(text=text):
+                self.assertTrue(pw_link_output_unrecognized(text, list(iter_pw_links(text))))
+
+    def test_healthy_live_graph_disconnects_nothing(self):
+        commands = []
+
+        async def run(command):
+            commands.append(tuple(command))
+            return CommandResult(0, self.LIVE_104 if tuple(command) == ("pw-link", "-l") else "")
+
+        manager = DSPManager(home=Path(tempfile.mkdtemp()))
+        manager.save_global_extras({"limiter": {"enabled": False}})
+        runtime = DSPRuntime(manager, command_runner=run)
+        runtime._config = DSPRuntimeConfig(
+            "subwoofer-2.2", self.HW, 48000,
+            tuple(f"playback_AUX{index}" for index in range(18)), (),
+        )
+        asyncio.run(runtime._remove_direct_source_links())
+        self.assertEqual([command for command in commands if command[:2] == ("pw-link", "-d")], [])
+        self.assertIn(("pw-link", "-l"), [command[:2] for command in commands])
+
+    def test_unrecognized_output_falls_back_to_brute_force(self):
+        from audio.output_ports import HARDWARE_CHANNEL_ORDER  # noqa: E402
+        commands = []
+
+        async def run(command):
+            commands.append(tuple(command))
+            return CommandResult(0, "something broke\ntry again\n"
+                                 if tuple(command) == ("pw-link", "-l") else "")
+
+        manager = DSPManager(home=Path(tempfile.mkdtemp()))
+        manager.save_global_extras({"limiter": {"enabled": False}})
+        runtime = DSPRuntime(manager, command_runner=run)
+        runtime._config = DSPRuntimeConfig("stereo", "hw", 48000, ("playback_FL", "playback_FR"), ())
+        asyncio.run(runtime._remove_direct_source_links())
+        # Fail-safe: the exact pre-optimization matrix, in deterministic
+        # node -> port -> channel order (2 sources x 2 ports x 4 channels).
+        expected = [
+            ("pw-link", "-d", f"{node}:output_{channel}", f"hw:{port}")
+            for node in ("mpv", "spotify")
+            for port in ("playback_FL", "playback_FR")
+            for channel in HARDWARE_CHANNEL_ORDER
+        ]
+        self.assertEqual([command for command in commands if command[:2] == ("pw-link", "-d")], expected)
 
 
 class ControlReplyTruncationTests(unittest.TestCase):
