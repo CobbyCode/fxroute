@@ -4273,7 +4273,10 @@ function footerSingleTrackStartLockActive(playback = state.playback) {
 
 function activeLocalPlaybackBlocksSpotifyOwnership(playback = state.playback) {
     const track = playback?.current_track;
-    if (!(track && (track.source === 'local' || track.source === 'radio'))) return false;
+    // Every MPV source (local/radio/tidal) blocks a stale Spotify takeover:
+    // TIDAL rides the same native engine, so live TIDAL playback keeps the
+    // footer even while MPRIS still reports a stale Spotify Playing edge.
+    if (!(track && (track.source === 'local' || track.source === 'radio' || track.source === 'tidal'))) return false;
     return !!(playback?.playing && !playback?.ended);
 }
 
@@ -4469,7 +4472,10 @@ async function fetchMetadata() {
             }
         }
         if (data.current_track) {
-            mergePlaybackState({ current_track: data.current_track, playing: data.playing, paused: data.paused, live_title: data.live_title, radio_metadata: data.radio_metadata, stream_info: data.stream_info });
+            // The owner rides along so the peak poll heals a stale footer
+            // owner (e.g. a missed playback broadcast after a TIDAL start);
+            // VU/peak gating resolves the footer from this field.
+            mergePlaybackState({ current_track: data.current_track, playing: data.playing, paused: data.paused, playback_owner: data.playback_owner, live_title: data.live_title, radio_metadata: data.radio_metadata, stream_info: data.stream_info });
             syncFooterOwnershipFromPlayback(data);
             needsUiRefresh = true;
         }
@@ -4890,7 +4896,10 @@ function setFooterSource(nextSource, reason, details = {}) {
 
 function localPlaybackHasFooterContext(playback = state.playback) {
     const track = playback?.current_track;
-    if (!(track && (track.source === 'radio' || track.source === 'local'))) return false;
+    // Native MPV sources share one footer context: TIDAL rides the same
+    // engine as local/radio, so live TIDAL playback owns the footer (and the
+    // VU/peak gating derived from it) even when no backend commit is cached.
+    if (!(track && (track.source === 'radio' || track.source === 'local' || track.source === 'tidal'))) return false;
     if (spotifyPlayingOwnsFooter()) return false;
     if (playback?.paused && window.__footerSource === 'spotify' && spotifyPausedHasFooterContext()) return false;
     return !!(playback?.playing || playback?.paused);
@@ -4898,7 +4907,7 @@ function localPlaybackHasFooterContext(playback = state.playback) {
 
 function localEndedPlaybackHasFooterContext(playback = state.playback) {
     const track = playback?.current_track;
-    if (!(track && track.source === 'local')) return false;
+    if (!(track && (track.source === 'local' || track.source === 'tidal'))) return false;
     if (spotifyPlayingOwnsFooter()) return false;
     return !!(playback?.ended && !playback?.playing && !playback?.paused);
 }
@@ -4925,7 +4934,7 @@ function qobuzPlayingOwnsFooter(data = window.__qobuzLastData) {
 
 function localFooterHoldHasContext(playback = state.playback) {
     const track = playback?.current_track;
-    if (!(track && (track.source === 'radio' || track.source === 'local'))) return false;
+    if (!(track && (track.source === 'radio' || track.source === 'local' || track.source === 'tidal'))) return false;
     return Date.now() < _localFooterHoldUntil;
 }
 
@@ -5061,6 +5070,28 @@ function syncFooterOwnershipFromPlayback(playback = state.playback) {
         _spotifyPollGeneration++;
         stopSpotifyPoll();
     }
+}
+
+// Shared commit path for a native /api/play response (local/radio/tidal).
+// playLocal/playRadio perform these steps inline; TIDAL starts through
+// streaming.js and must commit the same authoritative payload instead of
+// relying on the WebSocket playback frame: without the merge the footer
+// keeps a stale Spotify owner and the VU/peak gating derived from it hides
+// the meter even though the backend already streams fresh peak values.
+function applyNativePlayResponse(data) {
+    if (data && data.playback) {
+        mergePlaybackState(data.playback);
+    }
+    _spotifyTakeoverUntil = 0;
+    if (window.__spotifyLastData && window.__spotifyLastData.status === 'Playing') {
+        window.__spotifyLastData = { ...window.__spotifyLastData, status: 'Paused' };
+    }
+    syncFooterOwnershipFromPlayback(state.playback);
+    if (!shouldPollSpotify()) {
+        _spotifyPollGeneration++;
+        stopSpotifyPoll();
+    }
+    updatePlaybackUI();
 }
 
 function footerContentFreezeActive() {
