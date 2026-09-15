@@ -68,6 +68,21 @@ assert.ok(commitSrc.includes('mergePlaybackState('), 'shared commit must merge t
 assert.ok(commitSrc.includes('syncFooterOwnershipFromPlayback('), 'shared commit must re-resolve footer ownership');
 assert.ok(!/tidal/i.test(commitSrc), 'shared commit must not branch on any provider identity');
 assert.ok(streamingJs.includes('applyNativePlayResponse(data)'), 'playTidalTracks must commit through the shared native path');
+// All three native starts commit through the same helper; no caller keeps an
+// inline merge+UI block that could drift from the shared commit path.
+const playRadioSrc = extractFunction(appJs, 'playRadio');
+const playLocalSrc = extractFunction(appJs, 'playLocal');
+assert.ok(playRadioSrc.includes('applyNativePlayResponse(data)'), 'playRadio must commit through the shared native path');
+assert.ok(playLocalSrc.includes('applyNativePlayResponse(data)'), 'playLocal must commit through the shared native path');
+assert.ok(!playRadioSrc.includes('mergePlaybackState('), 'playRadio must not keep an inline merge block');
+assert.ok(!playLocalSrc.includes('mergePlaybackState('), 'playLocal must not keep an inline merge block');
+// Library reaction and the track cue are provider-specific: they must stay in
+// playLocal and run after the shared commit (not inside the helper).
+assert.ok(
+    playLocalSrc.indexOf('applyNativePlayResponse(data)') < playLocalSrc.indexOf('syncLibraryStateFromPlaybackContext(true)'),
+    'playLocal must run the library sync after the shared commit',
+);
+assert.ok(playLocalSrc.includes('maybeShowNativeTrackCue('), 'playLocal must keep its queue-started cue');
 // ... and the peak poll must heal a stale owner when a broadcast was missed.
 assert.ok(
     /mergePlaybackState\(\{\s*current_track:\s*data\.current_track,[^}]*playback_owner:\s*data\.playback_owner/.test(appJs),

@@ -5073,11 +5073,12 @@ function syncFooterOwnershipFromPlayback(playback = state.playback) {
 }
 
 // Shared commit path for a native /api/play response (local/radio/tidal).
-// playLocal/playRadio perform these steps inline; TIDAL starts through
-// streaming.js and must commit the same authoritative payload instead of
-// relying on the WebSocket playback frame: without the merge the footer
-// keeps a stale Spotify owner and the VU/peak gating derived from it hides
-// the meter even though the backend already streams fresh peak values.
+// All three starts commit the same authoritative payload through this helper:
+// merge, footer-ownership resync, Spotify poll demotion and UI refresh.
+// Without the merge the footer keeps a stale Spotify owner and the VU/peak
+// gating derived from it hides the meter even though the backend already
+// streams fresh peak values. Provider-specific reactions (library state,
+// track cue, metadata refresh, samplerate burst polling) stay in the callers.
 function applyNativePlayResponse(data) {
     if (data && data.playback) {
         mergePlaybackState(data.playback);
@@ -7533,10 +7534,7 @@ async function playRadio(stationId) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
         clearPendingOptimisticTrack(requestId);
-        if (data.playback) {
-            mergePlaybackState(data.playback);
-        }
-        updatePlaybackUI();
+        applyNativePlayResponse(data);
         void fetchMetadata();
         triggerSamplerateBurstPolling();
         const playedTrack = data?.playback?.current_track || {
@@ -7623,14 +7621,15 @@ async function playLocal(trackId, queueTrackIds = null) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
         clearPendingOptimisticTrack(requestId);
-        let playedTrack = track;
+        applyNativePlayResponse(data);
         if (data.playback) {
-            mergePlaybackState(data.playback);
+            // Library state must react to the merged playback context, so it
+            // runs after the shared commit; the helper itself is provider-
+            // neutral and does not know library specifics.
             syncLibraryStateFromPlaybackContext(true);
-            playedTrack = data.playback.current_track || track;
         }
-        updatePlaybackUI();
         triggerSamplerateBurstPolling();
+        const playedTrack = data?.playback?.current_track || track;
         const queueCount = (((data || {}).playback || {}).queue || {}).count || 0;
         maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
     } catch (e) {
