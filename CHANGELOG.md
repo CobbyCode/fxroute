@@ -1,5 +1,89 @@
 # Changelog
 
+## 1.0-beta7 (2026-09-16)
+
+Seventh public beta. Distribution channels unchanged: web demo on GitHub Pages,
+Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 ISO via
+SourceForge. Khadas/VIM1S stays internal and gets no public image.
+
+### Release provenance
+
+- Source stand: `main`. No Armbian or live-converter changes this cycle;
+  installer only the Spotify Connect empty-argument parity fix.
+- The x86_64 Leap 16 ISO and the Pi 4/Pi 5 images are built from the release
+  commit; their SHA-256 digests are recorded in this section once the builds
+  exist.
+- The web demo snapshot was rebuilt from this stand (`demo/dist` parity is
+  green).
+- Explicitly not included: the unmerged `feature/adaptive-headroom` work
+  (convolver headroom derived from the realized filter peak).
+
+### Multichannel / Scarlett tiers / routing
+
+- Device-scoped output routing: each hardware output carries one signal
+  (Main L/R, Sub 1/2) or stays silent (Off), fan-out allowed; defaults keep
+  Main L/R on Out 1/2 and Sub 1/2 on Out 3/4. Assignments are stored per
+  device and survive tier changes; a new `POST /api/audio/output-routing`
+  applies them through a coordinated transition (locked with 423 while a
+  measurement is active). DSP links, graph diagnosis, repair paths and the
+  silent-active watcher resolve the same assigned topology; settings show
+  the routing matrix on devices with more than two outputs.
+- Scarlett 16i16/18i16/18i20 (4th Gen) channel tiers from the ALSA USB
+  playback altsets (e.g. 16i16: 18 channels at 44.1/48 kHz, 14 at
+  88.2/96 kHz, 10 at 176.4/192 kHz). No separate tier control: Fixed and
+  Auto select a rate and the coordinator reprobes profiled devices into the
+  rate's native tier; Auto follows the source rate across tier boundaries
+  and never resamples to stay inside an inventory. Tier switches keep an
+  already offered fixed rate, returning to the largest tier restores the
+  stock multichannel profile, and source changes never switch tiers.
+- Routing performance on large devices (Scarlett 16i16, measured on `.104`):
+  direct-source disconnects read the live graph once instead of probing the
+  full matrix (~6.9 s to ~2.0 s per routing save); the idle link-watcher
+  tick no longer builds the full audio overview (~950 to ~280 subprocess
+  spawns per idle minute); the idle pin repair reads force-rate directly;
+  the `pw-link` parser falls back to the brute-force matrix on unrecognized
+  output instead of misreading an empty graph.
+- Tier robustness: the fresh-sink gate confirm re-reads the sink on every
+  retry, a tier change lost on an immutable snapshot is logged, the sink
+  suspend/resume cooldown is serialized, and generic `Digital Output` ports
+  keep the informative device description.
+
+### Playback / DSP
+
+- TIDAL footer/VU fix: TIDAL starts commit through the shared native play
+  path and TIDAL counts as an MPV source in the footer predicates, so VU
+  meter and peak detector now show during TIDAL playback; the peak poll
+  heals a stale playback owner.
+- Local and radio starts use the same shared commit path; the radio handoff
+  behavior is pinned against live response shapes.
+
+### Measurement / UI
+
+- Sweep menu polish: centered secondary button labels, active toggle state,
+  fade-in popover, focusable panel with focus ring and focus return, plus
+  arrow-key navigation on the L/R/Stereo chips.
+- Smoothing chips and the Freq/IR view toggle support the same arrow-key
+  navigation; the smoothing row is a labelled group.
+- Settings Channel Map dropdowns stay open across the settings refresh
+  (deferred rebuild while a routing select is operated).
+- Demo follows the backend's per-device mode memory and falls back to
+  Stereo with `mode_adjustment` on 2-channel outputs.
+
+### Internal maintenance
+
+- Retention first-scan throttle fixed for low-uptime hosts; dead-code and
+  facade re-export cleanup with no behavior change; README demo section
+  trimmed.
+- Regression coverage added for channel tiers, output routing, `pw-link`
+  parsing, samplerate probing, the TIDAL footer handoff and the dropdown
+  stability.
+
+Public release artifact names (to be built from tag `v1.0-beta7`):
+
+- `fxroute-1.0-beta7-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta7-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta7-x86_64-leap16.iso` (SourceForge, + `.sha256`)
+
 ## 1.0-beta6 (2026-09-13)
 
 Sixth public beta. Distribution channels unchanged: web demo on GitHub Pages,
