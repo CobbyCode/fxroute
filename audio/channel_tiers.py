@@ -166,17 +166,22 @@ class ChannelTierChange:
                     # A just-created node still settles (mute/volume writes and
                     # reads can race its appearance): settle, then confirm the
                     # gate with bounded retries instead of failing the whole
-                    # reprobe on one transient readback.
+                    # reprobe on one transient readback.  Every attempt reads
+                    # the sink state fresh after the writes: a spec that
+                    # settles late must not fail each retry against the same
+                    # pre-loop read.
                     time.sleep(0.5)
                     last_error: Exception | None = None
                     for attempt in range(3):
                         try:
                             self.run(["pactl", "set-sink-mute", key, "1"])
                             self.run(["pactl", "set-sink-volume", key, f"{self.volume}%"])
-                            if self._spec(sink)[0] != channels:
-                                raise ValueError(f"Channel-tier readback mismatch: expected {channels}, got {self._spec(sink)[0]}")
-                            confirmed = next(item for item in self._sinks() if item.get("name") == key)
-                            if not confirmed.get("mute") or abs(self._volume(confirmed) - self.volume) > 1:
+                            live = next((item for item in self._sinks() if item.get("name") == key), None)
+                            if live is None:
+                                raise RuntimeError("Recreated hardware sink disappeared before the gate confirm")
+                            if self._spec(live)[0] != channels:
+                                raise ValueError(f"Channel-tier readback mismatch: expected {channels}, got {self._spec(live)[0]}")
+                            if not live.get("mute") or abs(self._volume(live) - self.volume) > 1:
                                 raise ValueError("Recreated sink did not retain the output gate and volume")
                             break
                         except (RuntimeError, ValueError, KeyError) as exc:

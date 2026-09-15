@@ -251,6 +251,32 @@ class HardwareTierTests(unittest.TestCase):
         self.assertEqual(self.volume, original_volume)
         self.assertTrue(self.mute)
 
+    def test_late_settling_spec_confirms_on_a_fresh_read(self):
+        change = self.change()
+        change.capture()
+        # The first read that finds the recreated sink still reports the old
+        # 18-channel spec; the spec settles afterwards. The confirm must
+        # re-read per attempt instead of re-checking that one stale read on
+        # every retry, which failed the whole reprobe before.
+        real_run = self.run_command
+        state = {"profiled": False, "stale": True}
+
+        def late(command):
+            if command[:2] == ["pactl", "set-card-profile"] and command[-1] == "pro-audio":
+                state["profiled"] = True
+            result = real_run(command)
+            if state["profiled"] and state["stale"] and command == ["pactl", "-f", "json", "list", "sinks"]:
+                state["stale"] = False
+                payload = json.loads(result)
+                payload[0]["sample_specification"] = "s32le 18ch 96000Hz"
+                return json.dumps(payload)
+            return result
+
+        change.run = late
+        with patch("time.sleep", return_value=None):
+            change.apply()
+        self.assertEqual(self.channels, 14)
+
     def test_reprobe_failure_restores_old_rule_selection_rate_and_volume(self):
         change = self.change()
         change.capture()
