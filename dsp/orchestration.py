@@ -833,18 +833,29 @@ class DspOrchestrator:
                 if dsp_runtime is None:
                     continue
                 mode_provider = self._deps.get_output_mode
-                if mode_provider is not None and str(mode_provider() or "stereo") not in samplerate.OUTPUT_MODE_SUBWOOFER_MODES:
+                cheap_mode = str(mode_provider() or "stereo") if mode_provider is not None else None
+                if cheap_mode is not None and cheap_mode not in samplerate.OUTPUT_MODE_SUBWOOFER_MODES:
                     # Stereo output needs no subwoofer link watch; skip the
                     # overview build (dozens of short-lived PipeWire/BlueZ
                     # subprocesses per tick) until a subwoofer mode is active.
                     continue
-                # The overview build spawns a dozen PipeWire/BlueZ subprocesses;
-                # keep that blocking pipeline off the event loop so playback
-                # transitions, IPC, and status endpoints stay responsive.
-                overview = await asyncio.to_thread(self._deps.get_audio_output_overview)
-                output_mode = overview.get("output_mode") or {}
-                if output_mode.get("mode") not in samplerate.OUTPUT_MODE_SUBWOOFER_MODES:
-                    continue
+                track = dict(self._deps.get_current_track_info() or {})
+                # The overview is needed to re-read the output mode when the
+                # cheap provider above is unavailable, and to diagnose the
+                # graph of a track.  On an idle graph with the provider present
+                # it has nothing to contribute, and building it cost ~35
+                # short-lived PipeWire/BlueZ subprocesses every 2 s tick, so it
+                # must not run for the idle pinned-rate repair below.
+                overview = None
+                if cheap_mode is None or track:
+                    # The overview build spawns a dozen PipeWire/BlueZ
+                    # subprocesses; keep that blocking pipeline off the event
+                    # loop so playback transitions, IPC, and status endpoints
+                    # stay responsive.
+                    overview = await asyncio.to_thread(self._deps.get_audio_output_overview)
+                    output_mode = overview.get("output_mode") or {}
+                    if output_mode.get("mode") not in samplerate.OUTPUT_MODE_SUBWOOFER_MODES:
+                        continue
                 if self._deps.playback_transition_is_active():
                     continue
                 if dsp_runtime.sync_in_progress:
@@ -852,7 +863,6 @@ class DspOrchestrator:
                         "Subwoofer link watcher skipped while a subwoofer runtime reconfiguration is in progress"
                     )
                     continue
-                track = dict(self._deps.get_current_track_info() or {})
                 if not track:
                     # No source owns a target rate.  Repair a pinned helper
                     # that does not honour the live force-rate pin rather than
