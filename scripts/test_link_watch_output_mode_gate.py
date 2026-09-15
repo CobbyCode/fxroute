@@ -162,6 +162,52 @@ class LinkWatchOutputModeGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(overview_calls, [], "idle subwoofer ticks must not build the overview")
         self.assertEqual(len(repairs), 1, "the idle pinned-rate repair must still run")
 
+    async def test_idle_gate_follows_cheap_provider_not_overview_mode(self):
+        """Pin the idle mode contract: overview.mode adds no live truth.
+
+        overview.output_mode.mode is the same persisted mode the cheap
+        provider falls back to (plus availability/ports the idle gate does
+        not read); the cheap provider additionally prefers the committed
+        runtime config. A divergent overview must therefore never be
+        consulted on an idle tick.
+        """
+        overview_calls = []
+        repairs = []
+
+        def overview_builder():
+            overview_calls.append(True)
+            return {"output_mode": {"mode": "stereo"}}
+
+        ticks = 0
+
+        async def cancel_on_second_sleep(_delay):
+            nonlocal ticks
+            ticks += 1
+            if ticks < 2:
+                return
+            raise asyncio.CancelledError
+
+        deps = SimpleNamespace(
+            sleep=cancel_on_second_sleep,
+            get_dsp_runtime=lambda: SimpleNamespace(sync_in_progress=False),
+            get_audio_output_overview=overview_builder,
+            observe_playback_samplerate_drift=mock.AsyncMock(),
+            get_output_mode=lambda: "subwoofer-2.2",
+            get_current_track_info=lambda: {},
+            playback_transition_is_active=lambda: False,
+        )
+        orchestrator = DspOrchestrator(_watcher_deps(deps))
+
+        async def repair(runtime):
+            repairs.append(runtime)
+
+        orchestrator._repair_idle_stale_pinned_rate = repair
+        task = asyncio.create_task(orchestrator.runtime_link_watch_loop())
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual(overview_calls, [], "a divergent overview must never be consulted idle")
+        self.assertEqual(len(repairs), 1, "the cheap provider stays authoritative idle")
+
     async def test_idle_tick_still_respects_the_transition_guard(self):
         overview_calls = []
         repairs = []

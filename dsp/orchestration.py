@@ -863,6 +863,11 @@ class DspOrchestrator:
                 # it has nothing to contribute, and building it cost ~35
                 # short-lived PipeWire/BlueZ subprocesses every 2 s tick, so it
                 # must not run for the idle pinned-rate repair below.
+                # Contract: overview.mode is the same persisted mode the cheap
+                # provider falls back to (it only adds availability/ports the
+                # idle gate does not read); the cheap provider additionally
+                # prefers the committed runtime config, so it stays
+                # authoritative for the idle gate.
                 overview = None
                 if cheap_mode is None or track:
                     # The overview build spawns a dozen PipeWire/BlueZ

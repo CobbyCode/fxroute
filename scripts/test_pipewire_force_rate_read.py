@@ -5,9 +5,10 @@ Idle watchers and the measurement restore path need the live
 ``clock.force-rate`` pin and nothing else.  It used to be derived from the
 full samplerate status, which costs four subprocesses (pw-metadata, wpctl,
 pactl, pw-cli) per call; every idle link-watch tick paid that for a value
-that is 0 whenever no pin is live.  The narrow read must keep the exact
-value and error semantics of the status-derived one while issuing a single
-pw-metadata read.
+that is 0 whenever no pin is live.  The narrow read keeps the
+status-derived value semantics (live pin else 0) while issuing a single
+pw-metadata read.  A failed read reports None (unknown) rather than 0
+(no pin), so callers distinguish failure from an unpinned graph.
 """
 
 from __future__ import annotations
@@ -58,9 +59,9 @@ class PipewireForceRateReadTests(unittest.TestCase):
             self.assertIsNone(samplerate.get_current_pipewire_force_rate())
 
     def test_matches_the_status_derived_normalization(self):
-        # The narrow read must not change what consumers see: the value equals
-        # the full status' force_rate after the same "no pin means zero"
-        # normalization, for a live pin, no pin, and an unavailable read.
+        # Value semantics match the full status' force_rate after the same
+        # "no pin means zero" normalization, for a live pin and no pin.
+        # Read failure is None (see above) and covered separately.
         for force in ("0", "44100", "96000"):
             status = {"force_rate": int(force)}
             expected = status.get("force_rate") if status["force_rate"] > 0 else 0
