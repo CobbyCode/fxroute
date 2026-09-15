@@ -259,7 +259,11 @@ class SpotifyPlayerctlWatch:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                assert proc.stdout is not None
+                if proc.stdout is None:
+                    # Spawned with stdout=PIPE above; a None reader is a
+                    # broken subprocess contract, not a state the follow loop
+                    # can handle.
+                    raise RuntimeError("Spotify playerctl watch spawned without a stdout pipe")
                 logger.info("Spotify playerctl watch started")
                 while True:
                     line = await proc.stdout.readline()

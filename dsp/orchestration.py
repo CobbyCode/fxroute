@@ -781,7 +781,10 @@ class DspOrchestrator:
     async def _repair_output_authority_locked(self, coord_lock: Any, session: Any) -> None:
         """Run the mutating output-authority repair under the Coordinator lock."""
         reconcile = self._deps.reconcile_output_default
-        assert reconcile is not None
+        if reconcile is None:
+            # The caller gates the repair on this dep; reaching here means a
+            # wiring bug (repair triggered without the reconcile dep).
+            raise RuntimeError("Output-authority repair triggered without reconcile_output_default dep")
 
         async def repair_inner() -> None:
             runtime = self._deps.get_dsp_runtime()

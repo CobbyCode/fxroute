@@ -437,7 +437,10 @@ class DSPPeakMonitor:
             stderr=asyncio.subprocess.PIPE,
         )
         logger.info("Peak monitor pw-record spawned in %.3fs for capture node %s", time.monotonic() - capture_started_at, capture_node_name)
-        assert self._proc.stdout is not None
+        if self._proc.stdout is None:
+            # Spawned with stdout=PIPE above; a None reader is a broken
+            # subprocess contract, not a state the read loop can handle.
+            raise RuntimeError("Peak monitor pw-record spawned without a stdout pipe")
         # Start the no-data clock before the initial link attempt.  A failed
         # first link is recoverable, but must still use the normal capture
         # timeout rather than reaching the read loop with an unbound clock.
