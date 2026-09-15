@@ -1107,6 +1107,11 @@ function setMeasurementSweepMenuOpen(shouldOpen) {
     if (!elements.measurementSweepMenu || !elements.measurementSweepToggleBtn) return;
     elements.measurementSweepMenu.classList.toggle('hidden', !shouldOpen);
     elements.measurementSweepToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+    if (shouldOpen) {
+        elements.measurementSweepMenu.focus({ preventScroll: true });
+    } else if (elements.measurementSweepMenu.contains(document.activeElement)) {
+        elements.measurementSweepToggleBtn.focus({ preventScroll: true });
+    }
 }
 
 function setupWebSocket() {
@@ -12682,6 +12687,25 @@ function setupMeasurementActions() {
     if (elements.measurementSweepMenu) {
         elements.measurementSweepMenu.addEventListener('click', (event) => {
             if (event.target.closest('button')) setMeasurementSweepMenuOpen(false);
+        });
+        // Arrow keys walk the L/R/Stereo chips; each chip button is a normal
+        // tab stop, so Enter/Space keep working via the browser defaults.
+        elements.measurementSweepMenu.addEventListener('keydown', (event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+            const chips = Array.from(
+                elements.measurementSweepMenu.querySelectorAll('[data-measurement-channel]'),
+            ).filter(button => !button.disabled);
+            if (!chips.length) return;
+            const currentIndex = chips.indexOf(document.activeElement);
+            let next;
+            if (currentIndex < 0) {
+                next = event.key === 'ArrowRight' ? chips[0] : chips[chips.length - 1];
+            } else {
+                const offset = event.key === 'ArrowRight' ? 1 : -1;
+                next = chips[(currentIndex + offset + chips.length) % chips.length];
+            }
+            event.preventDefault();
+            next.focus({ preventScroll: true });
         });
         document.addEventListener('click', (event) => {
             if (!elements.measurementSweepMenu.classList.contains('hidden')
