@@ -4509,7 +4509,10 @@ body {
     justify-content: flex-start;
 }
 
+/* The large secondary action buttons (Start LR Repeat, Advanced) center their
+   label like Start Sweep; the help texts below stay left-aligned. */
 .measurement-workflow-menu-choice > .btn-secondary {
+    justify-content: center;
     background: var(--accent-dim);
     border-color: var(--accent-dim);
 }
