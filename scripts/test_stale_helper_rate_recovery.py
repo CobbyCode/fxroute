@@ -97,6 +97,10 @@ class _OrchestratorDeps:
         self.owned = owned
         self.force_rate_writes: list[int] = []
         self.force_rate_kwargs: list[dict] = []
+        # Read accounting: the idle repair must decide its early return from
+        # the pin-only probe and only build the full status when a pin is live.
+        self.force_rate_reads = 0
+        self.samplerate_status_reads = 0
         # The hardware sink normally follows a helper rebuild (that is what the
         # rebuild is for).  A hardware node can also renegotiate late, so the
         # bounded nudge is what moves it there, on a configurable call.
@@ -134,7 +138,12 @@ class _OrchestratorDeps:
             },
         }
 
+    def get_current_force_rate(self):
+        self.force_rate_reads += 1
+        return self.pinned_rate
+
     def get_samplerate_status(self):
+        self.samplerate_status_reads += 1
         return {
             "active_rate": self.sink_rate,
             "force_rate": self.pinned_rate,
@@ -494,9 +503,26 @@ class IdleLinkWatcherRepairTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_idle_tick_leaves_an_unpinned_graph_alone(self):
         runtime = _FakeDspRuntime(MEASUREMENT_RATE)
-        await self._run_one_tick(runtime, pinned_rate=0)
+        deps = await self._run_one_tick(runtime, pinned_rate=0)
         self.assertEqual(runtime.helper_rate, MEASUREMENT_RATE)
         self.assertEqual(runtime.sync_calls, [])
+        self.assertEqual(deps.force_rate_reads, 1, "the pin probe decides the tick")
+        self.assertEqual(
+            deps.samplerate_status_reads, 0,
+            "an unpinned idle tick must not read the full samplerate status",
+        )
+
+    async def test_pinned_idle_tick_still_reads_the_full_status(self):
+        # The pin-only probe only short-circuits the common unpinned tick; a
+        # live pin still resolves through the authoritative full status.
+        runtime = _FakeDspRuntime(MEASUREMENT_RATE)
+        deps = await self._run_one_tick(runtime, pinned_rate=TARGET_RATE)
+        self.assertEqual(deps.force_rate_reads, 1)
+        self.assertGreaterEqual(
+            deps.samplerate_status_reads, 1,
+            "a live pin must still resolve through the authoritative status",
+        )
+        self.assertEqual(runtime.helper_rate, TARGET_RATE)
 
     async def test_idle_repair_is_rate_limited_between_ticks(self):
         # A rebuild that fails before the running helper is replaced must not

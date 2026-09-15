@@ -2615,6 +2615,7 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         get_dsp_manager=lambda: dsp_manager,
         get_audio_output_overview=lambda: get_audio_output_overview(),
         get_samplerate_status=lambda: get_samplerate_status(),
+        get_current_force_rate=lambda: samplerate.get_current_pipewire_force_rate(),
         get_measurement_sr_session=lambda: measurement_sr_session,
         get_player_instance=lambda: runtime.player_instance,
         get_current_track_info=lambda: playback_state.current_track_info,

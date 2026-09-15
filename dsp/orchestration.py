@@ -98,6 +98,10 @@ class DspOrchestrationDeps:
     # renegotiation trigger the stale-helper repair nudges with as its last
     # bounded step.
     trigger_idle_sink_renegotiation: Callable[..., Awaitable[bool]] | None = None
+    # Pin-only (single-read) force-rate probe used to decide the idle repair's
+    # early return before paying for the full samplerate status.  When absent
+    # the repair keeps reading the full status first, as before.
+    get_current_force_rate: Callable[[], Any] | None = None
 
 
 def helper_argument_sample_rate(snapshot: dict | None) -> int | None:
@@ -548,6 +552,19 @@ class DspOrchestrator:
         recovery.  Only that state is touched: a healthy idle graph is left
         alone.
         """
+        pin_reader = self._deps.get_current_force_rate
+        if pin_reader is not None:
+            # An idle graph normally carries no pin at all, and the full status
+            # read below costs four subprocesses this repair never inspects.
+            # The pin-only read decides the same early return for one read; the
+            # status still supplies the authoritative value when a pin is live.
+            # A read failure reports no repair, exactly as it did before.
+            try:
+                pinned_rate = await asyncio.to_thread(pin_reader)
+            except Exception:
+                return
+            if not isinstance(pinned_rate, int) or pinned_rate <= 0:
+                return
         try:
             status = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
         except Exception:

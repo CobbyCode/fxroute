@@ -20,7 +20,7 @@ from .overview import (
     get_samplerate_status,
     playback_rate_aligned,
 )
-from .parsing import _parse_pactl_card_active_profile, _run_command
+from .parsing import _parse_pactl_card_active_profile, _parse_pw_metadata_settings, _run_command
 from audio.tool_env import c_locale_env
 from .persistence import load_sample_rate_policy
 
@@ -91,12 +91,19 @@ def set_pipewire_force_rate(rate: int) -> None:
         raise RuntimeError(stderr or f"pw-metadata clock.force-rate {rate} failed")
 
 def get_current_pipewire_force_rate() -> Optional[int]:
-    """Read the live force-rate; 0 means no force-rate is set."""
+    """Read the live force-rate; 0 means no force-rate is set.
+
+    Reads the ``clock.force-rate`` metadata entry directly instead of building
+    the full samplerate status: the value comes from the same parse of the same
+    command, but costs one subprocess instead of four.  Callers that only need
+    the pin (idle watchers, measurement restore) must not pay for the sink and
+    core reads they never look at.
+    """
     try:
-        status = get_samplerate_status()
+        metadata = _parse_pw_metadata_settings(_run_command(["pw-metadata", "-n", "settings", "0"]))
     except Exception:
         return None
-    force_rate = status.get("force_rate") if isinstance(status, dict) else None
+    force_rate = metadata.get("force_rate")
     return force_rate if isinstance(force_rate, int) and force_rate > 0 else 0
 
 async def suspend_resume_playback_sink(
