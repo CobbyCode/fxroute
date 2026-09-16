@@ -46,11 +46,15 @@
     --radius-xl:  20px;
     --action-gap: 12px;
     --action-gap-mobile: 8px;
-    /* Right padding every dropdown/chevron carrier reserves for its custom
-       arrow, instead of repeating the literal per context. The invariant:
-       it must exceed the arrow offset plus the arrow width used by the
-       arrow rules (0.55rem + 0.68rem = 1.23rem), leaving the arrow band
-       clear of the content box. */
+    /* Custom dropdown arrow, shared by every carrier instead of repeating
+       the literals per context: the glyph width, its inset from the right
+       edge, and the right padding each carrier reserves so a long label
+       cannot reach it. The reserve must stay larger than offset + width
+       (0.55rem + 0.68rem = 1.23rem), which keeps the arrow band clear of
+       the content box. Carriers that align the glyph to their own padding
+       edge use their own inset, but keep this width. */
+    --arrow-width: 0.68rem;
+    --arrow-offset: 0.55rem;
     --arrow-reserve: 1.55rem;
     /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
        cards derive their column sizing from these two values so all three
@@ -415,9 +419,10 @@ body {
 /* Shared native-select chevron (every app dropdown carries .url-input):
    one custom chevron replaces the per-browser native arrow, so the arrow
    zone is compact and identical everywhere (Chromium/Firefox/Android draw
-   native arrows at different widths). The --arrow-reserve right padding
-   fits chevron plus breathing room so long labels never slide underneath;
-   background-position keeps the chevron vertically centered. Contexts
+   native arrows at different widths). Size and inset come from the shared
+   --arrow-width/--arrow-offset tokens, the --arrow-reserve right padding
+   fits chevron plus breathing room so long labels never slide underneath,
+   and background-position keeps the chevron vertically centered. Contexts
    with tighter caps keep their own widths; only the arrow zone is
    unified here. */
 select.url-input {
@@ -426,8 +431,8 @@ select.url-input {
     padding-right: var(--arrow-reserve);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
-    background-position: right 0.55rem center;
-    background-size: 0.68rem auto;
+    background-position: right var(--arrow-offset) center;
+    background-size: var(--arrow-width) auto;
 }
 
 /* Visually hidden but available to screen readers (page h1, live labels). */
@@ -5239,13 +5244,15 @@ select.url-input {
 
 /* Same chevron language as the app dropdowns: custom marker on the
    right, pointing down when closed and rotated 180° when open.
-   Absolutely positioned, so text metrics and spacing stay untouched. */
+   Absolutely positioned, so text metrics and spacing stay untouched.
+   Keeps its own 0.75rem inset, aligned with the summary's padding edge,
+   rather than the shared --arrow-offset the selects use. */
 .measurement-saved-group > summary::after {
     content: "";
     position: absolute;
     right: 0.75rem;
     top: 50%;
-    width: 0.68rem;
+    width: var(--arrow-width);
     height: 0.45rem;
     margin-top: -0.225rem;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -6253,8 +6260,8 @@ input[type="number"]::-webkit-outer-spin-button {
     padding-right: var(--arrow-reserve);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
-    background-position: right 0.55rem center;
-    background-size: 0.68rem auto;
+    background-position: right var(--arrow-offset) center;
+    background-size: var(--arrow-width) auto;
 }
 
 .effects-inline-control-label {
@@ -7190,8 +7197,8 @@ input[type="number"]::-webkit-outer-spin-button {
     padding-right: var(--arrow-reserve);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
-    background-position: right 0.55rem center;
-    background-size: 0.68rem auto;
+    background-position: right var(--arrow-offset) center;
+    background-size: var(--arrow-width) auto;
 }
 .source-select:disabled { opacity: .45; cursor: default; }
 .source-select option { background: #16281f; color: #f0fff8; }
