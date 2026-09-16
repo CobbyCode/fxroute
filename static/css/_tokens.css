@@ -46,6 +46,12 @@
     --radius-xl:  20px;
     --action-gap: 12px;
     --action-gap-mobile: 8px;
+    /* Right padding every dropdown/chevron carrier reserves for its custom
+       arrow, instead of repeating the literal per context. The invariant:
+       it must exceed the arrow offset plus the arrow width used by the
+       arrow rules (0.55rem + 0.68rem = 1.23rem), leaving the arrow band
+       clear of the content box. */
+    --arrow-reserve: 1.55rem;
     /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
        cards derive their column sizing from these two values so all three
        surfaces keep one tile rhythm across breakpoints. Radio reads a

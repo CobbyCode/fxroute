@@ -1778,7 +1778,7 @@
             /* Not the shorthand's 0.55rem: keep the arrow reserve the
                desktop rule sets, otherwise the phone layout reopens
                the collision this guard prevents. */
-            padding-right: 1.55rem;
+            padding-right: var(--arrow-reserve);
         }
 
         .measurement-saved-list {

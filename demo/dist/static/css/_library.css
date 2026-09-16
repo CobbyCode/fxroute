@@ -899,7 +899,7 @@
    existing playlist" target), where a long playlist name would otherwise
    slide underneath the arrow. */
 .playlist-save-row select.url-input {
-    padding-right: 1.55rem;
+    padding-right: var(--arrow-reserve);
 }
 .playlist-save-row .btn-secondary {
     flex: 0 0 auto;

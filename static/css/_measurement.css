@@ -715,7 +715,7 @@
 /* Same shorthand-over-arrow-zone conflict as the playlist save row: the
    PEQ type select carries the shared chevron, so keep its reserve too. */
 .measurement-peq-editor-grid select.url-input {
-    padding-right: 1.55rem;
+    padding-right: var(--arrow-reserve);
 }
 
 .measurement-peq-stepper {
@@ -933,7 +933,7 @@
     /* Same arrow reserve the selects carry: the custom marker below is
        absolutely positioned, so without this a long label would run into
        the arrow band. */
-    padding-right: 1.55rem;
+    padding-right: var(--arrow-reserve);
     font-weight: 600;
     position: relative;
 }

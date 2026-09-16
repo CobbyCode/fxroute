@@ -46,6 +46,12 @@
     --radius-xl:  20px;
     --action-gap: 12px;
     --action-gap-mobile: 8px;
+    /* Right padding every dropdown/chevron carrier reserves for its custom
+       arrow, instead of repeating the literal per context. The invariant:
+       it must exceed the arrow offset plus the arrow width used by the
+       arrow rules (0.55rem + 0.68rem = 1.23rem), leaving the arrow band
+       clear of the content box. */
+    --arrow-reserve: 1.55rem;
     /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
        cards derive their column sizing from these two values so all three
        surfaces keep one tile rhythm across breakpoints. Radio reads a
@@ -409,15 +415,15 @@ body {
 /* Shared native-select chevron (every app dropdown carries .url-input):
    one custom chevron replaces the per-browser native arrow, so the arrow
    zone is compact and identical everywhere (Chromium/Firefox/Android draw
-   native arrows at different widths). The 1.55rem right padding fits
-   chevron plus breathing room so long labels never slide underneath;
+   native arrows at different widths). The --arrow-reserve right padding
+   fits chevron plus breathing room so long labels never slide underneath;
    background-position keeps the chevron vertically centered. Contexts
    with tighter caps keep their own widths; only the arrow zone is
    unified here. */
 select.url-input {
     appearance: none;
     -webkit-appearance: none;
-    padding-right: 1.55rem;
+    padding-right: var(--arrow-reserve);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 0.55rem center;
@@ -2209,7 +2215,7 @@ select.url-input {
    existing playlist" target), where a long playlist name would otherwise
    slide underneath the arrow. */
 .playlist-save-row select.url-input {
-    padding-right: 1.55rem;
+    padding-right: var(--arrow-reserve);
 }
 .playlist-save-row .btn-secondary {
     flex: 0 0 auto;
@@ -5004,7 +5010,7 @@ select.url-input {
 /* Same shorthand-over-arrow-zone conflict as the playlist save row: the
    PEQ type select carries the shared chevron, so keep its reserve too. */
 .measurement-peq-editor-grid select.url-input {
-    padding-right: 1.55rem;
+    padding-right: var(--arrow-reserve);
 }
 
 .measurement-peq-stepper {
@@ -5222,7 +5228,7 @@ select.url-input {
     /* Same arrow reserve the selects carry: the custom marker below is
        absolutely positioned, so without this a long label would run into
        the arrow band. */
-    padding-right: 1.55rem;
+    padding-right: var(--arrow-reserve);
     font-weight: 600;
     position: relative;
 }
@@ -6244,7 +6250,7 @@ input[type="number"]::-webkit-outer-spin-button {
 #tab-effects select.url-input {
     appearance: none;
     -webkit-appearance: none;
-    padding-right: 1.55rem;
+    padding-right: var(--arrow-reserve);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 0.55rem center;
@@ -7181,7 +7187,7 @@ input[type="number"]::-webkit-outer-spin-button {
        never slide underneath. */
     appearance: none;
     -webkit-appearance: none;
-    padding-right: 1.55rem;
+    padding-right: var(--arrow-reserve);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 0.55rem center;
@@ -9106,7 +9112,7 @@ input[type="number"]::-webkit-outer-spin-button {
             /* Not the shorthand's 0.55rem: keep the arrow reserve the
                desktop rule sets, otherwise the phone layout reopens
                the collision this guard prevents. */
-            padding-right: 1.55rem;
+            padding-right: var(--arrow-reserve);
         }
 
         .measurement-saved-list {
