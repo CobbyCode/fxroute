@@ -3471,9 +3471,9 @@ function stepSourceSwitcher(delta) {
     if (sourceSwitcherGuardReason()) return;
     const sourceMode = state.settings?.sourceMode || {};
     const entries = buildSourceSwitcherEntries(sourceMode);
-    const next = cycleSourceSwitcherIndex(entries, findSourceSwitcherIndex(entries, sourceMode), delta);
-    if (next < 0) return;
-    if (next === findSourceSwitcherIndex(entries, sourceMode)) return;
+    const current = findSourceSwitcherIndex(entries, sourceMode);
+    const next = cycleSourceSwitcherIndex(entries, current, delta);
+    if (next < 0 || next === current) return;
     activateSourceSwitcherEntry(entries[next]);
 }
 
@@ -5652,7 +5652,10 @@ function updatePlaybackUI() {
     }
     // Bluetooth / external-input modes reuse this footer: transport is
     // replaced by the source switcher while volume and meter keep updating.
-    if (nonAppSourceModeActive() && !isStreamingFooterSource(window.__footerSource)) {
+    // reconcileFooterSource() above pinned ownership to 'local' in these
+    // modes, so no streaming gate is needed here — consulting it would delay
+    // the switcher by one poll on first paint after entering a source mode.
+    if (nonAppSourceModeActive()) {
         renderSourceModeFooter();
     }
     // Highlight active

@@ -69,6 +69,9 @@ vm.runInContext([
     extractFunction('cycleSourceSwitcherIndex'),
     extractFunction('nonAppSourceModeActive'),
     extractFunction('isFooterSignalActive'),
+    extractFunction('sourceSwitcherGuardReason'),
+    extractFunction('activateSourceSwitcherEntry'),
+    extractFunction('stepSourceSwitcher'),
 ].join('\n'), sandbox);
 
 const {
@@ -134,6 +137,29 @@ assert.equal(cycleSourceSwitcherIndex(entries, 9, 1), 0);
 assert.equal(cycleSourceSwitcherIndex(entries, 0, -1), 9);
 assert.equal(cycleSourceSwitcherIndex(entries, 2, -1), 1);
 assert.equal(cycleSourceSwitcherIndex([], 0, 1), -1);
+
+// Stepping with an unresolvable current entry (no selection cached yet)
+// must still land on a real source instead of doing nothing.
+const stepCalls = [];
+sandbox.saveAudioSourceSelection = (mode, key) => { stepCalls.push([mode, key]); return Promise.resolve(); };
+sandbox.state.settings = {
+    sourceMode: {
+        mode: 'external-input',
+        pending: false,
+        inputs: scarlettInputs,
+        selected_input: null,
+        current_input: null,
+        bluetooth: { selectable: true, active_session: { device_name: 'ZENBOOK', active_codec: 'aac' } },
+    },
+};
+vm.runInContext('stepSourceSwitcher(1)', sandbox);
+assert.deepEqual(stepCalls, [['bluetooth-input', undefined]], 'forward step from unresolvable current lands on the first entry');
+vm.runInContext('stepSourceSwitcher(-1)', sandbox);
+assert.deepEqual(
+    stepCalls[1],
+    ['external-input', scarlettInputs[8].key],
+    'backward step from unresolvable current wraps to the last entry',
+);
 
 // Without Bluetooth availability the switcher is inputs only.
 const noBt = buildSourceSwitcherEntries({ ...bluetoothOverview, bluetooth: { selectable: false } });
@@ -249,6 +275,19 @@ renderSandbox.window.__footerSource = 'local';
 const reconcileSource = extractFunction('reconcileFooterSource');
 assert.ok(reconcileSource.includes('nonAppSourceModeActive()'), 'reconcile must consult the source mode');
 assert.ok(reconcileSource.includes('source-mode-owns-footer'), 'reconcile must pin ownership in source modes');
+
+// First paint after entering a source mode must render the switcher
+// immediately: updatePlaybackUI must call renderSourceModeFooter() from the
+// non-streaming body without a streaming-ownership gate — reconcile above
+// pinned ownership to local before the gate would even be evaluated, so any
+// streaming condition there only delays the first paint by one poll.
+const updateFnSource = extractFunction('updatePlaybackUI');
+const updateCallSite = updateFnSource.match(/if \(nonAppSourceModeActive\(\)\) \{\s*renderSourceModeFooter\(\);\s*\}/);
+assert.ok(updateCallSite, 'updatePlaybackUI must render the source footer ungated by streaming ownership');
+assert.ok(
+    !/nonAppSourceModeActive\(\) && !isStreamingFooterSource/.test(updateFnSource),
+    'updatePlaybackUI must not gate the source footer on streaming ownership',
+);
 
 vm.runInContext('renderSourceModeFooter()', renderSandbox);
 assert.equal(renderSandbox.elements.sourceSelect.writes, 1, 'identical poll must not rebuild the options');

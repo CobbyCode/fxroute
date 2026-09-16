@@ -1229,18 +1229,15 @@ class PeakMonitorCoordinator:
                 and external_key
             )
             desired_signature = None
-            desired_label = ""
             if is_bt_streaming:
                 desired_signature = f"bluetooth:{bluetooth.get('connected_device')}:{bluetooth.get('active_codec') or ''}"
-                desired_label = desired_signature
             elif is_external_active:
                 desired_signature = f"external:{external_key}"
-                desired_label = desired_signature
 
             if desired_signature and (not self.armed or self.signature != desired_signature):
                 self.armed = True
                 self.signature = desired_signature
-                logger.info("Starting peak monitor for active line source: %s", desired_label)
+                logger.info("Starting peak monitor for active line source: %s", desired_signature)
                 await self._peak_monitor().restart()
                 await self._broadcast_snapshot()
             elif (not desired_signature) and self.armed and str(self.signature or "").startswith(("bluetooth:", "external:")):
