@@ -643,6 +643,9 @@ const elements = {
     measurementNameInput: document.getElementById('measurement-name'),
     measurementSweepToggleBtn: document.getElementById('measurement-sweep-toggle'),
     measurementSweepMenu: document.getElementById('measurement-sweep-menu'),
+    measurementSweepStartBtn: document.getElementById('measurement-sweep-start'),
+    measurementAreaIndicator: document.getElementById('measurement-area-indicator'),
+    measurementAreaNote: document.getElementById('measurement-area-note'),
     measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
     measurementAutoSubStartBtn: document.getElementById('measurement-auto-sub-start'),
     measurementAutoSubGroup: document.getElementById('measurement-auto-sub-group'),
@@ -3811,6 +3814,41 @@ async function fetchOutputSystemCatalog(force = false) {
         renderCrossoverTile();
     }
     return state.outputSystem.catalog;
+}
+
+function measurementAreaFromCatalog() {
+    /* Read-only measurement area: the single A/B selector owns the scope, so
+     * the sweep menu shows it instead of offering its own channel chips. */
+    const mod = outputSystemModule();
+    const catalog = (state.outputSystem || {}).catalog;
+    if (!mod || !catalog || typeof mod.measurementArea !== 'function') return null;
+    return mod.measurementArea(catalog);
+}
+
+async function ensureMeasurementAreaCatalog() {
+    if ((state.outputSystem || {}).catalog) {
+        renderMeasurementArea();
+        return state.outputSystem.catalog;
+    }
+    const catalog = await fetchOutputSystemCatalog();
+    renderMeasurementArea();
+    return catalog;
+}
+
+function renderMeasurementArea() {
+    ensureOutputSystemBoxes();
+    const area = measurementAreaFromCatalog();
+    if (elements.measurementAreaIndicator) {
+        elements.measurementAreaIndicator.textContent = area ? area.label : 'Global';
+    }
+    if (elements.measurementAreaNote) {
+        elements.measurementAreaNote.textContent = area
+            ? area.note
+            : 'Whole system: Global plus every area bank stay audible for this sweep.';
+    }
+    if (elements.measurementSweepStartBtn) {
+        elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight;
+    }
 }
 
 function outputSystemDevice() {
@@ -11579,6 +11617,7 @@ function toggleMeasurementPanel(forceOpen = null) {
         resetMeasurementTransientStatus();
         renderMeasurementPanel();
         void fetchMeasurementInputs();
+        void ensureMeasurementAreaCatalog();
         scheduleMeasurementGraphRender();
         window.FXRouteModal?.open(elements.measurementPanel, {
             initialFocus: elements.measurementCloseBtn,
@@ -11954,7 +11993,11 @@ async function startHostMeasurement(jobGeneration = state.measurement.jobGenerat
     const formData = new FormData();
     formData.append('input_id', state.measurement.selectedInputId);
     formData.append('input_key', state.measurement.selectedInputKey || '');
-    formData.append('channel', state.measurement.selectedChannel || 'left');
+    // The selected area decides the sweep side and the frozen measurement
+    // target; there is no separate channel selector for a single sweep.
+    const area = measurementAreaFromCatalog();
+    formData.append('channel', area ? area.channel : (state.measurement.selectedChannel || 'left'));
+    if (area) formData.append('measurement_bank', area.bank_id);
     formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
     appendMeasurementReferenceFields(formData);
     const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
@@ -12555,9 +12598,7 @@ function renderMeasurementPanelSetupSection({ measurementState, current, measure
     if (elements.measurementModeNote) {
         elements.measurementModeNote.textContent = measurementState.modeNote || '';
     }
-    document.querySelectorAll('[data-measurement-channel]').forEach((button) => {
-        button.disabled = measurementState.startInFlight;
-    });
+    renderMeasurementArea();
     document.querySelectorAll('[data-measurement-smoothing]').forEach((button) => {
         const active = (button.getAttribute('data-measurement-smoothing') || '') === (measurementState.displaySmoothing || '1/6-oct');
         button.classList.toggle('is-active', active);
@@ -13353,7 +13394,6 @@ function setupMeasurementActions() {
         elements.measurementSweepMenu.addEventListener('click', (event) => {
             if (event.target.closest('button')) setMeasurementSweepMenuOpen(false);
         });
-        bindChipArrowKeyNavigation(elements.measurementSweepMenu, '[data-measurement-channel]');
         document.addEventListener('click', (event) => {
             if (!elements.measurementSweepMenu.classList.contains('hidden')
                     && !event.target.closest('.measurement-workflow-menu')) {
@@ -13410,14 +13450,13 @@ function setupMeasurementActions() {
     bindReferenceInputChannelSelect(elements.measurementReferenceInputChannelSelect, 'selectedReferenceInputChannel');
     bindReferenceInputChannelSelect(elements.measurementReferenceInputChannelLeftSelect, 'selectedReferenceInputChannelLeft');
     bindReferenceInputChannelSelect(elements.measurementReferenceInputChannelRightSelect, 'selectedReferenceInputChannelRight');
-    document.querySelectorAll('[data-measurement-channel]').forEach((button) => {
-        button.addEventListener('click', () => {
+    if (elements.measurementSweepStartBtn) {
+        elements.measurementSweepStartBtn.addEventListener('click', () => {
             if (state.measurement.startInFlight || hasActiveMeasurementJob()) return;
-            state.measurement.selectedChannel = button.getAttribute('data-measurement-channel') || 'left';
             setMeasurementSweepMenuOpen(false);
             void startMeasurement();
         });
-    });
+    }
     document.querySelectorAll('[data-measurement-smoothing]').forEach((button) => {
         button.addEventListener('click', () => {
             if (getMeasurementGraphView() === 'ir') return;

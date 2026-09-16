@@ -35,6 +35,31 @@ def _serve():
 
 STUB = """
 const realFetch = window.fetch.bind(window);
+// There is no websocket server behind the static test host: a real socket
+// would close, pop the "Disconnected from server" banner over the toolbar and
+// make later clicks fail. Report a healthy connection instead.
+window.WebSocket = class {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    constructor() {
+        this.readyState = 1;
+        this.listeners = {};
+        setTimeout(() => {
+            if (typeof this.onopen === 'function') this.onopen({});
+            (this.listeners.open || []).forEach(handler => handler({}));
+        }, 0);
+    }
+    addEventListener(type, handler) {
+        (this.listeners[type] = this.listeners[type] || []).push(handler);
+    }
+    removeEventListener(type, handler) {
+        this.listeners[type] = (this.listeners[type] || []).filter(item => item !== handler);
+    }
+    send() {}
+    close() {}
+};
 const measurementJobs = new Map();
 let measurementSequence = 0;
 window.__measurementCalls = [];
@@ -75,7 +100,8 @@ window.fetch = (url, opts) => {
             message: 'Measurement running…',
         };
         measurementJobs.set(job.id, job);
-        window.__measurementCalls.push({ type: 'start', path, id: job.id, channel: body?.get?.('channel') || '' });
+        window.__measurementCalls.push({ type: 'start', path, id: job.id, channel: body?.get?.('channel') || '',
+            bank: body?.get?.('measurement_bank') || '' });
         return json({ job });
     };
     if (u.includes('/api/measurements/lr-repeat/start') && opts?.method === 'POST') {
@@ -98,6 +124,46 @@ window.fetch = (url, opts) => {
         }
         const job = measurementJobs.get(finalPart) || { id: finalPart, status: 'running', job_kind: 'single', message: 'Measurement running…' };
         return json({ job });
+    }
+    const outputState = { revision: 1, active_mode: 'stereo', selected_bank: 'global' };
+    const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' });
+    const modeCatalog = (mode) => {
+        const ids = mode === 'stereo' ? ['global', 'main_l', 'main_r', 'sub1'] : ['global'];
+        const banks = {};
+        ids.forEach(id => { banks[id] = neutralBank(); });
+        return {
+            selected_bank: mode === outputState.active_mode ? outputState.selected_bank : 'global',
+            banks,
+            processing: {},
+            bass_management: { frequency_hz: 80, main_highpass_enabled: true },
+            extras: {},
+            topology: {
+                mode,
+                roles: mode === 'stereo' ? ['main_l', 'main_r', 'sub1'] : [],
+                sub_roles: mode === 'stereo' ? ['sub1'] : [],
+                sub_mode: mode === 'stereo' ? 'mono' : 'none',
+                left_ways: [], right_ways: [], way_count: null, issues: [],
+            },
+        };
+    };
+    if (u.includes('/api/audio/output-state')) {
+        return json({
+            status: 'ok',
+            revision: outputState.revision,
+            active_mode: outputState.active_mode,
+            device: { key: 'default', channels: 4, routing: { stereo: ['main_l', 'main_r', 'sub1', 'sub1'], crossover: [] } },
+            modes: { stereo: modeCatalog('stereo'), crossover: modeCatalog('crossover') },
+            capabilities: {
+                modes: ['stereo', 'crossover'],
+                roles: {
+                    stereo: ['main_l', 'main_r', 'sub_l', 'sub_r', 'sub1', 'sub2'],
+                    crossover: ['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high'],
+                },
+                filter_families: { 'linkwitz-riley': [12, 24, 36, 48, 60, 72], butterworth: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72], bessel: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72] },
+                max_slope_db_oct: 72,
+                max_biquads_per_output: 32,
+            },
+        });
     }
     if (u.includes('/api/audio/samplerate')) {
         return json({ available: true, active_rate: 44100, supported_rates: [44100, 48000] });
@@ -223,15 +289,17 @@ def _run():
                 menu = page.locator("#measurement-sweep-menu")
                 assert menu.is_visible()
                 assert [
-                    page.locator("[data-measurement-channel='left']").inner_text(),
-                    page.locator("[data-measurement-channel='right']").inner_text(),
-                    page.locator("[data-measurement-channel='stereo']").inner_text(),
+                    page.locator("#measurement-area-indicator").inner_text(),
+                    page.locator("#measurement-sweep-start").inner_text(),
                     page.locator("#measurement-repeat-start").inner_text(),
                     page.locator("#measurement-hybrid-open").inner_text(),
-                ] == ["L", "R", "Stereo", "Start LR Repeat", "Advanced"]
+                ] == ["Global", "Run Single Sweep", "Start LR Repeat", "Advanced"]
                 first_choice = page.locator(".measurement-workflow-menu-choice").nth(0).inner_text()
-                assert "Run Single Sweep." in first_choice
+                # The label is uppercased by CSS; compare case-insensitively.
+                assert "measuring area" in first_choice.lower()
+                assert "Run Single Sweep" in first_choice
                 assert "L / R / Stereo" not in first_choice
+                assert page.locator("[data-measurement-channel]").count() == 0
                 assert page.locator(".measurement-workflow-menu-choice").nth(1).inner_text() == (
                     "Start LR Repeat\nRepeated L/R sweeps for more precision."
                 )
@@ -256,13 +324,18 @@ def _run():
                 assert page.evaluate("document.activeElement?.id") == "measurement-sweep-toggle"
                 checks += 2
 
-                for channel in ("left", "right", "stereo"):
+                def start_sweep(expected_channel, expected_bank):
                     page.locator("#measurement-sweep-toggle").click()
-                    page.wait_for_function(f"() => !document.querySelector(\"[data-measurement-channel='{channel}']\")?.disabled")
-                    page.locator(f"[data-measurement-channel='{channel}']").click()
-                    _wait_for_call(page, "start", "/api/measurements/start", channel)
+                    page.wait_for_function("() => !document.getElementById('measurement-sweep-start')?.disabled")
+                    page.locator("#measurement-sweep-start").click()
+                    _wait_for_call(page, "start", "/api/measurements/start", expected_channel)
+                    last = page.evaluate("() => window.__measurementCalls.filter(c => c.type === 'start').at(-1)")
+                    assert last["bank"] == expected_bank, last
                     _cancel_from_sweep_button(page)
-                checks += 6
+
+                # The demo starts on Global: whole system, both inputs.
+                start_sweep("stereo", "global")
+                checks += 2
 
                 page.locator("#measurement-sweep-toggle").click()
                 page.locator("#measurement-repeat-start").click()
@@ -272,15 +345,15 @@ def _run():
 
                 page.evaluate("window.__fxDebugRuntimeSnapshots = true; window.__measurementControls.delayCompletionDebug = true")
                 page.locator("#measurement-sweep-toggle").click()
-                page.locator("[data-measurement-channel='left']").click()
-                _wait_for_call(page, "start", "/api/measurements/start", "left")
+                page.locator("#measurement-sweep-start").click()
+                _wait_for_call(page, "start", "/api/measurements/start", "stereo")
                 page.evaluate("window.__measurementControls.completeLast()")
                 page.wait_for_function("() => document.getElementById('measurement-sweep-toggle')?.textContent === 'Start Sweep'")
                 page.wait_for_function("() => window.__measurementControls.completionDebugResolvers.length > 0")
                 page.locator("#measurement-sweep-toggle").click()
-                page.wait_for_function("() => !document.querySelector(\"[data-measurement-channel='right']\")?.disabled")
-                page.locator("[data-measurement-channel='right']").click()
-                _wait_for_call(page, "start", "/api/measurements/start", "right")
+                page.wait_for_function("() => !document.getElementById('measurement-sweep-start')?.disabled")
+                page.locator("#measurement-sweep-start").click()
+                _wait_for_call(page, "start", "/api/measurements/start", "stereo")
                 assert page.locator("#measurement-sweep-toggle").inner_text() == "Cancel"
                 page.evaluate("window.__measurementControls.releaseCompletionDebug()")
                 page.wait_for_timeout(50)

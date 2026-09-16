@@ -283,8 +283,28 @@
     border-color: var(--accent-hover);
 }
 
-.measurement-workflow-menu-panel .measurement-channel-chip-row {
+/* Read-only measurement area: the A/B selector owns the scope, so the sweep
+   menu shows the selected area instead of offering channel chips. */
+.measurement-workflow-menu-panel .measurement-area-row {
     padding: 0.1rem 0.1rem 0.15rem;
+}
+
+.measurement-area-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.measurement-area-label {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.measurement-area-indicator {
+    font-weight: 600;
 }
 
 .measurement-workflow-row {
@@ -295,6 +315,7 @@
     min-width: 0;
 }
 
+#measurement-sweep-start,
 #measurement-repeat-start,
 #measurement-hybrid-open {
     min-height: 42px;
@@ -525,7 +546,6 @@
 .hybrid-advanced-details summary { cursor: pointer; color: var(--text-secondary); }
 .hybrid-advanced-details p { margin: 0.5rem 0 0; line-height: 1.45; }
 
-.measurement-channel-chip-row,
 .measurement-smoothing-chips,
 .measurement-view-toggle {
     display: flex;

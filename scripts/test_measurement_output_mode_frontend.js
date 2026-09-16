@@ -47,6 +47,7 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
     const fetchCalls = [];
     const saveCalls = [];
     let releaseDebugSnapshot = null;
+    let capturedStartForm = null;
     const state = {
         settings: {
             audioOutputs: {
@@ -70,12 +71,28 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         append(name, value) {
             this.fields.push([name, value]);
         }
+
+        get(name) {
+            const entry = this.fields.filter(([key]) => key === name).at(-1);
+            return entry ? entry[1] : undefined;
+        }
     }
     const context = {
         MeasurementUI,
         state,
+        // Area contract: the sweep side and bank come from the A/B catalog.
+        OutputState: require('../static/output_state.js'),
+        outputCatalog: {
+            active_mode: 'stereo',
+            modes: { stereo: { selected_bank: 'main_l', banks: { global: {}, main_l: {} } } },
+        },
         elements: { measurementCalibrationFile: null },
-        FormData: TestFormData,
+        FormData: class extends TestFormData {
+            append(name, value) {
+                super.append(name, value);
+                if (name === 'channel') capturedStartForm = this;
+            }
+        },
         console,
         setTimeout,
         clearTimeout,
@@ -107,6 +124,9 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         }
         function releaseSnapshot() { if (releaseDebugSnapshot) releaseDebugSnapshot(); }
         function renderMeasurementPanel() {}
+        function measurementAreaFromCatalog() {
+            return OutputState.measurementArea(outputCatalog);
+        }
         async function pollMeasurementJob() {}
         ${extractFunction('formatTransitionErrorDetail')}
         ${extractFunction('flushSubwooferSettingsBeforeMeasurement')}
@@ -114,7 +134,10 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         ${extractFunction('startLrRepeatMeasurement')}
     `, context);
     context.setPendingSave(pendingSave);
-    return { context, fetchCalls, saveCalls, state };
+    return {
+        context, fetchCalls, saveCalls, state,
+        get startForm() { return capturedStartForm; },
+    };
 }
 
 async function main() {
@@ -148,6 +171,10 @@ async function main() {
     assert.deepEqual(committed.fetchCalls, ['/api/measurements/start']);
     committed.context.releaseSnapshot();
     await committedStart;
+    // The selected area decides the sweep side and the frozen bank target.
+    const committedStartForm = committed.startForm;
+    assert.equal(committedStartForm.get('channel'), 'left');
+    assert.equal(committedStartForm.get('measurement_bank'), 'main_l');
 
     const repeat = makeMeasurementContext();
     const repeatStart = repeat.context.startLrRepeatMeasurement();

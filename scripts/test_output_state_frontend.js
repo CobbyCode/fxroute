@@ -132,6 +132,32 @@ async function applyFlow() {
         /423/);
 }
 
+function measurementAreaTests() {
+    const selected = catalog();
+    const area = OutputState.measurementArea(selected);
+    assert.deepEqual(area, {
+        bank_id: 'sub1',
+        label: 'Sub 1',
+        channel: 'stereo',
+        note: 'Only Sub 1 stays audible; every other output is muted for this sweep.',
+    });
+    assert.equal(OutputState.measurementArea(selected, 'global').channel, 'stereo');
+    assert.equal(OutputState.measurementArea(selected, 'main_l').channel, 'left');
+    assert.equal(OutputState.measurementArea(selected, 'main_r').channel, 'right');
+    assert.equal(OutputState.measurementArea(selected, 'sub_r').channel, 'right');
+    assert.equal(OutputState.measurementArea(selected, 'sub2').channel, 'stereo');
+    const crossover = { ...selected, active_mode: 'crossover' };
+    assert.equal(OutputState.measurementArea(crossover, 'left_low').channel, 'left');
+    assert.equal(OutputState.measurementArea(crossover, 'right_high').channel, 'right');
+    assert.equal(OutputState.measurementArea(crossover, 'left_low_mid').label, 'Left Low-Mid');
+    // Read-only: no bank id falls back to the whole system without inventing one.
+    const empty = OutputState.measurementArea(null);
+    assert.equal(empty.bank_id, 'global');
+    assert.equal(empty.label, 'Global');
+}
+
+measurementAreaTests();
+
 applyFlow().then(() => {
     assert.match(indexSource, /output_state\.js\?v=\d+\.\d+\.\d+/);
     assert.match(indexSource, /id="os-mode-select"/);

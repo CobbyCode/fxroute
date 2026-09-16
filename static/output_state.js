@@ -75,6 +75,39 @@ function topologySummary(topology) {
     return text;
 }
 
+// Sweep side per area: left-sided roles excite the left input, right-sided
+// roles the right input, and mono bass or whole-system areas both inputs
+// (the mono sub matrix sums both with 0.5 gain per input).
+function bankSweepChannel(bankId) {
+    const id = String(bankId || '');
+    if (id === 'global') return 'stereo';
+    if (id === 'main_l' || id === 'sub_l' || id.startsWith('left_')) return 'left';
+    if (id === 'main_r' || id === 'sub_r' || id.startsWith('right_')) return 'right';
+    return 'stereo';
+}
+
+function measurementArea(catalog, bankId) {
+    const mode = (catalog && catalog.active_mode) || 'stereo';
+    const modeConfig = (catalog && catalog.modes && catalog.modes[mode]) || {};
+    const selected = String(bankId || modeConfig.selected_bank || 'global');
+    const label = roleLabel(selected);
+    const channel = bankSweepChannel(selected);
+    if (selected === 'global') {
+        return {
+            bank_id: 'global',
+            label,
+            channel,
+            note: 'Whole system: Global plus every area bank stay audible for this sweep.',
+        };
+    }
+    return {
+        bank_id: selected,
+        label,
+        channel,
+        note: `Only ${label} stays audible; every other output is muted for this sweep.`,
+    };
+}
+
 function bankOptions(modeConfig, capabilities) {
     const banks = (modeConfig && modeConfig.banks) || {};
     const canonical = rolesForMode(modeConfig && modeConfig.topology && modeConfig.topology.mode, capabilities);
@@ -199,6 +232,8 @@ function renderBankSelector(select, info, catalog, mode) {
         modeLabel,
         subModeLabel,
         topologySummary,
+        bankSweepChannel,
+        measurementArea,
         bankOptions,
         bankInfoLine,
         buildMutation,
