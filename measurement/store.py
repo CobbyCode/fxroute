@@ -476,9 +476,15 @@ class MeasurementStore:
         Without an injected provider the job keeps its legacy shape (no target,
         no masking).  With one, a missing or unrouted area fails the request
         before any sweep is played instead of capturing the wrong outputs.
+
+        Raw helper sweeps (Auto-Sub optimize, SPL calibration) are exempt: they
+        bypass the active chain and drive their own isolation, so an editing
+        area must never mute the outputs they are about to measure.
         """
         provider = self.measurement_target_provider
         if not callable(provider):
+            return {}
+        if self._normalize_measurement_scope(job.get("measurement_scope")) != MEASUREMENT_SCOPE_ACTIVE_CHAIN:
             return {}
         input_info = job.get("input") if isinstance(job.get("input"), dict) else {}
         rate = input_info.get("measurement_sample_rate") or input_info.get("sample_rate")

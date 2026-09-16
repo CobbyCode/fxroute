@@ -33,6 +33,7 @@ from measurement.target import (
     measurement_target_from_context,
     require_commit_target,
     require_target_matches,
+    summed_role_ids,
     sweep_output_masks,
     target_output_mask,
     targets_compatible,
@@ -346,6 +347,18 @@ class StoredAreaContextTests(TargetFixture, unittest.TestCase):
 class CommitTargetTests(TargetFixture, unittest.TestCase):
     """A generated correction may only be committed where it was measured."""
 
+    def setUp(self):
+        super().setUp()
+        # A MeasurementStore resolves its roots from XDG, so the sandbox has to
+        # be pinned before the store exists (never the developer's real library).
+        self.environment = patch.dict("os.environ", {
+            "XDG_CONFIG_HOME": str(self.root / "config"),
+            "XDG_STATE_HOME": str(self.root / "state"),
+        })
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.store = MeasurementStore(home=self.root)
+
     def test_matching_area_and_processing_is_accepted(self):
         target = self.freeze(crossover_state(), "left_mid")
         require_commit_target(target, copy.deepcopy(target), mode="crossover", bank_id="left_mid")
@@ -383,7 +396,6 @@ class CommitTargetTests(TargetFixture, unittest.TestCase):
                 require_commit_target(target, live, mode="crossover", bank_id="left_mid")
 
     def test_stored_measurement_lookup_keeps_its_target(self):
-        self.store = MeasurementStore(home=self.root)
         target = self.freeze(crossover_state(), "left_mid")
         self.store.save_measurement(measurement_payload("saved-mid", channel="left", target=target))
         stored = self.store.get_measurement("saved-mid")
@@ -419,6 +431,31 @@ class SweepOutputMaskTests(TargetFixture, unittest.TestCase):
         # A mono sub sums both inputs, so it is part of both internal sweeps.
         self.assertEqual(sweep_output_masks(target, roles=roles),
                          {"left": 0b010, "right": 0b001})
+
+    def test_mono_sub_is_audible_in_both_sweeps_whatever_its_name(self):
+        # A lone sub role is summed from both inputs (mono routing), even when
+        # it is called sub_l: muting it during the right sweep would capture
+        # silence where the routing still feeds it.
+        state = set_mode_routing(default_output_state(), "stereo", "A",
+                                 ["main_l", "main_r", "sub_l", "off"])
+        target = self.freeze(state, GLOBAL_BANK_ID, channels=4)
+        roles = target["roles"]
+        self.assertEqual(roles, ["main_l", "main_r", "sub_l"])
+        self.assertEqual(sweep_output_masks(target, roles=roles),
+                         {"left": 0b010, "right": 0b001})
+
+    def test_summed_role_ids_matches_the_plan_input_routes(self):
+        for roles, expected in (
+            (["main_l", "sub_l"], {"sub_l"}),
+            (["main_l", "main_r", "sub1"], {"sub1"}),
+            (["sub_l", "sub_r"], set()),
+            (["main_l", "main_r", "sub_l", "sub_r"], set()),
+            (["sub1", "sub2"], {"sub1", "sub2"}),
+            (["sub_l", "sub1"], {"sub_l", "sub1"}),
+            (["main_l", "main_r"], set()),
+        ):
+            with self.subTest(roles=roles):
+                self.assertEqual(summed_role_ids(roles), expected)
 
     def test_one_sided_area_keeps_the_whole_area_in_both_sweeps(self):
         target = self.freeze(crossover_state(), "left_mid")

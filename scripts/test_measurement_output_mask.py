@@ -188,6 +188,19 @@ class MeasurementOutputMaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.events, [])
         self.assertEqual(store._jobs, {})
 
+    async def test_raw_helper_sweeps_are_never_masked_by_an_editing_area(self):
+        # Auto-Sub optimize and SPL calibration drive their own bypass and
+        # isolation; an editing area selected on screen must not mute the
+        # outputs they are measuring.
+        store = self.make_store()
+        job = await self.start(store, measurement_bank="left_mid",
+                               measurement_scope="raw_helper")
+
+        for key in ("measurement_bank", "measurement_target", "output_mask"):
+            self.assertNotIn(key, job)
+        self.assertEqual(self.provider_calls, [])
+        self.assertEqual(self.runtime.events, [])
+
     async def test_store_without_a_provider_keeps_the_legacy_job_shape(self):
         store = self.make_store(with_provider=False)
         job = await self.start(store, measurement_bank="left_mid")

@@ -75,12 +75,23 @@ function topologySummary(topology) {
     return text;
 }
 
+// Sub roles the routing sums from both inputs at 0.5 gain: only a real
+// sub_l/sub_r pair feeds each sub from its own side, so a lone sub_l in a mono
+// routing is a summed output, not a left-sided one.
+function summedRoleIds(topology) {
+    const topo = topology || {};
+    const subs = Array.isArray(topo.sub_roles) ? topo.sub_roles.map(String).filter(Boolean) : [];
+    if (!subs.length || String(topo.sub_mode || '') === 'stereo') return [];
+    return subs;
+}
+
 // Sweep side per area: left-sided roles excite the left input, right-sided
-// roles the right input, and mono bass or whole-system areas both inputs
-// (the mono sub matrix sums both with 0.5 gain per input).
-function bankSweepChannel(bankId) {
+// roles the right input, and every summed role (mono/dual-mono subs) or
+// whole-system area needs both channels to reach its operating level.
+function bankSweepChannel(bankId, topology) {
     const id = String(bankId || '');
     if (id === 'global') return 'stereo';
+    if (summedRoleIds(topology).includes(id)) return 'stereo';
     if (id === 'main_l' || id === 'sub_l' || id.startsWith('left_')) return 'left';
     if (id === 'main_r' || id === 'sub_r' || id.startsWith('right_')) return 'right';
     return 'stereo';
@@ -91,7 +102,7 @@ function measurementArea(catalog, bankId) {
     const modeConfig = (catalog && catalog.modes && catalog.modes[mode]) || {};
     const selected = String(bankId || modeConfig.selected_bank || 'global');
     const label = roleLabel(selected);
-    const channel = bankSweepChannel(selected);
+    const channel = bankSweepChannel(selected, modeConfig.topology);
     if (selected === 'global') {
         return {
             bank_id: 'global',
@@ -232,6 +243,7 @@ function renderBankSelector(select, info, catalog, mode) {
         modeLabel,
         subModeLabel,
         topologySummary,
+        summedRoleIds,
         bankSweepChannel,
         measurementArea,
         bankOptions,

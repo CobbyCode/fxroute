@@ -22,7 +22,7 @@ from collections.abc import Sequence
 
 from audio.output_routing import device_key
 from audio.output_state import routing_for_device, validate_output_state
-from audio.output_topology import MAX_CHANNELS, derive_topology
+from audio.output_topology import MAX_CHANNELS, SUB_ROLES, derive_topology
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
 from dsp.native_config import role_side
 
@@ -35,6 +35,7 @@ __all__ = [
     "measurement_target_from_context",
     "require_commit_target",
     "require_target_matches",
+    "summed_role_ids",
     "sweep_output_masks",
     "target_output_mask",
     "targets_compatible",
@@ -149,23 +150,38 @@ def target_output_mask(target: dict, *, roles: Sequence[str]) -> int:
     return sum(1 << index for index, role in enumerate(ordered) if role not in measured)
 
 
+def summed_role_ids(roles: Sequence[str]) -> set[str]:
+    """Sub roles the routing sums from both inputs (both at 0.5 gain).
+
+    Mirrors the plan's input routes: only a real ``sub_l``/``sub_r`` pair feeds
+    each sub from its own side.  A single sub role (mono) and every other pair
+    (dual-mono) are summed from both inputs, whatever the role is called, so a
+    lone ``sub_l`` is *not* a left-sided output.
+    """
+    active = {str(role) for role in roles}
+    subs = tuple(role for role in SUB_ROLES if role in active)
+    return set() if subs == ("sub_l", "sub_r") else set(subs)
+
+
 def sweep_output_masks(target: dict, *, roles: Sequence[str]) -> dict[str, int]:
     """Return the mute mask of each internal sweep of a two-sided capture.
 
     L/R Repeat (and every other two-sided workflow) runs several sweeps of one
     frozen area: each side is an internal way sweep of the same job, so it
     keeps the measured roles that side can excite audible and mutes the rest.
-    Roles that sum both inputs (a mono sub) stay audible in both sweeps, and an
-    area that only exists on one side keeps the whole area audible in both
-    sweeps instead of silencing a sweep that has nothing else to measure.
+    Roles that sum both inputs (a mono or dual-mono sub) stay audible in both
+    sweeps, and an area that only exists on one side keeps the whole area
+    audible in both sweeps instead of silencing a sweep that has nothing else
+    to measure.
     """
     measured = _measured_roles(target)
     ordered = _engine_roles(roles, measured)
+    summed = summed_role_ids(ordered)
     masks: dict[str, int] = {}
     for side in ("left", "right"):
-        side_roles = {role for role in measured if role_side(role) == side}
+        side_roles = {role for role in measured if role_side(role) == side and role not in summed}
         if side_roles:
-            side_roles |= {role for role in measured if role_side(role) == "mono"}
+            side_roles |= {role for role in measured if role_side(role) == "mono" or role in summed}
         else:
             side_roles = set(measured)
         masks[side] = sum(1 << index for index, role in enumerate(ordered) if role not in side_roles)

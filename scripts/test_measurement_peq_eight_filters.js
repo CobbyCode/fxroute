@@ -52,6 +52,8 @@ function extractFunction(name) {
 
 async function main() {
     const requests = [];
+    const toasts = [];
+    let nextResponse = null;
     const state = { measurement: { currentMeasurement: { id: 'measurement-1' } }, dsp: {} };
     const context = {
         MeasurementUI,
@@ -63,7 +65,7 @@ async function main() {
             clampMeasurementPeqQ: (value) => Math.max(0.1, Math.min(20, Number(value))),
         },
         elements: {},
-        showToast: () => {},
+        showToast: (message, kind) => toasts.push({ message, kind }),
         showMeasurementPeqTakeFeedback: () => {},
         renderMeasurementPanel: () => {},
         validatePeqBands: () => '',
@@ -72,7 +74,7 @@ async function main() {
         fetchEffects: async () => {},
         fetch: async (url, options) => {
             requests.push({ url, options });
-            return { ok: true, json: async () => ({ preset: { name: 'Twelve filters' } }) };
+            return nextResponse || { ok: true, json: async () => ({ preset: { name: 'Twelve filters' } }) };
         },
         console,
         Date,
@@ -99,6 +101,7 @@ async function main() {
         'takeMeasurementPeqToPreset',
         'createMeasurementPeqPresetFromDraft',
         'measurementCommitSourceId',
+        'formatTransitionErrorDetail',
         'ensureOutputSystemBoxes',
         'outputSystemModule',
         'outputSystemBankBinding',
@@ -145,6 +148,30 @@ async function main() {
     state.measurement.currentMeasurement = null;
     assert.equal(context.measurementCommitSourceId(), '', 'an unsaved measurement keeps the pre-gate path');
     state.measurement.currentMeasurement = { id: 'measurement-1' };
+
+    // A rejected commit carries a structured detail (the measurement-target
+    // gate answers with {code, message}); the feedback must show its message
+    // instead of stringifying the object.
+    toasts.length = 0;
+    context.takeMeasurementPeqToPreset('both');
+    nextResponse = {
+        ok: false,
+        status: 409,
+        json: async () => ({
+            detail: {
+                code: 'measurement-target-mismatch',
+                message: 'Measurement target no longer matches live processing: processing \'fp-1\' != \'fp-2\'',
+            },
+        }),
+    };
+    await context.createMeasurementPeqPresetFromDraft();
+    assert.equal(
+        toasts.at(-1).message,
+        'Measurement target no longer matches live processing: processing \'fp-1\' != \'fp-2\'',
+        'a structured commit conflict must surface its message',
+    );
+    assert.equal(toasts.at(-1).kind, 'error');
+    nextResponse = null;
 
     assert.match(appSource, /peq\.filters\.length >= 12/, 'PEQ assistant guard must enforce the twelve-filter limit');
     assert.match(appSource, /supports up to 12 filters/, 'limit toast must describe twelve filters');

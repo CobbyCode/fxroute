@@ -146,6 +146,23 @@ function measurementAreaTests() {
     assert.equal(OutputState.measurementArea(selected, 'main_r').channel, 'right');
     assert.equal(OutputState.measurementArea(selected, 'sub_r').channel, 'right');
     assert.equal(OutputState.measurementArea(selected, 'sub2').channel, 'stereo');
+    // A role the routing sums from both inputs needs both channels to reach
+    // its operating level: a lone sub_l in a mono routing is not left-only.
+    const withTopology = (topology) => ({ ...selected, modes: { ...selected.modes, stereo: {
+        ...selected.modes.stereo, topology: { ...selected.modes.stereo.topology, ...topology } } } });
+    const monoSubL = withTopology({ sub_roles: ['sub_l'], sub_mode: 'mono' });
+    assert.equal(OutputState.measurementArea(monoSubL, 'sub_l').channel, 'stereo');
+    assert.equal(OutputState.measurementArea(monoSubL, 'main_l').channel, 'left');
+    const dualMono = withTopology({ sub_roles: ['sub1', 'sub2'], sub_mode: 'dual-mono' });
+    assert.equal(OutputState.measurementArea(dualMono, 'sub1').channel, 'stereo');
+    const stereoSubs = withTopology({ sub_roles: ['sub_l', 'sub_r'], sub_mode: 'stereo' });
+    assert.equal(OutputState.measurementArea(stereoSubs, 'sub_l').channel, 'left');
+    assert.equal(OutputState.measurementArea(stereoSubs, 'sub_r').channel, 'right');
+    assert.deepEqual(OutputState.summedRoleIds({ sub_roles: ['sub_l'], sub_mode: 'mono' }), ['sub_l']);
+    assert.deepEqual(OutputState.summedRoleIds({ sub_roles: ['sub_l', 'sub_r'], sub_mode: 'stereo' }), []);
+    assert.deepEqual(OutputState.summedRoleIds({ sub_roles: [], sub_mode: 'none' }), []);
+    assert.deepEqual(OutputState.summedRoleIds({}), []);
+
     const crossover = { ...selected, active_mode: 'crossover' };
     assert.equal(OutputState.measurementArea(crossover, 'left_low').channel, 'left');
     assert.equal(OutputState.measurementArea(crossover, 'right_high').channel, 'right');

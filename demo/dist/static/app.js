@@ -9854,7 +9854,7 @@ async function createMeasurementPeqPresetFromDraft() {
             }),
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'PEQ preset creation failed');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'PEQ preset creation failed'));
         await fetchEffects();
         void fetchOutputSystemCatalog(true);
         peq.draft.leftBands = [];
@@ -10224,7 +10224,7 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
         formData.append('source_measurement_id', measurementCommitSourceId());
         const resp = await fetch('/api/dsp/presets/import-filter-dual', { method: 'POST', body: formData });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Convolver preset creation failed');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Convolver preset creation failed'));
         void fetchOutputSystemCatalog(true);
         return data;
     }
@@ -10240,7 +10240,7 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
     formData.append('source_measurement_id', measurementCommitSourceId());
     const resp = await fetch('/api/dsp/presets/create-with-ir', { method: 'POST', body: formData });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.detail || 'Convolver preset creation failed');
+    if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Convolver preset creation failed'));
     void fetchOutputSystemCatalog(true);
     return data;
 }
@@ -14106,7 +14106,7 @@ async function createPeqPreset() {
             }),
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'PEQ preset creation failed');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'PEQ preset creation failed'));
         await fetchEffects();
         void fetchOutputSystemCatalog(true);
         if (elements.effectsPeqDisclosure) elements.effectsPeqDisclosure.open = false;
@@ -15333,7 +15333,7 @@ async function createConvolverPreset() {
             body: formData,
         });
         const data = await resp.json();
-        if (!resp.ok) throw new Error(data.detail || 'Preset creation failed');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Preset creation failed'));
         await fetchEffects();
         void fetchOutputSystemCatalog(true);
         elements.effectsImportFile.value = '';
