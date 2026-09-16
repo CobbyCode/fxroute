@@ -757,7 +757,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
-    """/api/playback/selection: prepare candidate, commit it, keep track dict."""
+    """sync_active_local_queue_selection: prepare candidate, commit it, keep track dict."""
 
     GLOBALS = (
         "player_instance", "music_library", "current_track_info",
