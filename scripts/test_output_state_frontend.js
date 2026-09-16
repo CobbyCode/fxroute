@@ -1,0 +1,141 @@
+#!/usr/bin/env node
+// SPDX-License-Identifier: AGPL-3.0-only
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const OutputState = require('../static/output_state.js');
+const repoRoot = path.resolve(__dirname, '..');
+const indexSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
+
+function catalog() {
+    return {
+        status: 'ok',
+        revision: 4,
+        active_mode: 'stereo',
+        device: { key: 'A', channels: 4, routing: { stereo: ['main_l', 'main_r', 'sub1', 'sub1'], crossover: [] } },
+        modes: {
+            stereo: {
+                selected_bank: 'sub1',
+                banks: {
+                    global: { preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' },
+                    main_l: { preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' },
+                    main_r: { preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' },
+                    sub1: { preset: 'Room', preset_a: 'Room', preset_b: 'Room IR', active_side: 'A' },
+                },
+                processing: {},
+                bass_management: { frequency_hz: 80, main_highpass_enabled: true },
+                extras: {},
+                topology: { mode: 'stereo', roles: ['main_l', 'main_r', 'sub1'], sub_roles: ['sub1'],
+                    sub_mode: 'mono', left_ways: [], right_ways: [], way_count: null, issues: [] },
+            },
+            crossover: {
+                selected_bank: 'global',
+                banks: { global: { preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' } },
+                processing: {},
+                bass_management: { frequency_hz: 80, main_highpass_enabled: true },
+                extras: {},
+                topology: { mode: 'crossover', roles: [], sub_roles: [], sub_mode: 'none',
+                    left_ways: [], right_ways: [], way_count: null, issues: ['Crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways'] },
+            },
+        },
+        capabilities: {
+            modes: ['stereo', 'crossover'],
+            roles: { stereo: ['main_l', 'main_r', 'sub_l', 'sub_r', 'sub1', 'sub2'],
+                     crossover: ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low', 'right_low_mid', 'right_mid', 'right_high', 'sub_l', 'sub_r', 'sub1', 'sub2'] },
+            filter_families: { 'linkwitz-riley': [12, 24, 36, 48, 60, 72], butterworth: [6, 12], bessel: [6, 12] },
+            max_slope_db_oct: 72,
+            max_biquads_per_output: 32,
+        },
+    };
+}
+
+assert.equal(OutputState.roleLabel('main_l'), 'Main L');
+assert.equal(OutputState.roleLabel('sub_r'), 'Sub R');
+assert.equal(OutputState.roleLabel('sub1'), 'Sub 1');
+assert.equal(OutputState.roleLabel('left_low_mid'), 'Left Low-Mid');
+assert.equal(OutputState.roleLabel('right_high'), 'Right High');
+assert.equal(OutputState.roleLabel('global'), 'Global');
+assert.equal(OutputState.roleLabel('off'), 'Off');
+
+assert.deepEqual(OutputState.rolesForMode('stereo', catalog().capabilities),
+    ['main_l', 'main_r', 'sub_l', 'sub_r', 'sub1', 'sub2']);
+assert.deepEqual(OutputState.rolesForMode('surround', catalog().capabilities), []);
+
+assert.equal(OutputState.modeLabel('stereo'), 'Stereo');
+assert.equal(OutputState.modeLabel('crossover'), 'Crossover');
+
+assert.equal(OutputState.topologySummary(catalog().modes.stereo.topology), 'Stereo · Mono sub');
+assert.equal(
+    OutputState.topologySummary({ sub_mode: 'stereo', way_count: null, issues: [] }),
+    'Stereo · Stereo subs');
+assert.equal(
+    OutputState.topologySummary({ sub_mode: 'dual-mono', way_count: null, issues: [] }),
+    'Stereo · Dual-mono subs');
+assert.equal(
+    OutputState.topologySummary({ sub_mode: 'mono', way_count: 3, issues: [] }),
+    '3-Way · Mono sub');
+assert.equal(
+    OutputState.topologySummary({ sub_mode: 'none', way_count: 2, issues: [] }),
+    '2-Way');
+assert.match(
+    OutputState.topologySummary(catalog().modes.crossover.topology),
+    /incomplete|requires/i);
+
+assert.deepEqual(
+    OutputState.bankOptions(catalog().modes.stereo, catalog().capabilities).map(o => o.id),
+    ['global', 'main_l', 'main_r', 'sub1']);
+assert.equal(
+    OutputState.bankOptions(catalog().modes.stereo, catalog().capabilities)[3].label, 'Sub 1');
+
+assert.match(OutputState.bankInfoLine(catalog().modes.stereo.banks.sub1), /Room/);
+assert.match(OutputState.bankInfoLine(catalog().modes.stereo.banks.sub1), /Room IR/);
+
+assert.deepEqual(
+    OutputState.buildMutation('set_routing', { mode: 'stereo', assignments: ['main_l', 'main_r'] }),
+    { kind: 'set_routing', mode: 'stereo', assignments: ['main_l', 'main_r'] });
+assert.throws(() => OutputState.buildMutation('teleport', {}), /Unknown mutation kind/);
+
+async function applyFlow() {
+    const seen = [];
+    const fetchImpl = async (url, options) => {
+        seen.push(JSON.parse(options.body));
+        if (seen.length === 1) {
+            return { ok: false, status: 409,
+                     json: async () => ({ detail: { code: 'revision-conflict', revision: 5 } }) };
+        }
+        return { ok: true, status: 200,
+                 json: async () => ({ status: 'ok', revision: 6, live_applied: true }) };
+    };
+    let current = catalog();
+    const fresh = { ...catalog(), revision: 5 };
+    const getCatalog = async () => fresh;
+    const result = await OutputState.applyMutation(fetchImpl, current, getCatalog,
+        { kind: 'select_bank', mode: 'stereo', bank_id: 'main_l' });
+    assert.equal(seen.length, 2);
+    assert.equal(seen[0].expected_revision, 4);
+    assert.equal(seen[1].expected_revision, 5);
+    assert.equal(result.data.revision, 6);
+
+    const failing = async () => ({ ok: false, status: 409, json: async () => ({}) });
+    await assert.rejects(
+        OutputState.applyMutation(failing, current, getCatalog, { kind: 'switch_mode', mode: 'crossover' }),
+        (error) => {
+            assert.equal(error.status, 409);
+            assert.equal(error.catalog.revision, 5);
+            return true;
+        });
+
+    const locked = async () => ({ ok: false, status: 423, json: async () => ({}) });
+    await assert.rejects(OutputState.applyMutation(locked, current, getCatalog, { kind: 'switch_mode', mode: 'crossover' }),
+        /423/);
+}
+
+applyFlow().then(() => {
+    assert.match(indexSource, /output_state\.js\?v=\d+\.\d+\.\d+/);
+    assert.match(indexSource, /id="os-mode-select"/);
+    assert.match(indexSource, /id="os-routing-grid"/);
+    assert.match(indexSource, /id="effects-bank-select"/);
+    console.log('output-state frontend tests: ok');
+}).catch((error) => { console.error(error); process.exitCode = 1; });

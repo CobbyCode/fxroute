@@ -100,6 +100,10 @@ class AudioStateApiTests(unittest.TestCase):
         self.assertEqual(stereo["topology"]["issues"], [])
         self.assertIn("linkwitz-riley", catalog["capabilities"]["filter_families"])
         self.assertEqual(catalog["capabilities"]["max_slope_db_oct"], 72)
+        self.assertEqual(catalog["device"]["key"], "A")
+        self.assertEqual(catalog["device"]["channels"], 4)
+        self.assertEqual(catalog["device"]["routing"]["stereo"],
+                         ["main_l", "main_r", "sub1", "sub1"])
 
     def test_apply_routing_commits_with_fingerprint_report(self):
         seed_sub_state(self.service)

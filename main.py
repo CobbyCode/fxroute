@@ -4103,6 +4103,12 @@ async def get_audio_output_state():
         "status": "ok",
         "revision": state["revision"],
         "active_mode": state["active_mode"],
+        "device": {
+            "key": output_key,
+            "channels": channels,
+            "routing": {mode: routing_for_device(state, mode, output_key)
+                        for mode in ("stereo", "crossover")},
+        },
         "modes": modes,
         "capabilities": {
             "modes": ["stereo", "crossover"],

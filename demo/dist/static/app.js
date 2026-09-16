@@ -151,6 +151,10 @@ let state = {
     playlists: [],
     stations: [],
     download: null,
+    outputSystem: {
+        catalog: null,
+        busy: false,
+    },
     dsp: {
         available: false,
         preset_count: 0,
@@ -461,6 +465,16 @@ const elements = {
     settingsRoutingGroup: document.getElementById('settings-routing-group'),
     settingsRoutingGrid: document.getElementById('settings-routing-grid'),
     settingsRoutingHint: document.getElementById('settings-routing-hint'),
+    osModeSelect: document.getElementById('os-mode-select'),
+    osModeHint: document.getElementById('os-mode-hint'),
+    osRoutingGroup: document.getElementById('os-routing-group'),
+    osRoutingGrid: document.getElementById('os-routing-grid'),
+    osRoutingHint: document.getElementById('os-routing-hint'),
+    osTopology: document.getElementById('os-topology'),
+    osRevision: document.getElementById('os-revision'),
+    osFeedback: document.getElementById('os-feedback'),
+    effectsBankSelect: document.getElementById('effects-bank-select'),
+    effectsBankInfo: document.getElementById('effects-bank-info'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
@@ -1534,6 +1548,34 @@ function setupSettingsActions() {
         elements.settingsRoutingGrid.addEventListener('change', (event) => {
             if (!event.target || event.target.tagName !== 'SELECT') return;
             void saveOutputRouting();
+        });
+    }
+    if (elements.osModeSelect) {
+        elements.osModeSelect.addEventListener('change', (event) => {
+            const mode = event.target.value || 'stereo';
+            event.target.value = state.outputSystem.catalog?.active_mode || 'stereo';
+            void applyOutputSystemMutation('switch_mode', { mode }, `Output system mode: ${mode}`);
+        });
+    }
+    if (elements.osRoutingGrid) {
+        elements.osRoutingGrid.addEventListener('change', (event) => {
+            if (!event.target || event.target.tagName !== 'SELECT') return;
+            const catalog = state.outputSystem.catalog;
+            if (!catalog) return;
+            const selects = elements.osRoutingGrid.querySelectorAll('select');
+            const assignments = Array.from(selects).map((sel) => sel.value || 'off');
+            void applyOutputSystemMutation('set_routing',
+                { mode: catalog.active_mode, assignments }, 'Output routing updated');
+        });
+    }
+    if (elements.effectsBankSelect) {
+        elements.effectsBankSelect.addEventListener('change', (event) => {
+            const catalog = state.outputSystem.catalog;
+            if (!catalog) return;
+            const bankId = event.target.value || 'global';
+            event.target.value = catalog.modes[catalog.active_mode]?.selected_bank || 'global';
+            void applyOutputSystemMutation('select_bank',
+                { mode: catalog.active_mode, bank_id: bankId }, false);
         });
     }
     if (elements.settingsSourceSelect) {
@@ -3257,6 +3299,7 @@ function renderSettingsPanel() {
     renderHardwareController();
     renderMaintenancePanel();
     renderSubwooferPanel();
+    renderOutputSystemSection();
     applySourceModeUiState();
 }
 
@@ -3614,6 +3657,7 @@ async function fetchAudioOutputOverview() {
         renderSettingsPanel();
         renderSubwooferPanel();
         syncAutoSubButton();
+        void fetchOutputSystemCatalog();
     } catch (e) {
         state.settings.audioOutputs = {
             loaded: true,
@@ -3707,6 +3751,139 @@ async function saveOutputRouting() {
         _audioRoutingInProgress = false;
         renderSettingsPanel();
     }
+}
+
+function outputSystemModule() {
+    return (typeof window !== 'undefined' && window.FXRouteOutputState) || null;
+}
+
+async function fetchOutputSystemCatalog(force = false) {
+    const mod = outputSystemModule();
+    if (!mod) return null;
+    if (state.outputSystem.catalog && !force) return state.outputSystem.catalog;
+    try {
+        state.outputSystem.catalog = await mod.fetchCatalog(fetch);
+    } catch (e) {
+        state.outputSystem.catalog = null;
+    }
+    renderOutputSystemSection();
+    renderEffectsBankSelector();
+    return state.outputSystem.catalog;
+}
+
+function outputSystemDevice() {
+    const catalog = state.outputSystem.catalog;
+    return (catalog && catalog.device) || { key: '', channels: 0, routing: {} };
+}
+
+function renderOutputSystemSection() {
+    const mod = outputSystemModule();
+    const catalog = state.outputSystem.catalog;
+    if (!mod || !catalog) {
+        if (elements.osModeHint) elements.osModeHint.textContent = '';
+        if (elements.osTopology) elements.osTopology.textContent = '';
+        if (elements.osRevision) elements.osRevision.textContent = '';
+        if (elements.osFeedback) elements.osFeedback.innerHTML = '';
+        return;
+    }
+    const device = outputSystemDevice();
+    const mode = catalog.active_mode || 'stereo';
+    const modeConfig = catalog.modes[mode] || {};
+    const busy = state.outputSystem.busy;
+    mod.renderModeSelect(elements.osModeSelect, catalog, mode);
+    if (elements.osModeSelect) elements.osModeSelect.disabled = busy;
+    const assignments = (device.routing && device.routing[mode]) || [];
+    mod.renderRoutingGrid(elements.osRoutingGrid, catalog, mode, assignments, device.channels || 0, busy);
+    const topology = modeConfig.topology || {};
+    if (elements.osTopology) {
+        elements.osTopology.textContent = mod.topologySummary(topology);
+    }
+    if (elements.osModeHint) {
+        elements.osModeHint.textContent = `${mod.modeLabel(mode)} output system active.`;
+    }
+    if (elements.osRoutingHint) {
+        const dormant = Object.keys(modeConfig.banks || {}).filter(
+            (id) => id !== 'global' && !topology.roles?.includes(id));
+        elements.osRoutingHint.textContent = dormant.length
+            ? `Roles not on any output keep their settings: ${dormant.map((id) => mod.roleLabel(id)).join(', ')}.`
+            : 'Assign a role to each hardware output. Off leaves an output silent.';
+    }
+    if (elements.osRevision) {
+        elements.osRevision.textContent = `Revision ${catalog.revision}`;
+    }
+}
+
+async function applyOutputSystemMutation(kind, fields, successMessage) {
+    const mod = outputSystemModule();
+    if (!mod || !state.outputSystem.catalog) return null;
+    state.outputSystem.busy = true;
+    renderOutputSystemSection();
+    renderEffectsBankSelector();
+    try {
+        const mutation = mod.buildMutation(kind, fields);
+        const getCatalog = async () => {
+            const fresh = await mod.fetchCatalog(fetch);
+            state.outputSystem.catalog = fresh;
+            return fresh;
+        };
+        const { data, catalog } = await mod.applyMutation(
+            fetch, state.outputSystem.catalog, getCatalog, mutation);
+        state.outputSystem.catalog = catalog;
+        if (successMessage) showToast(successMessage, 'success');
+        if (data && data.live_applied === false && data.live_reason && data.live_reason !== 'nothing-to-apply') {
+            showToast(`Saved (revision ${data.revision}); live apply: ${data.live_reason}`, 'info');
+        }
+        return data;
+    } catch (e) {
+        if (elements.osFeedback) {
+            elements.osFeedback.innerHTML = `<div style="color: var(--danger);">${mod.esc(e.message || 'Output system update failed')}</div>`;
+        }
+        showToast(e.message || 'Output system update failed', 'error');
+        return null;
+    } finally {
+        state.outputSystem.busy = false;
+        renderOutputSystemSection();
+        renderEffectsBankSelector();
+    }
+}
+
+function outputSystemBankBinding() {
+    const catalog = state.outputSystem.catalog;
+    if (!catalog) return null;
+    const mode = catalog.active_mode || 'stereo';
+    const modeConfig = catalog.modes[mode] || {};
+    if (!modeConfig.selected_bank) return null;
+    return {
+        bank_mode: mode,
+        bank_id: modeConfig.selected_bank,
+        expected_revision: catalog.revision,
+    };
+}
+
+function appendBankBindingFields(formData) {
+    const binding = outputSystemBankBinding();
+    if (!binding || !formData || typeof formData.append !== 'function') return false;
+    formData.append('bank_mode', binding.bank_mode);
+    formData.append('bank_id', binding.bank_id);
+    formData.append('expected_revision', String(binding.expected_revision));
+    return true;
+}
+
+function bankBindingJson() {
+    return outputSystemBankBinding() || {};
+}
+
+function renderEffectsBankSelector() {
+    const mod = outputSystemModule();
+    const catalog = state.outputSystem.catalog;
+    if (!mod || !elements.effectsBankSelect) return;
+    if (!catalog) {
+        elements.effectsBankSelect.innerHTML = '';
+        if (elements.effectsBankInfo) elements.effectsBankInfo.textContent = '';
+        return;
+    }
+    mod.renderBankSelector(elements.effectsBankSelect, elements.effectsBankInfo,
+        catalog, catalog.active_mode || 'stereo');
 }
 
 async function saveAudioSourceSelection(mode, inputKey = '') {
@@ -8054,6 +8231,7 @@ async function createDualFilterPreset() {
         formData.append('tone_effect_mode', extras.toneEffectMode);
         if (leftFile) formData.append('left_file', leftFile);
         if (rightFile) formData.append('right_file', rightFile);
+        appendBankBindingFields(formData);
 
         const resp = await fetch('/api/dsp/presets/import-filter-dual', {
             method: 'POST',
@@ -8062,6 +8240,7 @@ async function createDualFilterPreset() {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Dual filter import failed');
         await fetchEffects();
+        void fetchOutputSystemCatalog(true);
         if (elements.effectsRewLeftText) elements.effectsRewLeftText.value = '';
         if (elements.effectsRewRightText) elements.effectsRewRightText.value = '';
         if (elements.effectsRewLeftFile) elements.effectsRewLeftFile.value = '';
@@ -9355,6 +9534,7 @@ async function createMeasurementPeqPresetFromDraft() {
                 presetName,
                 loadAfterCreate: false,
                 ...collectEffectsExtras(),
+                ...bankBindingJson(),
                 peq: {
                     enabled: true,
                     params: {
@@ -9369,6 +9549,7 @@ async function createMeasurementPeqPresetFromDraft() {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'PEQ preset creation failed');
         await fetchEffects();
+        void fetchOutputSystemCatalog(true);
         peq.draft.leftBands = [];
         peq.draft.rightBands = [];
         peq.draft.presetName = '';
@@ -9723,9 +9904,11 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
         appendMeasurementConvolverExtras(formData);
         formData.append('left_file', leftBlob, `${filenameBase}-L.wav`);
         formData.append('right_file', rightBlob, `${filenameBase}-R.wav`);
+        appendBankBindingFields(formData);
         const resp = await fetch('/api/dsp/presets/import-filter-dual', { method: 'POST', body: formData });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Convolver preset creation failed');
+        void fetchOutputSystemCatalog(true);
         return data;
     }
     const side = mode === 'right' ? 'right' : 'left';
@@ -9736,9 +9919,11 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
     formData.append('preset_name', itemName);
     appendMeasurementConvolverExtras(formData);
     formData.append('file', blob, `${filenameBase}-${side === 'right' ? 'R' : 'L'}.wav`);
+    appendBankBindingFields(formData);
     const resp = await fetch('/api/dsp/presets/create-with-ir', { method: 'POST', body: formData });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.detail || 'Convolver preset creation failed');
+    void fetchOutputSystemCatalog(true);
     return data;
 }
 
@@ -13234,6 +13419,7 @@ async function fetchEffects() {
             });
         }
         renderEffects();
+        void fetchOutputSystemCatalog();
     } catch (e) {
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">DSP presets are unavailable</div>';
     }
@@ -13584,6 +13770,7 @@ async function createPeqPreset() {
                 presetName,
                 loadAfterCreate: false,
                 ...collectEffectsExtras(),
+                ...bankBindingJson(),
                 peq: {
                     enabled: true,
                     params: {
@@ -13598,6 +13785,7 @@ async function createPeqPreset() {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'PEQ preset creation failed');
         await fetchEffects();
+        void fetchOutputSystemCatalog(true);
         if (elements.effectsPeqDisclosure) elements.effectsPeqDisclosure.open = false;
         updateEffectsPeqDisclosureLabel();
         resetPeqDraft();
@@ -13638,6 +13826,7 @@ async function importRewPeqPreset() {
     formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
     formData.append('tone_effect_mode', extras.toneEffectMode);
     formData.append('file', file);
+    appendBankBindingFields(formData);
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Importing REW PEQ: <strong>${escapeHtml(presetName)}</strong>…</div>`;
     try {
         const resp = await fetch('/api/dsp/presets/import-rew-peq', {
@@ -13647,6 +13836,7 @@ async function importRewPeqPreset() {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'REW PEQ import failed');
         await fetchEffects();
+        void fetchOutputSystemCatalog(true);
         elements.effectsImportFile.value = '';
         updateEffectsImportUi();
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
@@ -13812,6 +14002,7 @@ function renderEffectsCompare() {
         slotEl.classList.toggle('is-active', effectiveActiveSide === slot && !!slotPreset);
         slotEl.classList.toggle('is-armed', effectiveActiveSide !== slot && !!slotPreset);
     });
+    renderEffectsBankSelector();
     setEffectsCompareLoadBusy(effectsCompareLoadInFlight);
 }
 
@@ -14808,6 +14999,7 @@ async function createConvolverPreset() {
     formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
     formData.append('tone_effect_mode', extras.toneEffectMode);
     formData.append('file', file);
+    appendBankBindingFields(formData);
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Importing: <strong>${escapeHtml(presetName)}</strong>…</div>`;
     const importArea = document.getElementById('effects-import-area');
     if (importArea) importArea.classList.add('is-busy');
@@ -14819,6 +15011,7 @@ async function createConvolverPreset() {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || 'Preset creation failed');
         await fetchEffects();
+        void fetchOutputSystemCatalog(true);
         elements.effectsImportFile.value = '';
         updateEffectsImportUi();
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
@@ -14852,6 +15045,7 @@ async function deleteEffectsPreset() {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || 'Preset delete failed');
         await fetchEffects();
+        void fetchOutputSystemCatalog(true);
         showToast(`Deleted preset: ${presetName}`, 'success');
     } catch (e) {
         showToast(e.message || 'Preset delete failed', 'error');
