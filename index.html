@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/fxroute/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/fxroute/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/fxroute/static/style.css?v=0.9.213">
+    <link rel="stylesheet" href="/fxroute/static/style.css?v=0.9.218">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -23,7 +23,7 @@
     <script src="./demo/data/radio.js?v=3"></script>
     <script src="./demo/data/measurements.js?v=1"></script>
     <script src="./demo/state.js?v=18"></script>
-    <script src="./demo/routes.js?v=20"></script>
+    <script src="./demo/routes.js?v=22"></script>
     <script src="./demo/streaming.js?v=1"></script>
     <script src="./demo/ws.js?v=1"></script>
     <script src="./demo/boot.js?v=8"></script>
@@ -133,6 +133,11 @@
                                 <option value="auto">Auto</option>
                             </select>
                             <p id="settings-samplerate-hint" class="settings-inline-note">Follows the effective playback sample rate.</p>
+                        </div>
+                        <div class="field-group settings-field-group hidden" id="settings-routing-group">
+                            <span class="settings-routing-label" id="settings-routing-label">Output Routing</span>
+                            <div id="settings-routing-grid" class="settings-routing-grid" role="group" aria-labelledby="settings-routing-label"></div>
+                            <p id="settings-routing-hint" class="settings-inline-note"></p>
                         </div>
                     </section>
 
@@ -933,7 +938,7 @@
                                         <div class="measurement-workflow-group measurement-workflow-menu-group">
                                             <div class="measurement-workflow-menu">
                                                 <button id="measurement-sweep-toggle" class="btn-primary" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="measurement-sweep-menu">Start Sweep</button>
-                                                <div id="measurement-sweep-menu" class="measurement-workflow-menu-panel hidden" aria-labelledby="measurement-sweep-toggle">
+                                                <div id="measurement-sweep-menu" class="measurement-workflow-menu-panel hidden" tabindex="-1" aria-labelledby="measurement-sweep-toggle">
                                                     <div class="measurement-workflow-menu-choice measurement-workflow-channel-choice">
                                                         <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" role="group" aria-label="Single sweep speaker selection">
                                                             <button type="button" class="measurement-chip" data-measurement-channel="left">L</button>
@@ -1082,7 +1087,7 @@
                             </div>
                             <div id="measurement-empty" class="measurement-empty hidden">No current or saved measurements yet.</div>
                             <div class="measurement-save-row">
-                                <div id="measurement-smoothing-chips" class="measurement-smoothing-chips" aria-label="Graph smoothing">
+                                <div id="measurement-smoothing-chips" class="measurement-smoothing-chips" role="group" aria-label="Graph smoothing">
                                     <button type="button" class="measurement-chip" data-measurement-smoothing="raw">Raw</button>
                                     <button type="button" class="measurement-chip is-active" data-measurement-smoothing="1/6-oct">1/6</button>
                                     <button type="button" class="measurement-chip" data-measurement-smoothing="1/3-oct">1/3</button>
@@ -1352,6 +1357,11 @@
                 <button id="footer-loop" class="control-btn control-btn-mode hidden" type="button" aria-label="Repeat" aria-pressed="false" title="Repeat">↻</button>
                 <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled title="Clear queue" aria-label="Clear queue">✕</button>
             </div>
+            <div id="source-switcher" class="source-switcher hidden">
+                <button id="source-prev" class="control-btn control-btn-secondary" type="button" aria-label="Previous source" title="Previous source">‹</button>
+                <select id="source-select" class="source-select" aria-label="Audio source"></select>
+                <button id="source-next" class="control-btn control-btn-secondary" type="button" aria-label="Next source" title="Next source">›</button>
+            </div>
             <div class="seek-row hidden">
                 <span id="seek-current" class="seek-time">0:00</span>
                 <input
@@ -1539,7 +1549,7 @@
     <script src="/fxroute/static/measurement_graph.js?v=0.9.16"></script>
     <script src="/fxroute/static/measurement_flows.js?v=0.9.21"></script>
     <script src="/fxroute/static/radio.js?v=0.9.19"></script>
-    <script src="/fxroute/static/app.js?v=0.9.148"></script>
-    <script src="/fxroute/static/streaming.js?v=0.9.70"></script>
+    <script src="/fxroute/static/app.js?v=0.9.161"></script>
+    <script src="/fxroute/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

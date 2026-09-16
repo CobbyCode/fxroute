@@ -118,17 +118,72 @@
     }
 
     // ── Audio output model ──────────────────────────────────────────────
+    const SCARLETT_TIERS = [
+        { id: '18ch', channels: 18, rates: [44100, 48000], probe_rate: 48000 },
+        { id: '14ch', channels: 14, rates: [88200, 96000], probe_rate: 96000 },
+        { id: '10ch', channels: 10, rates: [176400, 192000], probe_rate: 192000 },
+    ];
+    const SCARLETT_KEY = 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output';
+    let scarlettTierId = '18ch';
+    function scarlettTier() { return SCARLETT_TIERS.find(t => t.id === scarlettTierId) || SCARLETT_TIERS[0]; }
+    function scarlettDeviceRates() {
+        const rates = [];
+        for (const tier of SCARLETT_TIERS) rates.push(...tier.rates);
+        return [...new Set(rates)].sort((a, b) => a - b);
+    }
+    function scarlettNativeTierForRate(rate) {
+        return SCARLETT_TIERS.find(t => t.rates.includes(rate)) || null;
+    }
+    const ROUTING_SIGNALS = ['Off', 'Main L', 'Main R', 'Sub 1', 'Sub 2'];
+    const routingStore = {};
+    function routingAssignments(key, channels) {
+        const saved = routingStore[key];
+        const base = Array.isArray(saved) ? saved.slice() : [1, 2, 3, 4];
+        while (base.length < channels) base.push(0);
+        return {
+            assignments: base.slice(0, channels),
+            inactive: base.map((v, i) => (i >= channels && v ? i + 1 : 0)).filter(Boolean),
+            full: base,
+        };
+    }
     const OUTPUTS = [
         { key: 'alsa_output.pci-0000_00_1f.3.analog-stereo', name: 'Built-in Audio', label: 'Built-in Audio', description: 'Analog Stereo', channels: 2, active_rate: 48000, selectable: true, default: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
-        { key: 'alsa_output.usb-DEMO_DAC-00.analog-stereo', name: 'Demo USB DAC', label: 'Demo USB DAC', description: 'Hi-Res USB Audio', channels: 4, active_rate: 96000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
+        { key: 'alsa_output.usb-DEMO_DAC-00.analog-stereo', name: 'Demo USB DAC', label: 'Demo USB DAC', description: 'Hi-Res USB Audio', channels: 2, active_rate: 96000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
         { key: 'alsa_output.usb-MOTU_M4-00.analog-surround-40', name: 'MOTU M4', label: 'MOTU M4', description: '4-Channel USB Audio Interface', channels: 4, active_rate: 48000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000] },
-        { key: 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output', name: 'Focusrite Scarlett 16i16', label: 'Focusrite Scarlett 16i16', description: '18-Channel USB Audio Interface', channels: 18, active_rate: 44100, selectable: true, supported_rates: [44100, 48000] },
+        { key: SCARLETT_KEY, name: 'Focusrite Scarlett 16i16', label: 'Focusrite Scarlett 16i16', description: '18-Channel USB Audio Interface', channels: 18, active_rate: 44100, selectable: true, supported_rates: [44100, 48000] },
     ];
     // The demo starts on the 4-channel interface so the default 2.2 mode has
     // the channels it needs (Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2).
     let selectedOutputKeyCache = OUTPUTS[2].key;
     function selectedOutput() {
         return OUTPUTS.find(o => o.key === selectedOutputKeyCache) || OUTPUTS[0];
+    }
+
+    // ── Output-mode per-device memory (mirrors the real backend) ─────────
+    // A deliberate device switch derives the mode from the actually
+    // available output channel count, never from the device name: a
+    // subwoofer mode on a device with fewer than 4 channels falls back to
+    // Stereo, and a mode remembered for this device is restored when the
+    // device can carry it. Like the backend's persisted per-device memory,
+    // a mode is only remembered when it is actually applied for that device
+    // (mode change or an explicit mode request), never on a switch whose
+    // effective mode already matches the current one.
+    const OUTPUT_MODES = ['stereo', 'subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'];
+    const SUBWOOFER_MODES = ['subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'];
+    const deviceOutputModes = { [OUTPUTS[2].key]: 'subwoofer-2.2' };
+    function isSubwooferOutputModeName(mode) {
+        return SUBWOOFER_MODES.includes(String(mode || ''));
+    }
+    function outputModeLabel(mode) {
+        if (mode === 'subwoofer-2.1') return '2.1';
+        if (mode === 'subwoofer-2.2-stereo') return '2.2 Stereo Bass';
+        if (mode === 'subwoofer-2.2') return '2.2';
+        return 'Stereo';
+    }
+    function routingStatusForOutputMode(mode) {
+        if (mode === 'stereo') return 'Out 1/2 Main';
+        if (mode === 'subwoofer-2.2-stereo') return 'Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub';
+        return 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2';
     }
 
     // ── Measurement capture model ───────────────────────────────────────
@@ -240,18 +295,70 @@
         return ['stereo', 'subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'].includes(mode) ? mode : 'stereo';
     }
 
-    function outputsPayload() {
-        const out = selectedOutput();
+    function scarlettOutputEntry() {
+        const tier = scarlettTier();
+        const base = OUTPUTS.find(o => o.key === SCARLETT_KEY);
+        return { ...base, channels: tier.channels, active_rate: samplerate.active_rate, supported_rates: scarlettDeviceRates(),
+            device_profile: { id: 'scarlett-16i16-4th-gen', tiers: SCARLETT_TIERS.map(x => ({ ...x, rates: x.rates.slice() })), active_tier: tier.id, source: 'alsa-usb-playback', manual: true } };
+    }
+    function outputEntry(out) {
+        if (out.key === SCARLETT_KEY) return scarlettOutputEntry();
+        return { ...out };
+    }
+    function outputsPayload(modeAdjustment) {
+        const out = outputEntry(selectedOutput());
+        const channels = Number(out.channels || 0);
+        // Availability follows the actually available channel count, never
+        // the device name: subwoofer modes need at least 4 channels.
+        outputMode.available = channels >= 4;
+        outputMode.effective_output_channels = channels;
+        const routing = routingAssignments(out.key, channels);
+        const mode = { ...outputMode, effective_output_channels: channels,
+            output_routing: { available: channels > 2, device_key: out.key, assignments: routing.assignments,
+                customized: Object.hasOwn(routingStore, out.key),
+                signals: ROUTING_SIGNALS.map((label, id) => ({ id, label })), inactive_assignments: routing.inactive } };
+        if (modeAdjustment && modeAdjustment.adjusted) {
+            mode.mode_adjustment = modeAdjustment;
+        }
         return {
             loaded: true,
             available: true,
             default_output: { key: OUTPUTS[0].key, target_name: OUTPUTS[0].name, target_label: OUTPUTS[0].label },
-            selected_output: { key: out.key, label: out.name, channels: out.channels, active_rate: out.active_rate, supported_rates: out.supported_rates },
-            current_output: { key: out.key, label: out.name, channels: out.channels, active_rate: out.active_rate },
-            outputs: OUTPUTS.map(o => ({ ...o })),
+            selected_output: { key: out.key, label: out.name, channels, active_rate: out.active_rate, supported_rates: out.supported_rates, device_profile: out.device_profile },
+            current_output: { key: out.key, label: out.name, channels, active_rate: out.active_rate },
+            outputs: OUTPUTS.map(o => outputEntry(o)),
             notes: [],
-            output_mode: outputMode,
+            output_mode: mode,
         };
+    }
+
+    function applyDeviceOutputModeForSwitch(deviceKey, channels) {
+        const count = Number(channels || 0);
+        const currentMode = String(outputMode.mode || 'stereo');
+        let candidate = deviceOutputModes[deviceKey] || currentMode;
+        if (!OUTPUT_MODES.includes(candidate)) candidate = 'stereo';
+        let effective = candidate;
+        if (isSubwooferOutputModeName(effective) && count < 4) {
+            effective = 'stereo';
+        }
+        let adjustment = null;
+        if (effective !== currentMode) {
+            const previous = currentMode;
+            outputMode.mode = effective;
+            outputMode.required_channels = effective === 'stereo' ? 2 : 4;
+            outputMode.routing = { ...(outputMode.routing || {}), status: routingStatusForOutputMode(effective) };
+            deviceOutputModes[deviceKey] = effective;
+            const reason = (isSubwooferOutputModeName(candidate) && count < 4)
+                ? 'device-channel-capacity'
+                : 'device-remembered-mode';
+            const message = reason === 'device-channel-capacity'
+                ? `Output mode switched to ${outputModeLabel(effective)} — selected device supports ${count} channels.`
+                : `Output mode restored to ${outputModeLabel(effective)} — last used with this device.`;
+            adjustment = { adjusted: true, previous_mode: previous, mode: effective, reason, message };
+        }
+        outputMode.available = count >= 4;
+        outputMode.effective_output_channels = count;
+        return adjustment;
     }
 
     let samplerate = { available: true, active_rate: 48000, mode: 'auto', policy: { mode: 'auto', rate: null }, support: { rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] } };
@@ -288,6 +395,8 @@
         else if (owner === 'local') rate = Number(findTrack(trackId)?.track.sample_rate_hz) || 48000;
         else if (owner === 'tidal') rate = TIDAL_TIER_GRAPH_RATE[inList(S.tidalTracks())?.audio_quality] || 48000;
         samplerate.active_rate = rate;
+        const nativeTier = scarlettNativeTierForRate(rate);
+        if (selectedOutputKeyCache === SCARLETT_KEY && nativeTier) scarlettTierId = nativeTier.id;
     }
     S.onSourceChanged = followSourceGraphRate;
 
@@ -1723,7 +1832,31 @@
                     // picking the Scarlett 16i16 also switches the measurement
                     // setup to its 18-channel capture (split Ref L / R).
                     measurementCaptureInput = captureInputForOutputKey(key);
+                    // Derive the routing from the actually available channel
+                    // count: a subwoofer mode on a device with fewer than 4
+                    // channels falls back to Stereo (crossover/sub routing
+                    // off), a remembered mode is restored when possible.
+                    const channels = Number(outputEntry(selectedOutput()).channels || 0);
+                    const adjustment = applyDeviceOutputModeForSwitch(key, channels);
+                    return j(outputsPayload(adjustment));
                 }
+                return j(outputsPayload());
+            }
+            return j(outputsPayload());
+        }
+        if (p === '/api/audio/output-routing') {
+            if (post) {
+                const key = String(body.key || '');
+                const out = outputEntry(selectedOutput());
+                if (key !== out.key) return err('Selected output changed; refresh audio settings', 400);
+                const values = body.assignments;
+                if (!Array.isArray(values) || values.length !== out.channels || values.some(v => !Number.isInteger(v) || v < 0 || v > 4)) {
+                    return err('Assign one signal (0-4) to each available hardware output', 400);
+                }
+                const prev = routingStore[key];
+                const full = values.slice();
+                if (Array.isArray(prev) && prev.length > full.length) full.push(...prev.slice(full.length));
+                routingStore[key] = full;
                 return j(outputsPayload());
             }
             return j(outputsPayload());
@@ -1731,6 +1864,13 @@
         if (p === '/api/audio/output-mode') {
             if (post) {
                 const mode = normalizeOutputModeName(String(body.mode || 'stereo'));
+                const currentOut = outputEntry(selectedOutput());
+                const currentChannels = Number(currentOut.channels || 0);
+                if (isSubwooferOutputModeName(mode) && currentChannels < 4) {
+                    const label = mode === 'subwoofer-2.1' ? '2.1'
+                        : mode === 'subwoofer-2.2-stereo' ? '2.2 Stereo Bass' : '2.2';
+                    return err(`${label} Subwoofer requires a selected multichannel output with at least 4 channels`, 400);
+                }
                 if (body.subwoofer) {
                     outputMode.subwoofer = normalizeSub(body.subwoofer);
                 }
@@ -1744,22 +1884,31 @@
                     outputMode.subwoofer.crossover_frequency_hz = Math.round(Number(body.crossover_frequency_hz) || 80);
                 }
                 outputMode.mode = mode;
-                outputMode.available = true;
+                outputMode.available = currentChannels >= 4;
                 outputMode.required_channels = mode === 'stereo' ? 2 : 4;
-                outputMode.effective_output_channels = selectedOutput().channels;
+                outputMode.effective_output_channels = currentChannels;
                 outputMode.routing = {
-                    status: mode === 'stereo' ? 'Out 1/2 Main'
-                        : mode === 'subwoofer-2.2-stereo' ? 'Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub'
-                            : 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2',
+                    status: routingStatusForOutputMode(mode),
                 };
+                deviceOutputModes[currentOut.key] = mode;
                 return j(outputsPayload());
             }
+            const outNow = outputEntry(selectedOutput());
+            outputMode.available = Number(outNow.channels || 0) >= 4;
+            outputMode.effective_output_channels = Number(outNow.channels || 0);
             return j(outputMode);
         }
         if (p === '/api/audio/samplerate') {
             if (post) {
                 const mode = String(body.mode || 'auto');
                 const rate = Number(body.rate || 0);
+                const out = outputEntry(selectedOutput());
+                const tierRates = out.key === SCARLETT_KEY ? scarlettDeviceRates() : out.supported_rates;
+                if (mode === 'fixed' && rate && !tierRates.includes(rate)) return err('Selected output does not support this sample rate', 400);
+                if (mode === 'fixed' && rate && out.key === SCARLETT_KEY) {
+                    const native = scarlettNativeTierForRate(rate);
+                    if (native && native.id !== scarlettTierId) scarlettTierId = native.id;
+                }
                 samplerate = {
                     ...samplerate,
                     mode: mode === 'fixed' ? 'fixed' : 'auto',

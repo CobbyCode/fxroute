@@ -144,6 +144,34 @@
     color: var(--accent);
     animation: switching-pulse 1.2s ease-in-out infinite;
 }
+.settings-routing-label {
+    display: block;
+    margin-bottom: 0.38rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+.settings-routing-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+    gap: 0.5rem;
+}
+.settings-routing-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+}
+.settings-routing-cell label {
+    margin-bottom: 0;
+    font-size: 0.75rem;
+}
+.settings-routing-cell select {
+    width: 100%;
+}
 @keyframes switching-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }

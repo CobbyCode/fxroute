@@ -971,6 +971,34 @@ body {
     color: var(--accent);
     animation: switching-pulse 1.2s ease-in-out infinite;
 }
+.settings-routing-label {
+    display: block;
+    margin-bottom: 0.38rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+.settings-routing-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+    gap: 0.5rem;
+}
+.settings-routing-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+}
+.settings-routing-cell label {
+    margin-bottom: 0;
+    font-size: 0.75rem;
+}
+.settings-routing-cell select {
+    width: 100%;
+}
 @keyframes switching-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
@@ -4455,6 +4483,30 @@ body {
     border-radius: var(--radius-md);
     background: var(--bg-elevated);
     box-shadow: 0 18px 36px -18px var(--shadow);
+    animation: measurement-menu-in 0.2s var(--ease);
+}
+
+@keyframes measurement-menu-in {
+    from {
+        opacity: 0;
+        transform: translateY(-3px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* While the sweep menu is open the toggle reads as active, matching the
+   .power-btn[aria-expanded="true"] pattern. */
+#measurement-sweep-toggle[aria-expanded="true"] {
+    background: var(--accent-hover);
+}
+
+.measurement-workflow-menu-panel:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 .measurement-workflow-menu-choice {
@@ -4481,7 +4533,10 @@ body {
     justify-content: flex-start;
 }
 
+/* The large secondary action buttons (Start LR Repeat, Advanced) center their
+   label like Start Sweep; the help texts below stay left-aligned. */
 .measurement-workflow-menu-choice > .btn-secondary {
+    justify-content: center;
     background: var(--accent-dim);
     border-color: var(--accent-dim);
 }
@@ -7017,6 +7072,41 @@ input[type="number"]::-webkit-outer-spin-button {
     justify-content: center;
     min-height: 52px;
     gap: .32rem; }
+/* Source switcher replaces transport in bluetooth-input / external-input
+   footer modes: compact ‹ label › stepping plus a native select for direct
+   choice. No per-input button row, so large interfaces stay compact. */
+.playback-bar.source-mode .transport-controls { display: none; }
+/* The track/metadata block is irrelevant for line sources: hide it and let
+   the switcher absorb its column. Meter and master volume stay untouched. */
+.playback-bar.source-mode {
+    grid-template-columns: minmax(300px, 1.7fr) minmax(130px, 0.52fr) minmax(200px, 0.78fr);
+    grid-template-areas: "transport meter volume";
+}
+.playback-bar.source-mode .track-info { display: none; }
+.source-switcher { display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    gap: .45rem; }
+.source-switcher.hidden { display: none; }
+.source-select {
+    min-width: 0;
+    flex: 1 1 auto;
+    max-width: min(460px, 100%);
+    padding: .45rem .6rem;
+    border: 1px solid rgba(110,231,183,.28);
+    border-radius: 999px;
+    background: #203b32;
+    color: #f0fff8;
+    font: inherit;
+    font-size: .92rem;
+    font-weight: 600;
+    text-align: center;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+.source-select:disabled { opacity: .45; cursor: default; }
+.source-select option { background: #16281f; color: #f0fff8; }
 .control-btn, .control-btn-secondary, .control-btn-mode, .control-btn-clear { padding: 0;
     line-height: 1;
     align-self: center;
@@ -7243,6 +7333,12 @@ input[type="number"]::-webkit-outer-spin-button {
         width: min(100%, 430px);
         max-width: 430px;
     }
+    .playback-bar.source-mode {
+        grid-template-columns:
+            minmax(390px, 1fr)
+            minmax(150px, 220px)
+            minmax(220px, 300px);
+    }
     .playback-bar .controls {
         width: min(100%, 360px);
         max-width: 360px;
@@ -7419,6 +7515,15 @@ input[type="number"]::-webkit-outer-spin-button {
         max-width: none;
         min-width: 0;
     }
+    .playback-bar.source-mode {
+        grid-template-columns:
+            minmax(240px, 1.18fr)
+            minmax(170px, .78fr);
+        grid-template-rows: minmax(46px, auto) minmax(42px, auto);
+        grid-template-areas:
+            "transport meter"
+            "transport volume";
+    }
     .playback-visual {
         width: 60px;
         height: 60px;
@@ -7575,6 +7680,13 @@ input[type="number"]::-webkit-outer-spin-button {
         gap: .6rem;
         max-width: none;
         align-self: center;
+    }
+    .playback-bar.source-mode {
+        grid-template-columns: minmax(0, 1fr) 84px;
+        grid-template-areas:
+            "meter meter"
+            "transport transport"
+            "volume volume";
     }
     .playback-visual {
         width: 50px;

@@ -458,6 +458,9 @@ const elements = {
     settingsOutputModeHint: document.getElementById('settings-output-mode-hint'),
     settingsSamplerateSelect: document.getElementById('settings-samplerate-select'),
     settingsSamplerateHint: document.getElementById('settings-samplerate-hint'),
+    settingsRoutingGroup: document.getElementById('settings-routing-group'),
+    settingsRoutingGrid: document.getElementById('settings-routing-grid'),
+    settingsRoutingHint: document.getElementById('settings-routing-hint'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
@@ -764,6 +767,11 @@ const elements = {
     btnNext: document.getElementById('btn-next'),
     footerLoopBtn: document.getElementById('footer-loop'),
     btnClearQueue: document.getElementById('btn-clear-queue'),
+    transportControls: document.querySelector('.playback-center .transport-controls'),
+    sourceSwitcher: document.getElementById('source-switcher'),
+    sourcePrev: document.getElementById('source-prev'),
+    sourceSelect: document.getElementById('source-select'),
+    sourceNext: document.getElementById('source-next'),
     queueStatus: document.getElementById('queue-status'),
     samplerateStatus: document.getElementById('samplerate-status'),
     outputLevelBadge: document.getElementById('output-level-badge'),
@@ -1104,6 +1112,11 @@ function setMeasurementSweepMenuOpen(shouldOpen) {
     if (!elements.measurementSweepMenu || !elements.measurementSweepToggleBtn) return;
     elements.measurementSweepMenu.classList.toggle('hidden', !shouldOpen);
     elements.measurementSweepToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+    if (shouldOpen) {
+        elements.measurementSweepMenu.focus({ preventScroll: true });
+    } else if (elements.measurementSweepMenu.contains(document.activeElement)) {
+        elements.measurementSweepToggleBtn.focus({ preventScroll: true });
+    }
 }
 
 function setupWebSocket() {
@@ -1517,6 +1530,12 @@ function setupSettingsActions() {
             void saveSampleRatePolicy(event.target.value || 'auto');
         });
     }
+    if (elements.settingsRoutingGrid) {
+        elements.settingsRoutingGrid.addEventListener('change', (event) => {
+            if (!event.target || event.target.tagName !== 'SELECT') return;
+            void saveOutputRouting();
+        });
+    }
     if (elements.settingsSourceSelect) {
         elements.settingsSourceSelect.addEventListener('change', (event) => {
             const value = event.target.value || 'app-playback';
@@ -1816,6 +1835,7 @@ function buildAudioOutputModeRequest(mode, settings = null, options = {}) {
 let _audioOutputModeRequestId = 0;
 let _audioOutputModeMutationGeneration = 0;
 let _audioOutputModeSwitchInProgress = false;
+let _audioRoutingInProgress = false;
 function getAudioOutputModeSignature(mode, settings = null, options = {}) {
     return JSON.stringify(buildAudioOutputModeRequest(mode, settings, options));
 }
@@ -3091,7 +3111,7 @@ function renderSettingsPanel() {
             elements.settingsOutputModeSelect.innerHTML = optionsHtml;
         }
         elements.settingsOutputModeSelect.value = mode;
-        elements.settingsOutputModeSelect.disabled = !overview.available || _audioOutputModeSwitchInProgress;
+        elements.settingsOutputModeSelect.disabled = !overview.available || _audioOutputModeSwitchInProgress || _audioRoutingInProgress;
     }
     if (elements.settingsOutputModeHint) {
         const channels = outputMode.effective_output_channels;
@@ -3114,6 +3134,10 @@ function renderSettingsPanel() {
         }
     }
 
+    const deviceProfile = selectedOutput?.device_profile || null;
+    const tiers = Array.isArray(deviceProfile?.tiers) ? deviceProfile.tiers : [];
+    const activeTier = tiers.find((tier) => tier.id === deviceProfile?.active_tier) || null;
+
     const sampleRatePolicy = state.samplerate?.policy || { mode: 'auto', rate: null };
     const supportedRates = Array.isArray(selectedOutput?.supported_rates) ? selectedOutput.supported_rates : [];
     if (elements.settingsSamplerateSelect && !isSelectFocused(elements.settingsSamplerateSelect)) {
@@ -3127,9 +3151,56 @@ function renderSettingsPanel() {
         elements.settingsSamplerateSelect.disabled = !!state.samplerate?.pending || !overview.available;
     }
     if (elements.settingsSamplerateHint) {
+        const tierNote = activeTier ? ` · ${activeTier.channels} channels active` : '';
         elements.settingsSamplerateHint.textContent = sampleRatePolicy.mode === 'fixed'
-            ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}.`
-            : 'Follows the effective playback sample rate.';
+            ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}${tierNote}.`
+            : `Follows the effective playback sample rate${activeTier ? '; the device switches channel inventory automatically' : ''}.`;
+    }
+
+    const outputRouting = outputMode.output_routing || {};
+    const routingChannels = Number(outputMode.effective_output_channels || 0);
+    const routingAvailable = !!outputRouting.available && routingChannels > 2;
+    if (elements.settingsRoutingGroup) {
+        elements.settingsRoutingGroup.classList.toggle('hidden', !routingAvailable);
+    }
+    if (routingAvailable && elements.settingsRoutingGrid) {
+        const signals = Array.isArray(outputRouting.signals) ? outputRouting.signals : [];
+        const assignments = Array.isArray(outputRouting.assignments) ? outputRouting.assignments : [];
+        const busy = _audioRoutingInProgress || _audioOutputModeSwitchInProgress;
+        const routingHtml = assignments.map((signal, index) => {
+            const options = signals.map((entry) => `<option value="${entry.id}">${escapeHtml(entry.label)}</option>`).join('');
+            return `<div class="settings-routing-cell"><label for="settings-routing-out-${index + 1}">Out ${index + 1}</label>`
+                + `<select id="settings-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="Output ${index + 1} signal"${busy ? ' disabled' : ''}>${options}</select></div>`;
+        }).join('');
+        // Replacing the <select> nodes closes an open native dropdown, so the
+        // grid is only touched when its rendered matrix really differs and no
+        // routing select is being operated. Rebuilding on every render tore the
+        // grid down under the user: the periodic settings refresh (2.5 s status
+        // poll) closed the dropdown within one poll interval. The signature
+        // carries the assignments and the in-flight flag too, since those are
+        // applied to the selects rather than to the options markup.
+        const routingSignature = [routingHtml, assignments.join(','), busy ? 'busy' : 'idle'].join('|');
+        const routingSelectActive = !!document.activeElement
+            && elements.settingsRoutingGrid.contains(document.activeElement);
+        if (!routingSelectActive && elements.settingsRoutingGrid.dataset.routingSignature !== routingSignature) {
+            elements.settingsRoutingGrid.innerHTML = routingHtml;
+            elements.settingsRoutingGrid.dataset.routingSignature = routingSignature;
+            Array.from(elements.settingsRoutingGrid.querySelectorAll('select')).forEach((sel, index) => {
+                sel.value = String(assignments[index] ?? 0);
+            });
+        }
+    }
+    if (elements.settingsRoutingHint) {
+        if (_audioRoutingInProgress) {
+            elements.settingsRoutingHint.textContent = 'Saving output routing…';
+            elements.settingsRoutingHint.classList.add('switching');
+        } else {
+            elements.settingsRoutingHint.classList.remove('switching');
+            const inactive = Array.isArray(outputRouting.inactive_assignments) ? outputRouting.inactive_assignments : [];
+            elements.settingsRoutingHint.textContent = inactive.length
+                ? `Saved assignments for output${inactive.length === 1 ? '' : 's'} ${inactive.join(', ')} are inactive in this tier and kept.`
+                : 'Assign Main L/R and Sub 1/2 to hardware outputs. Off leaves an output silent.';
+        }
     }
 
     const sourceOverview = state.settings?.sourceMode || {};
@@ -3321,6 +3392,153 @@ function nonAppSourceModeActive() {
     return ['external-input', 'bluetooth-input'].includes(state.settings?.sourceMode?.mode);
 }
 
+// The footer meter/badge show the live post-DSP output level. App playback
+// pauses when a line source takes over, but the DSP path stays live then,
+// so source modes count as active signal too.
+function isFooterSignalActive() {
+    if (isStreamingFooterSource(window.__footerSource)) {
+        return streamingFooterData()?.status === 'Playing';
+    }
+    if (!!state.playback.playing && !state.playback.paused) return true;
+    return nonAppSourceModeActive();
+}
+
+// Compact footer source switcher for bluetooth-input / external-input modes.
+// Entries reuse the audio source overview, so only real, selectable sources
+// appear: Bluetooth first (when available), then every external stereo pair
+// in overview order. Labels stay short ("Input 1/2"); the human device name
+// is option text only, never a PipeWire/ALSA node name.
+function shortSourcePairLabel(pairLabel) {
+    const text = String(pairLabel || '').trim();
+    const match = /^Input\s+(\d+)\s*[–—-]\s*(\d+)$/.exec(text);
+    if (match) return `Input ${match[1]}/${match[2]}`;
+    return text;
+}
+
+function buildSourceSwitcherEntries(sourceMode) {
+    const mode = sourceMode || {};
+    const entries = [];
+    const bluetooth = mode.bluetooth || {};
+    if (bluetooth.selectable) {
+        const session = bluetooth.active_session || {};
+        const detail = [session.device_name, session.active_codec].filter(Boolean).join(' · ');
+        entries.push({ kind: 'bluetooth', key: 'bluetooth-input', label: 'Bluetooth', sub: detail, optionLabel: detail ? `Bluetooth — ${detail}` : 'Bluetooth' });
+    }
+    const inputs = Array.isArray(mode.inputs) ? mode.inputs : [];
+    inputs.forEach((input) => {
+        if (!input || !input.key) return;
+        const label = shortSourcePairLabel(input.pair_label) || shortSourcePairLabel(input.label) || 'Input';
+        const sub = String(input.device_label || input.label || '');
+        entries.push({
+            kind: 'external',
+            key: String(input.key),
+            label,
+            sub,
+            optionLabel: (sub && sub !== label) ? `${label} — ${sub}` : label,
+        });
+    });
+    return entries;
+}
+
+function findSourceSwitcherIndex(entries, sourceMode) {
+    const mode = sourceMode || {};
+    if (!Array.isArray(entries) || entries.length === 0) return -1;
+    if ((mode.mode || '') === 'bluetooth-input') {
+        return entries.findIndex((entry) => entry.kind === 'bluetooth');
+    }
+    const key = mode.selected_input?.key || mode.current_input?.key || '';
+    if (!key) return -1;
+    return entries.findIndex((entry) => entry.kind === 'external' && entry.key === key);
+}
+
+function cycleSourceSwitcherIndex(entries, currentIndex, delta) {
+    if (!Array.isArray(entries) || entries.length === 0) return -1;
+    const step = (delta || 0) >= 0 ? 1 : -1;
+    const base = currentIndex >= 0 ? currentIndex : (step > 0 ? -1 : 0);
+    return (((base + step) % entries.length) + entries.length) % entries.length;
+}
+
+function activateSourceSwitcherEntry(entry) {
+    if (!entry) return;
+    if (entry.kind === 'bluetooth') {
+        void saveAudioSourceSelection('bluetooth-input');
+    } else {
+        void saveAudioSourceSelection('external-input', entry.key);
+    }
+}
+
+function stepSourceSwitcher(delta) {
+    if (sourceSwitcherGuardReason()) return;
+    const sourceMode = state.settings?.sourceMode || {};
+    const entries = buildSourceSwitcherEntries(sourceMode);
+    const current = findSourceSwitcherIndex(entries, sourceMode);
+    const next = cycleSourceSwitcherIndex(entries, current, delta);
+    if (next < 0 || next === current) return;
+    activateSourceSwitcherEntry(entries[next]);
+}
+
+// Measurement and AutoSub capture own their signal path: while a job is
+// active the footer switcher is parked instead of rewiring the graph.
+function sourceSwitcherGuardReason() {
+    if (typeof hasActiveMeasurementJob === 'function' && hasActiveMeasurementJob()) {
+        return 'Unavailable while a measurement is running';
+    }
+    if (state.settings?.sourceMode?.pending) {
+        return 'Switching sources…';
+    }
+    return '';
+}
+
+// Signature of the last rendered source <select>: option writes only happen
+// when the list actually changes, so status polls never rebuild the popup
+// while it is open (which would instantly close the native dropdown).
+let _sourceSelectSignature = null;
+
+function renderSourceModeFooter() {
+    const bar = elements.playbackBar;
+    if (!bar) return;
+    // Line sources own the footer outright: stale streaming ownership (e.g.
+    // a retained Spotify Paused context) must not suppress the switcher.
+    // reconcileFooterSource() already forces 'local' in these modes; this
+    // stays order-independent so no poll interleaving can flash the app
+    // footer back.
+    const active = nonAppSourceModeActive();
+    bar.classList.toggle('source-mode', active);
+    if (elements.sourceSwitcher) elements.sourceSwitcher.classList.toggle('hidden', !active);
+    if (elements.transportControls) elements.transportControls.classList.toggle('hidden', active);
+    if (!active) return;
+    const sourceMode = state.settings?.sourceMode || {};
+    const entries = buildSourceSwitcherEntries(sourceMode);
+    const current = findSourceSwitcherIndex(entries, sourceMode);
+    const currentEntry = current >= 0 ? entries[current] : null;
+    const guard = sourceSwitcherGuardReason();
+    // The track/metadata block is hidden by CSS in these modes; only the
+    // queue pill and seek row need explicit parking here.
+    if (elements.queueStatus) elements.queueStatus.classList.add('hidden');
+    setFooterProgressState(false);
+    const signature = JSON.stringify([
+        entries.map((entry) => [entry.key, entry.optionLabel]),
+        currentEntry ? currentEntry.key : '',
+    ]);
+    if (elements.sourceSelect && signature !== _sourceSelectSignature
+        && document.activeElement !== elements.sourceSelect) {
+        elements.sourceSelect.innerHTML = entries.map((entry) =>
+            `<option value="${escapeHtml(entry.key)}">${escapeHtml(entry.optionLabel)}</option>`).join('');
+        elements.sourceSelect.value = currentEntry ? currentEntry.key : '';
+        _sourceSelectSignature = signature;
+    }
+    if (elements.sourceSelect) {
+        elements.sourceSelect.disabled = !!guard || entries.length === 0;
+        elements.sourceSelect.title = guard || 'Choose audio source';
+    }
+    const arrowsDisabled = !!guard || entries.length < 2;
+    for (const button of [elements.sourcePrev, elements.sourceNext]) {
+        if (!button) continue;
+        button.disabled = arrowsDisabled;
+        button.title = guard || button.getAttribute('aria-label') || '';
+    }
+}
+
 function applySourceModeUiState() {
     const nonAppSourceActive = nonAppSourceModeActive();
     ['radio', 'spotify', 'qobuz', 'tidal', 'library'].forEach((tabId) => {
@@ -3330,8 +3548,9 @@ function applySourceModeUiState() {
         if (tabPanel) tabPanel.classList.toggle('hidden', nonAppSourceActive);
     });
     if (elements.playbackBar) {
-        elements.playbackBar.classList.toggle('hidden', nonAppSourceActive);
+        elements.playbackBar.classList.remove('hidden');
     }
+    renderSourceModeFooter();
     if (nonAppSourceActive && ['radio', 'spotify', 'qobuz', 'tidal', 'library'].includes(window.__visibleTab)) {
         switchTab('effects');
     }
@@ -3380,7 +3599,7 @@ async function fetchAudioOutputOverview() {
         const resp = await fetch('/api/audio/outputs');
         if (!resp.ok) throw new Error('Failed to fetch audio outputs');
         const data = await resp.json();
-        if (mutationGeneration !== _audioOutputModeMutationGeneration || _audioOutputModeSwitchInProgress) return;
+        if (mutationGeneration !== _audioOutputModeMutationGeneration || _audioOutputModeSwitchInProgress || _audioRoutingInProgress) return;
         state.settings.audioOutputs = {
             loaded: true,
             available: !!data.available,
@@ -3428,13 +3647,65 @@ async function saveSampleRatePolicy(value) {
         if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save sample-rate policy'));
         state.samplerate = { ...state.samplerate, ...data, pending: false };
         renderSamplerateUI();
-        renderSettingsPanel();
+        // A rate change can switch the channel inventory server-side; pull
+        // the fresh output overview so channel count, tier note and routing
+        // matrix update without reopening settings.
+        await fetchAudioOutputOverview();
         triggerSamplerateBurstPolling();
         showToast('Sample-rate policy updated', 'success');
     } catch (error) {
         state.samplerate.pending = false;
         renderSettingsPanel();
         showToast(error.message || 'Failed to save sample-rate policy', 'error');
+    }
+}
+
+function applyAudioOutputOverview(data) {
+    state.settings.audioOutputs = {
+        loaded: true,
+        available: !!data.available,
+        default_output: data.default_output || null,
+        selected_output: data.selected_output || null,
+        current_output: data.current_output || null,
+        outputs: Array.isArray(data.outputs) ? data.outputs : [],
+        notes: Array.isArray(data.notes) ? data.notes : [],
+        pendingSelectionKey: null,
+        output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
+    };
+    renderSettingsPanel();
+}
+
+async function saveOutputRouting() {
+    const overview = state.settings?.audioOutputs || {};
+    const outputMode = overview.output_mode || {};
+    const routing = outputMode.output_routing || {};
+    const key = overview.selected_output?.key || '';
+    const channels = Number(outputMode.effective_output_channels || 0);
+    if (!key || !routing.available || _audioRoutingInProgress) return;
+    const selects = elements.settingsRoutingGrid ? elements.settingsRoutingGrid.querySelectorAll('select') : [];
+    const assignments = Array.from(selects).map((sel) => Number(sel.value || 0));
+    if (assignments.length !== channels || assignments.some((v) => !Number.isInteger(v) || v < 0 || v > 4)) {
+        showToast('Assign one signal to each available hardware output', 'error');
+        return;
+    }
+    _audioRoutingInProgress = true;
+    renderSettingsPanel();
+    try {
+        const resp = await fetch('/api/audio/output-routing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key, assignments }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save output routing'));
+        applyAudioOutputOverview(data);
+        showToast('Output routing updated', 'success');
+    } catch (error) {
+        renderSettingsPanel();
+        showToast(error.message || 'Failed to save output routing', 'error');
+    } finally {
+        _audioRoutingInProgress = false;
+        renderSettingsPanel();
     }
 }
 
@@ -3802,6 +4073,18 @@ function setupPlaybackControls() {
     if (elements.btnPrevious) elements.btnPrevious.addEventListener('click', globalPrevious);
     elements.btnPlayPause.addEventListener('click', globalTogglePlayback);
     if (elements.btnNext) elements.btnNext.addEventListener('click', globalNext);
+    if (elements.sourcePrev) elements.sourcePrev.addEventListener('click', () => stepSourceSwitcher(-1));
+    if (elements.sourceNext) elements.sourceNext.addEventListener('click', () => stepSourceSwitcher(1));
+    if (elements.sourceSelect) elements.sourceSelect.addEventListener('change', (event) => {
+        const key = event.target.value || '';
+        const sourceMode = state.settings?.sourceMode || {};
+        const entry = buildSourceSwitcherEntries(sourceMode).find((item) => item.key === key);
+        if (entry) {
+            activateSourceSwitcherEntry(entry);
+        } else {
+            renderSourceModeFooter();
+        }
+    });
     if (elements.footerLoopBtn) elements.footerLoopBtn.addEventListener('click', toggleFooterLoop);
     if (elements.btnClearQueue) elements.btnClearQueue.addEventListener('click', clearQueue);
     if (elements.trackFavoriteBtn) elements.trackFavoriteBtn.addEventListener('click', toggleCurrentTrackFavorite);
@@ -4160,7 +4443,10 @@ function footerSingleTrackStartLockActive(playback = state.playback) {
 
 function activeLocalPlaybackBlocksSpotifyOwnership(playback = state.playback) {
     const track = playback?.current_track;
-    if (!(track && (track.source === 'local' || track.source === 'radio'))) return false;
+    // Every MPV source (local/radio/tidal) blocks a stale Spotify takeover:
+    // TIDAL rides the same native engine, so live TIDAL playback keeps the
+    // footer even while MPRIS still reports a stale Spotify Playing edge.
+    if (!(track && (track.source === 'local' || track.source === 'radio' || track.source === 'tidal'))) return false;
     return !!(playback?.playing && !playback?.ended);
 }
 
@@ -4356,7 +4642,10 @@ async function fetchMetadata() {
             }
         }
         if (data.current_track) {
-            mergePlaybackState({ current_track: data.current_track, playing: data.playing, paused: data.paused, live_title: data.live_title, radio_metadata: data.radio_metadata, stream_info: data.stream_info });
+            // The owner rides along so the peak poll heals a stale footer
+            // owner (e.g. a missed playback broadcast after a TIDAL start);
+            // VU/peak gating resolves the footer from this field.
+            mergePlaybackState({ current_track: data.current_track, playing: data.playing, paused: data.paused, playback_owner: data.playback_owner, live_title: data.live_title, radio_metadata: data.radio_metadata, stream_info: data.stream_info });
             syncFooterOwnershipFromPlayback(data);
             needsUiRefresh = true;
         }
@@ -4671,11 +4960,7 @@ function renderPeakWarningBadge(activeOverride = null) {
     const warning = state.playback.output_peak_warning || {};
     const title = warning.target?.description || warning.target?.source_name || 'DSP output monitor';
     const vuDb = isFiniteVuDb(warning.vu_db) ? Number(warning.vu_db) : null;
-    const playbackActive = activeOverride === null
-        ? (isStreamingFooterSource(window.__footerSource)
-            ? streamingFooterData()?.status === 'Playing'
-            : !!state.playback.playing && !state.playback.paused)
-        : !!activeOverride;
+    const playbackActive = activeOverride === null ? isFooterSignalActive() : !!activeOverride;
     const showPeak = !!warning.detected && playbackActive;
     const liveShowVu = !!warning.available && warning.vu_fresh === true
         && playbackActive && vuDb !== null;
@@ -4777,7 +5062,10 @@ function setFooterSource(nextSource, reason, details = {}) {
 
 function localPlaybackHasFooterContext(playback = state.playback) {
     const track = playback?.current_track;
-    if (!(track && (track.source === 'radio' || track.source === 'local'))) return false;
+    // Native MPV sources share one footer context: TIDAL rides the same
+    // engine as local/radio, so live TIDAL playback owns the footer (and the
+    // VU/peak gating derived from it) even when no backend commit is cached.
+    if (!(track && (track.source === 'radio' || track.source === 'local' || track.source === 'tidal'))) return false;
     if (spotifyPlayingOwnsFooter()) return false;
     if (playback?.paused && window.__footerSource === 'spotify' && spotifyPausedHasFooterContext()) return false;
     return !!(playback?.playing || playback?.paused);
@@ -4785,7 +5073,7 @@ function localPlaybackHasFooterContext(playback = state.playback) {
 
 function localEndedPlaybackHasFooterContext(playback = state.playback) {
     const track = playback?.current_track;
-    if (!(track && track.source === 'local')) return false;
+    if (!(track && (track.source === 'local' || track.source === 'tidal'))) return false;
     if (spotifyPlayingOwnsFooter()) return false;
     return !!(playback?.ended && !playback?.playing && !playback?.paused);
 }
@@ -4812,11 +5100,19 @@ function qobuzPlayingOwnsFooter(data = window.__qobuzLastData) {
 
 function localFooterHoldHasContext(playback = state.playback) {
     const track = playback?.current_track;
-    if (!(track && (track.source === 'radio' || track.source === 'local'))) return false;
+    if (!(track && (track.source === 'radio' || track.source === 'local' || track.source === 'tidal'))) return false;
     return Date.now() < _localFooterHoldUntil;
 }
 
 function reconcileFooterSource() {
+    // Line-source modes own the footer exclusively with the source
+    // switcher. Entering them pauses app playback backend-side, so any
+    // retained streaming context (notably a Spotify Paused state) is stale
+    // and must not pull the footer back to the app layout.
+    if (nonAppSourceModeActive()) {
+        setFooterSource('local', 'source-mode-owns-footer');
+        return;
+    }
     const backendOwner = getBackendFooterOwner();
     if (backendOwner === 'local') {
         setFooterSource('local', 'backend-footer-owner-local');
@@ -4948,6 +5244,29 @@ function syncFooterOwnershipFromPlayback(playback = state.playback) {
         _spotifyPollGeneration++;
         stopSpotifyPoll();
     }
+}
+
+// Shared commit path for a native /api/play response (local/radio/tidal).
+// All three starts commit the same authoritative payload through this helper:
+// merge, footer-ownership resync, Spotify poll demotion and UI refresh.
+// Without the merge the footer keeps a stale Spotify owner and the VU/peak
+// gating derived from it hides the meter even though the backend already
+// streams fresh peak values. Provider-specific reactions (library state,
+// track cue, metadata refresh, samplerate burst polling) stay in the callers.
+function applyNativePlayResponse(data) {
+    if (data && data.playback) {
+        mergePlaybackState(data.playback);
+    }
+    _spotifyTakeoverUntil = 0;
+    if (window.__spotifyLastData && window.__spotifyLastData.status === 'Playing') {
+        window.__spotifyLastData = { ...window.__spotifyLastData, status: 'Paused' };
+    }
+    syncFooterOwnershipFromPlayback(state.playback);
+    if (!shouldPollSpotify()) {
+        _spotifyPollGeneration++;
+        stopSpotifyPoll();
+    }
+    updatePlaybackUI();
 }
 
 function footerContentFreezeActive() {
@@ -5330,6 +5649,14 @@ function updatePlaybackUI() {
         renderVolumeControlsFromActualVolume(volume);
     } else {
         elements.volumeDisplay.textContent = `${actualVolumeToSliderValue(volume)}%`;
+    }
+    // Bluetooth / external-input modes reuse this footer: transport is
+    // replaced by the source switcher while volume and meter keep updating.
+    // reconcileFooterSource() above pinned ownership to 'local' in these
+    // modes, so no streaming gate is needed here — consulting it would delay
+    // the switcher by one poll on first paint after entering a source mode.
+    if (nonAppSourceModeActive()) {
+        renderSourceModeFooter();
     }
     // Highlight active
     highlightActiveTrack();
@@ -7389,10 +7716,7 @@ async function playRadio(stationId) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
         clearPendingOptimisticTrack(requestId);
-        if (data.playback) {
-            mergePlaybackState(data.playback);
-        }
-        updatePlaybackUI();
+        applyNativePlayResponse(data);
         void fetchMetadata();
         triggerSamplerateBurstPolling();
         const playedTrack = data?.playback?.current_track || {
@@ -7479,14 +7803,15 @@ async function playLocal(trackId, queueTrackIds = null) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
         clearPendingOptimisticTrack(requestId);
-        let playedTrack = track;
+        applyNativePlayResponse(data);
         if (data.playback) {
-            mergePlaybackState(data.playback);
+            // Library state must react to the merged playback context, so it
+            // runs after the shared commit; the helper itself is provider-
+            // neutral and does not know library specifics.
             syncLibraryStateFromPlaybackContext(true);
-            playedTrack = data.playback.current_track || track;
         }
-        updatePlaybackUI();
         triggerSamplerateBurstPolling();
+        const playedTrack = data?.playback?.current_track || track;
         const queueCount = (((data || {}).playback || {}).queue || {}).count || 0;
         maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
     } catch (e) {
@@ -10773,6 +11098,26 @@ function stopMeasurementWindowHeartbeat(keepalive = false) {
     void sendMeasurementWindowHeartbeat(false, keepalive);
 }
 
+const MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT = 'Scans sub delay around crossover, picks best alignment.';
+
+function resetMeasurementTransientStatus() {
+    // A cancelled/completed/failed AutoSub (or sweep) leaves its statusText
+    // and the directly written AutoSub inline status behind; no render pass
+    // ever restores them, so reopening the panel would show stale
+    // cancelled/completed/error/progress/result state until a page refresh.
+    // Unsaved measurement data (autoSubMeasurements, currentMeasurement) is
+    // deliberately kept: it is saveable content, not transient status.
+    const measurementState = state.measurement || {};
+    if (measurementState.autoSubInFlight || measurementState.startInFlight
+        || measurementState.activeJobId || measurementState.autoSubJobId
+        || measurementState.activeMeasurementKind) return;
+    measurementState.statusText = '';
+    measurementState.autoSubResult = null;
+    if (elements.measurementAutoSubStatus) {
+        elements.measurementAutoSubStatus.textContent = MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT;
+    }
+}
+
 function toggleMeasurementPanel(forceOpen = null) {
     if (!elements.measurementPanel) return;
     state.measurement.modeNote = measurementModeNoteText();
@@ -10786,6 +11131,7 @@ function toggleMeasurementPanel(forceOpen = null) {
     if (shouldOpen) {
         startMeasurementWindowHeartbeat();
         measurementInputScanOnFocusDone = false;
+        resetMeasurementTransientStatus();
         renderMeasurementPanel();
         void fetchMeasurementInputs();
         scheduleMeasurementGraphRender();
@@ -12510,6 +12856,28 @@ function setMeasurementSetupOpen(open) {
     if (open) elements.measurementPanel.querySelector('.measurement-dialog').scrollTop = 0;
 }
 
+/* Arrow keys walk a horizontal chip group with wrap-around; disabled chips
+   are skipped and Enter/Space keep working via the browser defaults. */
+function bindChipArrowKeyNavigation(container, chipSelector) {
+    if (!container) return;
+    container.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        const chips = Array.from(container.querySelectorAll(chipSelector))
+            .filter(button => !button.disabled);
+        if (!chips.length) return;
+        const currentIndex = chips.indexOf(document.activeElement);
+        let next;
+        if (currentIndex < 0) {
+            next = event.key === 'ArrowRight' ? chips[0] : chips[chips.length - 1];
+        } else {
+            const offset = event.key === 'ArrowRight' ? 1 : -1;
+            next = chips[(currentIndex + offset + chips.length) % chips.length];
+        }
+        event.preventDefault();
+        next.focus({ preventScroll: true });
+    });
+}
+
 function setupMeasurementActions() {
     if (!elements.measurementPanel || !elements.effectsMeasureOpenBtn || !elements.measurementCloseBtn) return;
     bindMeasurementPanelDelegation();
@@ -12540,6 +12908,7 @@ function setupMeasurementActions() {
         elements.measurementSweepMenu.addEventListener('click', (event) => {
             if (event.target.closest('button')) setMeasurementSweepMenuOpen(false);
         });
+        bindChipArrowKeyNavigation(elements.measurementSweepMenu, '[data-measurement-channel]');
         document.addEventListener('click', (event) => {
             if (!elements.measurementSweepMenu.classList.contains('hidden')
                     && !event.target.closest('.measurement-workflow-menu')) {
@@ -12547,6 +12916,10 @@ function setupMeasurementActions() {
             }
         });
     }
+    const smoothingChipsRow = document.getElementById('measurement-smoothing-chips');
+    if (smoothingChipsRow) bindChipArrowKeyNavigation(smoothingChipsRow, '[data-measurement-smoothing]');
+    const measurementViewToggle = document.querySelector('.measurement-view-toggle');
+    if (measurementViewToggle) bindChipArrowKeyNavigation(measurementViewToggle, '[data-measurement-view]');
     if (elements.measurementInputSelect) {
         const scanMeasurementInputsOnceForSelect = () => {
             if (measurementInputScanOnFocusDone) return;

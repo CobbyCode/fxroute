@@ -2809,6 +2809,17 @@
             } catch (_cueError) {
                 // Cue must never break playback.
             }
+            // Commit the authoritative playback payload through the shared
+            // native path so footer ownership (and the VU/peak gating derived
+            // from it) follows the TIDAL start instead of a stale cached
+            // commit. The WebSocket playback frame stays a redundant backup.
+            try {
+                if (data && data.playback && typeof applyNativePlayResponse === 'function') {
+                    applyNativePlayResponse(data);
+                }
+            } catch (_commitError) {
+                // The footer commit must never break playback.
+            }
             void refreshTidalStatus();
         } catch (err) {
             showToast(friendlyError(err?.message || err), 'error');
