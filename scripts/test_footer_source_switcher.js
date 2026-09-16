@@ -148,6 +148,103 @@ for (const snippet of [
 ]) {
     assert.ok(indexSource.includes(snippet), `static/index.html missing ${snippet}`);
 }
+// In source modes the track/metadata block is hidden by CSS so the switcher
+// absorbs its column; meter and volume keep their grid areas everywhere.
+const styleSource = fs.readFileSync(path.join(root, 'static', 'style.css'), 'utf8');
+assert.ok(
+    /\.playback-bar\.source-mode\s*\{[^}]*grid-template-areas:\s*"transport meter volume"/s.test(styleSource),
+    'source-mode footer must remap the grid without the track column',
+);
+assert.ok(
+    /\.playback-bar\.source-mode \.track-info\s*\{\s*display:\s*none/s.test(styleSource),
+    'source-mode footer must hide the track/metadata block',
+);
+// Option writes must be stable across polls: rebuilding the native select
+// on every status update closes its popup instantly (no usable dropdown).
+function makeClassList() {
+    return { toggled: {}, added: [], removed: [], toggle(name, force) { this.toggled[name] = force; }, add(name) { this.added.push(name); }, remove(name) { this.removed.push(name); } };
+}
+const renderSandbox = {
+    state: {
+        settings: { sourceMode: { ...bluetoothOverview, pending: false } },
+        measurement: {},
+    },
+    window: { __footerSource: 'local' },
+    document: { activeElement: null },
+    elements: {
+        playbackBar: { classList: makeClassList() },
+        sourceSwitcher: { classList: makeClassList() },
+        transportControls: { classList: makeClassList() },
+        queueStatus: { classList: makeClassList() },
+        seekRow: { classList: makeClassList() },
+        sourceSelect: {
+            writes: 0,
+            html: '',
+            value: '',
+            disabled: false,
+            title: '',
+            set innerHTML(next) { this.writes += 1; this.html = next; },
+            get innerHTML() { return this.html; },
+        },
+        sourcePrev: { disabled: false, title: '', getAttribute() { return 'Previous source'; } },
+        sourceNext: { disabled: false, title: '', getAttribute() { return 'Next source'; } },
+    },
+};
+vm.createContext(renderSandbox);
+// escapeHtml is not extractor-safe (regex literal with a quote); the render
+// test only needs its identity behavior for plain labels, stubbed here.
+renderSandbox.escapeHtml = (text) => String(text ?? '');
+const selectSigDecl = /let _sourceSelectSignature = null;/.exec(appSource);
+assert.ok(selectSigDecl, 'missing _sourceSelectSignature module state');
+vm.runInContext([
+    selectSigDecl[0],
+    extractFunction('isStreamingFooterSource'),
+    extractFunction('hasActiveMeasurementJob'),
+    extractFunction('nonAppSourceModeActive'),
+    extractFunction('shortSourcePairLabel'),
+    extractFunction('buildSourceSwitcherEntries'),
+    extractFunction('findSourceSwitcherIndex'),
+    extractFunction('sourceSwitcherGuardReason'),
+    extractFunction('setFooterProgressState'),
+    extractFunction('renderSourceModeFooter'),
+].join('\n'), renderSandbox);
+
+vm.runInContext('renderSourceModeFooter()', renderSandbox);
+assert.equal(renderSandbox.elements.sourceSelect.writes, 1, 'first render builds the options');
+assert.ok(renderSandbox.elements.sourceSelect.html.includes('value="bluetooth-input"'), 'options carry the bluetooth key');
+assert.ok(renderSandbox.elements.sourceSelect.html.includes('Input 1/2'), 'options carry the pair labels');
+assert.equal(renderSandbox.elements.sourceSelect.value, 'bluetooth-input', 'bluetooth preselected in bluetooth mode');
+assert.equal(renderSandbox.elements.playbackBar.classList.toggled['source-mode'], true, 'bar carries source-mode class');
+assert.equal(renderSandbox.elements.transportControls.classList.toggled.hidden, true, 'transport parked in source mode');
+
+vm.runInContext('renderSourceModeFooter()', renderSandbox);
+assert.equal(renderSandbox.elements.sourceSelect.writes, 1, 'identical poll must not rebuild the options');
+
+vm.runInContext(
+    `state.settings.sourceMode = { mode: 'external-input', inputs: ${JSON.stringify(scarlettInputs)},
+        selected_input: ${JSON.stringify(scarlettInputs[1])}, current_input: ${JSON.stringify(scarlettInputs[1])},
+        bluetooth: { selectable: true, active_session: null }, pending: false };
+     renderSourceModeFooter()`,
+    renderSandbox,
+);
+assert.equal(renderSandbox.elements.sourceSelect.writes, 2, 'source change rebuilds the options once');
+assert.equal(renderSandbox.elements.sourceSelect.value, scarlettInputs[1].key, 'Input 3/4 selected after switch');
+
+// An open popup (focused select) is never rebuilt, even with new data.
+renderSandbox.document.activeElement = renderSandbox.elements.sourceSelect;
+vm.runInContext(
+    `state.settings.sourceMode = { mode: 'external-input', inputs: ${JSON.stringify(scarlettInputs)},
+        selected_input: ${JSON.stringify(scarlettInputs[2])}, current_input: ${JSON.stringify(scarlettInputs[2])},
+        bluetooth: { selectable: true, active_session: null }, pending: false };
+     renderSourceModeFooter()`,
+    renderSandbox,
+);
+assert.equal(renderSandbox.elements.sourceSelect.writes, 2, 'focused select keeps its popup');
+renderSandbox.document.activeElement = null;
+vm.runInContext('renderSourceModeFooter()', renderSandbox);
+assert.equal(renderSandbox.elements.sourceSelect.writes, 3, 'pending change applies after the popup closes');
+assert.equal(renderSandbox.elements.sourceSelect.value, scarlettInputs[2].key, 'Input 5/6 selected afterwards');
+
 // Changed cached assets must be versioned so browsers fetch the new footer.
 for (const pattern of [/\/static\/app\.js\?v=\d+\.\d+\.\d+/, /\/static\/style\.css\?v=\d+\.\d+\.\d+/]) {
     assert.ok(pattern.test(indexSource), `static/index.html missing versioned asset for ${pattern}`);

@@ -3478,6 +3478,11 @@ function sourceSwitcherGuardReason() {
     return '';
 }
 
+// Signature of the last rendered source <select>: option writes only happen
+// when the list actually changes, so status polls never rebuild the popup
+// while it is open (which would instantly close the native dropdown).
+let _sourceSelectSignature = null;
+
 function renderSourceModeFooter() {
     const bar = elements.playbackBar;
     if (!bar) return;
@@ -3491,21 +3496,22 @@ function renderSourceModeFooter() {
     const current = findSourceSwitcherIndex(entries, sourceMode);
     const currentEntry = current >= 0 ? entries[current] : null;
     const guard = sourceSwitcherGuardReason();
-    if (elements.trackTitle) {
-        elements.trackTitle.textContent = currentEntry ? currentEntry.label : 'No sources available';
-        elements.trackTitle.classList.remove('placeholder');
-        elements.trackTitle.style.display = '';
-    }
-    if (elements.trackArtist) {
-        elements.trackArtist.textContent = currentEntry?.sub || '';
-        elements.trackArtist.style.display = currentEntry?.sub ? '' : 'none';
-    }
+    // The track/metadata block is hidden by CSS in these modes; only the
+    // queue pill and seek row need explicit parking here.
     if (elements.queueStatus) elements.queueStatus.classList.add('hidden');
     setFooterProgressState(false);
-    if (elements.sourceSelect && document.activeElement !== elements.sourceSelect) {
+    const signature = JSON.stringify([
+        entries.map((entry) => [entry.key, entry.optionLabel]),
+        currentEntry ? currentEntry.key : '',
+    ]);
+    if (elements.sourceSelect && signature !== _sourceSelectSignature
+        && document.activeElement !== elements.sourceSelect) {
         elements.sourceSelect.innerHTML = entries.map((entry) =>
             `<option value="${escapeHtml(entry.key)}">${escapeHtml(entry.optionLabel)}</option>`).join('');
         elements.sourceSelect.value = currentEntry ? currentEntry.key : '';
+        _sourceSelectSignature = signature;
+    }
+    if (elements.sourceSelect) {
         elements.sourceSelect.disabled = !!guard || entries.length === 0;
         elements.sourceSelect.title = guard || 'Choose audio source';
     }
