@@ -257,6 +257,19 @@ def v2_request(payload, *, target_rate=48000):
         output_state_transition=payload)
 
 
+def plan_target(service, manager, state, fingerprint="fp"):
+    plan = service.compile_plan(state, output_key="A", channels=4, sample_rate_hz=48000)
+    layout = service.compile_layout(plan)
+    config = DSPRuntimeConfig.from_plan(
+        plan, layout=layout, output_key="A", sample_rate_hz=48000,
+        hardware_ports=[f"playback_AUX{i}" for i in range(4)],
+        plan_fingerprint=fingerprint)
+    text = manager.compile_engine_text(
+        [dict(entry) for entry in layout], preset_name=plan["global"]["preset"],
+        sample_rate_hz=48000, extras_override=plan["global"]["extras"])
+    return PlannedSyncTarget(config=config, text=text)
+
+
 class CommitV2Tests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -369,7 +382,7 @@ class RollbackV2Tests(unittest.TestCase):
         self.service = make_service(directory.name, self.manager)
         self.base = seed_sub_state(self.service)
         self.candidate = set_bank_preset(self.base, "stereo", "sub1", preset="Room")
-        self.previous_target = {"config": "old", "text": "old-text"}
+        self.previous_target = plan_target(self.service, self.manager, self.base)
         self.runtime = make_transition_runtime()
 
     def synced(self):
@@ -377,15 +390,20 @@ class RollbackV2Tests(unittest.TestCase):
         fake.sync_rendered = AsyncMock()
         return fake
 
+    def rollback(self, payload):
+        with mock.patch.object(main, "get_output_service", return_value=self.service), \
+             mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis",
+                               new=AsyncMock(return_value={"links_complete": True,
+                                                           "signature": "sig"})):
+            return asyncio.run(self.runtime.rollback_output_mode_runtime(
+                v2_request(payload), snapshot={}))
+
     def test_rollback_reverts_and_resyncs_previous(self):
         self.service.commit(self.candidate, expected_revision=1)
         fake = self.synced()
-        with mock.patch.object(main, "get_output_service", return_value=self.service), \
-             mock.patch.object(main.runtime, "dsp_runtime", fake):
-            asyncio.run(self.runtime.rollback_output_mode_runtime(
-                v2_request(v2_payload(self.service, self.candidate, self.base,
-                                      previous_target=self.previous_target)),
-                snapshot={}))
+        with mock.patch.object(main.runtime, "dsp_runtime", fake):
+            self.rollback(v2_payload(self.service, self.candidate, self.base,
+                                     previous_target=self.previous_target))
         self.assertEqual(self.service.load()["revision"], 3)
         self.assertEqual(self.service.load()["modes"]["stereo"]["banks"]["sub1"]["preset"], "Neutral")
         fake.sync_rendered.assert_awaited_once_with(self.previous_target)
@@ -395,23 +413,17 @@ class RollbackV2Tests(unittest.TestCase):
         self.service.apply(lambda state: set_bank_preset(state, "stereo", "global", preset="Room"),
                            expected_revision=2)
         fake = self.synced()
-        with mock.patch.object(main, "get_output_service", return_value=self.service), \
-             mock.patch.object(main.runtime, "dsp_runtime", fake):
-            asyncio.run(self.runtime.rollback_output_mode_runtime(
-                v2_request(v2_payload(self.service, self.candidate, self.base,
-                                      previous_target=self.previous_target)),
-                snapshot={}))
+        with mock.patch.object(main.runtime, "dsp_runtime", fake):
+            self.rollback(v2_payload(self.service, self.candidate, self.base,
+                                     previous_target=self.previous_target))
         self.assertEqual(self.service.load()["revision"], 3)
         fake.sync_rendered.assert_not_awaited()
 
     def test_unlanded_commit_resyncs_graph_without_revert(self):
         fake = self.synced()
-        with mock.patch.object(main, "get_output_service", return_value=self.service), \
-             mock.patch.object(main.runtime, "dsp_runtime", fake):
-            asyncio.run(self.runtime.rollback_output_mode_runtime(
-                v2_request(v2_payload(self.service, self.candidate, self.base,
-                                      previous_target=self.previous_target)),
-                snapshot={}))
+        with mock.patch.object(main.runtime, "dsp_runtime", fake):
+            self.rollback(v2_payload(self.service, self.candidate, self.base,
+                                     previous_target=self.previous_target))
         self.assertEqual(self.service.load()["revision"], 1)
         fake.sync_rendered.assert_awaited_once_with(self.previous_target)
 
@@ -421,6 +433,21 @@ class RollbackV2Tests(unittest.TestCase):
                 asyncio.run(self.runtime.rollback_output_mode_runtime(
                     v2_request(v2_payload(self.service, self.candidate, self.base)),
                     snapshot={}))
+
+    def test_rollback_resync_failure_propagates_after_revert(self):
+        self.service.commit(self.candidate, expected_revision=1)
+        fake = self.synced()
+        with mock.patch.object(main, "get_output_service", return_value=self.service), \
+             mock.patch.object(main.runtime, "dsp_runtime", fake), \
+             mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis",
+                               new=AsyncMock(return_value={"links_complete": False,
+                                                           "signature": "bad"})):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(self.runtime.rollback_output_mode_runtime(
+                    v2_request(v2_payload(self.service, self.candidate, self.base,
+                                          previous_target=self.previous_target)),
+                    snapshot={}))
+        self.assertEqual(self.service.load()["revision"], 3)
 
 
 class FakeRequest:

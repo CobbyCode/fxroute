@@ -873,6 +873,7 @@ class PlaybackOrchestrator:
             # A v2 transition stages its plan-derived graph (including the
             # global bank's active preset) directly: legacy preset/compare
             # handling would stage a legacy graph first and is skipped.
+            # v2_pending below reuses this decision for the port wait.
             v2_staging = (request.operation == "output-mode-switch"
                           and (request.output_state_transition or {}).get("target") is not None)
             needs_preset = not diagnosis.get("dsp_ports")
@@ -893,7 +894,8 @@ class PlaybackOrchestrator:
                     _rate_lock_held=request.operation in {"measurement-entry", "measurement-restore"},
                 )
                 preset_reloaded = True
-            v2_pending = v2_staging
+            v2_pending = (request.operation == "output-mode-switch"
+                          and (request.output_state_transition or {}).get("target") is not None)
             # A v2 transition may cold-start the engine: staging creates the
             # ports, so the pre-staging wait only gates the legacy path.
             if not v2_pending and not await self.wait_for_dsp_output_ports(timeout):
@@ -902,12 +904,13 @@ class PlaybackOrchestrator:
                 status = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
                 raise RuntimeError(f"Coordinator effects stage rate reconcile failed: expected={target_rate} active={status.get('active_rate')} force={status.get('force_rate')}")
             if request.operation == "output-mode-switch":
-                v2_target = (request.output_state_transition or {}).get("target")
-                if v2_target is not None:
-                    # A plan-derived graph stages directly: no legacy preset
-                    # sync (it would stage a legacy graph first), no legacy
-                    # sub/stereo/compare follow-ups (the runtime reconciled
-                    # its own links while staging).
+                if v2_pending:
+                    # No legacy preset sync (it would stage a legacy graph
+                    # first), no legacy sub/stereo/compare follow-ups (the
+                    # runtime reconciled its own links while staging).
+                    v2_target = (request.output_state_transition or {}).get("target")
+                    if self._deps.sync_plan_runtime is None:
+                        raise RuntimeError("Coordinator plan runtime sync is unavailable")
                     if self._deps.sync_plan_runtime is None:
                         raise RuntimeError("Coordinator plan runtime sync is unavailable")
                     await self._deps.sync_plan_runtime(

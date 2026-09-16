@@ -206,10 +206,24 @@ class _RuntimeOutputModeMixin:
             return
         if previous_target is not None and runtime is not None:
             await runtime.sync_rendered(previous_target)
+            await self._verify_plan_rollback(request, previous_target)
         else:
             logger.warning(
                 "Output-state rollback has no previous graph target; "
                 "the engine may hold an uncommitted candidate graph")
+
+    async def _verify_plan_rollback(self, request: TransitionRequest, previous_target) -> None:
+        """Confirm the resynced previous graph with two stable readbacks."""
+        config = previous_target.config
+        overview = {"output_mode": {
+            "mode": config.output_mode,
+            "effective_output_key": config.output_key,
+            "planned_routes": [[signal, port] for signal, port in config.route_pairs]}}
+        readbacks, _, stable = await stable_graph_readbacks(
+            lambda: self._deps.playback_graph_diagnosis(
+                overview, target_rate=request.target_rate, require_source=False))
+        if not stable:
+            raise RuntimeError("previous plan graph could not be restored")
 
     async def _verify_output_mode_rollback(
         self,
