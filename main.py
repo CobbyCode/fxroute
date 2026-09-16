@@ -2379,6 +2379,22 @@ async def lifespan(app: FastAPI):
             measurement_store.measurement_target_provider = _freeze_measurement_target
         runtime_loop = asyncio.get_running_loop()
 
+        def _sync_output_mask(method_name):
+            method = getattr(runtime.dsp_runtime, method_name, None)
+            if not callable(method):
+                return None
+
+            def run(mask):
+                return asyncio.run_coroutine_threadsafe(method(mask), runtime_loop).result()
+
+            return run
+
+        # L/R repeat drives its sweeps from a synchronous worker, so it needs
+        # the same mask control without an await.
+        if hasattr(measurement_store, "output_mask_apply_sync"):
+            measurement_store.output_mask_apply_sync = _sync_output_mask("apply_output_mask")
+            measurement_store.output_mask_clear_sync = _sync_output_mask("clear_output_mask")
+
         def guarded_effects_transition(previous, candidate, persist_all_presets):
             return asyncio.run_coroutine_threadsafe(
                 _guarded_effects_transition(previous, candidate, persist_all_presets),

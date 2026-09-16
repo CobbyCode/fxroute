@@ -150,7 +150,7 @@ assert.strictEqual(normalized.selectedReferenceInputChannelRight, '', 'out-of-ra
 console.log('channel normalization choke point: ok');
 
 // --- Part 2: hybrid builder field snapshot -------------------------------
-function makeFlowsContext(state, warning) {
+function makeFlowsContext(state, warning, areaBank = '') {
     const ctx = {
         console, Math, JSON, Object, Array, Promise, String, Number, Boolean,
         setTimeout, clearTimeout, FormData,
@@ -170,6 +170,7 @@ function makeFlowsContext(state, warning) {
         getElements: () => ({}),
         normalizeMeasurementInputChannelSelections: () => {},
         getMeasurementReferenceWarning: () => warning,
+        measurementAreaBank: () => areaBank,
         api: {},
         sleep: async () => {},
         showToast: () => {},
@@ -207,6 +208,15 @@ assert.strictEqual(entries.reference_input_channel, '', 'warning gates the refer
 assert.strictEqual(entries.mic_input_channel, '1');
 assert.strictEqual(entries.measurement_role, 'secondary');
 console.log('hybrid payload gated reference: ok');
+
+// A selected area turns every advanced step into an internal way sweep of the
+// same frozen area; without one the payload keeps its legacy field set.
+MF = makeFlowsContext(hybridState, '', 'left_low');
+entries = formEntries(MF.buildHybridMeasurementForm(step));
+assert.strictEqual(entries.measurement_bank, 'left_low');
+assert.strictEqual(entries.measurement_role, 'secondary');
+assert.strictEqual(entries.channel, 'left');
+console.log('hybrid payload selected area: ok');
 
 // --- Part 3: per-side reference fields -----------------------------------
 function runAppendReferenceFields(state, channelCount, warning) {

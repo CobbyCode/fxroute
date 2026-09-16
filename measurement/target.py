@@ -24,6 +24,7 @@ from audio.output_routing import device_key
 from audio.output_state import routing_for_device, validate_output_state
 from audio.output_topology import MAX_CHANNELS, derive_topology
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
+from dsp.native_config import role_side
 
 __all__ = [
     "GLOBAL_BANK_ID",
@@ -33,6 +34,7 @@ __all__ = [
     "freeze_measurement_target",
     "measurement_target_from_context",
     "require_target_matches",
+    "sweep_output_masks",
     "target_output_mask",
     "targets_compatible",
 ]
@@ -118,6 +120,19 @@ def _measured_roles(target: dict) -> list[str]:
     return list(measured)
 
 
+def _engine_roles(roles: Sequence[str], measured: Sequence[str]) -> list[str]:
+    """Validate the ordered engine role list of the running plan."""
+    ordered = [str(role) for role in roles]
+    if len(set(ordered)) != len(ordered):
+        raise ValueError("Engine roles must be unique")
+    if len(ordered) > MAX_CHANNELS:
+        raise ValueError(f"Engine roles exceed {MAX_CHANNELS} outputs")
+    missing = [role for role in measured if role not in ordered]
+    if missing:
+        raise ValueError(f"Measurement target roles are no longer routed: {', '.join(sorted(missing))}")
+    return ordered
+
+
 def target_output_mask(target: dict, *, roles: Sequence[str]) -> int:
     """Return the engine output mute mask for this target.
 
@@ -127,17 +142,33 @@ def target_output_mask(target: dict, *, roles: Sequence[str]) -> int:
     fanned-out measured role keeps all of its physical ports audible.
     """
     measured = _measured_roles(target)
-    ordered = [str(role) for role in roles]
-    if len(set(ordered)) != len(ordered):
-        raise ValueError("Engine roles must be unique")
-    if len(ordered) > MAX_CHANNELS:
-        raise ValueError(f"Engine roles exceed {MAX_CHANNELS} outputs")
-    missing = [role for role in measured if role not in ordered]
-    if missing:
-        raise ValueError(f"Measurement target roles are no longer routed: {', '.join(sorted(missing))}")
+    ordered = _engine_roles(roles, measured)
     if target.get("bank_id") == GLOBAL_BANK_ID:
         return 0
     return sum(1 << index for index, role in enumerate(ordered) if role not in measured)
+
+
+def sweep_output_masks(target: dict, *, roles: Sequence[str]) -> dict[str, int]:
+    """Return the mute mask of each internal sweep of a two-sided capture.
+
+    L/R Repeat (and every other two-sided workflow) runs several sweeps of one
+    frozen area: each side is an internal way sweep of the same job, so it
+    keeps the measured roles that side can excite audible and mutes the rest.
+    Roles that sum both inputs (a mono sub) stay audible in both sweeps, and an
+    area that only exists on one side keeps the whole area audible in both
+    sweeps instead of silencing a sweep that has nothing else to measure.
+    """
+    measured = _measured_roles(target)
+    ordered = _engine_roles(roles, measured)
+    masks: dict[str, int] = {}
+    for side in ("left", "right"):
+        side_roles = {role for role in measured if role_side(role) == side}
+        if side_roles:
+            side_roles |= {role for role in measured if role_side(role) == "mono"}
+        else:
+            side_roles = set(measured)
+        masks[side] = sum(1 << index for index, role in enumerate(ordered) if role not in side_roles)
+    return masks
 
 
 def require_target_matches(

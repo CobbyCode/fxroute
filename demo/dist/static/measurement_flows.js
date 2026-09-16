@@ -37,6 +37,9 @@
             formData.append('reference_input_channel', deps.getMeasurementReferenceWarning() ? '' : (deps.getState().measurement.selectedReferenceInputChannel || ''));
         },
         normalizeOutputModeName: (m) => m || 'stereo',
+        // Selected measurement area (bank id): every wizard step is an internal
+        // way sweep of the same frozen area.
+        measurementAreaBank: () => '',
         getMeasurementJobStatus: () => 'unknown',
         normalizeMeasurementEntry: (m) => m,
         getMeasurementJobResultMeasurement: () => null,
@@ -698,6 +701,8 @@ function buildHybridMeasurementForm(step) {
     formData.append('input_key', deps.getState().measurement.selectedInputKey || '');
     formData.append('channel', step.channel);
     formData.append('measurement_role', step.role);
+    const areaBank = deps.measurementAreaBank();
+    if (areaBank) formData.append('measurement_bank', areaBank);
     formData.append('mic_input_channel', deps.getState().measurement.selectedMicInputChannel || '1');
     deps.appendMeasurementReferenceFields(formData);
     const calibrationFile = deps.getElements().measurementCalibrationFile?.files?.[0];

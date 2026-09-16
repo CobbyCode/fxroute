@@ -61,6 +61,10 @@ window.FXRouteMeasurementFlows?.init({
     postRuntimeDebugSnapshot,
     formatTransitionErrorDetail,
     fetchAudioOutputOverview,
+    measurementAreaBank: () => {
+        const area = measurementAreaFromCatalog();
+        return area ? area.bank_id : '';
+    },
     getMeasurementReferenceWarning,
     normalizeOutputModeName,
     getMeasurementJobStatus,
@@ -12040,6 +12044,10 @@ async function startLrRepeatMeasurement(jobGeneration = state.measurement.jobGen
     formData.append('input_id', state.measurement.selectedInputId);
     formData.append('input_key', state.measurement.selectedInputKey || '');
     formData.append('base_name', state.measurement.currentMeasurementName || '');
+    // The repeat freezes the selected area and gives each of its internal
+    // two-sided sweeps the matching output mask.
+    const area = measurementAreaFromCatalog();
+    if (area) formData.append('measurement_bank', area.bank_id);
     formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
     appendMeasurementReferenceFields(formData);
     const calibrationFile = elements.measurementCalibrationFile?.files?.[0];

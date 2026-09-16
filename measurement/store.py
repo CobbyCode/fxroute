@@ -29,7 +29,7 @@ from measurement.persistence import MeasurementPersistence
 from measurement.routing import MeasurementRouting
 from measurement.signal import _write_wav, write_sweep_file
 from measurement.job_runner import MeasurementJobRunner
-from measurement.target import target_output_mask
+from measurement.target import sweep_output_masks, target_output_mask
 from measurement.repeat_runner import MeasurementRepeatRunner
 from measurement.analyzer import MeasurementAnalyzer
 from measurement.constants import (
@@ -122,7 +122,9 @@ class MeasurementStore:
                  active_scope_enter: Callable[[], Any] | None = None,
                  active_scope_exit: Callable[[bool], Any] | None = None,
                  output_mask_apply: Callable[[int], Any] | None = None,
-                 output_mask_clear: Callable[[int], Any] | None = None):
+                 output_mask_clear: Callable[[int], Any] | None = None,
+                 output_mask_apply_sync: Callable[[int], Any] | None = None,
+                 output_mask_clear_sync: Callable[[int], Any] | None = None):
         self.home = Path(home or Path.home())
         self.runtime_snapshot_provider = runtime_snapshot_provider
         self.effect_bypass_setter = effect_bypass_setter
@@ -132,6 +134,11 @@ class MeasurementStore:
         self.active_scope_exit = active_scope_exit
         self.output_mask_apply = output_mask_apply
         self.output_mask_clear = output_mask_clear
+        # Synchronous twins for the sequential capture runners (L/R repeat),
+        # which drive several sweeps inside one synchronous worker instead of
+        # letting the job runner mask a whole job.
+        self.output_mask_apply_sync = output_mask_apply_sync
+        self.output_mask_clear_sync = output_mask_clear_sync
         # Optional application hook: freezes the measurement target (mode,
         # bank, revision, fingerprint, reference tap) and returns it.  Without
         # it the store behaves exactly as before the frozen-target era.
@@ -479,6 +486,20 @@ class MeasurementStore:
             "output_mask": target_output_mask(target, roles=target["roles"]),
         }
 
+    def _freeze_repeat_job_target(self, job: dict[str, Any], measurement_bank: str) -> dict[str, Any]:
+        """Freeze the area plus the per-sweep masks of a two-sided capture.
+
+        An L/R repeat is a sequence of internal way sweeps over the same
+        frozen area, so every sweep gets its own mask instead of the job-wide
+        one the single-sweep path uses.
+        """
+        frozen = self._freeze_measurement_job_target(job, measurement_bank)
+        target = frozen.get("measurement_target")
+        if not isinstance(target, dict) or target.get("legacy"):
+            return frozen
+        frozen["sweep_output_masks"] = sweep_output_masks(target, roles=target["roles"])
+        return frozen
+
     def _register_measurement_job(
         self,
         job: dict[str, Any],
@@ -569,6 +590,7 @@ class MeasurementStore:
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+        measurement_bank: str = "",
     ) -> dict[str, Any]:
         normalized_repeat_count = 3
         setup = await self._prepare_measurement_job_setup(
@@ -593,6 +615,7 @@ class MeasurementStore:
             "channel": "stereo",
             "message": "L/R repeat queued.",
         })
+        job.update(self._freeze_repeat_job_target(job, measurement_bank))
         return self._register_measurement_job(job, self._execute_lr_repeat_job)
 
     @staticmethod

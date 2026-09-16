@@ -32,6 +32,7 @@ from measurement.target import (
     freeze_measurement_target,
     measurement_target_from_context,
     require_target_matches,
+    sweep_output_masks,
     target_output_mask,
     targets_compatible,
 )
@@ -339,6 +340,64 @@ class StoredAreaContextTests(TargetFixture, unittest.TestCase):
             self.store.save_measurement(measurement_payload(measurement_id, channel="left"))
         merged = self.store.merge_measurements(["legacy-a", "legacy-b"], "Legacy merge")
         self.assertNotIn("measurement_target", merged)
+
+
+class SweepOutputMaskTests(TargetFixture, unittest.TestCase):
+    """Internal way sweeps of a two-sided capture over one frozen area."""
+
+    def test_global_repeat_masks_the_other_side_per_internal_sweep(self):
+        state = set_mode_routing(default_output_state(), "stereo", "A",
+                                 ["main_l", "main_r", "sub_l", "sub_r"])
+        target = self.freeze(state, GLOBAL_BANK_ID, channels=4)
+        roles = target["roles"]
+        self.assertEqual(roles, ["main_l", "main_r", "sub_l", "sub_r"])
+        masks = sweep_output_masks(target, roles=roles)
+        # Left sweep: Right Main and Right Sub are muted, Left stays audible.
+        self.assertEqual(masks, {"left": 0b1010, "right": 0b0101})
+        self.assertEqual(target_output_mask(target, roles=roles), 0)
+
+    def test_mono_roles_stay_audible_in_both_sweeps(self):
+        state = set_mode_routing(default_output_state(), "stereo", "A",
+                                 ["main_l", "main_r", "sub1", "off"])
+        target = self.freeze(state, GLOBAL_BANK_ID, channels=4)
+        roles = target["roles"]
+        self.assertEqual(roles, ["main_l", "main_r", "sub1"])
+        # A mono sub sums both inputs, so it is part of both internal sweeps.
+        self.assertEqual(sweep_output_masks(target, roles=roles),
+                         {"left": 0b010, "right": 0b001})
+
+    def test_one_sided_area_keeps_the_whole_area_in_both_sweeps(self):
+        target = self.freeze(crossover_state(), "left_mid")
+        roles = target["roles"]
+        masks = sweep_output_masks(target, roles=roles)
+        area_mask = target_output_mask(target, roles=roles)
+        # Nothing on the right side of this area, so neither sweep silences it.
+        self.assertEqual(masks, {"left": area_mask, "right": area_mask})
+
+    def test_multi_role_area_splits_by_sweep_side(self):
+        # An area whose measured roles span both sides (a multi-way area) keeps
+        # each side's roles audible in its own internal sweep.
+        target = self.freeze(crossover_state(), GLOBAL_BANK_ID)
+        target["measured_roles"] = ["left_mid", "right_mid", "sub1"]
+        roles = target["roles"]
+        masks = sweep_output_masks(target, roles=roles)
+        self.assertEqual([index for index in range(len(roles))
+                          if masks["left"] >> index & 1],
+                         [index for index, role in enumerate(roles)
+                          if role not in {"left_mid", "sub1"}])
+        self.assertEqual([index for index in range(len(roles))
+                          if masks["right"] >> index & 1],
+                         [index for index, role in enumerate(roles)
+                          if role not in {"right_mid", "sub1"}])
+
+    def test_sweep_masks_validate_the_engine_role_list(self):
+        target = self.freeze(crossover_state(), GLOBAL_BANK_ID)
+        with self.assertRaisesRegex(ValueError, "must be unique"):
+            sweep_output_masks(target, roles=["left_low", "left_low"])
+        with self.assertRaisesRegex(ValueError, "no longer routed"):
+            sweep_output_masks(target, roles=["left_low"])
+        with self.assertRaises(ValueError):
+            sweep_output_masks(LEGACY_TARGET, roles=target["roles"])
 
 
 if __name__ == "__main__":

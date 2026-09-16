@@ -90,7 +90,7 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         FormData: class extends TestFormData {
             append(name, value) {
                 super.append(name, value);
-                if (name === 'channel') capturedStartForm = this;
+                if (name === 'channel' || name === 'measurement_bank') capturedStartForm = this;
             }
         },
         console,
@@ -182,6 +182,9 @@ async function main() {
     assert.deepEqual(repeat.fetchCalls, ['/api/measurements/lr-repeat/start']);
     repeat.context.releaseSnapshot();
     await repeatStart;
+    // The repeat freezes the same selected area for its internal way sweeps.
+    assert.equal(repeat.startForm.get('measurement_bank'), 'main_l');
+    assert.equal(repeat.startForm.get('channel'), undefined);
 
     // A still-debounced subwoofer edit is started exactly once and awaited
     // before the measurement endpoint is reached.

@@ -1493,6 +1493,7 @@ async def start_lr_repeat_measurement(
     reference_input_channel_right: str = Form(""),
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
+    measurement_bank: str = Form(""),
 ):
     services = _measurement_services()
     measurement_store = services.get_store()
@@ -1532,6 +1533,7 @@ async def start_lr_repeat_measurement(
                 calibration_filename=calibration_filename,
                 calibration_bytes=calibration_bytes,
                 calibration_ref=calibration_ref,
+                measurement_bank=measurement_bank,
             ),
             entry_epoch=entry_epoch,
         )
