@@ -46,6 +46,7 @@ function extractFunction(name) {
 function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {}) {
     const fetchCalls = [];
     const saveCalls = [];
+    const toasts = [];
     let releaseDebugSnapshot = null;
     let capturedStartForm = null;
     const state = {
@@ -85,7 +86,15 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
             active_mode: 'stereo',
             modes: { stereo: { selected_bank: 'main_l', banks: { global: {}, main_l: {} } } },
         },
-        elements: { measurementCalibrationFile: null },
+        elements: {
+            measurementCalibrationFile: null,
+            measurementPeqTakeLeftBtn: null,
+            measurementPeqTakeRightBtn: null,
+            measurementConvolverTakeBothBtn: null,
+        },
+        showToast: (message) => { toasts.push(message); },
+        showMeasurementPeqTakeFeedback: () => {},
+        showMeasurementConvolverFeedback: () => {},
         FormData: class extends TestFormData {
             append(name, value) {
                 super.append(name, value);
@@ -135,10 +144,12 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         ${extractFunction('startHostMeasurement')}
         ${extractFunction('startLrRepeatMeasurement')}
         ${extractFunction('measurementAreaBadge')}
+        ${extractFunction('measurementBankSumsBothInputs')}
+        ${extractFunction('syncMeasurementSummedSubTakeModes')}
     `, context);
     context.setPendingSave(pendingSave);
     return {
-        context, fetchCalls, saveCalls, state,
+        context, fetchCalls, saveCalls, state, toasts,
         get startForm() { return capturedStartForm; },
     };
 }
@@ -188,6 +199,41 @@ async function main() {
     // The repeat freezes the same selected area for its internal way sweeps.
     assert.equal(repeat.startForm.get('measurement_bank'), 'main_l');
     assert.equal(repeat.startForm.get('channel'), undefined);
+
+    // A summed-sub bank (both inputs at 0.5) is mono on the preset side: the
+    // take helpers disable the takes that cannot compile there and say why.
+    const summedContext = makeMeasurementContext();
+    summedContext.context.outputCatalog = {
+        active_mode: 'stereo',
+        modes: { stereo: { selected_bank: 'sub1', banks: { global: {}, sub1: {} } } },
+    };
+    assert.equal(summedContext.context.measurementBankSumsBothInputs(), true);
+    const makeButton = () => ({ disabled: false, title: '', dataset: {} });
+    const peqLeft = makeButton();
+    const peqRight = makeButton();
+    const convBoth = makeButton();
+    summedContext.context.elements.measurementPeqTakeLeftBtn = peqLeft;
+    summedContext.context.elements.measurementPeqTakeRightBtn = peqRight;
+    summedContext.context.elements.measurementConvolverTakeBothBtn = convBoth;
+    summedContext.context.syncMeasurementSummedSubTakeModes();
+    assert.equal(peqLeft.disabled, true);
+    assert.equal(peqRight.disabled, true);
+    assert.match(peqLeft.title, /take Both/);
+    assert.equal(convBoth.disabled, true);
+    assert.match(convBoth.title, /mono IR/);
+    // A side-fed bank clears the markers and leaves disabled to the render.
+    const sidedContext = makeMeasurementContext();
+    assert.equal(sidedContext.context.measurementBankSumsBothInputs(), false);
+    const sidedPeqLeft = makeButton();
+    sidedPeqLeft.disabled = true;
+    sidedPeqLeft.dataset.summedSub = 'true';
+    sidedPeqLeft.title = 'stale reason';
+    sidedContext.context.elements.measurementPeqTakeLeftBtn = sidedPeqLeft;
+    sidedContext.context.syncMeasurementSummedSubTakeModes();
+    assert.equal(sidedPeqLeft.disabled, true, 'render pass owns disabled when not summed');
+    assert.equal(sidedPeqLeft.dataset.summedSub, 'false');
+    assert.equal(sidedPeqLeft.title, '');
+    assert.equal(sidedContext.toasts.length, 0);
 
     // Saved results carry the frozen area they were captured in; legacy
     // results without a target stay unlabelled.

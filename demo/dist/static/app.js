@@ -9796,6 +9796,12 @@ function takeMeasurementPeqToPreset(mode = 'both') {
         showToast('Add at least one measurement PEQ filter first', 'warning');
         return;
     }
+    if (mode !== 'both' && measurementBankSumsBothInputs()) {
+        const warning = 'This area is fed by both inputs: take Both to stage the identical L/R correction.';
+        showMeasurementPeqTakeFeedback(warning);
+        showToast(warning, 'warning');
+        return;
+    }
     const mappedBands = peq.filters.map((filter) => measurementPeqFilterToBand(filter));
     if (mode === 'left') {
         peq.draft.leftBands = mappedBands.map((band) => ({ ...band }));
@@ -10270,6 +10276,12 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
     const selection = getMeasurementConvolverSourceSelectionState();
     if (!selection.take[mode]) {
         const warning = selection.warning || getMeasurementConvolverMultiSourceWarning();
+        showMeasurementConvolverFeedback(warning);
+        showToast(warning, 'warning');
+        return;
+    }
+    if (mode === 'both' && measurementBankSumsBothInputs()) {
+        const warning = 'This area is fed by both inputs: its bank needs a mono IR, so take a single side.';
         showMeasurementConvolverFeedback(warning);
         showToast(warning, 'warning');
         return;
@@ -13045,7 +13057,39 @@ function renderMeasurementPanelEditorsSection({ measurementState, current, measu
     if (elements.measurementPeqTakeRightBtn) elements.measurementPeqTakeRightBtn.disabled = !peq.filters.length;
     if (elements.measurementPeqTakeBothBtn) elements.measurementPeqTakeBothBtn.disabled = !peq.filters.length;
     if (elements.measurementPeqCreateBtn) elements.measurementPeqCreateBtn.disabled = (!peqDraftLeftCount && !peqDraftRightCount) || !String(peq.draft?.presetName || '').trim() || peqCreateInFlight;
+    syncMeasurementSummedSubTakeModes();
 
+}
+
+function measurementBankSumsBothInputs() {
+    /* The selected area is fed by both inputs (mono/dual-mono sub): its bank
+     * plays L and R identically, so per-side takes would stage one half of a
+     * correction the engine applies to both inputs. */
+    const area = measurementAreaFromCatalog();
+    return !!area && area.channel === 'stereo' && area.bank_id !== 'global';
+}
+
+function syncMeasurementSummedSubTakeModes() {
+    /* Steer a summed-sub bank away from the takes that cannot compile there:
+     * the engine classifies the bank as mono, so a dual PEQ needs identical
+     * L/R bands (a single-side take would be rejected) and a convolver needs
+     * a mono IR file (a Both take would be rejected). Disabled buttons keep
+     * the tooltip as the reason. */
+    const summed = measurementBankSumsBothInputs();
+    const bothReason = summed ? 'This area is fed by both inputs: its bank needs a mono IR, so take a single side.' : '';
+    const sideReason = summed ? 'This area is fed by both inputs: take Both to stage the identical L/R correction.' : '';
+    for (const button of [elements.measurementPeqTakeLeftBtn, elements.measurementPeqTakeRightBtn,
+                          elements.measurementConvolverTakeBothBtn]) {
+        if (!button) continue;
+        if (summed) {
+            button.disabled = true;
+            button.title = button === elements.measurementConvolverTakeBothBtn ? bothReason : sideReason;
+        } else if (button.dataset.summedSub === 'true') {
+            // Leave disabled to the render pass; only clear the stale marker.
+            button.dataset.summedSub = 'false';
+            button.title = '';
+        }
+    }
 }
 
 function renderMeasurementPanelConvolverSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {

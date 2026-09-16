@@ -36,6 +36,12 @@ assert.match(app, /target\.schema !== 'fxroute\.measurement-target'\) return nul
 assert.match(app, /target\.legacy \|\| target\.schema/);
 assert.match(app, /measurement-area-badge\$\{areaBadge\.stale \? ' is-stale' : ''\}/);
 assert.match(app, /Measured area: \$\{areaBadge\.title\}/);
+// A summed-sub bank is mono on the preset side: per-side PEQ takes and a
+// Both convolver take cannot compile there, so the UI disables them.
+assert.match(app, /function measurementBankSumsBothInputs\(\) \{/);
+assert.match(app, /function syncMeasurementSummedSubTakeModes\(\) \{/);
+assert.match(app, /if \(mode !== 'both' && measurementBankSumsBothInputs\(\)\)/);
+assert.match(app, /if \(mode === 'both' && measurementBankSumsBothInputs\(\)\)/);
 assert.match(index, /id="measurement-repeat-start"[^>]*>Start LR Repeat<\/button>/);
 assert.match(index, /id="measurement-repeat-note" class="measurement-repeat-help">Repeated L\/R sweeps for more precision\.<\/span>/);
 // A one-sided area (fed by one input only) must disable the repeat and explain

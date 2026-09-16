@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 
+from audio.output_topology import SUB_ROLES
 from dsp.crossover import design_crossover
 
 # Shared biquad budget per output, mirroring
@@ -36,6 +37,20 @@ def role_side(role: str) -> str:
     if role in {"main_r", "sub_r"} or role.startswith("right_"):
         return "right"
     return "mono"
+
+
+def bank_side(role: str, sub_mode: str = "stereo") -> str:
+    """Return the input side a banked role is fed from, or "mono".
+
+    Mirrors the plan's input routes: only a real ``sub_l``/``sub_r`` pair
+    (``sub_mode == "stereo"``) feeds each sub from its own side.  Every other
+    sub role — a lone mono sub or a dual-mono pair — sums both inputs at 0.5
+    gain, so it is a mono bank whatever the role is called: a lone ``sub_l``
+    is *not* a left-sided output.
+    """
+    if role in SUB_ROLES and sub_mode != "stereo":
+        return "mono"
+    return role_side(role)
 
 
 def _finite(value: object, label: str) -> float:
@@ -66,7 +81,7 @@ def _validate_band(band: object, index: int) -> dict:
             "frequencyHz": frequency, "gainDb": gain, "q": quality, "delayMs": delay}
 
 
-def _project_bands(role: str, plugin: dict) -> list[dict]:
+def _project_bands(role: str, plugin: dict, sub_mode: str = "stereo") -> list[dict]:
     """Select the audible bands of one equalizer plugin for a mono role."""
     params = plugin.get("params") if isinstance(plugin.get("params"), dict) else {}
     mode = str(params.get("channelMode", "stereo-linked"))
@@ -79,7 +94,7 @@ def _project_bands(role: str, plugin: dict) -> list[dict]:
         right = [_validate_band(band, index) for index, band in enumerate(params.get("rightBands", []))]
         if len(left) > 20 or len(right) > 20:
             raise ValueError(f"Area bank {role} supports at most 20 bands per side")
-        side = role_side(role)
+        side = bank_side(role, sub_mode)
         if side == "mono" and left != right:
             raise ValueError(f"Area bank {role} sums both inputs and needs identical L/R bands")
         return {"left": left, "right": right, "mono": left}[side]
@@ -89,7 +104,8 @@ def _project_bands(role: str, plugin: dict) -> list[dict]:
     return bands
 
 
-def _oconv_for_bank(role: str, plugin: dict, resolve_ir: Callable[[str], dict]) -> dict:
+def _oconv_for_bank(role: str, plugin: dict, resolve_ir: Callable[[str], dict],
+                    sub_mode: str = "stereo") -> dict:
     params = plugin.get("params") if isinstance(plugin.get("params"), dict) else {}
     info = resolve_ir(params.get("kernel", ""))
     if not isinstance(info, dict) or not isinstance(info.get("path"), str) or not info["path"]:
@@ -97,7 +113,7 @@ def _oconv_for_bank(role: str, plugin: dict, resolve_ir: Callable[[str], dict]) 
     channels = info.get("channels")
     if type(channels) is not int or channels < 1:
         raise ValueError(f"Area bank {role} convolver needs a known IR channel count")
-    side = role_side(role)
+    side = bank_side(role, sub_mode)
     if channels == 1:
         channel = 0
     elif side == "mono":
@@ -124,6 +140,9 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
     rate = plan.get("sample_rate_hz")
     if type(rate) is not int or rate <= 0:
         raise ValueError("Processing plan requires a positive integer sample rate")
+    sub_mode = str(plan.get("sub_mode", ""))
+    if sub_mode not in {"none", "mono", "stereo", "dual-mono", "unsupported"}:
+        raise ValueError("Processing plan requires a known sub_mode")
     layout = []
     for output in plan["outputs"]:
         role = output.get("role")
@@ -148,7 +167,7 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
                 plugin_type = plugin.get("type")
                 if plugin_type == "equalizer":
                     equalizers += 1
-                    for band in _project_bands(role, plugin):
+                    for band in _project_bands(role, plugin, sub_mode):
                         if not band["enabled"]:
                             continue
                         if band["filterType"] == "gain":
@@ -161,7 +180,7 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
                 elif plugin_type == "convolver":
                     if oconv is not None:
                         raise ValueError(f"Area bank {role} supports a single convolver")
-                    oconv = _oconv_for_bank(role, plugin, resolve_ir)
+                    oconv = _oconv_for_bank(role, plugin, resolve_ir, sub_mode)
                 else:
                     raise ValueError(f"Area bank {role} supports only PEQ and convolver presets")
         if equalizers > 1:

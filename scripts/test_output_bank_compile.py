@@ -145,6 +145,37 @@ class BankCompileTests(unittest.TestCase):
         return compile_processing_plan(state, output_key="A", channels=channels,
                                        sample_rate_hz=rate, preset_loader=self.manager.preset_store.read)
 
+    def test_lone_sub_l_bank_is_mono_not_left_sided(self):
+        # A single sub role sums both inputs at 0.5, so its bank is a mono
+        # bank even though the role is called sub_l: dual PEQ needs identical
+        # sides and a stereo IR is rejected instead of silently using channel
+        # 0 only. A real stereo sub pair keeps its per-side behaviour.
+        self.manager.preset_store.write("Wide IR", {"schema": "fxroute.dsp.preset", "version": 1,
+            "chain": [{"id": "conv", "type": "convolver", "params": {"kernel": "wide"}}]})
+        state = self.stereo_state()
+        state = set_mode_routing(state, "stereo", "A", ["main_l", "main_r", "sub1"])
+        state["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Dual EQ"
+        with self.assertRaises(ValueError):
+            self.compile(self.plan_for(state))
+        state["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Same Dual EQ"
+        rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
+        self.assertEqual(rows["sub1"]["filters"][0]["frequency_hz"], 900)
+        state["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Wide IR"
+        with self.assertRaises(ValueError):
+            self.compile(self.plan_for(state))
+
+    def test_stereo_sub_pair_bank_keeps_per_side_behaviour(self):
+        # With a real sub_l/sub_r pair each side is fed from its own input,
+        # so dual PEQ may differ per side and a stereo IR picks its channel.
+        state = self.stereo_state()
+        state = set_mode_routing(state, "stereo", "A", ["main_l", "main_r", "sub_l", "sub_r"])
+        state["modes"]["stereo"]["banks"]["sub_l"]["preset"] = "Dual EQ"
+        rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
+        self.assertEqual(rows["sub_l"]["filters"][0]["frequency_hz"], 900)
+        state["modes"]["stereo"]["banks"]["sub_l"]["preset"] = "Mid IR"
+        rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
+        self.assertEqual(rows["sub_l"]["oconv"]["channel"], 0)
+
     def test_stereo_ir_channel_follows_role_side(self):
         state = self.crossover_state()
         mode = state["modes"]["crossover"]
