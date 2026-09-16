@@ -134,6 +134,37 @@ def main() -> int:
                   is not None
                   and "is-active" in (page.locator("[data-crossover-way='right_high']").get_attribute("class") or ""))
 
+            # Clear one filter, then let the starter refill only the gap.
+            page.evaluate(
+                "applyOutputSystemMutation('set_processing',"
+                " { mode: 'crossover', role: 'left_mid', lowpass: null }, false, { quiet: true })")
+            page.wait_for_timeout(1200)
+            page.locator("#effects-crossover-starter").click()
+            page.wait_for_timeout(1500)
+            starter_back = page.evaluate(
+                """fetch('/api/audio/output-state').then(r => r.json())
+                    .then(j => JSON.stringify(j.modes.crossover.processing.left_mid.lowpass))""")
+            check(f"starter refills only the gap ({starter_back})",
+                  '"frequency_hz":2500' in starter_back)
+
+            # Editing a way control persists to the backend state.
+            page.evaluate(
+                """(() => {
+                    const slope = document.getElementById('effects-crossover-slope');
+                    slope.value = '48';
+                    slope.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            slope_back = page.evaluate(
+                """fetch('/api/audio/output-state').then(r => r.json())
+                    .then(j => {
+                        const active = document.querySelector('.crossover-tab.is-active')
+                            ?.dataset.crossoverWay || 'left_low';
+                        const entry = j.modes.crossover.processing[active];
+                        return JSON.stringify((entry.lowpass || entry.highpass || {}).slope_db_oct);
+                    })""")
+            check(f"way slope edit persists ({slope_back})", slope_back == "48")
+
             browser.close()
     finally:
         server.terminate()
