@@ -3873,6 +3873,15 @@ async function applyOutputSystemMutation(kind, fields, successMessage, options =
         const { data, catalog } = await mod.applyMutation(
             fetch, state.outputSystem.catalog, getCatalog, mutation);
         state.outputSystem.catalog = catalog;
+        // The apply response carries no catalog: refetch so renders use
+        // the committed revision instead of the pre-apply snapshot. A
+        // failed refetch must not mask the successful apply.
+        try {
+            await fetchOutputSystemCatalog(true);
+        } catch (e) {
+            renderOutputSystemSection();
+            renderEffectsBankSelector();
+        }
         if (successMessage) showToast(successMessage, 'success');
         if (!options.quiet && data && data.live_applied === false && data.live_reason && data.live_reason !== 'nothing-to-apply') {
             showToast(`Saved (revision ${data.revision}); live apply: ${data.live_reason}`, 'info');
