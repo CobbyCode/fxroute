@@ -29,6 +29,7 @@ from measurement.persistence import MeasurementPersistence
 from measurement.routing import MeasurementRouting
 from measurement.signal import _write_wav, write_sweep_file
 from measurement.job_runner import MeasurementJobRunner
+from measurement.target import target_output_mask
 from measurement.repeat_runner import MeasurementRepeatRunner
 from measurement.analyzer import MeasurementAnalyzer
 from measurement.constants import (
@@ -119,7 +120,9 @@ class MeasurementStore:
                  raw_scope_enter: Callable[[], Any] | None = None,
                  raw_scope_exit: Callable[[bool], Any] | None = None,
                  active_scope_enter: Callable[[], Any] | None = None,
-                 active_scope_exit: Callable[[bool], Any] | None = None):
+                 active_scope_exit: Callable[[bool], Any] | None = None,
+                 output_mask_apply: Callable[[int], Any] | None = None,
+                 output_mask_clear: Callable[[int], Any] | None = None):
         self.home = Path(home or Path.home())
         self.runtime_snapshot_provider = runtime_snapshot_provider
         self.effect_bypass_setter = effect_bypass_setter
@@ -127,6 +130,12 @@ class MeasurementStore:
         self.raw_scope_exit = raw_scope_exit
         self.active_scope_enter = active_scope_enter
         self.active_scope_exit = active_scope_exit
+        self.output_mask_apply = output_mask_apply
+        self.output_mask_clear = output_mask_clear
+        # Optional application hook: freezes the measurement target (mode,
+        # bank, revision, fingerprint, reference tap) and returns it.  Without
+        # it the store behaves exactly as before the frozen-target era.
+        self.measurement_target_provider: Callable[[str, int], dict[str, Any]] | None = None
         self.config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (self.home / ".config"))
         self.state_root = Path(os.environ.get("XDG_STATE_HOME") or (self.home / ".local" / "state"))
         self.measurements_dir = self.config_root / "fxroute" / "measurements"
@@ -172,6 +181,8 @@ class MeasurementStore:
             effect_bypass_setter=self.effect_bypass_setter,
             active_scope_enter=self.active_scope_enter,
             active_scope_exit=self.active_scope_exit,
+            output_mask_apply=self.output_mask_apply,
+            output_mask_clear=self.output_mask_clear,
         )
         self._repeat_runner = MeasurementRepeatRunner(self)
         self._analyzer = MeasurementAnalyzer(self, CaptureQualityError)
@@ -448,6 +459,26 @@ class MeasurementStore:
         }
         return {"job": job, "channel": normalized_channel}
 
+    def _freeze_measurement_job_target(self, job: dict[str, Any], measurement_bank: str) -> dict[str, Any]:
+        """Freeze the area target and derive its output mute mask at job creation.
+
+        Without an injected provider the job keeps its legacy shape (no target,
+        no masking).  With one, a missing or unrouted area fails the request
+        before any sweep is played instead of capturing the wrong outputs.
+        """
+        provider = self.measurement_target_provider
+        if not callable(provider):
+            return {}
+        input_info = job.get("input") if isinstance(job.get("input"), dict) else {}
+        rate = input_info.get("measurement_sample_rate") or input_info.get("sample_rate")
+        target = provider(str(measurement_bank or ""), int(rate) if type(rate) is int else 0)
+        return {
+            "measurement_bank": target["bank_id"],
+            "measurement_target": target,
+            # Bit n mutes engine output n (plan/role order); Global needs none.
+            "output_mask": target_output_mask(target, roles=target["roles"]),
+        }
+
     def _register_measurement_job(
         self,
         job: dict[str, Any],
@@ -459,6 +490,8 @@ class MeasurementStore:
         self._job_runner._effect_bypass_setter = self.effect_bypass_setter
         self._job_runner._active_scope_enter = self.active_scope_enter
         self._job_runner._active_scope_exit = self.active_scope_exit
+        self._job_runner._output_mask_apply = self.output_mask_apply
+        self._job_runner._output_mask_clear = self.output_mask_clear
         self._jobs[job_id] = job
         self._persistence._persist_job(job)
         self._job_runner.start(job_id, job, executor)
@@ -482,6 +515,7 @@ class MeasurementStore:
         playback_gain: float | None = None,
         measurement_role: str = "",
         skip_pre_sweep_diagnostics: bool = False,
+        measurement_bank: str = "",
     ) -> dict[str, Any]:
         setup = await self._prepare_measurement_job_setup(
             input_id=input_id,
@@ -518,6 +552,7 @@ class MeasurementStore:
             "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
             "_skip_pre_sweep_diagnostics": bool(skip_pre_sweep_diagnostics),
         })
+        job.update(self._freeze_measurement_job_target(job, measurement_bank))
         return self._register_measurement_job(job, self._execute_capture_job)
 
     async def start_lr_repeat_measurement(
@@ -687,6 +722,8 @@ class MeasurementStore:
         self._job_runner._effect_bypass_setter = self.effect_bypass_setter
         self._job_runner._active_scope_enter = self.active_scope_enter
         self._job_runner._active_scope_exit = self.active_scope_exit
+        self._job_runner._output_mask_apply = self.output_mask_apply
+        self._job_runner._output_mask_clear = self.output_mask_clear
         await self._job_runner.run(job_id, job, executor)
 
     def _execute_lr_repeat_job(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -918,6 +955,7 @@ class MeasurementStore:
                 "reference_disabled_reason_right": str(input_channels.get("reference_disabled_reason_right") or ""),
             },
             measurement_role=str(job.get("measurement_role") or ""),
+            measurement_target=job.get("measurement_target"),
         )
         cj["measured"] = time.monotonic()
         try:

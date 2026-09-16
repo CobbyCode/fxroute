@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from measurement.target import measurement_target_from_context, targets_compatible
 from measurement.constants import (
     DISPLAY_DEFAULTS,
     IR_DEBUG_SEGMENT_RETENTION_SEGMENTS,
@@ -114,6 +115,14 @@ class MeasurementPersistence:
             except Exception as exc:
                 raise ValueError(f"Saved measurement could not be loaded: {measurement_id}") from exc
 
+        targets = [measurement_target_from_context(measurement) for measurement in measurements]
+        for target in targets[1:]:
+            if not targets_compatible(targets[0], target):
+                raise ValueError(
+                    "Selected measurements capture different areas or processing; "
+                    "merge one area at a time"
+                )
+
         merged_name = str(name or "").strip() or f"Merged {len(measurements)} measurements"
         trusted_traces = [
             self._select_merge_trace(measurement, "traces", preferred_role="trusted")
@@ -165,6 +174,10 @@ class MeasurementPersistence:
                 "direct_arrival_timing_available": False,
             },
         }
+        if all(not target.get("legacy") for target in targets):
+            # Compatible sources share one area context; keep it so the merged
+            # result still names the bank and processing it was averaged from.
+            payload["measurement_target"] = deepcopy(targets[0])
         if all(review_traces):
             payload["review_traces"] = [
                 self._average_merge_traces(
@@ -397,6 +410,7 @@ class MeasurementPersistence:
         calibration: dict[str, Any],
         input_channels: dict[str, Any] | None = None,
         measurement_role: str = "",
+        measurement_target: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         timestamp = datetime.now(timezone.utc).replace(microsecond=0)
         created_at = timestamp.isoformat().replace("+00:00", "Z")
@@ -464,6 +478,10 @@ class MeasurementPersistence:
         }
         if measurement_role:
             payload["measurement_role"] = measurement_role
+        if isinstance(measurement_target, dict):
+            # Frozen at job creation: mode, area bank, revision, processing
+            # fingerprint and reference tap the sweep actually ran through.
+            payload["measurement_target"] = deepcopy(measurement_target)
         if measurement_role == "direct" and analysis.get("direct_response") is not None:
             payload["analysis"]["direct_response"] = deepcopy(analysis["direct_response"])
         if measurement_role in {"direct", "mlp", "integration"} and analysis.get("complex_response") is not None:
@@ -560,6 +578,8 @@ class MeasurementPersistence:
             result["autosub_meta"] = payload["autosub_meta"]
         if payload.get("audio_output_context") and isinstance(payload.get("audio_output_context"), dict):
             result["audio_output_context"] = payload["audio_output_context"]
+        if isinstance(payload.get("measurement_target"), dict):
+            result["measurement_target"] = payload["measurement_target"]
         if source_path is not None:
             result["storage_path"] = str(source_path)
         return result

@@ -1426,6 +1426,7 @@ async def start_measurement(
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
     measurement_role: str = Form(""),
+    measurement_bank: str = Form(""),
 ):
     services = _measurement_services()
     measurement_store = services.get_store()
@@ -1466,6 +1467,7 @@ async def start_measurement(
                 calibration_bytes=calibration_bytes,
                 calibration_ref=calibration_ref,
                 measurement_role=measurement_role,
+                measurement_bank=measurement_bank,
             ),
             entry_epoch=entry_epoch,
         )

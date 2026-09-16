@@ -444,6 +444,7 @@ class DSPRuntime:
         self._exact_sub_mute = False
         self._effect_bypass = False
         self._output_gain_db = 0.0
+        self._output_mask = 0
         self._stderr_drain_task: asyncio.Task | None = None
         self._stderr_tail = b""
 
@@ -550,6 +551,7 @@ class DSPRuntime:
                             "layout": [dict(channel) for channel in getattr(self._config, "layout", ())]} if self._config else None,
                 "last_error": self._error, "last_started_at": self._started_at,
                 "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
+                "output_mask": self._output_mask,
                 "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
                 "stderr_tail": self.stderr_tail()[:2048]}
 
@@ -560,6 +562,39 @@ class DSPRuntime:
         await self._control(f"mute 12 {1 if enabled else 0}", reply=True)
         self._exact_sub_mute = bool(enabled)
         return previous
+
+    def _validate_output_mask(self, mask: object) -> int:
+        """Validate a role-derived engine output mute mask.
+
+        Bit ``n`` addresses engine output ``n`` in plan order.  A zero mask is
+        rejected instead of silently no-opping, so callers must state that no
+        masking is needed; the native engine owns one 32-bit mask.
+        """
+        if type(mask) is not int or mask <= 0 or mask >= (1 << 32):
+            raise ValueError("Output mute mask must be a non-zero 32-bit integer")
+        layout = tuple(getattr(self._config, "layout", ()) or ()) if self._config is not None else ()
+        if layout and mask >= (1 << len(layout)):
+            raise ValueError("Output mute mask addresses an output the engine does not expose")
+        return mask
+
+    async def apply_output_mask(self, mask: int) -> int:
+        """Mute the masked engine outputs; returns the previously applied mask.
+
+        Only the given bits are set: unrelated bits (for example the legacy
+        exact-sub mute) stay untouched, which is why clearing must repeat the
+        same mask rather than resetting the engine's whole mute state.
+        """
+        bits = self._validate_output_mask(mask)
+        previous = self._output_mask
+        await self._control(f"mute {bits} 1", reply=True)
+        self._output_mask |= bits
+        return previous
+
+    async def clear_output_mask(self, mask: int) -> None:
+        """Clear exactly the masked engine outputs again."""
+        bits = self._validate_output_mask(mask)
+        await self._control(f"mute {bits} 0", reply=True)
+        self._output_mask &= ~bits
 
     async def reset_output_peaks(self) -> None:
         await self._control("peaks reset", reply=True)
@@ -1058,6 +1093,7 @@ class DSPRuntime:
         self._exact_sub_mute = False
         self._effect_bypass = False
         self._output_gain_db = 0.0
+        self._output_mask = 0
         self._config_text = None
 
     async def verify(self) -> bool:

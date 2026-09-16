@@ -404,6 +404,7 @@ except ImportError:
 from measurement.store import (
     MeasurementStore,
 )
+from measurement.target import freeze_measurement_target
 from dsp.peak_monitor import DSPPeakMonitor, PeakMonitorCoordinator, PeakMonitorCoordinatorDeps
 from playback.transition import (
     PlaybackTransitionCoordinator,
@@ -2373,6 +2374,9 @@ async def lifespan(app: FastAPI):
             measurement_store.raw_scope_exit = getattr(runtime.dsp_runtime, "exit_raw_measurement", None)
             measurement_store.active_scope_enter = getattr(runtime.dsp_runtime, "enter_active_measurement", None)
             measurement_store.active_scope_exit = getattr(runtime.dsp_runtime, "exit_active_measurement", None)
+            measurement_store.output_mask_apply = getattr(runtime.dsp_runtime, "apply_output_mask", None)
+            measurement_store.output_mask_clear = getattr(runtime.dsp_runtime, "clear_output_mask", None)
+            measurement_store.measurement_target_provider = _freeze_measurement_target
         runtime_loop = asyncio.get_running_loop()
 
         def guarded_effects_transition(previous, candidate, persist_all_presets):
@@ -3940,6 +3944,27 @@ def _output_state_device(overview: dict) -> tuple[str, int | None]:
     if count < 0:
         raise HTTPException(status_code=400, detail="Output channel capacity is unknown")
     return key, count
+
+
+def _freeze_measurement_target(bank_id: str, sample_rate_hz: int) -> dict:
+    """Freeze the measurement target for the currently selected output device.
+
+    Uses the committed output state and the same processing fingerprint the
+    transition coordinator verifies, so a stored result can never claim
+    processing the sweep did not run through.  An empty bank id follows the
+    current editing selection (the area selector's Global default).
+    """
+    service = get_output_service()
+    state = service.ensure_state()
+    overview = get_audio_output_overview()
+    output_key, channels = _output_state_device(overview)
+    channel_count = int(channels or 0)
+    bank = str(bank_id or "").strip() or state["modes"][state["active_mode"]]["selected_bank"]
+    fingerprint = service.fingerprint(state, output_key=output_key, channels=channel_count,
+                                      sample_rate_hz=sample_rate_hz)
+    return freeze_measurement_target(
+        state, bank_id=bank, output_key=output_key, channels=channel_count,
+        sample_rate_hz=sample_rate_hz, fingerprint=fingerprint)
 
 
 def _require_state_mode(value) -> str:
