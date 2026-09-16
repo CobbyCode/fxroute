@@ -893,6 +893,14 @@
     font-size: 0.88rem;
     padding: 0.3rem 0.6rem;
 }
+/* The padding shorthand above is two classes deep, so it would outrank the
+   shared select.url-input arrow zone and reopen the roomy gap the chevron
+   lives in. Re-assert the reserve for selects only (the TIDAL "add to
+   existing playlist" target), where a long playlist name would otherwise
+   slide underneath the arrow. */
+.playlist-save-row select.url-input {
+    padding-right: 1.55rem;
+}
 .playlist-save-row .btn-secondary {
     flex: 0 0 auto;
     white-space: nowrap;

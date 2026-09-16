@@ -712,6 +712,11 @@
     padding: 0.55rem 0.75rem;
     font-size: 0.9rem;
 }
+/* Same shorthand-over-arrow-zone conflict as the playlist save row: the
+   PEQ type select carries the shared chevron, so keep its reserve too. */
+.measurement-peq-editor-grid select.url-input {
+    padding-right: 1.55rem;
+}
 
 .measurement-peq-stepper {
     display: grid;
