@@ -63,6 +63,26 @@ window.WebSocket = class {
 const measurementJobs = new Map();
 let measurementSequence = 0;
 window.__measurementCalls = [];
+// Saved results carrying frozen area targets (one current, one legacy).
+const savedMeasurements = [
+    {
+        id: 'area-mid', name: 'Left mid area', created_at: '2026-09-16T10:00:00Z',
+        channel: 'left', measurement_kind: 'single',
+        input_device: { id: 'mic-1', label: 'Test microphone' },
+        traces: [{ kind: 'sweep-response', role: 'trusted', label: 'Left mid area', points: [[20, 0], [1000, 6], [20000, 1]] }],
+        measurement_target: { schema: 'fxroute.measurement-target', version: 1, mode: 'crossover',
+            device_key: 'default', bank_id: 'left_mid', preset: 'Neutral', revision: 2,
+            processing_fingerprint: 'fp-1', sample_rate_hz: 48000, channels: 6,
+            roles: ['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high'],
+            measured_roles: ['left_mid'], reference_tap: 'fxroute_dsp_sink.monitor' },
+    },
+    {
+        id: 'legacy-global', name: 'Legacy sweep', created_at: '2026-09-15T10:00:00Z',
+        channel: 'stereo', measurement_kind: 'single',
+        input_device: { id: 'mic-1', label: 'Test microphone' },
+        traces: [{ kind: 'sweep-response', role: 'trusted', label: 'Legacy sweep', points: [[20, 0], [1000, 6], [20000, 1]] }],
+    },
+];
 window.__measurementControls = {
     completionDebugResolvers: [],
     delayCompletionDebug: false,
@@ -192,7 +212,7 @@ window.fetch = (url, opts) => {
             capture_available: true,
         });
     }
-    if (u.includes('/api/measurements')) return json({ measurements: [] });
+    if (u.includes('/api/measurements')) return json({ measurements: savedMeasurements });
     if (u.includes('/api/library/')) return json({ tracks: [], albums: [], folders: [] });
     if (u.includes('/api/streaming/providers')) return json({ providers: [] });
     if (u.includes('/api/streaming/')) return json({ installed: false, available: false });
@@ -425,6 +445,19 @@ def _run():
             # A single sweep of the same area stays available.
             assert not page.locator("#measurement-sweep-start").is_disabled()
             checks += 4
+
+            # Saved results show the frozen area they were captured in; a legacy
+            # result without a target stays unlabelled.
+            saved_summary = page.locator(".measurement-saved-group summary")
+            if saved_summary.count() and "Open saved" in saved_summary.first.inner_text():
+                saved_summary.first.click()
+            page.wait_for_selector("[data-measurement-toggle='area-mid']")
+            area_badge = page.locator("[data-measurement-toggle='area-mid'] ~ .measurement-area-badge")
+            assert area_badge.inner_text() == "Left Mid"
+            assert "is-stale" not in (area_badge.get_attribute("class") or "")
+            assert page.locator("[data-measurement-toggle='legacy-global'] ~ .measurement-area-badge").count() == 0, (
+                "a legacy result without a target must not be labelled as an area")
+            checks += 3
             page.close()
             browser.close()
     finally:

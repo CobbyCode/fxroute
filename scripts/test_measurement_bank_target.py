@@ -21,6 +21,7 @@ from audio.output_state import (
     switch_mode,
     validate_output_state,
 )
+from audio.output_routing import device_key
 from audio.output_state_store import OutputStateStore
 from dsp.persistence import DSPPresetStore
 from measurement.store import MeasurementStore
@@ -32,7 +33,6 @@ from measurement.target import (
     freeze_measurement_target,
     measurement_target_from_context,
     require_commit_target,
-    require_target_matches,
     summed_role_ids,
     sweep_output_masks,
     target_output_mask,
@@ -218,32 +218,20 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
         self.assertEqual(target["processing_fingerprint"], self.fingerprint(crossover_state(), channels=8))
 
     def test_editing_selection_keeps_the_target_but_processing_edits_break_it(self):
+        # A pure editing-selection change (another bank selected) leaves the
+        # compiled fingerprint unchanged: the same capture still applies.
         state = crossover_state()
         frozen = self.freeze(state, "left_mid")
         selected = select_bank(state, "crossover", "A", 8, "left_mid")
-        live = self.fingerprint(selected)
-        self.assertEqual(frozen["processing_fingerprint"], live)
-        require_target_matches(frozen, mode="crossover", bank_id="left_mid",
-                               processing_fingerprint=live, output_key="A", sample_rate_hz=48000)
+        live = self.freeze(selected, "left_mid")
+        self.assertEqual(frozen["processing_fingerprint"], live["processing_fingerprint"])
+        require_commit_target(frozen, live, mode="crossover", bank_id="left_mid")
+
+        # A processing edit breaks it; the differing field is named.
         edited = set_bank_preset(selected, "crossover", "left_mid", preset="Room EQ")
-        with self.assertRaisesRegex(ValueError, "processing fingerprint changed"):
-            require_target_matches(frozen, mode="crossover", bank_id="left_mid",
-                                   processing_fingerprint=self.fingerprint(edited))
-        with self.assertRaisesRegex(ValueError, "bank 'left_mid' != 'left_high'"):
-            require_target_matches(frozen, mode="crossover", bank_id="left_high",
-                                   processing_fingerprint=live)
-        with self.assertRaisesRegex(ValueError, "mode 'crossover' != 'stereo'"):
-            require_target_matches(frozen, mode="stereo", bank_id="left_mid",
-                                   processing_fingerprint=live)
-        with self.assertRaisesRegex(ValueError, "output device changed"):
-            require_target_matches(frozen, mode="crossover", bank_id="left_mid",
-                                   processing_fingerprint=live, output_key="B")
-        with self.assertRaisesRegex(ValueError, "sample rate 48000 != 96000"):
-            require_target_matches(frozen, mode="crossover", bank_id="left_mid",
-                                   processing_fingerprint=live, sample_rate_hz=96000)
-        # Legacy results carry no context to compare against.
-        require_target_matches(copy.deepcopy(LEGACY_TARGET), mode="stereo", bank_id="global",
-                               processing_fingerprint="unrelated")
+        with self.assertRaisesRegex(ValueError, "processing '.*' != '.*"):
+            require_commit_target(frozen, self.freeze(edited, "left_mid"),
+                                  mode="crossover", bank_id="left_mid")
 
     def test_merge_compatibility_rejects_mixed_areas_and_accepts_revision_drift(self):
         state = crossover_state()

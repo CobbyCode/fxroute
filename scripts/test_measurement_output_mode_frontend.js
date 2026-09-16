@@ -127,11 +127,15 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         function measurementAreaFromCatalog() {
             return OutputState.measurementArea(outputCatalog);
         }
+        function outputSystemModule() {
+            return OutputState;
+        }
         async function pollMeasurementJob() {}
         ${extractFunction('formatTransitionErrorDetail')}
         ${extractFunction('flushSubwooferSettingsBeforeMeasurement')}
         ${extractFunction('startHostMeasurement')}
         ${extractFunction('startLrRepeatMeasurement')}
+        ${extractFunction('measurementAreaBadge')}
     `, context);
     context.setPendingSave(pendingSave);
     return {
@@ -185,6 +189,35 @@ async function main() {
     // The repeat freezes the same selected area for its internal way sweeps.
     assert.equal(repeat.startForm.get('measurement_bank'), 'main_l');
     assert.equal(repeat.startForm.get('channel'), undefined);
+
+    // Saved results carry the frozen area they were captured in; legacy
+    // results without a target stay unlabelled.
+    const badgeTarget = {
+        schema: 'fxroute.measurement-target', version: 1, mode: 'crossover',
+        bank_id: 'left_low', legacy: false,
+    };
+    const badge = committed.context.measurementAreaBadge({ measurement_target: badgeTarget });
+    assert.deepEqual({ ...badge }, {
+        label: 'Left Low', mode: 'crossover', stale: false,
+        title: 'Left Low · Crossover · measured area only',
+    });
+    assert.equal(
+        committed.context.measurementAreaBadge({ measurement_target: { ...badgeTarget, bank_id: 'global' } }).title,
+        'Global · Crossover · measured whole system',
+    );
+    assert.deepEqual(
+        committed.context.measurementAreaBadge({ measurement_target: { legacy: true } }), null,
+        'legacy results are not silently labelled Global',
+    );
+    assert.equal(committed.context.measurementAreaBadge({}), null);
+    assert.equal(committed.context.measurementAreaBadge(undefined), null);
+    assert.equal(
+        committed.context.measurementAreaBadge({
+            measurement_target: { ...badgeTarget, bank_id: 'left_mid' },
+            measurement_target_stale: true,
+        }).stale, true,
+        'a result whose processing moved on is marked stale',
+    );
 
     // A still-debounced subwoofer edit is started exactly once and awaited
     // before the measurement endpoint is reached.

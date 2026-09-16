@@ -29,6 +29,13 @@ assert.match(app, /formData\.append\('measurement_bank', area\.bank_id\)/);
 assert.match(app, /elements\.measurementAreaIndicator\.textContent = area \? area\.label : 'Global'/);
 assert.doesNotMatch(app, /\[data-measurement-channel\]/, 'no leftover output-channel chip handlers');
 assert.match(app, /void ensureMeasurementAreaCatalog\(\);/, 'opening the panel loads the area catalog');
+// Saved results show the frozen area they were captured in (legacy results
+// without a target stay unlabelled, never silently "Global").
+assert.match(app, /function measurementAreaBadge\(measurement\) \{/);
+assert.match(app, /target\.schema !== 'fxroute\.measurement-target'\) return null;/);
+assert.match(app, /target\.legacy \|\| target\.schema/);
+assert.match(app, /measurement-area-badge\$\{areaBadge\.stale \? ' is-stale' : ''\}/);
+assert.match(app, /Measured area: \$\{areaBadge\.title\}/);
 assert.match(index, /id="measurement-repeat-start"[^>]*>Start LR Repeat<\/button>/);
 assert.match(index, /id="measurement-repeat-note" class="measurement-repeat-help">Repeated L\/R sweeps for more precision\.<\/span>/);
 // A one-sided area (fed by one input only) must disable the repeat and explain

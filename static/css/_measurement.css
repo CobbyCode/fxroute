@@ -307,6 +307,23 @@
     font-weight: 600;
 }
 
+/* Saved-list badge: the frozen area a result was captured in. */
+.measurement-area-badge {
+    margin-left: 0.45rem;
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+.measurement-area-badge.is-stale {
+    border-color: var(--warning, #b45309);
+    color: var(--warning, #b45309);
+}
+
 .measurement-workflow-row {
     display: grid;
     grid-template-columns: 190px minmax(0, 1fr);
@@ -931,6 +948,10 @@
 
 .measurement-list-title {
     font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
 }
 
 .measurement-list-meta,

@@ -12799,6 +12799,12 @@ function renderMeasurementPanelActionsSection({ measurementState, current, measu
     if (elements.measurementNameInput) {
         elements.measurementNameInput.value = measurementState.currentMeasurementName || '';
         elements.measurementNameInput.disabled = measurementState.startInFlight || measurementState.saveInFlight || !!measurementState.activeJobId;
+        // The area badge next to the name shows where the current result was
+        // captured; the sweep menu's own indicator shows where the next one goes.
+        const areaBadge = measurementAreaBadge(current);
+        elements.measurementNameInput.title = areaBadge
+            ? `Measured area: ${areaBadge.title}`
+            : 'Measurement name';
         elements.measurementNameInput.placeholder = 'Measurement name';
     }
     syncMeasurementSweepButton();
@@ -13154,6 +13160,28 @@ function renderMeasurementPanelConvolverSection({ measurementState, current, mea
     }
 }
 
+function measurementAreaBadge(measurement) {
+    /* The frozen area a saved result was captured in, from its measurement
+     * target.  Legacy results (and demo data) carry no target and stay
+     * unlabelled rather than being silently called "Global". */
+    const target = measurement?.measurement_target;
+    if (!target || target.legacy || target.schema !== 'fxroute.measurement-target') return null;
+    const mod = outputSystemModule();
+    const label = (mod && typeof mod.roleLabel === 'function')
+        ? mod.roleLabel(String(target.bank_id || 'global'))
+        : String(target.bank_id || 'global');
+    const mode = String(target.mode || '');
+    const stale = !!measurement.measurement_target_stale;
+    return {
+        label,
+        mode,
+        stale,
+        title: mode
+            ? `${label} · ${mode === 'crossover' ? 'Crossover' : 'Stereo'} · measured ${label === 'Global' ? 'whole system' : 'area only'}`
+            : label,
+    };
+}
+
 function renderMeasurementPanelSavedListSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
     const selectedSavedCount = measurements.filter(measurement => measurementState.visibilityById?.[measurement.id]).length;
     const allSavedSelected = measurements.length > 0 && selectedSavedCount === measurements.length;
@@ -13169,6 +13197,10 @@ function renderMeasurementPanelSavedListSection({ measurementState, current, mea
         const timingInfo = getMeasurementTimingInfo(measurement);
         const micInputChannel = measurement.input_channels?.mic ? ` · Mic In ${measurement.input_channels.mic}` : '';
         const referenceInputChannel = measurement.input_channels?.electrical_reference ? ` · Ref In ${measurement.input_channels.electrical_reference}` : '';
+        const areaBadge = measurementAreaBadge(measurement);
+        const areaBadgeHtml = areaBadge
+            ? `<span class="measurement-area-badge${areaBadge.stale ? ' is-stale' : ''}" title="${escapeHtml(areaBadge.title)}">${escapeHtml(areaBadge.label)}</span>`
+            : '';
         return `
             <div class="measurement-list-item" style="${isVisibleInGraph ? `border-color:${traceColor}; box-shadow: inset 0 0 0 1px ${traceColor}33; background: linear-gradient(180deg, rgba(255,255,255,0.03), ${traceColor}12);` : ''}">
                 <div class="measurement-list-row">
@@ -13176,6 +13208,7 @@ function renderMeasurementPanelSavedListSection({ measurementState, current, mea
                         <input type="checkbox" data-measurement-toggle="${escapeHtml(measurement.id)}" ${isSelected ? 'checked' : ''}>
                         <span class="measurement-swatch ${isVisibleInGraph ? '' : 'measurement-swatch-inactive'}" ${isVisibleInGraph ? `style="background:${escapeHtml(traceColor)}"` : ''}></span>
                         <span class="measurement-list-title"><a href="${escapeHtml(measurementFileUrl(measurement.id))}" title="${escapeHtml(measurement.name)}">${escapeHtml(getCompactDisplayName(measurement.name, 24))}</a></span>
+                        ${areaBadgeHtml}
                     </span>
                     <span class="measurement-list-meta">${escapeHtml(formatMeasurementDate(measurement.created_at))}</span>
                 </div>

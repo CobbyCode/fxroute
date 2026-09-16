@@ -84,6 +84,10 @@ function normalizeMeasurementEntry(measurement = {}, index = 0) {
         review_summary: safeMeasurement.review_summary || {},
         analysis: safeMeasurement.analysis || {},
         audio_output_context: safeMeasurement.audio_output_context || {},
+        // Frozen area context (Task 7): the area, revision and processing the
+        // sweep ran through.  Absent on legacy results, which then stay
+        // unlabelled in the UI instead of being assumed Global.
+        measurement_target: safeMeasurement.measurement_target || null,
         storage_path: safeMeasurement.storage_path || '',
         traces,
         review_traces: reviewTraces,

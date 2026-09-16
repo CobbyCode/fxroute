@@ -34,7 +34,6 @@ __all__ = [
     "freeze_measurement_target",
     "measurement_target_from_context",
     "require_commit_target",
-    "require_target_matches",
     "summed_role_ids",
     "sweep_output_masks",
     "target_output_mask",
@@ -186,38 +185,6 @@ def sweep_output_masks(target: dict, *, roles: Sequence[str]) -> dict[str, int]:
             side_roles = set(measured)
         masks[side] = sum(1 << index for index, role in enumerate(ordered) if role not in side_roles)
     return masks
-
-
-def require_target_matches(
-    target: dict,
-    *,
-    mode: str,
-    bank_id: str,
-    processing_fingerprint: str,
-    output_key: str | None = None,
-    sample_rate_hz: int | None = None,
-) -> None:
-    """Reject a result or commit whose live context no longer fits its target.
-
-    Legacy results carry no frozen context and are accepted unchanged.
-    """
-    if isinstance(target, dict) and target.get("legacy"):
-        return
-    if not isinstance(target, dict) or target.get("schema") != SCHEMA:
-        raise ValueError("Measurement target is missing or malformed")
-    mismatches: list[str] = []
-    if target.get("mode") != mode:
-        mismatches.append(f"mode {target.get('mode')!r} != {mode!r}")
-    if target.get("bank_id") != bank_id:
-        mismatches.append(f"bank {target.get('bank_id')!r} != {bank_id!r}")
-    if target.get("processing_fingerprint") != processing_fingerprint:
-        mismatches.append("processing fingerprint changed")
-    if output_key is not None and target.get("device_key") != device_key(output_key):
-        mismatches.append("output device changed")
-    if sample_rate_hz is not None and target.get("sample_rate_hz") != sample_rate_hz:
-        mismatches.append(f"sample rate {target.get('sample_rate_hz')} != {sample_rate_hz}")
-    if mismatches:
-        raise ValueError("Measurement target mismatch: " + "; ".join(mismatches))
 
 
 # Live facts a stored target must still agree with before a correction that
