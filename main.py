@@ -42,7 +42,6 @@ from radio.metadata import RadioMetadataService
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "covers"
-TOP40_COVER_IMAGE = STATIC_DIR / "Top40.png"
 UPDATE_SCRIPT = BASE_DIR / "scripts" / "update_fxroute.sh"
 # Same rule as install.sh valid_local_hostname().
 _LOCAL_HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -3471,32 +3470,6 @@ async def clear_playback_queue():
     playback = build_playback_payload(runtime.player_instance.state)
     await manager.broadcast({"type": "playback", "data": playback})
     return {"status": "cleared" if had_queue else "idle", "playback": playback}
-
-
-@app.post("/api/playback/selection")
-async def sync_playback_selection(request: Request):
-    if not runtime.player_instance or not runtime.player_instance._running:
-        raise HTTPException(status_code=503, detail="Player not available")
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-
-    queue_track_ids = body.get("queue_track_ids") or []
-    if not isinstance(queue_track_ids, list):
-        raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"queue_track_ids\": <list>}")
-
-    scanner = runtime.music_library.scanner
-    tracks = await _drain_worker(scanner.get_tracks) if scanner is not None else None
-    playback = playback_queue.queue.sync_active_local_queue_selection(
-        queue_track_ids=queue_track_ids,
-        shuffle=bool(body.get("shuffle", False)),
-        loop=bool(body.get("loop", False)),
-        tracks=tracks,
-    )
-    await manager.broadcast({"type": "playback", "data": playback})
-    return {"status": "ok", "playback": playback}
 
 
 @app.post("/api/playback/shuffle")

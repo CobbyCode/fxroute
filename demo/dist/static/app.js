@@ -8746,10 +8746,6 @@ function smoothMeasurementTracePoints(points = [], mode = '1/6-oct') {
     return MeasurementDsp.smoothMeasurementTracePoints(points, mode);
 }
 
-function trackFileUrl(trackId = '') {
-    return MeasurementUI.trackFileUrl(trackId);
-}
-
 function measurementFileUrl(measurementId = '') {
     return MeasurementUI.measurementFileUrl(measurementId);
 }

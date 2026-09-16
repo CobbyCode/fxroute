@@ -41,7 +41,6 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "covers"
-TOP40_COVER_IMAGE = STATIC_DIR / "Top40.png"
 ALBUM_COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "album-covers"
 
 router = APIRouter()
@@ -358,13 +357,6 @@ async def get_smart_top_tracks(limit: int = 40):
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     return await _run_blocking(library_scanner.get_top_played_tracks, limit=limit)
-
-
-@router.get("/api/smart/top40/cover")
-async def get_smart_top40_cover():
-    if not TOP40_COVER_IMAGE.is_file():
-        raise HTTPException(status_code=404, detail="Top 40 cover not found")
-    return FileResponse(TOP40_COVER_IMAGE, media_type="image/png")
 
 
 def _list_albums_filtered(library_scanner, query: Optional[str]) -> List[Dict[str, Any]]:

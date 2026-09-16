@@ -117,10 +117,6 @@ function normalizeMeasurementReviewVisibility(measurements = [], previous = {}) 
     return next;
 }
 
-function trackFileUrl(trackId = '') {
-    return `/api/tracks/file/${encodeURIComponent(String(trackId || ''))}`;
-}
-
 function measurementFileUrl(measurementId = '') {
     return `/api/measurements/${encodeURIComponent(String(measurementId || ''))}/file`;
 }
@@ -983,7 +979,6 @@ function hybridSpeakerName(channel) {
         normalizeMeasurementVisibility,
         formatMeasurementDate,
         normalizeMeasurementReviewVisibility,
-        trackFileUrl,
         measurementFileUrl,
         presetFileUrl,
         getDefaultMeasurementPeqFilter,
