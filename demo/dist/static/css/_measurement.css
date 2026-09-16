@@ -930,6 +930,10 @@
     cursor: pointer;
     list-style: none;
     padding: 0.65rem 0.75rem;
+    /* Same arrow reserve the selects carry: the custom marker below is
+       absolutely positioned, so without this a long label would run into
+       the arrow band. */
+    padding-right: 1.55rem;
     font-weight: 600;
     position: relative;
 }
