@@ -3,8 +3,10 @@
 """Main FastAPI application for FXRoute."""
 
 import copy
+import cmath
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -342,6 +344,7 @@ from library.core import (
 )
 from downloader import Downloader
 from dsp.manager import DSPManager, ensure_kernel_supported_ir, parse_wav_frames
+from dsp.crossover import crossover_response, design_crossover
 from dsp.runtime import DSPRuntime, DSPRuntimeConfig, PlannedSyncTarget, _contains_link
 import dsp.api as dsp_api
 import dsp.orchestration as dsp_orchestration
@@ -4314,6 +4317,71 @@ async def apply_audio_output_state(request: Request):
         "live_reason": None,
         "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
     }
+
+
+def _crossover_way_points(role: str, role_settings: dict, sample_rate_hz: int,
+                          point_count: int = 180) -> list | None:
+    """Evaluate one way's crossover filters to log-spaced magnitude points.
+
+    Returns None when the way is incomplete (a required filter is missing),
+    mirroring the activation rule in the processing plan. Only crossover
+    filters shape this curve; area-bank PEQ/FIR correction is visualized in
+    the measurement graph instead.
+    """
+    try:
+        required = ("lowpass",) if role.endswith("low") else ("highpass",) if role.endswith("high") \
+            else ("highpass", "lowpass")
+        sections = []
+        for kind in ("highpass", "lowpass"):
+            definition = role_settings.get(kind)
+            if definition is None:
+                if kind in required:
+                    return None
+                continue
+            sections.extend(design_crossover(
+                {"kind": kind, "family": definition["family"],
+                 "slope_db_oct": definition["slope_db_oct"],
+                 "frequency_hz": definition["frequency_hz"]}, sample_rate_hz))
+    except (ValueError, KeyError, TypeError):
+        return None
+    points = []
+    for index in range(point_count):
+        frequency = 20.0 * (20000.0 / 20.0) ** (index / (point_count - 1))
+        total = 1.0 + 0.0j
+        for section in sections:
+            b0, b1, b2, _, a1, a2 = section
+            z = cmath.exp(2j * math.pi * frequency / sample_rate_hz)
+            total *= (b0 + b1 / z + b2 / z / z) / (1.0 + a1 / z + a2 / z / z)
+        points.append([round(frequency, 3), round(20.0 * math.log10(abs(total)), 3)])
+    return points
+
+
+@app.get("/api/audio/output-state/crossover-response")
+async def get_audio_output_state_crossover_response():
+    service = get_output_service()
+    try:
+        state = service.ensure_state()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
+    status = get_samplerate_status()
+    rate = status.get("active_rate")
+    if not isinstance(rate, int) or rate <= 0:
+        rate = status.get("force_rate")
+    if not isinstance(rate, int) or rate <= 0:
+        rate = 48000
+    mode = state["active_mode"]
+    ways = {}
+    for role, settings in state["modes"][mode]["processing"].items():
+        if not (role.startswith("left_") or role.startswith("right_")):
+            continue
+        points = _crossover_way_points(role, settings, rate)
+        ways[role] = {
+            "filters": {"highpass": settings["highpass"], "lowpass": settings["lowpass"]},
+            "complete": points is not None,
+            "points": points,
+        }
+    return {"status": "ok", "revision": state["revision"], "mode": mode,
+            "sample_rate_hz": rate, "ways": ways}
 
 
 @app.post("/api/audio/output-routing")
