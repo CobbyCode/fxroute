@@ -112,7 +112,7 @@ class AudioStateApiTests(unittest.TestCase):
         self.assertEqual(result["revision"], 2)
         self.assertTrue(result["fingerprint_changed"])
         self.assertFalse(result["live_applied"])
-        self.assertEqual(result["live_reason"], "v2-runtime-pending")
+        self.assertEqual(result["live_reason"], "dsp-runtime-unavailable")
         self.assertEqual(result["topology"]["sub_mode"], "mono")
         self.assertEqual(self.service.load()["modes"]["stereo"]["banks"]["sub1"]["preset"], "Room")
 

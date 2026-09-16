@@ -91,6 +91,18 @@ class ServiceMutationTests(unittest.TestCase):
             self.service.apply(lambda state: switch_mode(state, "crossover"), expected_revision=1)
         self.assertEqual(self.path.read_bytes(), committed)
 
+    def test_commit_prepared_candidate_and_revert_rebases_revision(self):
+        committed = stereo_state(self.service)
+        candidate = switch_mode(committed, "crossover")
+        second = self.service.commit(candidate, expected_revision=1)
+        self.assertEqual(second["revision"], 2)
+        self.assertEqual(second["active_mode"], "crossover")
+        third = self.service.revert(committed, expected_revision=2)
+        self.assertEqual(third["revision"], 3)
+        self.assertEqual(third["active_mode"], "stereo")
+        with self.assertRaises(StateConflictError):
+            self.service.revert(committed, expected_revision=2)
+
     def test_measurement_active_blocks_without_touching_bytes(self):
         stereo_state(self.service)
         busy = make_service(self.path, manager=self.manager, active=True)

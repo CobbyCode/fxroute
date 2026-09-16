@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 from audio.output_state_migration import migrate_legacy_output_state
 from audio.output_state_store import OutputStateStore, StateConflictError
+from dsp.native_config import layout_from_plan
 from dsp.processing_plan import compile_processing_plan
 
 __all__ = [
@@ -78,8 +79,37 @@ class OutputService:
         """Apply a pure state mutation under the measurement and revision guards."""
         if self._deps.measurement_active():
             raise MeasurementActiveError("Measurement is active; output state is locked")
-        return self._deps.store.commit(
-            mutate(self._deps.store.load()), expected_revision=expected_revision)
+        return self.commit(mutate(self._deps.store.load()), expected_revision=expected_revision)
+
+    def commit(self, candidate: dict, *, expected_revision: int) -> dict:
+        """Commit a prepared candidate (see apply for the guarded variant).
+
+        Separate load/mutate/commit phases enable two-stage transitions:
+        prepare and verify first, commit only after the runtime readback.
+        """
+        return self._deps.store.commit(candidate, expected_revision=expected_revision)
+
+    def revert(self, document: dict, *, expected_revision: int) -> dict:
+        """Recommit a previous document as a new revision (rollback path).
+
+        The document keeps its content but is rebased onto the expected
+        head revision, so concurrent commits still conflict instead of
+        being silently rewound.
+        """
+        candidate = dict(document)
+        candidate["revision"] = expected_revision
+        return self.commit(candidate, expected_revision=expected_revision)
+
+    def compile_plan(self, state: dict, *, output_key: str, channels: int,
+                     sample_rate_hz: int) -> dict:
+        """Compile the effective processing plan for one device and rate."""
+        return compile_processing_plan(
+            state, output_key=output_key, channels=channels,
+            sample_rate_hz=sample_rate_hz, preset_loader=self._deps.preset_loader)
+
+    def compile_layout(self, plan: dict) -> list[dict]:
+        """Map a compiled plan to a native engine output layout."""
+        return layout_from_plan(plan, resolve_ir=self._deps.resolve_ir)
 
     def fingerprint(self, state: dict, *, output_key: str, channels: int,
                     sample_rate_hz: int) -> str:
@@ -89,9 +119,12 @@ class OutputService:
         helpers; bank *selection* is intentionally excluded. Two commits
         with equal fingerprints drive identical DSP graphs on the device.
         """
-        plan = compile_processing_plan(
-            state, output_key=output_key, channels=channels,
-            sample_rate_hz=sample_rate_hz, preset_loader=self._deps.preset_loader)
+        return self.fingerprint_plan(
+            self.compile_plan(state, output_key=output_key, channels=channels,
+                              sample_rate_hz=sample_rate_hz))
+
+    def fingerprint_plan(self, plan: dict) -> str:
+        """Hash a compiled plan without recompiling it."""
         canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"),
                                allow_nan=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

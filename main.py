@@ -342,7 +342,7 @@ from library.core import (
 )
 from downloader import Downloader
 from dsp.manager import DSPManager, ensure_kernel_supported_ir, parse_wav_frames
-from dsp.runtime import DSPRuntime, DSPRuntimeConfig, _contains_link
+from dsp.runtime import DSPRuntime, DSPRuntimeConfig, PlannedSyncTarget, _contains_link
 import dsp.api as dsp_api
 import dsp.orchestration as dsp_orchestration
 import dsp.preset_loading as preset_loading
@@ -4017,6 +4017,42 @@ def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: i
     raise HTTPException(status_code=400, detail=f"Unknown mutation kind: {kind}")
 
 
+def _live_topology_key(state: dict, *, output_key: str, channels: int | None,
+                       rate: int | None) -> tuple:
+    """Physical-graph identity for the live fast-path gate.
+
+    Equal keys mean the engine's port graph stays valid: only DSP-internal
+    coefficients, trims and bank content change. Anything else (roles,
+    wiring, channel count, rate) needs the coordinator path.
+    """
+    mode = state.get("active_mode") if isinstance(state, dict) else None
+    assignments = routing_for_device(state, mode, output_key) if mode else []
+    return (mode, tuple(assignments[:channels or 0]), channels, rate)
+
+
+def _plan_transition_guard(old_layout, new_layout, previous_gain: float) -> float:
+    """Guard pin for a plan rebuild, mirroring the legacy mode guard."""
+    current_peak = max((float(channel.get("gain_db", 0.0)) for channel in old_layout),
+                       default=0.0)
+    target_peak = max((float(channel.get("gain_db", 0.0)) for channel in new_layout),
+                      default=0.0)
+    positive_gain_delta = max(0.0, target_peak - current_peak)
+    return min(0.0, float(previous_gain or 0.0) - max(1.0, positive_gain_delta + 1.0))
+
+
+def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
+                       hardware_ports: list, fingerprint: str | None):
+    """Render one plan to a runtime sync target (pre-commit, may raise)."""
+    layout = service.compile_layout(plan)
+    config = DSPRuntimeConfig.from_plan(
+        plan, layout=layout, output_key=output_key, sample_rate_hz=rate,
+        hardware_ports=hardware_ports, plan_fingerprint=fingerprint)
+    text = manager.compile_engine_text(
+        [dict(entry) for entry in layout], preset_name=plan["global"]["preset"],
+        sample_rate_hz=rate, extras_override=plan["global"]["extras"])
+    return PlannedSyncTarget(config=config, text=text)
+
+
 def _output_state_topology(state: dict, mode: str, output_key: str, channels: int | None) -> dict:
     topology = derive_topology(mode, routing_for_device(state, mode, output_key), channels=channels)
     return {"mode": topology.mode, "roles": list(topology.roles),
@@ -4095,21 +4131,28 @@ async def apply_audio_output_state(request: Request):
     target_rate = status.get("active_rate")
     if not isinstance(target_rate, int) or target_rate <= 0:
         target_rate = status.get("force_rate")
+    live_known = isinstance(target_rate, int) and target_rate > 0 and bool(channels)
+    old_plan = new_plan = None
     fingerprints: dict[str, str | None] = {"old": None, "new": None}
-    if isinstance(target_rate, int) and target_rate > 0 and channels:
+    if live_known:
         # A draft that cannot activate (incomplete routing, unresolvable
-        # bank preset) has no meaningful fingerprint; the commit below
-        # still persists it, activation gates on compilability later.
+        # bank preset) has no meaningful plan or fingerprint; the commit
+        # below still persists it, activation gates on compilability later.
         for key, document in (("old", state), ("new", candidate)):
             try:
-                fingerprints[key] = service.fingerprint(
+                plan = service.compile_plan(
                     document, output_key=output_key, channels=channels,
                     sample_rate_hz=target_rate)
+                fingerprints[key] = service.fingerprint_plan(plan)
             except (FileNotFoundError, ValueError):
-                fingerprints[key] = None
+                plan = None
+            if key == "old":
+                old_plan = plan
+            else:
+                new_plan = plan
 
     try:
-        committed = service.apply(mutate, expected_revision=expected_revision)
+        committed = service.commit(candidate, expected_revision=expected_revision)
     except StateConflictError as exc:
         raise HTTPException(status_code=409, detail={
             "code": "revision-conflict", "message": str(exc),
@@ -4119,14 +4162,71 @@ async def apply_audio_output_state(request: Request):
     except ValueError as exc:
         raise bad_request(exc)
     old_fp, new_fp = fingerprints["old"], fingerprints["new"]
+
+    def draft_response(reason: str) -> dict:
+        return {
+            "status": "ok",
+            "revision": committed["revision"],
+            "active_mode": committed["active_mode"],
+            "fingerprint": new_fp,
+            "fingerprint_changed": None if old_fp is None or new_fp is None else old_fp != new_fp,
+            "live_applied": False,
+            "live_reason": reason,
+            "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
+        }
+
+    if not live_known:
+        return draft_response("rate-unknown" if not target_rate else "output-capacity-unknown")
+    if old_plan is None or new_plan is None:
+        return draft_response("not-activatable")
+    if _live_topology_key(state, output_key=output_key, channels=channels, rate=target_rate) != \
+            _live_topology_key(candidate, output_key=output_key, channels=channels, rate=target_rate):
+        return draft_response("topology-change-pending-coordinator")
+    if old_fp == new_fp:
+        return draft_response("nothing-to-apply")
+    if runtime.dsp_runtime is None:
+        return draft_response("dsp-runtime-unavailable")
+    ports = (overview.get("output_mode") or {}).get("hardware_playback_ports") or []
+    if not ports:
+        return draft_response("output-ports-undiscovered")
+
+    manager = _require_dsp_manager()
+    try:
+        new_target = _build_plan_target(service, manager, new_plan, output_key=output_key,
+                                        rate=target_rate, hardware_ports=list(ports),
+                                        fingerprint=new_fp)
+        old_target = _build_plan_target(service, manager, old_plan, output_key=output_key,
+                                        rate=target_rate, hardware_ports=list(ports),
+                                        fingerprint=old_fp)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
+    previous_gain = float((runtime.dsp_runtime.snapshot() or {}).get("output_gain_db") or 0.0)
+    guard = _plan_transition_guard(old_target.config.layout, new_target.config.layout, previous_gain)
+    try:
+        await runtime.dsp_runtime.guarded_rebuild_rendered(
+            new_target, previous=old_target, guard_db=guard,
+            apply_candidate=lambda: None, apply_previous=lambda: None,
+            settle_seconds=0.0)
+    except BaseException as exc:
+        rolled_back = False
+        try:
+            service.revert(state, expected_revision=committed["revision"])
+            rolled_back = True
+            await runtime.dsp_runtime.sync_rendered(old_target, initial_output_gain_db=guard)
+        except BaseException:
+            logger.exception("Output-state fast-path rollback failed")
+        raise HTTPException(status_code=500, detail={
+            "code": "live-apply-failed", "message": str(exc),
+            "revision": service.load()["revision"] if rolled_back else committed["revision"],
+            "rollback": "committed" if rolled_back else "conflicted"}) from exc
     return {
         "status": "ok",
         "revision": committed["revision"],
         "active_mode": committed["active_mode"],
         "fingerprint": new_fp,
-        "fingerprint_changed": None if old_fp is None or new_fp is None else old_fp != new_fp,
-        "live_applied": False,
-        "live_reason": "v2-runtime-pending",
+        "fingerprint_changed": True,
+        "live_applied": True,
+        "live_reason": None,
         "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
     }
 
