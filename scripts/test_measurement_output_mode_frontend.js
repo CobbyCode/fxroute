@@ -57,7 +57,6 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         measurement: {
             hostCaptureAvailable: true,
             selectedInputId: 'pw-source-54',
-            selectedChannel: 'left',
             selectedMicInputChannel: '1',
             selectedReferenceInputChannel: '',
             selectedCalibrationRef: '',

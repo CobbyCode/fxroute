@@ -80,7 +80,6 @@ async function runAutoSubFlow(modeName) {
             currentMeasurementName: '',
             selectedInputId: 'demo_mic',
             selectedInputKey: 'demo_mic',
-            selectedChannel: 'left',
             selectedMicInputChannel: '1',
             selectedCalibrationRef: '',
         },

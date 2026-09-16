@@ -176,7 +176,6 @@ async function testStaleHybridPollDoesNotClobberNewJob() {
             jobGeneration: 5,
             selectedInputId: 'in1',
             selectedInputKey: 'k',
-            selectedChannel: 'left',
             selectedMicInputChannel: '1',
             selectedReferenceInputChannel: '',
         },

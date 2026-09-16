@@ -24,8 +24,8 @@ assert.match(index, /id="measurement-area-indicator"[^>]*aria-live="polite">Glob
 assert.match(index, /id="measurement-sweep-start"[^>]*>Run Single Sweep<\/button>/);
 assert.ok(index.indexOf('measurement-area-row') < index.indexOf('id="measurement-sweep-start"'), 'the area line sits above the single sweep action');
 assert.match(app, /const area = measurementAreaFromCatalog\(\);/);
-assert.match(app, /formData\.append\('channel', area \? area\.channel : \(state\.measurement\.selectedChannel \|\| 'left'\)\)/);
-assert.match(app, /formData\.append\('measurement_bank', area\.bank_id\)/);
+assert.match(app, /if \(area\) \{\n        formData\.append\('channel', area\.channel\);\n        formData\.append\('measurement_bank', area\.bank_id\);\n    \}/);
+assert.doesNotMatch(app, /state\.measurement\.selectedChannel/, 'the area is the only sweep scope; the channel fallback is gone');
 assert.match(app, /elements\.measurementAreaIndicator\.textContent = area \? area\.label : 'Global'/);
 assert.doesNotMatch(app, /\[data-measurement-channel\]/, 'no leftover output-channel chip handlers');
 assert.match(app, /void ensureMeasurementAreaCatalog\(\);/, 'opening the panel loads the area catalog');

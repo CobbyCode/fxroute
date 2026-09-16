@@ -122,7 +122,8 @@ async function startAutoSubOptimize() {
         const formData = new FormData();
         formData.append('input_id', inputId);
         formData.append('input_key', measurementState.selectedInputKey || '');
-        formData.append('channel', measurementState.selectedChannel || 'left');
+        // No explicit channel: Auto-Sub sweeps the whole system, so the
+        // endpoint default of a left-side sweep applies.
         deps.normalizeMeasurementInputChannelSelections();
         formData.append('mic_input_channel', measurementState.selectedMicInputChannel || '1');
         deps.appendMeasurementReferenceFields(formData);

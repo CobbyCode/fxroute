@@ -204,7 +204,6 @@ let state = {
         selectedReferenceInputChannel: '',
         selectedReferenceInputChannelLeft: '',
         selectedReferenceInputChannelRight: '',
-        selectedChannel: 'left',
         cancelRequested: false,
         repeatJobActive: false,
         displaySmoothing: '1/6-oct',
@@ -12036,10 +12035,13 @@ async function startHostMeasurement(jobGeneration = state.measurement.jobGenerat
     formData.append('input_id', state.measurement.selectedInputId);
     formData.append('input_key', state.measurement.selectedInputKey || '');
     // The selected area decides the sweep side and the frozen measurement
-    // target; there is no separate channel selector for a single sweep.
+    // target; there is no separate channel selector for a single sweep. With
+    // no area catalog loaded the server default of a left-side sweep applies.
     const area = measurementAreaFromCatalog();
-    formData.append('channel', area ? area.channel : (state.measurement.selectedChannel || 'left'));
-    if (area) formData.append('measurement_bank', area.bank_id);
+    if (area) {
+        formData.append('channel', area.channel);
+        formData.append('measurement_bank', area.bank_id);
+    }
     formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
     appendMeasurementReferenceFields(formData);
     const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
