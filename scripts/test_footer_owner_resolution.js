@@ -82,6 +82,7 @@ const FNAMES = [
     'getBackendFooterOwner',
     'getEffectivePlaybackControlSource',
     'setFooterSource',
+    'nonAppSourceModeActive',
     'spotifyPlayingOwnsFooter',
     'spotifyPausedHasFooterContext',
     'qobuzPlayingOwnsFooter',
@@ -112,6 +113,9 @@ function runCase({ ownerCache, spotify, qobuz, playback, entry }) {
                 ended: false,
                 ...(playback || {}),
             },
+            // Source-mode ownership pin: app-playback here keeps every
+            // existing owner case on its established path.
+            settings: { sourceMode: { mode: 'app-playback', pending: false } },
         },
         _spotifyTakeoverUntil: 0,
         _localFooterHoldUntil: 0,

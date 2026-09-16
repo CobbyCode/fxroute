@@ -69,6 +69,7 @@ assert.ok(/fetchQobuzStatus\(\)/.test(src), 'resync/tab paths must fetch Qobuz s
 const FNAMES = [
     'getBackendFooterOwner',
     'setFooterSource',
+    'nonAppSourceModeActive',
     'spotifyPlayingOwnsFooter',
     'spotifyPausedHasFooterContext',
     'qobuzPlayingOwnsFooter',
@@ -104,6 +105,9 @@ function makeSandbox({ footerSource = 'local', visibleTab = 'radio', owner = nul
                 paused: false,
                 ended: false,
             },
+            // Source-mode ownership pin: app-playback here keeps every
+            // existing owner case on its established path.
+            settings: { sourceMode: { mode: 'app-playback', pending: false } },
         },
         document: { hidden: false },
         _spotifyTakeoverUntil: 0,

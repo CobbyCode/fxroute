@@ -3497,7 +3497,12 @@ let _sourceSelectSignature = null;
 function renderSourceModeFooter() {
     const bar = elements.playbackBar;
     if (!bar) return;
-    const active = nonAppSourceModeActive() && !isStreamingFooterSource(window.__footerSource);
+    // Line sources own the footer outright: stale streaming ownership (e.g.
+    // a retained Spotify Paused context) must not suppress the switcher.
+    // reconcileFooterSource() already forces 'local' in these modes; this
+    // stays order-independent so no poll interleaving can flash the app
+    // footer back.
+    const active = nonAppSourceModeActive();
     bar.classList.toggle('source-mode', active);
     if (elements.sourceSwitcher) elements.sourceSwitcher.classList.toggle('hidden', !active);
     if (elements.transportControls) elements.transportControls.classList.toggle('hidden', active);
@@ -5100,6 +5105,14 @@ function localFooterHoldHasContext(playback = state.playback) {
 }
 
 function reconcileFooterSource() {
+    // Line-source modes own the footer exclusively with the source
+    // switcher. Entering them pauses app playback backend-side, so any
+    // retained streaming context (notably a Spotify Paused state) is stale
+    // and must not pull the footer back to the app layout.
+    if (nonAppSourceModeActive()) {
+        setFooterSource('local', 'source-mode-owns-footer');
+        return;
+    }
     const backendOwner = getBackendFooterOwner();
     if (backendOwner === 'local') {
         setFooterSource('local', 'backend-footer-owner-local');

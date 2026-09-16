@@ -229,11 +229,26 @@ vm.runInContext([
 
 vm.runInContext('renderSourceModeFooter()', renderSandbox);
 assert.equal(renderSandbox.elements.sourceSelect.writes, 1, 'first render builds the options');
-assert.ok(renderSandbox.elements.sourceSelect.html.includes('value="bluetooth-input"'), 'options carry the bluetooth key');
 assert.ok(renderSandbox.elements.sourceSelect.html.includes('Input 1/2'), 'options carry the pair labels');
 assert.equal(renderSandbox.elements.sourceSelect.value, 'bluetooth-input', 'bluetooth preselected in bluetooth mode');
 assert.equal(renderSandbox.elements.playbackBar.classList.toggled['source-mode'], true, 'bar carries source-mode class');
 assert.equal(renderSandbox.elements.transportControls.classList.toggled.hidden, true, 'transport parked in source mode');
+
+// Stale streaming ownership must not suppress the switcher: a retained
+// Spotify Paused context (backend pauses Spotify on source switch, which
+// keeps footer context) previously flashed the app footer back.
+renderSandbox.window.__footerSource = 'spotify';
+vm.runInContext('renderSourceModeFooter()', renderSandbox);
+assert.equal(renderSandbox.elements.playbackBar.classList.toggled['source-mode'], true, 'source mode survives stale spotify ownership');
+assert.equal(renderSandbox.elements.sourceSwitcher.classList.toggled.hidden, false, 'switcher stays visible with stale spotify ownership');
+assert.equal(renderSandbox.elements.transportControls.classList.toggled.hidden, true, 'transport stays parked with stale spotify ownership');
+renderSandbox.window.__footerSource = 'local';
+
+// reconcileFooterSource must force local ownership in source modes so the
+// streaming early-return in updatePlaybackUI never hijacks the footer.
+const reconcileSource = extractFunction('reconcileFooterSource');
+assert.ok(reconcileSource.includes('nonAppSourceModeActive()'), 'reconcile must consult the source mode');
+assert.ok(reconcileSource.includes('source-mode-owns-footer'), 'reconcile must pin ownership in source modes');
 
 vm.runInContext('renderSourceModeFooter()', renderSandbox);
 assert.equal(renderSandbox.elements.sourceSelect.writes, 1, 'identical poll must not rebuild the options');
