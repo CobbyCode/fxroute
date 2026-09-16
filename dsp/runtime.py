@@ -833,6 +833,14 @@ class DSPRuntime:
             elif kind == "output" and len(parts) == 5:
                 shape.append((kind, parts[1]))
                 values.append((kind, int(parts[1]), float(parts[2]), float(parts[3]), parts[4]))
+            elif kind in {"sos", "oconv"} and len(parts) >= 2:
+                # Output-bank lines join the shape with full content: any
+                # bank change forces a rebuild, while identical banks allow
+                # live updates of unrelated parameters. Live updates *for*
+                # bank coefficients arrive with the transaction integration;
+                # note peq live indices count peq lines per output, while sos
+                # lines share the native filter array in file order.
+                shape.append((kind, *parts[1:]))
             elif kind == "bypass":
                 shape.append((kind, parts[1:]))
         return shape, values

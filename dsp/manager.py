@@ -624,6 +624,71 @@ class DSPManager:
                 f"{self.OUTPUT_FILTER_MAX_BIQUADS} biquad stages")
         return validated
 
+    @staticmethod
+    def _sos_stable(a1: float, a2: float) -> bool:
+        """Mirror the native engine's pole-inside-unit-circle check."""
+        return abs(a2) < 1.0 and abs(a1) < 1.0 + a2
+
+    def _validate_output_sos(self, sos: Any, output_index: int,
+                             filters: List[dict]) -> List[list]:
+        """Validate raw second-order sections sharing the biquad budget."""
+        if sos is None:
+            return []
+        if not isinstance(sos, list):
+            raise ValueError(f"output_layout[{output_index}].sos must be an array")
+        used = sum(item["stages"] for item in filters)
+        validated = []
+        for position, section in enumerate(sos):
+            prefix = f"output_layout[{output_index}].sos[{position}]"
+            if not isinstance(section, (list, tuple)) or len(section) != 5:
+                raise ValueError(f"{prefix} must be [b0, b1, b2, a1, a2]")
+            try:
+                coefficients = [float(value) for value in section]
+            except (TypeError, ValueError):
+                raise ValueError(f"{prefix} coefficients must be numeric") from None
+            if not all(math.isfinite(value) for value in coefficients):
+                raise ValueError(f"{prefix} coefficients must be finite")
+            if not self._sos_stable(coefficients[3], coefficients[4]):
+                raise ValueError(f"{prefix} has poles outside the unit circle")
+            validated.append(coefficients)
+        if used + len(validated) > self.OUTPUT_FILTER_MAX_BIQUADS:
+            raise ValueError(
+                f"output_layout[{output_index}] exceeds "
+                f"{self.OUTPUT_FILTER_MAX_BIQUADS} biquad stages")
+        return validated
+
+    def _validate_output_oconv(self, oconv: Any, output_index: int) -> Optional[dict]:
+        """Validate one per-output convolver against its resolved IR file."""
+        if oconv is None:
+            return None
+        prefix = f"output_layout[{output_index}].oconv"
+        if not isinstance(oconv, dict) or set(oconv) != {
+                "path", "channel", "wet_db", "dry_db", "input_gain_db", "output_gain_db"}:
+            raise ValueError(
+                f"{prefix} requires path, channel, wet_db, dry_db, "
+                "input_gain_db and output_gain_db")
+        path = Path(str(oconv["path"] or ""))
+        if not path.is_file():
+            raise ValueError(f"{prefix}.path is not a readable IR file: {oconv['path']}")
+        try:
+            params = parse_wav_frames(path)
+            ensure_kernel_supported_ir(params, path.name)
+        except ValueError as exc:
+            raise ValueError(f"{prefix} has an invalid IR file: {exc}") from exc
+        channel = oconv["channel"]
+        if type(channel) is not int or not 0 <= channel < params["channels"]:
+            raise ValueError(
+                f"{prefix}.channel must select one of the "
+                f"{params['channels']} IR channels")
+        try:
+            gains = {key: float(oconv[key]) for key in (
+                "wet_db", "dry_db", "input_gain_db", "output_gain_db")}
+        except (TypeError, ValueError):
+            raise ValueError(f"{prefix} gains must be numeric") from None
+        if not all(math.isfinite(value) for value in gains.values()):
+            raise ValueError(f"{prefix} gains must be finite")
+        return {"path": str(path), "channel": channel, **gains}
+
     def compile_engine_config(self, output_layout: List[Dict[str, Any]], *,
                                preset_name: Optional[str] = None,
                                sample_rate_hz: int = 48000,
@@ -665,11 +730,16 @@ class DSPManager:
                 raise ValueError(f"output_layout[{index}].gain_db must be between -80 and 24")
             if not math.isfinite(delay_ms) or not 0 <= delay_ms <= 500:
                 raise ValueError(f"output_layout[{index}].delay_ms must be between 0 and 500")
+            validated_filters = self._validate_output_filters(
+                channel.get("filters", []), index, sample_rate_hz)
             outputs.append({"name": channel["name"], "routes": normalized_routes,
                              "gain_db": gain_db, "delay_ms": delay_ms,
                              "invert": bool(channel.get("invert", False)),
-                             "filters": self._validate_output_filters(
-                                 channel.get("filters", []), index, sample_rate_hz)})
+                             "filters": validated_filters,
+                             "sos": self._validate_output_sos(
+                                 channel.get("sos", []), index, validated_filters),
+                             "oconv": self._validate_output_oconv(
+                                 channel.get("oconv"), index)})
         active = clean_name(preset_name or self.get_active_preset())
         payload = self.preset_store.read(active)
         chain = copy.deepcopy(payload["chain"])
@@ -700,6 +770,18 @@ class DSPManager:
                     lines.append("peq %d %s %.9g %.9g %.9g" % (
                         output_index, filter_def["type"], float(filter_def["frequency_hz"]),
                         float(filter_def["q"]), float(filter_def["gain_db"])))
+            # Output biquads are LTI, so emitting bank PEQ above and crossover
+            # SOS here matches the processing plan response exactly even though
+            # the plan orders crossover before the area bank.
+            for section in output.get("sos", []):
+                lines.append("sos %d %.9g %.9g %.9g %.9g %.9g" % (
+                    output_index, *[float(value) for value in section]))
+            oconv = output.get("oconv")
+            if oconv is not None:
+                lines.append("oconv %d %d %.9g %.9g %.9g %.9g %s" % (
+                    output_index, int(oconv["channel"]), float(oconv["wet_db"]),
+                    float(oconv["dry_db"]), float(oconv["input_gain_db"]),
+                    float(oconv["output_gain_db"]), json.dumps(oconv["path"])))
 
         def number(value: Any) -> str:
             return format(float(value), ".9g")
