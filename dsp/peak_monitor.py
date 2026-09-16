@@ -21,7 +21,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 import playback.state as playback_state
 from common import process_stop
-from audio.samplerate import SOURCE_MODE_BLUETOOTH_INPUT, authoritative_sample_rate, get_samplerate_status
+from audio.samplerate import SOURCE_MODE_BLUETOOTH_INPUT, SOURCE_MODE_EXTERNAL_INPUT, authoritative_sample_rate, get_samplerate_status
 
 logger = logging.getLogger(__name__)
 
@@ -1220,21 +1220,34 @@ class PeakMonitorCoordinator:
                 and bluetooth.get("state") == "streaming"
                 and bluetooth.get("connected_device")
             )
+            external_key = (
+                (overview.get("selected_input") or {}).get("key")
+                or (overview.get("current_input") or {}).get("key")
+            )
+            is_external_active = bool(
+                overview.get("mode") == SOURCE_MODE_EXTERNAL_INPUT
+                and external_key
+            )
             desired_signature = None
+            desired_label = ""
             if is_bt_streaming:
                 desired_signature = f"bluetooth:{bluetooth.get('connected_device')}:{bluetooth.get('active_codec') or ''}"
+                desired_label = desired_signature
+            elif is_external_active:
+                desired_signature = f"external:{external_key}"
+                desired_label = desired_signature
 
-            if is_bt_streaming and (not self.armed or self.signature != desired_signature):
+            if desired_signature and (not self.armed or self.signature != desired_signature):
                 self.armed = True
                 self.signature = desired_signature
-                logger.info("Starting peak monitor for active Bluetooth input: %s", desired_signature)
+                logger.info("Starting peak monitor for active line source: %s", desired_label)
                 await self._peak_monitor().restart()
                 await self._broadcast_snapshot()
-            elif (not is_bt_streaming) and self.armed and str(self.signature or "").startswith("bluetooth:"):
+            elif (not desired_signature) and self.armed and str(self.signature or "").startswith(("bluetooth:", "external:")):
                 player_state = self._deps.get_player_state()
                 spotify_state = await self._deps.get_spotify_ui_state()
                 if not playback_state.is_local_playback_active(player_state) and not playback_state.is_spotify_playback_active(spotify_state):
-                    logger.info("Stopping peak monitor because Bluetooth input is no longer actively streaming")
+                    logger.info("Stopping peak monitor because the line source is no longer active")
                     await self._peak_monitor().stop()
                     self.armed = False
                     self.signature = None

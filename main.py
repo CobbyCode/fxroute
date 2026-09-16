@@ -2399,6 +2399,7 @@ async def lifespan(app: FastAPI):
                 )
             elif applied_source.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT:
                 logger.info("Re-applied persisted Bluetooth input mode")
+            await peak_monitor_coordinator.sync_source_mode_state(applied_source)
         except Exception as exc:
             logger.warning("Failed to re-apply source monitoring: %s", exc)
 
