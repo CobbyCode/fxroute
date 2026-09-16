@@ -106,11 +106,22 @@ class HardwareTierTests(unittest.TestCase):
         self.profile = "output:multichannel-output+input:multichannel-input"
         self.key = self.old_key
         self.channels, self.rate, self.volume, self.mute = 18, 48000, 23, False
+        self.pro_channels = 14
         self.force_rate = 48000
         self.events = []
         self.fail_reprobe = False
+        wake_patch = patch.object(channel_tiers.ChannelTierChange, "_wake_sink", return_value=None)
+        wake_patch.start()
+        self._wake_patch = wake_patch
+        self.addCleanup(self._stop_wake_patch)
         from audio.samplerate.persistence import _save_audio_output_selection
         _save_audio_output_selection(self.old_key)
+
+    def _stop_wake_patch(self):
+        try:
+            self._wake_patch.stop()
+        except RuntimeError:
+            pass
 
     def run_command(self, command):
         self.events.append(tuple(command))
@@ -137,7 +148,7 @@ class HardwareTierTests(unittest.TestCase):
         if command[:2] == ["pactl", "set-card-profile"]:
             self.profile = command[-1]
             if self.profile == "pro-audio":
-                self.key, self.channels, self.rate = self.new_key, 14, self.force_rate
+                self.key, self.channels, self.rate = self.new_key, self.pro_channels, self.force_rate
             elif self.profile != "off":
                 self.key, self.channels, self.rate = self.old_key, 18, self.force_rate
             return ""
@@ -194,44 +205,103 @@ class HardwareTierTests(unittest.TestCase):
         self.assertIn('"api.acp.pro-channels": 14', rule)
         self.assertIn('"api.acp.probe-rate": 96000', rule)
 
-    def test_default_tier_removes_rule_and_restores_multichannel_profile(self):
-        from audio.channel_tiers import default_output_profile
-        cards = ("Profiles:\n"
-                 "  off: Off (sinks: 0, sources: 0, priority: 0, available: yes)\n"
-                 "  output:multichannel-output+input:multichannel-input: Multichannel Duplex (sinks: 1, sources: 1, priority: 101, available: yes)\n"
-                 "  pro-audio: Pro Audio (sinks: 1, sources: 1, priority: 1, available: yes)\n"
-                 "Active Profile: pro-audio\n")
-        self.assertEqual(default_output_profile(cards, self.card),
-                         "output:multichannel-output+input:multichannel-input")
-        self.assertIsNone(default_output_profile("Profiles:\n  pro-audio: Pro Audio (sinks: 1, sources: 1, priority: 1, available: yes)\n", self.card))
-        multi = ("Card #1\n\tName: alsa_card.usb-OTHER-00\n\tProfiles:\n"
-                 "\t\toff: Off (sinks: 0, sources: 0, priority: 0, available: yes)\n"
-                 "\tActive Profile: off\n"
-                 "Card #2\n\tName: " + self.card + "\n\tProfiles:\n"
-                 "\t\toff: Off (sinks: 0, sources: 0, priority: 0, available: yes)\n"
-                 "\t\toutput:multichannel-output+input:multichannel-input: Multichannel Duplex (sinks: 1, sources: 1, priority: 101, available: yes)\n"
-                 "\tActive Profile: pro-audio\n")
-        self.assertEqual(default_output_profile(multi, self.card),
-                         "output:multichannel-output+input:multichannel-input")
-        self.assertIsNone(default_output_profile(multi, "alsa_card.usb-OTHER-00"))
-        # Currently on the small tier; switching back removes the rule file,
-        # restores the stock profile and migrates the sink identity back.
-        self.key, self.channels, self.rate = self.new_key, 14, 96000
-        self.profile = "pro-audio"
-        from audio.samplerate.persistence import _save_audio_output_selection
-        _save_audio_output_selection(self.new_key)
-        change = channel_tiers.ChannelTierChange(
-            self.new_key, {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
-            48000, run=self.run_command, default_tier=True,
+    def test_largest_tier_uses_explicit_pro_audio_path(self):
+        # The stock multichannel special case is gone: even the largest
+        # inventory reprobes through the pro-audio rule (PipeWire 1.4.6
+        # exposed only 10ch on the stock profile at 44.1 kHz).
+        self.assertFalse(hasattr(channel_tiers, "default_output_profile"))
+        tiers = [
+            {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+            {"id": "14ch", "channels": 14, "rates": [88200, 96000], "probe_rate": 96000},
+            {"id": "10ch", "channels": 10, "rates": [176400, 192000], "probe_rate": 192000},
+        ]
+        change = channel_tiers.prepare_change(
+            self.old_key,
+            {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+            48000, tiers,
         )
-        change.rule_path.parent.mkdir(parents=True, exist_ok=True)
-        change.rule_path.write_text("stale rule")
+        change.run = self.run_command
+        self.assertEqual(change.new_key, self.new_key)
+        self.pro_channels = 18
         change.capture()
         change.apply()
-        self.assertFalse(change.rule_path.exists())
         from audio.samplerate.persistence import _load_audio_output_selection
-        self.assertEqual(_load_audio_output_selection()["selected_key"], self.old_key)
-        self.assertEqual((self.channels, self.rate, self.profile), (18, 48000, "output:multichannel-output+input:multichannel-input"))
+        self.assertEqual(_load_audio_output_selection()["selected_key"], self.new_key)
+        self.assertEqual((self.channels, self.rate, self.profile), (18, 48000, "pro-audio"))
+        rule = change.rule_path.read_text()
+        self.assertIn('"api.acp.pro-channels": 18', rule)
+        self.assertIn('"api.acp.probe-rate": 48000', rule)
+        self.assertIn('"device.profile": "pro-audio"', rule)
+
+    def test_tier_to_tier_switch_stays_on_pro_audio_path(self):
+        # Switching between tiers (pro -> pro) keeps the sink identity and
+        # only rewrites the rule; the source rewrite is a no-op.
+        from audio.samplerate.persistence import (
+            _audio_source_selection_path,
+            _save_audio_output_selection,
+        )
+        self.key, self.channels, self.rate = self.new_key, 14, 96000
+        self.profile = "pro-audio"
+        self.pro_channels = 14
+        _save_audio_output_selection(self.new_key)
+        tiers = [
+            {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+            {"id": "14ch", "channels": 14, "rates": [88200, 96000], "probe_rate": 96000},
+        ]
+        stale_rule = {"monitor.alsa.rules": [{"matches": [{"device.name": self.card}],
+            "actions": {"update-props": {"api.acp.pro-channels": 14,
+                                         "api.acp.probe-rate": 96000,
+                                         "device.profile": "pro-audio"}}}]}
+        source_path = _audio_source_selection_path()
+        pro_source = self.new_key.replace("alsa_output.", "alsa_input.", 1).rsplit(".", 1)[0] + ".pro-input-0"
+        source_path.write_text(json.dumps({"selected_input_key": pro_source}))
+        change = channel_tiers.prepare_change(
+            self.new_key,
+            {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+            48000, tiers,
+        )
+        change.run = self.run_command
+        self.assertEqual(change.new_key, self.new_key)
+        change.rule_path.parent.mkdir(parents=True, exist_ok=True)
+        change.rule_path.write_text(json.dumps(stale_rule))
+        self.pro_channels = 18
+        change.capture()
+        change.apply()
+        from audio.samplerate.persistence import _load_audio_output_selection
+        self.assertEqual(_load_audio_output_selection()["selected_key"], self.new_key)
+        self.assertEqual((self.channels, self.rate, self.profile), (18, 48000, "pro-audio"))
+        rule = change.rule_path.read_text()
+        self.assertIn('"api.acp.pro-channels": 18', rule)
+        self.assertEqual(json.loads(source_path.read_text())["selected_input_key"], pro_source)
+
+    def test_failed_tier_to_tier_switch_rolls_back_to_pro_tier(self):
+        from audio.samplerate.persistence import _save_audio_output_selection
+        self.key, self.channels, self.rate = self.new_key, 14, 96000
+        self.profile = "pro-audio"
+        self.pro_channels = 14
+        _save_audio_output_selection(self.new_key)
+        tiers = [
+            {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+            {"id": "14ch", "channels": 14, "rates": [88200, 96000], "probe_rate": 96000},
+        ]
+        change = channel_tiers.prepare_change(
+            self.new_key,
+            {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+            48000, tiers,
+        )
+        change.run = self.run_command
+        change.rule_path.parent.mkdir(parents=True, exist_ok=True)
+        change.rule_path.write_text("stale 14ch rule")
+        change.capture()
+        self.fail_reprobe = True
+        with self.assertRaisesRegex(RuntimeError, "reprobe failed"):
+            change.apply()
+        change.rollback()
+        from audio.samplerate.persistence import _load_audio_output_selection
+        self.assertEqual(_load_audio_output_selection()["selected_key"], self.new_key)
+        self.assertEqual((self.channels, self.rate, self.profile), (14, 96000, "pro-audio"))
+        self.assertEqual(change.rule_path.read_text(), "stale 14ch rule")
+
 
     def test_transient_gate_readback_is_retried_not_failed(self):
         change = self.change()
@@ -289,6 +359,71 @@ class HardwareTierTests(unittest.TestCase):
         self.assertEqual(_load_audio_output_selection()["selected_key"], self.old_key)
         self.assertEqual((self.channels, self.rate, self.volume, self.mute), (18, 48000, 23, True))
         self.assertFalse(change.rule_path.exists())
+
+    def test_wake_keepalive_spans_gate_confirm(self):
+        self._stop_wake_patch()
+        FakeWakeProcess.created = []
+        FakeWakeProcess.exit_first = 0
+        change = self.change()
+        change.capture()
+        with patch("audio.channel_tiers.subprocess.Popen", FakeWakeProcess):
+            with patch("time.sleep", return_value=None):
+                change.apply()
+        self.assertEqual(len(FakeWakeProcess.created), 1)
+        player = FakeWakeProcess.created[0]
+        self.assertEqual(player.argv[0], "pw-cat")
+        self.assertEqual(player.argv[player.argv.index("--target") + 1], self.new_key)
+        self.assertTrue(player.terminated, "keep-alive must stop after the confirm")
+        self.assertFalse(Path(player.argv[-1]).exists(), "silence file must be removed")
+        self.assertEqual((self.channels, self.rate, self.volume, self.mute), (14, 96000, 23, True))
+
+    def test_exited_wake_player_is_respawned(self):
+        self._stop_wake_patch()
+        FakeWakeProcess.created = []
+        FakeWakeProcess.exit_first = 1
+        change = self.change()
+        change.capture()
+        with patch("audio.channel_tiers.subprocess.Popen", FakeWakeProcess):
+            with patch("time.sleep", return_value=None):
+                change.apply()
+        self.assertEqual(len(FakeWakeProcess.created), 2)
+        self.assertTrue(all(player.terminated for player in FakeWakeProcess.created))
+        self.assertEqual((self.channels, self.rate), (14, 96000))
+
+    def test_missing_player_degrades_to_direct_confirm(self):
+        self._stop_wake_patch()
+        change = self.change()
+        change.capture()
+        with patch("audio.channel_tiers.subprocess.Popen", side_effect=FileNotFoundError("pw-cat")):
+            with patch("time.sleep", return_value=None):
+                change.apply()
+        self.assertEqual((self.channels, self.rate, self.volume, self.mute), (14, 96000, 23, True))
+
+
+class FakeWakeProcess:
+    """Stand-in for the silence keep-alive player (no audio stack needed)."""
+
+    created = []
+    exit_first = 0
+
+    def __init__(self, args, **kwargs):
+        self.argv = list(args)
+        self.terminated = False
+        self.killed = False
+        type(self).created.append(self)
+        self._exited = len(type(self).created) <= type(self).exit_first
+
+    def poll(self):
+        return 0 if self._exited else None
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        self.killed = True
 
 
 class TierCoordinatorTests(unittest.IsolatedAsyncioTestCase):

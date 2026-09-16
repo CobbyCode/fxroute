@@ -105,8 +105,10 @@ SourceForge. Khadas/VIM1S stays internal and gets no public image.
   Auto select a rate and the coordinator reprobes profiled devices into the
   rate's native tier; Auto follows the source rate across tier boundaries
   and never resamples to stay inside an inventory. Tier switches keep an
-  already offered fixed rate, returning to the largest tier restores the
-  stock multichannel profile, and source changes never switch tiers.
+  already offered fixed rate, every tier (including the largest) reprobes
+  through the explicit Pro Audio path (`pro-audio` + `api.acp.pro-channels`
+  / probe-rate rule) instead of the stock multichannel profile, and source
+  changes never switch tiers.
 - Routing performance on large devices (Scarlett 16i16, measured on `.104`):
   direct-source disconnects read the live graph once instead of probing the
   full matrix (~6.9 s to ~2.0 s per routing save); the idle link-watcher

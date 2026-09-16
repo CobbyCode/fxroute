@@ -12,7 +12,10 @@ import json
 import logging
 import os
 import re
+import subprocess
+import tempfile
 import time
+import wave
 from pathlib import Path
 from typing import Callable
 
@@ -28,66 +31,52 @@ logger = logging.getLogger(__name__)
 
 TIER_REOPEN_TIMEOUT_SECONDS = 25.0
 TIER_REOPEN_POLL_SECONDS = 0.5
+# Silence held on the fresh sink while the output gate is confirmed. Idle
+# pro-audio nodes on PipeWire <1.6 silently drop mute writes; the mute
+# persists once applied while the node runs, so the gate confirm plays
+# inaudible zeros until the mute readback holds.
+TIER_WAKE_SILENCE_SECONDS = 8
 
 
-def default_output_profile(cards_output: str, card_name: str) -> str | None:
-    """Return the card's stock multichannel output profile, if advertised."""
-    current: str | None = None
-    in_profiles = False
-    candidates: list[str] = []
-    for raw_line in (cards_output or "").splitlines():
-        line = raw_line.strip()
-        if line.startswith("Name:"):
-            current = line[len("Name:"):].strip()
-            in_profiles = False
-            continue
-        if current is not None and current != card_name:
-            continue
-        if line == "Profiles:":
-            in_profiles = True
-            continue
-        if in_profiles and (line.startswith("Active Profile:") or line.startswith("Ports:")):
-            break
-        if in_profiles and "multichannel-output" in line and "available: yes" in line:
-            match = re.match(r"^(\S+):\s", line)
-            if match:
-                candidates.append(match.group(1))
-    for candidate in candidates:
-        if "+input:" in candidate:
-            return candidate
-    return candidates[0] if candidates else None
+def _write_silence_wav(seconds: int = TIER_WAKE_SILENCE_SECONDS) -> str:
+    """Write a short stereo silence file for the gate-confirm keep-alive."""
+    frames = max(1, int(seconds)) * 44100
+    handle = tempfile.NamedTemporaryFile(prefix="fxroute-tier-silence-", suffix=".wav", delete=False)
+    try:
+        with wave.open(handle, "wb") as wav:
+            wav.setnchannels(2)
+            wav.setsampwidth(2)
+            wav.setframerate(44100)
+            wav.writeframes(bytes(frames * 4))
+    finally:
+        handle.close()
+    return handle.name
 
 
 def prepare_change(output_key: str, tier: dict, target_rate: int, tiers: list) -> "ChannelTierChange":
-    """Build an uncaptured tier change, flagging the stock-profile return.
+    """Build an uncaptured tier change on the explicit Pro Audio path.
 
-    The largest inventory is the device's stock multichannel profile (no rule
-    file); smaller ones go through the pro-audio rule.
+    Every Scarlett tier, including the largest inventory, goes through the
+    pro-audio rule: the stock multichannel profile does not expose every
+    altset on all stacks (seen: 10ch at 44.1 kHz on PipeWire 1.4.6).
     """
     bands = [item for item in tiers if isinstance(item, dict)]
-    largest = max([int(item.get("channels") or 0) for item in bands] or [0])
     return ChannelTierChange(
-        output_key, dict(tier), target_rate,
-        default_tier=bool(bands) and int(tier.get("channels") or 0) >= largest,
-        tiers=list(bands),
+        output_key, dict(tier), target_rate, tiers=list(bands),
     )
 
 
 class ChannelTierChange:
     def __init__(self, output_key: str, tier: dict, target_rate: int, *, run: Callable = _run_command,
-                 default_tier: bool = False, tiers: list | None = None):
+                 tiers: list | None = None):
         if not profile_id(output_key) or not output_key.startswith("alsa_output."):
             raise ValueError("Selected output has no supported channel-tier profile")
         allowed = cumulative_rates(tiers, tier.get("id")) if tiers else list(tier.get("rates", []))
         if target_rate not in allowed:
             raise ValueError("Target rate is not available in the selected channel tier")
         self.old_key = output_key
-        self.default_tier = bool(default_tier)
         prefix = output_key.rsplit(".", 1)[0]
-        if self.default_tier:
-            self.new_key = prefix + ".multichannel-output" if output_key.endswith(".pro-output-0") else output_key
-        else:
-            self.new_key = prefix + ".pro-output-0"
+        self.new_key = prefix + ".pro-output-0"
         self.card = output_key.replace("alsa_output.", "alsa_card.", 1).rsplit(".", 1)[0]
         self.tier, self.target_rate, self.run = dict(tier), target_rate, run
         root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
@@ -144,6 +133,42 @@ class ChannelTierChange:
         self.run(["pactl", "set-card-profile", self.card, "off"])
         self.run(["pw-metadata", "-n", "settings", "0", "clock.force-rate", str(rate)])
 
+    def _wake_sink(self, key: str) -> tuple | None:
+        """Hold inaudible silence on the fresh sink for the gate confirm.
+
+        Returns the player handle for :meth:`_stop_wake`, or None when no
+        player is available (the confirm then proceeds without keep-alive).
+        """
+        try:
+            path = _write_silence_wav()
+        except OSError as exc:
+            logger.info("Channel-tier sink wake skipped, silence unwritable: %s", exc)
+            return None
+        try:
+            proc = subprocess.Popen(["pw-cat", "-p", "--target", key, path],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            logger.info("Channel-tier sink wake skipped, no silence player: %s", exc)
+            Path(path).unlink(missing_ok=True)
+            return None
+        return (proc, path)
+
+    @staticmethod
+    def _stop_wake(handle: tuple | None) -> None:
+        if handle is None:
+            return
+        proc, path = handle
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        finally:
+            Path(path).unlink(missing_ok=True)
+
     def _reopen(self, key: str, profile: str, channels: int) -> None:
         logger.info("Channel-tier reprobe start: key=%s profile=%s channels=%s rate=%s",
                     key, profile, channels, self.target_rate)
@@ -172,24 +197,31 @@ class ChannelTierChange:
                     # pre-loop read.
                     time.sleep(0.5)
                     last_error: Exception | None = None
-                    for attempt in range(3):
-                        try:
-                            self.run(["pactl", "set-sink-mute", key, "1"])
-                            self.run(["pactl", "set-sink-volume", key, f"{self.volume}%"])
-                            live = next((item for item in self._sinks() if item.get("name") == key), None)
-                            if live is None:
-                                raise RuntimeError("Recreated hardware sink disappeared before the gate confirm")
-                            if self._spec(live)[0] != channels:
-                                raise ValueError(f"Channel-tier readback mismatch: expected {channels}, got {self._spec(live)[0]}")
-                            if not live.get("mute") or abs(self._volume(live) - self.volume) > 1:
-                                raise ValueError("Recreated sink did not retain the output gate and volume")
-                            break
-                        except (RuntimeError, ValueError, KeyError) as exc:
-                            last_error = exc
-                            logger.info("Channel-tier gate confirm attempt %s waiting: %s", attempt + 1, exc)
-                            time.sleep(0.5)
-                    else:
-                        raise last_error or RuntimeError("Recreated sink did not retain the output gate and volume")
+                    wake = self._wake_sink(key)
+                    try:
+                        for attempt in range(3):
+                            try:
+                                if wake is not None and wake[0].poll() is not None:
+                                    self._stop_wake(wake)
+                                    wake = self._wake_sink(key)
+                                self.run(["pactl", "set-sink-mute", key, "1"])
+                                self.run(["pactl", "set-sink-volume", key, f"{self.volume}%"])
+                                live = next((item for item in self._sinks() if item.get("name") == key), None)
+                                if live is None:
+                                    raise RuntimeError("Recreated hardware sink disappeared before the gate confirm")
+                                if self._spec(live)[0] != channels:
+                                    raise ValueError(f"Channel-tier readback mismatch: expected {channels}, got {self._spec(live)[0]}")
+                                if not live.get("mute") or abs(self._volume(live) - self.volume) > 1:
+                                    raise ValueError("Recreated sink did not retain the output gate and volume")
+                                break
+                            except (RuntimeError, ValueError, KeyError) as exc:
+                                last_error = exc
+                                logger.info("Channel-tier gate confirm attempt %s waiting: %s", attempt + 1, exc)
+                                time.sleep(0.5)
+                        else:
+                            raise last_error or RuntimeError("Recreated sink did not retain the output gate and volume")
+                    finally:
+                        self._stop_wake(wake)
                     self.run(["pactl", "set-default-sink", key])
                     _save_audio_output_selection(key)
                     logger.info("Channel-tier reprobe done: key=%s polls=%s", key, iterations)
@@ -207,25 +239,20 @@ class ChannelTierChange:
             raise RuntimeError("Channel-tier change has no hardware snapshot")
         self.started = True
         self._release_and_pin(self.target_rate)
-        if self.default_tier:
-            profile = default_output_profile(self.cards_text, self.card)
-            if profile is None:
-                raise RuntimeError("Selected hardware card has no multichannel output profile")
-            self._write_rule(None)
-            self._reopen(self.new_key, profile, self.tier["channels"])
-            old_suffix, new_suffix = ".pro-input-0", ".multichannel-input"
-        else:
-            rule = {"monitor.alsa.rules": [{
-                "matches": [{"device.name": self.card}],
-                "actions": {"update-props": {
-                    "api.acp.pro-channels": self.tier["channels"],
-                    "api.acp.probe-rate": self.tier["probe_rate"],
-                    "device.profile": "pro-audio",
-                }},
-            }]}
-            self._write_rule((json.dumps(rule, indent=2) + "\n").encode())
-            self._reopen(self.new_key, "pro-audio", self.tier["channels"])
-            old_suffix, new_suffix = ".multichannel-input", ".pro-input-0"
+        rule = {"monitor.alsa.rules": [{
+            "matches": [{"device.name": self.card}],
+            "actions": {"update-props": {
+                "api.acp.pro-channels": self.tier["channels"],
+                "api.acp.probe-rate": self.tier["probe_rate"],
+                "device.profile": "pro-audio",
+            }},
+        }]}
+        self._write_rule((json.dumps(rule, indent=2) + "\n").encode())
+        self._reopen(self.new_key, "pro-audio", self.tier["channels"])
+        # Tier-to-tier switches stay on pro-audio: then the old source has
+        # the pro-input suffix as well and the rewrite below is a no-op.
+        old_suffix = ".pro-input-0" if self.old_key.endswith(".pro-output-0") else ".multichannel-input"
+        new_suffix = ".pro-input-0"
         if self.old_source_selection:
             old_source = self.old_key.replace("alsa_output.", "alsa_input.", 1).rsplit(".", 1)[0] + old_suffix
             new_source = self.new_key.replace("alsa_output.", "alsa_input.", 1).rsplit(".", 1)[0] + new_suffix
