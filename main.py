@@ -3416,7 +3416,7 @@ async def set_volume(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
     await _drain_worker(ensure_local_source_volume)
     await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
-    return {"volume": volume_result["volume"]}
+    return {"status": "ok", "volume": volume_result["volume"]}
 
 @app.post("/api/playback/next")
 async def next_playback():
@@ -3880,8 +3880,8 @@ async def save_audio_output_routing_route(request: Request):
             target_rate=target_rate, target_url=context.get("target_url"),
             target_track=dict(context.get("target_track") or {}),
             should_play=bool(context.get("should_play")), reload_source=False,
-            detail="api-audio-output-routing", output_mode_target=target,
-            output_mode_config=samplerate._load_audio_output_mode(),
+            detail="api-audio-output-routing",            output_mode_target=target,
+            output_mode_config=samplerate.load_audio_output_mode_snapshot(),
             output_routing_config={"key": output["key"], "channels": channels, "assignments": assignments},
         ))
         return await audio_output_overview()
@@ -3929,10 +3929,7 @@ async def save_audio_output_mode_route(request: Request):
         ).strip()
         if target_mode == current_mode:
             previous_overview = get_audio_output_overview()
-            try:
-                previous_mode_raw = samplerate._audio_output_mode_path().read_bytes()
-            except OSError:
-                previous_mode_raw = None
+            previous_mode_raw = samplerate.read_audio_output_mode_raw()
             result = persist_audio_output_mode(target["config"])
             if runtime.dsp_runtime is None:
                 await dsp_orchestrator.sync_runtime(result, reason="output-mode-params", retry_on_stale=True)
@@ -3947,13 +3944,7 @@ async def save_audio_output_mode_route(request: Request):
                     )
                 except Exception:
                     try:
-                        if previous_mode_raw is None:
-                            try:
-                                samplerate._audio_output_mode_path().unlink(missing_ok=True)
-                            except OSError:
-                                logger.exception("Failed to remove persisted output mode after same-mode transition failure")
-                        elif samplerate._audio_output_mode_path().read_bytes() != previous_mode_raw:
-                            samplerate._audio_output_mode_path().write_bytes(previous_mode_raw)
+                        samplerate.restore_audio_output_mode_raw(previous_mode_raw)
                     except OSError:
                         logger.exception("Failed to restore persisted output mode after same-mode transition failure")
                     try:

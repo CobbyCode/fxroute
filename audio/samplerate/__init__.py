@@ -93,9 +93,12 @@ from audio.samplerate.persistence import (
     _save_audio_output_selection,
     _save_audio_source_selection,
     effective_playback_rate,
+    load_audio_output_mode_snapshot,
     load_sample_rate_policy,
     normalize_sample_rate_policy,
     persist_sample_rate_policy,
+    read_audio_output_mode_raw,
+    restore_audio_output_mode_raw,
 )
 
 from audio.samplerate.bluetooth import (

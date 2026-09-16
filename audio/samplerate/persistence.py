@@ -259,6 +259,37 @@ def _load_audio_source_selection() -> dict[str, Any]:
         "selected_input_key": selected_input_key if isinstance(selected_input_key, str) and selected_input_key else None,
     }
 
+def load_audio_output_mode_snapshot() -> dict[str, Any]:
+    """Load the normalized audio output mode (public API for callers outside
+    this package; main.py previously reached into the private helpers)."""
+    return _load_audio_output_mode()
+
+def read_audio_output_mode_raw() -> bytes | None:
+    """Read the raw persisted output-mode file bytes for rollback snapshots.
+
+    Returns ``None`` when the file is missing or unreadable. Callers pass the
+    value to :func:`restore_audio_output_mode_raw` unchanged.
+    """
+    path = _audio_output_mode_path()
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+def restore_audio_output_mode_raw(previous: bytes | None) -> None:
+    """Restore a raw snapshot taken by :func:`read_audio_output_mode_raw`.
+
+    ``None`` deletes the file (it did not exist before); otherwise the exact
+    bytes are rewritten. Raises ``OSError`` on failure.
+    """
+    path = _audio_output_mode_path()
+    if previous is None:
+        path.unlink(missing_ok=True)
+        return
+    current = read_audio_output_mode_raw()
+    if current != previous:
+        path.write_bytes(previous)
+
 def _load_pipewire_clock_rate_config() -> dict[str, Any]:
     path = _pipewire_clock_rate_dropin_path()
     if not path.exists():

@@ -34,6 +34,42 @@ def _track(track_id: str, *, rate: int = 44100) -> dict:
     }
 
 
+def _install_globals(names) -> dict:
+    """Snapshot the shared playback globals from whichever module owns them."""
+    return {
+        name: (
+            getattr(main.runtime, name)
+            if hasattr(main.runtime, name)
+            else getattr(main.playback_state, name)
+            if hasattr(main.playback_state, name)
+            else getattr(main, name)
+        )
+        for name in names
+    }
+
+
+def _restore_globals(originals: dict) -> None:
+    for name, value in originals.items():
+        setattr(
+            main.runtime
+            if hasattr(main.runtime, name)
+            else main.playback_state
+            if hasattr(main.playback_state, name)
+            else main,
+            name,
+            value,
+        )
+
+
+# Union of the globals both queue test classes snapshot. The install/restore
+# helpers tolerate names that only some classes carry (e.g.
+# last_radio_track_info), so one shared tuple is enough.
+_QUEUE_TEST_GLOBALS = (
+    "player_instance", "music_library", "current_track_info",
+    "last_track_info", "last_radio_track_info", "current_playback_owner",
+)
+
+
 class _ScannerTrack:
     def __init__(self, track_id: str, *, rate: int = 44100) -> None:
         self.id = track_id
@@ -123,14 +159,11 @@ class _MpvPlaylistPlayer:
 
 
 class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
-    GLOBALS = (
-        "player_instance", "music_library", "current_track_info",
-        "last_track_info", "last_radio_track_info", "current_playback_owner",
-    )
+    GLOBALS = _QUEUE_TEST_GLOBALS
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
                  loop: bool = False, shuffle: bool = False) -> dict:
-        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in self.GLOBALS}
+        originals = _install_globals(self.GLOBALS)
         self._saved_queue = queue_state()
         main.runtime.player_instance = _FakePlayer()
         main.runtime.music_library.scanner = _Scanner(["a", "b", "c", "d"])
@@ -149,8 +182,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
     def _restore(self, originals: dict) -> None:
         restore_queue_state(self._saved_queue)
-        for name, value in originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
+        _restore_globals(originals)
 
     def _patches(self, transition, *, radio_stations: list[_Station] | None = None):
         async def no_op(*_args, **_kwargs):
@@ -759,14 +791,11 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
 class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
     """sync_active_local_queue_selection: prepare candidate, commit it, keep track dict."""
 
-    GLOBALS = (
-        "player_instance", "music_library", "current_track_info",
-        "last_track_info", "current_playback_owner",
-    )
+    GLOBALS = _QUEUE_TEST_GLOBALS
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
                  shuffle: bool = False) -> dict:
-        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in self.GLOBALS}
+        originals = _install_globals(self.GLOBALS)
         self._saved_queue = queue_state()
         main.runtime.player_instance = _FakePlayer()
         main.runtime.music_library.scanner = _Scanner(["a", "b", "c", "d"])
@@ -785,8 +814,7 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
     def _restore(self, originals: dict) -> None:
         restore_queue_state(self._saved_queue)
-        for name, value in originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
+        _restore_globals(originals)
 
     async def test_selection_commits_prepared_queue_and_track_dict(self):
         queue_a = [_track("a"), _track("b"), _track("c")]
