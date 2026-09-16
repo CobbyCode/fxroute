@@ -241,6 +241,10 @@ class MeasurementStore:
     def list_measurements(self) -> dict[str, Any]:
         return self._persistence.list_measurements()
 
+    def get_measurement(self, measurement_id: str) -> dict[str, Any]:
+        """Return one stored measurement by id; unknown ids raise KeyError."""
+        return self._persistence.load_measurement(measurement_id)
+
     def save_measurement(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._persistence.save_measurement(payload)
 

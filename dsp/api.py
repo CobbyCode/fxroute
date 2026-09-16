@@ -79,6 +79,9 @@ class DspApiDeps:
     volume_state_for_manager: Callable[..., Awaitable[Any]]
     schedule_peak_monitor_refresh: Callable[[str], None]
     get_output_service: Optional[Callable[[], Any]] = None
+    # Gates a generated-correction commit on the source measurement's frozen
+    # target still matching live processing; raises ValueError on mismatch.
+    verify_measurement_commit: Optional[Callable[[str, dict], None]] = None
 
 
 @dataclass
@@ -268,6 +271,30 @@ async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) ->
             "created": created_name, "assigned": False}) from exc
     return {"assigned": True, "mode": binding["mode"],
             "bank_id": binding["bank_id"], "revision": committed["revision"]}
+
+
+def _verify_measurement_commit(source_measurement_id: object, binding: dict | None) -> None:
+    """Gate a generated PEQ/FIR commit on its source measurement still matching.
+
+    A commit without a bank binding is not a commit into an area, and a client
+    that sends no source measurement (imports, manual presets) is left to the
+    pre-existing path; both stay unchanged.  A mismatch is a conflict, not bad
+    input: the preset may still be created elsewhere from the same measurement
+    once the area or its processing is restored.
+    """
+    verifier = _deps().verify_measurement_commit
+    measurement_id = str(source_measurement_id or "").strip()
+    if verifier is None or binding is None or not measurement_id:
+        return
+    try:
+        verifier(measurement_id, binding)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "measurement-target-mismatch",
+            "message": str(exc),
+            "source_measurement_id": measurement_id,
+            "assigned": False,
+        }) from exc
 
 
 def _pinned_deletion_presets(dsp_mgr) -> set[str]:
@@ -611,12 +638,15 @@ async def create_convolver_preset(
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
     expected_revision: int = Form(-1),
+    source_measurement_id: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
     binding = _parse_bank_binding(
         bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
     if binding is not None:
         _validate_bank_target(_require_output_state_service(), binding)
+    # The bank is known to exist now, so a target mismatch is a real conflict.
+    _verify_measurement_commit(source_measurement_id, binding)
 
     try:
         # The canonical loudness read inside _effects_extras_from_form must
@@ -879,6 +909,7 @@ async def create_convolver_preset_with_ir(
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
     expected_revision: int = Form(-1),
+    source_measurement_id: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
@@ -893,6 +924,8 @@ async def create_convolver_preset_with_ir(
             bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
         if binding is not None:
             _validate_bank_target(_require_output_state_service(), binding)
+        # The bank is known to exist now, so a target mismatch is a conflict.
+        _verify_measurement_commit(source_measurement_id, binding)
 
         # The canonical loudness read inside _effects_extras_from_form must
         # happen under the same mutation ownership as the preset creation:
@@ -939,6 +972,9 @@ async def create_convolver_preset_with_ir(
             response["bank"] = await _assign_created_preset_to_bank(
                 created_name=created["preset"]["name"], binding=binding)
         return response
+    except HTTPException:
+        # Already an HTTP outcome (for example the measurement-target gate).
+        raise
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except (FileNotFoundError, ValueError, RuntimeError) as e:
@@ -972,6 +1008,7 @@ async def create_peq_preset(request: Request):
     binding = _parse_bank_binding(
         bank_mode=body.get("bank_mode"), bank_id=body.get("bank_id"),
         expected_revision=body.get("expected_revision"))
+    source_measurement_id = body.get("source_measurement_id", body.get("sourceMeasurementId"))
 
     if not preset_name:
         raise HTTPException(status_code=400, detail="presetName is required")
@@ -979,6 +1016,8 @@ async def create_peq_preset(request: Request):
         raise HTTPException(status_code=400, detail="peq is required")
     if binding is not None:
         _validate_bank_target(_require_output_state_service(), binding)
+    # The bank is known to exist now, so a target mismatch is a real conflict.
+    _verify_measurement_commit(source_measurement_id, binding)
 
     try:
         async with _deps().dsp_mutation_lock():
@@ -1103,6 +1142,7 @@ async def import_dual_filter_preset(
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
     expected_revision: int = Form(-1),
+    source_measurement_id: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
@@ -1147,6 +1187,8 @@ async def import_dual_filter_preset(
         bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
     if binding is not None:
         _validate_bank_target(_require_output_state_service(), binding)
+    # The bank is known to exist now, so a target mismatch is a real conflict.
+    _verify_measurement_commit(source_measurement_id, binding)
 
     tmp_paths = []
     try:

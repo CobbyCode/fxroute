@@ -9841,6 +9841,7 @@ async function createMeasurementPeqPresetFromDraft() {
                 loadAfterCreate: false,
                 ...collectEffectsExtras(),
                 ...bankBindingJson(),
+                source_measurement_id: measurementCommitSourceId(),
                 peq: {
                     enabled: true,
                     params: {
@@ -10165,6 +10166,15 @@ function writeMeasurementConvolverWav(channels, sampleRate) {
     return MeasurementDsp.writeMeasurementConvolverWav(channels, sampleRate);
 }
 
+function measurementCommitSourceId() {
+    /* The stored measurement a generated PEQ/FIR is derived from.  The commit
+     * gate rejects a preset whose source measurement area or the processing it
+     * ran through has moved since the sweep; an unsaved measurement sends no
+     * id and keeps the pre-gate behaviour. */
+    const current = state.measurement?.currentMeasurement;
+    return String(current?.id || '');
+}
+
 function appendMeasurementConvolverExtras(formData) {
     const extras = collectEffectsExtras();
     formData.append('load_after_create', 'false');
@@ -10211,6 +10221,7 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
         formData.append('left_file', leftBlob, `${filenameBase}-L.wav`);
         formData.append('right_file', rightBlob, `${filenameBase}-R.wav`);
         appendBankBindingFields(formData);
+        formData.append('source_measurement_id', measurementCommitSourceId());
         const resp = await fetch('/api/dsp/presets/import-filter-dual', { method: 'POST', body: formData });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Convolver preset creation failed');
@@ -10226,6 +10237,7 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
     appendMeasurementConvolverExtras(formData);
     formData.append('file', blob, `${filenameBase}-${side === 'right' ? 'R' : 'L'}.wav`);
     appendBankBindingFields(formData);
+    formData.append('source_measurement_id', measurementCommitSourceId());
     const resp = await fetch('/api/dsp/presets/create-with-ir', { method: 'POST', body: formData });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.detail || 'Convolver preset creation failed');

@@ -33,6 +33,7 @@ __all__ = [
     "attach_measurement_target",
     "freeze_measurement_target",
     "measurement_target_from_context",
+    "require_commit_target",
     "require_target_matches",
     "sweep_output_masks",
     "target_output_mask",
@@ -201,6 +202,50 @@ def require_target_matches(
         mismatches.append(f"sample rate {target.get('sample_rate_hz')} != {sample_rate_hz}")
     if mismatches:
         raise ValueError("Measurement target mismatch: " + "; ".join(mismatches))
+
+
+# Live facts a stored target must still agree with before a correction that
+# was derived from it may be committed anywhere.
+_LIVE_FIELDS = (
+    ("device_key", "output device"),
+    ("sample_rate_hz", "sample rate"),
+    ("processing_fingerprint", "processing"),
+    ("reference_tap", "reference tap"),
+    ("measured_roles", "measured roles"),
+)
+
+
+def require_commit_target(target: dict, live: dict, *, mode: str, bank_id: str) -> None:
+    """Reject a generated-correction commit whose measurement no longer applies.
+
+    ``target`` is the frozen target stored with the source measurement and
+    ``live`` is the same area frozen from the current committed state.  A
+    legacy result (no frozen context) is accepted unchanged, and so is a commit
+    into the measurement's own area while its processing is untouched; anything
+    else is rejected with the differing fields named, so a correction measured
+    through one area or one revision can never be committed as if it were
+    measured through another.
+    """
+    if isinstance(target, dict) and target.get("legacy"):
+        return
+    if not isinstance(target, dict) or target.get("schema") != SCHEMA:
+        raise ValueError("Source measurement carries no frozen target")
+    if target.get("mode") != mode or target.get("bank_id") != bank_id:
+        raise ValueError(
+            f"Measurement was captured for {target.get('mode')} area "
+            f"{target.get('bank_id')!r}, but this commit targets {mode} area {bank_id!r}"
+        )
+    if not isinstance(live, dict) or live.get("schema") != SCHEMA or live.get("legacy"):
+        raise ValueError("Live measurement context is unavailable")
+    mismatches = [
+        f"{label} {target.get(field)!r} != {live.get(field)!r}"
+        for field, label in _LIVE_FIELDS
+        if target.get(field) != live.get(field)
+    ]
+    if mismatches:
+        raise ValueError(
+            "Measurement target no longer matches live processing: " + "; ".join(mismatches)
+        )
 
 
 def _comparison_key(target: dict) -> tuple:

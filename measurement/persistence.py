@@ -62,6 +62,17 @@ class MeasurementPersistence:
             "measurements": measurements,
         }
 
+    def load_measurement(self, measurement_id: str) -> dict[str, Any]:
+        """Read one stored measurement by id; unknown ids raise KeyError."""
+        measurement_id = str(measurement_id or "").strip()
+        if not measurement_id or Path(measurement_id).name != measurement_id:
+            raise ValueError("Invalid measurement id")
+        path = self._store.measurements_dir / f"{measurement_id}.json"
+        if not path.exists():
+            raise KeyError(measurement_id)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return self._normalize_measurement(payload, source_path=path)
+
     def save_measurement(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = self._normalize_measurement(payload)
         measurement_id = normalized["id"]

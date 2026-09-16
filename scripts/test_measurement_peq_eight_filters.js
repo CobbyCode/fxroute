@@ -52,7 +52,7 @@ function extractFunction(name) {
 
 async function main() {
     const requests = [];
-    const state = { measurement: {}, dsp: {} };
+    const state = { measurement: { currentMeasurement: { id: 'measurement-1' } }, dsp: {} };
     const context = {
         MeasurementUI,
         state,
@@ -98,6 +98,7 @@ async function main() {
         'resolveMeasurementPeqPresetName',
         'takeMeasurementPeqToPreset',
         'createMeasurementPeqPresetFromDraft',
+        'measurementCommitSourceId',
         'ensureOutputSystemBoxes',
         'outputSystemModule',
         'outputSystemBankBinding',
@@ -132,6 +133,18 @@ async function main() {
     const payload = JSON.parse(requests[0].options.body);
     assert.deepEqual(payload.peq.params.leftBands, expectedBands, 'left preset bands must be complete and ordered');
     assert.deepEqual(payload.peq.params.rightBands, expectedBands, 'right preset bands must be complete and ordered');
+    // The commit gate needs to know which measurement the bands came from.
+    assert.equal(payload.source_measurement_id, 'measurement-1', 'the source measurement id must travel with the commit');
+
+    // Every measurement-derived commit names its source measurement, and only
+    // the measurement flows do: the effects-panel PEQ create stays unbound.
+    const convolverCommitSites = appSource.split("'source_measurement_id', measurementCommitSourceId()").length - 1;
+    assert.equal(convolverCommitSites, 2, 'both measurement convolver commits must name their source measurement');
+    assert.match(appSource, /source_measurement_id: measurementCommitSourceId\(\),/, 'the measurement PEQ commit must name its source measurement');
+    assert.equal(context.measurementCommitSourceId(), 'measurement-1', 'a loaded measurement supplies its stored id');
+    state.measurement.currentMeasurement = null;
+    assert.equal(context.measurementCommitSourceId(), '', 'an unsaved measurement keeps the pre-gate path');
+    state.measurement.currentMeasurement = { id: 'measurement-1' };
 
     assert.match(appSource, /peq\.filters\.length >= 12/, 'PEQ assistant guard must enforce the twelve-filter limit');
     assert.match(appSource, /supports up to 12 filters/, 'limit toast must describe twelve filters');

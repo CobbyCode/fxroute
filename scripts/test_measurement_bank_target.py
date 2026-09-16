@@ -31,6 +31,7 @@ from measurement.target import (
     attach_measurement_target,
     freeze_measurement_target,
     measurement_target_from_context,
+    require_commit_target,
     require_target_matches,
     sweep_output_masks,
     target_output_mask,
@@ -340,6 +341,59 @@ class StoredAreaContextTests(TargetFixture, unittest.TestCase):
             self.store.save_measurement(measurement_payload(measurement_id, channel="left"))
         merged = self.store.merge_measurements(["legacy-a", "legacy-b"], "Legacy merge")
         self.assertNotIn("measurement_target", merged)
+
+
+class CommitTargetTests(TargetFixture, unittest.TestCase):
+    """A generated correction may only be committed where it was measured."""
+
+    def test_matching_area_and_processing_is_accepted(self):
+        target = self.freeze(crossover_state(), "left_mid")
+        require_commit_target(target, copy.deepcopy(target), mode="crossover", bank_id="left_mid")
+
+    def test_commit_into_another_area_is_rejected(self):
+        target = self.freeze(crossover_state(), "left_mid")
+        live = self.freeze(crossover_state(), "left_high")
+        with self.assertRaisesRegex(ValueError, "captured for crossover area 'left_mid'"):
+            require_commit_target(target, live, mode="crossover", bank_id="left_high")
+        with self.assertRaisesRegex(ValueError, "captured for crossover area 'left_mid'"):
+            require_commit_target(target, copy.deepcopy(target), mode="crossover", bank_id="left_high")
+
+    def test_processing_and_device_changes_are_rejected_with_details(self):
+        target = self.freeze(crossover_state(), "left_mid")
+        for field, value, label in (
+            ("processing_fingerprint", "other-fingerprint", "processing"),
+            ("device_key", "device-b", "output device"),
+            ("sample_rate_hz", 44100, "sample rate"),
+            ("reference_tap", "later", "reference tap"),
+            ("measured_roles", ["left_high"], "measured roles"),
+        ):
+            live = copy.deepcopy(target)
+            live[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, label):
+                require_commit_target(target, live, mode="crossover", bank_id="left_mid")
+
+    def test_legacy_and_unavailable_contexts(self):
+        # A measurement from before the frozen-target era stays committable.
+        require_commit_target(LEGACY_TARGET, {}, mode="crossover", bank_id="left_mid")
+        with self.assertRaisesRegex(ValueError, "no frozen target"):
+            require_commit_target({}, {}, mode="crossover", bank_id="left_mid")
+        target = self.freeze(crossover_state(), "left_mid")
+        for live in ({}, LEGACY_TARGET, None):
+            with self.subTest(live=live), self.assertRaisesRegex(ValueError, "unavailable"):
+                require_commit_target(target, live, mode="crossover", bank_id="left_mid")
+
+    def test_stored_measurement_lookup_keeps_its_target(self):
+        self.store = MeasurementStore(home=self.root)
+        target = self.freeze(crossover_state(), "left_mid")
+        self.store.save_measurement(measurement_payload("saved-mid", channel="left", target=target))
+        stored = self.store.get_measurement("saved-mid")
+        self.assertEqual(stored["measurement_target"], target)
+        require_commit_target(stored["measurement_target"], copy.deepcopy(target),
+                              mode="crossover", bank_id="left_mid")
+        with self.assertRaises(KeyError):
+            self.store.get_measurement("missing")
+        with self.assertRaisesRegex(ValueError, "Invalid measurement id"):
+            self.store.get_measurement("../escape")
 
 
 class SweepOutputMaskTests(TargetFixture, unittest.TestCase):

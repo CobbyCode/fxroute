@@ -404,7 +404,11 @@ except ImportError:
 from measurement.store import (
     MeasurementStore,
 )
-from measurement.target import freeze_measurement_target
+from measurement.target import (
+    freeze_measurement_target,
+    measurement_target_from_context,
+    require_commit_target,
+)
 from dsp.peak_monitor import DSPPeakMonitor, PeakMonitorCoordinator, PeakMonitorCoordinatorDeps
 from playback.transition import (
     PlaybackTransitionCoordinator,
@@ -2660,6 +2664,8 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         volume_state_for_manager=lambda *args, **kwargs: _volume_state_for_manager(*args, **kwargs),
         schedule_peak_monitor_refresh=lambda reason: dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason),
         get_output_service=lambda: get_output_service(),
+        verify_measurement_commit=lambda measurement_id, binding: _verify_measurement_commit(
+            measurement_id, binding),
     )
 
 
@@ -3981,6 +3987,44 @@ def _freeze_measurement_target(bank_id: str, sample_rate_hz: int) -> dict:
     return freeze_measurement_target(
         state, bank_id=bank, output_key=output_key, channels=channel_count,
         sample_rate_hz=sample_rate_hz, fingerprint=fingerprint)
+
+
+def _live_measurement_sample_rate() -> int:
+    """Sample rate the next measurement would run at (48 kHz fallback)."""
+    store = measurement_store
+    if store is None:
+        return 48_000
+    try:
+        rate = int(store._resolve_measurement_sample_rate())
+    except Exception as exc:
+        logger.warning("Live measurement sample rate unavailable, using 48000 Hz: %s", exc)
+        return 48_000
+    return rate if rate > 0 else 48_000
+
+
+def _verify_measurement_commit(measurement_id: str, binding: dict) -> None:
+    """Gate a generated PEQ/FIR commit on its source measurement still fitting.
+
+    The stored target must still describe both the area the preset is committed
+    into and the processing the committed state compiles to.  A measurement
+    from before the frozen-target era carries no context and is accepted
+    unchanged, as is any commit whose area and processing are untouched.
+    """
+    store = measurement_store
+    if store is None:
+        raise ValueError("Measurement store is not available")
+    try:
+        measurement = store.get_measurement(measurement_id)
+    except KeyError as exc:
+        raise ValueError(f"Source measurement {measurement_id} is no longer available") from exc
+    target = measurement_target_from_context(measurement)
+    if target.get("legacy"):
+        return
+    live = _freeze_measurement_target(target["bank_id"], _live_measurement_sample_rate())
+    require_commit_target(
+        target, live,
+        mode=str(binding.get("mode") or ""), bank_id=str(binding.get("bank_id") or ""),
+    )
 
 
 def _require_state_mode(value) -> str:
