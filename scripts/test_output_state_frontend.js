@@ -140,7 +140,11 @@ function measurementAreaTests() {
         label: 'Sub 1',
         channel: 'stereo',
         note: 'Only Sub 1 stays audible; every other output is muted for this sweep.',
+        // A mono sub is fed by both inputs, so an L/R repeat compares two sides.
+        repeat_supported: true,
+        repeat_note: '',
     });
+    assert.equal(OutputState.measurementArea(selected, 'global').repeat_supported, true);
     assert.equal(OutputState.measurementArea(selected, 'global').channel, 'stereo');
     assert.equal(OutputState.measurementArea(selected, 'main_l').channel, 'left');
     assert.equal(OutputState.measurementArea(selected, 'main_r').channel, 'right');
@@ -167,6 +171,16 @@ function measurementAreaTests() {
     assert.equal(OutputState.measurementArea(crossover, 'left_low').channel, 'left');
     assert.equal(OutputState.measurementArea(crossover, 'right_high').channel, 'right');
     assert.equal(OutputState.measurementArea(crossover, 'left_low_mid').label, 'Left Low-Mid');
+    // One-sided areas carry no second side to compare, and say so.
+    const oneSided = OutputState.measurementArea(crossover, 'left_low');
+    assert.equal(oneSided.repeat_supported, false);
+    assert.match(oneSided.repeat_note, /fed by one input only/);
+    assert.match(oneSided.repeat_note, /Use a single sweep/);
+    assert.equal(OutputState.measurementArea(stereoSubs, 'sub_l').repeat_supported, false);
+    assert.equal(OutputState.measurementArea(monoSubL, 'sub_l').repeat_supported, true);
+    assert.equal(OutputState.measurementArea(dualMono, 'sub2').repeat_supported, true);
+    assert.equal(OutputState.repeatSupported('global', {}), true);
+    assert.equal(OutputState.repeatSupported('left_mid', {}), false);
     // Read-only: no bank id falls back to the whole system without inventing one.
     const empty = OutputState.measurementArea(null);
     assert.equal(empty.bank_id, 'global');

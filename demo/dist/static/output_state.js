@@ -97,18 +97,33 @@ function bankSweepChannel(bankId, topology) {
     return 'stereo';
 }
 
+// An area holds one logical role, so an L/R repeat can only compare two sides
+// when the routing feeds that role from both inputs: a summed mono/dual-mono
+// sub is fed by both, a single speaker way (or one half of a stereo sub pair)
+// is fed by one input only and would be captured twice by the same way.
+function repeatSupported(roleId, topology) {
+    const id = String(roleId || 'global');
+    if (id === 'global') return true;
+    return summedRoleIds(topology).includes(id);
+}
+
 function measurementArea(catalog, bankId) {
     const mode = (catalog && catalog.active_mode) || 'stereo';
     const modeConfig = (catalog && catalog.modes && catalog.modes[mode]) || {};
     const selected = String(bankId || modeConfig.selected_bank || 'global');
     const label = roleLabel(selected);
     const channel = bankSweepChannel(selected, modeConfig.topology);
+    const repeat_supported = repeatSupported(selected, modeConfig.topology);
+    const repeat_note = repeat_supported ? ''
+        : `${label} is fed by one input only, so an L/R repeat would capture the same way twice. Use a single sweep.`;
     if (selected === 'global') {
         return {
             bank_id: 'global',
             label,
             channel,
             note: 'Whole system: Global plus every area bank stay audible for this sweep.',
+            repeat_supported,
+            repeat_note,
         };
     }
     return {
@@ -116,6 +131,8 @@ function measurementArea(catalog, bankId) {
         label,
         channel,
         note: `Only ${label} stays audible; every other output is muted for this sweep.`,
+        repeat_supported,
+        repeat_note,
     };
 }
 
@@ -244,6 +261,7 @@ function renderBankSelector(select, info, catalog, mode) {
         subModeLabel,
         topologySummary,
         summedRoleIds,
+        repeatSupported,
         bankSweepChannel,
         measurementArea,
         bankOptions,

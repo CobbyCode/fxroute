@@ -132,7 +132,9 @@ window.fetch = (url, opts) => {
         const banks = {};
         ids.forEach(id => { banks[id] = neutralBank(); });
         return {
-            selected_bank: mode === outputState.active_mode ? outputState.selected_bank : 'global',
+            // One-sided-area checks boot the page with an init-script override.
+            selected_bank: mode === outputState.active_mode
+                ? (window.__stubSelectedBank || outputState.selected_bank) : 'global',
             banks,
             processing: {},
             bass_management: { frequency_hz: 80, main_highpass_enabled: true },
@@ -402,6 +404,28 @@ def _run():
                 checks += 3
                 effects_import.click()
                 page.close()
+
+            # A one-sided area has no second side to compare: the repeat action
+            # must be disabled and the note must say why.
+            page = browser.new_page(viewport={"width": VIEWPORTS[0][0], "height": VIEWPORTS[0][1]})
+            page.add_init_script(STUB)
+            page.add_init_script("window.__stubSelectedBank = 'main_l';")
+            _open_measurement(page)
+            page.locator("#measurement-sweep-toggle").click()
+            page.wait_for_function(
+                "() => document.getElementById('measurement-area-indicator')?.textContent === 'Main L'")
+            assert page.locator("#measurement-repeat-start").is_disabled(), (
+                "a one-sided area must not offer an L/R repeat")
+            assert page.locator("#measurement-repeat-note").inner_text() == (
+                "Main L is fed by one input only, so an L/R repeat would capture "
+                "the same way twice. Use a single sweep.")
+            assert page.locator("#measurement-repeat-start").get_attribute("title") == (
+                "Main L is fed by one input only, so an L/R repeat would capture "
+                "the same way twice. Use a single sweep.")
+            # A single sweep of the same area stays available.
+            assert not page.locator("#measurement-sweep-start").is_disabled()
+            checks += 4
+            page.close()
             browser.close()
     finally:
         server.shutdown()

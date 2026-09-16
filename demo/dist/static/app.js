@@ -651,6 +651,7 @@ const elements = {
     measurementAreaIndicator: document.getElementById('measurement-area-indicator'),
     measurementAreaNote: document.getElementById('measurement-area-note'),
     measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
+    measurementRepeatNote: document.getElementById('measurement-repeat-note'),
     measurementAutoSubStartBtn: document.getElementById('measurement-auto-sub-start'),
     measurementAutoSubGroup: document.getElementById('measurement-auto-sub-group'),
     measurementAutoSubStatus: document.getElementById('measurement-auto-sub-status'),
@@ -3827,6 +3828,27 @@ function measurementAreaFromCatalog() {
     const catalog = (state.outputSystem || {}).catalog;
     if (!mod || !catalog || typeof mod.measurementArea !== 'function') return null;
     return mod.measurementArea(catalog);
+}
+
+function measurementRepeatBlockedReason() {
+    /* A one-sided area has no second side to compare: its opposite-side reason
+     * would capture the same physical way again, so tell the user instead of
+     * running a repeat that measures nothing new. */
+    const area = measurementAreaFromCatalog();
+    if (!area || area.repeat_supported !== false) return '';
+    return area.repeat_note || `${area.label} is fed by one input only. Use a single sweep.`;
+}
+
+function syncMeasurementRepeatNote(lrActive, blockedReason) {
+    /* A running repeat stays cancellable, so its reason never disables it. */
+    if (elements.measurementRepeatStartBtn) {
+        elements.measurementRepeatStartBtn.title = lrActive ? '' : blockedReason;
+    }
+    if (elements.measurementRepeatNote) {
+        elements.measurementRepeatNote.textContent = lrActive || !blockedReason
+            ? 'Repeated L/R sweeps for more precision.'
+            : blockedReason;
+    }
 }
 
 async function ensureMeasurementAreaCatalog() {
@@ -11941,15 +11963,19 @@ function syncMeasurementStartButtonFallback() {
     const activeJobRunning = hasActiveMeasurementJob();
     const lrActive = activeKind === 'lr_repeat';
     const calibrationBusy = measurementState.calibrationUpdating || measurementState.calibrationDeleting;
+    const repeatBlockedReason = measurementRepeatBlockedReason();
     if (elements.measurementRepeatStartBtn) {
-        elements.measurementRepeatStartBtn.disabled = calibrationBusy
+        elements.measurementRepeatStartBtn.disabled = repeatBlockedReason && !lrActive
             ? true
-            : (activeJobRunning ? !lrActive
-            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementModeReady()));
+            : (calibrationBusy
+                ? true
+                : (activeJobRunning ? !lrActive
+                : (measurementState.startInFlight || measurementState.inputsLoading || !measurementModeReady())));
         elements.measurementRepeatStartBtn.textContent = lrActive
             ? 'Cancel measurement'
             : 'Start LR Repeat';
     }
+    syncMeasurementRepeatNote(lrActive, repeatBlockedReason);
     syncAutoSubButton();
 }
 
@@ -12180,6 +12206,13 @@ async function startMeasurement() {
 
 async function startLrRepeat() {
     if (state.measurement.startInFlight || state.measurement.activeJobId) return;
+    const repeatBlockedReason = measurementRepeatBlockedReason();
+    if (repeatBlockedReason) {
+        state.measurement.statusText = repeatBlockedReason;
+        renderMeasurementPanel();
+        showToast(repeatBlockedReason, 'warning');
+        return;
+    }
     if (!measurementModeReady()) {
         state.measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
         renderMeasurementPanel();
@@ -12772,13 +12805,18 @@ function renderMeasurementPanelActionsSection({ measurementState, current, measu
     if (elements.measurementRepeatStartBtn) {
         const activeKind = getActiveMeasurementKind();
         const activeJobRunning = hasActiveMeasurementJob();
-        elements.measurementRepeatStartBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting
+        const lrActive = activeKind === 'lr_repeat';
+        const repeatBlockedReason = measurementRepeatBlockedReason();
+        elements.measurementRepeatStartBtn.disabled = repeatBlockedReason && !lrActive
             ? true
-            : (activeJobRunning ? activeKind !== 'lr_repeat'
-            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementModeReady()));
-        elements.measurementRepeatStartBtn.textContent = activeKind === 'lr_repeat'
+            : ((measurementState.calibrationUpdating || measurementState.calibrationDeleting)
+                ? true
+                : (activeJobRunning ? !lrActive
+                : (measurementState.startInFlight || measurementState.inputsLoading || !measurementModeReady())));
+        elements.measurementRepeatStartBtn.textContent = lrActive
             ? 'Cancel measurement'
             : 'Start LR Repeat';
+        syncMeasurementRepeatNote(lrActive, repeatBlockedReason);
     }
     if (elements.measurementSaveBtn) {
         const hasAutoSubMeas = Array.isArray(measurementState.autoSubMeasurements) && measurementState.autoSubMeasurements.length > 0;

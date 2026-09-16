@@ -30,7 +30,16 @@ assert.match(app, /elements\.measurementAreaIndicator\.textContent = area \? are
 assert.doesNotMatch(app, /\[data-measurement-channel\]/, 'no leftover output-channel chip handlers');
 assert.match(app, /void ensureMeasurementAreaCatalog\(\);/, 'opening the panel loads the area catalog');
 assert.match(index, /id="measurement-repeat-start"[^>]*>Start LR Repeat<\/button>/);
-assert.match(index, /Repeated L\/R sweeps for more precision\./);
+assert.match(index, /id="measurement-repeat-note" class="measurement-repeat-help">Repeated L\/R sweeps for more precision\.<\/span>/);
+// A one-sided area (fed by one input only) must disable the repeat and explain
+// why in the note, while a running repeat stays cancellable.
+assert.match(app, /function measurementRepeatBlockedReason\(\) \{/);
+assert.match(app, /if \(!area \|\| area\.repeat_supported !== false\) return '';/);
+assert.match(app, /const repeatBlockedReason = measurementRepeatBlockedReason\(\);/);
+assert.match(app, /elements\.measurementRepeatStartBtn\.disabled = repeatBlockedReason && !lrActive/);
+assert.match(app, /syncMeasurementRepeatNote\(lrActive, repeatBlockedReason\);/);
+assert.match(app, /elements\.measurementRepeatNote\.textContent = lrActive \|\| !blockedReason/);
+assert.match(app, /showToast\(repeatBlockedReason, 'warning'\)/);
 assert.match(index, /id="measurement-hybrid-open"[^>]*>Advanced<\/button>/);
 assert.match(index, /Combined Speaker and Room Measurement/);
 assert.match(index, /id="measurement-spl-calibration-open"[^>]*>SPL Calibration<\/button>/);
