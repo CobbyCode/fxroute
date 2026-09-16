@@ -3392,6 +3392,17 @@ function nonAppSourceModeActive() {
     return ['external-input', 'bluetooth-input'].includes(state.settings?.sourceMode?.mode);
 }
 
+// The footer meter/badge show the live post-DSP output level. App playback
+// pauses when a line source takes over, but the DSP path stays live then,
+// so source modes count as active signal too.
+function isFooterSignalActive() {
+    if (isStreamingFooterSource(window.__footerSource)) {
+        return streamingFooterData()?.status === 'Playing';
+    }
+    if (!!state.playback.playing && !state.playback.paused) return true;
+    return nonAppSourceModeActive();
+}
+
 // Compact footer source switcher for bluetooth-input / external-input modes.
 // Entries reuse the audio source overview, so only real, selectable sources
 // appear: Bluetooth first (when available), then every external stereo pair
@@ -4944,11 +4955,7 @@ function renderPeakWarningBadge(activeOverride = null) {
     const warning = state.playback.output_peak_warning || {};
     const title = warning.target?.description || warning.target?.source_name || 'DSP output monitor';
     const vuDb = isFiniteVuDb(warning.vu_db) ? Number(warning.vu_db) : null;
-    const playbackActive = activeOverride === null
-        ? (isStreamingFooterSource(window.__footerSource)
-            ? streamingFooterData()?.status === 'Playing'
-            : !!state.playback.playing && !state.playback.paused)
-        : !!activeOverride;
+    const playbackActive = activeOverride === null ? isFooterSignalActive() : !!activeOverride;
     const showPeak = !!warning.detected && playbackActive;
     const liveShowVu = !!warning.available && warning.vu_fresh === true
         && playbackActive && vuDb !== null;

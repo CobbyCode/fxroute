@@ -76,6 +76,9 @@ const sandbox = {
             paused: false,
             output_peak_warning: {},
         },
+        settings: {
+            sourceMode: { mode: 'app-playback', pending: false },
+        },
     },
     elements: {
         outputLevelBadge: badge,
@@ -105,6 +108,8 @@ vm.runInContext([
     extractFunction('meterLitCount'),
     extractFunction('renderMeterChannel'),
     extractFunction('renderStereoMeter'),
+    extractFunction('nonAppSourceModeActive'),
+    extractFunction('isFooterSignalActive'),
     extractFunction('formatOutputLevelBadgeDb'),
     extractFunction('renderPeakWarningBadge'),
 ].join('\n'), sandbox);

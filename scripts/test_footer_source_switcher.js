@@ -67,6 +67,8 @@ vm.runInContext([
     extractFunction('buildSourceSwitcherEntries'),
     extractFunction('findSourceSwitcherIndex'),
     extractFunction('cycleSourceSwitcherIndex'),
+    extractFunction('nonAppSourceModeActive'),
+    extractFunction('isFooterSignalActive'),
 ].join('\n'), sandbox);
 
 const {
@@ -74,6 +76,7 @@ const {
     buildSourceSwitcherEntries,
     findSourceSwitcherIndex,
     cycleSourceSwitcherIndex,
+    isFooterSignalActive,
 } = sandbox;
 
 // Pair labels use an en dash on the backend; the footer shows a slash.
@@ -137,6 +140,21 @@ const noBt = buildSourceSwitcherEntries({ ...bluetoothOverview, bluetooth: { sel
 assert.equal(noBt.length, 9);
 assert.equal(noBt[0].label, 'Input 1/2');
 assert.equal(findSourceSwitcherIndex(noBt, { ...externalOverview, bluetooth: { selectable: false } }), 1);
+
+// Signal-active gating for the footer meter: line sources keep the DSP path
+// live while app playback is paused, so the meter must not stay dark there.
+sandbox.window = { __footerSource: 'local' };
+sandbox.isStreamingFooterSource = () => false;
+sandbox.streamingFooterData = () => null;
+sandbox.state.playback = { playing: false, paused: true };
+sandbox.state.settings = { sourceMode: { mode: 'external-input', pending: false } };
+assert.equal(isFooterSignalActive(), true, 'external input counts as live signal while app playback is paused');
+sandbox.state.settings.sourceMode.mode = 'bluetooth-input';
+assert.equal(isFooterSignalActive(), true, 'bluetooth input counts as live signal while app playback is paused');
+sandbox.state.settings.sourceMode.mode = 'app-playback';
+assert.equal(isFooterSignalActive(), false, 'paused app playback keeps the meter dark');
+sandbox.state.playback = { playing: true, paused: false };
+assert.equal(isFooterSignalActive(), true, 'playing app playback keeps the meter lit');
 
 // Footer markup contract: switcher lives in the playback bar center.
 for (const snippet of [
