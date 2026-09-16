@@ -1,6 +1,77 @@
 # Changelog
 
-## 1.0-beta7 (2026-09-16)
+## 1.0-beta8 (2026-09-16)
+
+Eighth public beta. Distribution channels unchanged: web demo on GitHub Pages,
+Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 ISO via
+SourceForge. Khadas/VIM1S stays internal and gets no public image.
+
+### Release provenance
+
+- Source stand: `main`. No Armbian or live-converter changes this cycle;
+  installer ships the WirePlumber Bluetooth autoconnect rule for capture
+  nodes (see below).
+- The x86_64 Leap 16 ISO and the Pi 4/Pi 5 images are built from the release
+  commit; their SHA-256 digests are recorded in this section once the builds
+  exist.
+- The web demo snapshot was rebuilt from this stand (`demo/dist` parity is
+  green).
+- Explicitly not included: the unmerged `feature/adaptive-headroom` work
+  (convolver headroom derived from the realized filter peak).
+
+### Bluetooth
+
+- Fixed double Bluetooth playback: BlueZ A2DP source nodes are created with
+  `node.autoconnect=true`, so WirePlumber linked every new `bluez_input`
+  node straight to the hardware sink while FXRoute additionally linked it
+  to the DSP ingress — the same audio played twice, offset by the DSP
+  latency, on every DAC. The managed WirePlumber drop-in now sets
+  `node.autoconnect=false` for `bluez_input.*`/`bluez_source.*` capture
+  nodes (`bluez_output.*` keeps autoconnect for Bluetooth speakers).
+- Verified live on `.104`: exactly one path (Bluetooth → DSP → hardware),
+  clean across DAC switches, disconnect/reconnect without stale links.
+
+### Footer: line sources as first-class citizens
+
+- The playback footer stays visible in bluetooth-input and external-input
+  modes instead of hiding: transport is replaced by a compact
+  `‹ label ›` source switcher (Bluetooth first when available, then every
+  real external stereo pair as `Input 1/2`, `3/4`, …; the middle label is a
+  native select for direct choice) while master volume and level meter keep
+  working on the normal output path. No new volume logic, no extra audio
+  paths; the switcher is parked while a measurement job is active.
+- Track/metadata block (cover, title, artist, samplerate) is hidden in
+  these modes and the switcher absorbs its grid column at every breakpoint.
+- Meter: the peak monitor arms for active external inputs with a per-input
+  signature (re-arm on input change, stop on leave), and line-source modes
+  count as live signal for meter/peak display.
+- Ownership: a retained Spotify Paused context no longer pulls the footer
+  back to the app layout in source modes; the switcher renders ungated on
+  first paint.
+
+### Home Assistant
+
+- `amp_should_be_on` now also covers the line sources: Bluetooth while its
+  linked capture source is actually streaming (connected/paused alone stays
+  off, fail-closed `wpctl` read) and external input while its loopback link
+  is established. New reasons `bluetooth`/`external-input`; measurement
+  keeps priority and its behavior is unchanged; payload keys unchanged.
+  README and manual updated to the actual behavior.
+- Verified live on `.104`: idle → external/BT-streaming → pause/
+  disconnect → idle, measurement heartbeat unchanged.
+
+### Internal maintenance
+
+- Footer styles moved from the generated `static/style.css` into the
+  `static/css/` partials (reproducible-build guard green again).
+- Regression coverage for the source switcher, line-source meter arming
+  and the Home Assistant payload.
+
+Public release artifact names (to be built from tag `v1.0-beta8`):
+
+- `fxroute-1.0-beta8-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta8-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta8-x86_64-leap16.iso` (SourceForge, + `.sha256`)
 
 Seventh public beta. Distribution channels unchanged: web demo on GitHub Pages,
 Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 ISO via
