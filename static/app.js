@@ -767,6 +767,11 @@ const elements = {
     btnNext: document.getElementById('btn-next'),
     footerLoopBtn: document.getElementById('footer-loop'),
     btnClearQueue: document.getElementById('btn-clear-queue'),
+    transportControls: document.querySelector('.playback-center .transport-controls'),
+    sourceSwitcher: document.getElementById('source-switcher'),
+    sourcePrev: document.getElementById('source-prev'),
+    sourceSelect: document.getElementById('source-select'),
+    sourceNext: document.getElementById('source-next'),
     queueStatus: document.getElementById('queue-status'),
     samplerateStatus: document.getElementById('samplerate-status'),
     outputLevelBadge: document.getElementById('output-level-badge'),
@@ -3387,6 +3392,131 @@ function nonAppSourceModeActive() {
     return ['external-input', 'bluetooth-input'].includes(state.settings?.sourceMode?.mode);
 }
 
+// Compact footer source switcher for bluetooth-input / external-input modes.
+// Entries reuse the audio source overview, so only real, selectable sources
+// appear: Bluetooth first (when available), then every external stereo pair
+// in overview order. Labels stay short ("Input 1/2"); the human device name
+// is option text only, never a PipeWire/ALSA node name.
+function shortSourcePairLabel(pairLabel) {
+    const text = String(pairLabel || '').trim();
+    const match = /^Input\s+(\d+)\s*[–—-]\s*(\d+)$/.exec(text);
+    if (match) return `Input ${match[1]}/${match[2]}`;
+    return text;
+}
+
+function buildSourceSwitcherEntries(sourceMode) {
+    const mode = sourceMode || {};
+    const entries = [];
+    const bluetooth = mode.bluetooth || {};
+    if (bluetooth.selectable) {
+        const session = bluetooth.active_session || {};
+        const detail = [session.device_name, session.active_codec].filter(Boolean).join(' · ');
+        entries.push({ kind: 'bluetooth', key: 'bluetooth-input', label: 'Bluetooth', sub: detail, optionLabel: detail ? `Bluetooth — ${detail}` : 'Bluetooth' });
+    }
+    const inputs = Array.isArray(mode.inputs) ? mode.inputs : [];
+    inputs.forEach((input) => {
+        if (!input || !input.key) return;
+        const label = shortSourcePairLabel(input.pair_label) || shortSourcePairLabel(input.label) || 'Input';
+        const sub = String(input.device_label || input.label || '');
+        entries.push({
+            kind: 'external',
+            key: String(input.key),
+            label,
+            sub,
+            optionLabel: (sub && sub !== label) ? `${label} — ${sub}` : label,
+        });
+    });
+    return entries;
+}
+
+function findSourceSwitcherIndex(entries, sourceMode) {
+    const mode = sourceMode || {};
+    if (!Array.isArray(entries) || entries.length === 0) return -1;
+    if ((mode.mode || '') === 'bluetooth-input') {
+        return entries.findIndex((entry) => entry.kind === 'bluetooth');
+    }
+    const key = mode.selected_input?.key || mode.current_input?.key || '';
+    if (!key) return -1;
+    return entries.findIndex((entry) => entry.kind === 'external' && entry.key === key);
+}
+
+function cycleSourceSwitcherIndex(entries, currentIndex, delta) {
+    if (!Array.isArray(entries) || entries.length === 0) return -1;
+    const step = (delta || 0) >= 0 ? 1 : -1;
+    const base = currentIndex >= 0 ? currentIndex : (step > 0 ? -1 : 0);
+    return (((base + step) % entries.length) + entries.length) % entries.length;
+}
+
+function activateSourceSwitcherEntry(entry) {
+    if (!entry) return;
+    if (entry.kind === 'bluetooth') {
+        void saveAudioSourceSelection('bluetooth-input');
+    } else {
+        void saveAudioSourceSelection('external-input', entry.key);
+    }
+}
+
+function stepSourceSwitcher(delta) {
+    if (sourceSwitcherGuardReason()) return;
+    const sourceMode = state.settings?.sourceMode || {};
+    const entries = buildSourceSwitcherEntries(sourceMode);
+    const next = cycleSourceSwitcherIndex(entries, findSourceSwitcherIndex(entries, sourceMode), delta);
+    if (next < 0) return;
+    if (next === findSourceSwitcherIndex(entries, sourceMode)) return;
+    activateSourceSwitcherEntry(entries[next]);
+}
+
+// Measurement and AutoSub capture own their signal path: while a job is
+// active the footer switcher is parked instead of rewiring the graph.
+function sourceSwitcherGuardReason() {
+    if (typeof hasActiveMeasurementJob === 'function' && hasActiveMeasurementJob()) {
+        return 'Unavailable while a measurement is running';
+    }
+    if (state.settings?.sourceMode?.pending) {
+        return 'Switching sources…';
+    }
+    return '';
+}
+
+function renderSourceModeFooter() {
+    const bar = elements.playbackBar;
+    if (!bar) return;
+    const active = nonAppSourceModeActive() && !isStreamingFooterSource(window.__footerSource);
+    bar.classList.toggle('source-mode', active);
+    if (elements.sourceSwitcher) elements.sourceSwitcher.classList.toggle('hidden', !active);
+    if (elements.transportControls) elements.transportControls.classList.toggle('hidden', active);
+    if (!active) return;
+    const sourceMode = state.settings?.sourceMode || {};
+    const entries = buildSourceSwitcherEntries(sourceMode);
+    const current = findSourceSwitcherIndex(entries, sourceMode);
+    const currentEntry = current >= 0 ? entries[current] : null;
+    const guard = sourceSwitcherGuardReason();
+    if (elements.trackTitle) {
+        elements.trackTitle.textContent = currentEntry ? currentEntry.label : 'No sources available';
+        elements.trackTitle.classList.remove('placeholder');
+        elements.trackTitle.style.display = '';
+    }
+    if (elements.trackArtist) {
+        elements.trackArtist.textContent = currentEntry?.sub || '';
+        elements.trackArtist.style.display = currentEntry?.sub ? '' : 'none';
+    }
+    if (elements.queueStatus) elements.queueStatus.classList.add('hidden');
+    setFooterProgressState(false);
+    if (elements.sourceSelect && document.activeElement !== elements.sourceSelect) {
+        elements.sourceSelect.innerHTML = entries.map((entry) =>
+            `<option value="${escapeHtml(entry.key)}">${escapeHtml(entry.optionLabel)}</option>`).join('');
+        elements.sourceSelect.value = currentEntry ? currentEntry.key : '';
+        elements.sourceSelect.disabled = !!guard || entries.length === 0;
+        elements.sourceSelect.title = guard || 'Choose audio source';
+    }
+    const arrowsDisabled = !!guard || entries.length < 2;
+    for (const button of [elements.sourcePrev, elements.sourceNext]) {
+        if (!button) continue;
+        button.disabled = arrowsDisabled;
+        button.title = guard || button.getAttribute('aria-label') || '';
+    }
+}
+
 function applySourceModeUiState() {
     const nonAppSourceActive = nonAppSourceModeActive();
     ['radio', 'spotify', 'qobuz', 'tidal', 'library'].forEach((tabId) => {
@@ -3396,8 +3526,9 @@ function applySourceModeUiState() {
         if (tabPanel) tabPanel.classList.toggle('hidden', nonAppSourceActive);
     });
     if (elements.playbackBar) {
-        elements.playbackBar.classList.toggle('hidden', nonAppSourceActive);
+        elements.playbackBar.classList.remove('hidden');
     }
+    renderSourceModeFooter();
     if (nonAppSourceActive && ['radio', 'spotify', 'qobuz', 'tidal', 'library'].includes(window.__visibleTab)) {
         switchTab('effects');
     }
@@ -3920,6 +4051,18 @@ function setupPlaybackControls() {
     if (elements.btnPrevious) elements.btnPrevious.addEventListener('click', globalPrevious);
     elements.btnPlayPause.addEventListener('click', globalTogglePlayback);
     if (elements.btnNext) elements.btnNext.addEventListener('click', globalNext);
+    if (elements.sourcePrev) elements.sourcePrev.addEventListener('click', () => stepSourceSwitcher(-1));
+    if (elements.sourceNext) elements.sourceNext.addEventListener('click', () => stepSourceSwitcher(1));
+    if (elements.sourceSelect) elements.sourceSelect.addEventListener('change', (event) => {
+        const key = event.target.value || '';
+        const sourceMode = state.settings?.sourceMode || {};
+        const entry = buildSourceSwitcherEntries(sourceMode).find((item) => item.key === key);
+        if (entry) {
+            activateSourceSwitcherEntry(entry);
+        } else {
+            renderSourceModeFooter();
+        }
+    });
     if (elements.footerLoopBtn) elements.footerLoopBtn.addEventListener('click', toggleFooterLoop);
     if (elements.btnClearQueue) elements.btnClearQueue.addEventListener('click', clearQueue);
     if (elements.trackFavoriteBtn) elements.trackFavoriteBtn.addEventListener('click', toggleCurrentTrackFavorite);
@@ -5480,6 +5623,11 @@ function updatePlaybackUI() {
         renderVolumeControlsFromActualVolume(volume);
     } else {
         elements.volumeDisplay.textContent = `${actualVolumeToSliderValue(volume)}%`;
+    }
+    // Bluetooth / external-input modes reuse this footer: transport is
+    // replaced by the source switcher while volume and meter keep updating.
+    if (nonAppSourceModeActive() && !isStreamingFooterSource(window.__footerSource)) {
+        renderSourceModeFooter();
     }
     // Highlight active
     highlightActiveTrack();

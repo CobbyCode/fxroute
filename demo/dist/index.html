@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.216">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.217">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -1357,6 +1357,11 @@
                 <button id="footer-loop" class="control-btn control-btn-mode hidden" type="button" aria-label="Repeat" aria-pressed="false" title="Repeat">↻</button>
                 <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled title="Clear queue" aria-label="Clear queue">✕</button>
             </div>
+            <div id="source-switcher" class="source-switcher hidden">
+                <button id="source-prev" class="control-btn control-btn-secondary" type="button" aria-label="Previous source" title="Previous source">‹</button>
+                <select id="source-select" class="source-select" aria-label="Audio source"></select>
+                <button id="source-next" class="control-btn control-btn-secondary" type="button" aria-label="Next source" title="Next source">›</button>
+            </div>
             <div class="seek-row hidden">
                 <span id="seek-current" class="seek-time">0:00</span>
                 <input
@@ -1544,7 +1549,7 @@
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
     <script src="/static/measurement_flows.js?v=0.9.21"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.156"></script>
+    <script src="/static/app.js?v=0.9.157"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

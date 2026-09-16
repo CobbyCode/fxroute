@@ -1,0 +1,156 @@
+#!/usr/bin/env node
+// Footer source switcher for bluetooth-input / external-input modes:
+// compact ‹ label › stepping over the real overview sources, no technical
+// node names, measurement-guarded. Tests the pure switcher model extracted
+// from static/app.js plus the footer markup contract in static/index.html.
+
+const assert = require('assert/strict');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const root = path.join(__dirname, '..');
+const appSource = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const indexSource = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+
+function extractFunction(name) {
+    const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(appSource);
+    assert.ok(match, `missing ${name}`);
+    const brace = appSource.indexOf('{', match.index);
+    assert.notEqual(brace, -1, `missing body ${name}`);
+    let depth = 0;
+    let quote = '';
+    let escaped = false;
+    let lineComment = false;
+    let blockComment = false;
+    for (let index = brace; index < appSource.length; index += 1) {
+        const character = appSource[index];
+        const nextCharacter = appSource[index + 1];
+        if (lineComment) {
+            if (character === '\n') lineComment = false;
+            continue;
+        }
+        if (blockComment) {
+            if (character === '*' && nextCharacter === '/') {
+                blockComment = false;
+                index += 1;
+            }
+            continue;
+        }
+        if (quote) {
+            if (escaped) escaped = false;
+            else if (character === '\\') escaped = true;
+            else if (character === quote) quote = '';
+            continue;
+        }
+        if (character === '/' && nextCharacter === '/') {
+            lineComment = true;
+            index += 1;
+            continue;
+        }
+        if (character === '/' && nextCharacter === '*') {
+            blockComment = true;
+            index += 1;
+            continue;
+        }
+        if (`'"\``.includes(character)) quote = character;
+        else if (character === '{') depth += 1;
+        else if (character === '}' && --depth === 0) return appSource.slice(match.index, index + 1);
+    }
+    throw new Error(`unterminated ${name}`);
+}
+
+const sandbox = { state: { settings: { sourceMode: { pending: false } } } };
+vm.createContext(sandbox);
+vm.runInContext([
+    extractFunction('shortSourcePairLabel'),
+    extractFunction('buildSourceSwitcherEntries'),
+    extractFunction('findSourceSwitcherIndex'),
+    extractFunction('cycleSourceSwitcherIndex'),
+].join('\n'), sandbox);
+
+const {
+    shortSourcePairLabel,
+    buildSourceSwitcherEntries,
+    findSourceSwitcherIndex,
+    cycleSourceSwitcherIndex,
+} = sandbox;
+
+// Pair labels use an en dash on the backend; the footer shows a slash.
+assert.equal(shortSourcePairLabel('Input 1–2'), 'Input 1/2');
+assert.equal(shortSourcePairLabel('Input 11–12'), 'Input 11/12');
+assert.equal(shortSourcePairLabel('Input 3-4'), 'Input 3/4');
+assert.equal(shortSourcePairLabel('Bluetooth'), 'Bluetooth');
+
+const scarlettInputs = Array.from({ length: 9 }, (_, pair) => ({
+    key: `alsa_input.scarlett::pair${pair}`,
+    pair_label: `Input ${2 * pair + 1}–${2 * pair + 2}`,
+    label: `Scarlett 16i16 4th Gen Multichannel — Input ${2 * pair + 1}–${2 * pair + 2}`,
+    device_label: 'Scarlett 16i16 4th Gen Multichannel',
+}));
+const bluetoothOverview = {
+    mode: 'bluetooth-input',
+    inputs: scarlettInputs,
+    selected_input: null,
+    current_input: null,
+    bluetooth: {
+        selectable: true,
+        active_session: { device_name: 'ZENBOOK', active_codec: 'aac' },
+    },
+};
+
+// Bluetooth first, then every real pair in overview order; no node names.
+const entries = buildSourceSwitcherEntries(bluetoothOverview);
+assert.equal(entries.length, 10, 'bluetooth + 9 scarlett pairs');
+assert.equal(
+    JSON.stringify(entries[0]),
+    JSON.stringify({ kind: 'bluetooth', key: 'bluetooth-input', label: 'Bluetooth', sub: 'ZENBOOK · aac', optionLabel: 'Bluetooth — ZENBOOK · aac' }),
+);
+assert.equal(entries[1].label, 'Input 1/2');
+assert.equal(entries[1].kind, 'external');
+assert.equal(entries[9].label, 'Input 17/18');
+for (const entry of entries) {
+    assert.ok(!entry.label.includes('alsa_'), `no technical name in label: ${entry.label}`);
+    assert.ok(!entry.optionLabel.includes('alsa_'), `no technical name in option: ${entry.optionLabel}`);
+}
+assert.ok(entries[1].optionLabel.includes('Scarlett'), 'dropdown keeps the human device context');
+
+// Current index follows the mode: bluetooth mode pins Bluetooth.
+assert.equal(findSourceSwitcherIndex(entries, bluetoothOverview), 0);
+const externalOverview = {
+    ...bluetoothOverview,
+    mode: 'external-input',
+    selected_input: scarlettInputs[1],
+    current_input: scarlettInputs[1],
+};
+assert.equal(findSourceSwitcherIndex(entries, externalOverview), 2, 'Input 3/4 is index 2 behind Bluetooth');
+
+// Cycling wraps across Bluetooth → Input 1/2 → … → Input 17/18 → Bluetooth.
+assert.equal(cycleSourceSwitcherIndex(entries, 0, 1), 1);
+assert.equal(cycleSourceSwitcherIndex(entries, 9, 1), 0);
+assert.equal(cycleSourceSwitcherIndex(entries, 0, -1), 9);
+assert.equal(cycleSourceSwitcherIndex(entries, 2, -1), 1);
+assert.equal(cycleSourceSwitcherIndex([], 0, 1), -1);
+
+// Without Bluetooth availability the switcher is inputs only.
+const noBt = buildSourceSwitcherEntries({ ...bluetoothOverview, bluetooth: { selectable: false } });
+assert.equal(noBt.length, 9);
+assert.equal(noBt[0].label, 'Input 1/2');
+assert.equal(findSourceSwitcherIndex(noBt, { ...externalOverview, bluetooth: { selectable: false } }), 1);
+
+// Footer markup contract: switcher lives in the playback bar center.
+for (const snippet of [
+    'id="source-switcher"',
+    'id="source-prev"',
+    'id="source-select"',
+    'id="source-next"',
+    'id="playback-bar"',
+]) {
+    assert.ok(indexSource.includes(snippet), `static/index.html missing ${snippet}`);
+}
+// Changed cached assets must be versioned so browsers fetch the new footer.
+for (const pattern of [/\/static\/app\.js\?v=\d+\.\d+\.\d+/, /\/static\/style\.css\?v=\d+\.\d+\.\d+/]) {
+    assert.ok(pattern.test(indexSource), `static/index.html missing versioned asset for ${pattern}`);
+}
+
+console.log('PASS  scripts/test_footer_source_switcher.js (bluetooth/external footer switcher model)');

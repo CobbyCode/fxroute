@@ -7072,6 +7072,33 @@ input[type="number"]::-webkit-outer-spin-button {
     justify-content: center;
     min-height: 52px;
     gap: .32rem; }
+/* Source switcher replaces transport in bluetooth-input / external-input
+   footer modes: compact ‹ label › stepping plus a native select for direct
+   choice. No per-input button row, so large interfaces stay compact. */
+.playback-bar.source-mode .transport-controls { display: none; }
+.source-switcher { display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    gap: .45rem; }
+.source-switcher.hidden { display: none; }
+.source-select {
+    min-width: 0;
+    max-width: min(300px, 38vw);
+    padding: .45rem .6rem;
+    border: 1px solid rgba(110,231,183,.28);
+    border-radius: 999px;
+    background: #203b32;
+    color: #f0fff8;
+    font: inherit;
+    font-size: .92rem;
+    font-weight: 600;
+    text-align: center;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+.source-select:disabled { opacity: .45; cursor: default; }
+.source-select option { background: #16281f; color: #f0fff8; }
 .control-btn, .control-btn-secondary, .control-btn-mode, .control-btn-clear { padding: 0;
     line-height: 1;
     align-self: center;
