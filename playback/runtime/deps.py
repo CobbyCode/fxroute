@@ -93,3 +93,5 @@ class PlaybackRuntimeDependencies:
     log_playback_graph_diagnosis: Callable[..., None]
     coordinator_reconcile_post_start_graph: Callable[..., Awaitable[dict]]
     audio_configuration_lock: Callable[[], Any] | None = None
+    # Authoritative output-state service for v2 transitions (main.py).
+    get_output_service: Callable[[], Any] | None = None

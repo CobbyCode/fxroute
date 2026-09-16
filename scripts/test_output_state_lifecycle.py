@@ -275,19 +275,6 @@ class ApplyLifecycleTests(unittest.TestCase):
         self.assertIn("sos 2 ", target.text)
         self.runtime.sync_rendered.assert_not_awaited()
 
-    def test_topology_change_commits_as_draft_without_touching_engine(self):
-        with lifecycle_context(self.service, self.manager, self.runtime):
-            result = asyncio.run(main.apply_audio_output_state(FakeRequest({
-                "expected_revision": 1,
-                "mutation": {"kind": "set_routing", "mode": "stereo",
-                             "assignments": ["main_l", "main_r", "sub1", "sub2"]},
-            })))
-        self.assertEqual(result["revision"], 2)
-        self.assertFalse(result["live_applied"])
-        self.assertEqual(result["live_reason"], "topology-change-pending-coordinator")
-        self.runtime.guarded_rebuild_rendered.assert_not_awaited()
-        self.runtime.sync_rendered.assert_not_awaited()
-
     def test_failed_rebuild_restores_bytes_and_previous_graph(self):
         self.runtime.guarded_rebuild_rendered = mock.AsyncMock(
             side_effect=RuntimeError("staging failed"))

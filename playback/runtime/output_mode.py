@@ -31,9 +31,31 @@ logger = logging.getLogger(__name__)
 class _RuntimeOutputModeMixin:
     """Attributes provided by the composing adapter instance."""
     _deps: PlaybackRuntimeDependencies
+    _dsp_runtime: Any
+
+    def _output_state_service(self):
+        """Return the bound output service for v2 transitions."""
+        getter = self._deps.get_output_service
+        service = getter() if callable(getter) else None
+        if service is None:
+            raise RuntimeError("output-state transition has no output service")
+        return service
 
     async def commit_output_mode_runtime(self, request: TransitionRequest) -> dict[str, Any]:
         """Write the target mode only after the guarded graph readback."""
+        v2 = request.output_state_transition or {}
+        if v2.get("candidate_state") is not None:
+            service = self._output_state_service()
+            expected_revision = v2.get("expected_revision")
+            if type(expected_revision) is bool or not isinstance(expected_revision, int):
+                raise RuntimeError("output-state transition has no base revision")
+            committed = service.commit(v2["candidate_state"],
+                                       expected_revision=expected_revision)
+            return {
+                "output_mode_persisted": True,
+                "output_state_revision": committed["revision"],
+                "output_fingerprint": v2.get("fingerprint"),
+            }
         if not request.output_mode_config:
             raise RuntimeError("output-mode transition has no durable target config")
         result = self._deps.persist_audio_output_mode(request.output_mode_config)
@@ -107,6 +129,10 @@ class _RuntimeOutputModeMixin:
         snapshot: Mapping[str, Any] | None,
     ) -> None:
         """Restore the old mode graph/config while the failure gate is closed."""
+        v2 = request.output_state_transition or {}
+        if v2.get("candidate_state") is not None:
+            await self._rollback_output_state(request, v2)
+            return
         snapshot = snapshot or {}
         if getattr(request, "output_routing_config", None):
             from audio.output_routing import restore_routing_state
@@ -144,6 +170,46 @@ class _RuntimeOutputModeMixin:
             await self._deps.coordinator_reconcile_subwoofer_links_only()
         rollback_request = replace(request, output_mode_target=old_overview)
         await self._verify_output_mode_rollback(rollback_request, old_mode)
+
+    async def _rollback_output_state(self, request: TransitionRequest, v2: Mapping[str, Any]) -> None:
+        """Revert a v2 candidate and resync the previous graph, best-effort.
+
+        The revert only lands when the failed candidate is still the head
+        revision: a concurrent newer commit owns the store and the engine
+        then, and clobbering either would trade one drift for another.
+        """
+        service = self._output_state_service()
+        current = service.load()
+        current_fingerprint = None
+        if current.get("revision") is not None:
+            try:
+                current_fingerprint = service.fingerprint(
+                    current, output_key=str(v2.get("output_key") or ""),
+                    channels=int(v2.get("channels") or 0),
+                    sample_rate_hz=int(request.target_rate or 0))
+            except (FileNotFoundError, ValueError):
+                current_fingerprint = None
+        previous_target = v2.get("previous_target")
+        runtime = self._dsp_runtime
+        if current_fingerprint == v2.get("fingerprint"):
+            reverted = service.revert(v2["previous_state"],
+                                      expected_revision=int(current.get("revision")))
+            logger.info("Output-state rollback recommitted revision %s", reverted.get("revision"))
+        elif current == v2.get("previous_state"):
+            # The persist stage never ran (or a repeated rollback already
+            # reverted): the store needs no repair, but the engine may still
+            # hold the staged candidate graph.
+            logger.info("Output-state store already at previous revision; resyncing graph only")
+        else:
+            logger.warning(
+                "Skipping output-state rollback: store head is not the failed candidate")
+            return
+        if previous_target is not None and runtime is not None:
+            await runtime.sync_rendered(previous_target)
+        else:
+            logger.warning(
+                "Output-state rollback has no previous graph target; "
+                "the engine may hold an uncommitted candidate graph")
 
     async def _verify_output_mode_rollback(
         self,
@@ -214,7 +280,8 @@ class _RuntimeOutputModeMixin:
         if not isinstance(overview, Mapping):
             raise RuntimeError("output-mode transition has no target overview")
         mode = (overview.get("output_mode") or {}).get("mode")
-        if mode in OUTPUT_MODE_SUBWOOFER_MODES:
+        v2 = request.output_state_transition or {}
+        if mode in OUTPUT_MODE_SUBWOOFER_MODES and v2.get("target") is None:
             await self._deps.coordinator_reconcile_subwoofer_links_only()
 
         # An output-mode switch never (re)starts its source (see the

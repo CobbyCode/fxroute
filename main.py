@@ -914,6 +914,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         log_playback_graph_diagnosis=lambda *a, **k: playback_orchestration.configured().log_playback_graph_diagnosis(*a, **k),
         coordinator_reconcile_post_start_graph=lambda *a, **k: playback_orchestration.configured().reconcile_post_start_graph(*a, **k),
         audio_configuration_lock=lambda: measurement_sr_session.lock,
+        get_output_service=lambda: get_output_service(),
     )
 
 
@@ -2759,6 +2760,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         repair_stereo_output_links=None,
         resolve_source_producer_ports=lambda source: _resolve_playback_source_producer_ports(source),
         list_spotify_sink_inputs=lambda: media_readiness.list_spotify_sink_inputs(),
+        sync_plan_runtime=lambda *a, **k: _sync_plan_runtime(*a, **k),
     )
 
 
@@ -4053,6 +4055,16 @@ def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
     return PlannedSyncTarget(config=config, text=text)
 
 
+async def _sync_plan_runtime(target, *, reason: str = "output-state-transition") -> None:
+    """Stage a prebuilt plan target on the native runtime (coordinator use)."""
+    del reason
+    if isinstance(target, Mapping):
+        target = PlannedSyncTarget(config=target["config"], text=target["text"])
+    if runtime.dsp_runtime is None:
+        raise RuntimeError("Native DSP runtime is unavailable")
+    await runtime.dsp_runtime.sync_rendered(target)
+
+
 def _output_state_topology(state: dict, mode: str, output_key: str, channels: int | None) -> dict:
     topology = derive_topology(mode, routing_for_device(state, mode, output_key), channels=channels)
     return {"mode": topology.mode, "roles": list(topology.roles),
@@ -4151,6 +4163,83 @@ async def apply_audio_output_state(request: Request):
             else:
                 new_plan = plan
 
+    old_fp, new_fp = fingerprints["old"], fingerprints["new"]
+    topology_changed = _live_topology_key(
+        state, output_key=output_key, channels=channels, rate=target_rate) != \
+        _live_topology_key(candidate, output_key=output_key, channels=channels, rate=target_rate)
+    coordinator_path = live_known and new_plan is not None and topology_changed
+
+    if coordinator_path:
+        ports = (overview.get("output_mode") or {}).get("hardware_playback_ports") or []
+        if not ports:
+            raise HTTPException(status_code=500, detail="Planned output has no discovered playback ports")
+        manager = _require_dsp_manager()
+        try:
+            new_target = _build_plan_target(service, manager, new_plan, output_key=output_key,
+                                            rate=target_rate, hardware_ports=list(ports),
+                                            fingerprint=new_fp)
+            old_target = None
+            if old_plan is not None:
+                old_target = _build_plan_target(service, manager, old_plan, output_key=output_key,
+                                                rate=target_rate, hardware_ports=list(ports),
+                                                fingerprint=old_fp)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
+        live_overview = copy.deepcopy(overview)
+        live_overview["output_mode"] = {
+            **(live_overview.get("output_mode") or {}),
+            "mode": new_plan["mode"],
+            "planned_routes": [[signal, port] for signal, port in new_target.config.route_pairs],
+            "output_state_revision": "pending",
+        }
+        if service.load()["revision"] != expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "code": "revision-conflict", "message": "Output state changed during transition prepare",
+                "revision": service.load()["revision"]})
+        context = await _coordinator_current_playback_context()
+        try:
+            await _run_coordinated_transition(TransitionRequest(
+                operation="output-mode-switch",
+                source=str(context.get("source") or "local"),
+                target_rate=target_rate,
+                target_url=context.get("target_url"),
+                target_track=dict(context.get("target_track") or {}),
+                should_play=bool(context.get("should_play")),
+                rate_change=False,
+                reload_source=False,
+                detail="api-audio-output-state",
+                output_mode_target=live_overview,
+                output_state_transition={
+                    "candidate_state": candidate,
+                    "previous_state": state,
+                    "expected_revision": expected_revision,
+                    "fingerprint": new_fp,
+                    "target": new_target,
+                    "previous_target": old_target,
+                    "output_key": output_key,
+                    "channels": channels,
+                }))
+        except PlaybackTransitionFailure as exc:
+            cause = exc.__cause__
+            while cause is not None:
+                if isinstance(cause, StateConflictError):
+                    raise HTTPException(status_code=409, detail={
+                        "code": "revision-conflict", "message": str(cause),
+                        "revision": service.load()["revision"]}) from exc
+                cause = cause.__cause__
+            raise _transition_error_http(exc) from exc
+        committed = service.load()
+        return {
+            "status": "ok",
+            "revision": committed["revision"],
+            "active_mode": committed["active_mode"],
+            "fingerprint": new_fp,
+            "fingerprint_changed": True,
+            "live_applied": True,
+            "live_reason": None,
+            "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
+        }
+
     try:
         committed = service.commit(candidate, expected_revision=expected_revision)
     except StateConflictError as exc:
@@ -4161,7 +4250,6 @@ async def apply_audio_output_state(request: Request):
         raise HTTPException(status_code=423, detail=str(exc)) from exc
     except ValueError as exc:
         raise bad_request(exc)
-    old_fp, new_fp = fingerprints["old"], fingerprints["new"]
 
     def draft_response(reason: str) -> dict:
         return {
@@ -4179,9 +4267,6 @@ async def apply_audio_output_state(request: Request):
         return draft_response("rate-unknown" if not target_rate else "output-capacity-unknown")
     if old_plan is None or new_plan is None:
         return draft_response("not-activatable")
-    if _live_topology_key(state, output_key=output_key, channels=channels, rate=target_rate) != \
-            _live_topology_key(candidate, output_key=output_key, channels=channels, rate=target_rate):
-        return draft_response("topology-change-pending-coordinator")
     if old_fp == new_fp:
         return draft_response("nothing-to-apply")
     if runtime.dsp_runtime is None:

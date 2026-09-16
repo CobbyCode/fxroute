@@ -100,6 +100,11 @@ class TransitionRequest:
     output_mode_target: Mapping[str, Any] = field(default_factory=dict)
     output_mode_config: Mapping[str, Any] = field(default_factory=dict)
     output_routing_config: Mapping[str, Any] = field(default_factory=dict)
+    # v2 output-state transitions stage a plan-derived graph instead of a
+    # legacy mode.  Carries the prepared candidate/previous documents, the
+    # staged sync targets and the expected fingerprint; persistence still
+    # happens only in the commit stage after the graph readback.
+    output_state_transition: Mapping[str, Any] = field(default_factory=dict)
     channel_tier: Mapping[str, Any] = field(default_factory=dict)
     sample_rate_policy: Mapping[str, Any] = field(default_factory=dict)
     # Runtime-captured output overview, frozen at transition start and reused
