@@ -98,6 +98,11 @@ async function main() {
         'resolveMeasurementPeqPresetName',
         'takeMeasurementPeqToPreset',
         'createMeasurementPeqPresetFromDraft',
+        'ensureOutputSystemBoxes',
+        'outputSystemModule',
+        'outputSystemBankBinding',
+        'bankBindingJson',
+        'fetchOutputSystemCatalog',
     ].map(extractFunction).join('\n');
     vm.runInContext(`let peqCreateInFlight = false;\n${functions}`, context);
 

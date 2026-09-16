@@ -155,6 +155,11 @@ let state = {
         catalog: null,
         busy: false,
     },
+    crossover: {
+        activeWay: null,
+        response: null,
+        busy: false,
+    },
     dsp: {
         available: false,
         preset_count: 0,
@@ -475,6 +480,22 @@ const elements = {
     osFeedback: document.getElementById('os-feedback'),
     effectsBankSelect: document.getElementById('effects-bank-select'),
     effectsBankInfo: document.getElementById('effects-bank-info'),
+    effectsCrossoverCard: document.getElementById('effects-crossover-card'),
+    effectsCrossoverSummary: document.getElementById('effects-crossover-summary'),
+    effectsCrossoverTabs: document.getElementById('effects-crossover-tabs'),
+    effectsCrossoverGraph: document.getElementById('effects-crossover-graph'),
+    effectsCrossoverFrequencyHighpass: document.getElementById('effects-crossover-frequency-highpass'),
+    effectsCrossoverFrequencyLowpass: document.getElementById('effects-crossover-frequency-lowpass'),
+    effectsCrossoverHighpassGroup: document.getElementById('effects-crossover-highpass-group'),
+    effectsCrossoverLowpassGroup: document.getElementById('effects-crossover-lowpass-group'),
+    effectsCrossoverFamily: document.getElementById('effects-crossover-family'),
+    effectsCrossoverSlope: document.getElementById('effects-crossover-slope'),
+    effectsCrossoverLevel: document.getElementById('effects-crossover-level'),
+    effectsCrossoverDelay: document.getElementById('effects-crossover-delay'),
+    effectsCrossoverPolarity: document.getElementById('effects-crossover-polarity'),
+    effectsCrossoverStarter: document.getElementById('effects-crossover-starter'),
+    effectsCrossoverStarterHint: document.getElementById('effects-crossover-starter-hint'),
+    effectsCrossoverFeedback: document.getElementById('effects-crossover-feedback'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
@@ -1577,6 +1598,15 @@ function setupSettingsActions() {
             void applyOutputSystemMutation('select_bank',
                 { mode: catalog.active_mode, bank_id: bankId }, false);
         });
+    }
+    const crossoverControlChanged = () => { void saveCrossoverWay(); };
+    for (const el of [elements.effectsCrossoverFrequencyHighpass, elements.effectsCrossoverFrequencyLowpass,
+        elements.effectsCrossoverFamily, elements.effectsCrossoverSlope, elements.effectsCrossoverLevel,
+        elements.effectsCrossoverDelay, elements.effectsCrossoverPolarity]) {
+        if (el) el.addEventListener('change', crossoverControlChanged);
+    }
+    if (elements.effectsCrossoverStarter) {
+        elements.effectsCrossoverStarter.addEventListener('click', () => { void applyCrossoverStarters(); });
     }
     if (elements.settingsSourceSelect) {
         elements.settingsSourceSelect.addEventListener('change', (event) => {
@@ -3757,7 +3787,13 @@ function outputSystemModule() {
     return (typeof window !== 'undefined' && window.FXRouteOutputState) || null;
 }
 
+function ensureOutputSystemBoxes() {
+    if (!state.outputSystem) state.outputSystem = { catalog: null, busy: false };
+    if (!state.crossover) state.crossover = { activeWay: null, response: null, busy: false };
+}
+
 async function fetchOutputSystemCatalog(force = false) {
+    ensureOutputSystemBoxes();
     const mod = outputSystemModule();
     if (!mod) return null;
     if (state.outputSystem.catalog && !force) return state.outputSystem.catalog;
@@ -3768,6 +3804,12 @@ async function fetchOutputSystemCatalog(force = false) {
     }
     renderOutputSystemSection();
     renderEffectsBankSelector();
+    if (state.outputSystem.catalog?.active_mode === 'crossover') {
+        void fetchCrossoverResponse();
+    } else {
+        state.crossover.response = null;
+        renderCrossoverTile();
+    }
     return state.outputSystem.catalog;
 }
 
@@ -3777,6 +3819,7 @@ function outputSystemDevice() {
 }
 
 function renderOutputSystemSection() {
+    ensureOutputSystemBoxes();
     const mod = outputSystemModule();
     const catalog = state.outputSystem.catalog;
     if (!mod || !catalog) {
@@ -3813,7 +3856,8 @@ function renderOutputSystemSection() {
     }
 }
 
-async function applyOutputSystemMutation(kind, fields, successMessage) {
+async function applyOutputSystemMutation(kind, fields, successMessage, options = {}) {
+    ensureOutputSystemBoxes();
     const mod = outputSystemModule();
     if (!mod || !state.outputSystem.catalog) return null;
     state.outputSystem.busy = true;
@@ -3830,7 +3874,7 @@ async function applyOutputSystemMutation(kind, fields, successMessage) {
             fetch, state.outputSystem.catalog, getCatalog, mutation);
         state.outputSystem.catalog = catalog;
         if (successMessage) showToast(successMessage, 'success');
-        if (data && data.live_applied === false && data.live_reason && data.live_reason !== 'nothing-to-apply') {
+        if (!options.quiet && data && data.live_applied === false && data.live_reason && data.live_reason !== 'nothing-to-apply') {
             showToast(`Saved (revision ${data.revision}); live apply: ${data.live_reason}`, 'info');
         }
         return data;
@@ -3848,7 +3892,7 @@ async function applyOutputSystemMutation(kind, fields, successMessage) {
 }
 
 function outputSystemBankBinding() {
-    const catalog = state.outputSystem.catalog;
+    const catalog = (state.outputSystem || {}).catalog;
     if (!catalog) return null;
     const mode = catalog.active_mode || 'stereo';
     const modeConfig = catalog.modes[mode] || {};
@@ -3875,7 +3919,7 @@ function bankBindingJson() {
 
 function renderEffectsBankSelector() {
     const mod = outputSystemModule();
-    const catalog = state.outputSystem.catalog;
+    const catalog = (state.outputSystem || {}).catalog;
     if (!mod || !elements.effectsBankSelect) return;
     if (!catalog) {
         elements.effectsBankSelect.innerHTML = '';
@@ -3884,6 +3928,217 @@ function renderEffectsBankSelector() {
     }
     mod.renderBankSelector(elements.effectsBankSelect, elements.effectsBankInfo,
         catalog, catalog.active_mode || 'stereo');
+}
+
+function crossoverModule() {
+    return (typeof window !== 'undefined' && window.FXRouteCrossover) || null;
+}
+
+async function fetchCrossoverResponse() {
+    ensureOutputSystemBoxes();
+    const catalog = state.outputSystem.catalog;
+    if (!catalog || catalog.active_mode !== 'crossover') {
+        state.crossover.response = null;
+        renderCrossoverTile();
+        return null;
+    }
+    try {
+        const resp = await fetch('/api/audio/output-state/crossover-response');
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error('Crossover response unavailable');
+        state.crossover.response = data;
+    } catch (e) {
+        state.crossover.response = null;
+    }
+    renderCrossoverTile();
+    return state.crossover.response;
+}
+
+function renderCrossoverTile() {
+    ensureOutputSystemBoxes();
+    const mod = crossoverModule();
+    const catalog = state.outputSystem.catalog;
+    const card = elements.effectsCrossoverCard;
+    if (!card) return;
+    const response = state.crossover.response;
+    const roles = mod && response && response.mode === 'crossover'
+        ? mod.orderedWays(response.ways) : [];
+    card.classList.toggle('hidden', roles.length === 0);
+    if (!roles.length) return;
+    if (!roles.includes(state.crossover.activeWay)) state.crossover.activeWay = roles[0];
+    const active = state.crossover.activeWay;
+    const modeConfig = catalog.modes.crossover || {};
+    const processing = modeConfig.processing || {};
+    const settings = processing[active] || {};
+    const busy = state.crossover.busy || state.outputSystem.busy;
+    mod.renderWayTabs(elements.effectsCrossoverTabs, roles, active, (role) => {
+        state.crossover.activeWay = role;
+        renderCrossoverTile();
+    });
+    if (elements.effectsCrossoverGraph) {
+        const paths = mod.graphPaths(response.ways, active, 600, 220);
+        elements.effectsCrossoverGraph.innerHTML = '<line x1="0" y1="'
+            + mod.graphY(0, 220).toFixed(1) + '" x2="600" y2="'
+            + mod.graphY(0, 220).toFixed(1) + '" class="crossover-grid-zero" />'
+            + paths.map((entry) => `<polyline points="${entry.d.replace(/^[ML]/, '').replace(/[ML]/g, ' ')}" fill="none" class="${entry.active ? 'crossover-path-active' : 'crossover-path-dim'}" />`).join('');
+    }
+    const applicable = mod.applicableFilters(active);
+    const showHighpass = applicable.includes('highpass');
+    const showLowpass = applicable.includes('lowpass');
+    if (elements.effectsCrossoverHighpassGroup) {
+        elements.effectsCrossoverHighpassGroup.style.display = showHighpass ? '' : 'none';
+    }
+    if (elements.effectsCrossoverLowpassGroup) {
+        elements.effectsCrossoverLowpassGroup.style.display = showLowpass ? '' : 'none';
+    }
+    if (elements.effectsCrossoverFrequencyHighpass && document.activeElement !== elements.effectsCrossoverFrequencyHighpass) {
+        elements.effectsCrossoverFrequencyHighpass.value = settings.highpass?.frequency_hz ?? '';
+        elements.effectsCrossoverFrequencyHighpass.disabled = !showHighpass || busy;
+    }
+    if (elements.effectsCrossoverFrequencyLowpass && document.activeElement !== elements.effectsCrossoverFrequencyLowpass) {
+        elements.effectsCrossoverFrequencyLowpass.value = settings.lowpass?.frequency_hz ?? '';
+        elements.effectsCrossoverFrequencyLowpass.disabled = !showLowpass || busy;
+    }
+    const current = settings.highpass || settings.lowpass || {};
+    const families = Object.keys(catalog.capabilities?.filter_families || {});
+    if (elements.effectsCrossoverFamily) {
+        const html = families.map((family) =>
+            `<option value="${mod.esc(family)}"${family === current.family ? ' selected' : ''}>${mod.esc(familyLabel(family))}</option>`).join('');
+        if (elements.effectsCrossoverFamily.innerHTML !== html) elements.effectsCrossoverFamily.innerHTML = html;
+        if (elements.effectsCrossoverFamily.value !== (current.family || '')) {
+            elements.effectsCrossoverFamily.value = current.family || '';
+        }
+        elements.effectsCrossoverFamily.disabled = busy;
+    }
+    if (elements.effectsCrossoverSlope) {
+        const slopes = mod.slopesForFamily(elements.effectsCrossoverFamily?.value || current.family, catalog.capabilities);
+        const html = slopes.map((slope) =>
+            `<option value="${slope}"${slope === current.slope_db_oct ? ' selected' : ''}>${slope}</option>`).join('');
+        if (elements.effectsCrossoverSlope.innerHTML !== html) elements.effectsCrossoverSlope.innerHTML = html;
+        elements.effectsCrossoverSlope.disabled = busy;
+    }
+    if (elements.effectsCrossoverLevel && document.activeElement !== elements.effectsCrossoverLevel) {
+        elements.effectsCrossoverLevel.value = settings.level_db ?? 0;
+        elements.effectsCrossoverLevel.disabled = busy;
+    }
+    if (elements.effectsCrossoverDelay && document.activeElement !== elements.effectsCrossoverDelay) {
+        elements.effectsCrossoverDelay.value = settings.alignment_ms ?? 0;
+        elements.effectsCrossoverDelay.disabled = busy;
+    }
+    if (elements.effectsCrossoverPolarity) {
+        elements.effectsCrossoverPolarity.value = settings.polarity || 'normal';
+        elements.effectsCrossoverPolarity.disabled = busy;
+    }
+    const wayCount = modeConfig.topology?.way_count || 0;
+    if (elements.effectsCrossoverSummary) {
+        elements.effectsCrossoverSummary.textContent = wayCount
+            ? `${wayCount}-Way system · ${roles.length} ways configured`
+            : 'Configure speaker ways in Output System first.';
+    }
+    if (elements.effectsCrossoverStarterHint) {
+        try {
+            const missing = wayCount ? mod.missingStarterRoles(processing, mod.starterValues(wayCount)) : [];
+            elements.effectsCrossoverStarterHint.textContent = !wayCount ? ''
+                : missing.length ? `Starter values missing for: ${missing.map((r) => mod.esc(r)).join(', ')}`
+                : 'All ways initialized.';
+        } catch (e) {
+            elements.effectsCrossoverStarterHint.textContent = '';
+        }
+    }
+    if (elements.effectsCrossoverStarter) elements.effectsCrossoverStarter.disabled = busy;
+}
+
+function familyLabel(family) {
+    return { 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' }[family] || family;
+}
+
+function collectCrossoverWayMutation() {
+    ensureOutputSystemBoxes();
+    const mod = crossoverModule();
+    const catalog = state.outputSystem.catalog;
+    const active = state.crossover.activeWay;
+    if (!mod || !catalog || !active) return null;
+    const applicable = mod.applicableFilters(active);
+    const readFreq = (el, fallback) => {
+        if (!el || el.value === '' || el.value === null) return fallback;
+        return mod.clampFrequencyHz(el.value);
+    };
+    const current = catalog.modes.crossover?.processing?.[active] || {};
+    const family = elements.effectsCrossoverFamily?.value || current.highpass?.family || current.lowpass?.family || 'linkwitz-riley';
+    const slope = Number(elements.effectsCrossoverSlope?.value || current.highpass?.slope_db_oct || current.lowpass?.slope_db_oct || 24);
+    const build = (previous, enabled, freqEl) => {
+        if (!enabled) return previous ?? null;
+        const raw = freqEl ? freqEl.value : '';
+        if ((raw === '' || raw === null) && !previous) return null;
+        return { family, slope_db_oct: slope, frequency_hz: readFreq(freqEl, previous?.frequency_hz ?? 1000) };
+    };
+    return {
+        kind: 'set_processing',
+        mode: 'crossover',
+        role: active,
+        highpass: build(current.highpass, applicable.includes('highpass'), elements.effectsCrossoverFrequencyHighpass),
+        lowpass: build(current.lowpass, applicable.includes('lowpass'), elements.effectsCrossoverFrequencyLowpass),
+        level_db: mod.clampLevelDb(elements.effectsCrossoverLevel?.value ?? 0),
+        alignment_ms: mod.clampAlignmentMs(elements.effectsCrossoverDelay?.value ?? 0),
+        polarity: elements.effectsCrossoverPolarity?.value === 'invert' ? 'invert' : 'normal',
+    };
+}
+
+async function saveCrossoverWay() {
+    const fields = collectCrossoverWayMutation();
+    if (!fields) return;
+    state.crossover.busy = true;
+    renderCrossoverTile();
+    try {
+        const { kind, ...rest } = fields;
+        await applyOutputSystemMutation(kind, rest, false, { quiet: true });
+        await fetchCrossoverResponse();
+    } finally {
+        state.crossover.busy = false;
+        renderCrossoverTile();
+    }
+}
+
+async function applyCrossoverStarters() {
+    ensureOutputSystemBoxes();
+    const mod = crossoverModule();
+    const catalog = state.outputSystem.catalog;
+    if (!mod || !catalog) return;
+    const modeConfig = catalog.modes.crossover || {};
+    const wayCount = modeConfig.topology?.way_count || 0;
+    if (!wayCount) {
+        showToast('Complete the crossover routing first (2/3/4-way).', 'warning');
+        return;
+    }
+    let starters;
+    try {
+        starters = mod.starterValues(wayCount);
+    } catch (e) {
+        showToast(e.message, 'error');
+        return;
+    }
+    const missing = mod.missingStarterRoles(modeConfig.processing || {}, starters);
+    if (!missing.length) {
+        showToast('All ways already initialized.', 'info');
+        return;
+    }
+    state.crossover.busy = true;
+    renderCrossoverTile();
+    try {
+        for (const role of missing) {
+            const wanted = starters[role] || {};
+            const current = modeConfig.processing?.[role] || {};
+            const fields = { mode: 'crossover', role };
+            if (wanted.highpass && !current.highpass) fields.highpass = wanted.highpass;
+            if (wanted.lowpass && !current.lowpass) fields.lowpass = wanted.lowpass;
+            await applyOutputSystemMutation('set_processing', fields, false, { quiet: true });
+        }
+        showToast(`Starter values applied to ${missing.length} way${missing.length === 1 ? '' : 's'}.`, 'success');
+        await fetchCrossoverResponse();
+    } finally {
+        state.crossover.busy = false;
+        renderCrossoverTile();
+    }
 }
 
 async function saveAudioSourceSelection(mode, inputKey = '') {
@@ -13880,6 +14135,7 @@ function renderEffects() {
     renderPeqBands();
     renderEffectsCompare();
     renderEffectsCombine();
+    renderCrossoverTile();
 }
 function getEmptyEffectsCompareState() {
     return { presetA: '', presetB: '', activeSide: null };

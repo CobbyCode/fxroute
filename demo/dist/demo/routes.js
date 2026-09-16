@@ -295,6 +295,161 @@
         return ['stereo', 'subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'].includes(mode) ? mode : 'stereo';
     }
 
+    // ── Output System (v2 demo state) ─────────────────────────────
+    // Multichannel modes, role routing and area banks for the Output
+    // System settings section, the A/B bank selector and the Crossover
+    // tile. Mutations apply to this demo state with revision guards,
+    // mirroring the backend contracts (409/400); measurement locking is
+    // not simulated here.
+    const outputStateRoles = {
+        stereo: ['main_l', 'main_r', 'sub_l', 'sub_r', 'sub1', 'sub2'],
+        crossover: ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low',
+            'right_low_mid', 'right_mid', 'right_high', 'sub_l', 'sub_r', 'sub1', 'sub2'],
+    };
+    const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' });
+    const defaultProcessing = () => ({ highpass: null, lowpass: null, level_db: 0.0, alignment_ms: 0.0, polarity: 'normal' });
+    const lr24 = (frequency_hz) => ({ family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz });
+    const outputStateStore = {
+        revision: 1,
+        active_mode: 'stereo',
+        modes: {
+            stereo: {
+                selected_bank: 'global',
+                banks: { global: neutralBank(), main_l: neutralBank(), main_r: neutralBank(), sub1: neutralBank() },
+                processing: { main_l: defaultProcessing(), main_r: defaultProcessing(), sub1: defaultProcessing() },
+                bass_management: { frequency_hz: 80, main_highpass_enabled: true },
+                extras: {},
+                routing: {},
+            },
+            crossover: {
+                selected_bank: 'global',
+                banks: { global: neutralBank() },
+                processing: {},
+                bass_management: { frequency_hz: 80, main_highpass_enabled: true },
+                extras: {},
+                routing: {},
+            },
+        },
+    };
+    for (const role of ['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high']) {
+        outputStateStore.modes.crossover.banks[role] = neutralBank();
+        outputStateStore.modes.crossover.processing[role] = defaultProcessing();
+    }
+    for (const [role, highpass, lowpass] of [
+        ['left_low', null, 300], ['left_mid', 300, 2500], ['left_high', 2500, null],
+        ['right_low', null, 300], ['right_mid', 300, 2500], ['right_high', 2500, null],
+    ]) {
+        const settings = outputStateStore.modes.crossover.processing[role];
+        if (highpass) settings.highpass = lr24(highpass);
+        if (lowpass) settings.lowpass = lr24(lowpass);
+    }
+    outputStateStore.modes.stereo.routing[SCARLETT_KEY] = ['main_l', 'main_r', 'sub1', 'sub1'];
+    outputStateStore.modes.crossover.routing[SCARLETT_KEY] = ['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high'];
+    function outputStateTopology(mode, assignments) {
+        const roles = [...new Set((assignments || []).filter(r => r && r !== 'off'))];
+        const subs = roles.filter(r => ['sub_l', 'sub_r', 'sub1', 'sub2'].includes(r));
+        const subMode = !subs.length ? 'none' : subs.length === 1 ? 'mono'
+            : subs.length === 2 && subs.includes('sub_l') && subs.includes('sub_r') ? 'stereo'
+            : subs.length === 2 ? 'dual-mono' : 'unsupported';
+        const issues = [];
+        let wayCount = null;
+        if (mode === 'stereo') {
+            if (!roles.includes('main_l') || !roles.includes('main_r')) issues.push('Stereo routing requires Main L and Main R');
+            if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
+        } else {
+            const ways = ['low', 'low_mid', 'mid', 'high'];
+            const left = roles.filter(r => r.startsWith('left_')).map(r => r.slice(5));
+            const right = roles.filter(r => r.startsWith('right_')).map(r => r.slice(6));
+            const complete = [['low', 'high'], ['low', 'mid', 'high'], ways];
+            const leftOk = complete.some(set => JSON.stringify(set) === JSON.stringify(left));
+            const rightOk = complete.some(set => JSON.stringify(set) === JSON.stringify(right));
+            if (!leftOk || !rightOk || JSON.stringify(left) !== JSON.stringify(right)) {
+                issues.push('Crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways');
+            } else {
+                wayCount = left.length;
+            }
+            if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
+        }
+        return { mode, roles, sub_roles: subs, sub_mode: subMode, left_ways: [], right_ways: [], way_count: wayCount, issues };
+    }
+    function outputStateCatalog() {
+        const out = outputEntry(selectedOutput());
+        const key = out.key;
+        const channels = Number(out.channels || 0);
+        const modes = {};
+        for (const mode of ['stereo', 'crossover']) {
+            const config = outputStateStore.modes[mode];
+            const routing = (config.routing[key] || (mode === 'stereo' ? ['main_l', 'main_r'] : [])).slice();
+            const banks = {};
+            for (const [id, bank] of Object.entries(config.banks)) {
+                banks[id] = { ...bank, active_side: bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null };
+            }
+            modes[mode] = {
+                selected_bank: config.selected_bank,
+                banks,
+                processing: JSON.parse(JSON.stringify(config.processing)),
+                bass_management: { ...config.bass_management },
+                extras: JSON.parse(JSON.stringify(config.extras)),
+                topology: outputStateTopology(mode, routing.slice(0, channels || routing.length)),
+            };
+        }
+        const deviceRouting = {};
+        for (const mode of ['stereo', 'crossover']) {
+            deviceRouting[mode] = (outputStateStore.modes[mode].routing[key]
+                || (mode === 'stereo' ? ['main_l', 'main_r'] : [])).slice();
+        }
+        return {
+            status: 'ok', revision: outputStateStore.revision, active_mode: outputStateStore.active_mode,
+            device: { key, channels, routing: deviceRouting },
+            modes,
+            capabilities: {
+                modes: ['stereo', 'crossover'],
+                roles: { stereo: outputStateRoles.stereo.slice(), crossover: outputStateRoles.crossover.slice() },
+                filter_families: { 'linkwitz-riley': [12, 24, 36, 48, 60, 72], butterworth: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72], bessel: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72] },
+                max_slope_db_oct: 72,
+                max_biquads_per_output: 32,
+            },
+        };
+    }
+    // Assigns a just-created preset to its bank when the request carries
+    // a bank target (multipart fields arrive as strings, JSON as
+    // numbers). Mirrors the backend binding contract.
+    function assignDemoBankTarget(body, createdName) {
+        const mode = String(body.bank_mode || '');
+        const bankId = String(body.bank_id || '');
+        if (!mode && !bankId) return null;
+        if (!mode || !bankId) return { error: 'bank_mode and bank_id are required together', status: 400 };
+        const revision = Number(body.expected_revision);
+        if (!Number.isInteger(revision) || revision < 0) {
+            return { error: 'expected_revision must be a non-negative integer', status: 400 };
+        }
+        const config = outputStateStore.modes[mode];
+        const bank = config && config.banks[bankId];
+        if (!bank) return { error: `Unknown bank ${bankId}`, status: 400 };
+        if (revision !== outputStateStore.revision) {
+            return { conflict: true, created: createdName };
+        }
+        bank.preset_a = bank.preset_a || createdName;
+        bank.preset = createdName;
+        outputStateStore.revision += 1;
+        return { assigned: true, mode, bank_id: bankId, revision: outputStateStore.revision };
+    }
+    function demoButterworthDb(frequency, cutoff, slopeDbOct, kind) {
+        const order = Math.max(1, Math.round(slopeDbOct / 6));
+        const ratio = kind === 'lowpass' ? frequency / cutoff : cutoff / frequency;
+        if (ratio <= 0) return 0;
+        return -10 * Math.log10(1 + Math.pow(ratio, 2 * order));
+    }
+    function demoCrossoverDb(frequency, definition, kind) {
+        if (!definition) return 0;
+        const { family, slope_db_oct: slope, frequency_hz: cutoff } = definition;
+        if (family === 'linkwitz-riley') {
+            const half = demoButterworthDb(frequency, cutoff, slope / 2, kind);
+            return 2 * half;
+        }
+        return demoButterworthDb(frequency, cutoff, slope, kind);
+    }
+
     function scarlettOutputEntry() {
         const tier = scarlettTier();
         const base = OUTPUTS.find(o => o.key === SCARLETT_KEY);
@@ -1898,6 +2053,101 @@
             outputMode.effective_output_channels = Number(outNow.channels || 0);
             return j(outputMode);
         }
+
+        if (p === '/api/audio/output-state' && !post) {
+            return j(outputStateCatalog());
+        }
+        if (p === '/api/audio/output-state/apply' && post) {
+            const revision = body.expected_revision;
+            if (!Number.isInteger(revision) || revision < 0) return err('expected_revision must be a non-negative integer', 400);
+            if (revision !== outputStateStore.revision) {
+                return err({ code: 'revision-conflict', message: 'Output state changed', revision: outputStateStore.revision }, 409);
+            }
+            const mutation = body.mutation || {};
+            const mode = String(mutation.mode || '');
+            const config = outputStateStore.modes[mode];
+            if (!config) return err(`Unknown output mode: ${mutation.mode}`, 400);
+            const fail = (message) => err(message, 400);
+            if (mutation.kind === 'switch_mode') {
+                outputStateStore.active_mode = mode;
+            } else if (mutation.kind === 'set_routing') {
+                const assignments = mutation.assignments;
+                if (!Array.isArray(assignments)) return fail('Routing assignments must be an array');
+                const allowed = new Set([...outputStateRoles[mode], 'off']);
+                if (assignments.some(role => !allowed.has(role))) return fail('Routing contains an invalid role');
+                config.routing[outputEntry(selectedOutput()).key] = assignments.slice();
+                for (const role of assignments) {
+                    if (role !== 'off' && !config.banks[role]) {
+                        config.banks[role] = neutralBank();
+                        config.processing[role] = defaultProcessing();
+                    }
+                }
+            } else if (mutation.kind === 'select_bank') {
+                if (!config.banks[mutation.bank_id]) return fail(`Unknown bank ${mutation.bank_id}`);
+                config.selected_bank = mutation.bank_id;
+            } else if (mutation.kind === 'set_bank_preset') {
+                const bank = config.banks[mutation.bank_id];
+                if (!bank) return fail(`Unknown bank ${mutation.bank_id}`);
+                if (mutation.preset) {
+                    bank.preset_a = bank.preset_a || mutation.preset;
+                    bank.preset = mutation.preset;
+                }
+            } else if (mutation.kind === 'set_processing') {
+                const settings = config.processing[mutation.role];
+                if (!settings) return fail(`Unknown role ${mutation.role}`);
+                for (const key of ['highpass', 'lowpass']) {
+                    if (key in mutation) settings[key] = mutation[key];
+                }
+                for (const key of ['level_db', 'alignment_ms', 'polarity']) {
+                    if (mutation[key] !== undefined && mutation[key] !== null) settings[key] = mutation[key];
+                }
+            } else if (mutation.kind === 'set_bass') {
+                if (mutation.frequency_hz !== undefined && mutation.frequency_hz !== null) {
+                    config.bass_management.frequency_hz = mutation.frequency_hz;
+                }
+                if (typeof mutation.main_highpass_enabled === 'boolean') {
+                    config.bass_management.main_highpass_enabled = mutation.main_highpass_enabled;
+                }
+            } else if (mutation.kind === 'set_extras') {
+                if (typeof mutation.extras !== 'object' || mutation.extras === null) {
+                    return fail('extras must be an object');
+                }
+                config.extras = mutation.extras;
+            } else {
+                return fail(`Unknown mutation kind: ${mutation.kind}`);
+            }
+            outputStateStore.revision += 1;
+            const catalog = outputStateCatalog();
+            const topology = catalog.modes[catalog.active_mode].topology;
+            return j({ status: 'ok', revision: catalog.revision, active_mode: catalog.active_mode,
+                fingerprint: `demo-${catalog.revision}`, fingerprint_changed: true,
+                live_applied: topology.issues.length === 0, live_reason: topology.issues.length ? 'not-activatable' : null,
+                topology });
+        }
+        if (p === '/api/audio/output-state/crossover-response' && !post) {
+            const catalog = outputStateCatalog();
+            const ways = {};
+            for (const [role, settings] of Object.entries(catalog.modes[catalog.active_mode].processing)) {
+                if (!role.startsWith('left_') && !role.startsWith('right_')) continue;
+                const points = [];
+                const way = role.split('_').slice(1).join('_');
+                const required = way === 'low' ? ['lowpass'] : way === 'high' ? ['highpass'] : ['highpass', 'lowpass'];
+                const complete = required.every(kind => settings[kind]);
+                if (complete) {
+                    for (let index = 0; index < 180; index += 1) {
+                        const frequency = 20 * Math.pow(1000, index / 179);
+                        let level = 0;
+                        if (settings.highpass) level += demoCrossoverDb(frequency, settings.highpass, 'highpass');
+                        if (settings.lowpass) level += demoCrossoverDb(frequency, settings.lowpass, 'lowpass');
+                        points.push([Math.round(frequency * 1000) / 1000, Math.round(level * 1000) / 1000]);
+                    }
+                }
+                ways[role] = { filters: { highpass: settings.highpass, lowpass: settings.lowpass },
+                    complete, points: complete ? points : null };
+            }
+            return j({ status: 'ok', revision: catalog.revision, mode: catalog.active_mode,
+                sample_rate_hz: 48000, ways });
+        }
         if (p === '/api/audio/samplerate') {
             if (post) {
                 const mode = String(body.mode || 'auto');
@@ -2015,7 +2265,15 @@
                 });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const created = { success: true, preset: { name } };
+            const binding = assignDemoBankTarget(body, name);
+            if (binding && binding.error) return err(binding.error, binding.status);
+            if (binding && binding.conflict) {
+                created.bank = { assigned: false, created: name };
+                return j(created, 409);
+            }
+            if (binding) created.bank = binding;
+            return j(created);
         }
         if (p === '/api/dsp/presets/create-with-ir' && post) {
             const name = String(body.preset_name || body.name || 'Convolver Preset').trim() || 'Convolver Preset';
@@ -2023,7 +2281,15 @@
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], convolver: true });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const created = { success: true, preset: { name } };
+            const binding = assignDemoBankTarget(body, name);
+            if (binding && binding.error) return err(binding.error, binding.status);
+            if (binding && binding.conflict) {
+                created.bank = { assigned: false, created: name };
+                return j(created, 409);
+            }
+            if (binding) created.bank = binding;
+            return j(created);
         }
         if (p === '/api/dsp/presets/combine' && post) {
             const name = String(body.presetName || 'Combined Preset').trim();
@@ -2038,6 +2304,15 @@
         }
         if (p === '/api/dsp/presets/delete' && post) {
             const name = String(body.preset_name || body.name || '');
+            const pinned = new Set();
+            for (const config of Object.values(outputStateStore.modes)) {
+                for (const bank of Object.values(config.banks)) {
+                    for (const key of ['preset', 'preset_a', 'preset_b']) {
+                        if (bank[key]) pinned.add(bank[key]);
+                    }
+                }
+            }
+            if (pinned.has(name)) return err(`Preset "${name}" is used by an output bank and cannot be deleted`, 400);
             const idx = dspPresets.findIndex(pr => pr.name === name);
             if (idx >= 0 && name !== 'Direct' && name !== 'Neutral') dspPresets.splice(idx, 1);
             if (dspActivePreset === name) dspActivePreset = 'Direct';
@@ -2132,7 +2407,15 @@
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const created = { success: true, preset: { name } };
+            const binding = assignDemoBankTarget(body, name);
+            if (binding && binding.error) return err(binding.error, binding.status);
+            if (binding && binding.conflict) {
+                created.bank = { assigned: false, created: name };
+                return j(created, 409);
+            }
+            if (binding) created.bank = binding;
+            return j(created);
         }
 
         // ── Measurements ────────────────────────────────────────────────
