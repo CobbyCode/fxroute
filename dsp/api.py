@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from pydantic.fields import FieldInfo
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
@@ -33,6 +34,9 @@ from dsp.effects_extras import (
     parse_effects_extras_from_json,
 )
 from dsp.persistence import clean_name
+from audio.output_service import MeasurementActiveError
+from audio.output_state import referenced_presets, set_bank_preset
+from audio.output_state_store import StateConflictError
 from library.core import path_within_root
 from library.api import _cleanup_temp_file
 from uploads import (
@@ -74,6 +78,7 @@ class DspApiDeps:
     restore_volume_state: Callable[..., Awaitable[Any]]
     volume_state_for_manager: Callable[..., Awaitable[Any]]
     schedule_peak_monitor_refresh: Callable[[str], None]
+    get_output_service: Optional[Callable[[], Any]] = None
 
 
 @dataclass
@@ -192,6 +197,97 @@ def _raise_dsp_http_error(exc: Exception) -> None:
         # Runtime state errors may carry internal detail; log fully, return generic.
         raise internal_error("DSP operation failed", exc) from exc
     raise exc
+
+
+def _output_state_service():
+    """Return the bound output service, or None when unwired (tests/legacy)."""
+    getter = _deps().get_output_service
+    return getter() if getter is not None else None
+
+
+def _require_output_state_service():
+    service = _output_state_service()
+    if service is None:
+        raise HTTPException(status_code=500, detail="Output state service is not configured")
+    return service
+
+
+def _parse_bank_binding(*, bank_mode: Any, bank_id: Any, expected_revision: Any) -> dict | None:
+    """Normalize an optional bank target; None means no binding requested.
+
+    FastAPI field markers (direct unit calls that omit form fields) count
+    as absent, so pre-existing callers without bank arguments keep working.
+    """
+    if isinstance(bank_mode, FieldInfo):
+        bank_mode = ""
+    if isinstance(bank_id, FieldInfo):
+        bank_id = ""
+    if isinstance(expected_revision, FieldInfo):
+        expected_revision = -1
+    mode = str(bank_mode or "").strip()
+    bank = str(bank_id or "").strip()
+    if not mode and not bank:
+        return None
+    if not mode or not bank:
+        raise HTTPException(status_code=400, detail="bank_mode and bank_id are required together")
+    if type(expected_revision) is bool or not isinstance(expected_revision, int) or expected_revision < 0:
+        raise HTTPException(status_code=400, detail="expected_revision must be a non-negative integer")
+    return {"mode": mode, "bank_id": bank, "expected_revision": expected_revision}
+
+
+def _validate_bank_target(service, binding: dict) -> None:
+    """Fail fast (400) when the requested bank does not exist yet."""
+    try:
+        state = service.load()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}") from exc
+    modes = state.get("modes") if isinstance(state, dict) else None
+    config = modes.get(binding["mode"]) if isinstance(modes, dict) else None
+    if config is None or binding["bank_id"] not in (config.get("banks") or {}):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown bank {binding['bank_id']} for output mode {binding['mode']}")
+
+
+async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) -> dict:
+    """Assign a just-created preset to its bank; conflicts report partial state."""
+    service = _require_output_state_service()
+    try:
+        committed = await _deps().drain_worker(
+            service.apply,
+            lambda state: set_bank_preset(
+                state, binding["mode"], binding["bank_id"], preset=created_name),
+            expected_revision=binding["expected_revision"])
+    except MeasurementActiveError as exc:
+        raise HTTPException(status_code=423, detail={
+            "code": "bank-assign-locked", "message": str(exc),
+            "created": created_name, "assigned": False}) from exc
+    except StateConflictError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "bank-assign-conflict", "message": str(exc),
+            "created": created_name, "assigned": False}) from exc
+    return {"assigned": True, "mode": binding["mode"],
+            "bank_id": binding["bank_id"], "revision": committed["revision"]}
+
+
+def _pinned_deletion_presets(dsp_mgr) -> set[str]:
+    """Presets referenced by output banks or legacy compare slots."""
+    pinned: set[str] = set()
+    service = _output_state_service()
+    if service is not None:
+        try:
+            pinned.update(referenced_presets(service.load()))
+        except ValueError:
+            logger.warning("Output state unavailable; bank-pinned preset guard skipped")
+    try:
+        compare = dsp_mgr.load_compare_state()
+    except Exception:
+        compare = {}
+    if isinstance(compare, dict):
+        for key in ("presetA", "presetB"):
+            if compare.get(key):
+                pinned.add(compare[key])
+    return pinned
 
 
 @router.get("/api/dsp/extras")
@@ -512,8 +608,15 @@ async def create_convolver_preset(
     delay_right_ms: float = Form(0.0),
     tone_effect_enabled: bool = Form(False),
     tone_effect_mode: str = Form("crystalizer"),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
+    binding = _parse_bank_binding(
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    if binding is not None:
+        _validate_bank_target(_require_output_state_service(), binding)
 
     try:
         # The canonical loudness read inside _effects_extras_from_form must
@@ -539,12 +642,16 @@ async def create_convolver_preset(
             preset_name=created["name"],
             refresh_reason="create-convolver",
         )
-        return {
+        response = {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created["name"], binding=binding)
+        return response
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
@@ -769,6 +876,9 @@ async def create_convolver_preset_with_ir(
     tone_effect_enabled: bool = Form(False),
     tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
@@ -778,6 +888,11 @@ async def create_convolver_preset_with_ir(
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp_path = Path(tmp.name)
             await save_upload_to_file(file, tmp, DSP_IR_MAX_BYTES)
+
+        binding = _parse_bank_binding(
+            bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+        if binding is not None:
+            _validate_bank_target(_require_output_state_service(), binding)
 
         # The canonical loudness read inside _effects_extras_from_form must
         # happen under the same mutation ownership as the preset creation:
@@ -813,13 +928,17 @@ async def create_convolver_preset_with_ir(
             preset_name=created["preset"]["name"],
             refresh_reason="create-with-ir",
         )
-        return {
+        response = {
             "status": "ok",
             "ir": created["ir"],
             "preset": created["preset"],
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created["preset"]["name"], binding=binding)
+        return response
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except (FileNotFoundError, ValueError, RuntimeError) as e:
@@ -850,11 +969,16 @@ async def create_peq_preset(request: Request):
     peq_definition = body.get("peq")
     load_after_create = bool(body.get("loadAfterCreate", body.get("load_after_create", False)))
     extras = _parse_effects_extras_from_json(body)
+    binding = _parse_bank_binding(
+        bank_mode=body.get("bank_mode"), bank_id=body.get("bank_id"),
+        expected_revision=body.get("expected_revision"))
 
     if not preset_name:
         raise HTTPException(status_code=400, detail="presetName is required")
     if peq_definition is None:
         raise HTTPException(status_code=400, detail="peq is required")
+    if binding is not None:
+        _validate_bank_target(_require_output_state_service(), binding)
 
     try:
         async with _deps().dsp_mutation_lock():
@@ -864,12 +988,16 @@ async def create_peq_preset(request: Request):
             preset_name=created["name"],
             refresh_reason="create-peq",
         )
-        return {
+        response = {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created["name"], binding=binding)
+        return response
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
@@ -891,6 +1019,9 @@ async def import_rew_peq_preset(
     tone_effect_enabled: bool = Form(False),
     tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
@@ -904,6 +1035,11 @@ async def import_rew_peq_preset(
 
     if not preset_name.strip():
         raise HTTPException(status_code=400, detail="preset_name is required")
+
+    binding = _parse_bank_binding(
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    if binding is not None:
+        _validate_bank_target(_require_output_state_service(), binding)
 
     try:
         # Canonical extras resolution under the same mutation ownership as
@@ -930,12 +1066,16 @@ async def import_rew_peq_preset(
             preset_name=created["name"],
             refresh_reason="import-rew-peq",
         )
-        return {
+        response = {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created["name"], binding=binding)
+        return response
     except (ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
@@ -960,6 +1100,9 @@ async def import_dual_filter_preset(
     tone_effect_mode: str = Form("crystalizer"),
     left_file: Optional[UploadFile] = File(None),
     right_file: Optional[UploadFile] = File(None),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
@@ -999,6 +1142,11 @@ async def import_dual_filter_preset(
 
     if bool(left_kind) != bool(right_kind):
         raise HTTPException(status_code=400, detail="Provide both Left and Right files, or neither")
+
+    binding = _parse_bank_binding(
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    if binding is not None:
+        _validate_bank_target(_require_output_state_service(), binding)
 
     tmp_paths = []
     try:
@@ -1061,7 +1209,7 @@ async def import_dual_filter_preset(
             preset_name=created_preset["name"],
             refresh_reason="import-filter-dual",
         )
-        return {
+        response = {
             "status": "ok",
             "import_kind": import_kind,
             "preset": created_preset,
@@ -1069,6 +1217,10 @@ async def import_dual_filter_preset(
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created_preset["name"], binding=binding)
+        return response
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except (ValueError, RuntimeError) as e:
@@ -1097,7 +1249,8 @@ async def delete_dsp_preset(request: Request):
     try:
         async with _deps().dsp_mutation_lock():
             deleted_active = dsp_mgr.get_active_preset() == clean_name(preset_name)
-            dsp_mgr.delete_preset(preset_name)
+            dsp_mgr.delete_preset(
+                preset_name, pinned_presets=_pinned_deletion_presets(dsp_mgr))
         if deleted_active:
             # The manager already moved the persisted active state to the
             # Neutral fallback; resync the running native engine through the

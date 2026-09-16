@@ -73,6 +73,17 @@ def saved_routing_state(output_key: str) -> list[int] | None:
     return list(values) if _valid(values) else None
 
 
+def all_saved_routes() -> dict[str, list[int]]:
+    """Return every stored device routing for migration snapshots.
+
+    Only validated assignments are reported; corrupt entries are skipped so
+    a single bad device map cannot poison a whole-state migration.
+    """
+    data = _load()
+    return {key: list(value) for key, value in data.items()
+            if isinstance(key, str) and _valid(value)}
+
+
 def restore_routing_state(output_key: str, state: list[int] | None) -> None:
     data = _load()
     if _valid(state):

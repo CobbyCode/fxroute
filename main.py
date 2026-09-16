@@ -341,7 +341,7 @@ from library.core import (
     LibraryScanner,
 )
 from downloader import Downloader
-from dsp.manager import DSPManager
+from dsp.manager import DSPManager, ensure_kernel_supported_ir, parse_wav_frames
 from dsp.runtime import DSPRuntime, DSPRuntimeConfig, _contains_link
 import dsp.api as dsp_api
 import dsp.orchestration as dsp_orchestration
@@ -349,6 +349,24 @@ import dsp.preset_loading as preset_loading
 import playback.orchestration as playback_orchestration
 from audio import pw_link
 from audio.output_ports import hardware_playback_port_fallback_from_mode
+from audio.output_routing import all_saved_routes
+from audio.output_service import MeasurementActiveError, OutputService, OutputServiceDeps
+from audio.output_state import (
+    FILTER_SLOPES,
+    roles_for_mode,
+    routing_for_device,
+    select_bank,
+    set_bank_preset,
+    set_bass_management,
+    set_mode_extras,
+    set_mode_routing,
+    set_output_processing,
+    switch_mode,
+    validate_output_state,
+)
+from audio.output_state_store import OutputStateStore, StateConflictError
+from audio.output_topology import derive_topology
+from dsp.banks import BankState
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
 from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
@@ -2617,6 +2635,7 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         restore_volume_state=lambda *args, **kwargs: preset_loading._restore_volume_state(*args, **kwargs),
         volume_state_for_manager=lambda *args, **kwargs: _volume_state_for_manager(*args, **kwargs),
         schedule_peak_monitor_refresh=lambda reason: dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason),
+        get_output_service=lambda: get_output_service(),
     )
 
 
@@ -3850,6 +3869,266 @@ async def save_audio_output_selection_route(request: Request):
         raise bad_request(exc)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to switch audio output: {exc}")
+
+
+_output_service_instance: OutputService | None = None
+
+
+def _output_state_store_path() -> Path:
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    return config_root / "fxroute" / "output-state.json"
+
+
+def _resolve_state_ir(kernel):
+    """Resolve a bank convolver kernel to its file and channel count."""
+    manager = _require_dsp_manager()
+    path = manager._resolve_kernel_path(kernel)
+    params = parse_wav_frames(path)
+    ensure_kernel_supported_ir(params, path.name)
+    return {"path": str(path), "channels": params["channels"]}
+
+
+def _legacy_output_snapshot() -> dict:
+    """Capture legacy documents once for the one-time output-state migration."""
+    overview = get_audio_output_overview()
+    selected = overview.get("selected_output") or {}
+    manager = _require_dsp_manager()
+    return {
+        "mode": samplerate._load_raw_audio_output_mode() or {"mode": "stereo"},
+        "routing": all_saved_routes(),
+        "active_preset": manager.get_active_preset() or "Neutral",
+        "compare": manager.load_compare_state(),
+        "extras": manager.load_global_extras(),
+        "output_key": str(selected.get("key") or ""),
+        "channels": int(selected.get("channels") or 0),
+    }
+
+
+def get_output_service() -> OutputService:
+    """Return the authoritative output-state service (late-bound singleton)."""
+    global _output_service_instance
+    if _output_service_instance is None:
+        _output_service_instance = OutputService(OutputServiceDeps(
+            store=OutputStateStore(_output_state_store_path()),
+            preset_loader=lambda name: _require_dsp_manager().preset_store.read(name),
+            resolve_ir=_resolve_state_ir,
+            measurement_active=lambda: measurement_sr_session is not None and bool(
+                measurement_sr_session.has_active_jobs),
+            legacy_snapshot_loader=_legacy_output_snapshot,
+        ))
+    return _output_service_instance
+
+
+def _output_state_device(overview: dict) -> tuple[str, int | None]:
+    mode = overview.get("output_mode") or {}
+    selected = overview.get("selected_output") or {}
+    key = str(mode.get("effective_output_key") or selected.get("key") or "")
+    channels = mode.get("effective_output_channels", selected.get("channels"))
+    if not key:
+        raise HTTPException(status_code=400, detail="No audio output device is selected")
+    if channels is None:
+        return key, None
+    try:
+        count = int(channels)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Output channel capacity is unknown")
+    if count < 0:
+        raise HTTPException(status_code=400, detail="Output channel capacity is unknown")
+    return key, count
+
+
+def _require_state_mode(value) -> str:
+    mode = str(value or "").strip()
+    if mode not in {"stereo", "crossover"}:
+        raise HTTPException(status_code=400, detail=f"Unknown output mode: {value}")
+    return mode
+
+
+def _require_bank_id(value) -> str:
+    bank_id = str(value or "").strip()
+    if not bank_id:
+        raise HTTPException(status_code=400, detail="bank_id is required")
+    return bank_id
+
+
+def _require_role(value) -> str:
+    role = str(value or "").strip()
+    if not role:
+        raise HTTPException(status_code=400, detail="role is required")
+    return role
+
+
+def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: int | None):
+    if not isinstance(mutation, dict):
+        raise HTTPException(status_code=400, detail="mutation must be an object")
+    kind = mutation.get("kind")
+    fields = {key: value for key, value in mutation.items() if key != "kind"}
+
+    def strict(allowed: set[str]) -> dict:
+        unknown = set(fields) - allowed
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Unknown mutation fields: {sorted(unknown)}")
+        return fields
+
+    if kind == "set_routing":
+        args = strict({"mode", "assignments"})
+        mode = _require_state_mode(args.get("mode"))
+        assignments = args.get("assignments")
+        return lambda state: set_mode_routing(state, mode, output_key, assignments)
+    if kind == "switch_mode":
+        args = strict({"mode"})
+        mode = _require_state_mode(args.get("mode"))
+        return lambda state: switch_mode(state, mode)
+    if kind == "select_bank":
+        args = strict({"mode", "bank_id"})
+        if channels is None:
+            raise HTTPException(status_code=400, detail="Output channel capacity is unknown")
+        mode = _require_state_mode(args.get("mode"))
+        bank_id = _require_bank_id(args.get("bank_id"))
+        return lambda state: select_bank(state, mode, output_key, channels, bank_id)
+    if kind == "set_bank_preset":
+        args = strict({"mode", "bank_id", "preset", "preset_a", "preset_b", "active_side"})
+        mode = _require_state_mode(args.get("mode"))
+        bank_id = _require_bank_id(args.get("bank_id"))
+        options = {name: args[name] for name in ("preset", "preset_a", "preset_b", "active_side")
+                   if args.get(name) is not None}
+        return lambda state: set_bank_preset(state, mode, bank_id, **options)
+    if kind == "set_processing":
+        args = strict({"mode", "role", "highpass", "lowpass", "level_db",
+                       "alignment_ms", "polarity"})
+        mode = _require_state_mode(args.get("mode"))
+        role = _require_role(args.get("role"))
+        options = {name: args[name] for name in ("highpass", "lowpass") if name in args}
+        options.update({name: args[name] for name in ("level_db", "alignment_ms", "polarity")
+                        if args.get(name) is not None})
+        return lambda state: set_output_processing(state, mode, role, **options)
+    if kind == "set_bass":
+        args = strict({"mode", "frequency_hz", "main_highpass_enabled"})
+        mode = _require_state_mode(args.get("mode"))
+        options = {name: args[name] for name in ("frequency_hz", "main_highpass_enabled")
+                   if args.get(name) is not None}
+        return lambda state: set_bass_management(state, mode, **options)
+    if kind == "set_extras":
+        args = strict({"mode", "extras"})
+        mode = _require_state_mode(args.get("mode"))
+        if not isinstance(args.get("extras"), dict):
+            raise HTTPException(status_code=400, detail="extras must be an object")
+        return lambda state: set_mode_extras(state, mode, args["extras"])
+    raise HTTPException(status_code=400, detail=f"Unknown mutation kind: {kind}")
+
+
+def _output_state_topology(state: dict, mode: str, output_key: str, channels: int | None) -> dict:
+    topology = derive_topology(mode, routing_for_device(state, mode, output_key), channels=channels)
+    return {"mode": topology.mode, "roles": list(topology.roles),
+            "sub_roles": list(topology.sub_roles), "sub_mode": topology.sub_mode,
+            "left_ways": list(topology.left_ways), "right_ways": list(topology.right_ways),
+            "way_count": topology.way_count, "issues": list(topology.issues)}
+
+
+@app.get("/api/audio/output-state")
+async def get_audio_output_state():
+    service = get_output_service()
+    try:
+        state = service.ensure_state()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
+    overview = await asyncio.to_thread(get_audio_output_overview)
+    output_key, channels = _output_state_device(overview)
+    modes = {}
+    for mode, config in state["modes"].items():
+        banks = {}
+        for bank_id, bank in config["banks"].items():
+            active_side = BankState.from_dict(bank).active_side
+            banks[bank_id] = {**bank, "active_side": active_side}
+        modes[mode] = {
+            "selected_bank": config["selected_bank"],
+            "banks": banks,
+            "processing": config["processing"],
+            "bass_management": config["bass_management"],
+            "extras": config["extras"],
+            "topology": _output_state_topology(state, mode, output_key, channels),
+        }
+    return {
+        "status": "ok",
+        "revision": state["revision"],
+        "active_mode": state["active_mode"],
+        "modes": modes,
+        "capabilities": {
+            "modes": ["stereo", "crossover"],
+            "roles": {mode: list(roles_for_mode(mode)) for mode in ("stereo", "crossover")},
+            "filter_families": {family: list(slopes) for family, slopes in FILTER_SLOPES.items()},
+            "max_slope_db_oct": 72,
+            "max_biquads_per_output": DSPManager.OUTPUT_FILTER_MAX_BIQUADS,
+        },
+    }
+
+
+@app.post("/api/audio/output-state/apply")
+async def apply_audio_output_state(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"expected_revision": <int>, "mutation": {...}}')
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"expected_revision": <int>, "mutation": {...}}')
+    expected_revision = body.get("expected_revision")
+    if type(expected_revision) is bool or not isinstance(expected_revision, int) or expected_revision < 0:
+        raise HTTPException(status_code=400, detail="expected_revision must be a non-negative integer")
+    if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
+        raise HTTPException(status_code=423, detail="Measurement is active; output state is locked")
+
+    service = get_output_service()
+    try:
+        state = service.ensure_state()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
+    overview = await asyncio.to_thread(get_audio_output_overview)
+    output_key, channels = _output_state_device(overview)
+    mutate = _build_output_state_mutation(
+        body.get("mutation"), output_key=output_key, channels=channels)
+    try:
+        candidate = mutate(state)
+    except ValueError as exc:
+        raise bad_request(exc)
+
+    status = get_samplerate_status()
+    target_rate = status.get("active_rate")
+    if not isinstance(target_rate, int) or target_rate <= 0:
+        target_rate = status.get("force_rate")
+    fingerprints: dict[str, str | None] = {"old": None, "new": None}
+    if isinstance(target_rate, int) and target_rate > 0 and channels:
+        # A draft that cannot activate (incomplete routing, unresolvable
+        # bank preset) has no meaningful fingerprint; the commit below
+        # still persists it, activation gates on compilability later.
+        for key, document in (("old", state), ("new", candidate)):
+            try:
+                fingerprints[key] = service.fingerprint(
+                    document, output_key=output_key, channels=channels,
+                    sample_rate_hz=target_rate)
+            except (FileNotFoundError, ValueError):
+                fingerprints[key] = None
+
+    try:
+        committed = service.apply(mutate, expected_revision=expected_revision)
+    except StateConflictError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "revision-conflict", "message": str(exc),
+            "revision": service.load()["revision"]}) from exc
+    except MeasurementActiveError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise bad_request(exc)
+    old_fp, new_fp = fingerprints["old"], fingerprints["new"]
+    return {
+        "status": "ok",
+        "revision": committed["revision"],
+        "active_mode": committed["active_mode"],
+        "fingerprint": new_fp,
+        "fingerprint_changed": None if old_fp is None or new_fp is None else old_fp != new_fp,
+        "live_applied": False,
+        "live_reason": "v2-runtime-pending",
+        "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
+    }
 
 
 @app.post("/api/audio/output-routing")
