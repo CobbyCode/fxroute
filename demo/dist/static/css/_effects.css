@@ -935,17 +935,13 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 /* Shared chevron treatment for the effects selects (headroom, autogain,
-   loudness, tone, sub crossover highpass/polarity, preset A/B): one custom
-   chevron replaces the native arrow so the arrow zone stays compact and
-   identical across browsers (Chromium/Firefox/Android draw native arrows at
-   different widths, which used to force the roomy reserve). The padded zone
-   fits chevron plus breathing room, so long labels never slide underneath;
-   background-position keeps the chevron vertically centered. The
-   #tab-effects select prefix is load-bearing: the shared sizing rule below
-   would otherwise win its padding shorthand back. */
-#tab-effects select.effects-headroom-select,
-#tab-effects select.effects-compact-control,
-#tab-effects select.compare-select {
+   loudness, tone, PEQ mode, convolver fields, sub crossover
+   highpass/polarity, preset A/B): same single chevron as the global
+   select rule, re-asserted here because the shared #tab-effects sizing
+   rule below would otherwise win its padding shorthand back and reopen
+   the roomy zone. One general selector covers the whole tab, including
+   future selects. */
+#tab-effects select.url-input {
     appearance: none;
     -webkit-appearance: none;
     padding-right: 1.55rem;
