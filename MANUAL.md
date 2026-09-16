@@ -219,7 +219,7 @@ When the optional HTTPS proxy is enabled, FXRoute runs a local certificate autho
 
 ## 10. Home Assistant / external automation
 
-FXRoute exposes `GET /api/power/state` as a read-only power hint: `amp_should_be_on` is true while playback is active or the Measurement Assistant is open. A Home Assistant or similar automation can use it to switch an amplifier smart plug; FXRoute needs no MQTT broker and never controls the plug itself.
+FXRoute exposes `GET /api/power/state` as a read-only power hint: `amp_should_be_on` is true while local, Spotify or Qobuz playback is active, while Bluetooth audio is streaming, while an external input is routed, or while the Measurement Assistant is open. A Home Assistant or similar automation can use it to switch an amplifier smart plug; FXRoute needs no MQTT broker and never controls the plug itself.
 
 A minimal configuration polls the endpoint as a binary sensor and switches the plug on when playback starts and off after an idle period:
 

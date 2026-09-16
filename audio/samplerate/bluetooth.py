@@ -114,6 +114,27 @@ def _bluetooth_daemon_reachable() -> bool:
     return True  # no probe tool; fall back to the bounded bluetoothctl call
 
 
+def is_bluetooth_audio_streaming(source_name: str | None) -> bool:
+    """Return True while the linked Bluetooth capture source is streaming.
+
+    ``pactl`` never lists PipeWire stream nodes, so the check reads the
+    WirePlumber stream states instead: only a source with live ``[active]``
+    links counts. A connected-but-idle or paused source stays off, as does
+    anything when the ``wpctl`` read fails. Fail-closed on any error.
+    """
+    normalized = (source_name or "").strip()
+    if not normalized or not _command_available("wpctl"):
+        return False
+    try:
+        streams = _parse_wpctl_status_bluetooth_streams(_run_command(["wpctl", "status"]))
+    except Exception:
+        return False
+    for stream in streams:
+        if str(stream.get("name") or "").strip() == normalized:
+            return bool(stream.get("active"))
+    return False
+
+
 def get_bluetooth_audio_overview() -> dict[str, Any]:
     notes: list[str] = []
     selection_state = _load_audio_source_selection()

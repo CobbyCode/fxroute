@@ -101,6 +101,7 @@ from audio.samplerate.persistence import (
 from audio.samplerate.bluetooth import (
     disconnect_connected_bluetooth_audio_sources,
     get_bluetooth_audio_overview,
+    is_bluetooth_audio_streaming,
     set_bluetooth_receiver_enabled,
 )
 
@@ -198,6 +199,7 @@ __all__ = [
     "get_audio_output_overview",
     "get_audio_source_overview",
     "get_bluetooth_audio_overview",
+    "is_bluetooth_audio_streaming",
     "get_current_pipewire_force_rate",
     "get_samplerate_status",
     "load_sample_rate_policy",

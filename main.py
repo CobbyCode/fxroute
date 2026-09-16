@@ -210,6 +210,30 @@ def _is_measurement_window_open() -> bool:
     return (time.monotonic() - last_measurement_window_seen_at) <= MEASUREMENT_WINDOW_TTL_SECONDS
 
 
+def _active_line_source_for_power() -> str | None:
+    """Routed line source keeping the amp hint on, if any.
+
+    Bluetooth counts only while its linked capture source shows live
+    WirePlumber stream links (merely connected or paused stays off);
+    external input counts while its loopback link is established. Both
+    link names are owned by the routing singletons; the Bluetooth case
+    costs one local ``wpctl`` read.
+    """
+    try:
+        bluetooth_source = (bluetooth_input.input_source_name or "").strip()
+    except Exception:
+        bluetooth_source = ""
+    if bluetooth_source and is_bluetooth_audio_streaming(bluetooth_source):
+        return "bluetooth"
+    try:
+        external_source = (external_input.loopback_source_name or "").strip()
+    except Exception:
+        external_source = ""
+    if external_source:
+        return "external-input"
+    return None
+
+
 def _build_power_state_payload() -> dict:
     local_state = runtime.player_instance.state if runtime.player_instance else {}
     spotify_state = playback_state.latest_spotify_state or {}
@@ -220,14 +244,21 @@ def _build_power_state_payload() -> dict:
         or _is_qobuz_playback_active(qobuz_state)
     )
     measurement_window_open = _is_measurement_window_open()
+    # Measurement keeps priority and skips the line-source probe entirely;
+    # its behavior is unchanged by the Bluetooth/external extension below.
+    line_source = None if measurement_window_open else _active_line_source_for_power()
     if measurement_window_open:
         reason = "measurement_window"
     elif playback_active:
         reason = "playback"
+    elif line_source == "bluetooth":
+        reason = "bluetooth"
+    elif line_source == "external-input":
+        reason = "external-input"
     else:
         reason = "idle"
     return {
-        "amp_should_be_on": bool(playback_active or measurement_window_open),
+        "amp_should_be_on": bool(playback_active or measurement_window_open or line_source),
         "reason": reason,
         "playback_active": bool(playback_active),
         "measurement_window_open": bool(measurement_window_open),
@@ -383,6 +414,7 @@ from audio.samplerate import (
     get_audio_source_overview,
     get_bluetooth_audio_overview,
     get_samplerate_status,
+    is_bluetooth_audio_streaming,
     normalize_sample_rate_policy,
     persist_audio_output_mode,
     prepare_audio_output_mode,
