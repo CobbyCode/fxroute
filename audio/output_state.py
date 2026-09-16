@@ -178,6 +178,92 @@ def switch_mode(state: dict, mode: str) -> dict:
     return result
 
 
+_UNCHANGED: object = object()
+
+
+def set_bank_preset(state: dict, mode: str, bank_id: str, *, preset: str | None = None,
+                    preset_a: str | None = None, preset_b: str | None = None,
+                    active_side: str | None = None) -> dict:
+    """Assign bank presets without touching routing or other banks.
+
+    ``preset`` writes the currently listened slot (slot A when the bank
+    listens to neither slot yet) and listens to it. ``active_side`` alone
+    switches listening; an unassigned B side is rejected. Slot arguments
+    set compare slots directly; ``None`` leaves a field unchanged (slot B
+    cannot be cleared through this call).
+    """
+    result = validate_output_state(state)
+    roles_for_mode(mode)
+    banks = result["modes"][mode]["banks"]
+    if bank_id not in banks:
+        raise ValueError(f"Bank {bank_id} is not stored in output mode {mode}")
+    current = dict(banks[bank_id])
+    if preset_a is not None:
+        current["preset_a"] = preset_a
+    if preset_b is not None:
+        current["preset_b"] = preset_b
+    if preset is not None:
+        slot = active_side or BankState.from_dict(current).active_side or "A"
+        current[f"preset_{slot.lower()}"] = preset
+        current["preset"] = preset
+    elif active_side is not None:
+        if active_side not in {"A", "B"}:
+            raise ValueError("Compare side must be A or B")
+        target = current["preset_b"] if active_side == "B" else current["preset_a"]
+        if target is None:
+            raise ValueError("Compare side B has no assigned preset")
+        current["preset"] = target
+    banks[bank_id] = BankState.from_dict(current).to_dict()
+    return validate_output_state(result)
+
+
+def set_output_processing(state: dict, mode: str, role: str, *, highpass: object = _UNCHANGED,
+                          lowpass: object = _UNCHANGED, level_db: float | None = None,
+                          alignment_ms: float | None = None,
+                          polarity: str | None = None) -> dict:
+    """Edit one area's output processing; filters accept None to clear."""
+    result = validate_output_state(state)
+    roles_for_mode(mode)
+    processing = result["modes"][mode]["processing"]
+    if role not in processing:
+        raise ValueError(f"Role {role} has no output processing in output mode {mode}")
+    settings = processing[role]
+    if highpass is not _UNCHANGED:
+        validate_filter(highpass)
+        settings["highpass"] = highpass
+    if lowpass is not _UNCHANGED:
+        validate_filter(lowpass)
+        settings["lowpass"] = lowpass
+    if level_db is not None:
+        settings["level_db"] = level_db
+    if alignment_ms is not None:
+        settings["alignment_ms"] = alignment_ms
+    if polarity is not None:
+        settings["polarity"] = polarity
+    return validate_output_state(result)
+
+
+def set_bass_management(state: dict, mode: str, *, frequency_hz: float | None = None,
+                        main_highpass_enabled: bool | None = None) -> dict:
+    result = validate_output_state(state)
+    roles_for_mode(mode)
+    bass = result["modes"][mode]["bass_management"]
+    if frequency_hz is not None:
+        bass["frequency_hz"] = frequency_hz
+    if main_highpass_enabled is not None:
+        bass["main_highpass_enabled"] = main_highpass_enabled
+    return validate_output_state(result)
+
+
+def set_mode_extras(state: dict, mode: str, extras: dict) -> dict:
+    if not isinstance(extras, dict):
+        raise ValueError("Global helpers must be an object")
+    result = validate_output_state(state)
+    roles_for_mode(mode)
+    result["modes"][mode]["extras"] = extras
+    return validate_output_state(result)
+
+
 def select_bank(state: dict, mode: str, output_key: str, channels: int, bank_id: str) -> dict:
     result = validate_output_state(state)
     active = derive_topology(mode, routing_for_device(result, mode, output_key), channels=channels)
