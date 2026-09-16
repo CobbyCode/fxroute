@@ -404,6 +404,41 @@
     justify-content: center;
     min-height: 52px;
     gap: .32rem; }
+/* Source switcher replaces transport in bluetooth-input / external-input
+   footer modes: compact ‹ label › stepping plus a native select for direct
+   choice. No per-input button row, so large interfaces stay compact. */
+.playback-bar.source-mode .transport-controls { display: none; }
+/* The track/metadata block is irrelevant for line sources: hide it and let
+   the switcher absorb its column. Meter and master volume stay untouched. */
+.playback-bar.source-mode {
+    grid-template-columns: minmax(300px, 1.7fr) minmax(130px, 0.52fr) minmax(200px, 0.78fr);
+    grid-template-areas: "transport meter volume";
+}
+.playback-bar.source-mode .track-info { display: none; }
+.source-switcher { display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    gap: .45rem; }
+.source-switcher.hidden { display: none; }
+.source-select {
+    min-width: 0;
+    flex: 1 1 auto;
+    max-width: min(460px, 100%);
+    padding: .45rem .6rem;
+    border: 1px solid rgba(110,231,183,.28);
+    border-radius: 999px;
+    background: #203b32;
+    color: #f0fff8;
+    font: inherit;
+    font-size: .92rem;
+    font-weight: 600;
+    text-align: center;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+.source-select:disabled { opacity: .45; cursor: default; }
+.source-select option { background: #16281f; color: #f0fff8; }
 .control-btn, .control-btn-secondary, .control-btn-mode, .control-btn-clear { padding: 0;
     line-height: 1;
     align-self: center;

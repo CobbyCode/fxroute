@@ -87,6 +87,12 @@
         width: min(100%, 430px);
         max-width: 430px;
     }
+    .playback-bar.source-mode {
+        grid-template-columns:
+            minmax(390px, 1fr)
+            minmax(150px, 220px)
+            minmax(220px, 300px);
+    }
     .playback-bar .controls {
         width: min(100%, 360px);
         max-width: 360px;
@@ -263,6 +269,15 @@
         max-width: none;
         min-width: 0;
     }
+    .playback-bar.source-mode {
+        grid-template-columns:
+            minmax(240px, 1.18fr)
+            minmax(170px, .78fr);
+        grid-template-rows: minmax(46px, auto) minmax(42px, auto);
+        grid-template-areas:
+            "transport meter"
+            "transport volume";
+    }
     .playback-visual {
         width: 60px;
         height: 60px;
@@ -419,6 +434,13 @@
         gap: .6rem;
         max-width: none;
         align-self: center;
+    }
+    .playback-bar.source-mode {
+        grid-template-columns: minmax(0, 1fr) 84px;
+        grid-template-areas:
+            "meter meter"
+            "transport transport"
+            "volume volume";
     }
     .playback-visual {
         width: 50px;
