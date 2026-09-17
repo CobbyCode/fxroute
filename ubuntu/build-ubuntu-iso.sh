@@ -135,8 +135,6 @@ cp -- "$ROOT_DIR/ubuntu/scripts/first-boot-install-ubuntu.sh" \
 cp -- "$ROOT_DIR/ubuntu/autoinstall/first-boot.service" "$STAGE_DIR/fxroute-iso/first-boot.service"
   chmod 755 "$STAGE_DIR/fxroute-iso/scripts/"*.sh
   cp -- "$ROOT_DIR/ubuntu/autoinstall/meta-data" "$STAGE_DIR/meta-data"
-  mkdir -p "$STAGE_DIR/seed"
-  cp -- "$STAGE_DIR/user-data" "$STAGE_DIR/meta-data" "$STAGE_DIR/seed/"
   if [[ "$TEST_SEED" -eq 1 ]]; then
     printf '[ubuntu-iso] warning: staging the TEST seed (dev/test ISO, never release this)\n'
     cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data.test" "$STAGE_DIR/user-data"
@@ -148,6 +146,9 @@ cp -- "$ROOT_DIR/ubuntu/autoinstall/first-boot.service" "$STAGE_DIR/fxroute-iso/
   else
     cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data" "$STAGE_DIR/user-data"
   fi
+  # ISO-tree seed for cloud-init (ds=nocloud;seedfrom=file:///cdrom/...).
+  mkdir -p "$STAGE_DIR/seed"
+  cp -- "$STAGE_DIR/user-data" "$STAGE_DIR/meta-data" "$STAGE_DIR/seed/"
 fi
 
 # Set from the environment (docker passes it through); the staging block
