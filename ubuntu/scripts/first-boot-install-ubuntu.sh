@@ -11,6 +11,7 @@ export PATH
 
 SOURCE_ARCHIVE="/opt/fxroute-iso/source.tar"
 SOURCE_DIR="/opt/fxroute-iso/source"
+PROFILE_FILE="/etc/fxroute-iso-profile"
 STATE_DIR="/var/lib/fxroute-iso"
 COMPLETE_MARKER="$STATE_DIR/install-complete"
 FAILED_MARKER="$STATE_DIR/install-failed"
@@ -58,6 +59,23 @@ trap cleanup EXIT
   printf '%s\n' "Missing FXRoute source archive: $SOURCE_ARCHIVE" >&2
   exit 1
 }
+
+# Older Ubuntu images had no profile marker and always installed a desktop.
+profile="desktop"
+if [[ -e "$PROFILE_FILE" || -L "$PROFILE_FILE" ]]; then
+  [[ -f "$PROFILE_FILE" && ! -L "$PROFILE_FILE" ]] || {
+    printf 'Invalid FXRoute profile marker: %s\n' "$PROFILE_FILE" >&2
+    exit 1
+  }
+  profile="$(<"$PROFILE_FILE")"
+fi
+case "$profile" in
+  headless|desktop) ;;
+  *)
+    printf 'Unknown FXRoute ISO profile: %s\n' "$profile" >&2
+    exit 1
+    ;;
+esac
 
 # The account created interactively in the Ubuntu installer. Prefer the
 # documented appliance account, else the single regular user.
@@ -377,6 +395,11 @@ EOF
     || systemctl start --no-block gdm.service 2>/dev/null || true
 }
 
-install_desktop_stack
+if [[ "$profile" == "desktop" ]]; then
+  install_desktop_stack
+fi
+# Headless targets were stripped and set to multi-user.target by the installer
+# late-command helper, before this boot. install.sh owns the shared user service,
+# audio/linger setup and LAN access; no alternative headless service is needed.
 
 completed=1

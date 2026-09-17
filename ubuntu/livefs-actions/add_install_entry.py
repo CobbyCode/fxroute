@@ -1,10 +1,8 @@
-"""livefs-edit --python action: GRUB entries for the FXRoute ISO.
+"""livefs-edit action: exactly Try Ubuntu, FXRoute Desktop, FXRoute Headless.
 
-Duplicates the Try or Install Ubuntu menuentry as Install FXRoute with
-autoinstall on the installer kernel args (before ---, installer-only).
-If FXROUTE_GRUB_TRY_EXTRA is set (QEMU test builds only), those args are
-appended to the Try entry linux line at build time instead of being typed
-at boot. Every other entry stays byte-identical.
+Keep the stock Try block and preamble unchanged in product builds. Only the
+FXRoute entries select an explicit seed; never inject a global cloud datasource.
+Test-only console/SSH args may be applied to all three entries.
 """
 import os
 import re
@@ -14,72 +12,50 @@ with open(path) as fp:
     text = fp.read()
 
 pattern = re.compile(
-    r'menuentry "Try or Install Ubuntu" \{\n'
-    r'(?:[^\n]*\n)*?\}\n',
-)
+    r'^menuentry "Try or Install Ubuntu" \{\n'
+    r'(?:[^\n]*\n)*?\}\n', re.MULTILINE)
 match = pattern.search(text)
 if not match:
     raise Exception('Try or Install Ubuntu menuentry not found in grub.cfg')
-if 'menuentry "Install FXRoute"' in text:
-    raise Exception('Install FXRoute menuentry already present')
 
-entry = match.group(0)
-lines = []
-for line in entry.splitlines(keepends=True):
-    stripped = line.strip()
-    if stripped.startswith('linux '):
-        if 'autoinstall' not in stripped.split('---')[0].split():
-            line = line.replace(' --- ', ' autoinstall --- ', 1)
-    lines.append(line)
-new_entry = ''.join(lines).replace(
-    'menuentry "Try or Install Ubuntu"',
-    'menuentry "Install FXRoute"',
-    1,
-)
-
-text = text[:match.end()] + new_entry + text[match.end():]
-
-extra = os.environ.get('FXROUTE_GRUB_TEST_EXTRA', '').strip()
-install_extra = os.environ.get('FXROUTE_GRUB_INSTALL_EXTRA', '').strip()
+# This action targets the pinned Ubuntu Desktop menu. Do not silently discard
+# new upstream entries if the base ISO changes; review the new menu first.
+titles = re.findall(r'^menuentry [\"\']([^\"\']+)', text, re.MULTILINE)
+if titles != ['Try or Install Ubuntu', 'Ubuntu (safe graphics)',
+              'Boot from next volume', 'UEFI Firmware Settings']:
+    raise Exception('Unexpected Ubuntu GRUB menu; review before replacing entries')
 
 
-def add_extra(block, extra_args):
-    out = []
+def add_args(block, arguments):
+    lines = []
+    linux_count = 0
     for line in block.splitlines(keepends=True):
-        if line.strip().startswith('linux ') and ' --- ' in line:
-            line = line.replace(' --- ', ' ' + extra_args + ' --- ', 1)
-        out.append(line)
-    return ''.join(out)
+        if line.strip().startswith('linux '):
+            linux_count += 1
+            if not re.search(r'\s---(?:\s|$)', line):
+                raise Exception('Stock linux line has no installer argument separator')
+            line = re.sub(r'(?<=\s)---(?=\s|$)', arguments + ' ---', line, count=1)
+        lines.append(line)
+    if linux_count != 1:
+        raise Exception('Expected one stock linux line')
+    return ''.join(lines)
 
 
-if extra:
-    # Test extras go on Try and Install FXRoute (console for observability,
-    # live hook is live-guarded so it stays inert on the install path).
-    text, try_count = pattern.subn(
-        lambda m: add_extra(m.group(0), extra), text, count=1)
-    install_pattern = re.compile(
-        r'menuentry "Install FXRoute" \{\n'
-        r'(?:[^\n]*\n)*?\}\n',
-    )
-    text, install_count = install_pattern.subn(
-        lambda m: add_extra(m.group(0), extra), text, count=1)
-    if try_count != 1 or install_count != 1:
-        raise Exception('Try/Install entries not found for kernel extras')
-    print('appended kernel extras to Try+Install entries: ' + extra)
+stock_entry = match.group(0)
+extra = os.environ.get('FXROUTE_GRUB_TEST_EXTRA', '').strip()
+try_entry = add_args(stock_entry, extra) if extra else stock_entry
+entries = [try_entry]
+for profile in ('desktop', 'headless'):
+    arguments = ('autoinstall '
+                 f'subiquity.autoinstallpath=cdrom/fxroute-seed/{profile}.yaml')
+    if extra:
+        arguments += ' ' + extra
+    entry = stock_entry.replace('"Try or Install Ubuntu"',
+                                f'"Install FXRoute {profile.title()}"', 1)
+    entries.append(add_args(entry, arguments))
 
-if install_extra:
-    # Seed pointer for the installer (cloud-init NoCloud reads the seed
-    # from the ISO tree, bypassing shadowed squashfs seed placeholders).
-    install_pattern = re.compile(
-        r'menuentry "Install FXRoute" \{\n'
-        r'(?:[^\n]*\n)*?\}\n',
-    )
-    text, install_count = install_pattern.subn(
-        lambda m: add_extra(m.group(0), install_extra), text, count=1)
-    if install_count != 1:
-        raise Exception('Install entry not found for seed pointer')
-    print('appended seed pointer to Install entry: ' + install_extra)
-
+# Drop the safe-graphics and firmware utility menu tail deliberately: the
+# requested product menu has exactly three entries. Stock Try remains first.
 with open(path, 'w') as fp:
-    fp.write(text)
-print('added Install FXRoute GRUB entry')
+    fp.write(text[:match.start()] + ''.join(entries))
+print('added FXRoute Desktop and Headless GRUB entries')

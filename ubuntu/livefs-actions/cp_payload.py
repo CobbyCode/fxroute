@@ -2,9 +2,9 @@
 
 livefs-edit --cp handles files only (shutil.copy). Payload and seed are
 trees: payload -> new/iso/fxroute-iso (read by late-commands via /cdrom),
-seed -> new/iso/fxroute-seed (read by cloud-init via
-ds=nocloud;seedfrom=file:///cdrom/fxroute-seed/ on the kernel cmdline;
-the squashfs seed dir is shadowed by empty upper-layer placeholders).
+seed -> new/iso/fxroute-seed (desktop.yaml / headless.yaml, selected only
+by the matching GRUB entry's subiquity.autoinstallpath kernel argument).
+No cloud-init datasource or automatically discovered autoinstall.yaml.
 Sources come from FXROUTE_UBUNTU_STAGE_DIR (bind-mounted in docker mode).
 """
 import os

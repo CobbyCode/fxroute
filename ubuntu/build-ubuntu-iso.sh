@@ -2,8 +2,8 @@
 # Build a bootable Ubuntu 26.04 Desktop ISO with the FXRoute payload.
 # Standard-Ubuntu-Weg: offizielles Desktop-ISO + livefs-editor. Die
 # Secure-Boot-Kette (Shim/signierter Kernel) bleibt unangetastet; der normale
-# "Try or Install Ubuntu"-Eintrag bleibt Default. Neu ist nur der Eintrag
-# "Install FXRoute" (derselbe Installer + `autoinstall` + Seed).
+# "Try or Install Ubuntu"-Eintrag bleibt Default und unveraendert. Daneben:
+# "Install FXRoute Desktop" / "Install FXRoute Headless" mit eigenen Seeds.
 #
 # livefs-edit braucht ein Loop-Device: wo das fehlt (rootless Desktop),
 # laeuft derselbe Bau per --docker in einem privilegierten
@@ -128,27 +128,27 @@ else
   tar --list --file="$STAGE_DIR/fxroute-iso/source.tar" >/dev/null || die "Could not read generated source archive"
 
   git -C "$ROOT_DIR" rev-parse HEAD > "$STAGE_DIR/fxroute-iso/build-commit"
-cp -- "$ROOT_DIR/ubuntu/scripts/first-boot-install-ubuntu.sh" \
-  "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" \
-  "$ROOT_DIR/ubuntu/scripts/fxroute-ubuntu-launcher.sh" \
-  "$STAGE_DIR/fxroute-iso/scripts/"
-cp -- "$ROOT_DIR/ubuntu/autoinstall/first-boot.service" "$STAGE_DIR/fxroute-iso/first-boot.service"
+  cp -- "$ROOT_DIR/ubuntu/scripts/first-boot-install-ubuntu.sh" \
+    "$ROOT_DIR/ubuntu/scripts/prepare-headless-target.sh" \
+    "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" \
+    "$ROOT_DIR/ubuntu/scripts/fxroute-ubuntu-launcher.sh" \
+    "$STAGE_DIR/fxroute-iso/scripts/"
+  cp -- "$ROOT_DIR/ubuntu/autoinstall/first-boot.service" "$STAGE_DIR/fxroute-iso/first-boot.service"
   chmod 755 "$STAGE_DIR/fxroute-iso/scripts/"*.sh
-  cp -- "$ROOT_DIR/ubuntu/autoinstall/meta-data" "$STAGE_DIR/meta-data"
+  SEED_ARGS=()
   if [[ "$TEST_SEED" -eq 1 ]]; then
-    printf '[ubuntu-iso] warning: staging the TEST seed (dev/test ISO, never release this)\n'
-    cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data.test" "$STAGE_DIR/user-data"
+    printf '[ubuntu-iso] warning: staging the TEST seeds (dev/test ISO, never release this)\n'
+    SEED_ARGS+=(--test-seed)
     # QEMU-only kernel extras, baked into the Try entry at build time:
     # serial console for observability, live SSH test hook.
     export FXROUTE_GRUB_TEST_EXTRA="console=ttyS0 fxroute.live-password=test"
     # QEMU test SSH hook (unit + helper, enabled in the squashfs).
     export FXROUTE_TEST_SSH=1
-  else
-    cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data" "$STAGE_DIR/user-data"
   fi
-  # ISO-tree seed for cloud-init (ds=nocloud;seedfrom=file:///cdrom/...).
-  mkdir -p "$STAGE_DIR/seed"
-  cp -- "$STAGE_DIR/user-data" "$STAGE_DIR/meta-data" "$STAGE_DIR/seed/"
+  # Only explicit Subiquity kernel paths select these profile configs.
+  # No NoCloud datasource or root autoinstall.yaml: stock Try stays isolated.
+  python3 "$ROOT_DIR/ubuntu/generate-seeds.py" \
+    --output-dir "$STAGE_DIR/seed" "${SEED_ARGS[@]}"
 fi
 
 # Set from the environment (docker passes it through); the staging block
@@ -188,7 +188,6 @@ if [[ "$BUILDER" == "docker" && "$INSIDE_DOCKER" -eq 0 ]]; then
     -e "FXROUTE_UBUNTU_STAGE_DIR=$STAGE_DIR" \
     -e "FXROUTE_GRUB_TEST_EXTRA=${FXROUTE_GRUB_TEST_EXTRA:-}" \
     -e "FXROUTE_TEST_SSH=${FXROUTE_TEST_SSH:-}" \
-    -e "FXROUTE_GRUB_INSTALL_EXTRA=ds=nocloud;seedfrom=file:///cdrom/fxroute-seed/" \
     -e "FXROUTE_UBUNTU_BASE_ISO=$BASE_ISO" \
     -e "FXROUTE_UBUNTU_ISO_OUTPUT=$OUTPUT" \
     -e "FXROUTE_UBUNTU_BUILDER=direct" \
@@ -209,13 +208,12 @@ command -v livefs-edit >/dev/null 2>&1 || die "livefs-edit is required (direct m
 command -v xorriso >/dev/null 2>&1 || die "xorriso is required for livefs-edit repacking"
 
 printf '[ubuntu-iso] editing live ISO with livefs-edit\n'
-# Seed pointer for the installer (always, product and test builds).
-# Currently empty: the pointer lives in 99-fxroute-seed.cfg (cloud.cfg.d),
-# kernel seedfrom does not survive casper.
-export FXROUTE_GRUB_INSTALL_EXTRA=""
+# Register final_checksums FIRST: livefs-edit runs its pre-repack hooks in
+# reverse order, so checksums see the rebuilt squashfs/initrd, not old bytes.
 # NOTE: --python takes code, not a path; the .py files stay the maintained
 # source and are inlined here (they contain no backticks/`$`, safe to inline).
 livefs-edit "$BASE_ISO" "$OUTPUT" \
+  --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/final_checksums.py")" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/remove_cdrom_source.py")" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/prep_chroot.py")" \
   --install-packages "${LIVE_PACKAGES[@]}" \
@@ -223,7 +221,6 @@ livefs-edit "$BASE_ISO" "$OUTPUT" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/cp_payload.py")" \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" '$LAYERS[0]/usr/local/libexec/fxroute-live-autostart.sh' \
   --cp "$ROOT_DIR/ubuntu/autoinstall/fxroute-live.desktop" '$LAYERS[0]/etc/xdg/autostart/fxroute-live.desktop' \
-  --cp "$ROOT_DIR/ubuntu/autoinstall/99-fxroute-seed.cfg" '$LAYERS[0]/etc/cloud/cloud.cfg.d/99-fxroute-seed.cfg' \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-ubuntu-launcher.sh" '$LAYERS[0]/usr/local/bin/fxroute-desktop-launcher' \
   $TEST_SSH_CPS \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/test_ssh.py")" \
