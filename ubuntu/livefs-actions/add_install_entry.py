@@ -47,7 +47,7 @@ try_entry = add_args(stock_entry, extra) if extra else stock_entry
 entries = [try_entry]
 for profile in ('desktop', 'headless'):
     arguments = ('autoinstall '
-                 f'subiquity.autoinstallpath=cdrom/fxroute-seed/{profile}.yaml')
+                 f'subiquity.autoinstallpath=/cdrom/fxroute-seed/{profile}.yaml')
     if extra:
         arguments += ' ' + extra
     entry = stock_entry.replace('"Try or Install Ubuntu"',

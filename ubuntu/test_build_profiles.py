@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Exercise ISO actions on fixture trees without building or booting an ISO."""
+import contextlib
 import hashlib
+import importlib.util
 import os
 import pathlib
 import re
@@ -71,7 +73,7 @@ class BuildProfilesTest(unittest.TestCase):
             block = re.search(r'menuentry "Install FXRoute ' + profile.title() + r'" \{(.*?)\n\}', output, re.S).group(1)
             before, after = block.split('---', 1)
             self.assertIn(' autoinstall ', before)
-            self.assertIn(f'subiquity.autoinstallpath=cdrom/fxroute-seed/{profile}.yaml', before)
+            self.assertIn(f'subiquity.autoinstallpath=/cdrom/fxroute-seed/{profile}.yaml', before)
             self.assertNotIn('autoinstall', after)
         self.assertNotIn('ds=nocloud', output)
 
@@ -114,6 +116,42 @@ class BuildProfilesTest(unittest.TestCase):
             (iso / 'casper/filesystem.squashfs').write_bytes(b'corrupted')
             result = subprocess.run(['md5sum', '--check', 'md5sum.txt'], cwd=iso, capture_output=True)
             self.assertNotEqual(result.returncode, 0, 'Integrity checks must detect corruption')
+
+    @unittest.skipUnless(importlib.util.find_spec('livefs_edit'),
+                         'Run with the livefs-edit Python interpreter for upstream lifecycle check')
+    def test_installed_livefs_repack_runs_checksum_after_rebuild_before_iso_write(self):
+        from livefs_edit.context import EditContext
+        with tempfile.TemporaryDirectory() as directory:
+            context = ActionContext(directory)
+            iso = pathlib.Path(context.p('new/iso'))
+            (iso / 'casper').mkdir(parents=True)
+            squash = iso / 'casper/filesystem.squashfs'
+            squash.write_bytes(b'old')
+            runpy.run_path(str(ROOT / 'livefs-actions/final_checksums.py'),
+                           init_globals={'ctxt': context})
+            context.add_pre_repack_hook(lambda: squash.write_bytes(b'final'))
+            stage = pathlib.Path(directory) / 'stage'
+            (stage / 'seed').mkdir(parents=True)
+            (stage / 'fxroute-iso').mkdir()
+            (stage / 'seed/desktop.yaml').write_text('autoinstall: {version: 1}\n')
+            (stage / 'fxroute-iso/source.tar').write_bytes(b'fixture payload')
+            with patch.dict(os.environ, {'FXROUTE_UBUNTU_STAGE_DIR': str(stage)}):
+                runpy.run_path(str(ROOT / 'livefs-actions/cp_payload.py'),
+                               init_globals={'ctxt': context})
+            self.assertEqual((iso / 'fxroute-seed/desktop.yaml').read_text(),
+                             'autoinstall: {version: 1}\n')
+            self.assertEqual((iso / 'fxroute-iso/source.tar').read_bytes(), b'fixture payload')
+            # Exercise upstream's actual repack method without mounts or ISO
+            # creation. Only its external repack_iso boundary is substituted.
+            context._pre_repack_hooks = context.hooks
+            context.logged = lambda *args: contextlib.nullcontext()
+            context._source_overlay = type('ChangedOverlay', (), {'unchanged': lambda self: False})()
+            context.source_fstype = 'iso9660'
+            def check_manifest_at_iso_write(destination):
+                self.assertIn(hashlib.md5(b'final').hexdigest(),
+                              (iso / 'md5sum.txt').read_text())
+            context.repack_iso = check_manifest_at_iso_write
+            self.assertTrue(EditContext.repack(context, 'unused.iso'))
 
     def test_build_registers_checksum_hook_before_any_rebuild_action(self):
         # The ordering is a CLI boundary contract: no ISO build in unit tests.
