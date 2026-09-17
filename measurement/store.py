@@ -25,6 +25,7 @@ from measurement.audio import MeasurementAudioAdapter
 from measurement.file_store import MeasurementFileStore
 from measurement.host_capture import HostCaptureRunner
 from measurement.capture_policy import MeasurementCapturePolicyRunner
+from measurement.capture_evidence import CaptureEvidence
 from measurement.persistence import MeasurementPersistence
 from measurement.routing import MeasurementRouting, freeze_expected_native_context
 from measurement.signal import _write_wav, write_sweep_file
@@ -550,7 +551,13 @@ class MeasurementStore:
         expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         expected_native_output_mode: str | None = None,
         expected_plan_fingerprint: str | None = None,
+        capture_evidence: CaptureEvidence | None = None,
     ) -> dict[str, Any]:
+        if capture_evidence is not None:
+            if (not isinstance(capture_evidence, CaptureEvidence)
+                    or self._normalize_measurement_scope(measurement_scope) != MEASUREMENT_SCOPE_ACTIVE_CHAIN
+                    or str(measurement_role or "").strip()):
+                raise ValueError("Capture evidence requires an owner and a single active-chain capture")
         # Internal owner-only context: detach before setup's first await so a
         # staged plan cannot be rebased by subsequent caller mutations.
         expected = freeze_expected_native_context(
@@ -596,6 +603,17 @@ class MeasurementStore:
         })
         job.update(self._freeze_measurement_job_target(job, measurement_bank))
         job.update({f"_{key}": value for key, value in expected.items()})
+        if capture_evidence is not None:
+            capture_evidence._bind(job["id"])
+            try:
+                result = self._register_measurement_job(
+                    job, lambda current: self._execute_capture_job(current, capture_evidence=capture_evidence),
+                )
+            except BaseException:
+                capture_evidence._discard()
+                raise
+            capture_evidence._attach(self._job_tasks[job["id"]], job)
+            return result
         return self._register_measurement_job(job, self._execute_capture_job)
 
     async def start_lr_repeat_measurement(
@@ -864,7 +882,7 @@ class MeasurementStore:
                         section.pop(path_key, None)
         return public
 
-    def _execute_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
+    def _execute_capture_job(self, job: dict[str, Any], *, capture_evidence: CaptureEvidence | None = None) -> dict[str, Any]:
         job_id = str(job["id"])
         cj: dict[str, float] = {"enter": time.monotonic()}
         owner_job_id = str(job.get("_owner_job_id") or job_id)
@@ -1010,6 +1028,7 @@ class MeasurementStore:
                     for key in ("expected_native_layout", "expected_native_output_mode", "expected_plan_fingerprint")
                     if f"_{key}" in job
                 },
+                **({"capture_evidence": capture_evidence} if capture_evidence is not None else {}),
             },
         )
         analysis = policy_result.analysis
@@ -1068,6 +1087,9 @@ class MeasurementStore:
         completion_message = f"Measurement finished. {timing_summary}" if timing_summary else "Measurement finished. Trusted trace is ready."
         if final_capture_level_low:
             completion_message += " Volume was low."
+
+        if capture_evidence is not None:
+            capture_evidence._select(analysis, job=job, capture=capture_info)
 
         return {
             "measurement": measurement,
@@ -1134,8 +1156,12 @@ class MeasurementStore:
         reference_capture: dict[str, Any],
         capture_channels: int,
         electrical_reference_channel_index: int | None,
+        capture_evidence: CaptureEvidence | None = None,
         **kwargs,
     ):
+        if capture_evidence is not None:
+            capture_evidence._begin_attempt()
+            kwargs["timing_ir_receiver"] = capture_evidence._receive_ir
         if capture_path.exists():
             capture_path.unlink()
         return self._host_capture_runner.execute(

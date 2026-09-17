@@ -7,7 +7,7 @@ import logging
 import math
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -261,6 +261,7 @@ class MeasurementAnalyzer:
         timing_override: dict[str, Any] | None = None,
         is_21_dsp_active: bool = False,
         measurement_role: str = "",
+        timing_ir_receiver: Callable[[np.ndarray, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         sample_rate, raw_signal = self._store._load_wav_array(capture_path)
         signal = self._store._select_analysis_channel(raw_signal, channel=channel, channel_index=analysis_channel_index)
@@ -610,6 +611,10 @@ class MeasurementAnalyzer:
         clock = (analysis.get("clock") or {})
         if clock.get("selected_lag") is not None:
             self._store._last_successful_lag = int(clock["selected_lag"])
+        if timing_ir_receiver is not None:
+            # Internal opt-in transport only. ER policy has not run yet; the
+            # receiver must wait for the selected attempt's final verdict.
+            timing_ir_receiver(timing_impulse_response, analysis)
         return analysis
 
 

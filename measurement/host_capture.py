@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -67,6 +67,7 @@ class HostCaptureRunner:
         expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         expected_native_output_mode: str | None = None,
         expected_plan_fingerprint: str | None = None,
+        timing_ir_receiver: Callable[[np.ndarray, dict[str, Any]], None] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         store = self._store
         record_node_name = f"fxroute-measure-record-{job_id}"
@@ -384,6 +385,7 @@ class HostCaptureRunner:
                 reference_channel_label=reference_channel_label,
                 is_21_dsp_active=is_21_active,
                 measurement_role=measurement_role,
+                **({"timing_ir_receiver": timing_ir_receiver} if timing_ir_receiver is not None else {}),
             )
         except Exception:
             helper_process_snapshots.append(store._snapshot_fxroute_21_helper_processes("after-capture-analysis-failure"))
