@@ -187,6 +187,7 @@ command -v xorriso >/dev/null 2>&1 || die "xorriso is required for livefs-edit r
 
 printf '[ubuntu-iso] editing live ISO with livefs-edit\n'
 livefs-edit "$BASE_ISO" "$OUTPUT" \
+  --python "$ROOT_DIR/ubuntu/livefs-actions/remove_cdrom_source.py" \
   --install-packages "${LIVE_PACKAGES[@]}" \
   --cp "$STAGE_DIR/fxroute-iso" 'new/iso/fxroute-iso' \
   --cp "$STAGE_DIR/user-data" '$LAYERS[0]/var/lib/cloud/seed/nocloud/user-data' \
