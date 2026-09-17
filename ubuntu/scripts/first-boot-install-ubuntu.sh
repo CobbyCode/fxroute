@@ -225,6 +225,15 @@ install_desktop_stack() {
   fi
 
   # The appliance never suspends or locks on its own: GNOME dconf overrides.
+  # dconf does not load the local database without an explicit profile.
+  install -d -m 755 /etc/dconf/profile
+  if [[ ! -f /etc/dconf/profile/user ]]; then
+    printf 'user-db:user\n' > /etc/dconf/profile/user
+  fi
+  if ! grep -qxF 'system-db:local' /etc/dconf/profile/user; then
+    printf '\nsystem-db:local\n' >> /etc/dconf/profile/user
+  fi
+  chmod 644 /etc/dconf/profile/user
   install -d -m 755 "$dconf_dir"
   cat > "$dconf_dir/10-fxroute-appliance" <<'EOF'
 [org/gnome/desktop/screensaver]
@@ -232,7 +241,7 @@ lock-enabled=false
 idle-activation-enabled=false
 
 [org/gnome/desktop/session]
-idle-delay=0
+idle-delay=uint32 0
 
 [org/gnome/settings-daemon/plugins/power]
 sleep-inactive-ac-type='nothing'
