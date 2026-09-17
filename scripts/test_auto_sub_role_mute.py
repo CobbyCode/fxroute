@@ -167,6 +167,100 @@ class ExactSubMuteMaskTests(unittest.IsolatedAsyncioTestCase):
             await runtime.set_exact_sub_mute(False, mask=6)
         self.assertTrue(runtime.snapshot()["exact_sub_mute"])
 
+    def _gated_runtime(self):
+        """Keep the real control lock; pause the fake engine before its ACK."""
+        runtime = self._runtime()
+        engine = SimpleNamespace(
+            mask=0, commands=[], gate_command=None,
+            entered=asyncio.Event(), acknowledge=asyncio.Event(),
+        )
+
+        async def control(command, *, reply):
+            self.assertTrue(reply)
+            engine.commands.append(command)
+            _, bits, enabled = command.split()
+            engine.mask = engine.mask | int(bits) if enabled == "1" else engine.mask & ~int(bits)
+            if command == engine.gate_command:
+                engine.entered.set()
+                await engine.acknowledge.wait()
+            return "ok"
+
+        del runtime._control  # Use DSPRuntime._control and its datagram lock.
+        runtime._control_unlocked = control
+        return runtime, engine
+
+    async def _start_competing_call(self, operation):
+        started = asyncio.Event()
+
+        async def run():
+            started.set()
+            # No yield between signalling and entering the runtime method:
+            # the test resumes only once the operation blocks (or finishes).
+            return await operation
+
+        task = asyncio.create_task(run())
+        await asyncio.wait_for(started.wait(), 1)
+        return task
+
+    async def test_concurrent_clear_output_mask_cannot_unmute_active_exact_mute(self):
+        """An exact-mute ACK must precede the overlapping clear decision."""
+        runtime, engine = self._gated_runtime()
+        await runtime.apply_output_mask(6)
+        engine.commands.clear()
+        engine.gate_command = "mute 12 1"
+        enable = asyncio.create_task(runtime.set_exact_sub_mute(True, mask=12))
+        try:
+            await asyncio.wait_for(engine.entered.wait(), 1)
+            clear = await self._start_competing_call(runtime.clear_output_mask(6))
+        finally:
+            engine.acknowledge.set()
+            await enable
+        await asyncio.wait_for(clear, 1)
+        self.assertEqual(engine.commands, ["mute 12 1", "mute 2 0"])
+        self.assertEqual(engine.mask, 12)
+        self.assertTrue(runtime.snapshot()["exact_sub_mute"])
+        self.assertEqual(runtime._exact_sub_mute_mask, 12)
+        self.assertEqual(runtime.snapshot()["output_mask"], 0)
+
+    async def test_concurrent_exact_mute_release_does_not_clear_mask_owned_bits(self):
+        """An output-mask ACK must precede the overlapping exact restore decision."""
+        runtime, engine = self._gated_runtime()
+        await runtime.set_exact_sub_mute(True, mask=12)
+        engine.commands.clear()
+        engine.gate_command = "mute 6 1"
+        apply_task = asyncio.create_task(runtime.apply_output_mask(6))
+        try:
+            await asyncio.wait_for(engine.entered.wait(), 1)
+            release = await self._start_competing_call(runtime.set_exact_sub_mute(False, mask=12))
+        finally:
+            engine.acknowledge.set()
+            await apply_task
+        self.assertTrue(await asyncio.wait_for(release, 1))
+        self.assertEqual(engine.commands, ["mute 6 1", "mute 8 0"])
+        self.assertEqual(engine.mask, 6)
+        self.assertFalse(runtime.snapshot()["exact_sub_mute"])
+        self.assertEqual(runtime._exact_sub_mute_mask, 0)
+        self.assertEqual(runtime.snapshot()["output_mask"], 6)
+
+    async def test_cancelled_mask_waiter_leaves_ownership_usable(self):
+        """Cancellation before ownership acquisition sends no command."""
+        runtime, engine = self._gated_runtime()
+        engine.gate_command = "mute 12 1"
+        enable = asyncio.create_task(runtime.set_exact_sub_mute(True, mask=12))
+        try:
+            await asyncio.wait_for(engine.entered.wait(), 1)
+            cancelled = await self._start_competing_call(runtime.clear_output_mask(12))
+            cancelled.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await cancelled
+        finally:
+            engine.acknowledge.set()
+            await enable
+        await asyncio.wait_for(runtime.set_exact_sub_mute(False, mask=12), 1)
+        self.assertEqual(engine.commands, ["mute 12 1", "mute 12 0"])
+        self.assertEqual(engine.mask, 0)
+        self.assertFalse(runtime.snapshot()["exact_sub_mute"])
+
     async def test_explicit_mask_checks_legacy_engine_bounds(self):
         runtime = self._runtime()
         runtime._config.layout = ()

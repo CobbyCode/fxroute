@@ -5,8 +5,8 @@ The routing is the only topology authority. These helpers translate a derived
 :class:`~audio.output_topology.OutputTopology` into everything the AutoSub
 optimizers need — which legacy optimizer path a system maps to, the engine
 output indices of the sub roles, and the mute mask for a Main-only reference
-sweep — so the runners never read legacy mode strings or hard-coded output 3/4
-indices again.
+sweep. These are the contracts for migrating runners away from legacy mode
+strings and fixed output 3/4 indices; production runner migration is still pending.
 
 Mixed Sub 1/R (and any two sub roles other than a true ``sub_l``/``sub_r``
 pair) is dual-mono: it uses the dual-sub optimizer path, never a stereo split.

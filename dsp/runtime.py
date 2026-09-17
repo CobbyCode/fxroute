@@ -436,6 +436,12 @@ class DSPRuntime:
         self._lock = asyncio.Lock()
         self._measurement_scope_lock = asyncio.Lock()
         self._control_lock = asyncio.Lock()
+        # Serializes the whole ownership decision (state read, validation,
+        # engine command with its acknowledgement, state write) across the
+        # exact sub mute and output mask APIs. The plain control lock only
+        # serializes commands and replies, so overlapping calls could each
+        # decide ownership before either acknowledgement lands.
+        self._mute_ownership_lock = asyncio.Lock()
         self._error: str | None = None
         self._started_at: float | None = None
         self._control_socket: socket.socket | None = None
@@ -564,22 +570,23 @@ class DSPRuntime:
         mask; changing an active mask is rejected because a boolean cannot
         represent the old mask. Independent output-mask bits remain muted.
         """
-        if mask is None and len(self._config.hardware_ports if self._config else ()) < 4:
-            raise RuntimeError("Sub outputs are unavailable")
-        bits = self._validate_output_mask(12 if mask is None else mask)
-        layout = tuple(getattr(self._config, "layout", ()) or ())
-        output_count = len(layout) if layout else min(4, len(self._config.hardware_ports if self._config else ()))
-        if bits >= (1 << output_count):
-            raise ValueError("Output mute mask addresses an output the engine does not expose")
-        previous = self._exact_sub_mute
-        if previous and bits != self._exact_sub_mute_mask:
-            raise RuntimeError("Cannot change an active exact sub mute mask; restore it first")
-        control_bits = bits if enabled else bits & ~self._output_mask
-        if control_bits:
-            await self._control(f"mute {control_bits} {1 if enabled else 0}", reply=True)
-        self._exact_sub_mute = bool(enabled)
-        self._exact_sub_mute_mask = bits if enabled else 0
-        return previous
+        async with self._mute_ownership_lock:
+            if mask is None and len(self._config.hardware_ports if self._config else ()) < 4:
+                raise RuntimeError("Sub outputs are unavailable")
+            bits = self._validate_output_mask(12 if mask is None else mask)
+            layout = tuple(getattr(self._config, "layout", ()) or ())
+            output_count = len(layout) if layout else min(4, len(self._config.hardware_ports if self._config else ()))
+            if bits >= (1 << output_count):
+                raise ValueError("Output mute mask addresses an output the engine does not expose")
+            previous = self._exact_sub_mute
+            if previous and bits != self._exact_sub_mute_mask:
+                raise RuntimeError("Cannot change an active exact sub mute mask; restore it first")
+            control_bits = bits if enabled else bits & ~self._output_mask
+            if control_bits:
+                await self._control(f"mute {control_bits} {1 if enabled else 0}", reply=True)
+            self._exact_sub_mute = bool(enabled)
+            self._exact_sub_mute_mask = bits if enabled else 0
+            return previous
 
     def _validate_output_mask(self, mask: object) -> int:
         """Validate a role-derived engine output mute mask.
@@ -602,19 +609,21 @@ class DSPRuntime:
         exact-sub mute) stay untouched, which is why clearing must repeat the
         same mask rather than resetting the engine's whole mute state.
         """
-        bits = self._validate_output_mask(mask)
-        previous = self._output_mask
-        await self._control(f"mute {bits} 1", reply=True)
-        self._output_mask |= bits
-        return previous
+        async with self._mute_ownership_lock:
+            bits = self._validate_output_mask(mask)
+            previous = self._output_mask
+            await self._control(f"mute {bits} 1", reply=True)
+            self._output_mask |= bits
+            return previous
 
     async def clear_output_mask(self, mask: int) -> None:
         """Release output-mask bits without clearing an active exact sub mute."""
-        bits = self._validate_output_mask(mask)
-        control_bits = bits & ~self._exact_sub_mute_mask
-        if control_bits:
-            await self._control(f"mute {control_bits} 0", reply=True)
-        self._output_mask &= ~bits
+        async with self._mute_ownership_lock:
+            bits = self._validate_output_mask(mask)
+            control_bits = bits & ~self._exact_sub_mute_mask
+            if control_bits:
+                await self._control(f"mute {control_bits} 0", reply=True)
+            self._output_mask &= ~bits
 
     async def reset_output_peaks(self) -> None:
         await self._control("peaks reset", reply=True)
@@ -755,14 +764,24 @@ class DSPRuntime:
                                        apply_previous: Callable[[], Any],
                                        settle_seconds: float = 0.35,
                                        before_ramp: Callable[[], Awaitable[Any]] | None = None,
-                                       before_rollback_ramp: Callable[[], Awaitable[Any]] | None = None) -> None:
+                                       before_rollback_ramp: Callable[[], Awaitable[Any]] | None = None,
+                                       ramp_target_db: float = 0.0,
+                                       rollback_ramp_target_db: float = 0.0) -> None:
         """guarded_rebuild for prebuilt plan targets, with rollback to previous.
 
         Unlike the overview form, the previous target is an explicit
         parameter: no durable source can re-derive it, so the caller owns
-        both documents.
+        both documents.  ``ramp_target_db`` / ``rollback_ramp_target_db``
+        set the post-transition operating gain (default 0 dB); a rollback
+        may restore a different gain than the candidate path intended.
         """
-        guard = max(-80.0, min(0.0, float(guard_db)))
+        for name, target in (("ramp_target_db", ramp_target_db),
+                             ("rollback_ramp_target_db", rollback_ramp_target_db)):
+            if (type(target) not in (int, float) or not math.isfinite(target)
+                    or not -80 <= target <= 0):
+                raise ValueError(f"{name} must be finite and between -80 and 0 dB")
+        guard = min(max(-80.0, min(0.0, float(guard_db))),
+                    float(ramp_target_db), float(rollback_ramp_target_db))
         hot_update = self._can_hot_update(new.config)
         settle_seconds = 0.0 if hot_update else settle_seconds
         async with self._measurement_scope_lock:
@@ -776,7 +795,7 @@ class DSPRuntime:
                     await asyncio.sleep(settle_seconds)
                 if before_ramp:
                     await before_ramp()
-                await self.ramp_output_gain_db(guard, 0.0)
+                await self.ramp_output_gain_db(guard, float(ramp_target_db))
                 apply_candidate()
             except BaseException:
                 try:
@@ -788,7 +807,7 @@ class DSPRuntime:
                         await asyncio.sleep(settle_seconds)
                     if before_rollback_ramp:
                         await before_rollback_ramp()
-                    await self.ramp_output_gain_db(guard, 0.0)
+                    await self.ramp_output_gain_db(guard, float(rollback_ramp_target_db))
                 except BaseException:
                     logger.exception("Native DSP guarded transition rollback failed")
                 raise
