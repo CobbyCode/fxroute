@@ -3,10 +3,10 @@
 ## Arbeitsstand
 - Worktree: `/home/pbclaw/ai/projects/fxroute-multichannel`
 - Branch: `feature/multichannel-crossover`
-- HEAD: `f50c881` (Slice E), Arbeitsbaum sauber.
+- HEAD: `b5ac9ed` (Slice F), Arbeitsbaum sauber.
 - Tasks 1–7 abgeschlossen einschließlich Task-7-Review und Nacharbeiten. Task 8 ist **teilweise implementiert, nicht produktiv vollständig verdrahtet**.
-- AutoSub-Slices A–E sind implementiert, reviewed (B) und committet. Offen: **F (Winner-Commit + Lifecycle), G (Session-Release), Speaker Align**.
-- Der AutoSub-HTTP-Start ist ausdrücklich gesperrt (`_AUTO_SUB_SERVICE_INTEGRATION_READY = False` in `measurement/autosub/runners/start.py:68`, HTTP 503 bei unterstützter Topologie), bis Slices F–G vollständig integriert und verifiziert sind. Kein HTTP-/Environment-Override; Tests öffnen das Gate nur per Patching.
+- AutoSub-Slices A–F sind implementiert und committet (B zusätzlich reviewed; F durch zwei externe Review-Runden mit reproduzierten und behobenen Defekten). Offen: **G (Session-Release), Speaker Align**.
+- Der AutoSub-HTTP-Start ist ausdrücklich gesperrt (`_AUTO_SUB_SERVICE_INTEGRATION_READY = False` in `measurement/autosub/runners/start.py:68`, HTTP 503 bei unterstützter Topologie), bis Slice G integriert und verifiziert ist. Kein HTTP-/Environment-Override; Tests öffnen das Gate nur per Patching.
 
 ## Maßgebliche Pläne
 Die bestehenden Pläne sind maßgeblich. **Keine Neuplanung oder erneute Implementierung bereits abgeschlossener Arbeiten.**
@@ -29,27 +29,27 @@ Tasks 1–7 liefern Routing-/Rollenmodell, pro Modus isolierten atomaren Output-
 7. **`a20ecac` — Slice C, Compiled-Layout Peak-Predictor**: `jobs.py`-Predictor mit exakt einem von `config` xor `layout`; Layout-Pfad pro Output in nativer Reihenfolge (Routen, SOS/PEQ mit aus `native_dsp/dsp.c` gespiegelten Koeffizienten, Mono-Convolver per FFT, Delay/Trim/Invert, Runtime-Output-Gain, Sink-Gain), Peaks als `output_1..N`. Striktes Fail-closed, Single-Slot-Cache (Model-Tag, Fingerprint, Layout-Signatur, IR-Identität, Rate, Sweep, Gains); Comparison wirft bei Output-Set-Mismatch. Native-Parität auf `.104` ≤ 0.05 dB bewiesen (`scripts/test_native_dsp_plan_peak_parity.py` in `NATIVE_HELPER_TESTS`).
 8. **`123047c` — Slice D, Owner-Prearm + Funnel-Staging**: Service-Sweeps stagen den Funnel-Kandidaten über den Owner (`roles.autosub_scan_knobs`), pre-armen mit `owner.ensure_ready` (kein Orchestration-Sync), predicten aus dem Staged-Layout mit Live-Runtime-Gain, übergeben Staged-Layout/Modus/Fingerprint an den Child-Sweep, muten Main-Only mit der Kontext-Rollenmaske (auch beim Restore). Legacy-Jobs unverändert.
 9. **`f50c881` — Slice E, Runner-IO-Grenzen**: reine Adapter (`autosub_explicit_knobs`-Kern, `autosub_apply_knobs`-Translator; Scan-Adapter mit Legacy-Wertquellen: Single aus Funnel-Args, Dual aus Snapshot, inaktiv −80 dB); `_auto_sub_apply_candidate` mit `job`-Param stagt für Service (False nur recoverable, Drift/Restore raisen); `_stage_auto_sub_service_state` für Fire-and-forget-Sites; alle direkten Runner-Sites (Winner/Polarity/Gain/Correction/Revert/Deep-Bass/Recommit), Bare-Resyncs für Service geskipt, Derived-Delays explizit gebaut; Legacy-Zeilen byte-identisch. Kritischer Test: volle Runner aller drei Topologien mit raisenden Legacy-Settern. Zwölf bestehende Test-Doubles akzeptieren die neue `job`-Kwarg (ignoriert, Assertions unverändert).
+10. **`b5ac9ed` — Slice F, Winner-Commit + Cancellation-sichere Finalisierung**: `AutoSubCandidateSession.commit_staged(cancel_requested)` committet den verifizierten Staging-Stand unter Owner-Lock (Re-Readback, gefrorene Revision, synchroner `service.commit`); Equal-to-start/never-staged ist verifizierter No-op ohne Revisionsbump; kooperative Cancellation (Probe, nach jedem Await geprüft) vetoed die Persistenz und lässt den Owner uncommitted. `candidates._commit_auto_sub_service_winner` (run-fatal, Cancel-Refusal, `committed_revision` im Job-Kontext) rufen alle drei Runner genau einmal vor Completion auf, nach allen akustischen Gates. Cleanup restauriert committete Owner nie → die committete Revision überlebt; Cancel-Refusal läuft über den Cancel-Arm (Job wird cancelled, nicht failed). `MeasurementStore.drain_job` wartet den echten Child-Task-Abschluss inkl. Raw-Scope-/Masken-Cleanup (abschirmt wiederholte Cancellation, deferred Cancel-Persist-Fehler erst nach dem Drain); Service-Funnel draint vor Peak-Read und in Early-Returns, `finish_capture` restauriert Exact-Mute immer nach dem Drain, auch bei Drain-Fehler. Legacy-Pfad byte-identisch. Suites: Winner-Commit 11, Worker-Lifecycle 5, Job-Drain 4, Owner-Prearm 13, Runner-IO 28 (neuer Vertrag).
 
 ## Architektur — bei Weiterarbeit beachten
 - Routing ist Topologie-Autorität; Legacy-Modi dürfen höchstens Algorithmuslabels bleiben. Scoring-, Scan-, Polarity-, Gain- und Confirmation-Mathematik unverändert lassen.
 - Ein gefrorener Startzustand pro Job; alle Vorschläge vollständig und startrelativ. Kein Rebase auf eine neuere Revision, kein Persistieren einzelner Scan-Kandidaten.
 - Service- und Legacy-Pfade laufen nebeneinander: Service-Jobs erkennt man an `"output_state_context" in job`. Legacy-Zeilen in Runnern/Funnel nur anfassen, wenn bestehende Suiten den Unterschied beweisen; `*_audio_output_mode`-Bindings (Runner-Modul, `candidates`, `measurement`, `samplerate`-Quelle für funktionslokale Imports) sind je eigene Patch-Ziele.
-- Nur der final akustisch akzeptierte, erneut verifizierte Vorschlag darf einmalig committed werden (Slice F). Die Session besitzt den Commit-Mechanismus (`commit_winner`); die Runner-/Lifecycle-Anbindung fehlt noch.
+- Nur der final akustisch akzeptierte, erneut verifizierte Vorschlag darf einmalig committed werden — Slice F ist implementiert: `commit_staged` (Owner) + `_commit_auto_sub_service_winner` (Runner-Helper) + Aufruf vor Completion. `commit_winner(proposal)` bleibt für explizite Proposal-Commits; Runner nutzen `commit_staged` (kein Triplet-Resend).
 - `CandidateStager` nutzt `guarded_rebuild_rendered`, nicht unguarded `sync_rendered`. Readback muss echte Links (`runtime.verify()`), Prozess-/Planidentität und Gain prüfen. Externe Graph-Ownership muss die Integration serialisieren; Revisionschecks allein machen Store und Engine nicht atomar.
-- Nach Winner-Commit niemals über den alten Stager den Startzustand wiederherstellen. Capture drainen und Masken/Scopes aufräumen, bevor Messsession/Ownership freigegeben werden.
+- Nach Winner-Commit niemals über den alten Stager den Startzustand wiederherstellen (Cleanup skippt committete Owner). Captures vor jedem Restore über `MeasurementStore.drain_job` drainen; Exact-Mute-Restore nach dem Drain, Drain-Fehler danach propagieren.
 - Der Predictor modelliert nur die Per-Output-Kette; Aufrufer brauchen einen neutralen Global-Pfad (dokumentiert in `jobs.py`).
 
 ## Offen — empfohlene Reihenfolge
-**F → G → Speaker Align.** Nicht erneut mit Grundlagen beginnen.
+**G → Speaker Align.** Nicht erneut mit Grundlagen beginnen.
 
-- **Rollout-Gate:** `_AUTO_SUB_SERVICE_INTEGRATION_READY = False` in `runners/start.py` erst nach F–G und deren Integrations-Gate entfernen. Kein HTTP-/Environment-Override. Die Tests öffnen das Gate ausschließlich lokal über Patching.
-- **F — Winner-Commit und Lifecycle:** final behaltenen Vorschlag nach bestehenden akustischen Gates erneut stage/verifizieren, einmalig via `service.commit(candidate, expected_revision=frozen)` committen (kein Rebase, equal-to-start = verifizierter No-op); Cancellation und Fehler drainen/restoren vor Unregister/Lock-Release. Tests: `test_autosub_winner_commit.py` + Lifecycle-Suiten. Hinweis: `commit_winner` existiert und ist getestet (Slice A); es fehlt die Runner-Anbindung (nach Confirmation den finalen Vorschlag committen statt nur zu stagen) plus die F-Cleanup-Reihenfolge (Sweep drainen → Mutes/Scope → Restore → Unregister → Owner-Drop → Finalize → Lock-Release).
-- **G — Session-Release:** bei Rate-/Playback-Restore den aktuellen committed Output-Plan laden, nicht den Legacy-Overview-Graph (`session.py`-Release-Boundary, Playback-Coordinator, verzögerter Window-Close/Resume). Tests: `test_autosub_session_release_plan.py`.
+- **Rollout-Gate:** `_AUTO_SUB_SERVICE_INTEGRATION_READY = False` in `runners/start.py` erst nach G und dessen Integrations-Gate entfernen. Kein HTTP-/Environment-Override. Die Tests öffnen das Gate ausschließlich lokal über Patching.
+- **G — Session-Release:** bei Rate-/Playback-Restore den aktuellen committed Output-Plan laden, nicht den Legacy-Overview-Graph (`session.py`-Release-Boundary, Playback-Coordinator, verzögerter Window-Close/Resume). Tests: `test_autosub_session_release_plan.py`. Hinweis: F liefert `committed_revision` im `output_state_context` und `service.load()` enthält den committeten Plan.
 - **Speaker Align (Task 8):** fehlt vollständig. Feste Mikrofonposition, gemeinsame upstream Referenz, unverschobenes IR-Timing, relative Delays `max(t)-t`, Overlap-Band-/Phasenprüfung, Qualitäts-/Stale-Gates; synthetische und reale Verifikation laut Gesamtplan.
 
 ### Bekannte Restprobleme / Grenzen
-- Winner-Commit-Wiring in den Runnern und vollständige Cleanup-/Release-Anbindung fehlen (F/G). Entry-Restore/-Cleanup ist bereits owner-basiert; das ersetzt nicht das Drainen aktiver Captures und die Masken-/Scope-Wiederherstellung aus F.
-- Vorbestehend, nur auf `.104` sichtbar: `test_auto_sub_fine_winner_apply.py` schreibt `config/fxroute/audio-output-mode.json` in den XDG-Canary (echte Hardware lässt den ungepatchten Legacy-Setter persistieren; lokal wirft er vorher). Harmlos unter Sandbox; der richtige Fix gehört zu Slice E-Nacharbeiten bzw. F (keine Legacy-Setter mehr im Runner-Pfad). Details im Integrationsplan.
+- Die G-Release-Anbindung fehlt (letzter AutoSub-Block vor Speaker Align).
+- Vorbestehend, nur auf `.104` sichtbar: `test_auto_sub_fine_winner_apply.py` schreibt `config/fxroute/audio-output-mode.json` in den XDG-Canary (echte Hardware lässt den ungepatchten Legacy-Setter persistieren; lokal wirft er vorher). Harmlos unter Sandbox; der richtige Fix gehört zu Slice E-Nacharbeiten (keine Legacy-Setter mehr im Runner-Pfad; der Funnel/Commit-Pfad ist sie inzwischen). Details im Integrationsplan.
 - Speaker Align fehlt. Keine Behauptung, Task 8 oder Crossover-AutoSub sei end-to-end fertig.
 - Bekannte Altgrenzen: Store↔Engine-TOCTOU ohne gemeinsame Ownership, Legacy-Checks in `silent_active` bei exotischen v2-Routings.
 
@@ -61,6 +61,8 @@ python3 scripts/test_autosub_role_mapping.py
 python3 scripts/test_auto_sub_role_mute.py
 python3 scripts/test_autosub_candidate_state.py
 python3 scripts/test_autosub_candidate_session.py
+python3 scripts/test_autosub_winner_commit.py
+python3 scripts/test_autosub_worker_lifecycle.py
 python3 scripts/test_autosub_dependency_injection.py
 python3 scripts/test_autosub_service_start.py
 python3 scripts/test_auto_sub_start_job_leak.py
@@ -73,12 +75,13 @@ python3 scripts/test_measurement_staged_layout.py
 python3 scripts/test_measurement_playback_target.py
 python3 scripts/test_measurement_capture_policy.py
 python3 scripts/test_measurement_job_setup.py
+python3 scripts/test_measurement_job_drain.py
 python3 scripts/test_dsp_runtime.py
 python3 scripts/test_output_state_lifecycle.py
 git diff --check
 ```
 
-Zuletzt fokussiert grün: Service-Start 23, Start-Leak 3, Dependency-Injection 11, Candidate-Session 38, Owner-Prearm 10, Runner-Service-IO 28, Plan-Peak 17, Peak-Prediction 5, Gain-Apply-Revert 23, Staged-Layout 15, Playback-Target 14, Capture-Policy 4, Job-Setup 6, Runtime 62, Output-Lifecycle 8, alle 43 `test_auto_sub_*`-/`test_autosub_*`-Suiten. Vollständiger `run_tests.sh`-Sweep nach Slice E: lokal 390 bestanden / 0 fehlgeschlagen / 14 übersprungen (native Helper-Suiten lokal geskipt); `.104` neue Suite 28/28, betroffenes Set 47/48 (einziger Fehler: bekannter httpx-Gap in Staged-Layout). Alle 15 nativen Suiten inkl. Parität auf `.104` grün.
+Zuletzt fokussiert grün: Service-Start 23, Start-Leak 3, Dependency-Injection 11, Candidate-Session 38, Winner-Commit 11, Worker-Lifecycle 5, Job-Drain 4, Owner-Prearm 13, Runner-Service-IO 28, Plan-Peak 17, Peak-Prediction 5, Gain-Apply-Revert 23, Staged-Layout 15, Playback-Target 14, Capture-Policy 4, Job-Setup 6, Runtime 62, Output-Lifecycle 8, alle 46 `test_auto_sub_*`-/`test_autosub_*`-/Drain-Suiten. Vollständiger `run_tests.sh`-Sweep nach Slice F: lokal 393 bestanden / 0 fehlgeschlagen / 14 übersprungen (Baseline ohne F-Änderungen: 390/0/14; native Helper-Suiten lokal geskipt). `.104`-Verifikation für Slice F noch nicht gefahren; neue Suiten dort nachholen.
 
 Für Runner-Änderungen zusätzlich die bestehenden `scripts/test_auto_sub_*`-Suiten (insbesondere alle drei Final-Path-, Confirmation-, Gain-, Polarity- und Cancellation-Suiten) ausführen, numerische Assertions nicht abschwächen. `scripts/run_tests.sh` entdeckt neue `test_*.py` automatisch und nutzt einen XDG-Sandbox. Test-Doubles von `_auto_sub_apply_candidate` müssen die `job`-Kwarg akzeptieren.
 
