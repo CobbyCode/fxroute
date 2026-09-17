@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # FXRoute live-session entry (Casper "Try" mode, RAM overlay only).
 # Started via /etc/xdg/autostart in the live GNOME session. Exits
-# immediately on installed systems (no boot=casper there). Never touches
+# immediately on installed systems (no live medium there). Never touches
 # internal disks, never runs the installer or first-boot.
 set -Eeuo pipefail
 
-# Live guard: only the Casper live session runs this.
-grep -q 'boot=casper' /proc/cmdline 2>/dev/null || exit 0
+# Live guard: only the Casper live session runs this. The stock Desktop
+# kernel cmdline carries no boot=casper flag (casper defaults apply from
+# the initrd), so the live medium mount decides, not the cmdline.
+if [[ ! -d /cdrom/casper && ! -d /cdrom/CASPER ]] \
+  && ! grep -q 'boot=casper' /proc/cmdline 2>/dev/null; then
+  exit 0
+fi
 # During an autoinstall run the live session belongs to the installer:
 # stay out of its way (the target gets FXRoute via first-boot).
 grep -q 'autoinstall' /proc/cmdline 2>/dev/null && exit 0
-[[ -d /cdrom/casper || -d /cdrom/CASPER ]] || exit 0
 
 # Test hook (QEMU only, release boots omit it): fxroute.live-password=...
 # on the kernel cmdline sets the live user password and starts SSH so the
