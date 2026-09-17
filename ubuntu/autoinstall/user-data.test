@@ -30,3 +30,4 @@ autoinstall:
     - 'cp /target/opt/fxroute-iso/first-boot.service /target/etc/systemd/system/fxroute-first-boot.service'
     - 'curtin in-target --target=/target -- systemctl enable fxroute-first-boot.service'
     - 'curtin in-target --target=/target -- systemctl enable ssh.service'
+    - 'rm -f /target/etc/cloud/cloud.cfg.d/99-fxroute-seed.cfg'

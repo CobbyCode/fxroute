@@ -37,3 +37,6 @@ autoinstall:
     - 'cp /target/opt/fxroute-iso/first-boot.service /target/etc/systemd/system/fxroute-first-boot.service'
     - 'curtin in-target --target=/target -- systemctl enable fxroute-first-boot.service'
     - 'curtin in-target --target=/target -- systemctl enable ssh.service'
+    # Seed-Zeiger gehoert nur der Live-Session: sonst wuerde cloud-init im
+    # installierten System auf ein nicht vorhandenes /cdrom zeigen.
+    - 'rm -f /target/etc/cloud/cloud.cfg.d/99-fxroute-seed.cfg'

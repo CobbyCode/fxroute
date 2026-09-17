@@ -210,7 +210,9 @@ command -v xorriso >/dev/null 2>&1 || die "xorriso is required for livefs-edit r
 
 printf '[ubuntu-iso] editing live ISO with livefs-edit\n'
 # Seed pointer for the installer (always, product and test builds).
-export FXROUTE_GRUB_INSTALL_EXTRA="ds=nocloud;seedfrom=file:///cdrom/fxroute-seed/"
+# Currently empty: the pointer lives in 99-fxroute-seed.cfg (cloud.cfg.d),
+# kernel seedfrom does not survive casper.
+export FXROUTE_GRUB_INSTALL_EXTRA=""
 # NOTE: --python takes code, not a path; the .py files stay the maintained
 # source and are inlined here (they contain no backticks/`$`, safe to inline).
 livefs-edit "$BASE_ISO" "$OUTPUT" \
@@ -221,6 +223,7 @@ livefs-edit "$BASE_ISO" "$OUTPUT" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/cp_payload.py")" \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" '$LAYERS[0]/usr/local/libexec/fxroute-live-autostart.sh' \
   --cp "$ROOT_DIR/ubuntu/autoinstall/fxroute-live.desktop" '$LAYERS[0]/etc/xdg/autostart/fxroute-live.desktop' \
+  --cp "$ROOT_DIR/ubuntu/autoinstall/99-fxroute-seed.cfg" '$LAYERS[0]/etc/cloud/cloud.cfg.d/99-fxroute-seed.cfg' \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-ubuntu-launcher.sh" '$LAYERS[0]/usr/local/bin/fxroute-desktop-launcher' \
   $TEST_SSH_CPS \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/test_ssh.py")" \
