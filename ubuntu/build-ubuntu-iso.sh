@@ -142,11 +142,17 @@ cp -- "$ROOT_DIR/ubuntu/autoinstall/first-boot.service" "$STAGE_DIR/fxroute-iso/
     export FXROUTE_GRUB_TEST_EXTRA="console=ttyS0 fxroute.live-password=test"
     # QEMU test SSH hook (unit + helper, enabled in the squashfs).
     export FXROUTE_TEST_SSH=1
-    TEST_SSH_CPS="--cp $ROOT_DIR/ubuntu/autoinstall/fxroute-test-ssh.service \$LAYERS[0]/etc/systemd/system/fxroute-test-ssh.service --cp $ROOT_DIR/ubuntu/scripts/fxroute-test-ssh.sh \$LAYERS[0]/usr/local/libexec/fxroute-test-ssh.sh"
   else
     cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data" "$STAGE_DIR/user-data"
-    TEST_SSH_CPS=""
   fi
+fi
+
+# Set from the environment (docker passes it through); the staging block
+# above is skipped on prestaged container runs.
+if [[ "${FXROUTE_TEST_SSH:-0}" == "1" ]]; then
+  TEST_SSH_CPS="--cp $ROOT_DIR/ubuntu/autoinstall/fxroute-test-ssh.service \$LAYERS[0]/etc/systemd/system/fxroute-test-ssh.service --cp $ROOT_DIR/ubuntu/scripts/fxroute-test-ssh.sh \$LAYERS[0]/usr/local/libexec/fxroute-test-ssh.sh"
+else
+  TEST_SSH_CPS=""
 fi
 
 # FXRoute runtime deps, pre-baked into the live squashfs so the Try session
