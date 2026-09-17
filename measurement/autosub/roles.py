@@ -18,8 +18,6 @@ This module is pure: no files, no hardware, no runtime, no global state.
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 import math
 
 from audio.output_state import routing_for_device, validate_output_state
