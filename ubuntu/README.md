@@ -39,9 +39,11 @@ kein Push/Release aus diesem Worktree ohne explizite Anforderung.
 
 Unverändert übernommen (kein Ubuntu-Bedarf zur Änderung):
 
-* `install.sh` — erkennt `apt` per Capability-Probe (`confirm_supported_
-  distro`), alle Paketlisten haben einen `apt`-Zweig. Einzige Prüfung in
-  Phase 1: Paketnamen auf 26.04 (`-t64`-Migration) und PipeWire-Version.
+* `install.sh` — erkennt `apt` per Capability-Probe, alle Paketlisten haben
+  einen `apt`-Zweig. Verifiziert auf Ubuntu 26.04 (resolute, QEMU-VM):
+  sämtliche `apt`-Paketnamen lösen auf, PipeWire ist 1.6.2 (≥ 1.4.9,
+  kein Backport nötig), `caddy` 2.6.2 liegt in den Standard-Repos,
+  Firefox ist der stock Snap. **Keine `install.sh`-Änderung nötig.**
 * Gesamte FXRoute-Anwendung: DSP, Routing, Provider, Measurement, Library.
 * `fxroute.service` (User-Unit), `source.tar`/`build-commit`-Muster,
   Geräte-Namensableitung (`fxroute-<machine-id>`), SSH-Defaults-Idee.
