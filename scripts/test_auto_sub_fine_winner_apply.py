@@ -186,6 +186,14 @@ class AutoSubFineWinnerApplyTests(unittest.IsolatedAsyncioTestCase):
                 stack.enter_context(patch.object(runner, "get_audio_output_overview", side_effect=overview))
                 stack.enter_context(patch.object(samplerate, "set_audio_output_mode", side_effect=persist))
                 stack.enter_context(patch.object(samplerate, "_load_audio_output_mode", side_effect=overview))
+                # The restore path calls candidates' own module bindings
+                # (not the runner or samplerate references above): without
+                # these the real setter persists on hardware hosts (.104
+                # XDG-canary write) and the real loader reads live config.
+                stack.enter_context(patch("measurement.autosub.candidates.set_audio_output_mode",
+                                          side_effect=persist))
+                stack.enter_context(patch("measurement.autosub.candidates._load_audio_output_mode",
+                                          side_effect=overview))
                 stack.enter_context(patch("measurement.session._resolve_measurement_start_sample_rate", return_value=48000))
 
                 await runner._run_auto_sub_optimize(
