@@ -16,9 +16,8 @@ autoinstall:
     # Der Rest (Locale, Tastatur, Storage, Pakete) laeuft automatisch.
     - network
     - identity
-  identity:
-    hostname: fxroute
-    username: fxroute
+  # Leave identity unset: Subiquity validates supplied mappings before
+  # showing the interactive page and requires a password in that mapping.
   storage:
     layout:
       name: lvm
