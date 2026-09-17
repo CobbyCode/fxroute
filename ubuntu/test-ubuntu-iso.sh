@@ -85,7 +85,7 @@ boot_iso() {
     -drive "file=$vars,format=raw,if=pflash" \
     -nic "user,model=virtio-net-pci,hostfwd=tcp::$HTTP_PORT-:8000,hostfwd=tcp::$SSH_PORT-:22" \
     -monitor "unix:$monitor,server=on,wait=off" \
-    -device virtio-rng-pci -device ich9-hda -vga virtio -display none \
+    -device virtio-rng-pci -device intel-hda -device hda-duplex -vga virtio -display none \
     -serial "file:$TEST_ROOT/serial.log" \
     -pidfile "$pidfile" -daemonize \
     $extra_args
@@ -106,7 +106,7 @@ boot_disk() {
     -drive "file=$vars,format=raw,if=pflash" \
     -nic "user,model=virtio-net-pci,hostfwd=tcp::$HTTP_PORT-:8000,hostfwd=tcp::$SSH_PORT-:22" \
     -monitor "unix:$monitor,server=on,wait=off" \
-    -device virtio-rng-pci -device ich9-hda -vga virtio -display none \
+    -device virtio-rng-pci -device intel-hda -device hda-duplex -vga virtio -display none \
     -serial "file:$TEST_ROOT/serial-appliance.log" \
     -pidfile "$pidfile" -daemonize
 }
