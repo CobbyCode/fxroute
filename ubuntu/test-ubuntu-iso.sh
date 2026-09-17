@@ -58,7 +58,7 @@ s.close()
 PY
 }
 select_grub_entry() {
-  local monitor="$1" downs="$2"
+  local monitor="$1" downs="$2" extra="${3:-}"
   local i=0
   sleep 5
   while (( i < downs )); do
@@ -67,11 +67,47 @@ select_grub_entry() {
     i=$(( i + 1 ))
   done
   sleep 1
-  qemu_monitor "$monitor" "sendkey ret"
+  if [[ -z "$extra" ]]; then
+    qemu_monitor "$monitor" "sendkey ret"
+    return 0
+  fi
+  # GRUB edit: append kernel args to the linux line, boot with Ctrl-x.
+  qemu_monitor "$monitor" "sendkey e"
+  sleep 2
+  qemu_monitor "$monitor" "sendkey down"
+  sleep 1
+  qemu_monitor "$monitor" "sendkey down"
+  sleep 1
+  qemu_monitor "$monitor" "sendkey end"
+  sleep 1
+  qemu_type "$monitor" " $extra"
+  sleep 1
+  qemu_monitor "$monitor" "sendkey ctrl-x"
+}
+
+# Type GRUB-safe text (lowercase alnum plus - = . / , and space) one key
+# at a time; anything else aborts loudly instead of mistyping a boot arg.
+qemu_type() {
+  local monitor="$1" text="$2" i=0 char="" key=""
+  for (( i = 0; i < ${#text}; i++ )); do
+    char="${text:$i:1}"
+    case "$char" in
+      [a-z0-9]) key="$char" ;;
+      '-') key="minus" ;;
+      '=') key="equal" ;;
+      '.') key="dot" ;;
+      '/') key="slash" ;;
+      ',') key="comma" ;;
+      ' ') key="spc" ;;
+      *) die "qemu_type: unsupported char '$char'" ;;
+    esac
+    qemu_monitor "$monitor" "sendkey $key"
+    sleep 0.3
+  done
 }
 
 boot_iso() {
-  local disk="$1" monitor="$2" pidfile="$3" grub_downs="$4" extra_args="${5:-}"
+  local disk="$1" monitor="$2" pidfile="$3" grub_downs="$4" kernel_extra="${5:-}"
   local vars="$TEST_ROOT/ovmf-vars.fd"
   rm -f "$vars"
   cp -- /usr/share/qemu/ovmf-x86_64-4m-vars.bin "$vars"
@@ -87,12 +123,9 @@ boot_iso() {
     -monitor "unix:$monitor,server=on,wait=off" \
     -device virtio-rng-pci -device intel-hda -device hda-duplex -vga virtio -display none \
     -serial "file:$TEST_ROOT/serial.log" \
-    -pidfile "$pidfile" -daemonize \
-    $extra_args
+    -pidfile "$pidfile" -daemonize
   sleep 25
-  if [[ "$grub_downs" -gt 0 ]]; then
-    select_grub_entry "$monitor" "$grub_downs"
-  fi
+  select_grub_entry "$monitor" "$grub_downs" "$kernel_extra"
 }
 
 boot_disk() {
@@ -116,11 +149,35 @@ ssh_run() {
     -p "$SSH_PORT" "test@127.0.0.1" "$@"
 }
 
+TEST_ASKPASS="$ROOT_DIR/ubuntu/test-askpass.sh"
+
+live_ssh_run() {
+  SSH_ASKPASS="$TEST_ASKPASS" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 \
+  FXROUTE_ASKPASS_PASSWORD="$TEST_PASSWORD" setsid ssh \
+    -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+    -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -p "$SSH_PORT" "ubuntu@127.0.0.1" "$@"
+}
+
+wait_for_live_ssh() {
+  local timeout_s="$1" i=0
+  while (( i < timeout_s )); do
+    if live_ssh_run true >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 10
+    i=$(( i + 10 ))
+  done
+  return 1
+}
+
 phase_live() {
   log "phase live: booting Try or Install Ubuntu (default entry)"
   local disk="$TEST_ROOT/live-check.qcow2" monitor="$TEST_ROOT/live-monitor.sock" pidfile="$TEST_ROOT/live.pid"
   qemu-img create -f qcow2 "$disk" "${DISK_GB}G" >/dev/null
-  boot_iso "$disk" "$monitor" "$pidfile" 0
+  boot_iso "$disk" "$monitor" "$pidfile" 0 "console=ttyS0 fxroute.live-password=$TEST_PASSWORD"
+  log "waiting for live SSH (test hook)"
+  wait_for_live_ssh 1200 || log "live SSH did not come up (continuing with HTTP only)"
   log "waiting for live FXRoute on :$HTTP_PORT (live install.sh needs minutes)"
   if wait_for_http "http://127.0.0.1:$HTTP_PORT/api/status" 2400; then
     log "live FXRoute reachable"
