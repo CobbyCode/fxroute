@@ -1,9 +1,12 @@
-"""livefs-edit --python action: add an "Install FXRoute" GRUB entry.
+"""livefs-edit --python action: GRUB entries for the FXRoute ISO.
 
-Duplicates the "Try or Install Ubuntu" menuentry, appends autoinstall to
-the installer kernel args (before ---, installer-only) and keeps every
-other entry byte-identical. The default boot path (Try) is untouched.
+Duplicates the Try or Install Ubuntu menuentry as Install FXRoute with
+autoinstall on the installer kernel args (before ---, installer-only).
+If FXROUTE_GRUB_TRY_EXTRA is set (QEMU test builds only), those args are
+appended to the Try entry linux line at build time instead of being typed
+at boot. Every other entry stays byte-identical.
 """
+import os
 import re
 
 path = ctxt.p('new/iso/boot/grub/grub.cfg')
@@ -35,6 +38,21 @@ new_entry = ''.join(lines).replace(
 )
 
 text = text[:match.end()] + new_entry + text[match.end():]
+
+extra = os.environ.get('FXROUTE_GRUB_TRY_EXTRA', '').strip()
+if extra:
+    def add_extra(m):
+        out = []
+        for line in m.group(0).splitlines(keepends=True):
+            if line.strip().startswith('linux ') and ' --- ' in line:
+                line = line.replace(' --- ', ' ' + extra + ' --- ', 1)
+            out.append(line)
+        return ''.join(out)
+    text, count = pattern.subn(add_extra, text, count=1)
+    if count != 1:
+        raise Exception('Try entry not found for kernel extras')
+    print('appended kernel extras to Try entry: ' + extra)
+
 with open(path, 'w') as fp:
     fp.write(text)
 print('added Install FXRoute GRUB entry')

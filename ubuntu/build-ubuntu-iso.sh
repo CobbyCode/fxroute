@@ -137,6 +137,9 @@ cp -- "$ROOT_DIR/ubuntu/autoinstall/first-boot.service" "$STAGE_DIR/fxroute-iso/
   if [[ "$TEST_SEED" -eq 1 ]]; then
     printf '[ubuntu-iso] warning: staging the TEST seed (dev/test ISO, never release this)\n'
     cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data.test" "$STAGE_DIR/user-data"
+    # QEMU-only kernel extras, baked into the Try entry at build time:
+    # serial console for observability, live SSH test hook.
+    export FXROUTE_GRUB_TRY_EXTRA="console=ttyS0 fxroute.live-password=test"
   else
     cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data" "$STAGE_DIR/user-data"
   fi
@@ -169,6 +172,7 @@ if [[ "$BUILDER" == "docker" && "$INSIDE_DOCKER" -eq 0 ]]; then
     -v "$WORK_DIR/ctmp:/ctmp" \
     -e "TMPDIR=/ctmp" \
     -e "FXROUTE_UBUNTU_STAGE_DIR=$STAGE_DIR" \
+    -e "FXROUTE_GRUB_TRY_EXTRA=${FXROUTE_GRUB_TRY_EXTRA:-}" \
     -e "FXROUTE_UBUNTU_BASE_ISO=$BASE_ISO" \
     -e "FXROUTE_UBUNTU_ISO_OUTPUT=$OUTPUT" \
     -e "FXROUTE_UBUNTU_BUILDER=direct" \
