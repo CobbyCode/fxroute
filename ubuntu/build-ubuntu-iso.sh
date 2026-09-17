@@ -66,6 +66,7 @@ if [[ "$INSIDE_DOCKER" -eq 1 ]]; then
   apt-get update -qq
   apt-get install -y -qq --no-install-recommends \
     xorriso squashfs-tools python3 python3-pip python3-yaml git curl ca-certificates \
+    udev mount kmod \
     > /tmp/fxroute-apt.log 2>&1 || { tail -20 /tmp/fxroute-apt.log; die "apt setup failed"; }
   pip3 install --quiet --break-system-packages \
     "git+https://github.com/mwhudson/livefs-editor.git" \
