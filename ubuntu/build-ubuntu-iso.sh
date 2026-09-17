@@ -134,6 +134,7 @@ cp -- "$ROOT_DIR/ubuntu/scripts/first-boot-install-ubuntu.sh" \
   "$STAGE_DIR/fxroute-iso/scripts/"
 cp -- "$ROOT_DIR/ubuntu/autoinstall/first-boot.service" "$STAGE_DIR/fxroute-iso/first-boot.service"
   chmod 755 "$STAGE_DIR/fxroute-iso/scripts/"*.sh
+  cp -- "$ROOT_DIR/ubuntu/autoinstall/meta-data" "$STAGE_DIR/meta-data"
   if [[ "$TEST_SEED" -eq 1 ]]; then
     printf '[ubuntu-iso] warning: staging the TEST seed (dev/test ISO, never release this)\n'
     cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data.test" "$STAGE_DIR/user-data"
@@ -212,7 +213,7 @@ livefs-edit "$BASE_ISO" "$OUTPUT" \
   --install-packages "${LIVE_PACKAGES[@]}" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/cleanup_chroot.py")" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/cp_payload.py")" \
-  --cp "$STAGE_DIR/user-data" '$LAYERS[0]/var/lib/cloud/seed/nocloud/user-data' \
+  --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/seed_layers.py")" \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" '$LAYERS[0]/usr/local/libexec/fxroute-live-autostart.sh' \
   --cp "$ROOT_DIR/ubuntu/autoinstall/fxroute-live.desktop" '$LAYERS[0]/etc/xdg/autostart/fxroute-live.desktop' \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-ubuntu-launcher.sh" '$LAYERS[0]/usr/local/bin/fxroute-desktop-launcher' \
