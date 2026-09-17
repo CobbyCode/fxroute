@@ -68,19 +68,60 @@ ubuntu/
   README.md                  diese Datei
   build-ubuntu-iso.sh        ISO-Build (lädt/prueft Basis-ISO, livefs-edit)
   test-ubuntu-iso.sh         QEMU-Abnahme (Live → Install → Appliance)
-  autoinstall/user-data      Subiquity-Autoinstall (en_US/us, Rest Standard)
+  test_iso_harness.py        Unit-Tests für den Harness (gemockte SSH/QEMU)
+  test_desktop_defaults.py   Unit-Test: dconf-Profil/Keyfile aus first-boot
+  autoinstall/
+    user-data                Subiquity-Autoinstall (en_US/us, Rest Standard)
+    user-data.test           Test-Seed (QEMU only: autologin test/test)
+    meta-data                 cloud-init NoCloud meta-data (instance-id)
+    99-fxroute-seed.cfg      Seed-Zeiger (seedfrom) für die Live-Session
+    first-boot.service       Oneshot-Unit fürs installierte System
+    fxroute-live.desktop     Autostart-Eintrag der Live-Session
+  livefs-actions/            livefs-edit --python-Aktionen
   scripts/
     first-boot-install-ubuntu.sh
     fxroute-live-autostart.sh
     fxroute-ubuntu-launcher.sh
+    fxroute-test-ssh.sh      QEMU-SSH-Hook (nur Test-Seed)
 ```
 
-## Phase-1-Abnahme (QEMU, UEFI, Secure Boot vorerst aus)
+## Phase-1-Abnahme (QEMU, UEFI/OVMF, Secure Boot vorerst aus)
 
-1. ISO bootet, `Try Ubuntu` → Live-Session mit FXRoute (`/api/status`).
-2. `Install FXRoute` → WLAN/Ethernet + Benutzer interaktiv, Rest automatisch.
-3. Installiertes System bootet selbstständig → GDM-Autologin → Firefox-Kiosk
-   mit FXRoute, `fxroute.service` aktiv, `/api/status` OK.
+Stand 17.09.2026, Test-ISO `dist/fxroute-ubuntu-26.04-test.iso`:
+
+* **Live-Phase bestanden:** Default-Eintrag `Try or Install Ubuntu` bootet
+  die GNOME-Live-Session; das Autostart-Skript richtet FXRoute ein und der
+  Kiosk öffnet. `/api/status` über QEMU-Portforward erreichbar (voller
+  Status-JSON, `system.version 1.0-beta8`).
+* **Install-Phase bestanden:** GRUB-Eintrag `Install FXRoute` (mit
+  `autoinstall` auf der Cmdline, per SSH verifiziert) fährt Subiquity
+  vollständig unbeaufsichtigt durch: LVM-Layout, Testbenutzer, late-commands
+  (Payload nach `/opt/fxroute-iso`, first-boot-Unit enabled). Der Reboot
+  landet direkt im installierten System (Subiquity stellt die
+  EFI-Bootreihenfolge um; es erscheint kein zweites GRUB-Menü).
+* **Appliance-Phase bestanden:** Die installierte Platte bootet ohne ISO.
+  `fxroute-first-boot.service` läuft einmalig erfolgreich und setzt
+  `install-complete`. `fxroute.service` (User-Unit) ist aktiv, HTTP
+  `/api/status` antwortet auf 127.0.0.1:8000, GDM-Autologin als
+  Installationsbenutzer aktiv, Firefox läuft im `--kiosk`-Modus.
+
+Gelernt/behoben während der QEMU-Läufe (Details siehe Git-Historie):
+
+* Stock-Desktop-Cmdline enthält kein `boot=casper` → Live-Guard prüft den
+  Casper-Mount (`/cdrom/casper`) statt des Kernel-Flags.
+* Casper stapelt Squashfs-Layer mit `.live` oben; die Platzhalter
+  `/var/lib/cloud/seed/nocloud/*` in der `.live`-Schicht sind leer und
+  überdecken Seed-Datei in tieferen Schichten. Der Seed liegt deshalb als
+  Baum auf dem ISO (`/fxroute-seed/`) und wird per cloud.cfg.d-Dropin
+  (`seedfrom: file:///cdrom/fxroute-seed/`) geladen — Kernel-Cmdline-
+  `seedfrom` überlebt Caspers Cmdline-Rewrite nicht.
+* Der Autoinstall-Reboot zeigt kein zweites GRUB (EFI-Reihenfolge wird von
+  Subiquity umgestellt); der Harness erkennt das installierte System per
+  SSH (root-Fs, Cmdline, Marker) statt per GRUB-Banner.
+* dconf-System-Overrides brauchen zwingend `/etc/dconf/profile/user` mit
+  `system-db:local`; Ubuntu legt es nicht an. uint32-Keys brauchen die
+  `idle-delay=uint32 0`-Notation (bare `0` = int32 wird ignoriert). Beides
+  unit-getestet (`test_desktop_defaults.py`).
 
 ## Offene Hardware-Gates (Phase 2, echte Hardware)
 
