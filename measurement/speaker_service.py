@@ -17,6 +17,7 @@ overlap checks as plain floats, never IR waveforms or numpy values.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import threading
 from copy import deepcopy
@@ -27,6 +28,8 @@ from measurement.speaker_align import SpeakerAlignment
 from measurement.speaker_apply import apply_and_confirm
 
 TERMINAL_STATUSES = ("committed", "trial-done", "unconfirmed", "failed", "cancelled")
+
+logger = logging.getLogger(__name__)
 
 
 class SpeakerAlignStaleError(ValueError):
@@ -114,17 +117,21 @@ class SpeakerAlignService:
                  describe: Callable[[dict], dict],
                  acquire: Callable[..., Any],
                  create_session: Callable[..., Any],
-                 freeze_live: Callable[..., dict]):
+                 freeze_live: Callable[..., dict],
+                 on_committed: Callable[[dict], Any] | None = None):
         for name, bound in (("get_state", get_state), ("describe", describe),
                             ("acquire", acquire), ("create_session", create_session),
                             ("freeze_live", freeze_live)):
             if not callable(bound):
                 raise ValueError(f"Speaker Align service requires a {name} boundary")
+        if on_committed is not None and not callable(on_committed):
+            raise ValueError("Speaker Align service requires a callable on_committed hook")
         self._get_state = get_state
         self._describe = describe
         self._acquire = acquire
         self._create_session = create_session
         self._freeze_live = freeze_live
+        self._on_committed = on_committed
         self._guard = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
@@ -365,12 +372,36 @@ class SpeakerAlignService:
                         "provenance": _jsonable(first.get("provenance") or {}),
                         "committed_revision": _jsonable(committed.get("revision")),
                         "dry_run": False})
+            await self._notify_committed(
+                output_key=context["output_key"], channels=context["channels"],
+                committed_revision=committed.get("revision"), job_id=job_id)
         except asyncio.CancelledError:
             self._finish(job_id, "cancelled", "Speaker alignment cancelled.")
             raise
         except Exception as exc:
             self._finish(job_id, "failed", f"Speaker alignment failed: {exc}",
                          error=str(exc) or type(exc).__name__)
+
+    async def _notify_committed(self, *, output_key: str, channels: int,
+                                committed_revision: Any, job_id: str) -> None:
+        """Register the committed-plan release adapter; never fail the job.
+
+        Committed jobs only: the hook renders no audio itself. Registration
+        failure skips quietly and the release keeps the legacy overview sync;
+        the persisted head still keeps the commit for the next transition.
+        """
+        if self._on_committed is None:
+            return
+        try:
+            result = self._on_committed({
+                "output_key": output_key, "channels": channels,
+                "committed_revision": committed_revision, "job_id": job_id})
+            if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                await result
+        except Exception as exc:
+            logger.warning(
+                "Speaker Align job=%s release adapter registration failed: %s",
+                job_id, exc)
 
     async def wait_for(self, job_id: str, *, timeout_seconds: float = 60.0) -> dict[str, Any]:
         """Await a terminal status; primarily a test and UI-polling helper."""

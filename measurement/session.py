@@ -153,6 +153,7 @@ class MeasurementSampleRateSession:
         self._entry_epoch = 0
         self.lock = asyncio.Lock()
         self._autosub_release_adapter: Callable[[int], Awaitable[Any]] | None = None
+        self._speaker_align_release_adapter: Callable[[int], Awaitable[Any]] | None = None
         self._playback_captured = False
         self._rate_changed = False
 
@@ -358,6 +359,21 @@ class MeasurementSampleRateSession:
         async with self.lock:
             self._autosub_release_adapter = adapter
 
+    async def register_speaker_align_release_adapter(
+        self, adapter: Callable[[int], Awaitable[Any]],
+    ) -> None:
+        """Register the committed-plan rebuild for a pending Speaker release.
+
+        The Speaker Align finalizer registers one adapter per committed job.
+        The adapter renders the current committed output plan at the restore
+        rate; the release invokes it instead of the legacy overview sync and
+        clears the slot when release completes. Re-registration overwrites.
+        """
+        if not callable(adapter):
+            raise ValueError("Speaker Align release adapter must be callable")
+        async with self.lock:
+            self._speaker_align_release_adapter = adapter
+
     async def request_open(self) -> None:
         """Record a heartbeat without changing the audio sample rate."""
         async with self.lock:
@@ -493,6 +509,19 @@ class MeasurementSampleRateSession:
                                 "Measurement release rebuilt committed output plan: %s",
                                 rendered,
                             )
+                    speaker_adapter = self._speaker_align_release_adapter
+                    if speaker_adapter is not None and playback_target_rate:
+                        try:
+                            rendered = await speaker_adapter(playback_target_rate)
+                        except Exception as exc:
+                            logger.warning(
+                                "Measurement release speaker committed-plan rebuild failed: %s", exc
+                            )
+                        else:
+                            logger.info(
+                                "Measurement release rebuilt speaker committed output plan: %s",
+                                rendered,
+                            )
             except Exception as exc:
                 logger.warning("Measurement restore through coordinator failed; retaining safe state: %s", exc)
             finally:
@@ -560,13 +589,20 @@ class MeasurementSampleRateSession:
                 measurement_only_restore = not playback_target_rate or playback_source not in {"local", "radio", "spotify", "tidal", "qobuz"}
                 if rate_ready and not coordinator_attempted and measurement_only_restore:
                     release_adapter = self._autosub_release_adapter
+                    speaker_adapter = self._speaker_align_release_adapter
                     if release_adapter is not None:
                         rendered = await release_adapter(runtime_restore_rate)
                         logger.info(
                             "Measurement release rebuilt committed output plan: %s",
                             rendered,
                         )
-                    else:
+                    if speaker_adapter is not None:
+                        rendered = await speaker_adapter(runtime_restore_rate)
+                        logger.info(
+                            "Measurement release rebuilt speaker committed output plan: %s",
+                            rendered,
+                        )
+                    if release_adapter is None and speaker_adapter is None:
                         await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
                 else:
                     logger.warning(
@@ -583,6 +619,7 @@ class MeasurementSampleRateSession:
             self.active_auto_sub_job_id = None
             self.active_spl_job_ids.clear()
             self._autosub_release_adapter = None
+            self._speaker_align_release_adapter = None
             self.close_requested = False
             self.deferred_release_pending = False
             self._playback_captured = False

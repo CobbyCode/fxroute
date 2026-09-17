@@ -5,11 +5,10 @@ Thin transport only: request validation stays in
 ``measurement.speaker_service`` (one validation owner — the handlers pass
 fields through and map the service's typed outcomes to status codes), and
 production boundaries are composed by ``build_speaker_align_service`` from
-injected parts so this module never imports ``main``. Release-adapter
-registration on the measurement session is a later slice: until then a
-measurement-session release with a rate change rebuilds from the legacy
-overview, while the persisted head keeps the commit for the next
-transition to rebuild.
+injected parts so this module never imports ``main``. Committed jobs
+register a release adapter on the measurement session so a later session
+release rebuilds the committed plan at the restore rate; without release
+wiring the persisted head still keeps the commit for the next transition.
 """
 
 from __future__ import annotations
@@ -139,6 +138,8 @@ def build_speaker_align_service(
     describe_device: Callable[[dict], dict],
     get_measurement_rate: Callable[[], int],
     capture_runner: Callable[..., Awaitable[dict]] | None = None,
+    get_measurement_session: Callable[[], Any] | None = None,
+    build_release_adapter: Callable[..., Any] | None = None,
 ) -> SpeakerAlignService:
     """Compose a service from application parts (no ``main`` import).
 
@@ -150,6 +151,12 @@ def build_speaker_align_service(
     accessor pinned per session with ownership checks. A ``None``
     measurement store is only accepted together with a custom
     ``capture_runner`` (test seam); the default runner requires the store.
+
+    Release wiring is optional and paired: ``get_measurement_session`` and
+    ``build_release_adapter`` must be given together. The committed hook
+    then registers one release adapter per committed job so a later
+    measurement-session release rebuilds the committed plan. Without both,
+    the legacy release path stays byte-identical.
     """
     if output_service is None or dsp_manager is None:
         raise ValueError("Speaker Align composition requires output and DSP services")
@@ -161,6 +168,12 @@ def build_speaker_align_service(
                         ("get_measurement_rate", get_measurement_rate)):
         if not callable(bound):
             raise ValueError(f"Speaker Align composition requires a callable {name}")
+    if (get_measurement_session is None) != (build_release_adapter is None):
+        raise ValueError("Speaker Align release wiring requires both session and factory")
+    if get_measurement_session is not None and not callable(get_measurement_session):
+        raise ValueError("Speaker Align composition requires a callable get_measurement_session")
+    if build_release_adapter is not None and not callable(build_release_adapter):
+        raise ValueError("Speaker Align composition requires a callable build_release_adapter")
 
     def get_state() -> dict:
         return output_service.load()
@@ -248,9 +261,20 @@ def build_speaker_align_service(
             channels=channels, sample_rate_hz=sample_rate_hz, build_target=build_target,
             guarded_stage=guarded_stage, readback=readback)
 
+    on_committed = None
+    if get_measurement_session is not None and build_release_adapter is not None:
+        async def on_committed(context: dict) -> None:
+            session = get_measurement_session()
+            if session is None:
+                return
+            adapter = build_release_adapter(
+                output_key=context["output_key"], channels=context["channels"])
+            await session.register_speaker_align_release_adapter(adapter)
+
     return SpeakerAlignService(
         get_state=get_state, describe=describe, acquire=acquire,
-        create_session=create_session, freeze_live=freeze_live)
+        create_session=create_session, freeze_live=freeze_live,
+        on_committed=on_committed)
 
 
 __all__ = [

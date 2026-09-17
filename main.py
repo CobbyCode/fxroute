@@ -4243,6 +4243,24 @@ def _describe_speaker_align_device(state: dict) -> dict:
             "hardware_ports": ports}
 
 
+def _create_speaker_align_release_adapter(*, service, output_key: str, channels: int):
+    """Compose a release adapter for one committed Speaker Align device context.
+
+    The adapter renders the current committed output plan at the restore
+    rate when the measurement session releases. Ports are discovery data
+    resolved at composition; the plan itself always renders live from the
+    current head, so a deferred release never serves stale content.
+    """
+    from measurement.speaker_commit import create_speaker_release_adapter
+    manager = _require_dsp_manager()
+    overview = get_audio_output_overview()
+    ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
+    return create_speaker_release_adapter(
+        service=service, dsp_manager=manager, hardware_ports=ports,
+        get_native_runtime=lambda: runtime.dsp_runtime,
+        output_key=output_key, channels=channels)
+
+
 def get_speaker_align_service():
     """Return the Speaker Align application service (late-bound singleton).
 
@@ -4258,7 +4276,10 @@ def get_speaker_align_service():
             dsp_manager=_require_dsp_manager(),
             get_native_runtime=lambda: runtime.dsp_runtime,
             describe_device=_describe_speaker_align_device,
-            get_measurement_rate=_live_measurement_sample_rate)
+            get_measurement_rate=_live_measurement_sample_rate,
+            get_measurement_session=lambda: measurement_sr_session,
+            build_release_adapter=lambda *, output_key, channels: _create_speaker_align_release_adapter(
+                service=get_output_service(), output_key=output_key, channels=channels))
     return _speaker_align_service_instance
 
 
