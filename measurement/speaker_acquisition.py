@@ -34,21 +34,32 @@ def _session_identity(value: object, label: str) -> str:
     return value
 
 
-def _job_input_key(job: dict[str, Any]) -> tuple:
+def _job_input_key(job: dict[str, Any], role: str) -> tuple:
     """Identify the capture input chain a job was started with.
 
     Compared before each way's sweep so a changed microphone or reference
-    input fails before spending another capture, not after it.
+    input fails before spending another capture, not after it. Fail closed:
+    an incomplete identity never compares equal to anything, not even itself.
     """
     input_info = job.get("input") if isinstance(job.get("input"), dict) else {}
     channels = job.get("input_channels") if isinstance(job.get("input_channels"), dict) else {}
-    return (
+    key = (
         input_info.get("node_name"),
         input_info.get("node_serial"),
         channels.get("mic"),
         channels.get("electrical_reference"),
         input_info.get("measurement_sample_rate") or input_info.get("sample_rate"),
     )
+    # A missing electrical reference is legitimate (acoustic-only path) and is
+    # rejected later at the reference gate with its accurate status; every
+    # other part of the identity is required for attestation.
+    required = (key[0], key[1], key[2], key[4])
+    if any(part is None or part == "" for part in required):
+        raise ValueError(
+            f"Speaker Align capture input is incomplete for {role}; "
+            "microphone and reference input identity are required for every way"
+        )
+    return key
 
 
 def _require_stable_reference(analysis: dict[str, Any], role: str) -> None:
@@ -122,22 +133,26 @@ async def acquire_speaker_captures(
         # Fail fast before the worker's first sweep: the frozen target and the
         # resolved input chain are both known at registration time. Draining
         # first cancels the just-started job before its worker runs, so no
-        # capture is spent and no worker task leaks past this call.
-        key = _job_input_key(job)
-        if expected_key is None:
-            expected_key = key
-        elif key != expected_key:
+        # capture is spent and no worker task leaks past this call. Any
+        # registration-time throw drains; the checks below are synchronous, so
+        # no caller cancellation can interleave here.
+        try:
+            key = _job_input_key(job, role)
+            if expected_key is None:
+                expected_key = key
+            elif key != expected_key:
+                raise RuntimeError(
+                    f"Speaker Align microphone input changed before capturing {role}; "
+                    "keep the same microphone and reference input channels for every way"
+                )
+            if job.get("measurement_target") != request["measurement_target"]:
+                raise ValueError(
+                    f"Speaker Align target for {role} is stale; revision, device and "
+                    "processing must match the frozen requests"
+                )
+        except BaseException:
             await store.drain_job(job_id)
-            raise RuntimeError(
-                f"Speaker Align microphone input changed before capturing {role}; "
-                "keep the same microphone and reference input channels for every way"
-            )
-        if job.get("measurement_target") != request["measurement_target"]:
-            await store.drain_job(job_id)
-            raise ValueError(
-                f"Speaker Align target for {role} is stale; revision, device and "
-                "processing must match the frozen requests"
-            )
+            raise
         # Same-package internal boundary: the store returns no public handle
         # for awaiting a job without cancelling it (drain_job cancels live
         # jobs), so await the runner task directly, then drain for cleanup.
@@ -147,6 +162,13 @@ async def acquire_speaker_captures(
         except asyncio.CancelledError:
             await store.drain_job(job_id)
             raise
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            # Our own cancellation was absorbed by cancelling the runner task,
+            # which swallows it into a cancelled job status: restore the
+            # caller's CancelledError contract instead of reporting failure.
+            await store.drain_job(job_id)
+            raise asyncio.CancelledError("Speaker Align acquisition was cancelled")
         await store.drain_job(job_id)
         finished = store.get_job(job_id)
         if finished.get("status") != "completed":
@@ -170,8 +192,21 @@ async def acquire_speaker_captures(
             "reference_node": capture_info.get("reference_node"),
             "sample_rate_hz": analysis.get("sample_rate"),
         }
+        # Fail closed before comparing: two ways both missing a field must
+        # never attest sameness of nothing.
+        missing = [name for name, value in observed.items() if value is None]
+        if missing:
+            raise RuntimeError(
+                f"Speaker Align capture for {role} is missing {', '.join(missing)}; "
+                "refusing to attest an incomplete input chain"
+            )
         if provenance is None:
-            provenance = {**observed, "job_ids": [job_id]}
+            provenance = {
+                **observed,
+                "reference_id": reference_id,
+                "microphone_position_id": microphone_position_id,
+                "job_ids": [job_id],
+            }
         else:
             differing = [name for name in observed if observed[name] != provenance[name]]
             if differing:

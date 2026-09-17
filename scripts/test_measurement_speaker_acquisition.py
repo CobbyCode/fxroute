@@ -282,6 +282,103 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
             await self.acquire()
         self.assertEqual(self.captures_started, 1)
 
+    async def test_provenance_carries_session_binding(self):
+        result = await self.acquire()
+        self.assertEqual(result["provenance"]["reference_id"], REFERENCE_ID)
+        self.assertEqual(result["provenance"]["microphone_position_id"], POSITION_ID)
+
+    async def test_incomplete_capture_input_fails_closed_and_drained(self):
+        original = self.store.start_measurement
+
+        async def strip_input(**kwargs):
+            job = await original(**kwargs)
+            job.pop("input", None)
+            job.pop("input_channels", None)
+            return job
+
+        self.store.start_measurement = strip_input
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            await self.acquire()
+        self.assertEqual(self.captures_started, 0)
+        self.assertEqual(len(self.store._jobs), 1)
+        job_id = next(iter(self.store._jobs))
+        self.assertEqual(self.store.get_job(job_id)["status"], "cancelled")
+        self.assertTrue(self.store._job_tasks[job_id].done())
+
+    async def test_tolerated_reference_is_rejected(self):
+        self.after_attempt = lambda analysis: analysis["clock"].update(end_score=0.8)
+        self.store._capture_policy._should_keep_electrical_reference = lambda *args: True
+        with self.assertRaisesRegex(RuntimeError, "electrical reference"):
+            await self.acquire()
+        self.assertEqual(self.captures_started, 1)
+        self.assertEqual(len(self.store._jobs), 1)
+
+    async def test_acoustic_only_capture_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "electrical reference"):
+            await self.acquire(reference_input_channel="1")
+        self.assertEqual(self.captures_started, 1)
+        self.assertEqual(len(self.store._jobs), 1)
+
+    async def test_changed_observed_reference_between_ways_fails(self):
+        calls = {"n": 0}
+        base_execute = self.store._host_capture_runner.execute
+
+        def mutate(**kwargs):
+            calls["n"] += 1
+            analysis, capture, playback = base_execute(**kwargs)
+            if calls["n"] == 2:
+                capture = dict(capture)
+                capture["reference_node"] = "other-monitor"
+            return analysis, capture, playback
+
+        self.store._host_capture_runner.execute = mutate
+        with self.assertRaisesRegex(RuntimeError, "reference_node"):
+            await self.acquire()
+        self.assertEqual(self.captures_started, 2)
+        self.assertEqual(len(self.store._jobs), 2)
+
+    async def test_outer_cancellation_drains_in_flight_way(self):
+        entered = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+
+        def pause_after_analysis(analysis):
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(10):
+                raise RuntimeError("test worker was not released")
+
+        self.after_attempt = pause_after_analysis
+        worker = asyncio.create_task(self.acquire())
+        try:
+            async with asyncio.timeout(10):
+                await entered.wait()
+            worker.cancel()
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await worker
+        finally:
+            release.set()
+            await asyncio.gather(worker, return_exceptions=True)
+        self.assertEqual(self.captures_started, 1)
+        self.assertEqual(len(self.store._jobs), 1)
+        job_id = next(iter(self.store._jobs))
+        self.assertTrue(self.store._job_tasks[job_id].done())
+
+    async def test_missing_observed_field_fails_closed(self):
+        base_execute = self.store._host_capture_runner.execute
+
+        def drop(**kwargs):
+            analysis, capture, playback = base_execute(**kwargs)
+            capture = dict(capture)
+            capture.pop("reference_node", None)
+            return analysis, capture, playback
+
+        self.store._host_capture_runner.execute = drop
+        with self.assertRaisesRegex(RuntimeError, "missing reference_node"):
+            await self.acquire()
+        self.assertEqual(self.captures_started, 1)
+        self.assertEqual(len(self.store._jobs), 1)
+
     async def test_mismatched_session_identities_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "reference_id"):
             await self.acquire(reference_id="other:input")
