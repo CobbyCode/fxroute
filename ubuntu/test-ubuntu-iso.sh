@@ -3,7 +3,8 @@
 # Ablauf: Live-Boot (Try -> FXRoute per HTTP) -> Neuinstallation per
 # "Install FXRoute" mit Test-Seed -> Appliance-Boot (Autologin/Kiosk/FXRoute).
 #
-# Aufruf: ubuntu/test-ubuntu-iso.sh [live|install|all] [ISO]
+# Usage: ubuntu/test-ubuntu-iso.sh [live|install|appliance|all] [ISO]
+# appliance reuses install.qcow2 and ovmf-vars.fd; it does not need an ISO.
 # Benoetigt: qemu-system-x86_64 (KVM), OVMF, ovmf-vars-Kopie, curl, ssh.
 # Like the Leap tester, this script is calibrated on real runs; timings below
 # are start values and get adjusted once the first manual boot is measured.
@@ -24,12 +25,7 @@ OVMF_CODE="${FXROUTE_UBUNTU_OVMF_CODE:-/usr/share/qemu/ovmf-x86_64-4m-code.bin}"
 die() { printf '[ubuntu-test][error] %s\n' "$*" >&2; exit 1; }
 log() { printf '[ubuntu-test] %s\n' "$*"; }
 
-[[ -f "$ISO" ]] || die "ISO not found: $ISO (build with ubuntu/build-ubuntu-iso.sh first)"
-[[ -f "$OVMF_CODE" ]] || die "OVMF code not found: $OVMF_CODE"
-command -v qemu-system-x86_64 >/dev/null 2>&1 || die "qemu-system-x86_64 is required"
-
-mkdir -p "$TEST_ROOT"
-
+# Preflight runs only from main, so helpers can be sourced safely.
 wait_for_http() {
   local url="$1" timeout_s="$2" i=0
   while (( i < timeout_s )); do
@@ -109,7 +105,10 @@ boot_disk() {
 }
 
 ssh_run() {
-  ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  SSH_ASKPASS="$TEST_ASKPASS" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 \
+  FXROUTE_ASKPASS_PASSWORD="$TEST_PASSWORD" setsid -w ssh \
+    -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+    -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -p "$SSH_PORT" "test@127.0.0.1" "$@"
 }
 
@@ -117,7 +116,7 @@ TEST_ASKPASS="$ROOT_DIR/ubuntu/test-askpass.sh"
 
 live_ssh_run() {
   SSH_ASKPASS="$TEST_ASKPASS" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 \
-  FXROUTE_ASKPASS_PASSWORD="$TEST_PASSWORD" setsid ssh \
+  FXROUTE_ASKPASS_PASSWORD="$TEST_PASSWORD" setsid -w ssh \
     -o PreferredAuthentications=password -o PubkeyAuthentication=no \
     -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -p "$SSH_PORT" "ubuntu@127.0.0.1" "$@"
@@ -133,6 +132,98 @@ wait_for_live_ssh() {
     i=$(( i + 10 ))
   done
   return 1
+}
+
+wait_for_check() {
+  local timeout_s="$1" elapsed=0
+  shift
+  while (( elapsed < timeout_s )); do
+    if "$@" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 10
+    elapsed=$(( elapsed + 10 ))
+  done
+  # Show the last failure for diagnosis.
+  "$@"
+}
+
+check_installed_os() {
+  ssh_run '
+    set -eu
+    root_type=$(findmnt -n -o FSTYPE /)
+    root_source=$(findmnt -n -o SOURCE /)
+    test -n "$root_type"
+    test "$root_type" != overlay
+    case "$root_source" in /dev/*) ;; *) exit 1 ;; esac
+    cmdline=$(cat /proc/cmdline)
+    case " $cmdline " in *" boot=casper "*|*" autoinstall "*|*" autoinstall="*) exit 1 ;; esac
+    test -f /var/lib/fxroute-iso/install-complete
+  '
+}
+
+check_appliance() {
+  check_installed_os || return 1
+  ssh_run '
+    set -eu
+    export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+    systemctl --user is-active --quiet fxroute.service
+    systemctl --user is-active --quiet pipewire.service
+    systemctl --user is-active --quiet wireplumber.service
+    systemctl is-active --quiet display-manager.service
+    session=$(loginctl show-seat seat0 -p ActiveSession --value)
+    test -n "$session"
+    test "$(loginctl show-session "$session" -p Name --value)" = test
+    test "$(loginctl show-session "$session" -p Active --value)" = yes
+    test "$(loginctl show-session "$session" -p Service --value)" = gdm-autologin
+    session_type=$(loginctl show-session "$session" -p Type --value)
+    case "$session_type" in wayland|x11) ;; *) exit 1 ;; esac
+    pgrep -u "$(id -u)" -f "(^|/)[f]irefox[[:space:]].*--kiosk([[:space:]]|$)" >/dev/null
+    test "$(gsettings get org.gnome.desktop.session idle-delay)" = "uint32 0"
+    test "$(gsettings get org.gnome.desktop.screensaver lock-enabled)" = false
+  '
+}
+
+shutdown_guest() {
+  local monitor="$1" pidfile="$2" pid elapsed=0
+  pid="$(cat "$pidfile")"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || die "Invalid PID file: $pidfile"
+  qemu_monitor "$monitor" system_powerdown
+  while kill -0 "$pid" 2>/dev/null; do
+    (( elapsed < 180 )) || die "Guest did not shut down cleanly; left running ($pidfile)"
+    sleep 5
+    elapsed=$(( elapsed + 5 ))
+  done
+}
+
+ensure_guests_stopped() {
+  local pidfile pid
+  for pidfile in "$TEST_ROOT/live.pid" "$TEST_ROOT/install.pid" "$TEST_ROOT/appliance.pid"; do
+    [[ -f "$pidfile" ]] || continue
+    pid="$(cat "$pidfile")"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || die "Invalid PID file: $pidfile"
+    if kill -0 "$pid" 2>/dev/null; then
+      die "Guest still running ($pidfile); shut it down before testing"
+    fi
+  done
+}
+
+phase_appliance() {
+  local disk="$TEST_ROOT/install.qcow2" monitor="$TEST_ROOT/appliance-monitor.sock" pidfile="$TEST_ROOT/appliance.pid"
+  [[ -f "$disk" ]] || die "Installed disk not found: $disk"
+  [[ -f "$TEST_ROOT/ovmf-vars.fd" ]] || die "Installed OVMF vars not found"
+  ensure_guests_stopped
+  log "booting installed disk without ISO"
+  boot_disk "$disk" "$monitor" "$pidfile"
+  log "waiting for appliance FXRoute on :$HTTP_PORT"
+  wait_for_http "http://127.0.0.1:$HTTP_PORT/api/status" 1800 \
+    || die "appliance FXRoute did not come up; see $TEST_ROOT/serial-appliance.log"
+  log "waiting for installed OS, services, seat0 autologin, kiosk and desktop settings"
+  wait_for_check 600 check_appliance \
+    || die "appliance checks failed; guest left running for diagnosis"
+  log "appliance checks passed"
+  shutdown_guest "$monitor" "$pidfile"
 }
 
 phase_live() {
@@ -174,40 +265,34 @@ phase_install() {
   else
     die "installer SSH did not come up; see $TEST_ROOT/serial.log"
   fi
-  # Autoinstall ends with a reboot; with the ISO still attached GRUB would
-  # come up again, so kill the guest as soon as the second GRUB shows.
-  log "waiting for autoinstall reboot (60 min budget)"
-  local i=0 rebooted=0
-  while (( i < 3600 )); do
-    if [[ -f "$TEST_ROOT/serial.log" ]] \
-      && (( $(tr -d '\000' < "$TEST_ROOT/serial.log" 2>/dev/null | grep -c 'GNU GRUB' || true) >= 2 )); then
-      rebooted=1
-      break
-    fi
-    sleep 15
-    i=$(( i + 15 ))
-  done
-  kill "$(cat "$pidfile")" 2>/dev/null || true
-  [[ "$rebooted" -eq 1 ]] || die "autoinstall reboot not seen; see $TEST_ROOT/serial.log"
-  log "installer rebooted; booting installed disk without ISO"
-  local amonitor="$TEST_ROOT/appliance-monitor.sock" apidfile="$TEST_ROOT/appliance.pid"
-  boot_disk "$disk" "$amonitor" "$apidfile"
-  log "waiting for appliance FXRoute on :$HTTP_PORT"
-  wait_for_http "http://127.0.0.1:$HTTP_PORT/api/status" 1800 \
-    || die "appliance FXRoute did not come up"
-  log "checking install-complete marker via SSH"
-  ssh_run "test -f /var/lib/fxroute-iso/install-complete" \
-    || die "install-complete marker missing"
-  ssh_run "systemctl --user is-active fxroute.service" \
-    || die "fxroute user service not active"
-  log "appliance checks passed"
-  kill "$(cat "$apidfile")" 2>/dev/null || true
+  # EFI may boot the installed LVM root directly even with the ISO attached.
+  log "waiting for installed OS and install-complete marker (60 min budget)"
+  wait_for_check 3600 check_installed_os \
+    || die "installed OS did not become ready; guest left running; see $TEST_ROOT/serial.log"
+  shutdown_guest "$monitor" "$pidfile"
+  phase_appliance
 }
 
-case "$MODE" in
-  live) phase_live ;;
-  install) phase_install ;;
-  all) phase_live; phase_install ;;
-  *) die "Unknown mode: $MODE (live|install|all)" ;;
-esac
-log "done: $MODE"
+main() {
+  case "$MODE" in
+    live|install|all)
+      [[ -f "$ISO" ]] || die "ISO not found: $ISO (build with ubuntu/build-ubuntu-iso.sh first)" ;;
+    appliance) ;;
+    *) die "Unknown mode: $MODE (live|install|appliance|all)" ;;
+  esac
+  [[ -f "$OVMF_CODE" ]] || die "OVMF code not found: $OVMF_CODE"
+  command -v qemu-system-x86_64 >/dev/null 2>&1 || die "qemu-system-x86_64 is required"
+  mkdir -p "$TEST_ROOT"
+  ensure_guests_stopped
+  case "$MODE" in
+    live) phase_live ;;
+    install) phase_install ;;
+    appliance) phase_appliance ;;
+    all) phase_live; phase_install ;;
+  esac
+  log "done: $MODE"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main
+fi
