@@ -829,6 +829,8 @@ def _make_measurement_services() -> MeasurementServices:
         audio_output_overview_with_effective_rate=lambda *a, **k: samplerate.audio_output_overview_with_effective_rate(*a, **k),
         spotify_prearm_sample_rate_hz=SPOTIFY_PREARM_SAMPLE_RATE_HZ,
         pipewire_handoff_poll_interval_ms=media_readiness.PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
+        build_autosub_release_adapter=lambda *, output_key, channels: _create_autosub_release_adapter(
+            service=get_output_service(), output_key=output_key, channels=channels),
     )
 
 
@@ -4143,6 +4145,26 @@ def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
         [dict(entry) for entry in layout], preset_name=plan["global"]["preset"],
         sample_rate_hz=rate, extras_override=plan["global"]["extras"])
     return PlannedSyncTarget(config=config, text=text)
+
+
+def _create_autosub_release_adapter(*, service, output_key: str, channels: int):
+    """Compose a release adapter for one committed AutoSub device context.
+
+    The adapter renders the current committed output plan at the restore
+    rate when the measurement session releases.  Ports are discovery data
+    resolved at composition; the plan itself always renders live from the
+    current head, so a deferred release never serves stale content.  The
+    device context (output key/channels/ports) stays pinned: only the
+    committing device's release may consume the adapter.
+    """
+    from measurement.autosub.release import create_release_adapter
+    manager = _require_dsp_manager()
+    overview = get_audio_output_overview()
+    ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
+    return create_release_adapter(
+        service=service, dsp_manager=manager, hardware_ports=ports,
+        get_native_runtime=lambda: runtime.dsp_runtime,
+        output_key=output_key, channels=channels)
 
 
 def _create_auto_sub_candidate_session(*, service, start_state: dict, output_key: str,

@@ -100,6 +100,13 @@ class MeasurementServices:
     audio_output_overview_with_effective_rate: Callable[..., Any]
     spotify_prearm_sample_rate_hz: Any
     pipewire_handoff_poll_interval_ms: Any
+    # Optional factory for the AutoSub committed-plan release adapter.  When
+    # composed (main.py), the AutoSub finalizer builds one adapter per
+    # committed service job and registers it on the session before
+    # unregistering; the release then rebuilds the committed output plan at
+    # the restore rate instead of re-syncing the stale legacy overview.
+    # Uncomposed (None) keeps the legacy release path byte-identical.
+    build_autosub_release_adapter: Callable[..., Any] | None = None
 
 
 _services: MeasurementServices | None = None
@@ -145,6 +152,7 @@ class MeasurementSampleRateSession:
         self.generation = 0
         self._entry_epoch = 0
         self.lock = asyncio.Lock()
+        self._autosub_release_adapter: Callable[[int], Awaitable[Any]] | None = None
         self._playback_captured = False
         self._rate_changed = False
 
@@ -333,6 +341,23 @@ class MeasurementSampleRateSession:
                 self.active_auto_sub_job_id = None
             await self._check_release()
 
+    async def register_autosub_release_adapter(
+        self, adapter: Callable[[int], Awaitable[Any]],
+    ) -> None:
+        """Register the committed-plan rebuild for the pending AutoSub release.
+
+        The AutoSub finalizer registers one adapter per committed service job
+        before unregistering.  The adapter renders the current committed
+        output plan at the restore rate; the release invokes it instead of
+        the legacy overview sync and clears the slot when release completes.
+        At most one AutoSub job can hold the session, so a single slot
+        suffices; re-registration overwrites.
+        """
+        if not callable(adapter):
+            raise ValueError("AutoSub release adapter must be callable")
+        async with self.lock:
+            self._autosub_release_adapter = adapter
+
     async def request_open(self) -> None:
         """Record a heartbeat without changing the audio sample rate."""
         async with self.lock:
@@ -455,6 +480,19 @@ class MeasurementSampleRateSession:
                         playback_source,
                         playback_target_rate,
                     )
+                    release_adapter = self._autosub_release_adapter
+                    if release_adapter is not None and playback_target_rate:
+                        try:
+                            rendered = await release_adapter(playback_target_rate)
+                        except Exception as exc:
+                            logger.warning(
+                                "Measurement release committed-plan rebuild failed: %s", exc
+                            )
+                        else:
+                            logger.info(
+                                "Measurement release rebuilt committed output plan: %s",
+                                rendered,
+                            )
             except Exception as exc:
                 logger.warning("Measurement restore through coordinator failed; retaining safe state: %s", exc)
             finally:
@@ -521,7 +559,15 @@ class MeasurementSampleRateSession:
 
                 measurement_only_restore = not playback_target_rate or playback_source not in {"local", "radio", "spotify", "tidal", "qobuz"}
                 if rate_ready and not coordinator_attempted and measurement_only_restore:
-                    await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
+                    release_adapter = self._autosub_release_adapter
+                    if release_adapter is not None:
+                        rendered = await release_adapter(runtime_restore_rate)
+                        logger.info(
+                            "Measurement release rebuilt committed output plan: %s",
+                            rendered,
+                        )
+                    else:
+                        await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
                 else:
                     logger.warning(
                         "Measurement sample-rate session runtime restore deferred until playback sink aligns: "
@@ -536,6 +582,7 @@ class MeasurementSampleRateSession:
             self.active_manual_job_ids.clear()
             self.active_auto_sub_job_id = None
             self.active_spl_job_ids.clear()
+            self._autosub_release_adapter = None
             self.close_requested = False
             self.deferred_release_pending = False
             self._playback_captured = False

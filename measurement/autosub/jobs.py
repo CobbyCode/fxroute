@@ -1016,6 +1016,47 @@ async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> No
         raise asyncio.CancelledError
 
 
+async def _register_autosub_release_adapter(job: dict[str, Any]) -> None:
+    """Register the committed-plan release adapter before session unregister.
+
+    Committed service jobs only: the adapter renders the current committed
+    output plan at the restore rate so the session release rebuilds it
+    instead of the stale legacy overview.  Anything unconfigured (no
+    services, no factory, no session) or uncommitted skips quietly and the
+    release keeps the legacy path; registration failure never fails the job
+    or blocks the unregister (see the cleanup contract below).
+    """
+    context = job.get("output_state_context") or {}
+    if "committed_revision" not in context:
+        return
+    try:
+        from measurement.session import _measurement_services
+        services = _measurement_services()
+    except RuntimeError:
+        logger.warning(
+            "AUTOSUB job=%s release adapter skipped: measurement services are not configured",
+            job.get("id") or "",
+        )
+        return
+    if services.build_autosub_release_adapter is None:
+        logger.warning(
+            "AUTOSUB job=%s release adapter skipped: factory is not composed; "
+            "release keeps the legacy overview sync",
+            job.get("id") or "",
+        )
+        return
+    session = _measurement_session()
+    if session is None:
+        logger.warning(
+            "AUTOSUB job=%s release adapter skipped: measurement session is unavailable",
+            job.get("id") or "",
+        )
+        return
+    adapter = services.build_autosub_release_adapter(
+        output_key=context["output_key"], channels=context["channels"])
+    await session.register_autosub_release_adapter(adapter)
+
+
 async def _finish_auto_sub_worker_cleanup(job: dict[str, Any] | None, job_id: str) -> None:
     """Release the shared AutoSub lock, finalize the job and schedule its cleanup task.
 
@@ -1031,6 +1072,13 @@ async def _finish_auto_sub_worker_cleanup(job: dict[str, Any] | None, job_id: st
         if job is not None and "output_state_context" in job:
             await _restore_original_config_or_fail_job(
                 job, {}, "Auto Sub Optimize failed to restore its output-state owner")
+        if job is not None:
+            try:
+                await _register_autosub_release_adapter(job)
+            except Exception:
+                logger.exception(
+                    "AUTOSUB job=%s release adapter registration failed", job_id
+                )
         if measurement_sr_session is not None:
             try:
                 await measurement_sr_session.unregister_auto_sub(job_id)
