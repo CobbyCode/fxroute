@@ -442,6 +442,7 @@ class DSPRuntime:
         self._control_path: Path | None = None
         self._control_client_path: Path | None = None
         self._exact_sub_mute = False
+        self._exact_sub_mute_mask = 0
         self._effect_bypass = False
         self._output_gain_db = 0.0
         self._output_mask = 0
@@ -555,12 +556,29 @@ class DSPRuntime:
                 "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
                 "stderr_tail": self.stderr_tail()[:2048]}
 
-    async def set_exact_sub_mute(self, enabled: bool) -> bool:
-        previous = self._exact_sub_mute
-        if len(self._config.hardware_ports if self._config else ()) < 4:
+    async def set_exact_sub_mute(self, enabled: bool, *, mask: int | None = None) -> bool:
+        """Set exact sub mute, returning its previously acknowledged enabled state.
+
+        Omitted masks retain legacy outputs 3/4. Explicit masks address engine
+        outputs in plan order. Restore with the returned boolean and the SAME
+        mask; changing an active mask is rejected because a boolean cannot
+        represent the old mask. Independent output-mask bits remain muted.
+        """
+        if mask is None and len(self._config.hardware_ports if self._config else ()) < 4:
             raise RuntimeError("Sub outputs are unavailable")
-        await self._control(f"mute 12 {1 if enabled else 0}", reply=True)
+        bits = self._validate_output_mask(12 if mask is None else mask)
+        layout = tuple(getattr(self._config, "layout", ()) or ())
+        output_count = len(layout) if layout else min(4, len(self._config.hardware_ports if self._config else ()))
+        if bits >= (1 << output_count):
+            raise ValueError("Output mute mask addresses an output the engine does not expose")
+        previous = self._exact_sub_mute
+        if previous and bits != self._exact_sub_mute_mask:
+            raise RuntimeError("Cannot change an active exact sub mute mask; restore it first")
+        control_bits = bits if enabled else bits & ~self._output_mask
+        if control_bits:
+            await self._control(f"mute {control_bits} {1 if enabled else 0}", reply=True)
         self._exact_sub_mute = bool(enabled)
+        self._exact_sub_mute_mask = bits if enabled else 0
         return previous
 
     def _validate_output_mask(self, mask: object) -> int:
@@ -591,9 +609,11 @@ class DSPRuntime:
         return previous
 
     async def clear_output_mask(self, mask: int) -> None:
-        """Clear exactly the masked engine outputs again."""
+        """Release output-mask bits without clearing an active exact sub mute."""
         bits = self._validate_output_mask(mask)
-        await self._control(f"mute {bits} 0", reply=True)
+        control_bits = bits & ~self._exact_sub_mute_mask
+        if control_bits:
+            await self._control(f"mute {control_bits} 0", reply=True)
         self._output_mask &= ~bits
 
     async def reset_output_peaks(self) -> None:
@@ -1091,6 +1111,7 @@ class DSPRuntime:
                 pass
         self._control_path = self._control_client_path = None
         self._exact_sub_mute = False
+        self._exact_sub_mute_mask = 0
         self._effect_bypass = False
         self._output_gain_db = 0.0
         self._output_mask = 0

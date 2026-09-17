@@ -26,6 +26,7 @@ __all__ = [
     "main_roles_for_side",
     "optimizer_path",
     "require_autosub_topology",
+    "sub_mute_indices",
     "sub_mute_mask",
     "sub_output_indices",
     "sub_roles_for_side",
@@ -53,6 +54,17 @@ def require_autosub_topology(topology: OutputTopology) -> OutputTopology:
 def sub_output_indices(topology: OutputTopology) -> tuple[int, ...]:
     """Engine output indices (0-based, plan order) of the active sub roles."""
     return tuple(index for index, role in enumerate(topology.roles) if role in topology.sub_roles)
+
+
+def sub_mute_indices(mask: int) -> tuple[int, ...]:
+    """Engine output indices (0-based) selected by a mute mask.
+
+    Inverse of ``sum(1 << i for i in indices)``; used to fold a role-derived
+    exact mute into stage peak predictions keyed by ``output_n``.
+    """
+    if type(mask) is not int or mask <= 0 or mask >= (1 << 32):
+        raise ValueError("Output mute mask must be a non-zero 32-bit integer")
+    return tuple(index for index in range(mask.bit_length()) if mask & (1 << index))
 
 
 def sub_mute_mask(topology: OutputTopology) -> int:

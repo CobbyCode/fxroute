@@ -344,6 +344,32 @@ async def _predict_auto_sub_stage_peaks(
         sink_gain=sink_gain,
     )
 
+def _auto_sub_zero_sub_peaks(
+    prediction: dict[str, Any], sub_indices: tuple[int, ...],
+) -> dict[str, Any]:
+    """Fold a Main-only capture's muted subs into the stage peak prediction.
+
+    Returns a deep copy with every sub engine output's predicted peak zeroed,
+    exactly as the exact sub mute will silence them during the sweep, then
+    recomputes the maximum and the safety verdict. The input prediction is
+    not mutated. Missing outputs fail closed: the current predictor only
+    models the legacy four outputs; zeroing cannot extend that model.
+    """
+    for index in sub_indices:
+        if type(index) is not int or index < 0:
+            raise ValueError("Sub output indices must be non-negative integers")
+        key = f"output_{index + 1}"
+        if key not in prediction["linear"] or key not in prediction["dbfs"]:
+            raise ValueError(f"Exact sub mute output {key} is absent from the peak prediction")
+    result = copy.deepcopy(prediction)
+    for index in sub_indices:
+        result["linear"][f"output_{index + 1}"] = 0.0
+        result["dbfs"][f"output_{index + 1}"] = -240.0
+    result["maximum_dbfs"] = max(result["dbfs"].values())
+    result["safe"] = result["maximum_dbfs"] <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS
+    return result
+
+
 def _auto_sub_stage_peak_comparison(
     predicted: dict[str, Any], measured_linear: dict[str, float],
     *, sink_gain: float = 1.0,

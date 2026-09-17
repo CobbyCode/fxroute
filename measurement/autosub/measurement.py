@@ -40,11 +40,12 @@ from .candidates import (
     _auto_sub_sync_dsp_runtime,
 )
 from .deps import _auto_sub_cancel_requested, _dsp_runtime, _measurement_store
+from .roles import sub_mute_indices
 from .jobs import (
-    _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
     _append_auto_sub_sweep_timing,
     _auto_sub_job_playback_gain,
     _auto_sub_stage_peak_comparison,
+    _auto_sub_zero_sub_peaks,
     _predict_auto_sub_stage_peaks,
     auto_sub_sink_gain_from_master_percent,
     AutoSubPeakSafetyError,
@@ -220,9 +221,19 @@ async def _measure_auto_sub_candidate(
     sub1_polarity: str | None = None,
     sub2_polarity: str | None = None,
     exact_sub_mute: bool = False,
+    exact_sub_mute_mask: int | None = None,
     _pending_remeasure_allowed: bool = True,
 ) -> dict[str, Any]:
-    """Measure one AutoSub delay candidate with the standard safety checks."""
+    """Measure one AutoSub delay candidate with the standard safety checks.
+
+    Explicit exact-mute masks are plumbing only: the predictor and candidate
+    configuration still use the legacy topology, not arbitrary crossover plans.
+    """
+    if exact_sub_mute_mask is not None and not exact_sub_mute:
+        raise ValueError("An exact sub mute mask requires exact_sub_mute=True")
+    sub_indices = ()
+    if exact_sub_mute:
+        sub_indices = sub_mute_indices(12 if exact_sub_mute_mask is None else exact_sub_mute_mask)
     measurement_store = _measurement_store()
     from measurement.session import _sync_dsp_runtime_for_measurement_sweep
     from audio.samplerate import _load_audio_output_mode
@@ -439,11 +450,7 @@ async def _measure_auto_sub_candidate(
         sink_gain=sink_gain,
     )
     if exact_sub_mute:
-        for key in ("output_3", "output_4"):
-            stage_peak_prediction["linear"][key] = 0.0
-            stage_peak_prediction["dbfs"][key] = -240.0
-        stage_peak_prediction["maximum_dbfs"] = max(stage_peak_prediction["dbfs"].values())
-        stage_peak_prediction["safe"] = stage_peak_prediction["maximum_dbfs"] <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS
+        stage_peak_prediction = _auto_sub_zero_sub_peaks(stage_peak_prediction, sub_indices)
     if not stage_peak_prediction["safe"]:
         logger.error(
             "Auto-sub: blocked unsafe sweep candidate stage=%s delay=%.2f predicted=%s",
@@ -465,7 +472,10 @@ async def _measure_auto_sub_candidate(
         if exact_sub_mute:
             if _dsp_runtime() is None:
                 raise RuntimeError("Subwoofer runtime unavailable; exact digital mute cannot be enabled")
-            previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True)
+            if exact_sub_mute_mask is not None:
+                previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True, mask=exact_sub_mute_mask)
+            else:
+                previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True)
             exact_sub_mute_enabled = True
             if not _dsp_runtime().snapshot().get("exact_sub_mute"):
                 raise RuntimeError("Subwoofer helper did not retain exact digital mute state")
@@ -661,6 +671,7 @@ async def _measure_auto_sub_candidate(
                     sub1_polarity=sub1_polarity,
                     sub2_polarity=sub2_polarity,
                     exact_sub_mute=exact_sub_mute,
+                    exact_sub_mute_mask=exact_sub_mute_mask,
                     _pending_remeasure_allowed=False,
                 )
             return _return_candidate({
@@ -713,7 +724,10 @@ async def _measure_auto_sub_candidate(
     finally:
         if exact_sub_mute_enabled and _dsp_runtime() is not None:
             try:
-                await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute)
+                if exact_sub_mute_mask is not None:
+                    await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute, mask=exact_sub_mute_mask)
+                else:
+                    await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute)
             except Exception as exc:
                 logger.exception("Auto-sub: failed to restore exact sub mute after %s reference", channel)
                 job["auto_gain"] = {
