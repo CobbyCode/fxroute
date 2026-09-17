@@ -838,6 +838,8 @@ autosub.configure_dependencies(autosub.AutoSubDependencies(
     get_measurement_store=lambda: measurement_store,
     get_measurement_session=lambda: measurement_sr_session,
     get_dsp_manager=lambda: dsp_manager,
+    get_output_service=lambda: get_output_service(),
+    create_candidate_session=lambda **kwargs: _create_auto_sub_candidate_session(**kwargs),
 ))
 
 def _set_runtime_current_track_info(value: dict | None) -> None:
@@ -4141,6 +4143,56 @@ def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
         [dict(entry) for entry in layout], preset_name=plan["global"]["preset"],
         sample_rate_hz=rate, extras_override=plan["global"]["extras"])
     return PlannedSyncTarget(config=config, text=text)
+
+
+def _create_auto_sub_candidate_session(*, service, start_state: dict, output_key: str,
+                                       channels: int, hardware_ports: list):
+    """Compose an inert owner, pinning one runtime and discovered device context."""
+    from measurement.autosub.candidate_session import AutoSubCandidateSession
+
+    native_runtime = runtime.dsp_runtime
+    if native_runtime is None:
+        raise RuntimeError("Native DSP runtime is unavailable")
+    manager = _require_dsp_manager()
+    ports = list(hardware_ports)
+    if len(ports) < channels:
+        raise ValueError("AutoSub output has insufficient discovered playback ports")
+
+    def require_runtime():
+        if runtime.dsp_runtime is not native_runtime:
+            raise RuntimeError("AutoSub native runtime ownership changed")
+
+    def build_target(plan, *, fingerprint):
+        require_runtime()
+        return _build_plan_target(
+            service, manager, plan, output_key=output_key, rate=plan["sample_rate_hz"],
+            hardware_ports=ports, fingerprint=fingerprint)
+
+    async def guarded_stage(*args, **kwargs):
+        require_runtime()
+        await native_runtime.guarded_rebuild_rendered(*args, **kwargs)
+        require_runtime()
+
+    async def readback():
+        require_runtime()
+        before = native_runtime.snapshot()
+        links_valid = await native_runtime.verify()
+        require_runtime()
+        after = native_runtime.snapshot()
+        config = after.get("config") or {}
+        same_graph = (before.get("helper_pid") == after.get("helper_pid")
+                      and before.get("config") == config)
+        expected_device = (config.get("output_key") == output_key
+                           and config.get("hardware_ports") == ports)
+        if (not links_valid or not same_graph or not expected_device
+                or before.get("active") is not True or after.get("active") is not True
+                or not after.get("helper_pid")):
+            raise RuntimeError("AutoSub runtime links, device or process identity could not be verified")
+        return after
+
+    return AutoSubCandidateSession(
+        service=service, start_state=start_state, output_key=output_key, channels=channels,
+        build_target=build_target, guarded_stage=guarded_stage, readback=readback)
 
 
 async def _sync_plan_runtime(target, *, reason: str = "output-state-transition") -> None:

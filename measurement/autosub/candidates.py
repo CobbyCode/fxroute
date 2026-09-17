@@ -17,7 +17,7 @@ from audio.samplerate import (
 )
 from dsp.runtime import BassManagementConfig
 
-from .deps import _dsp_runtime
+from .deps import _candidate_owner, _dsp_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,17 @@ async def _restore_original_config_or_fail_job(
     is marked failed instead. *message* names the mode for the user-visible
     job message and differs per runner by design.
     """
-    restored = await _restore_auto_sub_original_config(original_config_snapshot)
+    if "output_state_context" in job:
+        try:
+            owner = _candidate_owner(job["id"])
+            if not owner.committed:
+                await owner.restore()
+            restored = True
+        except Exception:
+            logger.exception("Auto-sub: candidate owner restore failed")
+            restored = False
+    else:
+        restored = await _restore_auto_sub_original_config(original_config_snapshot)
     if not restored:
         prior_detail = str((job.get("error") or {}).get("detail") or "")
         restore_detail = "original config restore verification failed"

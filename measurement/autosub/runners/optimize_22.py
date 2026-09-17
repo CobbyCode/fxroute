@@ -36,6 +36,7 @@ from ..deps import (
     _auto_sub_lock,
     _dsp_runtime,
     _measurement_session,
+    activate_candidate_owner,
 )
 from ..jobs import (
     _auto_sub_executed_sweep_count,
@@ -141,6 +142,8 @@ async def _run_auto_sub_22_optimize(
                 job["status"] = "cancelled"
                 job["message"] = "Auto Sub Optimize cancelled because the measurement window was closed."
                 return
+        owned_rate = (activate_candidate_owner(job, measurement_sr_session)
+                      if "output_state_context" in job else None)
         if _auto_sub_cancel_requested(job):
             logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
             job["message"] = "Auto Sub Optimize cancelled."
@@ -148,7 +151,7 @@ async def _run_auto_sub_22_optimize(
             return
 
         auto_sub_sweep_profile = _auto_sub_sweep_profile(fc)
-        auto_sub_rate = _resolve_measurement_start_sample_rate()
+        auto_sub_rate = owned_rate if owned_rate is not None else _resolve_measurement_start_sample_rate()
         await _capture_auto_sub_main_references(
             job=job, fc=fc, input_id=input_id,
             mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,

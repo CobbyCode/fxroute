@@ -35,8 +35,7 @@ class AutoSubDependencies:
     get_measurement_store: Callable[[], Any]
     get_measurement_session: Callable[[], Any]
     get_dsp_manager: Callable[[], Any]
-    # Fail-closed optionals: existing composition keeps constructing four
-    # accessors until main.py wires the output service in a later slice.
+    # Fail-closed optionals for consumers without output-state composition.
     get_output_service: Callable[[], Any] | None = None
     create_candidate_session: Callable[..., Any] | None = None
 
@@ -94,6 +93,15 @@ def _candidate_owner(job_id: str) -> Any:
 def drop_candidate_owner(job_id: str) -> None:
     """Forget a job's candidate owner; dropping twice stays idempotent."""
     _AUTO_SUB_CANDIDATE_OWNERS.pop(job_id, None)
+
+def activate_candidate_owner(job: dict[str, Any], session: Any) -> int:
+    """Bind the frozen start only after guarded measurement entry owns the rate."""
+    job_id = job["id"]
+    if session is None or session.active_auto_sub_job_id != job_id:
+        raise RuntimeError("AutoSub candidate activation requires measurement session ownership")
+    rate = session.measurement_rate
+    _candidate_owner(job_id).activate(rate)
+    return rate
 
 def is_optimization_active() -> bool:
     return bool(_auto_sub_lock and _auto_sub_lock.locked())
@@ -153,4 +161,3 @@ async def shutdown() -> None:
         task.cancel()
     if cleanup_tasks:
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-

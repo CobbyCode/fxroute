@@ -16,12 +16,13 @@ import asyncio
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import audio.samplerate as samplerate_module  # noqa: E402
+from audio.output_state import default_output_state, set_mode_routing  # noqa: E402
 import measurement.autosub as autosub  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from measurement.autosub import deps as autosub_deps  # noqa: E402
@@ -47,16 +48,10 @@ def overview_21(alignment=2.34):
 
 
 def mode_state():
-    return {
-        "mode": "subwoofer-2.1",
-        "subwoofer": {
-            "crossover_frequency_hz": 80,
-            "main_highpass_enabled": True,
-            "sub_alignment_ms": 2.34,
-            "sub_level_db": -3.0,
-            "sub_polarity": "normal",
-        },
-    }
+    state = set_mode_routing(default_output_state(), "stereo", "mock",
+                             ["main_l", "main_r", "sub1", "sub1"])
+    state["modes"]["stereo"]["processing"]["sub1"].update(alignment_ms=2.34, level_db=-3)
+    return state
 
 
 class FakeUpload:
@@ -98,6 +93,8 @@ class AutoSubStartJobLifecycleTests(unittest.IsolatedAsyncioTestCase):
             get_measurement_store=lambda: FakeStore(),
             get_measurement_session=lambda: FakeSession(),
             get_dsp_manager=lambda: None,
+            get_output_service=lambda: SimpleNamespace(load=mode_state),
+            create_candidate_session=lambda **kwargs: object(),
         ))
         try:
             autosub_start._auto_sub_lock.release()
@@ -105,24 +102,24 @@ class AutoSubStartJobLifecycleTests(unittest.IsolatedAsyncioTestCase):
             pass
         autosub_start._auto_sub_lock = asyncio.Lock()
         autosub_deps._AUTO_SUB_JOBS.clear()
+        autosub_deps._AUTO_SUB_CANDIDATE_OWNERS.clear()
+        rollout = patch.object(autosub_start, "_AUTO_SUB_SERVICE_INTEGRATION_READY", True)
+        rollout.start()
+        self.addCleanup(rollout.stop)
         # Route-local bindings that shadow the module imports.
         self._patch = patch.object(
             autosub_start, "_capture_auto_sub_playback_gain",
             return_value={"enabled": False, "volume_db": 0.0, "linear": 1.0, "source": "hardware-sink"},
         )
         self._patch.start()
-        self._samplerate_patch = patch.object(
-            samplerate_module, "_load_audio_output_mode", return_value=mode_state()
-        )
-        self._samplerate_patch.start()
         self._overview_patch = patch.object(autosub_start, "get_audio_output_overview", return_value=overview_21())
         self._overview_patch.start()
 
     async def asyncTearDown(self) -> None:
         self._overview_patch.stop()
-        self._samplerate_patch.stop()
         self._patch.stop()
         autosub_deps._AUTO_SUB_JOBS.clear()
+        autosub_deps._AUTO_SUB_CANDIDATE_OWNERS.clear()
         autosub_deps._autosub_deps = None
         try:
             autosub_start._auto_sub_lock.release()
@@ -148,6 +145,8 @@ class AutoSubStartJobLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("too large", str(raised.exception.detail))
         self.assertEqual(autosub_deps._AUTO_SUB_JOBS, {})
+        self.assertEqual(autosub_deps._AUTO_SUB_CANDIDATE_OWNERS, {})
+        self.assertFalse(autosub_start._auto_sub_lock.locked())
 
     async def test_wrong_content_type_leaves_no_job_behind(self) -> None:
         upload = FakeUpload(data=b"junk")
@@ -157,6 +156,8 @@ class AutoSubStartJobLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("must be a text file", str(raised.exception.detail))
         self.assertEqual(autosub_deps._AUTO_SUB_JOBS, {})
+        self.assertEqual(autosub_deps._AUTO_SUB_CANDIDATE_OWNERS, {})
+        self.assertFalse(autosub_start._auto_sub_lock.locked())
 
     async def test_valid_calibration_still_registers_and_dispatches(self) -> None:
         started: list = []
@@ -174,6 +175,7 @@ class AutoSubStartJobLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(started), 1)
         job_id = response["job"]["id"]
         self.assertIn(job_id, autosub_deps._AUTO_SUB_JOBS)
+        self.assertIn(job_id, autosub_deps._AUTO_SUB_CANDIDATE_OWNERS)
         self.assertEqual(autosub_deps._AUTO_SUB_JOBS[job_id]["status"], "preparing")
         # The worker is responsible for releasing the shared lock; since the
         # test never runs it, drop the job and free the lock now.

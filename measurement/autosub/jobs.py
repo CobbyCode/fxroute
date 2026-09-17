@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException
 
 from dsp.runtime import BassManagementConfig
 
+from .candidates import _restore_original_config_or_fail_job
 from .deps import (
     _AUTO_SUB_CLEANUP_TASKS,
     _AUTO_SUB_JOBS,
@@ -27,6 +28,7 @@ from .deps import (
     _dsp_manager,
     _measurement_session,
     _measurement_store,
+    drop_candidate_owner,
 )
 
 logger = logging.getLogger(__name__)
@@ -582,6 +584,23 @@ def _finalize_autosub_job(job: dict[str, Any] | None, job_id: str) -> None:
     logger.info("AUTOSUB job=%s cleanup complete state=%s", job_id, job.get("status") or "idle")
 
 async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> None:
+    """Drain service-owner cleanup even if the worker is cancelled repeatedly."""
+    if job is None or "output_state_context" not in job:
+        await _finish_auto_sub_worker_cleanup(job, job_id)
+        return
+    cleanup = asyncio.create_task(_finish_auto_sub_worker_cleanup(job, job_id))
+    cancelled = False
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            cancelled = True
+    cleanup.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _finish_auto_sub_worker_cleanup(job: dict[str, Any] | None, job_id: str) -> None:
     """Release the shared AutoSub lock, finalize the job and schedule its cleanup task.
 
     Ownership structure: the lock is released unconditionally in the outer
@@ -593,6 +612,9 @@ async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> No
     """
     measurement_sr_session = _measurement_session()
     try:
+        if job is not None and "output_state_context" in job:
+            await _restore_original_config_or_fail_job(
+                job, {}, "Auto Sub Optimize failed to restore its output-state owner")
         if measurement_sr_session is not None:
             try:
                 await measurement_sr_session.unregister_auto_sub(job_id)
@@ -600,6 +622,7 @@ async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> No
                 logger.exception(
                     "AUTOSUB job=%s measurement sample-rate session unregister failed", job_id
                 )
+        drop_candidate_owner(job_id)
         try:
             _finalize_autosub_job(job, job_id)
         except Exception:
@@ -618,4 +641,3 @@ async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> No
     cleanup_task = asyncio.create_task(_cleanup_autosub_job())
     _AUTO_SUB_CLEANUP_TASKS.add(cleanup_task)
     cleanup_task.add_done_callback(_AUTO_SUB_CLEANUP_TASKS.discard)
-
