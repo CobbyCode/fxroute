@@ -135,6 +135,8 @@ cp -- "$ROOT_DIR/ubuntu/scripts/first-boot-install-ubuntu.sh" \
 cp -- "$ROOT_DIR/ubuntu/autoinstall/first-boot.service" "$STAGE_DIR/fxroute-iso/first-boot.service"
   chmod 755 "$STAGE_DIR/fxroute-iso/scripts/"*.sh
   cp -- "$ROOT_DIR/ubuntu/autoinstall/meta-data" "$STAGE_DIR/meta-data"
+  mkdir -p "$STAGE_DIR/seed"
+  cp -- "$STAGE_DIR/user-data" "$STAGE_DIR/meta-data" "$STAGE_DIR/seed/"
   if [[ "$TEST_SEED" -eq 1 ]]; then
     printf '[ubuntu-iso] warning: staging the TEST seed (dev/test ISO, never release this)\n'
     cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data.test" "$STAGE_DIR/user-data"
@@ -185,6 +187,7 @@ if [[ "$BUILDER" == "docker" && "$INSIDE_DOCKER" -eq 0 ]]; then
     -e "FXROUTE_UBUNTU_STAGE_DIR=$STAGE_DIR" \
     -e "FXROUTE_GRUB_TEST_EXTRA=${FXROUTE_GRUB_TEST_EXTRA:-}" \
     -e "FXROUTE_TEST_SSH=${FXROUTE_TEST_SSH:-}" \
+    -e "FXROUTE_GRUB_INSTALL_EXTRA=ds=nocloud;seedfrom=file:///cdrom/fxroute-seed/" \
     -e "FXROUTE_UBUNTU_BASE_ISO=$BASE_ISO" \
     -e "FXROUTE_UBUNTU_ISO_OUTPUT=$OUTPUT" \
     -e "FXROUTE_UBUNTU_BUILDER=direct" \
@@ -205,6 +208,8 @@ command -v livefs-edit >/dev/null 2>&1 || die "livefs-edit is required (direct m
 command -v xorriso >/dev/null 2>&1 || die "xorriso is required for livefs-edit repacking"
 
 printf '[ubuntu-iso] editing live ISO with livefs-edit\n'
+# Seed pointer for the installer (always, product and test builds).
+export FXROUTE_GRUB_INSTALL_EXTRA="ds=nocloud;seedfrom=file:///cdrom/fxroute-seed/"
 # NOTE: --python takes code, not a path; the .py files stay the maintained
 # source and are inlined here (they contain no backticks/`$`, safe to inline).
 livefs-edit "$BASE_ISO" "$OUTPUT" \
@@ -213,7 +218,6 @@ livefs-edit "$BASE_ISO" "$OUTPUT" \
   --install-packages "${LIVE_PACKAGES[@]}" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/cleanup_chroot.py")" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/cp_payload.py")" \
-  --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/seed_layers.py")" \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" '$LAYERS[0]/usr/local/libexec/fxroute-live-autostart.sh' \
   --cp "$ROOT_DIR/ubuntu/autoinstall/fxroute-live.desktop" '$LAYERS[0]/etc/xdg/autostart/fxroute-live.desktop' \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-ubuntu-launcher.sh" '$LAYERS[0]/usr/local/bin/fxroute-desktop-launcher' \

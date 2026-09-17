@@ -1,13 +1,20 @@
-"""livefs-edit --python action: copy the FXRoute payload dir onto the ISO.
+"""livefs-edit --python action: copy trees onto the ISO.
 
-livefs-edit --cp handles files only (shutil.copy); the payload is a tree,
-so copy it here. Source comes from FXROUTE_UBUNTU_STAGE_DIR (bind-mounted
-into the container in docker mode, plain path in direct mode).
+livefs-edit --cp handles files only (shutil.copy). Payload and seed are
+trees: payload -> new/iso/fxroute-iso (read by late-commands via /cdrom),
+seed -> new/iso/fxroute-seed (read by cloud-init via
+ds=nocloud;seedfrom=file:///cdrom/fxroute-seed/ on the kernel cmdline;
+the squashfs seed dir is shadowed by empty upper-layer placeholders).
+Sources come from FXROUTE_UBUNTU_STAGE_DIR (bind-mounted in docker mode).
 """
 import os
 import shutil
 
-src = os.path.join(os.environ['FXROUTE_UBUNTU_STAGE_DIR'], 'fxroute-iso')
-dst = ctxt.p('new/iso/fxroute-iso')
-shutil.copytree(src, dst, dirs_exist_ok=True)
-print('payload copied to new/iso/fxroute-iso')
+stage = os.environ['FXROUTE_UBUNTU_STAGE_DIR']
+copies = (
+    (os.path.join(stage, 'fxroute-iso'), ctxt.p('new/iso/fxroute-iso')),
+    (os.path.join(stage, 'seed'), ctxt.p('new/iso/fxroute-seed')),
+)
+for src, dst in copies:
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    print('tree copied to ' + dst)

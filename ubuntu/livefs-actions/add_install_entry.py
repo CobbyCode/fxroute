@@ -40,25 +40,45 @@ new_entry = ''.join(lines).replace(
 text = text[:match.end()] + new_entry + text[match.end():]
 
 extra = os.environ.get('FXROUTE_GRUB_TEST_EXTRA', '').strip()
+install_extra = os.environ.get('FXROUTE_GRUB_INSTALL_EXTRA', '').strip()
+
+
+def add_extra(block, extra_args):
+    out = []
+    for line in block.splitlines(keepends=True):
+        if line.strip().startswith('linux ') and ' --- ' in line:
+            line = line.replace(' --- ', ' ' + extra_args + ' --- ', 1)
+        out.append(line)
+    return ''.join(out)
+
+
 if extra:
-    def add_extra(m):
-        out = []
-        for line in m.group(0).splitlines(keepends=True):
-            if line.strip().startswith('linux ') and ' --- ' in line:
-                line = line.replace(' --- ', ' ' + extra + ' --- ', 1)
-            out.append(line)
-        return ''.join(out)
     # Test extras go on Try and Install FXRoute (console for observability,
     # live hook is live-guarded so it stays inert on the install path).
-    text, try_count = pattern.subn(add_extra, text, count=1)
+    text, try_count = pattern.subn(
+        lambda m: add_extra(m.group(0), extra), text, count=1)
     install_pattern = re.compile(
         r'menuentry "Install FXRoute" \{\n'
         r'(?:[^\n]*\n)*?\}\n',
     )
-    text, install_count = install_pattern.subn(add_extra, text, count=1)
+    text, install_count = install_pattern.subn(
+        lambda m: add_extra(m.group(0), extra), text, count=1)
     if try_count != 1 or install_count != 1:
         raise Exception('Try/Install entries not found for kernel extras')
     print('appended kernel extras to Try+Install entries: ' + extra)
+
+if install_extra:
+    # Seed pointer for the installer (cloud-init NoCloud reads the seed
+    # from the ISO tree, bypassing shadowed squashfs seed placeholders).
+    install_pattern = re.compile(
+        r'menuentry "Install FXRoute" \{\n'
+        r'(?:[^\n]*\n)*?\}\n',
+    )
+    text, install_count = install_pattern.subn(
+        lambda m: add_extra(m.group(0), install_extra), text, count=1)
+    if install_count != 1:
+        raise Exception('Install entry not found for seed pointer')
+    print('appended seed pointer to Install entry: ' + install_extra)
 
 with open(path, 'w') as fp:
     fp.write(text)
