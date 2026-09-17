@@ -165,6 +165,163 @@ class VerifyConfirmationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overlap checks"):
             verify_confirmation(baseline, confirmation)
 
+    def test_missing_revision_fails_closed(self):
+        confirmation = self.alignment.propose(
+            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        baseline = deepcopy(self.baseline)
+        del baseline["start_revision"]
+        del confirmation["start_revision"]
+        with self.assertRaisesRegex(ValueError, "revision"):
+            verify_confirmation(baseline, confirmation)
+
+    def test_none_fingerprint_fails_closed(self):
+        confirmation = self.alignment.propose(
+            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        baseline = deepcopy(self.baseline)
+        baseline["processing_fingerprint"] = None
+        confirmation["processing_fingerprint"] = None
+        with self.assertRaisesRegex(ValueError, "fingerprint"):
+            verify_confirmation(baseline, confirmation)
+
+    def test_nan_residual_is_rejected(self):
+        confirmation = self.alignment.propose(
+            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        tampered = deepcopy(confirmation)
+        tampered["added_delay_ms"]["left_low"] = float("nan")
+        with self.assertRaisesRegex(ValueError, "finite"):
+            verify_confirmation(self.baseline, tampered)
+
+    def test_malformed_overlap_check_is_rejected(self):
+        confirmation = self.alignment.propose(
+            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        tampered = deepcopy(confirmation)
+        tampered["overlap_checks"] = [None]
+        with self.assertRaisesRegex(ValueError, "paired"):
+            verify_confirmation(self.baseline, tampered)
+
+    def test_missing_added_delays_is_rejected(self):
+        confirmation = self.alignment.propose(
+            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        tampered = deepcopy(confirmation)
+        del tampered["added_delay_ms"]
+        with self.assertRaisesRegex(ValueError, "added delay"):
+            verify_confirmation(self.baseline, tampered)
+
+    def test_malformed_confirmation_inputs_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "proposal"):
+            verify_confirmation(None, self.baseline)
+        with self.assertRaisesRegex(ValueError, "proposal"):
+            verify_confirmation(self.baseline, "not-a-proposal")
+
+    def test_numpy_float_residual_is_accepted(self):
+        confirmation = self.alignment.propose(
+            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        tampered = deepcopy(confirmation)
+        tampered["added_delay_ms"] = {
+            role: np.float64(value) for role, value in tampered["added_delay_ms"].items()}
+        check = verify_confirmation(self.baseline, tampered)
+        self.assertTrue(check["confirmed"])
+
+
+def crossover_state_3way():
+    state = default_output_state()
+    routes = [f"{side}_{way}" for side in ("right", "left") for way in ("high", "mid", "low")]
+    routes += ["sub1", "left_low"]
+    state = set_mode_routing(state, "crossover", "dev", routes)
+    state = switch_mode(state, "crossover")
+    state["revision"] = 7
+    processing = state["modes"]["crossover"]["processing"]
+    for side in ("left", "right"):
+        processing[f"{side}_low"]["lowpass"] = {
+            "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 300,
+        }
+        processing[f"{side}_mid"]["highpass"] = {
+            "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 300,
+        }
+        processing[f"{side}_mid"]["lowpass"] = {
+            "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2500,
+        }
+        processing[f"{side}_high"]["highpass"] = {
+            "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2500,
+        }
+    return state
+
+
+def alignment_and_live_3way(state):
+    alignment = SpeakerAlignment(
+        state, side="left", output_key="dev", channels=8, sample_rate_hz=RATE,
+        fingerprint="frozen-plan", reference_id="interface:input-2:upstream",
+        microphone_position_id="seat-1-fixed",
+    )
+    live = freeze_measurement_target(
+        state, bank_id="global", output_key="dev", channels=8,
+        sample_rate_hz=RATE, fingerprint="frozen-plan",
+    )
+    return alignment, live
+
+
+def captures_for_3way(alignment, arrivals):
+    """Three-way band-limited IRs with independently known arrival offsets."""
+    delta = np.zeros(513)
+    delta[256] = 1
+    boundaries = [np.zeros(513), lowpass_kernel(300), lowpass_kernel(2500), delta]
+    captures = []
+    for index, request in enumerate(alignment.capture_requests()):
+        reference = 700 + index * 131
+        arrival = reference + arrivals[index]
+        ir = np.zeros(4096)
+        ir[arrival - 256:arrival + 257] = boundaries[index + 1] - boundaries[index]
+        captures.append({
+            "role": request["role"],
+            "measurement_target": request["measurement_target"],
+            "reference_id": request["reference_id"],
+            "microphone_position_id": request["microphone_position_id"],
+            "reference_tap": REFERENCE_TAP_INGRESS,
+            "time_reference": "deconvolved-sweep-origin",
+            "impulse_response": ir,
+            "analysis": {
+                "sample_rate": RATE, "peak_dbfs": -12.0,
+                "quality_checks": {"status": "pass", "items": []},
+                "reference_path": {
+                    "usable": True, "electrical_reference_used": True,
+                    "timing_status": "electrical-reference", "stability": "stable",
+                    "confidence": 0.95, "clipped": False, "peak_dbfs": -9.0,
+                },
+                "impulse_response": {
+                    "direct_arrival_index": arrival, "reference_peak_index": reference,
+                    "direct_confidence": 0.95,
+                    "timing_source": "direct_arrival_minus_reference_peak",
+                },
+            },
+        })
+    return captures
+
+
+class VerifyThreeWayTests(unittest.TestCase):
+    def setUp(self):
+        self.state = crossover_state_3way()
+        self.alignment, self.live = alignment_and_live_3way(self.state)
+        self.baseline = self.alignment.propose(
+            captures_for_3way(self.alignment, (96, 144, 240)), live_target=self.live)
+
+    def test_three_way_aligned_confirmation_confirms(self):
+        confirmation = self.alignment.propose(
+            captures_for_3way(self.alignment, (500, 500, 500)), live_target=self.live)
+        check = verify_confirmation(self.baseline, confirmation)
+        self.assertTrue(check["confirmed"])
+        self.assertEqual(len(check["pairs"]), 2)
+        self.assertEqual([pair["roles"] for pair in check["pairs"]],
+                         [["left_low", "left_mid"], ["left_mid", "left_high"]])
+
+    def test_three_way_single_pair_regression_rejects(self):
+        confirmation = self.alignment.propose(
+            captures_for_3way(self.alignment, (500, 500, 500)), live_target=self.live)
+        tampered = deepcopy(confirmation)
+        tampered["overlap_checks"][1]["after_sum_db"] -= 5.0
+        check = verify_confirmation(self.baseline, tampered)
+        self.assertFalse(check["confirmed"])
+        self.assertIn("regression", check["reasons"][0])
+
 
 class StageDoubles:
     """Thin hardware-boundary doubles: record calls, nothing else is faked."""
@@ -301,6 +458,68 @@ class ApplyAndConfirmTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "graph stuck"):
             await self.run_trial(doubles)
         self.assertEqual([call[0] for call in doubles.calls], ["stage", "acquire", "restore"])
+
+    async def test_threshold_passthrough_accepts_known_residual(self):
+        offset = captures_for(self.alignment, (500, 548))
+        doubles = StageDoubles(offset)
+        rejected = await self.run_trial(doubles)
+        self.assertFalse(rejected["confirmed"])
+        allowed = await self.run_trial(StageDoubles(offset), max_residual_ms=1.5)
+        self.assertTrue(allowed["confirmed"])
+        self.assertAlmostEqual(allowed["check"]["max_residual_ms"], 1.0, delta=0.1)
+
+    async def test_missing_proposal_identity_fails_before_stage(self):
+        doubles = StageDoubles(self.aligned)
+        proposal = deepcopy(self.baseline)
+        del proposal["start_revision"]
+        with self.assertRaisesRegex(ValueError, "revision"):
+            await self.run_trial(doubles, proposal=proposal)
+        self.assertEqual(doubles.calls, [])
+
+    async def test_malformed_proposal_envelope_is_rejected(self):
+        doubles = StageDoubles(self.aligned)
+        for proposal in (deepcopy(self.baseline) | {"candidate_state": None}, "not-a-proposal"):
+            with self.subTest(proposal=type(proposal).__name__):
+                with self.assertRaisesRegex(ValueError, "proposal"):
+                    await self.run_trial(doubles, proposal=proposal)
+        self.assertEqual(doubles.calls, [])
+
+    async def test_cancel_during_error_restore_completes_restore(self):
+        entered = asyncio.Event()
+        released = threading.Event()
+        restore_done = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        calls = []
+
+        async def slow_restore():
+            calls.append("restore")
+            loop.call_soon_threadsafe(entered.set)
+            await asyncio.to_thread(released.wait, 10)
+            calls.append("restore-done")
+            loop.call_soon_threadsafe(restore_done.set)
+
+        async def failing_acquire():
+            calls.append("acquire")
+            raise RuntimeError("mic unplugged")
+
+        async def quick_stage(candidate):
+            calls.append("stage")
+            return {"staged": True}
+
+        worker = asyncio.create_task(apply_and_confirm(
+            stage=quick_stage, restore=slow_restore, acquire=failing_acquire,
+            alignment=self.alignment, proposal=self.baseline, live_target=self.live))
+        try:
+            async with asyncio.timeout(10):
+                await entered.wait()
+            worker.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await worker
+        finally:
+            released.set()
+        async with asyncio.timeout(10):
+            await restore_done.wait()
+        self.assertIn("restore-done", calls)
 
 
 if __name__ == "__main__":

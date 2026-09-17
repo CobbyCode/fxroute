@@ -7,11 +7,14 @@ verifies the improvement from measured evidence — then always restores the
 start rendering. Nothing is persisted here; the output-state revision never
 moves. Commit, restore-after-commit, release, API and UI are later boundaries.
 
-The runtime boundaries (``stage``/``restore``) are injected: ``stage`` must
-either fully render the exact candidate it receives or leave the start
-rendering untouched (restoring internally on failure); it must never mutate
-its argument. The production wiring (plan compile, guarded rebuild, runtime
-readback) belongs to the commit/integration slice, not here.
+The runtime boundaries (``stage``/``restore``) are injected. ``stage`` owns
+an atomicity contract: it must either fully render the exact candidate it
+receives or leave the start rendering untouched (restoring internally on
+failure), so a stage failure runs no restore here. Once staging succeeded,
+every later path restores (shielded against cancellation) before returning
+or re-raising; a stage failure itself never triggers restore. ``stage`` must
+never mutate its argument. The production wiring (plan compile, guarded
+rebuild, runtime readback) belongs to the commit/integration slice, not here.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
+import math
 from typing import Any
 
 from measurement.speaker_align import MAX_SUM_REGRESSION_DB, MIN_SUM_DB
@@ -35,7 +39,32 @@ def _check_cancel(cancel_requested: Callable[[], bool] | None) -> None:
         raise asyncio.CancelledError("Speaker Align trial was cancelled")
 
 
-def _pair_key(check: dict[str, Any]) -> tuple:
+def _finite(value: object, label: str) -> float:
+    # bool is an int subclass but never a measurement; numpy floats pass
+    # isinstance and are real arithmetic, unlike Decimal/str which stay out.
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"Speaker Align {label} must be finite")
+    return float(value)
+
+
+def _require_identity(document: dict[str, Any], label: str) -> tuple:
+    """Require a present, non-null start revision and processing fingerprint.
+
+    A missing key must never compare equal to another missing key: absent
+    identity fails closed instead of verifying as "same revision".
+    """
+    revision = document.get("start_revision")
+    fingerprint = document.get("processing_fingerprint")
+    if type(revision) is not int:
+        raise ValueError(f"Speaker Align {label} carries no start revision")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        raise ValueError(f"Speaker Align {label} carries no processing fingerprint")
+    return revision, fingerprint
+
+
+def _pair_key(check: object) -> tuple:
+    if not isinstance(check, dict):
+        raise ValueError("Speaker Align confirmation needs exactly paired overlap checks")
     roles = check.get("roles")
     if not isinstance(roles, list) or len(roles) != 2 or any(not isinstance(role, str) for role in roles):
         raise ValueError("Speaker Align confirmation needs exactly paired overlap checks")
@@ -54,8 +83,11 @@ def verify_confirmation(
     Both arguments are ``SpeakerAlignment.propose`` outputs: ``baseline``
     from the pre-apply acquisition, ``confirmation`` from the post-apply
     re-acquisition of the same frozen alignment. Malformed or rebased input
-    raises; a merely unconvincing measurement returns ``confirmed: False``.
+    raises ``ValueError``; a merely unconvincing measurement returns
+    ``confirmed: False``.
     """
+    if not isinstance(baseline, dict) or not isinstance(confirmation, dict):
+        raise ValueError("Speaker Align confirmation needs proposal outputs on both sides")
     if type(max_residual_ms) not in (int, float) or not 0 < max_residual_ms < 1000:
         raise ValueError("Speaker Align confirmation residual must be a positive time in ms")
     if type(max_regression_db) not in (int, float) or not 0 <= max_regression_db < 100:
@@ -68,14 +100,16 @@ def verify_confirmation(
     confirmation_by_pair = {_pair_key(check): check for check in confirmation_checks}
     if set(baseline_by_pair) != set(confirmation_by_pair) or not baseline_by_pair:
         raise ValueError("Speaker Align confirmation pairs differ from the baseline proposal")
-    if (baseline.get("start_revision") != confirmation.get("start_revision")
-            or baseline.get("processing_fingerprint") != confirmation.get("processing_fingerprint")):
+    if _require_identity(baseline, "baseline") != _require_identity(confirmation, "confirmation"):
         raise ValueError("Speaker Align confirmation is rebased onto another start revision")
-    residual_ms = max(abs(float(value)) for value in confirmation.get("added_delay_ms", {}).values())
+    added_delays = confirmation.get("added_delay_ms")
+    if not isinstance(added_delays, dict) or not added_delays:
+        raise ValueError("Speaker Align confirmation carries no added delay evidence")
+    residual_ms = max(abs(_finite(value, "residual delay")) for value in added_delays.values())
     pairs = []
     for pair in sorted(baseline_by_pair):
-        baseline_db = float(baseline_by_pair[pair]["after_sum_db"])
-        confirmation_db = float(confirmation_by_pair[pair]["after_sum_db"])
+        baseline_db = _finite(baseline_by_pair[pair].get("after_sum_db"), "baseline combined sum")
+        confirmation_db = _finite(confirmation_by_pair[pair].get("after_sum_db"), "confirmation combined sum")
         pairs.append({
             "roles": list(pair),
             "residual_within_pair_ms": residual_ms,
@@ -115,43 +149,63 @@ async def apply_and_confirm(
     proposal: dict[str, Any],
     live_target: dict[str, Any],
     cancel_requested: Callable[[], bool] | None = None,
+    max_residual_ms: float | None = None,
+    max_regression_db: float | None = None,
 ) -> dict[str, Any]:
     """Trial-stage a proposal, confirm it acoustically, always restore.
 
     ``acquire`` returns post-apply captures in ``propose`` shape (the serial
     acquisition adapter produces exactly that). ``live_target`` must be freshly
     frozen for the proposal's area: the output state is never persisted here,
-    so its revision still matches after staging. A failed measurement returns
-    ``confirmed: False``; errors re-raise after restore. Cancellation restores
-    through a shield before propagating.
+    so its revision still matches after staging. ``max_residual_ms`` and
+    ``max_regression_db`` override the confirmation gates for hardware
+    qualification; both default to the module gates. A failed measurement
+    returns ``confirmed: False``; errors re-raise after restore, except a
+    failing restore itself surfaces loudly (chained onto the original error
+    as context). A stage failure runs no restore (the stage boundary owns
+    atomicity); every later path restores shielded against cancellation
+    before returning or raising.
     """
     for label, bound in (("stage", stage), ("restore", restore), ("acquire", acquire)):
         if not callable(bound):
             raise ValueError(f"Speaker Align trial requires a {label} boundary")
     if not isinstance(live_target, dict):
         raise ValueError("Speaker Align trial requires a frozen live target")
-    if (live_target.get("revision") != proposal.get("start_revision")
-            or live_target.get("processing_fingerprint") != proposal.get("processing_fingerprint")):
+    if not isinstance(proposal, dict):
+        raise ValueError("Speaker Align trial requires a proposal")
+    candidate_state = proposal.get("candidate_state")
+    if not isinstance(candidate_state, dict):
+        raise ValueError("Speaker Align trial proposal carries no candidate state")
+    live_identity = _require_identity(
+        {"start_revision": live_target.get("revision"),
+         "processing_fingerprint": live_target.get("processing_fingerprint")},
+        "live target")
+    if live_identity != _require_identity(proposal, "proposal"):
         raise ValueError(
             "Speaker Align live target is stale; revision and processing must "
             "match the proposal before trial staging"
         )
+    verify_options = {}
+    if max_residual_ms is not None:
+        verify_options["max_residual_ms"] = max_residual_ms
+    if max_regression_db is not None:
+        verify_options["max_regression_db"] = max_regression_db
     _check_cancel(cancel_requested)
-    receipt = await stage(deepcopy(proposal["candidate_state"]))
+    receipt = await stage(deepcopy(candidate_state))
     try:
         _check_cancel(cancel_requested)
         captures = await acquire()
         _check_cancel(cancel_requested)
         confirmation = alignment.propose(captures, live_target=live_target)
         _check_cancel(cancel_requested)
-        check = verify_confirmation(proposal, confirmation)
+        check = verify_confirmation(proposal, confirmation, **verify_options)
     except asyncio.CancelledError:
         await asyncio.shield(restore())
         raise
     except BaseException:
-        await restore()
+        await asyncio.shield(restore())
         raise
-    await restore()
+    await asyncio.shield(restore())
     return {
         "confirmed": check["confirmed"],
         "check": check,
