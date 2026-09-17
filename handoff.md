@@ -3,9 +3,9 @@
 ## Arbeitsstand
 - Worktree: `/home/pbclaw/ai/projects/fxroute-multichannel`
 - Branch: `feature/multichannel-crossover`
-- HEAD: `ac52b02` (Slice-G-Code; darüber nur Handoff-Commits), Arbeitsbaum sauber.
+- HEAD: `583d3be` (Speaker-Align-Analyse-Code; darüber nur Handoff-Commits), Arbeitsbaum sauber.
 - Tasks 1–7 abgeschlossen einschließlich Task-7-Review und Nacharbeiten. Task 8 ist **teilweise implementiert, nicht produktiv vollständig verdrahtet**.
-- AutoSub-Slices A–G sind implementiert und committet (B zusätzlich reviewed; F durch zwei externe Review-Runden, G durch eine mit SHIP-Verdict). Offen: **Speaker Align**.
+- AutoSub-Slices A–G sind implementiert und committet (B zusätzlich reviewed; F durch zwei externe Review-Runden, G durch eine mit SHIP-Verdict). Speaker Align: erster Analyse-/Proposal-Slice implementiert und committet (`583d3be`, Zweit-Review SHIP für den begrenzten Slice); Live-Capture-/Apply-Integration offen.
 - Der AutoSub-HTTP-Start bleibt ausdrücklich gesperrt (`_AUTO_SUB_SERVICE_INTEGRATION_READY = False` in `measurement/autosub/runners/start.py:68`, HTTP 503 bei unterstützter Topologie). Slice G ist integriert und verifiziert; das Öffnen des Gates ist ein separater, expliziter Rollout-Schritt (kein HTTP-/Environment-Override; Tests öffnen das Gate nur per Patching).
 
 ## Maßgebliche Pläne
@@ -43,15 +43,15 @@ Tasks 1–7 liefern Routing-/Rollenmodell, pro Modus isolierten atomaren Output-
 - Der Predictor modelliert nur die Per-Output-Kette; Aufrufer brauchen einen neutralen Global-Pfad (dokumentiert in `jobs.py`).
 
 ## Offen — empfohlene Reihenfolge
-**Speaker Align.** Nicht erneut mit Grundlagen beginnen.
+**Speaker Align — Capture-/Apply-Integration nach dem Analyse-Slice.** Nicht erneut mit Grundlagen beginnen.
 
 - **Rollout-Gate (separater Schritt):** `_AUTO_SUB_SERVICE_INTEGRATION_READY = False` in `runners/start.py` bleibt, bis das Öffnen explizit entschieden und verifiziert ist. Kein HTTP-/Environment-Override. Die Tests öffnen das Gate ausschließlich lokal über Patching.
-- **Speaker Align (Task 8):** fehlt vollständig. Feste Mikrofonposition, gemeinsame upstream Referenz, unverschobenes IR-Timing, relative Delays `max(t)-t`, Overlap-Band-/Phasenprüfung, Qualitäts-/Stale-Gates; synthetische und reale Verifikation laut Gesamtplan.
+- **Speaker Align (Task 8), nächster Integrationsrand:** `MeasurementAnalyzer._analyze_sweep_capture` besitzt die volle unverschobene `timing_impulse_response` nur lokal; persistierte IR-Previews sind peak-relativ und dezimiert. Internen opt-in Transport der Full-Resolution-IR zu einem job-scoped Owner ergänzen (nicht in HTTP-/Job-JSON serialisieren). `host_capture.py` markiert elektrische Referenzen zunächst als Kandidat; erst nach `store._evaluate_electrical_reference_status` verwerten. Tatsächlichen gemeinsamen upstream Tap/Input und feste Mikrofonposition explizit belegen; der bestehende Target-Label allein ist kein physikalischer Beweis. Danach serielle Active-Chain-Way-Captures mit gefrorenen Requests, Drain-/Masken-/Cancellation-Lifecycle, guarded Candidate-Apply, kombinierte akustische Bestätigung, revisionsgeschützter Commit/Restore/Release und API/UI. Reale 2-/3-Wege-Verifikation laut Gesamtplan bleibt nötig.
 
 ### Bekannte Restprobleme / Grenzen
 - Enger Rest-Edge (Review-notiert, nicht blockierend): verwaister Release-Adapter nach Idle-Fenster-Gerätewechsel baut gepinnten Geräte-Kontext über live Selektion (Legacy-Pfad folgte live Overview). Follow-up: Invoke-time-Ports-/Selektions-Validierung. Slot-Löschen bei uncommittedtem Finalize wurde geprüft und verworfen (aktiv schädlich: Orphan rendert immer aktuelle Wahrheit).
 - Vorbestehend, nur auf `.104` sichtbar: `test_auto_sub_fine_winner_apply.py` schreibt `config/fxroute/audio-output-mode.json` in den XDG-Canary (echte Hardware lässt den ungepatchten Legacy-Setter persistieren; lokal wirft er vorher). Harmlos unter Sandbox; der richtige Fix gehört zu Slice E-Nacharbeiten (keine Legacy-Setter mehr im Runner-Pfad; der Funnel/Commit-Pfad ist sie inzwischen). Details im Integrationsplan.
-- Speaker Align fehlt. Keine Behauptung, Task 8 oder Crossover-AutoSub sei end-to-end fertig.
+- Speaker Align ist noch nicht live integriert. Keine Behauptung, Task 8 oder Crossover-AutoSub sei end-to-end fertig.
 - Bekannte Altgrenzen: Store↔Engine-TOCTOU ohne gemeinsame Ownership, Legacy-Checks in `silent_active` bei exotischen v2-Routings.
 
 ## Gezielte Verifikation
@@ -80,10 +80,13 @@ python3 scripts/test_measurement_job_setup.py
 python3 scripts/test_measurement_job_drain.py
 python3 scripts/test_dsp_runtime.py
 python3 scripts/test_output_state_lifecycle.py
+python3 scripts/test_speaker_align.py
+python3 scripts/test_hybrid_measurement.py
 git diff --check
 ```
 
 Zuletzt fokussiert grün: Service-Start 23, Start-Leak 3, Dependency-Injection 11, Candidate-Session 38, Session-Release-Plan 13, Winner-Commit 11, Worker-Lifecycle 5, Job-Drain 4, Owner-Prearm 13, Runner-Service-IO 28, Plan-Peak 17, Peak-Prediction 5, Gain-Apply-Revert 23, Staged-Layout 15, Playback-Target 14, Capture-Policy 4, Job-Setup 6, Runtime 62, Output-Lifecycle 8, alle 47 `test_auto_sub_*`-/`test_autosub_*`-/Drain-Suiten. Vollständiger `run_tests.sh`-Sweep nach Slice G: lokal 394 bestanden / 0 fehlgeschlagen / 14 übersprungen (native Helper-Suiten lokal geskipt). `.104`-Verifikation für Slice G gefahren (rsync ohne `--delete`, App-Venv, Produkt-App unberührt): neue Suite 13/13, betroffenes Set 56/56 (alle Auto-/Autosub-/Drain- plus SR-Session-/Release-/Ownership-/Entry-/DI-/Watcher-/Setup-/Target-/Policy-Suiten), nativ 11/11 Helper + 3/3 C inkl. Plan-Peak-Parität. Staged-Layout-`httpx`-Gap unverändert vorbestehend (von G unberührt).
+- Speaker-Align-Analyse-Slice (`583d3be`, Zweit-Review SHIP für den begrenzten Slice): neue Suite `test_speaker_align.py` 27/27 lokal und auf `.104`; 9 Suiten (128 Tests: Hybrid 13, Analyzer-IR 1, Bank-Target 23, Output-Mask 8, Repeat-Way-Sweeps 8, Output-State 10, Processing-Plan 7, Candidate-State 31, Speaker-Align 27) lokal und auf `.104` grün; Legacy-Hybrid-Default 16/16 exakt gegen HEAD; voller `run_tests.sh`-Sweep lokal 395/0/14. Erst-Review (not-ready) mit zwei False-Accepts reproduziert und per Regressionstest gefixt (Direct-Event-Retention, Residual-Phasenvieto); LR12/LR24 mit echter Ankunftserkennung bei 44,1/48/96 kHz akzeptiert, LR48/LR72 fail-closed abgelehnt.
 
 Für Runner-Änderungen zusätzlich die bestehenden `scripts/test_auto_sub_*`-Suiten (insbesondere alle drei Final-Path-, Confirmation-, Gain-, Polarity- und Cancellation-Suiten) ausführen, numerische Assertions nicht abschwächen. `scripts/run_tests.sh` entdeckt neue `test_*.py` automatisch und nutzt einen XDG-Sandbox. Test-Doubles von `_auto_sub_apply_candidate` müssen die `job`-Kwarg akzeptieren.
 
