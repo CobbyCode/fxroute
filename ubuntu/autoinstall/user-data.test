@@ -1,0 +1,32 @@
+#cloud-config
+# FXRoute Ubuntu QEMU-Test-Seed (NUR dev/test, nie im Produkt-ISO).
+# Vollautomatisch: Testbenutzer + DHCP-Netz, keine interaktiven Sektionen.
+# Das Produkt-ISO fragt Identity/Netzwerk bewusst interaktiv ab.
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  source:
+    id: ubuntu-desktop-minimal
+  identity:
+    hostname: fxroute
+    username: test
+    # Passwort: test (mkpasswd -m sha-512)
+    password: '$6$fxroutetest$fIbg1MbSnoMrKo6PNmlcW3FNPttBXGEzXuicaBBXGBtUAgZ42nW8n/BumKiT7AVVMfMyvOCRF7nJoEQBGLDxS.'
+  storage:
+    layout:
+      name: lvm
+  packages:
+    - openssh-server
+    - git
+    - curl
+    - ca-certificates
+  late-commands:
+    - 'cp -r /cdrom/fxroute-iso /target/opt/fxroute-iso'
+    - 'echo desktop > /target/etc/fxroute-iso-profile'
+    - 'cp /target/opt/fxroute-iso/scripts/first-boot-install-ubuntu.sh /target/usr/local/libexec/fxroute-first-boot-install.sh'
+    - 'chmod 755 /target/usr/local/libexec/fxroute-first-boot-install.sh'
+    - 'cp /target/opt/fxroute-iso/first-boot.service /target/etc/systemd/system/fxroute-first-boot.service'
+    - 'curtin in-target --target=/target -- systemctl enable fxroute-first-boot.service'
+    - 'curtin in-target --target=/target -- systemctl enable ssh.service'
