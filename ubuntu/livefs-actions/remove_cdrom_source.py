@@ -15,7 +15,7 @@ for path in (
 ):
     with open(path) as fp:
         lines = fp.readlines()
-    kept = [line for line in lines if 'file:/cdrom' not in line]
+    kept = [line for line in lines if 'cdrom' not in line]
     if len(kept) != len(lines):
         removed += len(lines) - len(kept)
         with open(path, 'w') as fp:
@@ -25,7 +25,7 @@ for path in glob.glob(base + '/etc/apt/sources.list.d/*.sources'):
         text = fp.read()
     blocks = []
     for block in text.split('\n\n'):
-        if 'file:/cdrom' in block:
+        if 'cdrom' in block:
             removed += 1
             continue
         blocks.append(block)
