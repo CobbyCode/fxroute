@@ -190,7 +190,9 @@ printf '[ubuntu-iso] editing live ISO with livefs-edit\n'
 # source and are inlined here (they contain no backticks/`$`, safe to inline).
 livefs-edit "$BASE_ISO" "$OUTPUT" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/remove_cdrom_source.py")" \
+  --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/prep_chroot.py")" \
   --install-packages "${LIVE_PACKAGES[@]}" \
+  --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/cleanup_chroot.py")" \
   --cp "$STAGE_DIR/fxroute-iso" 'new/iso/fxroute-iso' \
   --cp "$STAGE_DIR/user-data" '$LAYERS[0]/var/lib/cloud/seed/nocloud/user-data' \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" '$LAYERS[0]/usr/local/libexec/fxroute-live-autostart.sh' \
