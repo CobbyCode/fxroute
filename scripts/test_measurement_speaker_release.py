@@ -13,6 +13,7 @@ keeps the legacy path byte-identical.
 
 import asyncio
 import sys
+import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -23,6 +24,11 @@ sys.path.insert(0, str(ROOT))
 
 import measurement.session as measurement_session
 from measurement.session import MeasurementSampleRateSession, MeasurementServices
+from audio.output_service import OutputService, OutputServiceDeps
+from audio.output_state import default_output_state, set_mode_routing
+from audio.output_state_store import OutputStateStore
+from dsp.manager import DSPManager
+from measurement.speaker_commit import create_speaker_release_adapter
 
 
 RATE = 48000
@@ -428,6 +434,57 @@ class SpeakerCompositionTests(unittest.IsolatedAsyncioTestCase):
             get_measurement_rate=lambda: RATE,
             capture_runner=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no capture")))
         self.assertIsNone(service._on_committed)
+
+
+PORTS = ["playback_AUX0", "playback_AUX1"]
+
+
+class SpeakerReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
+    """An orphaned speaker adapter refuses a switched device, like AutoSub."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="speaker-release-")
+        self.addCleanup(directory.cleanup)
+        self.manager = DSPManager(home=Path(directory.name) / "dsp")
+        self.store = OutputStateStore(Path(directory.name) / "output-state.json")
+        self.service = OutputService(OutputServiceDeps(
+            store=self.store, preset_loader=self.manager.preset_store.read,
+            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            measurement_active=lambda: True))
+        state = set_mode_routing(default_output_state(), "stereo", "dev",
+                                 ["main_l", "main_r"])
+        self.service.commit(state, expected_revision=0)
+        self.targets = []
+
+        class FakeRuntime:
+            async def sync_rendered(inner_self, target):
+                self.targets.append(target)
+
+        self.runtime = FakeRuntime()
+        self.live = {"output_key": "dev", "channels": 2,
+                     "hardware_ports": list(PORTS)}
+
+    def build_adapter(self, **kwargs):
+        args = dict(service=self.service, dsp_manager=self.manager,
+                    hardware_ports=list(PORTS),
+                    get_native_runtime=lambda: self.runtime,
+                    output_key="dev", channels=2,
+                    resolve_live_device=lambda: dict(self.live))
+        args.update(kwargs)
+        return create_speaker_release_adapter(**args)
+
+    async def test_matching_live_device_renders(self):
+        result = await self.build_adapter()(RESTORE_RATE)
+        self.assertEqual(result["sample_rate_hz"], RESTORE_RATE)
+        self.assertEqual(len(self.targets), 1)
+
+    async def test_switched_ports_refuse_before_touching_runtime(self):
+        adapter = self.build_adapter()
+        self.live = {"output_key": "dev", "channels": 2,
+                     "hardware_ports": ["playback_AUX0"]}
+        with self.assertRaisesRegex(RuntimeError, "hardware_ports"):
+            await adapter(RESTORE_RATE)
+        self.assertEqual(self.targets, [])
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ from audio.output_state import routing_for_device, validate_output_state
 from audio.output_state_store import StateConflictError
 from audio.output_topology import derive_topology
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget
+from measurement.release_device import check_release_device
 from measurement.speaker_apply import verify_confirmation
 
 
@@ -422,6 +423,7 @@ def create_speaker_release_adapter(
     get_native_runtime: Callable[[], Any],
     output_key: str,
     channels: int,
+    resolve_live_device: Callable[[], dict] | None = None,
 ) -> Callable[[int], Awaitable[dict]]:
     """Build the release adapter for one committed speaker device context.
 
@@ -433,6 +435,11 @@ def create_speaker_release_adapter(
     Rendering is always live, never rebased: a later concurrent writer is
     consumed as-is. All device context is validated eagerly so a miswired
     finalizer fails before the session unregister, not mid-release.
+    ``resolve_live_device`` optionally resolves the live output selection
+    at invoke time: when the device moved since the commit — the narrow
+    idle-window orphan edge — the adapter refuses fail-closed instead of
+    rebuilding the pinned graph over the live selection. Without a
+    resolver the pinned context is used as before.
     """
     if not isinstance(output_key, str) or not output_key:
         raise ValueError("Speaker Align release requires a non-empty output key")
@@ -445,10 +452,17 @@ def create_speaker_release_adapter(
         raise ValueError("Speaker Align release requires a DSP manager")
     if not callable(get_native_runtime):
         raise ValueError("Speaker Align release requires a native runtime accessor")
+    if resolve_live_device is not None and not callable(resolve_live_device):
+        raise ValueError("Speaker Align release requires a callable live device resolver")
 
     async def adapter(restore_rate_hz: int) -> dict:
         if type(restore_rate_hz) is not int or restore_rate_hz <= 0:
             raise ValueError("Speaker Align release rate must be a positive integer")
+        if resolve_live_device is not None:
+            check_release_device(
+                output_key=output_key, channels=channels,
+                hardware_ports=ports, live=resolve_live_device(),
+                owner="Speaker Align")
         state = service.load()
         plan = service.compile_plan(
             state, output_key=output_key, channels=channels,

@@ -187,6 +187,17 @@ class SessionReleasePlanTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.session.register_autosub_release_adapter(None)
 
+    async def test_refusing_adapter_fails_closed_without_wedging_release(self):
+        async def refusing_adapter(restore_rate_hz):
+            raise RuntimeError("device switched since commit")
+
+        drive_release(self.session)
+        await self.session.request_close()
+        await self.session.register_autosub_release_adapter(refusing_adapter)
+        await self.session.unregister_auto_sub("release-job")
+        self.assertIsNone(self.session._autosub_release_adapter)
+        self.assertEqual(self.fakes.sync_at_rate_calls, [])
+
     async def test_services_default_to_no_release_factory(self):
         fields = {name: (lambda: None) for name in (
             "get_store", "get_session", "get_dsp_runtime", "get_player",
@@ -408,6 +419,75 @@ class FinalizerRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("registered", self.events)
         self.assertIn("unregistered", self.events)
         self.assertFalse(self.lock.locked())
+
+
+class ReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
+    """An orphaned adapter refuses a switched device instead of rebuilding it."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="autosub-release-")
+        self.addCleanup(directory.cleanup)
+        self.manager = DSPManager(home=Path(directory.name) / "dsp")
+        self.store = OutputStateStore(Path(directory.name) / "output-state.json")
+        self.service = OutputService(OutputServiceDeps(
+            store=self.store, preset_loader=self.manager.preset_store.read,
+            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            measurement_active=lambda: True))
+        state = set_mode_routing(default_output_state(), "stereo", "dev",
+                                 ["main_l", "main_r", "sub1"])
+        self.service.commit(state, expected_revision=0)
+        self.targets = []
+
+        class FakeRuntime:
+            async def sync_rendered(inner_self, target):
+                self.targets.append(target)
+
+        self.runtime = FakeRuntime()
+        self.live = {"output_key": "dev", "channels": 4,
+                     "hardware_ports": list(PORTS)}
+
+    def build_adapter(self, **kwargs):
+        args = dict(service=self.service, dsp_manager=self.manager,
+                    hardware_ports=list(PORTS),
+                    get_native_runtime=lambda: self.runtime,
+                    output_key="dev", channels=4,
+                    resolve_live_device=lambda: self.live)
+        args.update(kwargs)
+        return autosub_release.create_release_adapter(**args)
+
+    async def test_matching_live_device_renders(self):
+        result = await self.build_adapter()(RESTORE_RATE)
+        self.assertEqual(result["sample_rate_hz"], RESTORE_RATE)
+        self.assertEqual(len(self.targets), 1)
+
+    async def test_switched_device_refuses_before_touching_runtime(self):
+        adapter = self.build_adapter()
+        self.live = {"output_key": "other-dev", "channels": 4,
+                     "hardware_ports": list(PORTS)}
+        with self.assertRaisesRegex(RuntimeError, "output_key"):
+            await adapter(RESTORE_RATE)
+        self.assertEqual(self.targets, [])
+
+    async def test_unresolvable_live_device_refuses(self):
+        adapter = self.build_adapter()
+        self.live = None
+        with self.assertRaises(RuntimeError):
+            await adapter(RESTORE_RATE)
+        self.assertEqual(self.targets, [])
+
+    async def test_non_callable_resolver_rejected_eagerly(self):
+        with self.assertRaises(ValueError):
+            self.build_adapter(resolve_live_device="dev")
+
+    async def test_without_resolver_keeps_pinned_behavior(self):
+        adapter = autosub_release.create_release_adapter(
+            service=self.service, dsp_manager=self.manager,
+            hardware_ports=list(PORTS),
+            get_native_runtime=lambda: self.runtime,
+            output_key="dev", channels=4)
+        result = await adapter(RESTORE_RATE)
+        self.assertEqual(result["sample_rate_hz"], RESTORE_RATE)
+        self.assertEqual(len(self.targets), 1)
 
 
 if __name__ == "__main__":

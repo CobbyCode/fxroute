@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget
+from measurement.release_device import check_release_device
 
 
 def _validate_rate(sample_rate_hz: int) -> None:
@@ -34,6 +35,7 @@ def create_release_adapter(
     get_native_runtime: Callable[[], Any],
     output_key: str,
     channels: int,
+    resolve_live_device: Callable[[], dict] | None = None,
 ) -> Callable[[int], Awaitable[dict]]:
     """Build the release adapter for one committed AutoSub device context.
 
@@ -41,6 +43,12 @@ def create_release_adapter(
     ports); ``get_native_runtime`` resolves the live native runtime at
     invoke time.  All device context is validated eagerly so a miswired
     finalizer fails before the session unregister, not mid-release.
+    ``resolve_live_device`` optionally resolves the live output selection
+    (``output_key``/``channels``/``hardware_ports``) at invoke time: when
+    the device moved since the commit — the narrow idle-window orphan
+    edge — the adapter refuses fail-closed instead of rebuilding the
+    pinned graph over the live selection.  Without a resolver the pinned
+    context is used as before.
     """
     if not isinstance(output_key, str) or not output_key:
         raise ValueError("AutoSub release requires a non-empty output key")
@@ -53,9 +61,16 @@ def create_release_adapter(
         raise ValueError("AutoSub release requires a DSP manager")
     if not callable(get_native_runtime):
         raise ValueError("AutoSub release requires a native runtime accessor")
+    if resolve_live_device is not None and not callable(resolve_live_device):
+        raise ValueError("AutoSub release requires a callable live device resolver")
 
     async def adapter(restore_rate_hz: int) -> dict:
         _validate_rate(restore_rate_hz)
+        if resolve_live_device is not None:
+            check_release_device(
+                output_key=output_key, channels=channels,
+                hardware_ports=ports, live=resolve_live_device(),
+                owner="AutoSub")
         state = service.load()
         plan = service.compile_plan(
             state, output_key=output_key, channels=channels,

@@ -4158,7 +4158,9 @@ def _create_autosub_release_adapter(*, service, output_key: str, channels: int):
     resolved at composition; the plan itself always renders live from the
     current head, so a deferred release never serves stale content.  The
     device context (output key/channels/ports) stays pinned: only the
-    committing device's release may consume the adapter.
+    committing device's release may consume the adapter.  The live
+    selection is re-resolved at invoke time: a device-switched orphan
+    refuses instead of rebuilding the pinned graph over the new device.
     """
     from measurement.autosub.release import create_release_adapter
     manager = _require_dsp_manager()
@@ -4167,7 +4169,8 @@ def _create_autosub_release_adapter(*, service, output_key: str, channels: int):
     return create_release_adapter(
         service=service, dsp_manager=manager, hardware_ports=ports,
         get_native_runtime=lambda: runtime.dsp_runtime,
-        output_key=output_key, channels=channels)
+        output_key=output_key, channels=channels,
+        resolve_live_device=_live_release_device_context)
 
 
 def _create_auto_sub_candidate_session(*, service, start_state: dict, output_key: str,
@@ -4243,13 +4246,34 @@ def _describe_speaker_align_device(state: dict) -> dict:
             "hardware_ports": ports}
 
 
+def _live_release_device_context() -> dict:
+    """Resolve the live output device selection for release validation.
+
+    Same shape as the pinned adapter context: output key, channel count
+    and discovered playback ports. Raises RuntimeError when no output is
+    selected, so an orphaned release adapter fails closed instead of
+    rebuilding a stale device graph.
+    """
+    overview = get_audio_output_overview()
+    try:
+        output_key, channels = _output_state_device(overview)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "No audio output device is selected"
+        raise RuntimeError(detail) from exc
+    ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
+    return {"output_key": output_key, "channels": int(channels or 0),
+            "hardware_ports": ports}
+
+
 def _create_speaker_align_release_adapter(*, service, output_key: str, channels: int):
     """Compose a release adapter for one committed Speaker Align device context.
 
     The adapter renders the current committed output plan at the restore
     rate when the measurement session releases. Ports are discovery data
     resolved at composition; the plan itself always renders live from the
-    current head, so a deferred release never serves stale content.
+    current head, so a deferred release never serves stale content. The
+    live selection is re-resolved at invoke time: a device-switched orphan
+    refuses instead of rebuilding the pinned graph over the new device.
     """
     from measurement.speaker_commit import create_speaker_release_adapter
     manager = _require_dsp_manager()
@@ -4258,7 +4282,8 @@ def _create_speaker_align_release_adapter(*, service, output_key: str, channels:
     return create_speaker_release_adapter(
         service=service, dsp_manager=manager, hardware_ports=ports,
         get_native_runtime=lambda: runtime.dsp_runtime,
-        output_key=output_key, channels=channels)
+        output_key=output_key, channels=channels,
+        resolve_live_device=_live_release_device_context)
 
 
 def get_speaker_align_service():
