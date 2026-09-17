@@ -6,6 +6,7 @@
 # killed service runs must be cleaned up on the next start without ever
 # touching unrelated user mpv processes.
 
+import os
 import signal
 import sys
 import unittest
@@ -20,7 +21,7 @@ from playback.mpv_process import (
     _is_fxroute_mpv_cmdline,
     _stop_orphan_mpv_processes,
 )
-from playback.player import MPVWrapper
+from playback.player import MPVDisabledError, MPVNotInstalledError, MPVWrapper
 
 SOCKET = "/tmp/mpv.sock"
 FXROUTE_CMDLINE = (
@@ -102,6 +103,60 @@ class MPVCmdlineTests(unittest.TestCase):
                     mock_kill.side_effect = lambda pid, sig: signalled.append((pid, sig))
                     _stop_orphan_mpv_processes(SOCKET, own_pid=7)
         self.assertEqual(signalled, [(8, signal.SIGTERM), (8, signal.SIGKILL)])
+
+    def test_default_socket_and_enabled_unchanged(self):
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MPV_SOCKET_PATH", None)
+            os.environ.pop("MPV_ENABLED", None)
+            wrapper = MPVWrapper()
+        self.assertEqual(wrapper.socket_path, "/tmp/mpv.sock")
+
+    def test_socket_path_env_override_feeds_ipc_and_cleanup(self):
+        with unittest.mock.patch.dict(os.environ, {"MPV_SOCKET_PATH": "/tmp/view-mpv.sock"}):
+            wrapper = MPVWrapper()
+            self.assertEqual(wrapper.socket_path, "/tmp/view-mpv.sock")
+            with unittest.mock.patch("playback.player._stop_orphan_mpv_processes") as cleanup:
+                with unittest.mock.patch("playback.player.subprocess.run"):
+                    with unittest.mock.patch("playback.player.subprocess.Popen") as popen:
+                        with unittest.mock.patch("playback.player.os.path.exists", return_value=True):
+                            with unittest.mock.patch("playback.player.threading.Thread"):
+                                wrapper.start()
+        self.assertEqual(cleanup.call_args.args[0], "/tmp/view-mpv.sock")
+        command = popen.call_args.args[0]
+        self.assertIn("--input-ipc-server=/tmp/view-mpv.sock", command)
+        self.assertIn("--audio-device=pipewire/fxroute_dsp_sink", command)
+        self.assertTrue(wrapper._running)
+
+    def test_mpv_disabled_raises_and_never_touches_processes(self):
+        with unittest.mock.patch.dict(os.environ, {"MPV_ENABLED": "0"}):
+            wrapper = MPVWrapper()
+            with unittest.mock.patch("playback.player._stop_orphan_mpv_processes") as cleanup:
+                with unittest.mock.patch("playback.player.subprocess.run") as probe:
+                    with self.assertRaises(MPVDisabledError):
+                        wrapper.start()
+        cleanup.assert_not_called()
+        probe.assert_not_called()
+        self.assertFalse(wrapper._running)
+
+    def test_mpv_disabled_error_is_reported_as_not_installed(self):
+        self.assertTrue(issubclass(MPVDisabledError, MPVNotInstalledError))
+
+    def test_mpv_disabled_parsing_matches_off_like_values(self):
+        for value in ("0", "false", "no", "off", "OFF", "False"):
+            with self.subTest(value=value):
+                with unittest.mock.patch.dict(os.environ, {"MPV_ENABLED": value}):
+                    wrapper = MPVWrapper()
+                    with unittest.mock.patch("playback.player.subprocess.run") as probe:
+                        with self.assertRaises(MPVDisabledError):
+                            wrapper.start()
+                    probe.assert_not_called()
+        for value in ("1", "true", "yes", "on", ""):
+            with self.subTest(value=value):
+                with unittest.mock.patch.dict(os.environ, {"MPV_ENABLED": value}):
+                    wrapper = MPVWrapper()
+                    with unittest.mock.patch("playback.player.subprocess.run", side_effect=AssertionError):
+                        with self.assertRaises(AssertionError):
+                            wrapper.start()
 
     def test_orphan_cleanup_noop_when_no_orphans(self):
         with unittest.mock.patch("playback.mpv_process._fxroute_mpv_pids", return_value=[]):
