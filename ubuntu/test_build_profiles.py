@@ -117,6 +117,47 @@ class BuildProfilesTest(unittest.TestCase):
             result = subprocess.run(['md5sum', '--check', 'md5sum.txt'], cwd=iso, capture_output=True)
             self.assertNotEqual(result.returncode, 0, 'Integrity checks must detect corruption')
 
+    def test_checksum_hook_excludes_generated_catalog_not_similarly_named_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            context = ActionContext(directory)
+            iso = pathlib.Path(context.p('new/iso'))
+            generated = ('boot.catalog', 'boot/grub/boot.cat',
+                         'boot/grub/i386-pc/eltorito.img')
+            payload = ('casper/filesystem.squashfs', 'casper/initrd', 'casper/vmlinuz',
+                       'boot/grub/grub.cfg', 'EFI/boot/bootx64.efi',
+                       'fxroute-seed/desktop.yaml', 'fxroute-seed/headless.yaml',
+                       'fxroute-iso/source.tar', 'fxroute-iso/boot.catalog',
+                       'fxroute-iso/boot.cat', 'fxroute-iso/eltorito.img',
+                       'boot.catalog.backup')
+            for relative in generated + payload:
+                path = iso / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'original ' + relative.encode())
+            runpy.run_path(str(ROOT / 'livefs-actions/final_checksums.py'),
+                           init_globals={'ctxt': context})
+            for hook in reversed(context.hooks):
+                hook()
+            records = (iso / 'md5sum.txt').read_text().splitlines()
+            filenames = {record.split('  ', 1)[1] for record in records}
+            self.assertNotIn('./boot.catalog', filenames)
+            self.assertEqual(filenames, {'./' + relative for relative in payload})
+            # xorriso changes these structures only after the checksum hook.
+            for relative in generated:
+                (iso / relative).write_bytes(b'regenerated boot structure')
+            result = subprocess.run(['md5sum', '--check', 'md5sum.txt'], cwd=iso,
+                                    capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for relative in payload:
+                with self.subTest(payload=relative):
+                    path = iso / relative
+                    original = path.read_bytes()
+                    path.write_bytes(b'corrupted')
+                    result = subprocess.run(['md5sum', '--check', 'md5sum.txt'],
+                                            cwd=iso, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0,
+                                        'Integrity checks must cover ' + relative)
+                    path.write_bytes(original)
+
     @unittest.skipUnless(importlib.util.find_spec('livefs_edit'),
                          'Run with the livefs-edit Python interpreter for upstream lifecycle check')
     def test_installed_livefs_repack_runs_checksum_after_rebuild_before_iso_write(self):

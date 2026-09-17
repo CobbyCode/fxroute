@@ -14,9 +14,11 @@ from pathlib import Path
 def final_checksums():
     iso = Path(ctxt.p('new/iso'))
     # Match the stock Ubuntu exclusions: xorriso generates/patches these boot
-    # structures AFTER hooks. All payload, seeds, GRUB config, initrd and
-    # squashfs files remain covered. md5sum.txt cannot hash itself.
-    excluded = {'md5sum.txt', 'boot/grub/boot.cat',
+    # structures AFTER hooks. Ubuntu 26.04.1 uses /boot.catalog (confirmed by
+    # xorriso -report_el_torito plain); retain the older boot/grub/boot.cat path.
+    # Exact paths only: all payload, seeds, GRUB config, initrd and squashfs
+    # files remain covered. md5sum.txt cannot hash itself.
+    excluded = {'md5sum.txt', 'boot.catalog', 'boot/grub/boot.cat',
                 'boot/grub/i386-pc/eltorito.img'}
     records = []
     for path in sorted(iso.rglob('*')):
