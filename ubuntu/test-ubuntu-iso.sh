@@ -164,25 +164,46 @@ check_installed_os() {
 
 check_appliance() {
   check_installed_os || return 1
-  ssh_run '
-    set -eu
-    export XDG_RUNTIME_DIR=/run/user/$(id -u)
-    export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
-    systemctl --user is-active --quiet fxroute.service
-    systemctl --user is-active --quiet pipewire.service
-    systemctl --user is-active --quiet wireplumber.service
-    systemctl is-active --quiet display-manager.service
-    session=$(loginctl show-seat seat0 -p ActiveSession --value)
-    test -n "$session"
-    test "$(loginctl show-session "$session" -p Name --value)" = test
-    test "$(loginctl show-session "$session" -p Active --value)" = yes
-    test "$(loginctl show-session "$session" -p Service --value)" = gdm-autologin
-    session_type=$(loginctl show-session "$session" -p Type --value)
-    case "$session_type" in wayland|x11) ;; *) exit 1 ;; esac
-    pgrep -u "$(id -u)" -f "(^|/)[f]irefox[[:space:]].*--kiosk([[:space:]]|$)" >/dev/null
-    test "$(gsettings get org.gnome.desktop.session idle-delay)" = "uint32 0"
-    test "$(gsettings get org.gnome.desktop.screensaver lock-enabled)" = false
-  '
+  local profile="${FXROUTE_UBUNTU_TEST_PROFILE:-desktop}"
+  if [[ "$profile" == headless ]]; then
+    ssh_run '
+      set -eu
+      export XDG_RUNTIME_DIR=/run/user/$(id -u)
+      export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+      systemctl --user is-active --quiet fxroute.service
+      systemctl --user is-active --quiet pipewire.service
+      systemctl --user is-active --quiet wireplumber.service
+      # Headless contract: no display manager, no graphical session,
+      # no Firefox; SSH active; multi-user default target.
+      if systemctl is-active --quiet display-manager.service; then exit 1; fi
+      test "$(systemctl get-default)" = multi-user.target
+      if loginctl list-sessions --no-legend | grep -q seat; then exit 1; fi
+      if pgrep -f "(^|/)[f]irefox([[:space:]]|$)" >/dev/null; then exit 1; fi
+      if pgrep -x gnome-shell >/dev/null; then exit 1; fi
+      systemctl is-active --quiet ssh.service
+      curl --fail --silent http://127.0.0.1:8000/api/status >/dev/null
+    '
+  else
+    ssh_run '
+      set -eu
+      export XDG_RUNTIME_DIR=/run/user/$(id -u)
+      export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+      systemctl --user is-active --quiet fxroute.service
+      systemctl --user is-active --quiet pipewire.service
+      systemctl --user is-active --quiet wireplumber.service
+      systemctl is-active --quiet display-manager.service
+      session=$(loginctl show-seat seat0 -p ActiveSession --value)
+      test -n "$session"
+      test "$(loginctl show-session "$session" -p Name --value)" = test
+      test "$(loginctl show-session "$session" -p Active --value)" = yes
+      test "$(loginctl show-session "$session" -p Service --value)" = gdm-autologin
+      session_type=$(loginctl show-session "$session" -p Type --value)
+      case "$session_type" in wayland|x11) ;; *) exit 1 ;; esac
+      pgrep -u "$(id -u)" -f "(^|/)[f]irefox[[:space:]].*--kiosk([[:space:]]|$)" >/dev/null
+      test "$(gsettings get org.gnome.desktop.session idle-delay)" = "uint32 0"
+      test "$(gsettings get org.gnome.desktop.screensaver lock-enabled)" = false
+    '
+  fi
 }
 
 shutdown_guest() {
@@ -247,18 +268,30 @@ phase_live() {
 }
 
 phase_install() {
-  log "phase install: booting Install FXRoute (GRUB entry 1, test seed)"
+  # GRUB order: 0=Try or Install Ubuntu, 1=Install FXRoute Desktop,
+  # 2=Install FXRoute Headless (FXROUTE_UBUNTU_TEST_GRUB selects the
+  # profile under test; default = desktop).
+  local profile="${FXROUTE_UBUNTU_TEST_PROFILE:-desktop}"
+  local grub_downs=1
+  case "$profile" in
+    desktop) grub_downs=1 ;;
+    headless) grub_downs=2 ;;
+    *) die "Unknown profile: $profile (desktop|headless)" ;;
+  esac
+  log "phase install: booting Install FXRoute $profile (GRUB entry $grub_downs, test seed)"
   local disk="$TEST_ROOT/install.qcow2" monitor="$TEST_ROOT/install-monitor.sock" pidfile="$TEST_ROOT/install.pid"
   rm -f "$disk"
   qemu-img create -f qcow2 "$disk" "${DISK_GB}G" >/dev/null
   rm -f "$TEST_ROOT/serial.log"
-  boot_iso "$disk" "$monitor" "$pidfile" 1
+  boot_iso "$disk" "$monitor" "$pidfile" "$grub_downs"
   # Fast-fail if GRUB selection missed the Install entry (no autoinstall on
   # the kernel cmdline): better than a blind 60 min wait.
   log "waiting for installer SSH to verify the Install entry boot"
   if wait_for_live_ssh 900; then
     if live_ssh_run "grep -q autoinstall /proc/cmdline"; then
-      log "Install FXRoute entry confirmed (autoinstall on cmdline)"
+      live_ssh_run "grep -q 'autoinstallpath=/cdrom/fxroute-seed/$profile.yaml' /proc/cmdline" \
+        || die "wrong profile seed on cmdline (expected $profile); see $TEST_ROOT/serial.log"
+      log "Install FXRoute $profile entry confirmed (autoinstall + profile seed on cmdline)"
     else
       die "guest booted without autoinstall (wrong GRUB entry); see $TEST_ROOT/serial.log"
     fi
