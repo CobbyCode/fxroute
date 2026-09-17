@@ -157,15 +157,26 @@ if [[ "$BUILDER" == "docker" && "$INSIDE_DOCKER" -eq 0 ]]; then
     *) die "docker mode: --output must be under the repo or the ISO cache dir" ;;
   esac
   printf '[ubuntu-iso] re-running the build inside a privileged container\n'
+  # livefs-edit stacks overlay mounts: upper/work must live on a real
+  # filesystem, not on the container's own overlay /tmp. Bind a host dir.
+  mkdir -p "$WORK_DIR/ctmp"
   docker run --rm --privileged \
     -v "$ROOT_DIR:$ROOT_DIR" \
     -v "$(dirname "$BASE_ISO"):$(dirname "$BASE_ISO")" \
     -v "$WORK_DIR:$WORK_DIR" \
+    -v "$WORK_DIR/ctmp:/ctmp" \
+    -e "TMPDIR=/ctmp" \
     -e "FXROUTE_UBUNTU_BASE_ISO=$BASE_ISO" \
     -e "FXROUTE_UBUNTU_ISO_OUTPUT=$OUTPUT" \
     -e "FXROUTE_UBUNTU_BUILDER=direct" \
     -e "FXROUTE_UBUNTU_PRESTAGED=$STAGE_DIR" \
     ubuntu:26.04 "$ROOT_DIR/ubuntu/build-ubuntu-iso.sh" --inside-docker --keep-work
+  rc=$?
+  # Container runs as root: hand the work dir back to the invoking user.
+  docker run --rm \
+    -v "$WORK_DIR:$WORK_DIR" \
+    ubuntu:26.04 chown -R "$(id -u):$(id -g)" "$WORK_DIR" >/dev/null 2>&1 || true
+  [[ $rc -eq 0 ]] || die "container build failed (rc=$rc)"
   printf '[ubuntu-iso] wrote %s\n' "$OUTPUT"
   printf '[ubuntu-iso] sha256 %s\n' "$(sha256sum "$OUTPUT" | awk '{print $1}')"
   exit 0
