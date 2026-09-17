@@ -42,18 +42,32 @@ wait_for_http() {
   return 1
 }
 
-# GRUB-Auswahl per Monitor-sendkey: Eintraege sind
-# 0=Try or Install Ubuntu, 1=safe graphics, 2=Install FXRoute (+EFI-Eintraege).
+# GRUB-Eintraege (verifiziert am ISO): 0=Try or Install Ubuntu,
+# 1=Install FXRoute, 2=Ubuntu (safe graphics) (+EFI-Eintraege).
+# QEMU-Monitor per Python-Stdlib (kein socat noetig).
+qemu_monitor() {
+  python3 - "$1" "$2" <<'PY'
+import socket, sys
+path, cmd = sys.argv[1], sys.argv[2]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(path)
+s.recv(4096)
+s.sendall((cmd + '\n').encode())
+s.recv(4096)
+s.close()
+PY
+}
 select_grub_entry() {
   local monitor="$1" downs="$2"
   local i=0
+  sleep 5
   while (( i < downs )); do
-    printf 'sendkey down\n' | socat - "UNIX-CONNECT:$monitor" >/dev/null 2>&1
+    qemu_monitor "$monitor" "sendkey down"
     sleep 1
     i=$(( i + 1 ))
   done
   sleep 1
-  printf 'sendkey ret\n' | socat - "UNIX-CONNECT:$monitor" >/dev/null 2>&1
+  qemu_monitor "$monitor" "sendkey ret"
 }
 
 boot_iso() {
@@ -119,11 +133,11 @@ phase_live() {
 }
 
 phase_install() {
-  log "phase install: booting Install FXRoute (GRUB entry 2, test seed)"
+  log "phase install: booting Install FXRoute (GRUB entry 1, test seed)"
   local disk="$TEST_ROOT/install.qcow2" monitor="$TEST_ROOT/install-monitor.sock" pidfile="$TEST_ROOT/install.pid"
   rm -f "$disk"
   qemu-img create -f qcow2 "$disk" "${DISK_GB}G" >/dev/null
-  boot_iso "$disk" "$monitor" "$pidfile" 2
+  boot_iso "$disk" "$monitor" "$pidfile" 1
   # TODO: replace fixed sleep with install-completion detection (serial log
   # marker from late-commands + reboot watch) after the first manual run.
   log "waiting for autoinstall + first-boot (fixed 60 min budget, draft)"
