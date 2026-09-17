@@ -167,8 +167,13 @@ class SpeakerAlignService:
             task = self._tasks.get(job_id)
         if task is not None:
             task.cancel()
+        # Cross-thread cancels can race a retention eviction between the two
+        # guarded reads: a fully populated retention ring evicts the record
+        # the first read just returned. The first read already validated the
+        # job; when the second no longer finds it, that record is the honest
+        # answer instead of a KeyError surfacing as HTTP 500.
         with self._guard:
-            return self._public(self._jobs[job_id])
+            return self._public(self._jobs.get(job_id, job))
 
     def start(self, side: str, *, input_id: str, mic_input_channel: str | int | None = "1",
               reference_input_channel: str | int | None,

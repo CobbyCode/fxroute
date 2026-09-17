@@ -357,6 +357,52 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         service.cancel(job_id)
         self.assertEqual(service.status(job_id)["status"], "committed")
 
+    async def test_cancel_survives_concurrent_retention_eviction(self):
+        # Cross-thread cancel contract: a retention eviction can land between
+        # cancel()'s two guarded reads (first read validated the running job,
+        # task.cancel() delivers, the worker finishes and _finish evicts the
+        # record while the cancelling thread is between the two blocks). The
+        # second read must return the first read's record, not raise KeyError.
+        # The eviction is injected into task.cancel(), which runs exactly
+        # between the two guard blocks, so the interleaving is deterministic.
+        entered = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        original = self.acquire
+
+        async def paused(alignment, **kwargs):
+            loop.call_soon_threadsafe(entered.set)
+            await asyncio.to_thread(release.wait, 10)
+            return await original(alignment, **kwargs)
+
+        service = self.service(acquire=paused)
+        _, job_id = self.start(service)
+        try:
+            async with asyncio.timeout(10):
+                await entered.wait()
+            jobs_during = service._jobs
+
+            class EvictingTask:
+                def cancel(self_inner):
+                    service._jobs = {
+                        key: value for key, value in jobs_during.items()
+                        if key != job_id}
+
+            real_task = service._tasks[job_id]
+            service._tasks[job_id] = EvictingTask()
+            record = service.cancel(job_id)
+            self.assertEqual(record["id"], job_id)
+            self.assertEqual(record["status"], "cancelling")
+            # Restore the record and the real task so the paused worker can
+            # finish its cancellation path like a raced run would.
+            service._jobs[job_id] = jobs_during[job_id]
+            service._tasks[job_id] = real_task
+        finally:
+            release.set()
+        job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "cancelled")
+        self.assertFalse(self.session.committed)
+
     async def test_post_terminal_start_succeeds_with_new_id(self):
         service, first = self.start()
         await service.wait_for(first)
