@@ -3,7 +3,7 @@
 ## Arbeitsstand
 - Worktree: `/home/pbclaw/ai/projects/fxroute-multichannel`
 - Branch: `feature/multichannel-crossover`
-- HEAD: `b5ac9ed` (Slice F), Arbeitsbaum sauber.
+- HEAD: `b5ac9ed` (Slice-F-Code; darüber nur Handoff-Commits), Arbeitsbaum sauber.
 - Tasks 1–7 abgeschlossen einschließlich Task-7-Review und Nacharbeiten. Task 8 ist **teilweise implementiert, nicht produktiv vollständig verdrahtet**.
 - AutoSub-Slices A–F sind implementiert und committet (B zusätzlich reviewed; F durch zwei externe Review-Runden mit reproduzierten und behobenen Defekten). Offen: **G (Session-Release), Speaker Align**.
 - Der AutoSub-HTTP-Start ist ausdrücklich gesperrt (`_AUTO_SUB_SERVICE_INTEGRATION_READY = False` in `measurement/autosub/runners/start.py:68`, HTTP 503 bei unterstützter Topologie), bis Slice G integriert und verifiziert ist. Kein HTTP-/Environment-Override; Tests öffnen das Gate nur per Patching.
@@ -81,7 +81,7 @@ python3 scripts/test_output_state_lifecycle.py
 git diff --check
 ```
 
-Zuletzt fokussiert grün: Service-Start 23, Start-Leak 3, Dependency-Injection 11, Candidate-Session 38, Winner-Commit 11, Worker-Lifecycle 5, Job-Drain 4, Owner-Prearm 13, Runner-Service-IO 28, Plan-Peak 17, Peak-Prediction 5, Gain-Apply-Revert 23, Staged-Layout 15, Playback-Target 14, Capture-Policy 4, Job-Setup 6, Runtime 62, Output-Lifecycle 8, alle 46 `test_auto_sub_*`-/`test_autosub_*`-/Drain-Suiten. Vollständiger `run_tests.sh`-Sweep nach Slice F: lokal 393 bestanden / 0 fehlgeschlagen / 14 übersprungen (Baseline ohne F-Änderungen: 390/0/14; native Helper-Suiten lokal geskipt). `.104`-Verifikation für Slice F noch nicht gefahren; neue Suiten dort nachholen.
+Zuletzt fokussiert grün: Service-Start 23, Start-Leak 3, Dependency-Injection 11, Candidate-Session 38, Winner-Commit 11, Worker-Lifecycle 5, Job-Drain 4, Owner-Prearm 13, Runner-Service-IO 28, Plan-Peak 17, Peak-Prediction 5, Gain-Apply-Revert 23, Staged-Layout 15, Playback-Target 14, Capture-Policy 4, Job-Setup 6, Runtime 62, Output-Lifecycle 8, alle 46 `test_auto_sub_*`-/`test_autosub_*`-/Drain-Suiten. Vollständiger `run_tests.sh`-Sweep nach Slice F: lokal 393 bestanden / 0 fehlgeschlagen / 14 übersprungen (Baseline ohne F-Änderungen: 390/0/14; native Helper-Suiten lokal geskipt). `.104`-Verifikation für Slice F gefahren (rsync ohne `--delete` nach `/home/paul/fxroute-mc-build`, App-Venv, Produkt-App unberührt): fokussiert Winner-Commit 11, Worker-Lifecycle 5, Job-Drain 4, Owner-Prearm 13, Runner-Service-IO 28, Candidate-Session 38 (99/99 grün); alle 46 `test_auto_sub_*`-/`test_autosub_*`-Unittest-Suiten grün plus Mutation-Audit PASS (Exit 0); Mess-Spotchecks Playback-Target, Capture-Policy, Job-Setup, Fine-Winner-Apply grün, einziger Fehler Staged-Layout am bekannten `httpx`-Import-Gap (identisch zu D/E, Datei von F unberührt); nativ 11/11 Helper + 3/3 C grün inkl. Plan-Peak-Parität.
 
 Für Runner-Änderungen zusätzlich die bestehenden `scripts/test_auto_sub_*`-Suiten (insbesondere alle drei Final-Path-, Confirmation-, Gain-, Polarity- und Cancellation-Suiten) ausführen, numerische Assertions nicht abschwächen. `scripts/run_tests.sh` entdeckt neue `test_*.py` automatisch und nutzt einen XDG-Sandbox. Test-Doubles von `_auto_sub_apply_candidate` müssen die `job`-Kwarg akzeptieren.
 
