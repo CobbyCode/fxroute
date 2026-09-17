@@ -38,6 +38,7 @@ from ..candidates import (
     _auto_sub_winner_delay_ms,
     _restore_original_config_or_fail_job,
     _stage_auto_sub_service_state,
+    _commit_auto_sub_service_winner,
 )
 from ..deps import (
     _AUTO_SUB_JOBS,
@@ -1600,6 +1601,12 @@ async def _run_auto_sub_22_stereo_optimize(
             job["message"] = "Auto Sub Optimize cancelled."
             await _restore_original_config()
             return
+
+        if "output_state_context" in job:
+            # Slice F: publish the retained final sides once, after every
+            # acoustic gate (polarity, gain, deep bass, dip recheck).
+            await _commit_auto_sub_service_winner(job)
+
         job["status"] = "completed"
         gate_suffix = {
             "winner_alignment_original_kept": "; original Gain dropped, selected alignment/polarity committed",

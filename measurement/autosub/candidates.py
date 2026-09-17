@@ -17,7 +17,12 @@ from audio.samplerate import (
 )
 from dsp.runtime import BassManagementConfig
 
-from .deps import _candidate_owner, _dsp_runtime, _output_service
+from .deps import (
+    _auto_sub_cancel_requested,
+    _candidate_owner,
+    _dsp_runtime,
+    _output_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +276,29 @@ async def _stage_auto_sub_service_state(
         raise
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeError(f"AutoSub failed to stage retained state: {exc}") from exc
+
+
+async def _commit_auto_sub_service_winner(job: dict[str, Any]) -> dict[str, Any]:
+    """Commit the final verified staged state once; any failure is run-fatal.
+
+    Called by the runners immediately before completing a service job, after
+    every acoustic gate has retained the final state. The owner re-verifies
+    runtime and frozen revision inside its lock and retires afterwards, so
+    cleanup can never restore through it. A committed owner returning here
+    again is a programming error and raises.
+    """
+    if "output_state_context" not in job:
+        raise RuntimeError("AutoSub winner commit requires a service job")
+    if _auto_sub_cancel_requested(job):
+        raise RuntimeError("AutoSub winner commit skipped: cancellation requested")
+    owner = _candidate_owner(job["id"])
+    try:
+        committed = await owner.commit_staged(
+            cancel_requested=lambda: _auto_sub_cancel_requested(job))
+    except Exception as exc:
+        raise RuntimeError(f"AutoSub winner commit failed: {exc}") from exc
+    job["output_state_context"]["committed_revision"] = committed["revision"]
+    return committed
 
 
 async def _auto_sub_apply_candidate(

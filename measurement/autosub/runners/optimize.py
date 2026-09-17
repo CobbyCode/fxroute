@@ -26,6 +26,7 @@ from ..candidates import (
     _restore_original_config_or_fail_job,
     _auto_sub_sweep_profile,
     _stage_auto_sub_service_state,
+    _commit_auto_sub_service_winner,
 )
 from ..deps import (
     _AUTO_SUB_JOBS,
@@ -1049,6 +1050,13 @@ async def _run_auto_sub_optimize(
             job["message"] = "Auto Sub Optimize cancelled."
             await _restore_original_config()
             return
+
+        if "output_state_context" in job:
+            # Slice F: publish the retained final state once, after every
+            # acoustic gate. A failed commit fails the job (the except path
+            # restores through the owner); cleanup never restores a
+            # committed owner, so the committed state survives.
+            await _commit_auto_sub_service_winner(job)
 
         job["status"] = "completed"
         gate_action = (job.get("confirmation_gate") or {}).get("action") if auto_apply else None

@@ -109,7 +109,7 @@ class ServiceHarness:
                                          sample_rate_hz=RATE)
         self.target = self.build_target(
             plan, fingerprint=self.service.fingerprint_plan(plan))
-        self.initial_fingerprint = self.target.config.plan_fingerprint
+        self.start_fingerprint = self.target.config.plan_fingerprint
         real_stage = None
         owner = AutoSubCandidateSession(
             service=self.service, start_state=self.start,
@@ -519,10 +519,18 @@ class RunnerServiceIOTestBase(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.job_id, autosub_deps._AUTO_SUB_CANDIDATE_OWNERS)
         self.assertEqual(self.session.unregistered, [self.job_id])
         self.assertIsNone(self.session.active_auto_sub_job_id)
-        self.assertEqual(self.service.load()["revision"], self.harness.start["revision"])
-        self.assertEqual(
-            self.harness.target.config.plan_fingerprint,
-            self.harness.initial_fingerprint)
+        # Slice F: the final retained state is committed, not rolled back.
+        # No staged change (equal-to-start) keeps the frozen revision; any
+        # adopted candidate bumps exactly one revision. Either way the
+        # committed document must compile to the graph the fake hardware
+        # actually shows (the retired stager is never restored through).
+        final_state = self.service.load()
+        self.assertIn(final_state["revision"], (
+            self.harness.start["revision"], self.harness.start["revision"] + 1))
+        committed_plan = self.service.compile_plan(
+            final_state, output_key="dev", channels=4, sample_rate_hz=RATE)
+        self.assertEqual(self.service.fingerprint_plan(committed_plan),
+                         self.harness.target.config.plan_fingerprint)
 
     def canned_combined(self, points=None, **overrides):
         pts = copy.deepcopy(points if points is not None else _points())
@@ -645,7 +653,9 @@ class Runner21ServiceIOTests(RunnerServiceIOTestBase):
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
         self.assertEqual(self.job["result"]["applied_alignment_ms"], -3.12)
         self.assertEqual(self.job["auto_gain"]["final_level_db"], 3.0)
-        self.assertEqual(len(self.harness.transitions), 4)
+        # Winner + gain + correction staged; the cleanup restore is gone
+        # because the final state was committed (never restored through).
+        self.assertEqual(len(self.harness.transitions), 3)
         self.assertEqual(len(self.harness.stage_calls), 4)
         self.assert_service_end_state()
 
@@ -665,7 +675,7 @@ class Runner21ServiceIOTests(RunnerServiceIOTestBase):
             await self.run_runner(self.runner._run_auto_sub_optimize(**self.runner_args()))
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
         self.assertTrue(self.job["auto_gain"]["reverted"])
-        self.assertEqual(len(self.harness.transitions), 4)
+        self.assertEqual(len(self.harness.transitions), 3)
         self.assert_service_end_state()
 
     async def test_correction_reject_restores_step1_through_owner(self):
@@ -685,7 +695,7 @@ class Runner21ServiceIOTests(RunnerServiceIOTestBase):
             await self.run_runner(self.runner._run_auto_sub_optimize(**self.runner_args()))
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
         self.assertEqual(self.job["auto_gain"]["final_level_db"], 2.0)
-        self.assertEqual(len(self.harness.transitions), 5)
+        self.assertEqual(len(self.harness.transitions), 4)
         self.assert_service_end_state()
 
     async def test_veto_final_kept_recommits_through_owner(self):

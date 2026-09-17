@@ -246,10 +246,13 @@ def _reason(context: str, name: str) -> str | None:
     }:
         return "measurement workflow, outside playback transitions"
     if leaf in {
-        "_measure_auto_sub_candidate", "_capture_auto_sub_main_references",
+        "_measure_auto_sub_candidate", "finish_capture",
+        "_capture_auto_sub_main_references",
         "_measure_auto_sub_combined_candidate", "_run_auto_sub_optimize",
         "_run_auto_sub_22_optimize", "_run_auto_sub_22_stereo_optimize",
     }:
+        # finish_capture is _measure_auto_sub_candidate's shielded cleanup
+        # tail (drain + exact-mute restore), moved out of the main body.
         return "AutoSub sweep workflow, outside playback transitions"
     if leaf in {
         "lifespan", "save_audio_output_selection_route", "save_audio_output_mode_route",

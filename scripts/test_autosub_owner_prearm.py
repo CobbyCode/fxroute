@@ -18,6 +18,7 @@ Legacy jobs keep the persisted-config sync path untouched. Service jobs
 The pure funnel-args-to-proposal adapter is covered directly as well.
 """
 
+import asyncio
 import copy
 import sys
 import tempfile
@@ -144,6 +145,9 @@ class FakeStore:
             "analysis": {"alignment_samples": 1000, "sample_rate": RATE},
             "channel": "left"}}}
 
+    async def drain_job(self, job_id):
+        assert job_id == "sweep-1"
+
     def cancel_job(self, job_id):
         pass
 
@@ -253,6 +257,80 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
                     original_config_snapshot={"mode": "subwoofer-2.1"})
         args.update(overrides)
         return await funnel._measure_auto_sub_candidate(**args)
+
+    async def test_service_capture_drains_before_exact_mute_restore(self):
+        job = self.service_job()
+        self.mute_next = self.context["sub_mute_mask"]
+        events = []
+        real_mute = self.runtime.set_exact_sub_mute
+
+        async def drain(job_id):
+            self.assertEqual(job_id, "sweep-1")
+            self.assertTrue(self.runtime.muted)
+            events.append("drained")
+
+        async def mute(enabled, *, mask=None):
+            if not enabled:
+                events.append("unmuted")
+            return await real_mute(enabled, mask=mask)
+
+        self.measure_store.drain_job = drain
+        self.runtime.set_exact_sub_mute = mute
+        await self.sweep(job, exact_sub_mute=True)
+        self.assertEqual(events, ["drained", "unmuted"])
+
+    async def test_drain_error_after_finished_child_still_restores_exact_mute(self):
+        # A deferred drain error (e.g. cancel-request persist failure) must
+        # not skip the funnel's exact-mute restoration: the child cleanup
+        # completes, the mute is restored, and only then does the error
+        # surface to fail the run.
+        job = self.service_job()
+        self.mute_next = self.context["sub_mute_mask"]
+
+        async def drain(job_id):
+            raise OSError("disk full while persisting cancellation")
+
+        self.measure_store.drain_job = drain
+        with self.assertRaises(OSError):
+            await self.sweep(job, exact_sub_mute=True)
+        self.assertEqual(self.runtime.mute_calls[-1], (False, self.context["sub_mute_mask"]))
+        self.assertFalse(self.runtime.muted)
+
+    async def test_cancelled_service_capture_keeps_mute_until_drain_finishes(self):
+        job = self.service_job()
+        self.mute_next = self.context["sub_mute_mask"]
+        draining = asyncio.Event()
+        release = asyncio.Event()
+        events = []
+        real_start = self.measure_store.start_measurement
+
+        async def start(**kwargs):
+            child = await real_start(**kwargs)
+            job["cancel_requested"] = True
+            return child
+
+        async def drain(job_id):
+            draining.set()
+            await release.wait()
+            events.append("drained")
+
+        self.measure_store.start_measurement = start
+        self.measure_store.drain_job = drain
+        task = asyncio.create_task(self.sweep(job, exact_sub_mute=True))
+        try:
+            await asyncio.wait_for(draining.wait(), 2)
+            for _ in range(3):
+                task.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(task.done())
+                self.assertTrue(self.runtime.muted)
+            self.assertEqual(events, [])
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(events, ["drained"])
+        self.assertFalse(self.runtime.muted)
+        self.assertTrue(task.cancelled())
 
     async def test_service_sweep_stages_proposal_and_prearms_via_owner(self):
         job = self.service_job()

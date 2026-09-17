@@ -238,6 +238,51 @@ class AutoSubCandidateSession:
             self._committed = True
             return committed
 
+    async def commit_staged(self, cancel_requested: Callable[[], bool] | None = None) -> dict:
+        """Commit the verified currently staged state; equal-to-start is a no-op.
+
+        Runners call this once, after every acoustic gate, for the final
+        retained state. The proposal triplets were already validated when
+        staged, so the guard is the runtime: re-readback, frozen revision,
+        then the synchronous prepared-transaction commit. When nothing was
+        ever staged (no candidate changed anything) the start document is
+        re-verified and returned unchanged instead of bumping its revision.
+
+        ``cancel_requested`` is the cooperative cancel probe (the HTTP
+        endpoint only flips a flag; the worker task keeps running). It is
+        consulted after every await inside the critical section, so a cancel
+        observed during the runtime readback vetoes persistence; the owner
+        stays uncommitted and cleanup restores the frozen start.
+        """
+
+        def _cancelled() -> bool:
+            return bool(cancel_requested()) if cancel_requested is not None else False
+
+        async with self._lock:
+            self._require_stager()
+            self._check_revision()
+            if _cancelled():
+                raise RuntimeError("AutoSub winner commit skipped: cancellation requested")
+            if self._current is None or self._current["state"] == self._start_state:
+                # Equal-to-start (or nothing ever staged): verify the runtime
+                # still shows the frozen start graph, then return it unchanged
+                # without bumping the revision.
+                await self._ensure_ready_unlocked(self._sample_rate_hz)
+                self._check_revision()
+                if _cancelled():
+                    raise RuntimeError("AutoSub winner commit skipped: cancellation requested")
+                self._committed = True
+                return copy.deepcopy(self._service.load())
+            await self._ensure_ready_unlocked(self._sample_rate_hz)
+            # No await between these final checks and the synchronous commit.
+            self._check_revision()
+            if _cancelled():
+                raise RuntimeError("AutoSub winner commit skipped: cancellation requested")
+            committed = self._service.commit(
+                copy.deepcopy(self._current["state"]), expected_revision=self._revision)
+            self._committed = True
+            return committed
+
     async def restore(self) -> dict | None:
         """Inert is a no-op; activated restores start; committed/stale never restore."""
         async with self._lock:

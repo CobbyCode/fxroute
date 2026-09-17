@@ -702,6 +702,44 @@ class MeasurementStore:
         )
         return cancelled
 
+    async def drain_job(self, job_id: str) -> None:
+        """Stop a live capture and wait through its task's mask/scope cleanup.
+
+        Terminal status is published before runner finalization. Shield the
+        actual task, not status polling, and defer caller cancellation until
+        its cleanup has completed. A failing cancel request (e.g. a persist
+        error) is remembered and raised only after the child was actually
+        drained; this does not shut down other store jobs.
+        """
+        job = self.get_job(job_id)
+        cancel_error: BaseException | None = None
+        if str(job.get("status") or "") not in {"completed", "failed", "cancelled"}:
+            try:
+                self.cancel_job(job_id)
+            except BaseException as exc:
+                logger.exception(
+                    "MEASUREMENT-DRAIN cancel request failed; draining child anyway: job_id=%s",
+                    job_id,
+                )
+                cancel_error = exc
+        task = self._job_tasks.get(job_id)
+        if task is None:
+            if cancel_error is not None:
+                raise cancel_error
+            return
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        if not task.cancelled():
+            task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        if cancel_error is not None:
+            raise cancel_error
+
     def has_active_measurement_job(self) -> bool:
         self._normalize_stale_jobs()
         return any(
