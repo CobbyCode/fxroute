@@ -474,6 +474,7 @@ import install_info
 import audio.power_api as power_api
 import audio.canonical_volume as canonical_volume
 import measurement.spl_calibration as spl_calibration
+import measurement.speaker_api as speaker_api
 import measurement.autosub as autosub
 import measurement.session as measurement_session
 from measurement.session import (
@@ -835,6 +836,7 @@ def _make_measurement_services() -> MeasurementServices:
 
 
 measurement_session.configure_services(_make_measurement_services())
+speaker_api.configure_speaker_align(lambda: get_speaker_align_service())
 autosub.configure_dependencies(autosub.AutoSubDependencies(
     get_dsp_runtime=lambda: runtime.dsp_runtime,
     get_measurement_store=lambda: measurement_store,
@@ -2852,6 +2854,7 @@ app = FastAPI(
 )
 app.include_router(radio_api_router)
 app.include_router(spl_calibration.router)
+app.include_router(speaker_api.router)
 app.include_router(library_api_router)
 app.include_router(autosub.router)
 app.include_router(measurement_session.router)
@@ -4215,6 +4218,48 @@ def _create_auto_sub_candidate_session(*, service, start_state: dict, output_key
     return AutoSubCandidateSession(
         service=service, start_state=start_state, output_key=output_key, channels=channels,
         build_target=build_target, guarded_stage=guarded_stage, readback=readback)
+
+
+_speaker_align_service_instance = None
+
+
+def _describe_speaker_align_device(state: dict) -> dict:
+    """Resolve the selected output device context for one speaker job.
+
+    Mirrors the measurement-target device resolution: the committed
+    overview's effective key/channels plus discovered playback ports.
+    Raises ValueError (the service maps it to HTTP 400) instead of the
+    HTTPException the interactive output-state routes use.
+    """
+    del state
+    overview = get_audio_output_overview()
+    try:
+        output_key, channels = _output_state_device(overview)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "No audio output device is selected"
+        raise ValueError(detail) from exc
+    ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
+    return {"output_key": output_key, "channels": int(channels or 0),
+            "hardware_ports": ports}
+
+
+def get_speaker_align_service():
+    """Return the Speaker Align application service (late-bound singleton).
+
+    The measurement store value is captured at first use, which always
+    post-dates lifespan startup in production; tests rebind through their
+    own factory instead of this singleton.
+    """
+    global _speaker_align_service_instance
+    if _speaker_align_service_instance is None:
+        _speaker_align_service_instance = speaker_api.build_speaker_align_service(
+            output_service=get_output_service(),
+            measurement_store=measurement_store,
+            dsp_manager=_require_dsp_manager(),
+            get_native_runtime=lambda: runtime.dsp_runtime,
+            describe_device=_describe_speaker_align_device,
+            get_measurement_rate=_live_measurement_sample_rate)
+    return _speaker_align_service_instance
 
 
 async def _sync_plan_runtime(target, *, reason: str = "output-state-transition") -> None:

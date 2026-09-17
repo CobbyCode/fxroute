@@ -29,6 +29,14 @@ from measurement.speaker_apply import apply_and_confirm
 TERMINAL_STATUSES = ("committed", "trial-done", "unconfirmed", "failed", "cancelled")
 
 
+class SpeakerAlignStaleError(ValueError):
+    """Planning and live state disagree; HTTP maps this to 409, not 400."""
+
+
+class SpeakerAlignBusyError(RuntimeError):
+    """Another alignment owns the job slot; HTTP maps this to 409."""
+
+
 def _jsonable(value: Any) -> Any:
     """Convert evidence summaries to strict JSON values, failing loudly."""
     if value is None or isinstance(value, (bool, int, str)):
@@ -45,41 +53,43 @@ def _jsonable(value: Any) -> Any:
 
 
 def _summarize_proposal(proposal: dict[str, Any]) -> dict[str, Any]:
+    """Summarize a real proposal; missing keys raise instead of zero-filling."""
     checks = []
-    for check in proposal.get("overlap_checks", []):
+    for check in proposal["overlap_checks"]:
         checks.append({
-            "roles": list(check.get("roles", [])),
-            "lower_hz": float(check.get("lower_hz", 0.0)),
-            "upper_hz": float(check.get("upper_hz", 0.0)),
-            "phase_rms_degrees": float(check.get("phase_rms_degrees", 0.0)),
-            "residual_delay_ms": float(check.get("residual_delay_ms", 0.0)),
-            "before_sum_db": float(check.get("before_sum_db", 0.0)),
-            "after_sum_db": float(check.get("after_sum_db", 0.0)),
+            "roles": list(check["roles"]),
+            "lower_hz": float(check["lower_hz"]),
+            "upper_hz": float(check["upper_hz"]),
+            "phase_rms_degrees": float(check["phase_rms_degrees"]),
+            "residual_delay_ms": float(check["residual_delay_ms"]),
+            "before_sum_db": float(check["before_sum_db"]),
+            "after_sum_db": float(check["after_sum_db"]),
         })
     return _jsonable({
-        "start_revision": proposal.get("start_revision"),
-        "processing_fingerprint": proposal.get("processing_fingerprint"),
-        "arrival_ms": dict(proposal.get("arrival_ms", {})),
-        "added_delay_ms": dict(proposal.get("added_delay_ms", {})),
+        "start_revision": proposal["start_revision"],
+        "processing_fingerprint": proposal["processing_fingerprint"],
+        "arrival_ms": dict(proposal["arrival_ms"]),
+        "added_delay_ms": dict(proposal["added_delay_ms"]),
         "overlap_checks": checks,
     })
 
 
 def _summarize_check(check: dict[str, Any]) -> dict[str, Any]:
+    """Summarize a real confirmation check; missing keys raise loudly."""
     pairs = []
-    for pair in check.get("pairs", []):
+    for pair in check["pairs"]:
         pairs.append({
-            "roles": list(pair.get("roles", [])),
-            "baseline_after_sum_db": float(pair.get("baseline_after_sum_db", 0.0)),
-            "confirmation_after_sum_db": float(pair.get("confirmation_after_sum_db", 0.0)),
-            "regression_db": float(pair.get("regression_db", 0.0)),
+            "roles": list(pair["roles"]),
+            "baseline_after_sum_db": float(pair["baseline_after_sum_db"]),
+            "confirmation_after_sum_db": float(pair["confirmation_after_sum_db"]),
+            "regression_db": float(pair["regression_db"]),
         })
     return _jsonable({
-        "confirmed": bool(check.get("confirmed")),
-        "reasons": [str(reason) for reason in check.get("reasons", [])],
-        "max_residual_ms": float(check.get("max_residual_ms", 0.0)),
-        "max_regression_db": float(check.get("max_regression_db", 0.0)),
-        "min_confirmation_sum_db": float(check.get("min_confirmation_sum_db", 0.0)),
+        "confirmed": bool(check["confirmed"]),
+        "reasons": [str(reason) for reason in check["reasons"]],
+        "max_residual_ms": float(check["max_residual_ms"]),
+        "max_regression_db": float(check["max_regression_db"]),
+        "min_confirmation_sum_db": float(check["min_confirmation_sum_db"]),
         "pairs": pairs,
     })
 
@@ -91,7 +101,14 @@ def _session_identity(value: object, label: str) -> str:
 
 
 class SpeakerAlignService:
-    """Own Speaker Align job records, worker tasks and single-active ownership."""
+    """Own Speaker Align job records, worker tasks and single-active ownership.
+
+    ``start`` must be called with a running event loop: the worker task is
+    bound to it, and ``cancel`` must be called from the same loop for the
+    task cancellation to take effect (the cooperative flag works
+    cross-thread). All blocking boundaries are the composition root's
+    responsibility to keep fast or thread off.
+    """
 
     def __init__(self, *, get_state: Callable[[], dict],
                  describe: Callable[[dict], dict],
@@ -112,23 +129,30 @@ class SpeakerAlignService:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._active_id: str | None = None
+        self.max_retained_jobs = 20
+
+    @staticmethod
+    def _public(job: dict[str, Any]) -> dict[str, Any]:
+        """Detached job view: internal snapshots and cancel flags stay inside."""
+        return deepcopy({key: job[key] for key in (
+            "id", "side", "status", "message", "dry_run", "params", "result", "error")})
 
     def jobs(self) -> list[dict[str, Any]]:
         """Return detached public copies of every known job, newest last."""
         with self._guard:
-            return [deepcopy(job) for job in self._jobs.values()]
+            return [self._public(job) for job in self._jobs.values()]
 
     def status(self, job_id: str) -> dict[str, Any]:
         """Return a detached public copy of one job; unknown ids raise KeyError."""
         with self._guard:
-            return deepcopy(self._jobs[job_id])
+            return self._public(self._jobs[job_id])
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         """Request cancellation; terminal jobs are unaffected. Unknown ids raise KeyError."""
         with self._guard:
             job = self._jobs[job_id]
             if job["status"] in TERMINAL_STATUSES:
-                return deepcopy(job)
+                return self._public(job)
             job["cancel_requested"] = True
             if job["status"] != "cancelling":
                 job["status"] = "cancelling"
@@ -137,16 +161,26 @@ class SpeakerAlignService:
         if task is not None:
             task.cancel()
         with self._guard:
-            return deepcopy(self._jobs[job_id])
+            return self._public(self._jobs[job_id])
 
     def start(self, side: str, *, input_id: str, mic_input_channel: str | int | None = "1",
               reference_input_channel: str | int | None,
               reference_id: str, microphone_position_id: str,
               sweep_profile: dict[str, float] | None = None,
               dry_run: bool = False) -> str:
-        """Validate a request synchronously and launch its worker; return the job id."""
+        """Validate a request synchronously and launch its worker; return the job id.
+
+        Must be called with a running event loop (see the class contract).
+        Request validation — including a freshness check of the frozen
+        planning snapshot — raises before any job record exists. The worker
+        reuses that frozen snapshot instead of re-reading live state, so a
+        revision bump between ``start`` and the worker fails the job as
+        stale instead of silently rebasing it.
+        """
         if side not in ("left", "right"):
             raise ValueError("Speaker Align side must be left or right")
+        if not isinstance(input_id, str) or not input_id.strip():
+            raise ValueError("Speaker Align service requires a capture input id")
         if reference_input_channel is None or not str(reference_input_channel).strip():
             raise ValueError("Speaker Align service requires an electrical reference input channel")
         reference_id = _session_identity(reference_id, "upstream reference")
@@ -173,13 +207,14 @@ class SpeakerAlignService:
                 "output_key": context["output_key"], "channels": context["channels"],
                 "sample_rate_hz": context["sample_rate_hz"],
             },
+            "internal": {"start_state": state, "context": context},
             "result": None, "error": None,
         }
         with self._guard:
             if self._active_id is not None:
                 active = self._jobs.get(self._active_id)
                 if active is not None and active["status"] not in TERMINAL_STATUSES:
-                    raise RuntimeError("A speaker alignment is already running")
+                    raise SpeakerAlignBusyError("A speaker alignment is already running")
             self._jobs[job_id] = job
             self._active_id = job_id
             self._tasks[job_id] = asyncio.get_running_loop().create_task(self._run(job_id))
@@ -195,9 +230,14 @@ class SpeakerAlignService:
         if (not isinstance(live_target, dict)
                 or live_target.get("revision") != frozen.get("revision")
                 or live_target.get("processing_fingerprint") != frozen.get("processing_fingerprint")):
-            raise ValueError(
+            raise SpeakerAlignStaleError(
                 "Speaker Align live target is stale; revision and processing must "
                 "match the frozen requests before acquiring")
+
+    def _is_cancel_requested(self, job_id: str) -> bool:
+        with self._guard:
+            job = self._jobs.get(job_id)
+            return bool(job is not None and job.get("cancel_requested"))
 
     def _note(self, job_id: str, status: str, message: str) -> None:
         with self._guard:
@@ -217,25 +257,47 @@ class SpeakerAlignService:
             job["error"] = error
             if self._active_id == job_id:
                 self._active_id = None
+            self._tasks.pop(job_id, None)
+            terminal = [known for known, record in self._jobs.items()
+                        if record["status"] in TERMINAL_STATUSES]
+            while len(terminal) > max(1, int(self.max_retained_jobs)):
+                evicted = terminal.pop(0)
+                self._jobs.pop(evicted, None)
+                self._tasks.pop(evicted, None)
 
     async def _run(self, job_id: str) -> None:
         with self._guard:
-            job = self._jobs[job_id]
-            params = deepcopy(job["params"])
-            dry_run = job["dry_run"]
-        probe = lambda: bool(self._jobs[job_id]["cancel_requested"])
+            frozen = deepcopy(self._jobs[job_id]["internal"])
+            params = deepcopy(self._jobs[job_id]["params"])
+            side = str(self._jobs[job_id]["side"])
+            dry_run = bool(self._jobs[job_id]["dry_run"])
+        probe = lambda: self._is_cancel_requested(job_id)
         try:
-            state = deepcopy(self._get_state())
-            context = self._describe(state)
+            # The worker reuses the frozen start snapshot: the fresh-head
+            # drift gate below fails the job as stale instead of silently
+            # rebasing the whole run. The frozen-derived live check after
+            # it is defense in depth against a lying freeze boundary.
+            fresh_state = deepcopy(self._get_state())
+            fresh_context = self._describe(fresh_state)
+            if (fresh_state.get("revision") != frozen["start_state"].get("revision")
+                    or fresh_context.get("fingerprint")
+                    != frozen["context"].get("fingerprint")):
+                raise SpeakerAlignStaleError(
+                    "Speaker Align output state is stale: it moved after the job "
+                    "started; no rebase is performed, start a new alignment")
+            state = frozen["start_state"]
+            context = frozen["context"]
             alignment = SpeakerAlignment(
-                state, side=job["side"], output_key=context["output_key"],
+                deepcopy(state), side=side, output_key=context["output_key"],
                 channels=context["channels"], sample_rate_hz=context["sample_rate_hz"],
                 fingerprint=context["fingerprint"],
                 reference_id=params["reference_id"],
                 microphone_position_id=params["microphone_position_id"])
             live_target = self._freeze_live(
-                state, output_key=context["output_key"], channels=context["channels"],
-                sample_rate_hz=context["sample_rate_hz"], fingerprint=context["fingerprint"])
+                deepcopy(state), output_key=context["output_key"],
+                channels=context["channels"],
+                sample_rate_hz=context["sample_rate_hz"],
+                fingerprint=context["fingerprint"])
             self._require_fresh_live(alignment, live_target)
 
             self._note(job_id, "acquiring", "Acquiring speaker ways…")
@@ -247,7 +309,8 @@ class SpeakerAlignService:
                 microphone_position_id=params["microphone_position_id"],
                 sweep_profile=deepcopy(params["sweep_profile"]),
                 cancel_requested=probe)
-            proposal = alignment.propose(first["captures"], live_target=live_target)
+            proposal = alignment.propose(
+                first["captures"], live_target=live_target, cancel_requested=probe)
             session = self._create_session(
                 state, output_key=context["output_key"], channels=context["channels"],
                 sample_rate_hz=context["sample_rate_hz"])
@@ -300,7 +363,8 @@ class SpeakerAlignService:
                 result={"confirmed": True, "check": check,
                         "proposal": _summarize_proposal(proposal),
                         "provenance": _jsonable(first.get("provenance") or {}),
-                        "committed_revision": committed.get("revision"), "dry_run": False})
+                        "committed_revision": _jsonable(committed.get("revision")),
+                        "dry_run": False})
         except asyncio.CancelledError:
             self._finish(job_id, "cancelled", "Speaker alignment cancelled.")
             raise
@@ -312,5 +376,5 @@ class SpeakerAlignService:
         """Await a terminal status; primarily a test and UI-polling helper."""
         async with asyncio.timeout(timeout_seconds):
             while self.status(job_id)["status"] not in TERMINAL_STATUSES:
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.01)
         return self.status(job_id)

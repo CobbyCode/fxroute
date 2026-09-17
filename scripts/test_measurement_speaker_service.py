@@ -15,7 +15,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from audio.output_state import default_output_state, set_mode_routing, switch_mode
 from measurement.speaker_align import SpeakerAlignment
-from measurement.speaker_service import SpeakerAlignService
+from measurement.speaker_service import (
+    SpeakerAlignBusyError,
+    SpeakerAlignService,
+    SpeakerAlignStaleError,
+    _summarize_proposal,
+)
 from measurement.target import REFERENCE_TAP_INGRESS, freeze_measurement_target
 
 RATE = 48000
@@ -207,6 +212,13 @@ class StartValidationTests(ServiceFixture, unittest.TestCase):
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
 
+    def test_blank_input_id_fails_before_job_exists(self):
+        service = self.service()
+        with self.assertRaisesRegex(ValueError, "input"):
+            service.start(side="left", input_id="  ", reference_input_channel="2",
+                          reference_id="r", microphone_position_id="m")
+        self.assertEqual(service.jobs(), [])
+
     def test_unknown_job_status_raises_key_error(self):
         service = self.service()
         with self.assertRaises(KeyError):
@@ -268,7 +280,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
     async def test_stale_live_target_fails_before_any_job_exists(self):
         self.live_revision_bump = 1
         service = self.service()
-        with self.assertRaisesRegex(ValueError, "stale"):
+        with self.assertRaises(SpeakerAlignStaleError):
             service.start(side="left", input_id="mic", reference_input_channel="2",
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
@@ -283,6 +295,14 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["status"], "failed")
         self.assertIn("stale", job["error"].lower())
         self.assertFalse(self.session.committed)
+
+    def good_result(self):
+        alignment = SpeakerAlignment(
+            self.state, side="left", output_key="dev", channels=6, sample_rate_hz=RATE,
+            fingerprint="frozen-plan", reference_id="interface:input-2:upstream",
+            microphone_position_id="seat-1-fixed")
+        return {"captures": captures_for(alignment, (96, 240)),
+                "provenance": {"job_ids": ["job-1"]}}
 
     async def test_second_start_while_running_is_rejected(self):
         entered = asyncio.Event()
@@ -300,7 +320,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         try:
             async with asyncio.timeout(10):
                 await entered.wait()
-            with self.assertRaisesRegex(RuntimeError, "already running"):
+            with self.assertRaises(SpeakerAlignBusyError):
                 service.start(side="right", input_id="mic", reference_input_channel="2",
                               reference_id="r", microphone_position_id="m")
         finally:
@@ -333,9 +353,113 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_cancel_after_terminal_is_harmless(self):
         service, job_id = self.start()
-        await self.wait_terminal(service, job_id)
+        await service.wait_for(job_id)
         service.cancel(job_id)
         self.assertEqual(service.status(job_id)["status"], "committed")
+
+    async def test_post_terminal_start_succeeds_with_new_id(self):
+        service, first = self.start()
+        await service.wait_for(first)
+        _, second = self.start(service)
+        self.assertNotEqual(first, second)
+        job = await service.wait_for(second)
+        self.assertEqual(job["status"], "committed")
+
+    async def test_terminal_jobs_are_retained_bounded(self):
+        service = self.service()
+        service.max_retained_jobs = 2
+        ids = []
+        for _ in range(3):
+            _, job_id = self.start(service)
+            ids.append(job_id)
+            await service.wait_for(job_id)
+        remaining = [job["id"] for job in service.jobs()]
+        self.assertEqual(remaining, ids[1:])
+        with self.assertRaises(KeyError):
+            service.status(ids[0])
+
+    async def test_status_copies_are_detached_and_internal_free(self):
+        service, job_id = self.start()
+        await service.wait_for(job_id)
+        first = service.status(job_id)
+        self.assertNotIn("internal", first)
+        self.assertNotIn("cancel_requested", first)
+        first["result"]["proposal"]["added_delay_ms"]["left_low"] = 999.0
+        second = service.status(job_id)
+        self.assertNotEqual(
+            second["result"]["proposal"]["added_delay_ms"]["left_low"], 999.0)
+
+    async def test_dry_run_unconfirmed_reports_trial_without_commit(self):
+        self.second_arrivals = (500, 548)
+        service, job_id = self.start(dry_run=True)
+        job = await service.wait_for(job_id)
+        self.assertEqual(job["status"], "trial-done")
+        self.assertFalse(job["result"]["confirmed"])
+        self.assertIsNone(job["result"]["committed_revision"])
+        self.assertFalse(self.session.committed)
+
+    async def test_dry_run_never_touches_commit(self):
+        service, job_id = self.start(dry_run=True)
+        job = await service.wait_for(job_id)
+        self.assertEqual(job["status"], "trial-done")
+        self.assertNotIn("confirm_and_commit", self.session.calls)
+
+    async def test_commit_failure_fails_the_job(self):
+        self.commit_fails = True
+        service, job_id = self.start()
+        job = await service.wait_for(job_id)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("commit failed", job["error"])
+
+    async def test_second_acquire_failure_fails_the_job(self):
+        self.acquire_queue = [self.good_result(), RuntimeError("second sweep lost")]
+        service, job_id = self.start()
+        job = await service.wait_for(job_id)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("second sweep lost", job["error"])
+        self.assertFalse(self.session.committed)
+
+    async def test_worker_rejects_rebased_state_without_sweep(self):
+        calls = {"n": 0}
+        base_get_state = lambda: deepcopy(self.state)
+
+        def counting_get_state():
+            calls["n"] += 1
+            state = base_get_state()
+            if calls["n"] > 1:
+                state["revision"] += 1
+            return state
+
+        service = self.service(get_state=counting_get_state)
+        _, job_id = self.start(service)
+        job = await service.wait_for(job_id)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("stale", job["error"].lower())
+        self.assertEqual(self.acquire_calls, [])
+
+    async def test_cancel_probe_reaches_propose(self):
+        seen = {}
+        import measurement.speaker_service as service_module
+        real_alignment = service_module.SpeakerAlignment
+        fixture = self
+
+        class RecordingAlignment(real_alignment):
+            def propose(self, captures, **kwargs):
+                seen.update(kwargs)
+                return super().propose(captures, **kwargs)
+
+        service_module.SpeakerAlignment = RecordingAlignment
+        try:
+            service, job_id = self.start()
+            await service.wait_for(job_id)
+        finally:
+            service_module.SpeakerAlignment = real_alignment
+        self.assertIn("cancel_requested", seen)
+        self.assertTrue(callable(seen["cancel_requested"]))
+
+    def test_summarizer_rejects_malformed_proposal_loudly(self):
+        with self.assertRaises(KeyError):
+            _summarize_proposal({})
 
 
 if __name__ == "__main__":
