@@ -140,8 +140,12 @@ cp -- "$ROOT_DIR/ubuntu/autoinstall/first-boot.service" "$STAGE_DIR/fxroute-iso/
     # QEMU-only kernel extras, baked into the Try entry at build time:
     # serial console for observability, live SSH test hook.
     export FXROUTE_GRUB_TEST_EXTRA="console=ttyS0 fxroute.live-password=test"
+    # QEMU test SSH hook (unit + helper, enabled in the squashfs).
+    export FXROUTE_TEST_SSH=1
+    TEST_SSH_CPS="--cp $ROOT_DIR/ubuntu/autoinstall/fxroute-test-ssh.service \$LAYERS[0]/etc/systemd/system/fxroute-test-ssh.service --cp $ROOT_DIR/ubuntu/scripts/fxroute-test-ssh.sh \$LAYERS[0]/usr/local/libexec/fxroute-test-ssh.sh"
   else
     cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data" "$STAGE_DIR/user-data"
+    TEST_SSH_CPS=""
   fi
 fi
 
@@ -173,6 +177,7 @@ if [[ "$BUILDER" == "docker" && "$INSIDE_DOCKER" -eq 0 ]]; then
     -e "TMPDIR=/ctmp" \
     -e "FXROUTE_UBUNTU_STAGE_DIR=$STAGE_DIR" \
     -e "FXROUTE_GRUB_TEST_EXTRA=${FXROUTE_GRUB_TEST_EXTRA:-}" \
+    -e "FXROUTE_TEST_SSH=${FXROUTE_TEST_SSH:-}" \
     -e "FXROUTE_UBUNTU_BASE_ISO=$BASE_ISO" \
     -e "FXROUTE_UBUNTU_ISO_OUTPUT=$OUTPUT" \
     -e "FXROUTE_UBUNTU_BUILDER=direct" \
@@ -205,6 +210,8 @@ livefs-edit "$BASE_ISO" "$OUTPUT" \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" '$LAYERS[0]/usr/local/libexec/fxroute-live-autostart.sh' \
   --cp "$ROOT_DIR/ubuntu/autoinstall/fxroute-live.desktop" '$LAYERS[0]/etc/xdg/autostart/fxroute-live.desktop' \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-ubuntu-launcher.sh" '$LAYERS[0]/usr/local/bin/fxroute-desktop-launcher' \
+  $TEST_SSH_CPS \
+  --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/test_ssh.py")" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/add_install_entry.py")"
 
 printf '[ubuntu-iso] wrote %s\n' "$OUTPUT"

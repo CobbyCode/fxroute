@@ -14,26 +14,8 @@ if [[ ! -d /cdrom/casper && ! -d /cdrom/CASPER ]] \
 fi
 # During an autoinstall run the live session belongs to the installer:
 # stay out of its way (the target gets FXRoute via first-boot).
+# (QEMU SSH introspection is a separate test-seed unit, not this script.)
 grep -q 'autoinstall' /proc/cmdline 2>/dev/null && exit 0
-
-# Test hook (QEMU only, release boots omit it): fxroute.live-password=...
-# on the kernel cmdline sets the live user password and starts SSH so the
-# test harness can introspect the live session. Never active by default.
-LIVE_PASSWORD=""
-if [[ -r /proc/cmdline ]]; then
-  for token in $(cat /proc/cmdline); do
-    case "$token" in
-      fxroute.live-password=*)
-        LIVE_PASSWORD="${token#fxroute.live-password=}"
-        ;;
-    esac
-  done
-fi
-if [[ -n "$LIVE_PASSWORD" ]]; then
-  printf '%s:%s\n' "$(id -un)" "$LIVE_PASSWORD" | sudo -n chpasswd 2>/dev/null || true
-  sudo -n systemctl start ssh.service 2>/dev/null \
-    || sudo -n systemctl start sshd.service 2>/dev/null || true
-fi
 
 MARKER="$HOME/.local/share/fxroute/live-ready"
 LOG="$HOME/.local/share/fxroute/live-autostart.log"
