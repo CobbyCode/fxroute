@@ -162,6 +162,18 @@ phase_install() {
   qemu-img create -f qcow2 "$disk" "${DISK_GB}G" >/dev/null
   rm -f "$TEST_ROOT/serial.log"
   boot_iso "$disk" "$monitor" "$pidfile" 1
+  # Fast-fail if GRUB selection missed the Install entry (no autoinstall on
+  # the kernel cmdline): better than a blind 60 min wait.
+  log "waiting for installer SSH to verify the Install entry boot"
+  if wait_for_live_ssh 900; then
+    if live_ssh_run "grep -q autoinstall /proc/cmdline"; then
+      log "Install FXRoute entry confirmed (autoinstall on cmdline)"
+    else
+      die "guest booted without autoinstall (wrong GRUB entry); see $TEST_ROOT/serial.log"
+    fi
+  else
+    die "installer SSH did not come up; see $TEST_ROOT/serial.log"
+  fi
   # Autoinstall ends with a reboot; with the ISO still attached GRUB would
   # come up again, so kill the guest as soon as the second GRUB shows.
   log "waiting for autoinstall reboot (60 min budget)"
