@@ -1,7 +1,7 @@
 """livefs-edit --python action: drop cdrom apt sources from the live squashfs.
 
-The Desktop live filesystem inherits a `file:/cdrom` apt source that is
-unmounted inside the build chroot, so `apt-get update` fails with exit 100.
+The Desktop live filesystem inherits a file:/cdrom apt source that is
+unmounted inside the build chroot, so apt-get update fails with exit 100.
 The chroot has archive network access; the cdrom source is not needed.
 Runs before --install-packages on the same (cached) squashfs overlay.
 """

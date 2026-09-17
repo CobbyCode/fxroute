@@ -186,14 +186,16 @@ command -v livefs-edit >/dev/null 2>&1 || die "livefs-edit is required (direct m
 command -v xorriso >/dev/null 2>&1 || die "xorriso is required for livefs-edit repacking"
 
 printf '[ubuntu-iso] editing live ISO with livefs-edit\n'
+# NOTE: --python takes code, not a path; the .py files stay the maintained
+# source and are inlined here (they contain no backticks/`$`, safe to inline).
 livefs-edit "$BASE_ISO" "$OUTPUT" \
-  --python "$ROOT_DIR/ubuntu/livefs-actions/remove_cdrom_source.py" \
+  --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/remove_cdrom_source.py")" \
   --install-packages "${LIVE_PACKAGES[@]}" \
   --cp "$STAGE_DIR/fxroute-iso" 'new/iso/fxroute-iso' \
   --cp "$STAGE_DIR/user-data" '$LAYERS[0]/var/lib/cloud/seed/nocloud/user-data' \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" '$LAYERS[0]/usr/local/libexec/fxroute-live-autostart.sh' \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-ubuntu-launcher.sh" '$LAYERS[0]/usr/local/bin/fxroute-desktop-launcher' \
-  --python "$ROOT_DIR/ubuntu/livefs-actions/add_install_entry.py"
+  --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/add_install_entry.py")"
 
 printf '[ubuntu-iso] wrote %s\n' "$OUTPUT"
 printf '[ubuntu-iso] sha256 %s\n' "$(sha256sum "$OUTPUT" | awk '{print $1}')"

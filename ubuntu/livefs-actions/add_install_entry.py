@@ -1,7 +1,7 @@
 """livefs-edit --python action: add an "Install FXRoute" GRUB entry.
 
-Duplicates the "Try or Install Ubuntu" menuentry, appends `autoinstall` to
-the installer kernel args (before `---`, installer-only) and keeps every
+Duplicates the "Try or Install Ubuntu" menuentry, appends autoinstall to
+the installer kernel args (before ---, installer-only) and keeps every
 other entry byte-identical. The default boot path (Try) is untouched.
 """
 import re
