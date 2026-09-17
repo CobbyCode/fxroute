@@ -64,6 +64,9 @@ class HostCaptureRunner:
         mic_input_channel_index: int,
         electrical_reference_channel_index: int | None = None,
         skip_pre_sweep_diagnostics: bool = False,
+        expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        expected_native_output_mode: str | None = None,
+        expected_plan_fingerprint: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         store = self._store
         record_node_name = f"fxroute-measure-record-{job_id}"
@@ -132,10 +135,20 @@ class HostCaptureRunner:
         if store._pw_record_supports_option("--sample-count"):
             record_command.extend(["--sample-count", str(sample_count)])
         record_command.append(str(capture_path))
+        expected = {
+            key: value
+            for key, value in (
+                ("expected_native_layout", expected_native_layout),
+                ("expected_native_output_mode", expected_native_output_mode),
+                ("expected_plan_fingerprint", expected_plan_fingerprint),
+            )
+            if value is not None
+        }
         playback_route = store._routing._build_measurement_playback_route(
             play_node_name,
             playback_target,
             measurement_scope=measurement_scope,
+            **expected,
         )
         play_command = store._routing._build_measurement_play_command(
             play_node_name=play_node_name,

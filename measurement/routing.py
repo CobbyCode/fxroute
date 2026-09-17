@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
 import subprocess
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from dsp.runtime import DSPRuntimeConfig
+from audio.output_topology import MODES
 from audio.tool_env import c_locale_env
 from measurement.constants import (
     MEASUREMENT_SCOPE_ACTIVE_CHAIN,
@@ -18,6 +21,55 @@ from measurement.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def freeze_expected_native_context(
+    *,
+    measurement_scope: str,
+    expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    expected_native_output_mode: str | None = None,
+    expected_plan_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    """Validate and detach an internal, already compiled planned-output context.
+
+    Engine filter/route semantics remain the compiler/manager's responsibility;
+    this boundary checks the envelope, not a second native-layout dialect.
+    """
+    values = (expected_native_layout, expected_native_output_mode, expected_plan_fingerprint)
+    if all(value is None for value in values):
+        return {}
+    if any(value is None for value in values):
+        raise ValueError("Expected native layout, output mode and plan fingerprint are required together")
+    if measurement_scope != MEASUREMENT_SCOPE_RAW_HELPER:
+        raise ValueError("Expected native context is only supported for raw_helper measurements")
+    if not isinstance(expected_native_output_mode, str) or expected_native_output_mode not in MODES:
+        raise ValueError("expected_native_output_mode must be a known planned output mode")
+    if not isinstance(expected_plan_fingerprint, str) or not expected_plan_fingerprint.strip():
+        raise ValueError("expected_plan_fingerprint must be a non-empty token")
+    if not isinstance(expected_native_layout, (list, tuple)) or not expected_native_layout:
+        raise ValueError("expected_native_layout must be a non-empty output layout")
+    layout = deepcopy(list(expected_native_layout))
+    if any(not isinstance(row, dict) or not isinstance(row.get("name"), str)
+           or not row["name"].strip() for row in layout):
+        raise ValueError("expected_native_layout requires named output objects")
+    for row in layout:
+        routes = row.get("routes")
+        # Match the manager's legacy source shorthand as well as compiled
+        # route arrays; numeric/filter semantics were checked when staged.
+        if routes is None:
+            if not isinstance(row.get("source"), int) or row["source"] < 0:
+                raise ValueError("expected_native_layout requires output routes or a source")
+        elif not isinstance(routes, list) or not routes or any(not isinstance(route, dict) for route in routes):
+            raise ValueError("expected_native_layout requires non-empty output route arrays")
+    try:
+        json.dumps(layout, allow_nan=False)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("expected_native_layout must contain finite JSON data") from exc
+    return {
+        "expected_native_layout": layout,
+        "expected_native_output_mode": expected_native_output_mode,
+        "expected_plan_fingerprint": expected_plan_fingerprint,
+    }
 
 
 class MeasurementRouting:
@@ -278,8 +330,27 @@ class MeasurementRouting:
         *,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
         overview: dict[str, Any] | None = None,
+        expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        expected_native_output_mode: str | None = None,
+        expected_plan_fingerprint: str | None = None,
     ) -> dict[str, Any]:
         measurement_scope = self._store._normalize_measurement_scope(measurement_scope)
+        expected = freeze_expected_native_context(
+            measurement_scope=measurement_scope,
+            expected_native_layout=expected_native_layout,
+            expected_native_output_mode=expected_native_output_mode,
+            expected_plan_fingerprint=expected_plan_fingerprint,
+        )
+        if expected:
+            return {
+                "route": "direct-sink",
+                "measurement_scope": measurement_scope,
+                "output_mode": expected["expected_native_output_mode"],
+                "play_node_name": play_node_name,
+                "playback_target_name": str(playback_target.get("target_name") or ""),
+                "expected_native_layout": expected["expected_native_layout"],
+                "expected_plan_fingerprint": expected["expected_plan_fingerprint"],
+            }
         overview = overview or self._get_output_overview()
         output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
         mode = str(output_mode.get("mode") or "")
@@ -554,13 +625,17 @@ class MeasurementRouting:
                 failures.append(f"native DSP rate {config.get('sample_rate')} != measurement rate {sample_rate}")
             if str(config.get("output_mode") or "") != output_mode:
                 failures.append(f"native DSP output mode {config.get('output_mode')} != measurement mode {output_mode}")
+            if "expected_plan_fingerprint" in playback_route:
+                expected_fingerprint = playback_route["expected_plan_fingerprint"]
+                if not expected_fingerprint or config.get("plan_fingerprint") != expected_fingerprint:
+                    failures.append("native DSP plan fingerprint does not match expected staged plan")
             runtime_layout = config.get("layout") or []
             expected_layout = playback_route.get("expected_native_layout") or []
             # The native engine always runs the full 2.x topology: stereo mode
             # keeps the two sub channels in the layout muted (route gain 0), so
             # the expected output count follows the expected layout for the
             # mode instead of a bare stereo pair.  The expected layout is
-            # always derived from the output overview by the route builder;
+            # supplied by a trusted owner or derived from the output overview;
             # when it is missing the sweep must fail closed rather than guess
             # an output count.
             if not expected_layout:

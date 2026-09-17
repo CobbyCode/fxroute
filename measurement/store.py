@@ -26,7 +26,7 @@ from measurement.file_store import MeasurementFileStore
 from measurement.host_capture import HostCaptureRunner
 from measurement.capture_policy import MeasurementCapturePolicyRunner
 from measurement.persistence import MeasurementPersistence
-from measurement.routing import MeasurementRouting
+from measurement.routing import MeasurementRouting, freeze_expected_native_context
 from measurement.signal import _write_wav, write_sweep_file
 from measurement.job_runner import MeasurementJobRunner
 from measurement.target import sweep_output_masks, target_output_mask
@@ -547,7 +547,18 @@ class MeasurementStore:
         measurement_role: str = "",
         skip_pre_sweep_diagnostics: bool = False,
         measurement_bank: str = "",
+        expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        expected_native_output_mode: str | None = None,
+        expected_plan_fingerprint: str | None = None,
     ) -> dict[str, Any]:
+        # Internal owner-only context: detach before setup's first await so a
+        # staged plan cannot be rebased by subsequent caller mutations.
+        expected = freeze_expected_native_context(
+            measurement_scope=self._normalize_measurement_scope(measurement_scope),
+            expected_native_layout=expected_native_layout,
+            expected_native_output_mode=expected_native_output_mode,
+            expected_plan_fingerprint=expected_plan_fingerprint,
+        )
         setup = await self._prepare_measurement_job_setup(
             input_id=input_id,
             input_key=input_key,
@@ -584,6 +595,7 @@ class MeasurementStore:
             "_skip_pre_sweep_diagnostics": bool(skip_pre_sweep_diagnostics),
         })
         job.update(self._freeze_measurement_job_target(job, measurement_bank))
+        job.update({f"_{key}": value for key, value in expected.items()})
         return self._register_measurement_job(job, self._execute_capture_job)
 
     async def start_lr_repeat_measurement(
@@ -955,6 +967,11 @@ class MeasurementStore:
                 "calibration_curve": calibration_curve,
                 "mic_input_channel_index": mic_input_channel_index,
                 "skip_pre_sweep_diagnostics": bool(job.get("_skip_pre_sweep_diagnostics", False)),
+                **{
+                    key: job[f"_{key}"]
+                    for key in ("expected_native_layout", "expected_native_output_mode", "expected_plan_fingerprint")
+                    if f"_{key}" in job
+                },
             },
         )
         analysis = policy_result.analysis
