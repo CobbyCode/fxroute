@@ -160,13 +160,24 @@ phase_install() {
   local disk="$TEST_ROOT/install.qcow2" monitor="$TEST_ROOT/install-monitor.sock" pidfile="$TEST_ROOT/install.pid"
   rm -f "$disk"
   qemu-img create -f qcow2 "$disk" "${DISK_GB}G" >/dev/null
+  rm -f "$TEST_ROOT/serial.log"
   boot_iso "$disk" "$monitor" "$pidfile" 1
-  # TODO: replace fixed sleep with install-completion detection (serial log
-  # marker from late-commands + reboot watch) after the first manual run.
-  log "waiting for autoinstall + first-boot (fixed 60 min budget, draft)"
-  sleep 3600
+  # Autoinstall ends with a reboot; with the ISO still attached GRUB would
+  # come up again, so kill the guest as soon as the second GRUB shows.
+  log "waiting for autoinstall reboot (60 min budget)"
+  local i=0 rebooted=0
+  while (( i < 3600 )); do
+    if [[ -f "$TEST_ROOT/serial.log" ]] \
+      && (( $(tr -d '\000' < "$TEST_ROOT/serial.log" 2>/dev/null | grep -c 'GNU GRUB' || true) >= 2 )); then
+      rebooted=1
+      break
+    fi
+    sleep 15
+    i=$(( i + 15 ))
+  done
   kill "$(cat "$pidfile")" 2>/dev/null || true
-  log "phase appliance: booting installed disk without ISO"
+  [[ "$rebooted" -eq 1 ]] || die "autoinstall reboot not seen; see $TEST_ROOT/serial.log"
+  log "installer rebooted; booting installed disk without ISO"
   local amonitor="$TEST_ROOT/appliance-monitor.sock" apidfile="$TEST_ROOT/appliance.pid"
   boot_disk "$disk" "$amonitor" "$apidfile"
   log "waiting for appliance FXRoute on :$HTTP_PORT"

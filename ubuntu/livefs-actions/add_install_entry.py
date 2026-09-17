@@ -39,7 +39,7 @@ new_entry = ''.join(lines).replace(
 
 text = text[:match.end()] + new_entry + text[match.end():]
 
-extra = os.environ.get('FXROUTE_GRUB_TRY_EXTRA', '').strip()
+extra = os.environ.get('FXROUTE_GRUB_TEST_EXTRA', '').strip()
 if extra:
     def add_extra(m):
         out = []
@@ -48,10 +48,17 @@ if extra:
                 line = line.replace(' --- ', ' ' + extra + ' --- ', 1)
             out.append(line)
         return ''.join(out)
-    text, count = pattern.subn(add_extra, text, count=1)
-    if count != 1:
-        raise Exception('Try entry not found for kernel extras')
-    print('appended kernel extras to Try entry: ' + extra)
+    # Test extras go on Try and Install FXRoute (console for observability,
+    # live hook is live-guarded so it stays inert on the install path).
+    text, try_count = pattern.subn(add_extra, text, count=1)
+    install_pattern = re.compile(
+        r'menuentry "Install FXRoute" \{\n'
+        r'(?:[^\n]*\n)*?\}\n',
+    )
+    text, install_count = install_pattern.subn(add_extra, text, count=1)
+    if try_count != 1 or install_count != 1:
+        raise Exception('Try/Install entries not found for kernel extras')
+    print('appended kernel extras to Try+Install entries: ' + extra)
 
 with open(path, 'w') as fp:
     fp.write(text)
