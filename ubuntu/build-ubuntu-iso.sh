@@ -199,6 +199,7 @@ livefs-edit "$BASE_ISO" "$OUTPUT" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/cp_payload.py")" \
   --cp "$STAGE_DIR/user-data" '$LAYERS[0]/var/lib/cloud/seed/nocloud/user-data' \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" '$LAYERS[0]/usr/local/libexec/fxroute-live-autostart.sh' \
+  --cp "$ROOT_DIR/ubuntu/autoinstall/fxroute-live.desktop" '$LAYERS[0]/etc/xdg/autostart/fxroute-live.desktop' \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-ubuntu-launcher.sh" '$LAYERS[0]/usr/local/bin/fxroute-desktop-launcher' \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/add_install_entry.py")"
 
