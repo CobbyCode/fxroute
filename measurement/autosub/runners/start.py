@@ -62,10 +62,11 @@ from .optimize_22_stereo import _run_auto_sub_22_stereo_optimize
 logger = logging.getLogger(__name__)
 
 _AUTO_SUB_MAX_CALIBRATION_BYTES: int = 2 * 1024 * 1024  # 2 MiB
-# Remove only after service runner IO, compiled peak prediction, prearm, winner
-# commit and session release (integration slices C–G) pass their end-to-end gate.
-# This is an internal rollout gate, never a request/environment bypass.
-_AUTO_SUB_SERVICE_INTEGRATION_READY = False
+# Service runner IO, compiled peak prediction, prearm, winner commit and
+# session release (integration slices C–G) passed their end-to-end gate.
+# This internal rollout gate stays explicit: flipping it back to False
+# re-locks the HTTP start route (503) without any request/environment bypass.
+_AUTO_SUB_SERVICE_INTEGRATION_READY = True
 
 
 def _auto_sub_output_device(overview: dict) -> tuple[str, int]:

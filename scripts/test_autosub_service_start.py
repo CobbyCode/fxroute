@@ -278,16 +278,18 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assert_no_start_leak()
 
-    async def test_incomplete_service_sweep_path_is_blocked_in_production(self):
+    async def test_supported_topology_is_open_in_production(self):
         self.seed(["main_l", "main_r", "sub1"])
-        # Restore the actual module default. An accidentally enabled rollout
-        # must fail this behavioral test rather than being patched closed here.
+        # Production default must be open after the rollout flip. An
+        # accidentally closed gate must fail this behavioral test rather
+        # than being patched open here.
         self.rollout_patch.stop()
-        with self.assertRaises(HTTPException) as raised:
-            await self.request()
-        self.assertEqual(raised.exception.status_code, 503)
-        self.assert_no_start_leak()
-        self.assertEqual(self.owners, [])
+        self.assertTrue(start._AUTO_SUB_SERVICE_INTEGRATION_READY,
+                        "Production AutoSub rollout gate must be open")
+        job = (await self.request())["job"]
+        self.assertIn("output_state_context", job)
+        self.assertIn(job["id"], deps._AUTO_SUB_JOBS)
+        self.assertEqual(len(self.owners), 1)
 
     async def test_factory_failure_does_not_leave_job_or_lock(self):
         self.seed(["main_l", "main_r", "sub1"])
