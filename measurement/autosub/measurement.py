@@ -206,7 +206,10 @@ async def _stage_auto_sub_service_candidate(
     active_subs: tuple[str, ...],
     sub1_polarity: str | None,
     sub2_polarity: str | None,
+    original_level: float,
+    original_polarity: str,
     original_highpass: bool,
+    original_config_snapshot: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Stage one funnel candidate through the job's owner, returning its context.
 
@@ -225,7 +228,9 @@ async def _stage_auto_sub_service_candidate(
         sub1_alignment_ms=sub1_alignment_ms, sub2_alignment_ms=sub2_alignment_ms,
         active_subs=tuple(active_subs), sub1_polarity=sub1_polarity,
         sub2_polarity=sub2_polarity, crossover_hz=fc,
-        main_highpass_enabled=original_highpass))
+        main_highpass_enabled=original_highpass,
+        original_level=original_level, original_polarity=original_polarity,
+        original_config_snapshot=original_config_snapshot))
     return await owner.stage(proposal)
 
 
@@ -356,7 +361,10 @@ async def _measure_auto_sub_candidate(
                 active_subs=active_subs,
                 sub1_polarity=sub1_polarity,
                 sub2_polarity=sub2_polarity,
+                original_level=original_level,
+                original_polarity=original_polarity,
                 original_highpass=original_highpass,
+                original_config_snapshot=original_config_snapshot,
             )
             now = time.monotonic()
             _marks["config_set"] = now

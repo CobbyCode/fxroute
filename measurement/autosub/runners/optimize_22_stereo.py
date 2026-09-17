@@ -37,6 +37,7 @@ from ..candidates import (
     _auto_sub_sweep_profile,
     _auto_sub_winner_delay_ms,
     _restore_original_config_or_fail_job,
+    _stage_auto_sub_service_state,
 )
 from ..deps import (
     _AUTO_SUB_JOBS,
@@ -241,7 +242,11 @@ async def _run_auto_sub_22_stereo_optimize(
             "reason": "summation-first: no pre-alignment Target trim; Gain is single-stage after alignment",
         }
         logger.info("AUTOSUB_BALANCE job=%s mode=2.2_stereo %s", job_id, json.dumps(job["balance_check"], sort_keys=True))
-        if _dsp_runtime() is not None:
+        if "output_state_context" in job:
+            # The graph is already staged through the owner; a legacy
+            # overview sync would clobber it with persisted state.
+            pass
+        elif _dsp_runtime() is not None:
             await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
 
         left_results: list[dict[str, Any]] = []
@@ -740,6 +745,7 @@ async def _run_auto_sub_22_stereo_optimize(
             subwoofers_config=subwoofers_config,
             verify=lambda overview: _auto_sub_22_verify_alignment(overview, best_left, best_right),
             load_overview=_load_audio_output_mode,
+            job=job,
         )
 
         if not apply_ok:
@@ -751,7 +757,18 @@ async def _run_auto_sub_22_stereo_optimize(
 
         derived_delays: dict[str, Any] = {}
         try:
-            config = BassManagementConfig.from_overview(await asyncio.to_thread(get_audio_output_overview))
+            if "output_state_context" in job:
+                # Display-only diagnostic from the retained pair, never from
+                # the stale persisted overview.
+                config = BassManagementConfig(
+                    output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, output_key="",
+                    output_label="", output_channels=0, sample_rate=auto_sub_rate,
+                    crossover_frequency_hz=fc, main_highpass_enabled=True,
+                    sub_level_db=0.0, sub_alignment_ms=best_left,
+                    sub_polarity="normal", sub2_level_db=0.0,
+                    sub2_alignment_ms=best_right, sub2_polarity="normal")
+            else:
+                config = BassManagementConfig.from_overview(await asyncio.to_thread(get_audio_output_overview))
             derived_delays = {
                 "derived_main_delay_ms": round(config.derived_main_delay_ms, 2),
                 "derived_sub1_delay_ms": round(config.derived_sub1_delay_ms, 2),
@@ -872,16 +889,26 @@ async def _run_auto_sub_22_stereo_optimize(
         deep_bass_snapshot = _auto_sub_snapshot_copy(balanced_snapshot)
         deep_bass_snapshot.setdefault("subwoofers", {}).setdefault("sub1", {})["polarity"] = selected_left_polarity
         deep_bass_snapshot.setdefault("subwoofers", {}).setdefault("sub2", {})["polarity"] = selected_right_polarity
-        await asyncio.to_thread(
-            set_audio_output_mode,
-            OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(deep_bass_snapshot),
-            _auto_sub_22_candidate_subwoofers(
-                deep_bass_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
-                active_subs=("sub1", "sub2"),
-            ),
-        )
-        if _dsp_runtime() is not None:
-            await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+        if "output_state_context" in job:
+            await _stage_auto_sub_service_state(
+                job,
+                global_config=_auto_sub_22_global_config(deep_bass_snapshot),
+                subwoofers_config=_auto_sub_22_candidate_subwoofers(
+                    deep_bass_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                    active_subs=("sub1", "sub2"),
+                ),
+            )
+        else:
+            await asyncio.to_thread(
+                set_audio_output_mode,
+                OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(deep_bass_snapshot),
+                _auto_sub_22_candidate_subwoofers(
+                    deep_bass_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                    active_subs=("sub1", "sub2"),
+                ),
+            )
+            if _dsp_runtime() is not None:
+                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         deep_bass_left = await _measure_auto_sub_candidate(
             delay_ms=best_left, job=job, candidate_index=1, total=2, stage="deep_bass_check", fc=fc,
             input_id=input_id, channel="left", mic_input_channel=mic_input_channel,
@@ -1014,16 +1041,26 @@ async def _run_auto_sub_22_stereo_optimize(
             left_delta_db=first_step_deltas.get("left", 0.0), right_delta_db=first_step_deltas.get("right", 0.0),
         )
         if first_step_deltas:
-            await asyncio.to_thread(
-                set_audio_output_mode,
-                OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(gain_snapshot),
-                _auto_sub_22_candidate_subwoofers(
-                    gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
-                    active_subs=("sub1", "sub2"),
-                ),
-            )
-            if _dsp_runtime() is not None:
-                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+            if "output_state_context" in job:
+                await _stage_auto_sub_service_state(
+                    job,
+                    global_config=_auto_sub_22_global_config(gain_snapshot),
+                    subwoofers_config=_auto_sub_22_candidate_subwoofers(
+                        gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                        active_subs=("sub1", "sub2"),
+                    ),
+                )
+            else:
+                await asyncio.to_thread(
+                    set_audio_output_mode,
+                    OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(gain_snapshot),
+                    _auto_sub_22_candidate_subwoofers(
+                        gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                        active_subs=("sub1", "sub2"),
+                    ),
+                )
+                if _dsp_runtime() is not None:
+                    await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         gain_after_left = await _measure_auto_sub_candidate(
             delay_ms=best_left, job=job, candidate_index=1, total=2, stage="gain_after", fc=fc,
             input_id=input_id, channel="left", mic_input_channel=mic_input_channel,
@@ -1077,29 +1114,49 @@ async def _run_auto_sub_22_stereo_optimize(
         correction_verdict = None
         stereo_probe_plan = None
         if not step1_retained:
-            await asyncio.to_thread(
-                set_audio_output_mode,
-                OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(polarity_snapshot),
-                _auto_sub_22_candidate_subwoofers(
-                    polarity_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
-                    active_subs=("sub1", "sub2"),
-                ),
-            )
-            if _dsp_runtime() is not None:
-                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+            if "output_state_context" in job:
+                await _stage_auto_sub_service_state(
+                    job,
+                    global_config=_auto_sub_22_global_config(polarity_snapshot),
+                    subwoofers_config=_auto_sub_22_candidate_subwoofers(
+                        polarity_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                        active_subs=("sub1", "sub2"),
+                    ),
+                )
+            else:
+                await asyncio.to_thread(
+                    set_audio_output_mode,
+                    OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(polarity_snapshot),
+                    _auto_sub_22_candidate_subwoofers(
+                        polarity_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                        active_subs=("sub1", "sub2"),
+                    ),
+                )
+                if _dsp_runtime() is not None:
+                    await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         elif not all(accepted_step1_sides.values()):
             # Stereo channels have independent Gain controls.  A regression on
             # one side must not discard a measured improvement on the other.
-            await asyncio.to_thread(
-                set_audio_output_mode,
-                OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(final_gain_snapshot),
-                _auto_sub_22_candidate_subwoofers(
-                    final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
-                    active_subs=("sub1", "sub2"),
-                ),
-            )
-            if _dsp_runtime() is not None:
-                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+            if "output_state_context" in job:
+                await _stage_auto_sub_service_state(
+                    job,
+                    global_config=_auto_sub_22_global_config(final_gain_snapshot),
+                    subwoofers_config=_auto_sub_22_candidate_subwoofers(
+                        final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                        active_subs=("sub1", "sub2"),
+                    ),
+                )
+            else:
+                await asyncio.to_thread(
+                    set_audio_output_mode,
+                    OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(final_gain_snapshot),
+                    _auto_sub_22_candidate_subwoofers(
+                        final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                        active_subs=("sub1", "sub2"),
+                    ),
+                )
+                if _dsp_runtime() is not None:
+                    await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
             correction_verdict = {
                 "accepted": False,
                 "reason": "Retained improved Stereo side; restored regressed side",
@@ -1135,16 +1192,26 @@ async def _run_auto_sub_22_stereo_optimize(
                     gain_snapshot, left_delta_db=correction_deltas.get("left", 0.0),
                     right_delta_db=correction_deltas.get("right", 0.0),
                 )
-                await asyncio.to_thread(
-                    set_audio_output_mode,
-                    OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(correction_snapshot),
-                    _auto_sub_22_candidate_subwoofers(
-                        correction_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
-                        active_subs=("sub1", "sub2"),
-                    ),
-                )
-                if _dsp_runtime() is not None:
-                    await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+                if "output_state_context" in job:
+                    await _stage_auto_sub_service_state(
+                        job,
+                        global_config=_auto_sub_22_global_config(correction_snapshot),
+                        subwoofers_config=_auto_sub_22_candidate_subwoofers(
+                            correction_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                            active_subs=("sub1", "sub2"),
+                        ),
+                    )
+                else:
+                    await asyncio.to_thread(
+                        set_audio_output_mode,
+                        OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(correction_snapshot),
+                        _auto_sub_22_candidate_subwoofers(
+                            correction_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                            active_subs=("sub1", "sub2"),
+                        ),
+                    )
+                    if _dsp_runtime() is not None:
+                        await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
                 correction_left = await _measure_auto_sub_candidate(
                     delay_ms=best_left, job=job, candidate_index=1, total=2,
                     stage="gain_correction_after", fc=fc, input_id=input_id, channel="left",
@@ -1223,16 +1290,26 @@ async def _run_auto_sub_22_stereo_optimize(
                         "channels": probe_channels, "step1_retained": True, "stereo_probe": True,
                     }
                     if not all(accepted_probe_sides.get(side, False) for side in correction_deltas):
-                        await asyncio.to_thread(
-                            set_audio_output_mode,
-                            OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(final_gain_snapshot),
-                            _auto_sub_22_candidate_subwoofers(
-                                final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
-                                active_subs=("sub1", "sub2"),
-                            ),
-                        )
-                        if _dsp_runtime() is not None:
-                            await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+                        if "output_state_context" in job:
+                            await _stage_auto_sub_service_state(
+                                job,
+                                global_config=_auto_sub_22_global_config(final_gain_snapshot),
+                                subwoofers_config=_auto_sub_22_candidate_subwoofers(
+                                    final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                                    active_subs=("sub1", "sub2"),
+                                ),
+                            )
+                        else:
+                            await asyncio.to_thread(
+                                set_audio_output_mode,
+                                OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(final_gain_snapshot),
+                                _auto_sub_22_candidate_subwoofers(
+                                    final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                                    active_subs=("sub1", "sub2"),
+                                ),
+                            )
+                            if _dsp_runtime() is not None:
+                                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
                 else:
                     correction_verdict = _auto_sub_gain_verdict(
                         gain_after, correction_after, OUTPUT_MODE_SUBWOOFER_22_STEREO,
@@ -1245,16 +1322,26 @@ async def _run_auto_sub_22_stereo_optimize(
                         final_gain_snapshot = correction_snapshot
                         final_gain_left, final_gain_right = correction_left, correction_right
                     else:
-                        await asyncio.to_thread(
-                            set_audio_output_mode,
-                            OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(gain_snapshot),
-                            _auto_sub_22_candidate_subwoofers(
-                                gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
-                                active_subs=("sub1", "sub2"),
-                            ),
-                        )
-                        if _dsp_runtime() is not None:
-                            await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
+                        if "output_state_context" in job:
+                            await _stage_auto_sub_service_state(
+                                job,
+                                global_config=_auto_sub_22_global_config(gain_snapshot),
+                                subwoofers_config=_auto_sub_22_candidate_subwoofers(
+                                    gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                                    active_subs=("sub1", "sub2"),
+                                ),
+                            )
+                        else:
+                            await asyncio.to_thread(
+                                set_audio_output_mode,
+                                OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(gain_snapshot),
+                                _auto_sub_22_candidate_subwoofers(
+                                    gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                                    active_subs=("sub1", "sub2"),
+                                ),
+                            )
+                            if _dsp_runtime() is not None:
+                                await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         _auto_sub_gain_log_line("AUTOGAIN_FEEDBACK", {
             "gain_after_step1": {
                 "left": float(_auto_sub_22_sub(gain_snapshot, "sub1").get("level_db", 0.0)),
@@ -1422,6 +1509,7 @@ async def _run_auto_sub_22_stereo_optimize(
                         overview, final_subwoofers, OUTPUT_MODE_SUBWOOFER_22_STEREO,
                     ),
                     load_overview=_load_audio_output_mode,
+                    job=job,
                 )
                 if not final_apply_ok:
                     job["status"] = "failed"

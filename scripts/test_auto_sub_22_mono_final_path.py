@@ -74,13 +74,13 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
             })
             return overview()
 
-        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
+        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
             persist(output_mode, global_config, subwoofers_config)
             if fail_winner_apply:
                 return False
             return bool(verify((load_overview or (lambda: copy.deepcopy(state)))()))
 
-        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
+        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
             # The shared verified restore lives in candidates and calls
             # candidates._auto_sub_apply_candidate; keep its state test-local.
             if fail_restore:

@@ -382,37 +382,45 @@ class ScanKnobsTests(unittest.TestCase):
         args = dict(output_key="dev", channels=4, sub_role_map=role_map,
                     delay_ms=5.0, sub1_alignment_ms=None, sub2_alignment_ms=None,
                     active_subs=tuple(role_map), sub1_polarity=None, sub2_polarity=None,
-                    crossover_hz=80, main_highpass_enabled=True)
+                    crossover_hz=80, main_highpass_enabled=True,
+                    original_level=-3.0, original_polarity="normal",
+                    original_config_snapshot=None)
         args.update(overrides)
         return autosub_scan_knobs(state, **args)
 
-    def test_single_sub_slot_uses_scan_delay_and_start_trim(self):
+    def test_single_sub_slot_uses_funnel_level_and_polarity(self):
         state = self.start_state()
         state["modes"]["stereo"]["processing"]["sub1"].update(
             alignment_ms=2.0, level_db=-3.0, polarity="invert")
-        knobs = self.knobs(state, {"sub1": "sub1"})
+        knobs = self.knobs(state, {"sub1": "sub1"},
+                           original_level=2.0, original_polarity="invert")
         self.assertEqual(knobs["sub_delays"], {"sub1": 5.0})
-        self.assertEqual(knobs["sub_levels"], {"sub1": -3.0})
+        self.assertEqual(knobs["sub_levels"], {"sub1": 2.0})
         self.assertEqual(knobs["sub_polarities"], {"sub1": "invert"})
         self.assertEqual(knobs["bass"], {"frequency_hz": 80, "main_highpass_enabled": True})
 
-    def test_dual_mono_marks_inactive_slot_minus_80(self):
+    def test_dual_mono_uses_snapshot_levels_and_minus_80(self):
         state = self.start_state(roles=("sub1", "sub2"))
-        processing = state["modes"]["stereo"]["processing"]
-        processing["sub1"].update(alignment_ms=1.0, level_db=-2.0, polarity="normal")
-        processing["sub2"].update(alignment_ms=3.0, level_db=-4.0, polarity="invert")
+        snapshot = {"subwoofers": {
+            "sub1": {"level_db": 1.5, "alignment_ms": 1.0, "polarity": "invert"},
+            "sub2": {"level_db": 2.5, "alignment_ms": 3.0, "polarity": "normal"},
+        }}
         knobs = self.knobs(state, {"sub1": "sub1", "sub2": "sub2"},
+                           original_config_snapshot=snapshot,
                            sub1_alignment_ms=7.0, sub2_alignment_ms=9.0,
                            active_subs=("sub1",), sub2_polarity="normal")
         self.assertEqual(knobs["sub_delays"], {"sub1": 7.0, "sub2": 9.0})
-        self.assertEqual(knobs["sub_levels"], {"sub1": -2.0, "sub2": -80.0})
-        self.assertEqual(knobs["sub_polarities"], {"sub1": "normal", "sub2": "normal"})
+        self.assertEqual(knobs["sub_levels"], {"sub1": 1.5, "sub2": -80.0})
+        self.assertEqual(knobs["sub_polarities"], {"sub1": "invert", "sub2": "normal"})
 
-    def test_polarity_normalizes_to_known_words_and_clamps_delay(self):
+    def test_strict_polarity_words_and_clamped_delay(self):
         state = self.start_state()
-        knobs = self.knobs(state, {"sub1": "sub1"}, delay_ms=100.0, sub1_polarity="INVERT")
+        knobs = self.knobs(state, {"sub1": "sub1"}, delay_ms=100.0,
+                           original_polarity="invert")
         self.assertEqual(knobs["sub_delays"], {"sub1": 40.0})
-        self.assertEqual(knobs["sub_polarities"], {"sub1": "normal"})
+        self.assertEqual(knobs["sub_polarities"], {"sub1": "invert"})
+        with self.assertRaises(ValueError):
+            self.knobs(state, {"sub1": "sub1"}, original_polarity="INVERT")
 
     def test_unknown_slot_role_or_sub_rejected(self):
         state = self.start_state()

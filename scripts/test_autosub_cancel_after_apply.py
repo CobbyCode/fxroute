@@ -70,7 +70,7 @@ class AutoSubCancelAfterApplyTests(unittest.IsolatedAsyncioTestCase):
             })
             return overview()
 
-        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
+        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
             persist(output_mode, global_config, subwoofers_config)
             return bool(verify((load_overview or overview)()))
 
@@ -130,7 +130,7 @@ class AutoSubCancelAfterApplyTests(unittest.IsolatedAsyncioTestCase):
             },
         }
 
-        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
+        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
             persist(output_mode, global_config, subwoofers_config)
             return bool(verify(overview()))
 

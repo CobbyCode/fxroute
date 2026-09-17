@@ -17,7 +17,7 @@ from audio.samplerate import (
 )
 from dsp.runtime import BassManagementConfig
 
-from .deps import _candidate_owner, _dsp_runtime
+from .deps import _candidate_owner, _dsp_runtime, _output_service
 
 logger = logging.getLogger(__name__)
 
@@ -222,15 +222,89 @@ async def _auto_sub_sync_dsp_runtime(
         )
     await _dsp_runtime().sync(overview)
 
+async def _translate_and_stage_service_candidate(
+    job: dict[str, Any], *, global_config: dict[str, Any] | None,
+    subwoofers_config: dict[str, Any] | None,
+) -> None:
+    """Translate one retained legacy candidate triplet and stage it.
+
+    Service jobs only. Translation and render failures raise ``ValueError``;
+    revision drift raises ``StateConflictError`` and unrestorable rollback
+    raises ``CandidateRestoreError`` — both run-fatal by contract.
+    """
+    # Deferred: candidate_session reaches back through roles into this
+    # module, so a top-level import would close a cycle.
+    from .candidate_session import AutoSubProposal
+    from .roles import autosub_apply_knobs
+
+    owner = _candidate_owner(job["id"])
+    service = _output_service()
+    context = job["output_state_context"]
+    proposal = AutoSubProposal(**autosub_apply_knobs(
+        service.load(), output_key=context["output_key"], channels=context["channels"],
+        sub_role_map=context["sub_role_map"],
+        global_config=global_config, subwoofers_config=subwoofers_config))
+    await owner.stage(proposal)
+
+
+async def _stage_auto_sub_service_state(
+    job: dict[str, Any], *, global_config: dict[str, Any] | None,
+    subwoofers_config: dict[str, Any] | None = None,
+) -> None:
+    """Stage one retained runner state; any failure is run-fatal.
+
+    Fire-and-forget runner sites call this instead of persisting legacy
+    mode state: translation/render problems raise ``RuntimeError`` (like a
+    failed legacy persist would abort the run), revision drift and
+    unrestorable rollback propagate unchanged.
+    """
+    from audio.output_state_store import StateConflictError
+
+    if "output_state_context" not in job:
+        raise RuntimeError("AutoSub service staging requires a service job")
+    try:
+        await _translate_and_stage_service_candidate(
+            job, global_config=global_config, subwoofers_config=subwoofers_config)
+    except StateConflictError:
+        raise
+    except RuntimeError:
+        raise
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(f"AutoSub failed to stage retained state: {exc}") from exc
+
+
 async def _auto_sub_apply_candidate(
     *,
     output_mode: str,
     global_config: dict[str, Any],
     subwoofers_config: dict[str, Any] | None,
-    verify: Callable[[dict[str, Any]], bool],
+    verify: Callable[[dict[str, Any]], bool] | None = None,
     load_overview: Callable[[], dict[str, Any]] | None = None,
+    job: dict[str, Any] | None = None,
 ) -> bool:
-    """Persist, live-sync, settle, and verify one mode-owned candidate."""
+    """Persist, live-sync, settle, and verify one mode-owned candidate.
+
+    Service jobs (``job`` carrying ``output_state_context``) stage the
+    retained state through their owner instead: True once staged and
+    verified, False only for recoverable translation/render failures.
+    Revision drift and unrestorable rollback raise run-fatal.
+    """
+    from audio.output_state_store import StateConflictError
+
+    if job is not None and "output_state_context" in job:
+        try:
+            await _translate_and_stage_service_candidate(
+                job, global_config=global_config, subwoofers_config=subwoofers_config)
+        except StateConflictError:
+            raise
+        except RuntimeError:
+            raise
+        except (ValueError, KeyError, TypeError) as exc:
+            logger.warning("Auto-sub: service candidate staging failed: %s", exc)
+            return False
+        return True
+    if verify is None:
+        raise TypeError("Legacy candidate apply requires verify")
     try:
         persisted_overview = await asyncio.to_thread(
             set_audio_output_mode, output_mode, global_config, subwoofers_config,

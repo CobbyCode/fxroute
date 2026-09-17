@@ -69,7 +69,7 @@ class AutoSub21FinalPathTests(unittest.IsolatedAsyncioTestCase):
             })
             return overview()
 
-        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
+        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
             persist(output_mode, global_config, subwoofers_config)
             return bool(verify((load_overview or overview)()))
 
@@ -128,7 +128,7 @@ class AutoSub21FinalPathTests(unittest.IsolatedAsyncioTestCase):
         async def finish_worker(_job, _job_id):
             return None
 
-        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
+        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
             # The verified restore helper lives in candidates; route it
             # through the same fake persist/overview so the restore state
             # stays test-local. fail_restore simulates two unverified
