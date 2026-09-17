@@ -20,6 +20,7 @@ BASE_SHA256="601e30fbf5d97759367c632e2c33630665039b7e2158fd068403da3ccf1bda1f"
 BASE_ISO="${FXROUTE_UBUNTU_BASE_ISO:-${XDG_CACHE_HOME:-$HOME/.cache}/fxroute/ubuntu-${UBUNTU_VERSION}-desktop-amd64.iso}"
 OUTPUT="${FXROUTE_UBUNTU_ISO_OUTPUT:-$ROOT_DIR/dist/fxroute-ubuntu-26.04-x86_64.iso}"
 BUILDER="${FXROUTE_UBUNTU_BUILDER:-direct}"
+TEST_SEED=0
 INSIDE_DOCKER=0
 KEEP_WORK=0
 
@@ -33,6 +34,8 @@ Options:
                     (docker mode: must be under the repo or the ISO cache dir)
   --docker          Run livefs-edit in a privileged ubuntu:26.04 container
                     (same tool, same actions; for hosts without loop rights)
+  --test-seed       Stage the fully-automatic QEMU test seed instead of the
+                    interactive product seed (dev/test ISOs only)
   --inside-docker   Internal: container-side build (set up deps, then build)
   --keep-work       Keep the temporary staging directory
   -h, --help        Show this help
@@ -49,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --base-iso) BASE_ISO="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
     --docker) BUILDER="docker"; shift ;;
+    --test-seed) TEST_SEED=1; shift ;;
     --inside-docker) INSIDE_DOCKER=1; shift ;;
     --keep-work) KEEP_WORK=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -129,7 +133,12 @@ cp -- "$ROOT_DIR/ubuntu/scripts/first-boot-install-ubuntu.sh" \
   "$STAGE_DIR/fxroute-iso/scripts/"
 cp -- "$ROOT_DIR/ubuntu/autoinstall/first-boot.service" "$STAGE_DIR/fxroute-iso/first-boot.service"
   chmod 755 "$STAGE_DIR/fxroute-iso/scripts/"*.sh
-  cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data" "$STAGE_DIR/user-data"
+  if [[ "$TEST_SEED" -eq 1 ]]; then
+    printf '[ubuntu-iso] warning: staging the TEST seed (dev/test ISO, never release this)\n'
+    cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data.test" "$STAGE_DIR/user-data"
+  else
+    cp -- "$ROOT_DIR/ubuntu/autoinstall/user-data" "$STAGE_DIR/user-data"
+  fi
 fi
 
 # FXRoute runtime deps, pre-baked into the live squashfs so the Try session
