@@ -1435,6 +1435,40 @@
         return autoSubResult(job);
     }
 
+    // ── Speaker Align simulation ────────────────────────────────────────
+    // A short staged run: queued, acquiring ways, acoustic confirmation,
+    // then a committed job with a JSON-safe result summary. Stages advance
+    // by elapsed time so polls show progress instead of jumping to done.
+    const speakerAlignJobs = {};
+    let speakerAlignSeq = 0;
+
+    function speakerAlignPayload(id, elapsedMs) {
+        const job = speakerAlignJobs[id];
+        if (!job) return null;
+        if (job.status === 'cancelled') {
+            return { id, side: job.side, status: 'cancelled', message: 'Speaker Align cancelled.', dry_run: !!job.dryRun, params: job.params, result: null, error: null };
+        }
+        const elapsed = (elapsedMs != null) ? elapsedMs : (Date.now() - job.startedAt);
+        const base = { id, side: job.side, dry_run: !!job.dryRun, params: job.params };
+        if (elapsed < 900) return { ...base, status: 'queued', message: 'Speaker alignment queued.', result: null, error: null };
+        if (elapsed < 4000) return { ...base, status: 'acquiring', message: 'Acquiring speaker ways…', result: null, error: null };
+        if (elapsed < 6000) return { ...base, status: 'confirming', message: 'Confirming alignment acoustically…', result: null, error: null };
+        return {
+            ...base,
+            status: 'committed',
+            message: 'Committed speaker alignment at revision 8.',
+            result: {
+                confirmed: true,
+                check: { confirmed: true, reasons: [], max_residual_ms: 0.05, max_regression_db: 0.1, min_confirmation_sum_db: 0.0, pairs: [] },
+                proposal: { start_revision: 7, processing_fingerprint: 'demo-fingerprint', arrival_ms: {}, added_delay_ms: {}, overlap_checks: [] },
+                provenance: {},
+                committed_revision: 8,
+                dry_run: !!job.dryRun,
+            },
+            error: null,
+        };
+    }
+
     // ── fetch interceptor ───────────────────────────────────────────────
     const origFetch = window.fetch;
     window.fetch = function (url, opts) {
@@ -2603,6 +2637,34 @@
             const id = autoSubCancel[1];
             if (autoSubJobs[id]) autoSubJobs[id].status = 'cancelled';
             return j({ job: { id, status: 'cancelled', message: 'Auto Sub Optimize cancelled.' } });
+        }
+        if (p === '/api/speaker-align/start' && post) {
+            const side = String(body.side || 'left') === 'right' ? 'right' : 'left';
+            const id = 'demo_speaker_' + (++speakerAlignSeq);
+            const params = {
+                input_id: String(body.input_id || 'demo-mic'),
+                output_key: 'demo',
+                channels: 4,
+                sample_rate_hz: 48000,
+            };
+            speakerAlignJobs[id] = { id, side, dryRun: body.dry_run === true, params, startedAt: Date.now(), status: 'running' };
+            return j({ status: 'ok', job: { id, side, status: 'queued', message: 'Speaker alignment queued.', dry_run: body.dry_run === true, params, result: null, error: null } });
+        }
+        if (p === '/api/speaker-align/jobs' && !post) {
+            return j({ status: 'ok', jobs: Object.keys(speakerAlignJobs).map((id) => speakerAlignPayload(id)).filter(Boolean) });
+        }
+        const speakerJob = p.match(/^\/api\/speaker-align\/jobs\/([^/]+)$/);
+        if (speakerJob && !post) {
+            const payload = speakerAlignPayload(speakerJob[1]);
+            if (!payload) return err('Job not found', 404);
+            return j({ status: 'ok', job: payload });
+        }
+        const speakerCancel = p.match(/^\/api\/speaker-align\/jobs\/([^/]+)\/cancel$/);
+        if (speakerCancel && post) {
+            const id = speakerCancel[1];
+            if (!speakerAlignJobs[id]) return err('Job not found', 404);
+            speakerAlignJobs[id].status = 'cancelled';
+            return j({ status: 'ok', job: speakerAlignPayload(id) });
         }
         if (p === '/api/measurements/lr-repeat/start' && post) {
             const id = S.startLrRepeatMeasurement({ base_name: body.base_name });

@@ -41,6 +41,9 @@ window.FXRouteMeasurementFlows?.init({
         startAutoSubOptimize: (formData) => fetch('/api/measurements/auto-sub-optimize/start', { method: 'POST', body: formData }),
         cancelAutoSubJob: (jobId) => fetch(`/api/measurements/auto-sub-optimize/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
         pollAutoSubJob: (jobId) => fetch(`/api/measurements/auto-sub-optimize/jobs/${encodeURIComponent(jobId)}`),
+        startSpeakerAlign: (payload) => fetch('/api/speaker-align/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+        cancelSpeakerAlignJob: (jobId) => fetch(`/api/speaker-align/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
+        pollSpeakerAlignJob: (jobId) => fetch(`/api/speaker-align/jobs/${encodeURIComponent(jobId)}`),
         startMeasurement: (formData) => fetch('/api/measurements/start', { method: 'POST', body: formData }),
         cancelMeasurementJob: (jobId) => fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
         pollMeasurementJob: (jobId) => fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`),
@@ -247,6 +250,10 @@ let state = {
         autoSubInFlight: false,
         autoSubResult: null,
         autoSubMeasurements: [],
+        speakerAlignJobId: '',
+        speakerAlignInFlight: false,
+        speakerAlignCancelRequested: false,
+        speakerAlignResult: null,
         statusText: 'Sweep ready. Calibration file is optional.',
         measurementSampleRate: '48000',
         assistMode: 'peq',
@@ -654,6 +661,13 @@ const elements = {
     measurementAutoSubStartBtn: document.getElementById('measurement-auto-sub-start'),
     measurementAutoSubGroup: document.getElementById('measurement-auto-sub-group'),
     measurementAutoSubStatus: document.getElementById('measurement-auto-sub-status'),
+    measurementSpeakerAlignStartBtn: document.getElementById('measurement-speaker-align-start'),
+    measurementSpeakerAlignGroup: document.getElementById('measurement-speaker-align-group'),
+    measurementSpeakerAlignStatus: document.getElementById('measurement-speaker-align-status'),
+    measurementSpeakerAlignSide: document.getElementById('measurement-speaker-align-side'),
+    measurementSpeakerAlignDryRun: document.getElementById('measurement-speaker-align-dry-run'),
+    measurementSpeakerAlignReference: document.getElementById('measurement-speaker-align-reference'),
+    measurementSpeakerAlignPosition: document.getElementById('measurement-speaker-align-position'),
     measurementHybridOpenBtn: document.getElementById('measurement-hybrid-open'),
     measurementHybridPanel: document.getElementById('measurement-hybrid-panel'),
     measurementHybridCloseBtn: document.getElementById('measurement-hybrid-close'),
@@ -1973,6 +1987,7 @@ async function saveAudioOutputMode(mode, settings = null, options = {}) {
         setSubwooferFeedback('Saved', 'success');
         void postRuntimeDebugSnapshot(`ui-output-mode-saved-${nextMode}`, { requestedMode: nextMode });
         syncAutoSubButton();
+        syncSpeakerAlignButton();
         return data;
     } catch (error) {
         if (requestId !== _audioOutputModeRequestId || mutationGeneration !== _audioOutputModeMutationGeneration) return null;
@@ -3694,6 +3709,7 @@ async function fetchAudioOutputOverview() {
         renderSettingsPanel();
         renderSubwooferPanel();
         syncAutoSubButton();
+        syncSpeakerAlignButton();
         void fetchOutputSystemCatalog();
     } catch (e) {
         state.settings.audioOutputs = {
@@ -3710,6 +3726,7 @@ async function fetchAudioOutputOverview() {
         renderSettingsPanel();
         renderSubwooferPanel();
         syncAutoSubButton();
+        syncSpeakerAlignButton();
     }
 }
 
@@ -3817,6 +3834,7 @@ async function fetchOutputSystemCatalog(force = false) {
         state.crossover.response = null;
         renderCrossoverTile();
     }
+    syncSpeakerAlignButton();
     return state.outputSystem.catalog;
 }
 
@@ -3874,6 +3892,7 @@ function renderMeasurementArea() {
     if (elements.measurementSweepStartBtn) {
         elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight;
     }
+    syncSpeakerAlignButton();
 }
 
 function outputSystemDevice() {
@@ -11631,6 +11650,7 @@ function stopMeasurementWindowHeartbeat(keepalive = false) {
 }
 
 const MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT = 'Scans sub delay around crossover, picks best alignment.';
+const MEASUREMENT_SPEAKER_ALIGN_STATUS_DEFAULT_TEXT = 'Aligns each way of one speaker with the microphone fixed.';
 
 function resetMeasurementTransientStatus() {
     // A cancelled/completed/failed AutoSub (or sweep) leaves its statusText
@@ -11640,13 +11660,17 @@ function resetMeasurementTransientStatus() {
     // Unsaved measurement data (autoSubMeasurements, currentMeasurement) is
     // deliberately kept: it is saveable content, not transient status.
     const measurementState = state.measurement || {};
-    if (measurementState.autoSubInFlight || measurementState.startInFlight
-        || measurementState.activeJobId || measurementState.autoSubJobId
+    if (measurementState.autoSubInFlight || measurementState.speakerAlignInFlight || measurementState.startInFlight
+        || measurementState.activeJobId || measurementState.autoSubJobId || measurementState.speakerAlignJobId
         || measurementState.activeMeasurementKind) return;
     measurementState.statusText = '';
     measurementState.autoSubResult = null;
+    measurementState.speakerAlignResult = null;
     if (elements.measurementAutoSubStatus) {
         elements.measurementAutoSubStatus.textContent = MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT;
+    }
+    if (elements.measurementSpeakerAlignStatus) {
+        elements.measurementSpeakerAlignStatus.textContent = MEASUREMENT_SPEAKER_ALIGN_STATUS_DEFAULT_TEXT;
     }
 }
 
@@ -11916,6 +11940,7 @@ function normalizeMeasurementKind(kind) {
 function getActiveMeasurementKind() {
     const measurementState = state.measurement || {};
     if (measurementState.autoSubInFlight) return 'auto_sub';
+    if (measurementState.speakerAlignInFlight) return 'speaker_align';
     if (measurementState.hybridWizard?.running) return 'hybrid';
     const normalized = normalizeMeasurementKind(measurementState.activeMeasurementKind);
     if (normalized && measurementState.activeJobId) return normalized;
@@ -11926,7 +11951,7 @@ function getActiveMeasurementKind() {
 
 function hasActiveMeasurementJob() {
     const measurementState = state.measurement || {};
-    return !!(measurementState.activeJobId || measurementState.autoSubInFlight || measurementState.hybridWizard?.running);
+    return !!(measurementState.activeJobId || measurementState.autoSubInFlight || measurementState.speakerAlignInFlight || measurementState.hybridWizard?.running);
 }
 
 function getMeasurementJobResultMeasurement(job = {}) {
@@ -11988,6 +12013,27 @@ function syncMeasurementStartButtonFallback() {
     }
     syncMeasurementRepeatNote(lrActive, repeatBlockedReason);
     syncAutoSubButton();
+    syncSpeakerAlignButton();
+}
+
+function syncSpeakerAlignButton() {
+    return MeasurementFlows.syncSpeakerAlignButton();
+}
+
+async function startSpeakerAlign() {
+    return MeasurementFlows.startSpeakerAlign();
+}
+
+async function cancelSpeakerAlign() {
+    return MeasurementFlows.cancelSpeakerAlign();
+}
+
+async function pollSpeakerAlignJob(jobId) {
+    return MeasurementFlows.pollSpeakerAlignJob(jobId);
+}
+
+async function handleSpeakerAlignResult(job) {
+    return MeasurementFlows.handleSpeakerAlignResult(job);
 }
 
 function syncSubwooferControlsDuringAutoSub() {
@@ -12293,6 +12339,7 @@ function requestMeasurementCancellation() {
     const activeKind = getActiveMeasurementKind();
     if (activeKind === 'hybrid') return cancelHybridWizardMeasurement();
     if (activeKind === 'auto_sub') return cancelAutoSubOptimize();
+    if (activeKind === 'speaker_align') return cancelSpeakerAlign();
     if (state.measurement.activeJobId) return cancelMeasurement();
     if (state.measurement.startInFlight) {
         state.measurement.cancelRequested = true;
@@ -12645,6 +12692,7 @@ function renderMeasurementPanel() {
     renderMeasurementPanelConvolverSection(ctx);
     renderMeasurementPanelSavedListSection(ctx);
     syncAutoSubButton();
+    syncSpeakerAlignButton();
     scheduleMeasurementGraphRender();
 }
 
@@ -13690,6 +13738,16 @@ function setupMeasurementActions() {
                 return;
             }
             void startAutoSubOptimize();
+        });
+    }
+    if (elements.measurementSpeakerAlignStartBtn) {
+        elements.measurementSpeakerAlignStartBtn.addEventListener('click', () => {
+            const measurementState = state.measurement || {};
+            if (measurementState.speakerAlignInFlight) {
+                void cancelSpeakerAlign();
+                return;
+            }
+            void startSpeakerAlign();
         });
     }
     if (elements.measurementSaveBtn) {

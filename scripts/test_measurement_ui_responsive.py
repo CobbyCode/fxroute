@@ -304,7 +304,7 @@ def _run():
                 assert not page.locator("#measurement-sweep-menu").is_visible()
                 page.locator("#measurement-auto-sub-group").evaluate("element => element.classList.remove('hidden')")
                 labels = page.locator(".measurement-workflow-label").all_text_contents()
-                assert labels[:3] == ["Measurements", "Subwoofer", "Calibration"]
+                assert labels[:4] == ["Measurements", "Subwoofer", "Speaker Align", "Calibration"]
                 checks += 4
 
                 page.locator("#measurement-sweep-toggle").click()

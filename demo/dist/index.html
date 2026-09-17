@@ -1043,6 +1043,25 @@
                                             <span id="measurement-auto-sub-status" class="measurement-repeat-help">Scans sub delay around crossover, picks best alignment.</span>
                                         </div>
                                     </div>
+                                    <div class="measurement-workflow-section measurement-workflow-speaker-align hidden" id="measurement-speaker-align-group">
+                                        <h4 class="measurement-workflow-label">Speaker Align</h4>
+                                        <div class="measurement-workflow-row">
+                                            <label for="measurement-speaker-align-side">Side</label>
+                                            <select id="measurement-speaker-align-side" class="url-input">
+                                                <option value="left">Left</option>
+                                                <option value="right">Right</option>
+                                            </select>
+                                            <label for="measurement-speaker-align-dry-run"><input type="checkbox" id="measurement-speaker-align-dry-run"> Dry run</label>
+                                            <button id="measurement-speaker-align-start" class="btn-secondary" type="button">Speaker Align</button>
+                                            <span id="measurement-speaker-align-status" class="measurement-repeat-help">Aligns each way of one speaker with the microphone fixed.</span>
+                                        </div>
+                                        <div class="measurement-workflow-row">
+                                            <label for="measurement-speaker-align-reference">Reference</label>
+                                            <input type="text" id="measurement-speaker-align-reference" class="url-input" placeholder="interface:input-2:upstream" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                                            <label for="measurement-speaker-align-position">Mic position</label>
+                                            <input type="text" id="measurement-speaker-align-position" class="url-input" placeholder="seat-1-fixed" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                                        </div>
+                                    </div>
                                     <div class="measurement-workflow-section">
                                         <h4 class="measurement-workflow-label">Calibration</h4>
                                         <div class="measurement-workflow-group">
@@ -1624,11 +1643,12 @@
     <script src="/static/hybrid_measurement.js?v=0.9.15"></script>
     <script src="/static/measurement_ui.js?v=0.9.18"></script>
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
-    <script src="/static/measurement_flows.js?v=0.9.23"></script>
+    <script src="/static/measurement_flows.js?v=0.9.24"></script>
     <script src="/static/output_state.js?v=0.9.4"></script>
     <script src="/static/crossover.js?v=0.9.1"></script>
+    <script src="/static/speaker_align.js?v=0.9.1"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.171"></script>
+    <script src="/static/app.js?v=0.9.172"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>
