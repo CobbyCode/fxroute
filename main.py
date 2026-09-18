@@ -2665,6 +2665,7 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         volume_state_for_manager=lambda *args, **kwargs: _volume_state_for_manager(*args, **kwargs),
         schedule_peak_monitor_refresh=lambda reason: dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason),
         get_output_service=lambda: get_output_service(),
+        sync_v2_head_live=lambda: _sync_v2_head_after_bank_assign(),
         verify_measurement_commit=lambda measurement_id, binding: _verify_measurement_commit(
             measurement_id, binding),
     )
@@ -4242,6 +4243,39 @@ async def _try_render_v2_sync_target(rate: int, overview: dict):
         return None
 
 
+async def _sync_v2_head_after_bank_assign() -> dict:
+    """Best-effort live sync after a bank preset assignment (import flows).
+
+    Import/create endpoints persist through OutputService without touching
+    the runtime; without this the engine keeps serving the previous bank
+    content until the next unrelated edit.  Never raises: the assignment
+    stays committed when the head cannot activate or the sync fails.
+    """
+    try:
+        overview = await asyncio.to_thread(get_audio_output_overview)
+        try:
+            output_key, channels = _output_state_device(overview)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else "No audio output device"
+            return {"live_applied": False, "live_reason": detail}
+        status = get_samplerate_status()
+        rate = status.get("active_rate")
+        if not isinstance(rate, int) or rate <= 0:
+            rate = status.get("force_rate")
+        if not isinstance(rate, int) or rate <= 0 or not channels:
+            return {"live_applied": False, "live_reason": "rate-unknown"}
+        if runtime.dsp_runtime is None:
+            return {"live_applied": False, "live_reason": "dsp-runtime-unavailable"}
+        target = await _try_render_v2_sync_target(rate, overview)
+        if target is None:
+            return {"live_applied": False, "live_reason": "not-activatable"}
+        await runtime.dsp_runtime.sync_rendered(target)
+        return {"live_applied": True, "live_reason": None}
+    except Exception as exc:
+        logger.warning("Bank-assign live sync failed: %s", exc)
+        return {"live_applied": False, "live_reason": "live-apply-failed"}
+
+
 def _create_autosub_release_adapter(*, service, output_key: str, channels: int):
     """Compose a release adapter for one committed AutoSub device context.
 
@@ -4601,6 +4635,33 @@ async def _apply_audio_output_state_body(body: dict):
             "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
         }
 
+    # Stage render targets BEFORE committing: a candidate that compiles but
+    # cannot render (unstable coefficients, unresolvable IR, missing ports)
+    # must fail here with the last good head still live -- never as a
+    # committed-but-unrunnable poison head that every later background sync
+    # trips over (and silently replaces with the legacy graph).
+    staged_new_target = staged_old_target = None
+    staged_guard = 0.0
+    if (live_known and new_plan is not None and old_fp != new_fp
+            and runtime.dsp_runtime is not None
+            and (overview.get("output_mode") or {}).get("hardware_playback_ports")):
+        ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
+        manager = _require_dsp_manager()
+        try:
+            staged_new_target = _build_plan_target(
+                service, manager, new_plan, output_key=output_key,
+                rate=target_rate, hardware_ports=ports, fingerprint=new_fp)
+            if old_plan is not None:
+                staged_old_target = _build_plan_target(
+                    service, manager, old_plan, output_key=output_key,
+                    rate=target_rate, hardware_ports=ports, fingerprint=old_fp)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
+        if staged_old_target is not None:
+            previous_gain = float((runtime.dsp_runtime.snapshot() or {}).get("output_gain_db") or 0.0)
+            staged_guard = _plan_transition_guard(
+                staged_old_target.config.layout, staged_new_target.config.layout, previous_gain)
+
     try:
         committed = service.commit(candidate, expected_revision=expected_revision)
     except StateConflictError as exc:
@@ -4628,27 +4689,21 @@ async def _apply_audio_output_state_body(body: dict):
         return draft_response("rate-unknown" if not target_rate else "output-capacity-unknown")
     if new_plan is None:
         return draft_response("not-activatable")
-    if old_plan is None:
-        # The stored head becomes activatable with this commit (e.g. the
-        # missing crossover starter filters were just supplied).  There is no
-        # previous valid graph to guard against or roll back to: commit first,
-        # then sync the new plan directly.  Returning "not-activatable" here
-        # would persist the valid head while leaving the stale engine behind,
-        # so every later edit looks like the first audible change.
+    if staged_new_target is None:
+        if old_fp is not None and old_fp == new_fp:
+            return draft_response("nothing-to-apply")
         if runtime.dsp_runtime is None:
             return draft_response("dsp-runtime-unavailable")
-        ports = (overview.get("output_mode") or {}).get("hardware_playback_ports") or []
-        if not ports:
-            return draft_response("output-ports-undiscovered")
-        manager = _require_dsp_manager()
+        return draft_response("output-ports-undiscovered")
+    if staged_old_target is None:
+        # The stored head becomes activatable with this commit (e.g. the
+        # missing crossover starter filters were just supplied).  There is no
+        # previous valid graph to guard against or roll back to: sync the new
+        # plan directly.  Returning "not-activatable" here would persist the
+        # valid head while leaving the stale engine behind, so every later
+        # edit looks like the first audible change.
         try:
-            new_target = _build_plan_target(service, manager, new_plan, output_key=output_key,
-                                            rate=target_rate, hardware_ports=list(ports),
-                                            fingerprint=new_fp)
-        except (RuntimeError, ValueError) as exc:
-            raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
-        try:
-            await runtime.dsp_runtime.sync_rendered(new_target)
+            await runtime.dsp_runtime.sync_rendered(staged_new_target)
         except BaseException as exc:
             try:
                 service.revert(state, expected_revision=committed["revision"])
@@ -4668,29 +4723,9 @@ async def _apply_audio_output_state_body(body: dict):
             "live_reason": None,
             "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
         }
-    if old_fp == new_fp:
-        return draft_response("nothing-to-apply")
-    if runtime.dsp_runtime is None:
-        return draft_response("dsp-runtime-unavailable")
-    ports = (overview.get("output_mode") or {}).get("hardware_playback_ports") or []
-    if not ports:
-        return draft_response("output-ports-undiscovered")
-
-    manager = _require_dsp_manager()
-    try:
-        new_target = _build_plan_target(service, manager, new_plan, output_key=output_key,
-                                        rate=target_rate, hardware_ports=list(ports),
-                                        fingerprint=new_fp)
-        old_target = _build_plan_target(service, manager, old_plan, output_key=output_key,
-                                        rate=target_rate, hardware_ports=list(ports),
-                                        fingerprint=old_fp)
-    except (RuntimeError, ValueError) as exc:
-        raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
-    previous_gain = float((runtime.dsp_runtime.snapshot() or {}).get("output_gain_db") or 0.0)
-    guard = _plan_transition_guard(old_target.config.layout, new_target.config.layout, previous_gain)
     try:
         await runtime.dsp_runtime.guarded_rebuild_rendered(
-            new_target, previous=old_target, guard_db=guard,
+            staged_new_target, previous=staged_old_target, guard_db=staged_guard,
             apply_candidate=lambda: None, apply_previous=lambda: None,
             settle_seconds=0.0)
     except BaseException as exc:
@@ -4698,7 +4733,7 @@ async def _apply_audio_output_state_body(body: dict):
         try:
             service.revert(state, expected_revision=committed["revision"])
             rolled_back = True
-            await runtime.dsp_runtime.sync_rendered(old_target, initial_output_gain_db=guard)
+            await runtime.dsp_runtime.sync_rendered(staged_old_target, initial_output_gain_db=staged_guard)
         except BaseException:
             logger.exception("Output-state fast-path rollback failed")
         raise HTTPException(status_code=500, detail={

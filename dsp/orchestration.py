@@ -294,6 +294,14 @@ class DspOrchestrator:
             if v2_target is not None:
                 await dsp_runtime.sync_rendered(v2_target)
                 return current_overview
+            if self._v2_renderer_present() and self._serving_v2_plan(dsp_runtime):
+                # The committed head cannot render (e.g. a hand-edited state
+                # file), but the helper still serves the last good v2 graph:
+                # keep it instead of wiping the topology back to legacy.
+                logger.error(
+                    "Committed output state cannot render; keeping running v2 graph "
+                    "instead of legacy fallback")
+                return current_overview
             await dsp_runtime.sync(current_overview)
             return current_overview
 
@@ -319,6 +327,19 @@ class DspOrchestrator:
             logger.warning("V2 plan render for DSP sync failed, using legacy overview: %s", exc)
             return None
         return target
+
+    @staticmethod
+    def _serving_v2_plan(dsp_runtime: Any) -> bool:
+        """Return whether the running helper already serves a v2 plan graph."""
+        try:
+            snapshot = dsp_runtime.snapshot() or {}
+        except Exception:
+            return False
+        config = snapshot.get("config") or {}
+        return bool(snapshot.get("active") and config.get("plan_fingerprint"))
+
+    def _v2_renderer_present(self) -> bool:
+        return getattr(self._deps, "try_render_v2_target", None) is not None
 
     async def _sync_after_stale_settle(
         self,

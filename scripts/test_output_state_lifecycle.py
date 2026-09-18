@@ -315,6 +315,56 @@ class ApplyLifecycleTests(unittest.TestCase):
                          self.service.fingerprint(self.service.load(), output_key="A",
                                                   channels=4, sample_rate_hz=48000))
 
+    def test_unrenderable_candidate_fails_before_commit(self):
+        """A compiling-but-unrenderable edit must not poison the stored head.
+
+        Staging (layout/engine-text render) used to happen after the commit,
+        so a candidate that compiles yet cannot render left a head behind
+        that every later background sync tripped over (and silently replaced
+        with the legacy graph).  Staging now happens first: the apply fails
+        with the last good head still committed and live.
+        """
+        from unittest import mock as _mock
+        from audio.output_state import set_crossover
+        service, manager = self.service, self.manager
+        switched = service.commit(switch_mode(service.load(), "stereo"),
+                                  expected_revision=1)
+        cros = service.commit(set_crossover(switched, "stereo", True),
+                              expected_revision=switched["revision"])
+        routed = service.commit(
+            set_mode_routing(cros, "stereo", "A",
+                             ["left_low", "left_high", "right_low", "right_high"]),
+            expected_revision=cros["revision"])
+        lowpass = {"family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000}
+        highpass = {"family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000}
+        for role, filt in (("left_low", {"lowpass": lowpass}),
+                           ("right_low", {"lowpass": lowpass}),
+                           ("left_high", {"highpass": highpass}),
+                           ("right_high", {"highpass": highpass})):
+            routed = service.commit(
+                set_output_processing(routed, "stereo", role, **filt),
+                expected_revision=routed["revision"])
+        head_revision = routed["revision"]
+        other = {"family": "butterworth", "slope_db_oct": 12, "frequency_hz": 2500}
+        with lifecycle_context(service, manager, self.runtime):
+            with _mock.patch.object(
+                    service, "compile_layout",
+                    side_effect=ValueError("unresolvable IR kernel")):
+                with self.assertRaises(main.HTTPException) as ctx:
+                    asyncio.run(main.apply_audio_output_state(FakeRequest({
+                        "expected_revision": head_revision,
+                        "mutation": {"kind": "set_processing", "mode": "stereo",
+                                     "role": "right_high", "highpass": other},
+                    })))
+        self.assertEqual(ctx.exception.status_code, 500)
+        self.assertIn("cannot stage", str(ctx.exception.detail))
+        self.assertEqual(service.load()["revision"], head_revision)
+        self.assertEqual(
+            service.load()["modes"]["stereo"]["processing"]["right_high"]["highpass"],
+            highpass)
+        self.runtime.sync_rendered.assert_not_awaited()
+        self.runtime.guarded_rebuild_rendered.assert_not_awaited()
+
     def test_selection_only_change_skips_rebuild(self):
         with lifecycle_context(self.service, self.manager, self.runtime):
             result = asyncio.run(main.apply_audio_output_state(FakeRequest({

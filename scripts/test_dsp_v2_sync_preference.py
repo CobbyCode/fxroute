@@ -30,12 +30,16 @@ class _FakeDspRuntime:
     def __init__(self) -> None:
         self.sync_calls = []
         self.rendered_calls = []
+        self.snapshot_value = {"active": False, "config": {}}
 
     async def sync(self, overview: dict) -> None:
         self.sync_calls.append(dict(overview))
 
     async def sync_rendered(self, target) -> None:
         self.rendered_calls.append(target)
+
+    def snapshot(self):
+        return dict(self.snapshot_value)
 
 
 class _FakeSession:
@@ -200,6 +204,36 @@ class V2SyncPreferenceTests(unittest.TestCase):
             self.assertEqual(len(deps.runtime.sync_calls), 1)
 
         asyncio.run(run())
+
+    def test_unrenderable_head_keeps_running_v2_graph(self):
+        # A committed-but-unrenderable head (reachable only past the API,
+        # e.g. a hand-edited state file) must not wipe a healthy running v2
+        # graph back to the legacy topology from a background sync.
+        deps = _FakeDeps(v2_target=None)
+        deps.runtime.snapshot_value = {
+            "active": True,
+            "config": {"plan_fingerprint": "abc123", "output_key": "A"},
+        }
+        run_sync(deps)
+        self.assertEqual(deps.runtime.rendered_calls, [])
+        self.assertEqual(deps.runtime.sync_calls, [])
+
+    def test_unrenderable_head_without_running_v2_uses_legacy(self):
+        deps = _FakeDeps(v2_target=None)
+        deps.runtime.snapshot_value = {"active": True, "config": {}}
+        run_sync(deps)
+        self.assertEqual(deps.runtime.rendered_calls, [])
+        self.assertEqual(len(deps.runtime.sync_calls), 1)
+
+    def test_unrenderable_head_with_idle_engine_uses_legacy(self):
+        deps = _FakeDeps(v2_target=None)
+        deps.runtime.snapshot_value = {
+            "active": False,
+            "config": {"plan_fingerprint": "abc123"},
+        }
+        run_sync(deps)
+        self.assertEqual(deps.runtime.rendered_calls, [])
+        self.assertEqual(len(deps.runtime.sync_calls), 1)
 
 
 if __name__ == "__main__":

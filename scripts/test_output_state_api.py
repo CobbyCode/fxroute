@@ -188,7 +188,7 @@ class AudioStateApiTests(unittest.TestCase):
         self.assertNotIn("/api/audio/output-routing", routes)
 
 
-def dsp_deps(service, manager):
+def dsp_deps(service, manager, sync_hook=None):
     async def drain(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
@@ -207,6 +207,7 @@ def dsp_deps(service, manager):
         volume_state_for_manager=mock.MagicMock(),
         schedule_peak_monitor_refresh=mock.MagicMock(),
         get_output_service=lambda: service,
+        sync_v2_head_live=sync_hook,
     )
 
 
@@ -335,6 +336,53 @@ class DspBankApiTests(unittest.TestCase):
         self.assertTrue(result["bank"]["assigned"])
         bank = self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]
         self.assertEqual(bank["preset"], "REW Bank")
+
+    def test_bank_binding_triggers_live_sync_when_wired(self):
+        hook = mock.AsyncMock(return_value={"live_applied": True, "live_reason": None})
+        dsp_api.configure_dsp_api(dsp_deps(self.service, self.manager, sync_hook=hook))
+        try:
+            result = asyncio.run(dsp_api.create_peq_preset(FakeRequest({
+                "presetName": "Live EQ",
+                "peq": {"enabled": True, "params": {"channelMode": "stereo-linked", "bands": [
+                    {"filterType": "bell", "frequencyHz": 120, "gainDb": -2, "q": 1}]}},
+                "bank_mode": "stereo-sub", "bank_id": "sub1", "expected_revision": 1,
+            })))
+        finally:
+            dsp_api.configure_dsp_api(dsp_deps(self.service, self.manager))
+        self.assertTrue(result["bank"]["assigned"])
+        self.assertTrue(result["bank"]["live_applied"])
+        self.assertIsNone(result["bank"]["live_reason"])
+        hook.assert_awaited_once()
+
+    def test_bank_binding_survives_live_sync_failure(self):
+        async def failing_hook():
+            raise RuntimeError("engine unreachable")
+
+        dsp_api.configure_dsp_api(dsp_deps(self.service, self.manager, sync_hook=failing_hook))
+        try:
+            result = asyncio.run(dsp_api.create_peq_preset(FakeRequest({
+                "presetName": "Stale EQ",
+                "peq": {"enabled": True, "params": {"channelMode": "stereo-linked", "bands": [
+                    {"filterType": "bell", "frequencyHz": 120, "gainDb": -2, "q": 1}]}},
+                "bank_mode": "stereo-sub", "bank_id": "sub1", "expected_revision": 1,
+            })))
+        finally:
+            dsp_api.configure_dsp_api(dsp_deps(self.service, self.manager))
+        self.assertTrue(result["bank"]["assigned"])
+        self.assertFalse(result["bank"]["live_applied"])
+        bank = self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]
+        self.assertEqual(bank["preset"], "Stale EQ")
+
+    def test_bank_binding_without_hook_reports_unavailable(self):
+        result = asyncio.run(dsp_api.create_peq_preset(FakeRequest({
+            "presetName": "Quiet EQ",
+            "peq": {"enabled": True, "params": {"channelMode": "stereo-linked", "bands": [
+                {"filterType": "bell", "frequencyHz": 120, "gainDb": -2, "q": 1}]}},
+            "bank_mode": "stereo-sub", "bank_id": "sub1", "expected_revision": 1,
+        })))
+        self.assertTrue(result["bank"]["assigned"])
+        self.assertFalse(result["bank"]["live_applied"])
+        self.assertEqual(result["bank"]["live_reason"], "live-sync-unavailable")
 
 
 if __name__ == "__main__":

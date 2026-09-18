@@ -126,13 +126,27 @@ def _bilinear(coefficients: tuple, rate: int) -> list[float]:
     return [b0d / a0d, b1d / a0d, b2d / a0d, 1.0, a1d / a0d, a2d / a0d]
 
 
-def design_crossover(spec: dict, sample_rate_hz: int) -> list[list[float]]:
-    """Design normalized ``[b0, b1, b2, 1, a1, a2]`` second-order sections."""
-    spec = _validate_spec(spec)
-    if type(sample_rate_hz) is not int or not 0 < sample_rate_hz <= FXROUTE_MAX_PROCESSING_RATE:
-        raise ValueError("Sample rate must be a positive integer up to 384000")
-    if not spec["frequency_hz"] < sample_rate_hz / 2:
-        raise ValueError("Crossover frequency must be below Nyquist")
+def _first_order_digital(kind: str, w0: float, rate: int) -> list[float]:
+    """Design one true first-order section (real prototype pole).
+
+    A first-order analog section backwards through the biquad bilinear
+    above comes out with an exactly cancelling pole/zero pair at z = -1,
+    which sits precisely on the engine's strict stability boundary
+    (``|a1| < 1 + a2`` fails by equality) and is rejected at load even
+    though its response is correct.  Emit the direct first-order form
+    (``b2 == a2 == 0``) instead: identical magnitude response, strictly
+    stable, accepted by the native engine.  This revives every odd-order
+    slope (Butterworth/Bessel 6/18/30/… and Linkwitz-Riley 12/36/60).
+    """
+    c = 2.0 * rate
+    divisor = w0 + c
+    if kind == "lowpass":
+        return [w0 / divisor, w0 / divisor, 0.0, 1.0, (w0 - c) / divisor, 0.0]
+    return [c / divisor, -c / divisor, 0.0, 1.0, (w0 - c) / divisor, 0.0]
+
+
+def _design_sections(spec: dict) -> tuple[list[tuple], float]:
+    """Prototype sections plus the magnitude-cutoff normalization scale."""
     order = spec["slope_db_oct"] // 6
     if spec["family"] == "bessel":
         sections = _sections_from_poles(_bessel_poles(order))
@@ -143,9 +157,28 @@ def design_crossover(spec: dict, sample_rate_hz: int) -> list[list[float]]:
         if spec["family"] == "linkwitz-riley":
             sections = list(sections) + list(sections)
         scale = 1.0
+    return sections, scale
+
+
+def design_crossover(spec: dict, sample_rate_hz: int) -> list[list[float]]:
+    """Design normalized ``[b0, b1, b2, 1, a1, a2]`` second-order sections."""
+    spec = _validate_spec(spec)
+    if type(sample_rate_hz) is not int or not 0 < sample_rate_hz <= FXROUTE_MAX_PROCESSING_RATE:
+        raise ValueError("Sample rate must be a positive integer up to 384000")
+    if not spec["frequency_hz"] < sample_rate_hz / 2:
+        raise ValueError("Crossover frequency must be below Nyquist")
+    sections, scale = _design_sections(spec)
     warped = 2.0 * sample_rate_hz * math.tan(math.pi * spec["frequency_hz"] / sample_rate_hz)
-    return [_bilinear(_analog_coefficients(spec["kind"], section, warped, scale), sample_rate_hz)
-            for section in sections]
+    digital = []
+    for section in sections:
+        if len(section) == 1:
+            (w0_proto,) = section
+            w0 = w0_proto * scale * warped if spec["kind"] == "lowpass" else warped / (w0_proto * scale)
+            digital.append(_first_order_digital(spec["kind"], w0, sample_rate_hz))
+        else:
+            digital.append(_bilinear(
+                _analog_coefficients(spec["kind"], section, warped, scale), sample_rate_hz))
+    return digital
 
 
 def crossover_response(sections: list, frequency_hz: float, sample_rate_hz: int) -> complex:

@@ -80,6 +80,11 @@ class DspApiDeps:
     volume_state_for_manager: Callable[..., Awaitable[Any]]
     schedule_peak_monitor_refresh: Callable[[str], None]
     get_output_service: Optional[Callable[[], Any]] = None
+    # Best-effort live sync after a bank preset assignment (import/create
+    # flows persist through OutputService without touching the runtime).
+    # Returns {"live_applied": bool, "live_reason": str | None}; never raises
+    # (the assignment stays committed when the sync fails). Absent in tests.
+    sync_v2_head_live: Optional[Callable[[], Awaitable[dict]]] = None
     # Gates a generated-correction commit on the source measurement's frozen
     # target still matching live processing; raises ValueError on mismatch.
     verify_measurement_commit: Optional[Callable[[str, dict], None]] = None
@@ -258,7 +263,14 @@ def _validate_bank_target(service, binding: dict) -> None:
 
 
 async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) -> dict:
-    """Assign a just-created preset to its bank; conflicts report partial state."""
+    """Assign a just-created preset to its bank; conflicts report partial state.
+
+    The assignment persists through OutputService, which never touches the
+    runtime; without a follow-up sync the engine would keep serving the
+    previous bank content until the next unrelated edit.  The injected
+    live sync renders the current head afterwards (best-effort: the
+    assignment stays committed when the head cannot activate).
+    """
     service = _require_output_state_service()
     try:
         service.validate_bank_preset(service.load(), binding["mode"], binding["bank_id"], created_name)
@@ -275,8 +287,18 @@ async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) ->
         raise HTTPException(status_code=409, detail={
             "code": "bank-assign-conflict", "message": str(exc),
             "created": created_name, "assigned": False}) from exc
-    return {"assigned": True, "mode": binding["mode"],
-            "bank_id": binding["bank_id"], "revision": committed["revision"]}
+    response = {"assigned": True, "mode": binding["mode"],
+                "bank_id": binding["bank_id"], "revision": committed["revision"]}
+    sync = getattr(_deps(), "sync_v2_head_live", None)
+    if sync is None:
+        return {**response, "live_applied": False, "live_reason": "live-sync-unavailable"}
+    try:
+        live = await sync()
+    except Exception as exc:
+        logger.warning("Bank-assign live sync failed: %s", exc)
+        return {**response, "live_applied": False, "live_reason": "live-apply-failed"}
+    return {**response, "live_applied": bool(live.get("live_applied")),
+            "live_reason": live.get("live_reason")}
 
 
 def _verify_measurement_commit(source_measurement_id: object, binding: dict | None) -> None:

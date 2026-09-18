@@ -21,10 +21,12 @@ class CrossoverDesignTests(unittest.TestCase):
     def test_known_cutoff_levels(self):
         rate = 48000
         for family, slope, expected in (
-            ("butterworth", 12, -3.0103), ("butterworth", 24, -3.0103),
-            ("bessel", 12, -3.0103), ("bessel", 24, -3.0103),
+            ("butterworth", 6, -3.0103), ("butterworth", 12, -3.0103),
+            ("butterworth", 18, -3.0103), ("butterworth", 24, -3.0103),
+            ("bessel", 6, -3.0103), ("bessel", 12, -3.0103),
+            ("bessel", 18, -3.0103), ("bessel", 24, -3.0103),
             ("linkwitz-riley", 12, -6.0206), ("linkwitz-riley", 24, -6.0206),
-            ("linkwitz-riley", 72, -6.0206),
+            ("linkwitz-riley", 36, -6.0206), ("linkwitz-riley", 72, -6.0206),
         ):
             for kind in ("lowpass", "highpass"):
                 spec = {"kind": kind, "family": family, "slope_db_oct": slope, "frequency_hz": 2000}
@@ -53,15 +55,27 @@ class CrossoverDesignTests(unittest.TestCase):
                 self.assertEqual(len(design_crossover(lowpass((family, slope)), rate)), count)
 
     def test_digital_poles_are_stable_at_all_rates(self):
+        # Every advertised slope must survive the native engine's strict
+        # stability gate (|a2| < 1 and |a1| < 1 + a2): odd-order slopes ship
+        # a real-pole first-order section, which used to come out with an
+        # exactly cancelling pole/zero pair on the boundary and was rejected
+        # at load, silently killing the whole head render (and, through the
+        # background sync fallback, the running v2 graph with it).
+        from audio.output_state import FILTER_SLOPES
         for rate in (44100, 48000, 96000, 192000, 384000):
-            for family, slope in (("butterworth", 72), ("bessel", 72), ("linkwitz-riley", 72)):
-                for kind in ("lowpass", "highpass"):
-                    spec = {"kind": kind, "family": family, "slope_db_oct": slope, "frequency_hz": 2000}
-                    for section in design_crossover(spec, rate):
-                        b0, b1, b2, _, a1, a2 = section
-                        for pole in self._poles(a1, a2):
-                            with self.subTest(rate=rate, family=family, kind=kind):
-                                self.assertLess(abs(pole), 1.0 - 1e-9)
+            for family, slopes in FILTER_SLOPES.items():
+                for slope in slopes:
+                    for kind in ("lowpass", "highpass"):
+                        spec = {"kind": kind, "family": family,
+                                "slope_db_oct": slope, "frequency_hz": 2000}
+                        for section in design_crossover(spec, rate):
+                            b0, b1, b2, _, a1, a2 = section
+                            with self.subTest(rate=rate, family=family,
+                                              slope=slope, kind=kind):
+                                self.assertLess(abs(a2), 1.0)
+                                self.assertLess(abs(a1), 1.0 + a2)
+                                for pole in self._poles(a1, a2):
+                                    self.assertLess(abs(pole), 1.0 - 1e-9)
 
     @staticmethod
     def _poles(a1, a2):
