@@ -208,9 +208,24 @@ measurementAreaTests();
 applyFlow().then(() => {
     assert.match(indexSource, /output_state\.js\?v=\d+\.\d+\.\d+/);
     assert.match(indexSource, /id="settings-crossover-select"/);
+    assert.match(indexSource, /id="settings-crossover-group"/);
+    assert.match(indexSource, /id="settings-mode-group"/);
     assert.match(indexSource, /id="settings-routing-grid"/);
     assert.match(indexSource, /id="effects-bank-select"/);
     assert.doesNotMatch(indexSource, /id="os-mode-select"/);
     assert.doesNotMatch(indexSource, /id="os-routing-grid"/);
+    // Settings order: Source before Music Library, Device Name directly
+    // above Maintenance (Amplifier hidden), Maintenance last.
+    const sectionOrder = ['<h3>Audio Output</h3>', '<h3>Source</h3>', '<h3>Music Library</h3>',
+        '<h3>Device Name</h3>', '<h3>Maintenance</h3>'].map((h) => indexSource.indexOf(h));
+    assert.ok(sectionOrder.every((pos) => pos >= 0), 'all settings sections present');
+    assert.deepEqual([...sectionOrder].sort((a, b) => a - b), sectionOrder);
+    assert.match(indexSource, /<section class="radio-manage-section settings-section hidden">\s*<div class="radio-manage-section-header">\s*<h3>Amplifier Controller<\/h3>/);
+    // Audio Output field order: Device, Sample Rate, Mode, Crossover, Routing.
+    const fieldOrder = ['for="settings-output-select"', 'for="settings-samplerate-select"',
+        'for="settings-output-mode-select"', 'for="settings-crossover-select"',
+        'id="settings-routing-label"'].map((m) => indexSource.indexOf(m));
+    assert.ok(fieldOrder.every((pos) => pos >= 0), 'all audio output fields present');
+    assert.deepEqual([...fieldOrder].sort((a, b) => a - b), fieldOrder);
     console.log('output-state frontend tests: ok');
 }).catch((error) => { console.error(error); process.exitCode = 1; });

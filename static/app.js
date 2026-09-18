@@ -482,6 +482,7 @@ const elements = {
     settingsRoutingGrid: document.getElementById('settings-routing-grid'),
     settingsRoutingHint: document.getElementById('settings-routing-hint'),
     settingsCrossoverSelect: document.getElementById('settings-crossover-select'),
+    settingsCrossoverGroup: document.getElementById('settings-crossover-group'),
     osTopology: document.getElementById('os-topology'),
     osRevision: document.getElementById('os-revision'),
     osFeedback: document.getElementById('os-feedback'),
@@ -3605,6 +3606,7 @@ function renderOutputSystemSection() {
         if (elements.settingsOutputModeHint) elements.settingsOutputModeHint.textContent = 'Output configuration unavailable.';
         if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = true;
         if (elements.settingsModeGroup) elements.settingsModeGroup.classList.add('hidden');
+        if (elements.settingsCrossoverGroup) elements.settingsCrossoverGroup.classList.add('hidden');
         if (elements.settingsCrossoverSelect) elements.settingsCrossoverSelect.disabled = true;
         if (elements.settingsRoutingGrid) elements.settingsRoutingGrid.innerHTML = '';
         if (elements.osTopology) elements.osTopology.textContent = '';
@@ -3618,6 +3620,9 @@ function renderOutputSystemSection() {
     const busy = state.outputSystem.busy;
     if (elements.settingsModeGroup) {
         elements.settingsModeGroup.classList.toggle('hidden', !mod.modeSelectorVisible(device.channels || 0));
+    }
+    if (elements.settingsCrossoverGroup) {
+        elements.settingsCrossoverGroup.classList.toggle('hidden', !mod.modeSelectorVisible(device.channels || 0));
     }
     mod.renderModeSelect(elements.settingsOutputModeSelect, catalog, mode);
     if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = busy;

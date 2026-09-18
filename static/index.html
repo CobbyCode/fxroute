@@ -105,6 +105,13 @@
                                 <option value="">Loading…</option>
                             </select>
                         </div>
+                        <div class="field-group settings-field-group">
+                            <label for="settings-samplerate-select">Sample Rate</label>
+                            <select id="settings-samplerate-select" class="url-input">
+                                <option value="auto">Auto</option>
+                            </select>
+                            <p id="settings-samplerate-hint" class="settings-inline-note">Follows the effective playback sample rate.</p>
+                        </div>
                         <div class="field-group settings-field-group" id="settings-mode-group">
                             <label for="settings-output-mode-select">Mode</label>
                             <select id="settings-output-mode-select" class="url-input">
@@ -113,19 +120,12 @@
                             </select>
                             <p id="settings-output-mode-hint" class="settings-inline-note">Stereo output mode active.</p>
                         </div>
-                        <div class="field-group settings-field-group">
+                        <div class="field-group settings-field-group" id="settings-crossover-group">
                             <label for="settings-crossover-select">Crossover</label>
                             <select id="settings-crossover-select" class="url-input" disabled>
                                 <option value="off">Off</option>
                                 <option value="on">On</option>
                             </select>
-                        </div>
-                        <div class="field-group settings-field-group">
-                            <label for="settings-samplerate-select">Sample Rate</label>
-                            <select id="settings-samplerate-select" class="url-input">
-                                <option value="auto">Auto</option>
-                            </select>
-                            <p id="settings-samplerate-hint" class="settings-inline-note">Follows the effective playback sample rate.</p>
                         </div>
                         <div class="field-group settings-field-group" id="settings-routing-group">
                             <span class="settings-routing-label" id="settings-routing-label">Output Routing</span>
@@ -135,19 +135,6 @@
                         <p id="os-topology" class="settings-inline-note"></p>
                         <p id="os-revision" class="settings-inline-note"></p>
                         <div id="os-feedback" class="effects-extras-feedback" aria-live="polite"></div>
-                    </section>
-
-                    <section class="radio-manage-section settings-section">
-                        <div class="radio-manage-section-header">
-                            <h3>Music Library</h3>
-                        </div>
-                        <div class="field-group settings-field-group">
-                            <label for="settings-music-library-select">Library</label>
-                            <select id="settings-music-library-select" class="url-input" disabled>
-                                <option value="local">Loading…</option>
-                            </select>
-                            <p id="settings-music-library-hint" class="settings-inline-note"></p>
-                        </div>
                     </section>
 
                     <section class="radio-manage-section settings-section">
@@ -166,6 +153,19 @@
 
                     <section class="radio-manage-section settings-section">
                         <div class="radio-manage-section-header">
+                            <h3>Music Library</h3>
+                        </div>
+                        <div class="field-group settings-field-group">
+                            <label for="settings-music-library-select">Library</label>
+                            <select id="settings-music-library-select" class="url-input" disabled>
+                                <option value="local">Loading…</option>
+                            </select>
+                            <p id="settings-music-library-hint" class="settings-inline-note"></p>
+                        </div>
+                    </section>
+
+                    <section class="radio-manage-section settings-section">
+                        <div class="radio-manage-section-header">
                             <h3>Device Name</h3>
                             <p id="settings-device-name-hint">Address of this FXRoute box on the LAN.</p>
                         </div>
@@ -177,7 +177,7 @@
                         </div>
                     </section>
 
-                    <section class="radio-manage-section settings-section">
+                    <section class="radio-manage-section settings-section hidden">
                         <div class="radio-manage-section-header">
                             <h3>Amplifier Controller</h3>
                             <p id="settings-hardware-summary">Controller not detected.</p>
@@ -1622,7 +1622,7 @@
     <script src="/static/crossover.js?v=0.9.1"></script>
     <script src="/static/speaker_align.js?v=0.9.2"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.174"></script>
+    <script src="/static/app.js?v=0.9.175"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>
