@@ -38,7 +38,7 @@ wait_for_http() {
   return 1
 }
 
-# GRUB-Eintraege (verifiziert am ISO): 0=Try or Install Ubuntu,
+# GRUB-Eintraege (verifiziert am ISO): 0=Try FXRoute Live,
 # 1=Install FXRoute, 2=Ubuntu (safe graphics) (+EFI-Eintraege).
 # QEMU-Monitor per Python-Stdlib (kein socat noetig).
 qemu_monitor() {
@@ -248,7 +248,7 @@ phase_appliance() {
 }
 
 phase_live() {
-  log "phase live: booting Try or Install Ubuntu (default entry)"
+  log "phase live: booting Try FXRoute Live (default entry)"
   local disk="$TEST_ROOT/live-check.qcow2" monitor="$TEST_ROOT/live-monitor.sock" pidfile="$TEST_ROOT/live.pid"
   qemu-img create -f qcow2 "$disk" "${DISK_GB}G" >/dev/null
   # Kernel extras (console=ttyS0, live SSH hook) are baked into the
@@ -268,7 +268,7 @@ phase_live() {
 }
 
 phase_install() {
-  # GRUB order: 0=Try or Install Ubuntu, 1=Install FXRoute Desktop,
+  # GRUB order: 0=Try FXRoute Live, 1=Install FXRoute Desktop,
   # 2=Install FXRoute Headless (FXROUTE_UBUNTU_TEST_GRUB selects the
   # profile under test; default = desktop).
   local profile="${FXROUTE_UBUNTU_TEST_PROFILE:-desktop}"

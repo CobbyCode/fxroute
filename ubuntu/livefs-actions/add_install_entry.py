@@ -1,8 +1,11 @@
-"""livefs-edit action: exactly Try Ubuntu, FXRoute Desktop, FXRoute Headless.
+"""livefs-edit action: Try FXRoute Live plus Desktop/Headless installers.
 
-Keep the stock Try block and preamble unchanged in product builds. Only the
-FXRoute entries select an explicit seed; never inject a global cloud datasource.
-Test-only console/SSH args may be applied to all three entries.
+The stock Try block is reused verbatim except for its title: it boots the
+same live session (which autostarts the FXRoute live setup), so keeping the
+stock Ubuntu name confused testers into skipping it. Kernel args and preamble
+stay byte-identical. Only the FXRoute install entries select an explicit
+seed; never inject a global cloud datasource. Test-only console/SSH args may
+be applied to all three entries.
 """
 import os
 import re
@@ -43,7 +46,9 @@ def add_args(block, arguments):
 
 stock_entry = match.group(0)
 extra = os.environ.get('FXROUTE_GRUB_TEST_EXTRA', '').strip()
-try_entry = add_args(stock_entry, extra) if extra else stock_entry
+live_entry = stock_entry.replace('"Try or Install Ubuntu"',
+                                 '"Try FXRoute Live"', 1)
+try_entry = add_args(live_entry, extra) if extra else live_entry
 entries = [try_entry]
 for profile in ('desktop', 'headless'):
     arguments = ('autoinstall '
@@ -55,7 +60,7 @@ for profile in ('desktop', 'headless'):
     entries.append(add_args(entry, arguments))
 
 # Drop the safe-graphics and firmware utility menu tail deliberately: the
-# requested product menu has exactly three entries. Stock Try remains first.
+# requested product menu has exactly three entries. Renamed live entry first.
 with open(path, 'w') as fp:
     fp.write(text[:match.start()] + ''.join(entries))
-print('added FXRoute Desktop and Headless GRUB entries')
+print('added Try FXRoute Live plus Desktop and Headless GRUB entries')

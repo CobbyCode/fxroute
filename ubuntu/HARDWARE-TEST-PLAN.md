@@ -21,7 +21,7 @@ Vorbereitung einmalig:
 
 1. ISO/Stick im UEFI-Boot-Menü wählen; es muss der Shim lädt (kein MOK-
    Enroll-Screen, keine "Security Violation").
-2. GRUB → `Try or Install Ubuntu` startet normal (Secure Boot an).
+2. GRUB → `Try FXRoute Live` startet normal (Secure Boot an).
 3. GRUB → `Install FXRoute` → Installation durchlaufen lassen.
 4. Installiertes System bootet mit Secure Boot an (kein MOK, kein
    "Verification failed").

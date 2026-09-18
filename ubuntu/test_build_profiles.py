@@ -63,12 +63,14 @@ class BuildProfilesTest(unittest.TestCase):
             runpy.run_path(str(ROOT / 'livefs-actions/add_install_entry.py'), init_globals={'ctxt': context})
         return path.read_text()
 
-    def test_exact_three_entries_stock_try_unchanged_and_profile_paths(self):
+    def test_exact_three_entries_live_renamed_and_profile_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             output = self.run_grub(directory)
         self.assertEqual(re.findall(r'^menuentry [\"\']([^\"\']+)', output, re.M),
-                         ['Try or Install Ubuntu', 'Install FXRoute Desktop', 'Install FXRoute Headless'])
-        self.assertTrue(output.startswith('set timeout=30\nloadfont unicode\n\n' + TRY))
+                         ['Try FXRoute Live', 'Install FXRoute Desktop', 'Install FXRoute Headless'])
+        renamed_try = TRY.replace('menuentry "Try or Install Ubuntu"',
+                                  'menuentry "Try FXRoute Live"')
+        self.assertTrue(output.startswith('set timeout=30\nloadfont unicode\n\n' + renamed_try))
         for profile in ('desktop', 'headless'):
             block = re.search(r'menuentry "Install FXRoute ' + profile.title() + r'" \{(.*?)\n\}', output, re.S).group(1)
             before, after = block.split('---', 1)

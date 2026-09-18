@@ -2,7 +2,7 @@
 # Build a bootable Ubuntu 26.04 Desktop ISO with the FXRoute payload.
 # Standard-Ubuntu-Weg: offizielles Desktop-ISO + livefs-editor. Die
 # Secure-Boot-Kette (Shim/signierter Kernel) bleibt unangetastet; der normale
-# "Try or Install Ubuntu"-Eintrag bleibt Default und unveraendert. Daneben:
+# "Try FXRoute Live"-Eintrag (Live-Session mit FXRoute-Autostart) bleibt Default. Daneben:
 # "Install FXRoute Desktop" / "Install FXRoute Headless" mit eigenen Seeds.
 #
 # livefs-edit braucht ein Loop-Device: wo das fehlt (rootless Desktop),

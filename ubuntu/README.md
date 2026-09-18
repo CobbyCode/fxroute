@@ -100,7 +100,7 @@ ubuntu/
 
 Stand 17.09.2026, Test-ISO `dist/fxroute-ubuntu-26.04-test.iso`:
 
-* **Live-Phase bestanden:** Default-Eintrag `Try or Install Ubuntu` bootet
+* **Live-Phase bestanden:** Default-Eintrag `Try FXRoute Live` bootet
   die GNOME-Live-Session; das Autostart-Skript richtet FXRoute ein und der
   Kiosk öffnet. `/api/status` über QEMU-Portforward erreichbar (voller
   Status-JSON, `system.version 1.0-beta8`).
