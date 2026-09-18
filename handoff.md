@@ -14,8 +14,62 @@
 
 - Fertig und live auf `.104` (`http://192.168.178.104:8000`): Unified Output Model (Stereo / Stereo + Sub, Crossover als On/Off-Schalter, ein Hardware-Routing), kanalabhängiger Mode-Selektor, Settings-Reihenfolge, Crossover-Kachel im Sub-Stil mit Pro-Filter-Gruppen.
 - Verifikation: lokal 405/0/14, `.104` inkl. nativer Plan-Peak-Parität; Produkt läuft, Backups unter `~/deploy-backup/`, Demo nie auf `.104`.
-- Offen: Backend-v2-Migration nach `docs/superpowers/plans/2026-09-18-backend-v2-migration.md`, Einstieg Task 0 (Audit). Legacy-Layer (AutoSub-Runner, Coordinator-Snapshots, Linkaufbau) ist noch aktiv und tragend — nicht nebenbei anfassen.
+- Backend-v2-Migration: Tasks 0–5 **implementiert und committet** (Details unten); offen nur noch Task 6 Steps 3–4 (`.104`-Staffel + Deploy).
 - Regeln: `./AGENTS.md` (Git-ignoriert), kein Push/Release, Deploy nur Backup → Transfer (ohne `demo/`) → Restart → Verify.
+
+## Backend-v2-Migration — Stand (Tasks 0–5 fertig)
+
+Plan: `docs/superpowers/plans/2026-09-18-backend-v2-migration.md`. Tasks 1–3 waren
+per Plan-RED nicht reproduzierbar (v2-Pfad längst aktiv) und sind als
+Kontrakt-Tests + Sensitivitäts-Mutationen committet; Tasks 4+5 als ein
+kombinierter Slice (Plan-Gate ließ keine Löschung vor Task deserves zu —
+Befund: einziger produzierbarer Job trägt immer `output_state_context`,
+v2-Commit/Rollback/Link-Build längst aktiv). Commits auf
+`feature/multichannel-crossover` (aufbauend auf `680f16f`):
+
+- `19627e8` Task 0: Read-only-Audit aller Legacy-Call-Sites (Voll-Liste hier
+  im Handoff, Abschnitt „Backend-v2-Migration Task 0 Audit“).
+- `38f82d4` Task 1: Service-Pfad berührt keine Legacy-Persistenz
+  (Kontrakt-Test; Plan-Sketch adaptiert — `start` hat kein
+  `set_audio_output_mode`, Funnel-Modul nimmt den Slot).
+- `dca5280` Task 2: Commit/Rollback über `OutputService`, Legacy-Files per
+  Canary unberührt (Commit- + Rollback-Test).
+- `b2c6853` Task 3: Link-Build aus Plan-Routen, Mode-Label-unabhängigkeit
+  (`from_plan` + Diagnose-Tests).
+- `fa4f9dd` Task 5 vorgezogen (Phase A1): beide POST-Routen
+  (`/api/audio/output-mode`, `/api/audio/output-routing`) + `set_bass`-Kind
+  gelöscht; 423-Lock jetzt auf dem v2-Apply; Crossover/Mute-Garantien auf
+  `set_crossover`/`set_routing` umgeschrieben; lokale `AGENTS.md`-Payloads
+  auf v2-Apply umgestellt (Datei untracked, nie committen).
+- `a6af720` Phase A3a (Lesepfad, additiv): Overview-Mode-Payload wird aus
+  dem v2-Head abgeleitet (`configure_output_state_head`, total failure
+  semantics, inkl. `-80`-dB-Parks); Device-Switch ist selection-only
+  (kein Fallback, kein Persist, stales Device-Gedächtnis ignoriert);
+  `_current_output_mode` aus Runtime-Config, dann v2-Rollen, dann Stereo.
+- `f33300e` Phase A2 (Coordinator): Commit/Rollback verlangen v2-Kandidat
+  (Legacy-Branches, `_verify_output_mode_rollback`, Finalize-Sub-Gate,
+  `persist`-Deps-Feld, `output_mode/routing_config`-Felder entfernt).
+- `d0ae4ac` Task 4 (Phase B): Legacy-Persistenz + numerische
+  Routing-Writes gelöscht (Samplerate-Persist/Overview-Defs,
+  `save/saved/restore/all_saved`, Einmal-Migrations-Loader inkl.
+  `legacy_snapshot_loader`/Migrationsfenster — `.104` läuft längst
+  `output-state.json`); AutoSub (Candidates/Funnel/3 Runner) service-only
+  (Legacy-Branches verlangen jetzt Service-Job, Sync/Restore/21-Verify-
+  Helper gelöscht); ~28 Testdateien migriert (eine gelöscht:
+  `test_auto_sub_sync_runtime.py`), Voll-Sweep **405/0/14**.
+
+Verhaltens-Notizen (bei Weiterarbeit beachten):
+
+- Single-Sub-Kontextmaske ist 4 (nur `output_3`); Maske 12 war das
+  Legacy-Default für beide Sub-Outputs.
+- `output_route_pairs`/`routing_payload`/`BassManagementConfig.from_overview`
+  bleiben als reine Lesefunktionen (Overview-Link-Build, Messkontext);
+  keine Schreiber mehr vorhanden (Prod-Grep clean).
+- `audio-output-mode.json`/`output-routing.json` werden nie mehr
+  geschrieben; alte Dateien auf Hosts sind totes Gewicht (Canary-Test
+  beweist Unberührtheit).
+- Demo (`demo/`, `demo/dist`) behält simulierte Legacy-Routen (Constraint);
+  `demo/dist` nach `output_state.js`-Änderung neu gebaut, Parität grün.
 
 ## Maßgebliche Pläne
 Die bestehenden Pläne sind maßgeblich. **Keine Neuplanung oder erneute Implementierung bereits abgeschlossener Arbeiten.**
