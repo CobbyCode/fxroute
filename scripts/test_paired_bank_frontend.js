@@ -46,9 +46,12 @@ const source = fs.readFileSync(require('node:path').join(__dirname, '../static/a
 const calls = [];
 const context = {
     state: { outputSystem: { catalog }, dsp: { compare: {}, active_preset: 'Wrong legacy preset' } },
-    elements: { effectsCompareA: { value: 'Neutral' }, effectsCompareB: { value: 'Room' } },
+    elements: { effectsCompareA: { value: 'Neutral' }, effectsCompareB: { value: 'Room' },
+        effectsMeasureOpenBtn: { disabled: false, title: '' },
+        effectsToggleImportBtn: { disabled: false, title: '' } },
     effectsCompareLoadInFlight: false,
     outputSystemModule: () => ui,
+    measurementAreaFromCatalog: () => ui.measurementArea(context.state.outputSystem.catalog),
     applyOutputSystemMutation: async (kind, fields) => { calls.push({ kind, ...fields }); return {}; },
     renderEffectsCompare() {}, renderEffects() {}, setEffectsCompareLoadBusy() {},
     showToast(message) { throw new Error(message); }, console,
@@ -57,7 +60,8 @@ const context = {
 vm.createContext(context);
 for (const name of ['getEmptyEffectsCompareState', 'normalizeEffectsCompareSelection',
     'getEffectiveEffectsCompareSide', 'getEffectsCompareState', 'getEffectsCompareToggleTarget',
-    'handleEffectsCompareSelectionChange', 'loadEffectsComparePreset', 'toggleComparePreset']) {
+    'handleEffectsCompareSelectionChange', 'loadEffectsComparePreset', 'toggleComparePreset',
+    'syncBankActionButtons']) {
     const match = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));
     assert.ok(match, name);
     vm.runInContext(match[0], context);
@@ -79,5 +83,19 @@ for (const name of ['getEmptyEffectsCompareState', 'normalizeEffectsCompareSelec
     assert.deepEqual(JSON.parse(JSON.stringify(calls.pop())), {
         kind: 'switch_all_banks', mode: 'stereo-sub', active_side: 'A',
     });
+    // All Banks only switches A/B jointly: Measure and Import stay disabled.
+    // Global and concrete banks keep both actions enabled.
+    const buttons = [context.elements.effectsMeasureOpenBtn, context.elements.effectsToggleImportBtn];
+    for (const selected of ['main', 'global']) {
+        config.selected_bank = selected;
+        context.syncBankActionButtons();
+        assert.deepEqual(buttons.map(button => button.disabled), [false, false]);
+        assert.deepEqual(buttons.map(button => button.title), ['', '']);
+    }
+    config.selected_bank = 'all';
+    context.syncBankActionButtons();
+    assert.deepEqual(buttons.map(button => button.disabled), [true, true]);
+    assert.match(buttons[0].title, /All Banks/);
+    assert.match(buttons[1].title, /All Banks/);
     console.log('Paired bank frontend tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

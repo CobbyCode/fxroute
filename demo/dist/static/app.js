@@ -3735,6 +3735,18 @@ function renderEffectsBankSelector() {
     elements.effectsBankSelect.disabled = !!state.outputSystem.busy || effectsCompareLoadInFlight;
     renderMeasurementArea();
     renderBankImportTarget();
+    syncBankActionButtons();
+}
+
+function syncBankActionButtons() {
+    /* All Banks only switches A/B jointly across the area banks: there is
+     * nothing to measure or import there, so both entries stay disabled. */
+    const aggregate = measurementAreaFromCatalog()?.available === false;
+    for (const button of [elements.effectsMeasureOpenBtn, elements.effectsToggleImportBtn]) {
+        if (!button) continue;
+        button.disabled = aggregate;
+        button.title = aggregate ? 'All Banks only switches A/B; select a filter bank to measure or import.' : '';
+    }
 }
 
 function renderBankImportTarget() {
@@ -14232,6 +14244,7 @@ function renderEffectsCompare() {
     if (!elements.effectsCompareRow) return;
     if (presets.length === 0) {
         elements.effectsCompareRow.style.display = 'none';
+        syncBankActionButtons();
         return;
     }
     elements.effectsCompareRow.style.display = '';
