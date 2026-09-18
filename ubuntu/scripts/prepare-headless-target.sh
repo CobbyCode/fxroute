@@ -24,14 +24,21 @@ PROFILE_FILE="/etc/fxroute-iso-profile"
 # Exact package names only. GNOME libraries/keyring are not the desktop and are
 # retained for the shared installer (including provider credentials and GVfs).
 # No wildcard purge and no dependency garbage collection.
+# The last three entries are not top-level dependencies of the metapackages
+# but apt removes them as part of the same transaction (verified against a
+# real ubuntu-desktop-minimal target install): the Ubuntu shell-extensions
+# metapackage, the default gsettings overrides, and the GNOME portal backend,
+# which is useless without a graphical session. Each stays covered by the
+# fail-closed simulation check below.
 desktop_packages=(
   ubuntu-desktop ubuntu-desktop-minimal ubuntu-desktop-default-settings
   gdm3 gnome-shell gnome-shell-common gnome-session gnome-session-bin
-  gnome-session-common ubuntu-session gnome-settings-daemon
+  gnome-session-common ubuntu-session ubuntu-settings gnome-settings-daemon
   gnome-settings-daemon-common gnome-control-center gnome-control-center-data
   gnome-control-center-faces gnome-shell-extension-appindicator
   gnome-shell-extension-desktop-icons-ng gnome-shell-extension-ubuntu-dock
-  gnome-shell-extension-ubuntu-tiling-assistant gnome-initial-setup
+  gnome-shell-extension-ubuntu-tiling-assistant gnome-shell-ubuntu-extensions
+  gnome-initial-setup xdg-desktop-portal-gnome
   gnome-remote-desktop nautilus nautilus-data firefox
 )
 declare -A allowed_packages=()
@@ -67,33 +74,16 @@ if [[ ${#packages_to_purge[@]} -gt 0 ]]; then
   apt-get "${apt_options[@]}" purge "${packages_to_purge[@]}"
 fi
 
-# Read snap state offline: `snap list` cannot distinguish an absent Firefox from
-# an unavailable daemon in Curtin's chroot. Never edit snapd's installed state.
-# A genuinely installed Firefox must be removed through snapd or the install
-# fails rather than silently shipping it. An unseeded Firefox is handled below.
-firefox_installed="$(python3 - <<'PY'
-import json
-from pathlib import Path
-state = Path('/var/lib/snapd/state.json')
-snaps = json.loads(state.read_text()).get('data', {}).get('snaps', {}) if state.exists() else {}
-print('yes' if 'firefox' in snaps else 'no')
-PY
-)"
-if [[ "$firefox_installed" == yes ]]; then
-  snap remove --purge firefox \
-    || die "Could not remove installed Firefox snap; refusing a partial headless target"
-fi
-
-# Desktop ISO snaps may only be seeded on first boot. Remove Firefox from that
-# seed as well, otherwise it would reappear. python3-yaml comes with Netplan on
-# the Ubuntu desktop source. Preserve every other snap and shared assertion.
+# Installed snaps cannot be removed here: no snap daemon runs inside the install
+# target, and offline surgery on snapd state is unsupported. The Firefox snap
+# itself is removed on first boot with a running snapd (see
+# first-boot-install-ubuntu.sh). What is offline-safe stays here: remove
+# Firefox from the seed so it cannot reappear, otherwise it would be reseeded.
+# python3-yaml comes with Netplan on the Ubuntu desktop source. Preserve every
+# other snap and shared assertion.
 python3 - <<'PY'
-import json
 from pathlib import Path
 
-state = Path('/var/lib/snapd/state.json')
-if state.exists() and 'firefox' in json.loads(state.read_text()).get('data', {}).get('snaps', {}):
-    raise SystemExit('Firefox remains in installed snap state')
 seed = Path('/var/lib/snapd/seed')
 manifest = seed / 'seed.yaml'
 if manifest.exists():

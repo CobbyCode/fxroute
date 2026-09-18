@@ -39,6 +39,12 @@ elif name == 'apt-get':
             packages.pop(package, None)
     packages_file.write_text(json.dumps(packages))
 elif name == 'snap':
+    if args[:1] == ['list'] and len(args) == 1:
+        sys.exit(int(os.environ.get('SNAPD_DOWN', '0')))
+    if args[:2] == ['list', 'firefox']:
+        state_file = root / 'var/lib/snapd/state.json'
+        present = state_file.exists() and 'firefox' in json.loads(state_file.read_text())['data']['snaps']
+        sys.exit(0 if present else 1)
     assert args == ['remove', '--purge', 'firefox'], args
     if os.environ.get('SNAP_REMOVE_FAIL'):
         sys.exit(1)
@@ -187,22 +193,35 @@ class HeadlessTargetTest(IsolatedScripts):
         self.assertTrue((seed / 'snaps/core24_456.snap').exists())
         self.assertFalse(self.calls('snap'), 'Unseeded target has no running snap daemon')
 
-    def test_installed_firefox_removed_using_snap_and_seed_pruned(self):
+    def test_installed_firefox_left_for_first_boot_seed_still_pruned(self):
+        # No snap daemon runs inside the install target, so the helper must
+        # never invoke snap there. Seed pruning is offline-safe and stays.
         seed = self.seed_firefox()
         state = self.installed_firefox()
         result = self.run_script('prepare-headless-target.sh')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn('firefox', json.loads(state.read_text())['data']['snaps'])
-        self.assertIn('core24', json.loads(state.read_text())['data']['snaps'])
+        self.assertIn('firefox', json.loads(state.read_text())['data']['snaps'])
         self.assertNotIn('firefox', (seed / 'seed.yaml').read_text())
-        self.assertEqual(self.calls('snap'), [['snap', 'remove', '--purge', 'firefox']])
+        self.assertFalse(self.calls('snap'))
 
-    def test_snap_failure_is_not_silently_accepted(self):
-        self.installed_firefox()
-        self.env['SNAP_REMOVE_FAIL'] = '1'
+    def test_real_world_removal_plan_succeeds_without_collateral(self):
+        # Captured from a QEMU install (ubuntu-desktop-minimal target): apt
+        # additionally purges these desktop-only packages as dependencies of
+        # the explicit list. They must be covered explicitly, while anything
+        # else still fails closed.
+        observed = ['gnome-shell-ubuntu-extensions', 'ubuntu-settings',
+                    'xdg-desktop-portal-gnome']
+        retained = ['network-manager', 'wpasupplicant', 'pipewire',
+                    'wireplumber', 'openssh-server']
+        self.packages.write_text(json.dumps(dict.fromkeys(
+            ['gdm3', 'gnome-shell', 'ubuntu-desktop-minimal'] + observed + retained,
+            'installed')))
+        self.env['EXTRA_REMOVALS'] = json.dumps(observed)
         result = self.run_script('prepare-headless-target.sh')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(self.calls('systemctl'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(json.loads(self.packages.read_text())), set(retained))
+        self.assertIn(['systemctl', 'set-default', 'multi-user.target'], self.calls())
+        del self.env['EXTRA_REMOVALS']
 
     def test_helper_refuses_desktop_missing_and_invalid_profiles(self):
         for profile in ('desktop', '', 'headles', None):
@@ -238,6 +257,38 @@ class FirstBootProfileTest(IsolatedScripts):
         self.assertFalse((self.root / 'home/fxroute/.config/autostart').exists())
         self.assertFalse(any('gdm' in ' '.join(call) or 'graphical.target' in call
                              for call in self.calls('systemctl')))
+
+    def test_headless_removes_installed_firefox_through_snapd(self):
+        self.installed_firefox()
+        result = self.run_script('first-boot-install-ubuntu.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls('snap'),
+                         [['snap', 'list'],
+                          ['snap', 'list', 'firefox'],
+                          ['snap', 'remove', '--purge', 'firefox'],
+                          ['snap', 'list', 'firefox']])
+        state = self.root / 'var/lib/snapd/state.json'
+        snaps = json.loads(state.read_text())['data']['snaps']
+        self.assertNotIn('firefox', snaps)
+        self.assertIn('core24', snaps)
+        self.assertTrue((self.root / 'var/lib/fxroute-iso/install-complete').exists())
+
+    def test_headless_skips_snap_removal_when_firefox_absent(self):
+        result = self.run_script('first-boot-install-ubuntu.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(['snap', 'remove', '--purge', 'firefox'], self.calls())
+
+    def test_headless_fails_closed_without_snapd_or_on_remove_failure(self):
+        self.env['FXROUTE_SNAPD_WAIT_ATTEMPTS'] = '2'
+        self.addCleanup(self.env.pop, 'FXROUTE_SNAPD_WAIT_ATTEMPTS')
+        for failure in ('SNAPD_DOWN', 'SNAP_REMOVE_FAIL'):
+            with self.subTest(failure=failure):
+                self.installed_firefox()
+                self.env[failure] = '1'
+                result = self.run_script('first-boot-install-ubuntu.sh')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / 'var/lib/fxroute-iso/install-complete').exists())
+                del self.env[failure]
 
     def test_desktop_and_missing_profile_keep_browser_requirement(self):
         for profile in ('desktop', None):

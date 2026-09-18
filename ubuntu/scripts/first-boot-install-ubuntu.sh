@@ -147,6 +147,38 @@ derive_fxroute_device_name() {
 
 export HOME="$fxroute_home"
 
+# Headless targets must ship no browser. The installer late-command cannot
+# remove the Firefox snap (no snap daemon runs inside the install target),
+# so removal happens here, on first boot with a running snapd. Fail closed:
+# without snapd we cannot verify the browser is gone.
+remove_headless_browser_snap() {
+  local attempt="" attempts="${FXROUTE_SNAPD_WAIT_ATTEMPTS:-15}"
+  for attempt in $(seq 1 "$attempts"); do
+    if snap list >/dev/null 2>&1; then
+      break
+    fi
+    if [[ "$attempt" -eq "$attempts" ]]; then
+      printf '%s\n' "snapd is not responding; cannot verify headless browser removal" >&2
+      exit 1
+    fi
+    sleep 2
+  done
+  if snap list firefox >/dev/null 2>&1; then
+    snap remove --purge firefox || {
+      printf '%s\n' "Could not remove Firefox snap; refusing a partial headless target" >&2
+      exit 1
+    }
+  fi
+  if snap list firefox >/dev/null 2>&1; then
+    printf '%s\n' "Firefox snap remains after removal" >&2
+    exit 1
+  fi
+}
+
+if [[ "$profile" == "headless" ]]; then
+  remove_headless_browser_snap
+fi
+
 "$SOURCE_DIR/install.sh" \
   --source "$SOURCE_DIR" \
   --target "$fxroute_home/fxroute" \
