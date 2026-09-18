@@ -3771,11 +3771,7 @@ function renderCrossoverTile() {
         renderCrossoverTile();
     });
     if (elements.effectsCrossoverGraph) {
-        const paths = mod.graphPaths(response.ways, active, 600, 220);
-        elements.effectsCrossoverGraph.innerHTML = '<line x1="0" y1="'
-            + mod.graphY(0, 220).toFixed(1) + '" x2="600" y2="'
-            + mod.graphY(0, 220).toFixed(1) + '" class="crossover-grid-zero" />'
-            + paths.map((entry) => `<polyline points="${entry.d.replace(/^[ML]/, '').replace(/[ML]/g, ' ')}" fill="none" class="${entry.active ? 'crossover-path-active' : 'crossover-path-dim'}" />`).join('');
+        drawCrossoverResponse(elements.effectsCrossoverGraph, response.ways, active);
     }
     const applicable = mod.applicableFilters(active);
     const showHighpass = applicable.includes('highpass');
@@ -14772,6 +14768,125 @@ function drawSubwooferPreview(subwoofer) {
     ctx.strokeRect(markerLabelX - markerLabelWidth / 2, markerLabelY - 9, markerLabelWidth, 18);
     ctx.fillStyle = '#e5e7eb';
     ctx.fillText(markerLabel, markerLabelX, markerLabelY);
+    ctx.textAlign = 'start';
+}
+
+function drawCrossoverResponse(canvas, ways, activeRole) {
+    // Same visual language as the subwoofer preview: dark plot, dB/Hz
+    // axes, dimmed ways, highlighted active way, cutoff markers.
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const mod = crossoverModule();
+    const ordered = mod ? mod.orderedWays(ways || {}) : Object.keys(ways || {});
+    const displayWidth = Math.max(320, Math.round(canvas.clientWidth || canvas.width || 560));
+    const displayHeight = 170;
+    const dpr = window.devicePixelRatio || 1;
+    const targetWidth = Math.round(displayWidth * dpr);
+    const targetHeight = Math.round(displayHeight * dpr);
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const width = displayWidth;
+    const height = displayHeight;
+    const pad = { left: 48, right: 16, top: 14, bottom: 22 };
+    const plotW = Math.max(1, width - pad.left - pad.right);
+    const plotH = Math.max(1, height - pad.top - pad.bottom);
+    const minHz = 20;
+    const maxHz = 20000;
+    const minDb = -30;
+    const maxDb = 6;
+    const xForHz = (hz) => pad.left + ((Math.log10(Math.max(minHz, hz)) - Math.log10(minHz)) / (Math.log10(maxHz) - Math.log10(minHz))) * plotW;
+    const yForDb = (db) => pad.top + ((maxDb - Math.max(minDb, Math.min(maxDb, db))) / (maxDb - minDb)) * plotH;
+    const formatHz = (hz) => hz >= 1000 ? `${parseFloat((hz / 1000).toFixed(1))} kHz` : `${Math.round(hz)} Hz`;
+    const formatTickHz = (hz) => hz >= 1000 ? `${parseFloat((hz / 1000).toFixed(1))}k` : `${hz}`;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#08111f';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = 'rgba(255,255,255,0.035)';
+    ctx.fillRect(pad.left, pad.top, plotW, plotH);
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.lineWidth = 1;
+    const frequencyLabels = [20, 100, 500, 2000, 10000];
+    const dbLabels = [0, -6, -12, -18, -24];
+    frequencyLabels.forEach((hz) => {
+        const x = xForHz(hz);
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, pad.top + plotH);
+        ctx.stroke();
+    });
+    dbLabels.forEach((db) => {
+        const y = yForDb(db);
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + plotW, y);
+        ctx.stroke();
+    });
+    ctx.fillStyle = 'rgba(229,231,235,0.54)';
+    ctx.font = '500 10px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    dbLabels.forEach((db) => {
+        ctx.fillText(`${db} dB`, pad.left - 8, yForDb(db));
+    });
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    frequencyLabels.forEach((hz) => {
+        ctx.fillText(formatTickHz(hz), xForHz(hz), height - 8);
+    });
+    ctx.textAlign = 'start';
+    const drawWay = (role, color, lineWidth) => {
+        const entry = (ways || {})[role];
+        const points = entry && entry.complete && Array.isArray(entry.points) ? entry.points : null;
+        if (!points || points.length < 2) return;
+        ctx.beginPath();
+        let started = false;
+        for (const point of points) {
+            const hz = Number(point && point[0]);
+            const db = Number(point && point[1]);
+            if (!Number.isFinite(hz) || !Number.isFinite(db)) continue;
+            const x = xForHz(hz);
+            const y = yForDb(db);
+            if (!started) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+            started = true;
+        }
+        if (!started) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+        ctx.stroke();
+    };
+    ordered.filter((role) => role !== activeRole)
+        .forEach((role) => drawWay(role, 'rgba(107,114,128,0.85)', 1.5));
+    drawWay(activeRole, '#60a5fa', 3);
+    const activeFilters = ((ways || {})[activeRole] || {}).filters || {};
+    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    for (const kind of ['highpass', 'lowpass']) {
+        const hz = Number(activeFilters[kind] && activeFilters[kind].frequency_hz);
+        if (!Number.isFinite(hz) || hz < minHz || hz > maxHz) continue;
+        const x = xForHz(hz);
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, pad.top + plotH);
+        ctx.stroke();
+        const label = formatHz(hz);
+        ctx.textAlign = 'center';
+        const labelWidth = ctx.measureText(label).width + 12;
+        const labelX = Math.max(pad.left + labelWidth / 2 + 2, Math.min(pad.left + plotW - labelWidth / 2 - 2, x));
+        const labelY = pad.top + 12;
+        ctx.fillStyle = 'rgba(12,18,28,0.82)';
+        ctx.fillRect(labelX - labelWidth / 2, labelY - 9, labelWidth, 18);
+        ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+        ctx.strokeRect(labelX - labelWidth / 2, labelY - 9, labelWidth, 18);
+        ctx.fillStyle = '#e5e7eb';
+        ctx.fillText(label, labelX, labelY);
+    }
     ctx.textAlign = 'start';
 }
 

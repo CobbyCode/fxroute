@@ -141,11 +141,24 @@ def main() -> int:
             page.wait_for_timeout(1200)
             tabs = page.locator("#effects-crossover-tabs button")
             check(f"six way tabs ({tabs.count()} found)", tabs.count() == 6)
-            paths = page.locator("#effects-crossover-graph polyline")
-            check(f"six graph paths ({paths.count()} found)", paths.count() == 6)
-            box = page.locator("#effects-crossover-card").bounding_box()
+            check("crossover graph is a canvas",
+                  page.evaluate("document.getElementById('effects-crossover-graph')?.tagName") == 'CANVAS')
             graph_box = page.locator("#effects-crossover-graph").bounding_box()
-            check(f"graph height bounded ({graph_box['height']:.0f}px)", graph_box['height'] < 320)
+            check(f"graph height compact ({graph_box['height']:.0f}px)", 120 <= graph_box['height'] <= 220)
+            variance = page.evaluate(
+                """(() => {
+                    const c = document.getElementById('effects-crossover-graph');
+                    if (!c || c.tagName !== 'CANVAS') return -1;
+                    const x = c.getContext('2d');
+                    const d = x.getImageData(0, 0, c.width, c.height).data;
+                    let s = 0, n = 0;
+                    for (let i = 0; i < d.length; i += 401 * 4) { s += (d[i] + d[i + 1] + d[i + 2]) / 3; n += 1; }
+                    const mean = s / Math.max(1, n);
+                    let v = 0;
+                    for (let i = 0; i < d.length; i += 401 * 4) { const g = (d[i] + d[i + 1] + d[i + 2]) / 3; v += (g - mean) ** 2; }
+                    return v / Math.max(1, n);
+                })()""")
+            check("crossover graph painted", variance > 0)
             overflowing = page.evaluate(
                 """(() => {
                     const card = document.getElementById('effects-crossover-card').getBoundingClientRect();

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /**
  * FXRoute crossover/speaker tile helpers.
- * Pure way ordering, control enablement, starter sets and response-graph
- * geometry plus thin DOM renderers for the Crossover card. Browser-loadable
- * UMD, no build step; Node-testable via require().
+ * Pure way ordering, control enablement, starter sets and response-data
+ * selection plus thin DOM renderers for the Crossover card. The response
+ * graph itself is painted on canvas by the app in subwoofer-preview style.
+ * Browser-loadable UMD, no build step; Node-testable via require().
  */
 (function (root, factory) {
     const api = factory(root);
@@ -93,38 +94,6 @@ function clampFrequencyHz(value) {
     return Math.min(20000, Math.max(20, number));
 }
 
-const GRAPH_MIN_HZ = 20;
-const GRAPH_MAX_HZ = 20000;
-const GRAPH_MAX_DB = 6;
-const GRAPH_MIN_DB = -72;
-
-function graphX(hz, width) {
-    const t = (Math.log10(hz) - Math.log10(GRAPH_MIN_HZ)) / (Math.log10(GRAPH_MAX_HZ) - Math.log10(GRAPH_MIN_HZ));
-    return Math.min(width, Math.max(0, t * width));
-}
-
-function graphY(db, height) {
-    const clamped = Math.min(GRAPH_MAX_DB, Math.max(GRAPH_MIN_DB, db));
-    return ((GRAPH_MAX_DB - clamped) / (GRAPH_MAX_DB - GRAPH_MIN_DB)) * height;
-}
-
-function graphPaths(ways, activeRole, width, height) {
-    const roles = orderedWays(ways).filter((role) => {
-        const entry = ways[role];
-        return entry && entry.complete && Array.isArray(entry.points) && entry.points.length > 1;
-    });
-    return roles.map((role) => {
-        const points = ways[role].points;
-        let d = '';
-        points.forEach(([hz, db], index) => {
-            const x = graphX(Number(hz), width).toFixed(1);
-            const y = graphY(Number(db), height).toFixed(1);
-            d += `${index === 0 ? 'M' : 'L'}${x} ${y}`;
-        });
-        return { role, d, active: role === activeRole };
-    });
-}
-
 function renderWayTabs(tabs, roles, activeRole, onSelect) {
     if (!tabs) return;
     const html = roles.map((role) => {
@@ -146,8 +115,6 @@ function renderWayTabs(tabs, roles, activeRole, onSelect) {
     return {
         WAY_ORDER,
         SUB_ROLES,
-        GRAPH_MIN_DB,
-        GRAPH_MAX_DB,
         esc,
         orderedWays,
         applicableFilters,
@@ -157,9 +124,6 @@ function renderWayTabs(tabs, roles, activeRole, onSelect) {
         clampLevelDb,
         clampAlignmentMs,
         clampFrequencyHz,
-        graphX,
-        graphY,
-        graphPaths,
         renderWayTabs,
     };
 });

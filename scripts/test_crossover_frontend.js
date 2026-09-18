@@ -70,21 +70,8 @@ assert.equal(Crossover.clampAlignmentMs(-99), -40);
 assert.equal(Crossover.clampFrequencyHz(5), 20);
 assert.equal(Crossover.clampFrequencyHz(30000), 20000);
 
-const paths = Crossover.graphPaths({
-    left_low: { complete: true, points: [[20, 0], [300, -6], [20000, -120]] },
-    left_high: { complete: true, points: [[20, -120], [2500, -6], [20000, 0]] },
-}, 'left_low', 600, 220);
-assert.equal(paths.length, 2);
-const active = paths.find(p => p.role === 'left_low');
-assert.equal(active.active, true);
-assert.match(active.d, /^M/);
-assert.ok((active.d.match(/L/g) || []).length >= 2);
-const dimmed = paths.find(p => p.role === 'left_high');
-assert.equal(dimmed.active, false);
-const incomplete = Crossover.graphPaths({ left_mid: { complete: false, points: null } }, 'left_mid', 600, 220);
-assert.deepEqual(incomplete, []);
-
 assert.match(indexSource, /crossover\.js\?v=\d+\.\d+\.\d+/);
+assert.match(indexSource, /<canvas id="effects-crossover-graph"/);
 for (const id of ['effects-crossover-card', 'effects-crossover-tabs', 'effects-crossover-graph',
     'effects-crossover-frequency-highpass', 'effects-crossover-frequency-lowpass',
     'effects-crossover-family', 'effects-crossover-slope', 'effects-crossover-level',
