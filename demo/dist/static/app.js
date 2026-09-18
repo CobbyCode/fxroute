@@ -495,8 +495,10 @@ const elements = {
     effectsCrossoverFrequencyLowpass: document.getElementById('effects-crossover-frequency-lowpass'),
     effectsCrossoverHighpassGroup: document.getElementById('effects-crossover-highpass-group'),
     effectsCrossoverLowpassGroup: document.getElementById('effects-crossover-lowpass-group'),
-    effectsCrossoverFamily: document.getElementById('effects-crossover-family'),
-    effectsCrossoverSlope: document.getElementById('effects-crossover-slope'),
+    effectsCrossoverFamilyHighpass: document.getElementById('effects-crossover-family-highpass'),
+    effectsCrossoverSlopeHighpass: document.getElementById('effects-crossover-slope-highpass'),
+    effectsCrossoverFamilyLowpass: document.getElementById('effects-crossover-family-lowpass'),
+    effectsCrossoverSlopeLowpass: document.getElementById('effects-crossover-slope-lowpass'),
     effectsCrossoverLevel: document.getElementById('effects-crossover-level'),
     effectsCrossoverDelay: document.getElementById('effects-crossover-delay'),
     effectsCrossoverPolarity: document.getElementById('effects-crossover-polarity'),
@@ -1612,7 +1614,9 @@ function setupSettingsActions() {
     }
     const crossoverControlChanged = () => { void saveCrossoverWay(); };
     for (const el of [elements.effectsCrossoverFrequencyHighpass, elements.effectsCrossoverFrequencyLowpass,
-        elements.effectsCrossoverFamily, elements.effectsCrossoverSlope, elements.effectsCrossoverLevel,
+        elements.effectsCrossoverFamilyHighpass, elements.effectsCrossoverSlopeHighpass,
+        elements.effectsCrossoverFamilyLowpass, elements.effectsCrossoverSlopeLowpass,
+        elements.effectsCrossoverLevel,
         elements.effectsCrossoverDelay, elements.effectsCrossoverPolarity]) {
         if (el) el.addEventListener('change', crossoverControlChanged);
     }
@@ -3790,23 +3794,34 @@ function renderCrossoverTile() {
         elements.effectsCrossoverFrequencyLowpass.value = settings.lowpass?.frequency_hz ?? '';
         elements.effectsCrossoverFrequencyLowpass.disabled = !showLowpass || busy;
     }
-    const current = settings.highpass || settings.lowpass || {};
     const families = Object.keys(catalog.capabilities?.filter_families || {});
-    if (elements.effectsCrossoverFamily) {
-        const html = families.map((family) =>
-            `<option value="${mod.esc(family)}"${family === current.family ? ' selected' : ''}>${mod.esc(familyLabel(family))}</option>`).join('');
-        if (elements.effectsCrossoverFamily.innerHTML !== html) elements.effectsCrossoverFamily.innerHTML = html;
-        if (elements.effectsCrossoverFamily.value !== (current.family || '')) {
-            elements.effectsCrossoverFamily.value = current.family || '';
+    for (const kind of ['highpass', 'lowpass']) {
+        const definition = settings[kind] || {};
+        // An unstored filter displays the defaults a save would write.
+        const displayFamily = definition.family || 'linkwitz-riley';
+        const displaySlope = definition.slope_db_oct ?? 24;
+        const familyEl = kind === 'highpass' ? elements.effectsCrossoverFamilyHighpass : elements.effectsCrossoverFamilyLowpass;
+        const slopeEl = kind === 'highpass' ? elements.effectsCrossoverSlopeHighpass : elements.effectsCrossoverSlopeLowpass;
+        const kindBusy = busy || !applicable.includes(kind);
+        if (familyEl) {
+            const html = families.map((family) =>
+                `<option value="${mod.esc(family)}"${family === displayFamily ? ' selected' : ''}>${mod.esc(familyLabel(family))}</option>`).join('');
+            if (familyEl.innerHTML !== html) familyEl.innerHTML = html;
+            if (familyEl.value !== displayFamily) {
+                familyEl.value = displayFamily;
+            }
+            familyEl.disabled = kindBusy;
         }
-        elements.effectsCrossoverFamily.disabled = busy;
-    }
-    if (elements.effectsCrossoverSlope) {
-        const slopes = mod.slopesForFamily(elements.effectsCrossoverFamily?.value || current.family, catalog.capabilities);
-        const html = slopes.map((slope) =>
-            `<option value="${slope}"${slope === current.slope_db_oct ? ' selected' : ''}>${slope}</option>`).join('');
-        if (elements.effectsCrossoverSlope.innerHTML !== html) elements.effectsCrossoverSlope.innerHTML = html;
-        elements.effectsCrossoverSlope.disabled = busy;
+        if (slopeEl) {
+            const slopes = mod.slopesForFamily(familyEl?.value || displayFamily, catalog.capabilities);
+            const html = slopes.map((slope) =>
+                `<option value="${slope}"${slope === displaySlope ? ' selected' : ''}>${slope}</option>`).join('');
+            if (slopeEl.innerHTML !== html) slopeEl.innerHTML = html;
+            if (String(slopeEl.value) !== String(displaySlope)) {
+                slopeEl.value = displaySlope;
+            }
+            slopeEl.disabled = kindBusy;
+        }
     }
     if (elements.effectsCrossoverLevel && document.activeElement !== elements.effectsCrossoverLevel) {
         elements.effectsCrossoverLevel.value = settings.level_db ?? 0;
@@ -3855,20 +3870,24 @@ function collectCrossoverWayMutation() {
         return mod.clampFrequencyHz(el.value);
     };
     const current = catalog.modes[catalog.active_mode]?.processing?.[active] || {};
-    const family = elements.effectsCrossoverFamily?.value || current.highpass?.family || current.lowpass?.family || 'linkwitz-riley';
-    const slope = Number(elements.effectsCrossoverSlope?.value || current.highpass?.slope_db_oct || current.lowpass?.slope_db_oct || 24);
-    const build = (previous, enabled, freqEl) => {
+    const build = (previous, enabled, freqEl, familyEl, slopeEl) => {
         if (!enabled) return previous ?? null;
         const raw = freqEl ? freqEl.value : '';
         if ((raw === '' || raw === null) && !previous) return null;
+        const family = familyEl?.value || previous?.family || 'linkwitz-riley';
+        const slope = Number(slopeEl?.value || previous?.slope_db_oct || 24);
         return { family, slope_db_oct: slope, frequency_hz: readFreq(freqEl, previous?.frequency_hz ?? 1000) };
     };
     return {
         kind: 'set_processing',
         mode: catalog.active_mode,
         role: active,
-        highpass: build(current.highpass, applicable.includes('highpass'), elements.effectsCrossoverFrequencyHighpass),
-        lowpass: build(current.lowpass, applicable.includes('lowpass'), elements.effectsCrossoverFrequencyLowpass),
+        highpass: build(current.highpass, applicable.includes('highpass'),
+            elements.effectsCrossoverFrequencyHighpass,
+            elements.effectsCrossoverFamilyHighpass, elements.effectsCrossoverSlopeHighpass),
+        lowpass: build(current.lowpass, applicable.includes('lowpass'),
+            elements.effectsCrossoverFrequencyLowpass,
+            elements.effectsCrossoverFamilyLowpass, elements.effectsCrossoverSlopeLowpass),
         level_db: mod.clampLevelDb(elements.effectsCrossoverLevel?.value ?? 0),
         alignment_ms: mod.clampAlignmentMs(elements.effectsCrossoverDelay?.value ?? 0),
         polarity: elements.effectsCrossoverPolarity?.value === 'invert' ? 'invert' : 'normal',

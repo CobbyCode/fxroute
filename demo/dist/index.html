@@ -593,10 +593,10 @@
                                     <canvas id="effects-crossover-graph" class="crossover-graph effects-subwoofer-preview" width="600" height="136" role="img" aria-label="Crossover filter response"></canvas>
                                 </div>
                                 <div class="crossover-control-groups">
-                                    <div class="effects-subwoofer-control-group crossover-duo-group">
-                                        <div class="effects-subwoofer-group-label">Filters</div>
-                                        <div class="field-group" id="effects-crossover-highpass-group">
-                                            <label for="effects-crossover-frequency-highpass">High-pass</label>
+                                    <div class="effects-subwoofer-control-group crossover-trio-group" id="effects-crossover-highpass-group">
+                                        <div class="effects-subwoofer-group-label">High-pass</div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-frequency-highpass">Frequency</label>
                                             <div class="stepper-control">
                                                 <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease high-pass frequency">&minus;</button>
                                                 <input type="number" id="effects-crossover-frequency-highpass" class="url-input delay-number-input stepper-input stepper-input-freq" min="20" max="20000" step="1">
@@ -604,8 +604,19 @@
                                                 <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase high-pass frequency">+</button>
                                             </div>
                                         </div>
-                                        <div class="field-group" id="effects-crossover-lowpass-group">
-                                            <label for="effects-crossover-frequency-lowpass">Low-pass</label>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-family-highpass">Type</label>
+                                            <select id="effects-crossover-family-highpass" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                        </div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-slope-highpass">Slope dB/oct</label>
+                                            <select id="effects-crossover-slope-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
+                                        </div>
+                                    </div>
+                                    <div class="effects-subwoofer-control-group crossover-trio-group" id="effects-crossover-lowpass-group">
+                                        <div class="effects-subwoofer-group-label">Low-pass</div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-frequency-lowpass">Frequency</label>
                                             <div class="stepper-control">
                                                 <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease low-pass frequency">&minus;</button>
                                                 <input type="number" id="effects-crossover-frequency-lowpass" class="url-input delay-number-input stepper-input stepper-input-freq" min="20" max="20000" step="1">
@@ -613,16 +624,13 @@
                                                 <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase low-pass frequency">+</button>
                                             </div>
                                         </div>
-                                    </div>
-                                    <div class="effects-subwoofer-control-group crossover-duo-group">
-                                        <div class="effects-subwoofer-group-label">Shape</div>
                                         <div class="field-group">
-                                            <label for="effects-crossover-family">Type</label>
-                                            <select id="effects-crossover-family" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                            <label for="effects-crossover-family-lowpass">Type</label>
+                                            <select id="effects-crossover-family-lowpass" class="url-input effects-headroom-select effects-crossover-type-select"></select>
                                         </div>
                                         <div class="field-group">
-                                            <label for="effects-crossover-slope">Slope dB/oct</label>
-                                            <select id="effects-crossover-slope" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
+                                            <label for="effects-crossover-slope-lowpass">Slope dB/oct</label>
+                                            <select id="effects-crossover-slope-lowpass" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
                                         </div>
                                     </div>
                                     <div class="effects-subwoofer-control-group crossover-trio-group">
@@ -1664,7 +1672,7 @@
     <script src="/static/crossover.js?v=0.9.2"></script>
     <script src="/static/speaker_align.js?v=0.9.2"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.179"></script>
+    <script src="/static/app.js?v=0.9.180"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

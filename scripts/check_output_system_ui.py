@@ -195,9 +195,9 @@ def main() -> int:
                 })()""")
             check(f"no control overflows the card ({overflowing} found)", overflowing == 0)
             check("family select populated",
-                  page.locator("#effects-crossover-family option").count() >= 3)
+                  page.locator("#effects-crossover-family-highpass option").count() >= 3)
             check("slope select populated",
-                  page.locator("#effects-crossover-slope option").count() >= 2)
+                  page.locator("#effects-crossover-slope-highpass option").count() >= 2)
             page.screenshot(path=str(shots / "os-crossover.png"))
 
             # Switch the bank and the way tab; both must update without errors.
@@ -229,7 +229,7 @@ def main() -> int:
             # Editing a way control persists to the backend state.
             page.evaluate(
                 """(() => {
-                    const slope = document.getElementById('effects-crossover-slope');
+                    const slope = document.getElementById('effects-crossover-slope-highpass');
                     slope.value = '48';
                     slope.dispatchEvent(new Event('change', { bubbles: true }));
                 })()""")
@@ -240,9 +240,32 @@ def main() -> int:
                         const active = document.querySelector('.crossover-tab.is-active')
                             ?.dataset.crossoverWay || 'left_low';
                         const entry = j.modes[j.active_mode].processing[active];
-                        return JSON.stringify((entry.lowpass || entry.highpass || {}).slope_db_oct);
+                        return JSON.stringify((entry.highpass || entry.lowpass || {}).slope_db_oct);
                     })""")
             check(f"way slope edit persists ({slope_back})", slope_back == "48")
+
+            # High-pass and low-pass keep independent type/slope per filter.
+            page.locator("[data-crossover-way='left_mid']").click()
+            page.wait_for_timeout(400)
+            page.evaluate(
+                """(() => {
+                    const hi = document.getElementById('effects-crossover-slope-highpass');
+                    hi.value = '48'; hi.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            page.evaluate(
+                """(() => {
+                    const lo = document.getElementById('effects-crossover-slope-lowpass');
+                    lo.value = '12'; lo.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            both_back = page.evaluate(
+                """fetch('/api/audio/output-state').then(r => r.json())
+                    .then(j => JSON.stringify([
+                        j.modes[j.active_mode].processing.left_mid.highpass.slope_db_oct,
+                        j.modes[j.active_mode].processing.left_mid.lowpass.slope_db_oct,
+                    ]))""")
+            check(f"per-filter slopes persist independently ({both_back})", both_back == "[48,12]")
 
             # Cutoff changes must not move the layout: card width is identical
             # for a 3-digit and a 5-digit frequency.

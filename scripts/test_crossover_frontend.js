@@ -74,7 +74,9 @@ assert.match(indexSource, /crossover\.js\?v=\d+\.\d+\.\d+/);
 assert.match(indexSource, /<canvas id="effects-crossover-graph"/);
 for (const id of ['effects-crossover-card', 'effects-crossover-tabs', 'effects-crossover-graph',
     'effects-crossover-frequency-highpass', 'effects-crossover-frequency-lowpass',
-    'effects-crossover-family', 'effects-crossover-slope', 'effects-crossover-level',
+    'effects-crossover-family-highpass', 'effects-crossover-slope-highpass',
+    'effects-crossover-family-lowpass', 'effects-crossover-slope-lowpass',
+    'effects-crossover-level',
     'effects-crossover-delay', 'effects-crossover-polarity', 'effects-crossover-starter']) {
     assert.match(indexSource, new RegExp(`id="${id}"`), `missing #${id}`);
 }
