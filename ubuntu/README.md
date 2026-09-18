@@ -15,17 +15,19 @@ kein Push/Release aus diesem Worktree ohne explizite Anforderung.
   dem signierten Original-ISO (Secure-Boot-Kette aus Shim/signed Kernel bleibt
   unangetastet), Aktionen (`--install-packages`, `--cp`,
   `--add-autoinstall-config`) decken genau unseren Bedarf ab.
-* **Installer:** Subiquity/Autoinstall (`autoinstall:`-Sektion per
-  `--add-autoinstall-config`) + eigener GRUB-Eintrag `Install FXRoute`, der
-  per Kernel-Cmdline `autoinstall` startet. Der normale
-  `Try or Install Ubuntu`-Eintrag bleibt Default und unverändert:
-  normales Ubuntu-Live-/Installer-Modell, keine eigene
-  Persistenz-/Nicht-Persistenz-Logik.
-* **Interaktiv bleibt:** Identity (Benutzer) und Netzwerk (WLAN einmalig im
-  Installer) via `interactive-sections`. Ubuntu-typische Abfrage, keine
-  Leap-Oberflächen-Nachbildung. Netplan aus dem Installer wird von Curtin
-  standardmäßig aufs Ziel übernommen → WLAN nach Erstboot automatisch
-  verbunden (Realtest Phase 2).
+* **Installer:** Subiquity/Autoinstall mit `subiquity.autoinstallpath`
+  (absolut: `/cdrom/fxroute-seed/<profil>.yaml` — Subiquity resolving den
+  Pfad relativ zu seinem CWD, dem Live-User-Home, daher absolut) auf zwei
+  eigenen GRUB-Einträgen `Install FXRoute Desktop` / `Install FXRoute
+  Headless`, jeweils mit `autoinstall`. Der normale `Try or Install
+  Ubuntu`-Eintrag bleibt Default und unverändert und ohne Seed-Zugang
+  (kein `autoinstall.yaml` im ISO-Root, keine cloud-init-Datasource):
+  normales Ubuntu-Live-/Installer-Modell.
+* **Interaktiv bleiben:** Keyboard, Netzwerk (WLAN einmalig im Installer)
+  und Identity (Benutzer/Hostname/Passwort) via `interactive-sections` in
+  **beiden** Profilen. Ubuntu-typische Abfrage, keine eigenen Dialoge.
+  Netplan aus dem Installer wird von Curtin standardmäßig aufs Ziel
+  übernommen → WLAN nach Erstboot automatisch verbunden (Realtest Phase 2).
 * **Erstboot:** `fxroute-first-boot.service` (oneshot, aus Autoinstall
   `late-commands` installiert) entpackt `source.tar`, ruft `install.sh` mit
   denselben Flags wie der Leap-Pfad und richtet den Desktop-Stack (GDM-
@@ -34,6 +36,15 @@ kein Push/Release aus diesem Worktree ohne explizite Anforderung.
   `--install-packages` bereits im Squashfs, ein Autostart läuft `install.sh`
   in der RAM-Session und öffnet den Firefox-Kiosk. Live- und Install-Root
   sind bewusst nicht identisch.
+* **Headless-Ziel (Install FXRoute Headless):** dasselbe
+  `ubuntu-desktop-minimal`-Setup, aber der Curtin-Late-Command
+  `prepare-headless-target.sh` entfernt Desktop/GDM/Firefox-deb explizit aus
+  dem Zielsystem (Purge-Liste ohne autoremove, Fail-closed bei
+  Kollateralschaden; Firefox-Snap-Seed-Eintrag offline entprunt) und setzt
+  `multi-user.target` vor dem Erstboot. Der Firefox-Snap selbst wird beim
+  First-Boot mit laufendem snapd entfernt (nach `snap wait system
+  seed.loaded`). Bedienung per Browser im LAN (FXRoute-HTTP) und SSH;
+  Linger/User-Manager übernimmt `install.sh`.
 
 ## Übernahme vs. Neubau
 
@@ -111,10 +122,16 @@ Gelernt/behoben während der QEMU-Läufe (Details siehe Git-Historie):
   Casper-Mount (`/cdrom/casper`) statt des Kernel-Flags.
 * Casper stapelt Squashfs-Layer mit `.live` oben; die Platzhalter
   `/var/lib/cloud/seed/nocloud/*` in der `.live`-Schicht sind leer und
-  überdecken Seed-Datei in tieferen Schichten. Der Seed liegt deshalb als
-  Baum auf dem ISO (`/fxroute-seed/`) und wird per cloud.cfg.d-Dropin
-  (`seedfrom: file:///cdrom/fxroute-seed/`) geladen — Kernel-Cmdline-
-  `seedfrom` überlebt Caspers Cmdline-Rewrite nicht.
+  überdecken Seed-Dateien in tieferen Schichten. Die Seeds liegen deshalb als
+  Dateien auf dem ISO (`/fxroute-seed/<profil>.yaml`) und werden pro
+  GRUB-Eintrag per absolutem `subiquity.autoinstallpath=/cdrom/...`
+  ausgewählt (Subiquity löst relativ zu seinem CWD auf, dem Live-User-Home;
+  kein `autoinstall.yaml` im ISO-Root, keine cloud-init-Datasource, damit der
+  Stock-`Try`-Eintrag unbeeinflusst bleibt).
+* `md5sum.txt` muss nach dem Squashfs-Rebuild neu geschrieben werden
+  (Pre-Repack-Hook `final_checksums.py`); xorriso erzeugt `/boot.catalog`
+  erst danach — Katalog daher exkludiert wie im Ubuntu-Original, Payload
+  bleibt vollständig abgedeckt.
 * Der Autoinstall-Reboot zeigt kein zweites GRUB (EFI-Reihenfolge wird von
   Subiquity umgestellt); der Harness erkennt das installierte System per
   SSH (root-Fs, Cmdline, Marker) statt per GRUB-Banner.
