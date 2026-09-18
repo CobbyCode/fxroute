@@ -118,6 +118,27 @@ class FromPlanTests(unittest.TestCase):
             self.assertIsNone(runtime.snapshot()["config"]["plan_fingerprint"])
         asyncio.run(run())
 
+    def test_link_build_ignores_overview_mode_label(self):
+        """Task-3 contract: plan link build takes only plan+ports.
+
+        ``from_plan`` accepts no overview input by construction; the per-label
+        overview here is the sketch's decoy proving the label is never
+        consulted. Route pairs must equal the plan target for every label.
+        """
+        from dsp.runtime import DSPRuntimeConfig
+        target = target_for(self.service, self.manager, self.state)
+        plan = plan_for(self.service, self.state)
+        layout = self.service.compile_layout(plan)
+        for label in ("stereo", "subwoofer-2.1", "subwoofer-2.2", "crossover", ""):
+            overview = {"output_mode": {"mode": label,
+                        "effective_output_key": "A", "effective_output_channels": 4,
+                        "hardware_playback_ports": list(PORTS)}}
+            self.assertEqual(overview["output_mode"]["mode"], label)
+            config = DSPRuntimeConfig.from_plan(
+                plan, layout=layout, output_key="A", sample_rate_hz=48000,
+                hardware_ports=list(PORTS), plan_fingerprint="fp-new")
+            self.assertEqual(config.route_pairs, target.config.route_pairs)
+
 
 async def _unreachable(command):
     raise AssertionError(f"unexpected command: {command[0]}")

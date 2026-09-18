@@ -146,6 +146,23 @@ class PlannedDiagnosisTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(diagnosis["links_complete"])
         self.assertEqual(len(list(diagnosis["output_targets"])), 2)
 
+    async def test_planned_routes_ignore_overview_mode_label(self):
+        """Task-3 contract: equal plans verify identically whatever the label.
+
+        With staged plan routes the diagnosis must produce the same link
+        expectations for every legacy mode label; the label only echoes in
+        the ``mode`` field, never in targets/ports/completeness.
+        """
+        expected = [f"{OUTPUT_KEY}:{port}" for _, port in PLANNED]
+        for label in ("stereo", "subwoofer-2.1", "subwoofer-2.2", "crossover", ""):
+            overview = v2_overview()
+            overview["output_mode"] = {**overview["output_mode"], "mode": label}
+            diagnosis = await self.diagnose(
+                overview, self.snapshot(), graph_text(v2_edges()))
+            self.assertTrue(diagnosis["links_complete"], (label, diagnosis["signature"]))
+            self.assertEqual(list(diagnosis["output_targets"]), expected, label)
+            self.assertEqual(diagnosis["mode"], label)
+
     async def test_malformed_planned_routes_fall_back_without_crashing(self):
         diagnosis = await self.diagnose(
             v2_overview(planned=[["x"]]), self.snapshot(), graph_text(v2_edges()))
