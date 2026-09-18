@@ -1028,9 +1028,8 @@ select.url-input {
 .settings-routing-cell select {
     width: 100%;
 }
-/* Output System (multichannel): bank selector row inside the A/B card and
- * the revision note in the settings section. The routing grid reuses the
- * legacy settings-routing classes above unchanged. */
+/* Output routing (multichannel): bank selector row inside the A/B card.
+ * The routing grid reuses the legacy settings-routing classes above unchanged. */
 .effects-bank-row {
     margin-bottom: 0.6rem;
 }

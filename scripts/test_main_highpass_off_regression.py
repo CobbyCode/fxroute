@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
-"""Regression: DSP -> Crossover/Subwoofer -> Main highpass Off must stick.
+"""Regression: DSP -> Subwoofer tile -> Main highpass Off must stick.
 
-Covers the full path for 2.1 and 2.2:
-  UI draft (2.2 top-level sync) -> API payload build -> persisted state
-  -> BassManagementConfig/DSP runtime layout -> readback/render source.
-
-Root cause fixed here: for 2.2 the UI draft only updated
-`output_mode.subwoofer` + `output_mode.subwoofers`, leaving the stale
-top-level `main_highpass_enabled=true`. getSubwooferGlobalSettings() prefers
-the top-level field, so renderSubwooferPanel() snapped the select back to On
-on `input`, and the following `change` save re-read On. Off never reached
-the API. The draft now mirrors crossover/highpass to top-level (see
-applySubwooferDraftToOutputMode in static/app.js).
+Covers the persisted legacy path and the live UI save path: legacy
+2.1/2.2 payloads keep main_highpass_enabled=false through persistence
+into BassManagementConfig/DSP runtime layout (no FL/FR highpass
+filters), while On still produces them; the sub tile saves through
+the single v2 output state (set_subwoofers), never a legacy
+output-mode POST.
 """
 from __future__ import annotations
 
