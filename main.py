@@ -828,6 +828,8 @@ def _make_measurement_services() -> MeasurementServices:
         pipewire_handoff_poll_interval_ms=media_readiness.PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
         build_autosub_release_adapter=lambda *, output_key, channels: _create_autosub_release_adapter(
             service=get_output_service(), output_key=output_key, channels=channels),
+        stage_bank_v2_context=lambda *, measurement_bank, measurement_rate_hz: _stage_bank_v2_context(
+            measurement_bank=measurement_bank, measurement_rate_hz=measurement_rate_hz),
     )
 
 
@@ -4243,6 +4245,42 @@ async def _try_render_v2_sync_target(rate: int, overview: dict):
         return None
 
 
+def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int) -> dict | None:
+    """Stage the committed v2 plan context for one manual bank measurement.
+
+    Returns {"expected_native_layout", "expected_native_output_mode",
+    "expected_plan_fingerprint"} compiled at the measurement rate, or None
+    when the head cannot activate (the caller keeps the legacy route, whose
+    pre-sweep check then fails closed as before).  Never raises.
+    """
+    try:
+        if not str(measurement_bank or "").strip():
+            return None
+        if not isinstance(measurement_rate_hz, int) or measurement_rate_hz <= 0:
+            return None
+        service = get_output_service()
+        overview = get_audio_output_overview()
+        try:
+            output_key, channels = _output_state_device(overview)
+        except HTTPException:
+            return None
+        if not channels:
+            return None
+        state = service.load()
+        plan = service.compile_plan(state, output_key=output_key, channels=channels,
+                                    sample_rate_hz=measurement_rate_hz)
+        layout = service.compile_layout(plan)
+        return {"expected_native_layout": [dict(entry) for entry in layout],
+                "expected_native_output_mode": plan["mode"],
+                "expected_plan_fingerprint": service.fingerprint_plan(plan)}
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        logger.warning("Bank v2 staging failed for measurement: %s", exc)
+        return None
+    except Exception as exc:
+        logger.warning("Bank v2 staging failed for measurement: %s", exc)
+        return None
+
+
 async def _sync_v2_head_after_bank_assign() -> dict:
     """Best-effort live sync after a bank preset assignment (import flows).
 
@@ -4656,6 +4694,7 @@ async def _apply_audio_output_state_body(body: dict):
                     service, manager, old_plan, output_key=output_key,
                     rate=target_rate, hardware_ports=ports, fingerprint=old_fp)
         except (RuntimeError, ValueError) as exc:
+            logger.warning("Output-state staging failed before commit (head unchanged): %s", exc)
             raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
         if staged_old_target is not None:
             previous_gain = float((runtime.dsp_runtime.snapshot() or {}).get("output_gain_db") or 0.0)
@@ -4709,6 +4748,7 @@ async def _apply_audio_output_state_body(body: dict):
                 service.revert(state, expected_revision=committed["revision"])
             except BaseException:
                 logger.exception("Output-state activation rollback failed")
+            logger.warning("Output-state activation failed after commit: %s", exc)
             raise HTTPException(status_code=500, detail={
                 "code": "live-apply-failed", "message": str(exc),
                 "revision": service.load()["revision"],
@@ -4736,6 +4776,8 @@ async def _apply_audio_output_state_body(body: dict):
             await runtime.dsp_runtime.sync_rendered(staged_old_target, initial_output_gain_db=staged_guard)
         except BaseException:
             logger.exception("Output-state fast-path rollback failed")
+        logger.warning("Output-state live apply failed (rollback=%s): %s",
+                       "committed" if rolled_back else "conflicted", exc)
         raise HTTPException(status_code=500, detail={
             "code": "live-apply-failed", "message": str(exc),
             "revision": service.load()["revision"] if rolled_back else committed["revision"],

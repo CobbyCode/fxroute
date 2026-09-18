@@ -107,6 +107,14 @@ class MeasurementServices:
     # the restore rate instead of re-syncing the stale legacy overview.
     # Uncomposed (None) keeps the legacy release path byte-identical.
     build_autosub_release_adapter: Callable[..., Any] | None = None
+    # Optional factory staging the committed v2 plan context for a manual
+    # bank measurement.  Called as
+    # ``stage_bank_v2_context(measurement_bank=..., measurement_rate_hz=...)``;
+    # returns {"expected_native_layout", "expected_native_output_mode",
+    # "expected_plan_fingerprint"} or None when the head cannot activate.
+    # Without it (or on None) manual measurements keep the legacy overview
+    # route, whose mode/layout check then refuses any crossover/bank graph.
+    stage_bank_v2_context: Callable[..., Any] | None = None
 
 
 _services: MeasurementServices | None = None
@@ -126,6 +134,30 @@ def _measurement_services() -> MeasurementServices:
 def _dsp_runtime() -> Any:
     """Resolve the native DSP runtime late-bound through the injected accessor."""
     return _measurement_services().get_dsp_runtime()
+
+
+def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int) -> dict:
+    """Stage the committed v2 plan context for one manual bank measurement.
+
+    Returns kwargs for ``MeasurementStore.start_measurement`` (possibly
+    empty, preserving the legacy overview route).  Never raises: an
+    unresolvable bank or unrenderable head falls back to legacy, where the
+    store's own bank validation and the pre-sweep check still fail closed.
+    """
+    factory = getattr(_measurement_services(), "stage_bank_v2_context", None)
+    if factory is None or not str(measurement_bank or "").strip():
+        return {}
+    try:
+        staged = factory(measurement_bank=measurement_bank,
+                         measurement_rate_hz=measurement_rate_hz)
+    except Exception as exc:
+        logger.warning("Bank v2 staging failed, using legacy measurement route: %s", exc)
+        return {}
+    if not isinstance(staged, dict):
+        return {}
+    return {key: staged[key] for key in (
+        "expected_native_layout", "expected_native_output_mode",
+        "expected_plan_fingerprint") if key in staged}
 
 
 def _player() -> Any:
@@ -1552,6 +1584,8 @@ async def start_measurement(
                 calibration_ref=calibration_ref,
                 measurement_role=measurement_role,
                 measurement_bank=measurement_bank,
+                **_stage_bank_v2_context(measurement_bank=measurement_bank,
+                                         measurement_rate_hz=measurement_rate),
             ),
             entry_epoch=entry_epoch,
         )
