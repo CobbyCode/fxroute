@@ -204,6 +204,16 @@ def main() -> int:
             page.wait_for_timeout(800)
             check("bank selection follows pair", page.locator("#effects-bank-select").input_value() == 'mid')
             check("measurement follows pair", page.evaluate("measurementAreaFromCatalog().label") == 'Mid L/R')
+            # A bank roundtrip must leave the A/B selects usable: the busy
+            # disable during the switch has to be lifted afterwards.
+            for target in ('all', 'global'):
+                pick("#effects-bank-select", target)
+                page.wait_for_timeout(900)
+            check("compare A/B usable after bank roundtrip",
+                  page.locator("#effects-bank-select").input_value() == 'global'
+                  and page.locator("#effects-compare-a").is_enabled()
+                  and page.locator("#effects-compare-b").is_enabled()
+                  and page.locator("#effects-compare-a option").count() > 1)
             page.locator("[data-crossover-way='right_high']").click()
             page.wait_for_timeout(400)
             check("way tab activates",

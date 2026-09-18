@@ -3686,6 +3686,10 @@ async function applyOutputSystemMutation(kind, fields, successMessage, options =
         state.outputSystem.busy = false;
         renderOutputSystemSection();
         renderEffectsBankSelector();
+        // The busy disable in setEffectsCompareLoadBusy must be lifted here:
+        // this finally is the only path that runs after every mutation, and
+        // the bank selector render above does not touch the compare selects.
+        setEffectsCompareLoadBusy(effectsCompareLoadInFlight);
     }
 }
 
