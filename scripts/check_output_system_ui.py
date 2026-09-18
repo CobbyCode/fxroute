@@ -123,6 +123,15 @@ def main() -> int:
             check(f"bank info shows preset ({info})", "Listening" in info)
             card = page.locator("#effects-crossover-card")
             check("crossover card visible", card.is_visible())
+            order = page.evaluate(
+                """[...document.querySelectorAll('#tab-effects .effects-grid > section')]
+                    .map(el => el.id || el.querySelector('h3')?.textContent)""")
+            check(f"dsp card order ({order})",
+                  order == ['effects-crossover-card', 'Subwoofer', 'A/B compare',
+                            'Output extras', 'Combine', 'Create PEQ preset'])
+            span = page.evaluate(
+                "getComputedStyle(document.getElementById('effects-crossover-card')).gridColumn")
+            check(f"crossover spans full width ({span})", span == '1 / -1')
             page.locator("#effects-crossover-starter").click()
             page.wait_for_timeout(1200)
             tabs = page.locator("#effects-crossover-tabs button")

@@ -1038,6 +1038,9 @@ select.url-input {
     margin: 0;
 }
 /* Crossover / Speaker tile: way tabs, response graph, control grid. */
+.effects-card-crossover {
+    grid-column: 1 / -1;
+}
 .crossover-tabs {
     display: flex;
     flex-wrap: wrap;

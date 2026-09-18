@@ -1037,10 +1037,10 @@ select.url-input {
 .effects-bank-row .settings-inline-note {
     margin: 0;
 }
-#os-revision {
-    opacity: 0.75;
-}
 /* Crossover / Speaker tile: way tabs, response graph, control grid. */
+.effects-card-crossover {
+    grid-column: 1 / -1;
+}
 .crossover-tabs {
     display: flex;
     flex-wrap: wrap;

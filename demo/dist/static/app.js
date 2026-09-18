@@ -474,6 +474,7 @@ const elements = {
     settingsOutputSummary: document.getElementById('settings-output-summary'),
     settingsOutputSelect: document.getElementById('settings-output-select'),
     settingsOutputModeSelect: document.getElementById('settings-output-mode-select'),
+    settingsModeGroup: document.getElementById('settings-mode-group'),
     settingsOutputModeHint: document.getElementById('settings-output-mode-hint'),
     settingsSamplerateSelect: document.getElementById('settings-samplerate-select'),
     settingsSamplerateHint: document.getElementById('settings-samplerate-hint'),
@@ -481,8 +482,8 @@ const elements = {
     settingsRoutingGrid: document.getElementById('settings-routing-grid'),
     settingsRoutingHint: document.getElementById('settings-routing-hint'),
     settingsCrossoverSelect: document.getElementById('settings-crossover-select'),
+    settingsCrossoverGroup: document.getElementById('settings-crossover-group'),
     osTopology: document.getElementById('os-topology'),
-    osRevision: document.getElementById('os-revision'),
     osFeedback: document.getElementById('os-feedback'),
     effectsBankSelect: document.getElementById('effects-bank-select'),
     effectsBankInfo: document.getElementById('effects-bank-info'),
@@ -3603,10 +3604,11 @@ function renderOutputSystemSection() {
     if (!mod || !catalog) {
         if (elements.settingsOutputModeHint) elements.settingsOutputModeHint.textContent = 'Output configuration unavailable.';
         if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = true;
+        if (elements.settingsModeGroup) elements.settingsModeGroup.classList.add('hidden');
+        if (elements.settingsCrossoverGroup) elements.settingsCrossoverGroup.classList.add('hidden');
         if (elements.settingsCrossoverSelect) elements.settingsCrossoverSelect.disabled = true;
         if (elements.settingsRoutingGrid) elements.settingsRoutingGrid.innerHTML = '';
         if (elements.osTopology) elements.osTopology.textContent = '';
-        if (elements.osRevision) elements.osRevision.textContent = '';
         if (elements.osFeedback) elements.osFeedback.innerHTML = '';
         return;
     }
@@ -3614,6 +3616,12 @@ function renderOutputSystemSection() {
     const mode = catalog.active_mode || 'stereo';
     const modeConfig = catalog.modes[mode] || {};
     const busy = state.outputSystem.busy;
+    if (elements.settingsModeGroup) {
+        elements.settingsModeGroup.classList.toggle('hidden', !mod.modeSelectorVisible(device.channels || 0));
+    }
+    if (elements.settingsCrossoverGroup) {
+        elements.settingsCrossoverGroup.classList.toggle('hidden', !mod.modeSelectorVisible(device.channels || 0));
+    }
     mod.renderModeSelect(elements.settingsOutputModeSelect, catalog, mode);
     if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = busy;
     if (elements.settingsCrossoverSelect) {
@@ -3630,14 +3638,7 @@ function renderOutputSystemSection() {
         elements.settingsOutputModeHint.textContent = `${mod.modeLabel(mode)} · ${device.channels || 0} hardware outputs`;
     }
     if (elements.settingsRoutingHint) {
-        const dormant = Object.keys(modeConfig.banks || {}).filter(
-            (id) => id !== 'global' && !topology.roles?.includes(id));
-        elements.settingsRoutingHint.textContent = dormant.length
-            ? `Roles not on any output keep their settings: ${dormant.map((id) => mod.roleLabel(id)).join(', ')}.`
-            : 'Assign a role to each hardware output. Off leaves an output silent.';
-    }
-    if (elements.osRevision) {
-        elements.osRevision.textContent = `Revision ${catalog.revision}`;
+        elements.settingsRoutingHint.textContent = 'Assign a role to each hardware output. Off leaves an output silent.';
     }
 }
 

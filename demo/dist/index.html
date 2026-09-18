@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.228">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.229">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -119,6 +119,13 @@
                             </select>
                         </div>
                         <div class="field-group settings-field-group">
+                            <label for="settings-samplerate-select">Sample Rate</label>
+                            <select id="settings-samplerate-select" class="url-input">
+                                <option value="auto">Auto</option>
+                            </select>
+                            <p id="settings-samplerate-hint" class="settings-inline-note">Follows the effective playback sample rate.</p>
+                        </div>
+                        <div class="field-group settings-field-group" id="settings-mode-group">
                             <label for="settings-output-mode-select">Mode</label>
                             <select id="settings-output-mode-select" class="url-input">
                                 <option value="stereo">Stereo</option>
@@ -126,19 +133,12 @@
                             </select>
                             <p id="settings-output-mode-hint" class="settings-inline-note">Stereo output mode active.</p>
                         </div>
-                        <div class="field-group settings-field-group">
+                        <div class="field-group settings-field-group" id="settings-crossover-group">
                             <label for="settings-crossover-select">Crossover</label>
                             <select id="settings-crossover-select" class="url-input" disabled>
                                 <option value="off">Off</option>
                                 <option value="on">On</option>
                             </select>
-                        </div>
-                        <div class="field-group settings-field-group">
-                            <label for="settings-samplerate-select">Sample Rate</label>
-                            <select id="settings-samplerate-select" class="url-input">
-                                <option value="auto">Auto</option>
-                            </select>
-                            <p id="settings-samplerate-hint" class="settings-inline-note">Follows the effective playback sample rate.</p>
                         </div>
                         <div class="field-group settings-field-group" id="settings-routing-group">
                             <span class="settings-routing-label" id="settings-routing-label">Output Routing</span>
@@ -146,21 +146,7 @@
                             <p id="settings-routing-hint" class="settings-inline-note"></p>
                         </div>
                         <p id="os-topology" class="settings-inline-note"></p>
-                        <p id="os-revision" class="settings-inline-note"></p>
                         <div id="os-feedback" class="effects-extras-feedback" aria-live="polite"></div>
-                    </section>
-
-                    <section class="radio-manage-section settings-section">
-                        <div class="radio-manage-section-header">
-                            <h3>Music Library</h3>
-                        </div>
-                        <div class="field-group settings-field-group">
-                            <label for="settings-music-library-select">Library</label>
-                            <select id="settings-music-library-select" class="url-input" disabled>
-                                <option value="local">Loading…</option>
-                            </select>
-                            <p id="settings-music-library-hint" class="settings-inline-note"></p>
-                        </div>
                     </section>
 
                     <section class="radio-manage-section settings-section">
@@ -179,6 +165,19 @@
 
                     <section class="radio-manage-section settings-section">
                         <div class="radio-manage-section-header">
+                            <h3>Music Library</h3>
+                        </div>
+                        <div class="field-group settings-field-group">
+                            <label for="settings-music-library-select">Library</label>
+                            <select id="settings-music-library-select" class="url-input" disabled>
+                                <option value="local">Loading…</option>
+                            </select>
+                            <p id="settings-music-library-hint" class="settings-inline-note"></p>
+                        </div>
+                    </section>
+
+                    <section class="radio-manage-section settings-section">
+                        <div class="radio-manage-section-header">
                             <h3>Device Name</h3>
                             <p id="settings-device-name-hint">Address of this FXRoute box on the LAN.</p>
                         </div>
@@ -190,7 +189,7 @@
                         </div>
                     </section>
 
-                    <section class="radio-manage-section settings-section">
+                    <section class="radio-manage-section settings-section hidden">
                         <div class="radio-manage-section-header">
                             <h3>Amplifier Controller</h3>
                             <p id="settings-hardware-summary">Controller not detected.</p>
@@ -583,6 +582,55 @@
                     </section>
 
                     <div class="effects-grid">
+                        <section class="effects-card effects-card-crossover hidden" id="effects-crossover-card">
+                            <div class="effects-card-header">
+                                <h3>Crossover / Speaker</h3>
+                                <p id="effects-crossover-summary">Configure speaker ways.</p>
+                            </div>
+                            <div class="effects-stack">
+                                <div id="effects-crossover-tabs" class="crossover-tabs" role="tablist" aria-label="Speaker ways"></div>
+                                <svg id="effects-crossover-graph" class="crossover-graph" viewBox="0 0 600 220" role="img" aria-label="Crossover filter response"></svg>
+                                <div class="crossover-controls">
+                                    <div class="field-group" id="effects-crossover-highpass-group">
+                                        <label for="effects-crossover-frequency-highpass">High-pass Hz</label>
+                                        <input type="number" id="effects-crossover-frequency-highpass" class="url-input" min="20" max="20000" step="1">
+                                    </div>
+                                    <div class="field-group" id="effects-crossover-lowpass-group">
+                                        <label for="effects-crossover-frequency-lowpass">Low-pass Hz</label>
+                                        <input type="number" id="effects-crossover-frequency-lowpass" class="url-input" min="20" max="20000" step="1">
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="effects-crossover-family">Type</label>
+                                        <select id="effects-crossover-family" class="url-input"></select>
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="effects-crossover-slope">Slope dB/oct</label>
+                                        <select id="effects-crossover-slope" class="url-input"></select>
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="effects-crossover-level">Level dB</label>
+                                        <input type="number" id="effects-crossover-level" class="url-input" min="-80" max="24" step="0.5">
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="effects-crossover-delay">Align ms</label>
+                                        <input type="number" id="effects-crossover-delay" class="url-input" min="-40" max="40" step="0.5">
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="effects-crossover-polarity">Polarity</label>
+                                        <select id="effects-crossover-polarity" class="url-input">
+                                            <option value="normal">Normal</option>
+                                            <option value="invert">Invert</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="crossover-actions">
+                                    <button id="effects-crossover-starter" class="btn-secondary">Apply starter values</button>
+                                    <span id="effects-crossover-starter-hint" class="settings-inline-note"></span>
+                                </div>
+                                <div id="effects-crossover-feedback" class="effects-extras-feedback" aria-live="polite"></div>
+                            </div>
+                        </section>
+
                         <section class="effects-card effects-card-create effects-card-subwoofer hidden">
                             <div class="effects-card-header effects-card-subwoofer-header">
                                 <div>
@@ -724,55 +772,6 @@
                                     <div id="effects-info" class="effects-info"></div>
                                     <div id="effects-status" class="effects-status"></div>
                                 </div>
-                            </div>
-                        </section>
-
-                        <section class="effects-card effects-card-crossover hidden" id="effects-crossover-card">
-                            <div class="effects-card-header">
-                                <h3>Crossover / Speaker</h3>
-                                <p id="effects-crossover-summary">Configure speaker ways.</p>
-                            </div>
-                            <div class="effects-stack">
-                                <div id="effects-crossover-tabs" class="crossover-tabs" role="tablist" aria-label="Speaker ways"></div>
-                                <svg id="effects-crossover-graph" class="crossover-graph" viewBox="0 0 600 220" role="img" aria-label="Crossover filter response"></svg>
-                                <div class="crossover-controls">
-                                    <div class="field-group" id="effects-crossover-highpass-group">
-                                        <label for="effects-crossover-frequency-highpass">High-pass Hz</label>
-                                        <input type="number" id="effects-crossover-frequency-highpass" class="url-input" min="20" max="20000" step="1">
-                                    </div>
-                                    <div class="field-group" id="effects-crossover-lowpass-group">
-                                        <label for="effects-crossover-frequency-lowpass">Low-pass Hz</label>
-                                        <input type="number" id="effects-crossover-frequency-lowpass" class="url-input" min="20" max="20000" step="1">
-                                    </div>
-                                    <div class="field-group">
-                                        <label for="effects-crossover-family">Type</label>
-                                        <select id="effects-crossover-family" class="url-input"></select>
-                                    </div>
-                                    <div class="field-group">
-                                        <label for="effects-crossover-slope">Slope dB/oct</label>
-                                        <select id="effects-crossover-slope" class="url-input"></select>
-                                    </div>
-                                    <div class="field-group">
-                                        <label for="effects-crossover-level">Level dB</label>
-                                        <input type="number" id="effects-crossover-level" class="url-input" min="-80" max="24" step="0.5">
-                                    </div>
-                                    <div class="field-group">
-                                        <label for="effects-crossover-delay">Align ms</label>
-                                        <input type="number" id="effects-crossover-delay" class="url-input" min="-40" max="40" step="0.5">
-                                    </div>
-                                    <div class="field-group">
-                                        <label for="effects-crossover-polarity">Polarity</label>
-                                        <select id="effects-crossover-polarity" class="url-input">
-                                            <option value="normal">Normal</option>
-                                            <option value="invert">Invert</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div class="crossover-actions">
-                                    <button id="effects-crossover-starter" class="btn-secondary">Apply starter values</button>
-                                    <span id="effects-crossover-starter-hint" class="settings-inline-note"></span>
-                                </div>
-                                <div id="effects-crossover-feedback" class="effects-extras-feedback" aria-live="polite"></div>
                             </div>
                         </section>
 
@@ -1629,12 +1628,12 @@
     <script src="/static/hybrid_measurement.js?v=0.9.15"></script>
     <script src="/static/measurement_ui.js?v=0.9.18"></script>
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
-    <script src="/static/measurement_flows.js?v=0.9.24"></script>
-    <script src="/static/output_state.js?v=0.9.4"></script>
+    <script src="/static/measurement_flows.js?v=0.9.25"></script>
+    <script src="/static/output_state.js?v=0.9.6"></script>
     <script src="/static/crossover.js?v=0.9.1"></script>
-    <script src="/static/speaker_align.js?v=0.9.1"></script>
+    <script src="/static/speaker_align.js?v=0.9.2"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.172"></script>
+    <script src="/static/app.js?v=0.9.176"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

@@ -56,6 +56,13 @@ function modeLabel(mode) {
     return { stereo: 'Stereo', 'stereo-sub': 'Stereo + Sub', surround: 'Surround' }[mode] || mode;
 }
 
+// Two hardware outputs can only carry Main L/R, so the Mode selector is
+// hidden and the system is internally fixed Stereo. Three or more outputs
+// can additionally route subs.
+function modeSelectorVisible(channelCount) {
+    return Number(channelCount) >= 3;
+}
+
 function subModeLabel(subMode) {
     if (subMode === 'stereo') return 'Stereo subs';
     if (subMode === 'dual-mono') return 'Dual-mono subs';
@@ -286,6 +293,7 @@ function renderBankSelector(select, info, catalog, mode) {
         roleLabel,
         rolesForMode,
         modeLabel,
+        modeSelectorVisible,
         subModeLabel,
         subwooferView,
         topologySummary,
