@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Regression: DSP -> Subwoofer tile -> Main highpass Off must stick.
 
-Covers the persisted legacy path and the live UI save path: legacy
-2.1/2.2 payloads keep main_highpass_enabled=false through persistence
-into BassManagementConfig/DSP runtime layout (no FL/FR highpass
-filters), while On still produces them; the sub tile saves through
-the single v2 output state (set_subwoofers), never a legacy
-output-mode POST.
+Covers the overview payload path and the live UI save path: 2.1/2.2
+payloads keep main_highpass_enabled=false into
+BassManagementConfig/DSP runtime layout (no FL/FR highpass filters),
+while On still produces them; the sub tile saves through the single v2
+output state (set_subwoofers), never a legacy output-mode POST.
 """
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from audio.samplerate import persistence as persistence
 from dsp.runtime import BassManagementConfig, DSPRuntimeConfig
 
 
@@ -44,12 +42,8 @@ def _check_21_off_roundtrip() -> None:
             "sub_alignment_ms": 0.0,
             "sub_polarity": "normal",
         }
-        built = persistence._build_audio_output_mode_payload("subwoofer-2.1", dict(sub_off), None)
-        assert built["subwoofer"]["main_highpass_enabled"] is False, built
-        path = persistence._audio_output_mode_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(built, indent=2) + "\n")
-        loaded = persistence._load_audio_output_mode()
+        loaded = {"mode": "subwoofer-2.1",
+                  "subwoofer": {**dict(sub_off), "slope": "LR24"}}
         assert loaded["subwoofer"]["main_highpass_enabled"] is False, loaded
 
         overview = {"output_mode": loaded, "selected_output": {"key": "k", "label": "l"},
@@ -61,10 +55,9 @@ def _check_21_off_roundtrip() -> None:
             if channel["name"] in ("FL", "FR"):
                 assert channel.get("filters", []) == [], channel
         # On must still produce highpass filters.
-        sub_on = dict(sub_off, main_highpass_enabled=True)
-        built_on = persistence._build_audio_output_mode_payload("subwoofer-2.1", sub_on, None)
-        assert built_on["subwoofer"]["main_highpass_enabled"] is True, built_on
-        overview_on = {"output_mode": {**loaded, "subwoofer": built_on["subwoofer"]},
+        sub_on = {**dict(sub_off), "main_highpass_enabled": True, "slope": "LR24"}
+        assert sub_on["main_highpass_enabled"] is True, sub_on
+        overview_on = {"output_mode": {**loaded, "subwoofer": sub_on},
                        "selected_output": {"key": "k"}, "current_output": {"key": "k"}}
         bass_on = BassManagementConfig.from_overview(overview_on)
         assert bass_on.main_highpass_enabled is True, bass_on
@@ -90,13 +83,9 @@ def _check_22_off_roundtrip() -> None:
             "sub1": {"level_db": 1.5, "alignment_ms": 0.5, "polarity": "normal"},
             "sub2": {"level_db": 0.0, "alignment_ms": 0.0, "polarity": "normal"},
         }
-        built = persistence._build_audio_output_mode_payload(
-            "subwoofer-2.2", dict(sub_off), dict(subwoofers))
-        assert built["main_highpass_enabled"] is False, built
-        path = persistence._audio_output_mode_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(built, indent=2) + "\n")
-        loaded = persistence._load_audio_output_mode()
+        loaded = {"mode": "subwoofer-2.2", "crossover_frequency_hz": 80,
+                  "slope": "LR24", "main_highpass_enabled": False,
+                  "subwoofers": dict(subwoofers)}
         assert loaded["main_highpass_enabled"] is False, loaded
         assert loaded["crossover_frequency_hz"] == 80, loaded
 
@@ -115,9 +104,7 @@ def _check_22_off_roundtrip() -> None:
 
         # On must still produce highpass filters.
         sub_on = dict(sub_off, main_highpass_enabled=True)
-        built_on = persistence._build_audio_output_mode_payload(
-            "subwoofer-2.2", sub_on, dict(subwoofers))
-        assert built_on["main_highpass_enabled"] is True, built_on
+        assert sub_on["main_highpass_enabled"] is True, sub_on
         overview_on = {"output_mode": {**loaded, "main_highpass_enabled": True},
                        "selected_output": {"key": "k"}, "current_output": {"key": "k"}}
         runtime_on = DSPRuntimeConfig.from_overview(overview_on)

@@ -17,12 +17,9 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
-    get_audio_output_overview,
     get_samplerate_status,
-    set_audio_output_mode,
 )
 from audio.system_volume import get_output_volume_unclamped
-from dsp.runtime import BassManagementConfig
 
 from measurement.analyzer import measurement_level_reference_db
 from measurement.constants import LEVEL_REFERENCE_MAX_HZ, LEVEL_REFERENCE_MIN_HZ
@@ -37,7 +34,6 @@ from .candidates import (
     _auto_sub_cancelled_candidate,
     _auto_sub_clamped_delay,
     _auto_sub_snapshot_copy,
-    _auto_sub_sync_dsp_runtime,
 )
 from .candidate_session import AutoSubProposal
 from .deps import (
@@ -288,7 +284,6 @@ async def _measure_auto_sub_candidate(
             sub_indices = sub_mute_indices(12 if exact_sub_mute_mask is None else exact_sub_mute_mask)
     measurement_store = _measurement_store()
     from measurement.session import _sync_dsp_runtime_for_measurement_sweep
-    from audio.samplerate import _load_audio_output_mode
 
     _marks = {"start": time.monotonic()}
     _timing_written = False
@@ -379,90 +374,8 @@ async def _measure_auto_sub_candidate(
             staged_layout = staged["expected_native_layout"]
             staged_fingerprint = staged["fingerprint"]
             staged_mode = staged["expected_native_output_mode"]
-        if not service_job and config_reused:
-            verify = _load_audio_output_mode()
-            config_success = _auto_sub_verify_candidate_alignment(
-                verify,
-                output_mode=output_mode,
-                delay_ms=delay_ms,
-                sub1_alignment_ms=sub1_alignment_ms,
-                sub2_alignment_ms=sub2_alignment_ms,
-                original_config_snapshot=original_config_snapshot,
-            )
-            if config_success:
-                now = time.monotonic()
-                _marks["config_set"] = now
-                _marks["config_verify"] = now
-                logger.debug(
-                    "Auto-sub: reusing verified DSP config for delay %.2f ms channel=%s",
-                    delay_ms, measure_channel or channel,
-                )
-            else:
-                job[_AUTO_SUB_CONFIG_OK_KEY] = False
-                config_reused = False
-        if not service_job and not config_reused:
-            if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-                snapshot = original_config_snapshot or {}
-                sub1_delay = _auto_sub_clamped_delay(sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms)
-                sub2_delay = _auto_sub_clamped_delay(sub2_alignment_ms if sub2_alignment_ms is not None else _auto_sub_22_sub(snapshot, "sub2").get("alignment_ms", 0.0))
-                sub_config = _auto_sub_22_global_config(snapshot)
-                subwoofers_config = _auto_sub_22_candidate_subwoofers(
-                    snapshot,
-                    sub1_alignment_ms=sub1_delay,
-                    sub2_alignment_ms=sub2_delay,
-                    active_subs=active_subs,
-                    sub1_polarity=sub1_polarity,
-                    sub2_polarity=sub2_polarity,
-                )
-                persisted_overview = await asyncio.to_thread(
-                    set_audio_output_mode, output_mode, sub_config, subwoofers_config,
-                )
-            else:
-                sub_config = {
-                    "crossover_frequency_hz": fc,
-                    "sub_alignment_ms": delay_ms,
-                    "sub_level_db": original_level,
-                    "sub_polarity": original_polarity,
-                    "main_highpass_enabled": original_highpass,
-                }
-                persisted_overview = await asyncio.to_thread(
-                    set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, sub_config,
-                )
-            if _dsp_runtime() is not None:
-                await _auto_sub_sync_dsp_runtime(
-                    output_mode=output_mode,
-                    persisted_overview=persisted_overview,
-                )
-            _marks["config_set"] = time.monotonic()
-            await asyncio.sleep(0.5)
-            if _auto_sub_cancel_requested(job):
-                return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-            verify = _load_audio_output_mode()
-            if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-                config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
-            else:
-                config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
-            if not config_success:
-                await asyncio.sleep(0.15)
-                if _auto_sub_cancel_requested(job):
-                    return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-                verify = _load_audio_output_mode()
-                if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-                    config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
-                else:
-                    config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
-                if not config_success:
-                    await asyncio.sleep(0.5)
-                    if _auto_sub_cancel_requested(job):
-                        return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-                    verify = _load_audio_output_mode()
-                    if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-                        config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
-                    else:
-                        config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
-            _marks["config_verify"] = time.monotonic()
-            job[_AUTO_SUB_CONFIG_FP_KEY] = config_fingerprint
-            job[_AUTO_SUB_CONFIG_OK_KEY] = bool(config_success)
+        if not service_job:
+            raise RuntimeError("AutoSub candidate measurement requires a service job")
     except Exception as exc:
         logger.warning("Auto-sub: failed to configure delay %.2f ms: %s", delay_ms, exc)
         job[_AUTO_SUB_CONFIG_OK_KEY] = False
@@ -524,37 +437,24 @@ async def _measure_auto_sub_candidate(
     # clamp_upper=False keeps an externally raised >100% master from being
     # under-estimated by the safety check.
     sink_gain = auto_sub_sink_gain_from_master_percent(master_percent, clamp_upper=False)
-    if service_job:
-        runtime = _dsp_runtime()
-        if runtime is None:
-            raise RuntimeError("Native DSP runtime unavailable for service sweep prediction")
-        operating_gain = (runtime.snapshot() or {}).get("output_gain_db")
-        if (type(operating_gain) not in (int, float)
-                or not math.isfinite(operating_gain)
-                or not -80.0 <= operating_gain <= 0.0):
-            raise ValueError("Service sweep runtime output gain is unavailable")
-        stage_peak_prediction = await _predict_auto_sub_stage_peaks(
-            sweep_profile=auto_sub_sweep_profile,
-            sample_rate=auto_sub_rate,
-            channel=channel,
-            layout=staged_layout,
-            plan_fingerprint=staged_fingerprint,
-            output_gain_db=float(operating_gain),
-            playback_gain=playback_gain,
-            sink_gain=sink_gain,
-        )
-    else:
-        peak_config = BassManagementConfig.from_overview(
-            await asyncio.to_thread(get_audio_output_overview),
-        )
-        stage_peak_prediction = await _predict_auto_sub_stage_peaks(
-            sweep_profile=auto_sub_sweep_profile,
-            sample_rate=auto_sub_rate,
-            channel=channel,
-            config=peak_config,
-            playback_gain=playback_gain,
-            sink_gain=sink_gain,
-        )
+    runtime = _dsp_runtime()
+    if runtime is None:
+        raise RuntimeError("Native DSP runtime unavailable for service sweep prediction")
+    operating_gain = (runtime.snapshot() or {}).get("output_gain_db")
+    if (type(operating_gain) not in (int, float)
+            or not math.isfinite(operating_gain)
+            or not -80.0 <= operating_gain <= 0.0):
+        raise ValueError("Service sweep runtime output gain is unavailable")
+    stage_peak_prediction = await _predict_auto_sub_stage_peaks(
+        sweep_profile=auto_sub_sweep_profile,
+        sample_rate=auto_sub_rate,
+        channel=channel,
+        layout=staged_layout,
+        plan_fingerprint=staged_fingerprint,
+        output_gain_db=float(operating_gain),
+        playback_gain=playback_gain,
+        sink_gain=sink_gain,
+    )
     if exact_sub_mute:
         stage_peak_prediction = _auto_sub_zero_sub_peaks(stage_peak_prediction, sub_indices)
     if not stage_peak_prediction["safe"]:

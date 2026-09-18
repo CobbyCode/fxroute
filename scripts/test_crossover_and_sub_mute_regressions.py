@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
-import os
 import sys
 import tempfile
 from dataclasses import replace
@@ -37,93 +35,9 @@ import dsp.api as dsp_api
 dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 
 
-def _write_mode_file(config_home: Path, payload: dict) -> None:
-    path = Path(config_home) / "fxroute" / "audio-output-mode.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
-
-
-def _run_samplerate_roundtrip() -> None:
-    """Bug 1: 2.2 readback must honour the top-level crossover field."""
-    with tempfile.TemporaryDirectory() as raw:
-        config_home = Path(raw)
-        old_home = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = str(config_home)
-        try:
-            # Fresh 2.2 payload (no legacy subwoofer block): the readback used
-            # to fall back to the 80 Hz default because fallback_21 was None.
-            fresh = {
-                "mode": "subwoofer-2.2",
-                "crossover_frequency_hz": 150,
-                "slope": "LR24",
-                "main_highpass_enabled": True,
-                "subwoofers": {
-                    "sub1": {"level_db": 0.0, "alignment_ms": 0.0, "polarity": "normal"},
-                    "sub2": {"level_db": 0.0, "alignment_ms": 0.0, "polarity": "normal"},
-                },
-            }
-            _write_mode_file(config_home, fresh)
-            loaded = samplerate._load_audio_output_mode()
-            assert loaded["crossover_frequency_hz"] == 150, loaded
-            assert loaded["main_highpass_enabled"] is True, loaded
-
-            # Stale legacy 2.1 block: the readback used to derive 80 from it.
-            with_legacy = dict(fresh)
-            with_legacy["subwoofer"] = {
-                "crossover_frequency_hz": 80,
-                "slope": "LR24",
-                "main_highpass_enabled": False,
-                "sub_level_db": 6.5,
-                "sub_alignment_ms": -0.98,
-                "sub_polarity": "invert",
-            }
-            _write_mode_file(config_home, with_legacy)
-            loaded = samplerate._load_audio_output_mode()
-            assert loaded["crossover_frequency_hz"] == 150, loaded
-            assert loaded["main_highpass_enabled"] is True, loaded
-
-            # 2.2 save keeps the legacy block's global fields in sync, so a
-            # later 2.1 migration inherits the edited crossover.
-            built = samplerate._build_audio_output_mode_payload(
-                "subwoofer-2.2",
-                {
-                    "crossover_frequency_hz": 150,
-                    "main_highpass_enabled": True,
-                    "sub_level_db": -3.0,
-                    "sub_alignment_ms": 1.2,
-                    "sub_polarity": "normal",
-                },
-                None,
-            )
-            assert built["crossover_frequency_hz"] == 150, built
-            assert built["subwoofer"]["crossover_frequency_hz"] == 150, built
-            samplerate.persist_audio_output_mode(built)
-            migrated_21 = samplerate._build_audio_output_mode_payload(
-                "subwoofer-2.1", None, None
-            )
-            assert migrated_21["subwoofer"]["crossover_frequency_hz"] == 150, migrated_21
-
-            # 2.1 round-trip must stay unaffected.
-            built_21 = samplerate._build_audio_output_mode_payload(
-                "subwoofer-2.1",
-                {
-                    "crossover_frequency_hz": 120,
-                    "main_highpass_enabled": False,
-                    "sub_level_db": -3.0,
-                    "sub_alignment_ms": 1.2,
-                    "sub_polarity": "invert",
-                },
-                None,
-            )
-            samplerate.persist_audio_output_mode(built_21)
-            loaded = samplerate._load_audio_output_mode()
-            assert loaded["subwoofer"]["crossover_frequency_hz"] == 120, loaded
-        finally:
-            if old_home is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
-            else:
-                os.environ["XDG_CONFIG_HOME"] = old_home
-    print("crossover persistence round-trip: ok")
+# NOTE (backend-v2 migration): the legacy mode-file round-trip (Bug 1) is
+# deleted with the persistence helpers. Crossover translation from the v2
+# head is covered by test_derived_output_mode.py (file parity test).
 
 
 class FakeRequest:
@@ -630,7 +544,6 @@ async def _runtime_sync_in_progress_covers_link_repair() -> None:
 
 
 async def main_async() -> None:
-    _run_samplerate_roundtrip()
     await _route_same_mode_direct()
     await _route_mode_switch_coordinated()
     await _link_watcher_latch_reentry()

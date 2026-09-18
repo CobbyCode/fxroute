@@ -39,6 +39,12 @@ class AutoSub21ConfirmationRecommitTests(unittest.IsolatedAsyncioTestCase):
             "cancel_requested": False,
             "target_curve": {"label": "Neutral", "points": points},
             "main_target_anchor": {"status": "ready", "target_vertical_offset_db": 0.0},
+            # Backend-v2 migration: runners are service-only (see final_path).
+            "output_state_context": {
+                "mode": "stereo", "revision": 0, "output_key": "dev",
+                "channels": 4, "optimizer_path": "single-sub",
+                "sub_role_map": {"sub1": "sub1"}, "sub_mute_mask": 4,
+            },
         }
         runner._AUTO_SUB_JOBS[job_id] = job
 
@@ -139,20 +145,27 @@ class AutoSub21ConfirmationRecommitTests(unittest.IsolatedAsyncioTestCase):
         async def finish_worker(_job, _job_id):
             return None
 
-        async def restore_apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
-            # The verified restore helper lives in candidates and calls
-            # candidates._auto_sub_apply_candidate; route it through the same
-            # fake persist/overview so the restore state stays test-local.
+        async def stage_service_candidate(job, *, global_config, subwoofers_config=None):
+            persist(runner.OUTPUT_MODE_SUBWOOFER_21, global_config, subwoofers_config)
+
+        async def restore_or_fail_job(job, snapshot, message):
             if fail_restore:
+                job["status"] = "failed"
+                job["message"] = message
+                job["error"] = {"detail": "original config restore verification failed"}
                 return False
-            persist(output_mode, global_config, subwoofers_config)
-            return bool(verify(overview()))
+            persist(snapshot.get("mode", runner.OUTPUT_MODE_SUBWOOFER_21),
+                    dict(snapshot.get("subwoofer") or {}), None)
+            return True
+
+        async def commit_service_winner(job):
+            job["output_state_context"]["committed_revision"] = 1
+            return {"revision": 1}
 
         try:
             with ExitStack() as stack:
                 stack.enter_context(patch.object(runner, "_measurement_session", return_value=None))
-                stack.enter_context(patch.object(runner, "_dsp_runtime", return_value=None))
-                stack.enter_context(patch("measurement.autosub.candidates._dsp_runtime", return_value=None))
+                stack.enter_context(patch.object(runner, "activate_candidate_owner", return_value=48000))
                 stack.enter_context(patch.object(runner, "_capture_auto_sub_main_references", new=AsyncMock()))
                 stack.enter_context(patch.object(runner, "_measure_auto_sub_combined_candidate", side_effect=measure_candidate))
                 stack.enter_context(patch.object(runner, "_auto_sub_gate_candidate_rows", side_effect=lambda rows, *_a, **_k: (rows, [])))
@@ -171,11 +184,10 @@ class AutoSub21ConfirmationRecommitTests(unittest.IsolatedAsyncioTestCase):
                     7.25, 6.25, 10.40, 10.20, 10.30, 10.10,
                 ]))
                 stack.enter_context(patch.object(runner, "_auto_sub_apply_candidate", side_effect=apply_candidate))
-                stack.enter_context(patch("measurement.autosub.candidates._auto_sub_apply_candidate", side_effect=restore_apply_candidate))
+                stack.enter_context(patch.object(runner, "_stage_auto_sub_service_state", side_effect=stage_service_candidate))
+                stack.enter_context(patch.object(runner, "_restore_original_config_or_fail_job", side_effect=restore_or_fail_job))
+                stack.enter_context(patch.object(runner, "_commit_auto_sub_service_winner", side_effect=commit_service_winner))
                 stack.enter_context(patch.object(runner, "_finish_auto_sub_worker", side_effect=finish_worker))
-                stack.enter_context(patch.object(runner, "get_audio_output_overview", side_effect=overview))
-                stack.enter_context(patch.object(samplerate, "set_audio_output_mode", side_effect=persist))
-                stack.enter_context(patch.object(samplerate, "_load_audio_output_mode", side_effect=overview))
                 stack.enter_context(patch("measurement.session._resolve_measurement_start_sample_rate", return_value=48000))
 
                 await runner._run_auto_sub_optimize(

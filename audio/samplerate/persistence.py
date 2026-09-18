@@ -10,11 +10,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .constants import (
-    OUTPUT_MODE_STEREO,
-    OUTPUT_MODE_SUBWOOFER_21,
-    OUTPUT_MODE_SUBWOOFER_22_MODES,
-    OUTPUT_MODE_SUBWOOFER_22_STEREO,
-    OUTPUT_MODES,
     SAMPLE_RATE_CANDIDATES,
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
@@ -95,6 +90,7 @@ def effective_playback_rate(source_rate: int | None, policy: Mapping[str, Any] |
     if isinstance(fixed_rate, int) and fixed_rate > 0:
         return fixed_rate
     return source_rate if isinstance(source_rate, int) and source_rate > 0 else None
+
 
 def _normalize_single_sub_config(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     """Normalize one sub's {level_db, alignment_ms, polarity} for 2.2."""
@@ -197,52 +193,6 @@ def _normalize_subwoofer_config(payload: dict[str, Any] | None = None) -> dict[s
         "sub_polarity": "invert" if polarity in {"invert", "inverted", "180"} else "normal",
     }
 
-def _subwoofer_22_storage_key(mode: str) -> str:
-    """Return the config JSON key for mode-specific 2.2 subwoofer data."""
-    if mode == OUTPUT_MODE_SUBWOOFER_22_STEREO:
-        return "subwoofers_22_stereo"
-    return "subwoofers_22"
-
-def _load_audio_output_mode() -> dict[str, Any]:
-    path = _audio_output_mode_path()
-    default_payload = {
-        "mode": OUTPUT_MODE_STEREO,
-        "subwoofer": _normalize_subwoofer_config(None),
-    }
-    if not path.exists():
-        return default_payload
-    try:
-        payload = json.loads(path.read_text())
-    except Exception:
-        return default_payload
-    mode = payload.get("mode")
-
-    if mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-        # Read from mode-specific key; fall back to shared subwoofers (BC)
-        storage_key = _subwoofer_22_storage_key(mode)
-        source_subwoofers = payload.get(storage_key)
-        if not isinstance(source_subwoofers, dict):
-            source_subwoofers = payload.get("subwoofers")
-        normalized = _normalize_subwoofer_22_config(
-            source_subwoofers,
-            payload.get("subwoofer"),
-            payload,
-        )
-        return {
-            "mode": mode,
-            "crossover_frequency_hz": normalized["crossover_frequency_hz"],
-            "slope": normalized["slope"],
-            "main_highpass_enabled": normalized["main_highpass_enabled"],
-            "subwoofers": {
-                "sub1": normalized["sub1"],
-                "sub2": normalized["sub2"],
-            },
-        }
-
-    return {
-        "mode": mode if mode in {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21} else OUTPUT_MODE_STEREO,
-        "subwoofer": _normalize_subwoofer_config(payload.get("subwoofer") if isinstance(payload.get("subwoofer"), dict) else {}),
-    }
 
 def _load_audio_source_selection() -> dict[str, Any]:
     path = _audio_source_selection_path()
@@ -259,36 +209,6 @@ def _load_audio_source_selection() -> dict[str, Any]:
         "selected_input_key": selected_input_key if isinstance(selected_input_key, str) and selected_input_key else None,
     }
 
-def load_audio_output_mode_snapshot() -> dict[str, Any]:
-    """Load the normalized audio output mode (public API for callers outside
-    this package; main.py previously reached into the private helpers)."""
-    return _load_audio_output_mode()
-
-def read_audio_output_mode_raw() -> bytes | None:
-    """Read the raw persisted output-mode file bytes for rollback snapshots.
-
-    Returns ``None`` when the file is missing or unreadable. Callers pass the
-    value to :func:`restore_audio_output_mode_raw` unchanged.
-    """
-    path = _audio_output_mode_path()
-    try:
-        return path.read_bytes()
-    except OSError:
-        return None
-
-def restore_audio_output_mode_raw(previous: bytes | None) -> None:
-    """Restore a raw snapshot taken by :func:`read_audio_output_mode_raw`.
-
-    ``None`` deletes the file (it did not exist before); otherwise the exact
-    bytes are rewritten. Raises ``OSError`` on failure.
-    """
-    path = _audio_output_mode_path()
-    if previous is None:
-        path.unlink(missing_ok=True)
-        return
-    current = read_audio_output_mode_raw()
-    if current != previous:
-        path.write_bytes(previous)
 
 def _load_pipewire_clock_rate_config() -> dict[str, Any]:
     path = _pipewire_clock_rate_dropin_path()
@@ -319,91 +239,6 @@ def _save_audio_output_selection(selected_key: str) -> None:
         "selected_key": selected_key,
     }, indent=2) + "\n")
 
-def _build_audio_output_mode_payload(
-    mode: str,
-    subwoofer: dict[str, Any] | None = None,
-    subwoofers: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    valid_modes = OUTPUT_MODES
-    normalized_mode = mode if mode in valid_modes else OUTPUT_MODE_STEREO
-
-    # Load existing config to preserve the other mode's block
-    existing: dict[str, Any] = {}
-    path = _audio_output_mode_path()
-    if path.exists():
-        try:
-            existing = json.loads(path.read_text())
-        except Exception:
-            pass
-    previous = _load_audio_output_mode()
-
-    if normalized_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-        storage_key = _subwoofer_22_storage_key(normalized_mode)
-        if subwoofers is None:
-            target_subwoofers = existing.get(storage_key)
-            if not isinstance(target_subwoofers, dict):
-                target_subwoofers = existing.get("subwoofers")
-            subwoofers = target_subwoofers
-        if subwoofer is None and isinstance(existing.get("subwoofer"), dict):
-            subwoofer = existing.get("subwoofer")
-        if subwoofer is None and isinstance(previous.get("subwoofer"), dict):
-            subwoofer = previous.get("subwoofer")
-        normalized = _normalize_subwoofer_22_config(subwoofers, subwoofer or existing.get("subwoofer"))
-        subwoofer_22_payload = {
-            "sub1": normalized["sub1"],
-            "sub2": normalized["sub2"],
-        }
-        # Determine the other 2.2 storage key to preserve when saving
-        other_storage_keys = ["subwoofers_22", "subwoofers_22_stereo"]
-        try:
-            other_storage_keys.remove(storage_key)
-        except ValueError:
-            pass
-        payload: dict[str, Any] = {
-            "mode": normalized_mode,
-            "crossover_frequency_hz": normalized["crossover_frequency_hz"],
-            "slope": normalized["slope"],
-            "main_highpass_enabled": normalized["main_highpass_enabled"],
-            storage_key: subwoofer_22_payload,
-            # Keep shared subwoofers for BC (other 2.2 modes can migrate from it)
-            "subwoofers": subwoofer_22_payload,
-        }
-        # Preserve existing other 2.2 mode's subwoofers block
-        for other_key in other_storage_keys:
-            if other_key in existing:
-                payload[other_key] = existing[other_key]
-        if "device_modes" in existing:
-            payload["device_modes"] = existing["device_modes"]
-        # Preserve existing 2.1 subwoofer block for BC. The 2.2 save owns the
-        # global fields, so keep the legacy block's crossover/highpass in sync
-        # with the top-level 2.2 payload; otherwise a later 2.1 migration (or
-        # the legacy readback path) would resurrect the stale value.
-        if "subwoofer" in existing:
-            if isinstance(existing.get("subwoofer"), dict):
-                payload["subwoofer"] = {
-                    **existing["subwoofer"],
-                    "crossover_frequency_hz": normalized["crossover_frequency_hz"],
-                    "main_highpass_enabled": normalized["main_highpass_enabled"],
-                }
-            else:
-                payload["subwoofer"] = existing["subwoofer"]
-    else:
-        if subwoofer is None and isinstance(existing.get("subwoofer"), dict):
-            subwoofer = existing.get("subwoofer")
-        if subwoofer is None and isinstance(previous.get("subwoofer"), dict):
-            subwoofer = previous.get("subwoofer")
-        payload = {
-            "mode": normalized_mode,
-            "subwoofer": _normalize_subwoofer_config(subwoofer),
-        }
-        # Preserve existing 2.2 subwoofers blocks for BC
-        for bc_key in ("subwoofers", "subwoofers_22", "subwoofers_22_stereo"):
-            if bc_key in existing:
-                payload[bc_key] = existing[bc_key]
-        if "device_modes" in existing:
-            payload["device_modes"] = existing["device_modes"]
-
-    return payload
 
 def _save_audio_source_selection(mode: str, selected_input_key: str | None) -> None:
     path = _audio_source_selection_path()
@@ -412,31 +247,3 @@ def _save_audio_source_selection(mode: str, selected_input_key: str | None) -> N
         "mode": mode,
         "selected_input_key": selected_input_key,
     }, indent=2) + "\n")
-
-def _load_raw_audio_output_mode() -> dict[str, Any]:
-    """Load raw config payload without normalization. Returns {} on failure."""
-    path = _audio_output_mode_path()
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return {}
-
-def _load_device_output_modes() -> dict[str, str]:
-    """Load the last-valid-mode map per selected output device key.
-
-    The map is a hint only: callers must still verify that the currently
-    recognized device can carry the remembered mode and degrade otherwise.
-    Only known modes with non-empty string keys are returned.
-    """
-    device_modes = _load_raw_audio_output_mode().get("device_modes")
-    if not isinstance(device_modes, dict):
-        return {}
-    valid_modes = OUTPUT_MODES
-    return {
-        str(key): str(value)
-        for key, value in device_modes.items()
-        if isinstance(key, str) and key.strip()
-        and isinstance(value, str) and value in valid_modes
-    }

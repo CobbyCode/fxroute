@@ -70,20 +70,22 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
             return {}
         return json.loads(path.read_text())
 
-    def _device_modes(self) -> dict[str, str]:
-        return samplerate._load_device_output_modes()
+    def _seed_mode_file(self, payload: dict) -> None:
+        path = self.config_home / "fxroute" / "audio-output-mode.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n")
 
     def _persist_mode(self, mode: str) -> None:
-        samplerate.persist_audio_output_mode(
-            samplerate._build_audio_output_mode_payload(mode)
-        )
+        # Legacy persist helpers are deleted; seed a representative stale
+        # file directly. The selection path must leave it byte-identical.
+        self._seed_mode_file({"mode": mode})
 
     def _select(self, key: str, channels_by_key: dict[str, int]) -> dict:
         def live_overview() -> dict:
             return {
                 "outputs": _outputs(channels_by_key),
                 "available": True,
-                "output_mode": dict(samplerate._load_audio_output_mode()),
+                "output_mode": {"mode": "stereo"},
             }
 
         with mock.patch(
@@ -102,9 +104,8 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
         result = self._select(SMSL, {UMC: 4, SMSL: 2})
 
         # The mode file is untouched by the switch: no fallback persist,
-        # no new device memory (UMC was recorded by the earlier persist).
+        # no device memory written.
         self.assertEqual(self._read_mode_file()["mode"], "subwoofer-2.2")
-        self.assertNotIn(SMSL, self._device_modes())
         self.assertEqual(
             samplerate._load_audio_output_selection()["selected_key"], SMSL
         )
@@ -130,7 +131,6 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
         result = self._select(OTHER, {SMSL: 2, OTHER: 2})
 
         self.assertEqual(self._read_mode_file()["mode"], "stereo")
-        self.assertNotIn(OTHER, self._device_modes())
         self.assertNotIn("mode_adjustment", result["output_mode"])
 
     def test_multichannel_switch_ignores_stale_device_memory(self) -> None:
@@ -169,37 +169,10 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
         )
         self.assertNotIn("mode_adjustment", result["output_mode"])
 
-    def test_persist_audio_output_mode_records_current_device(self) -> None:
-        samplerate._save_audio_output_selection(OTHER)
-        self._persist_mode("stereo")
-        self.assertEqual(self._device_modes().get(OTHER), "stereo")
+    # NOTE (backend-v2 migration): per-device mode memory and its loader
+    # are deleted with the persistence helpers; stale device_modes
+    # entries in old files are ignored (covered above).
 
-        # No selected device -> nothing recorded, no device_modes key added.
-        path = self.config_home / "fxroute" / "audio-output-mode.json"
-        payload = json.loads(path.read_text())
-        del payload["device_modes"]
-        path.write_text(json.dumps(payload, indent=2) + "\n")
-        os.remove(self.config_home / "fxroute" / "audio-output-selection.json")
-        self._persist_mode("stereo")
-        self.assertNotIn("device_modes", self._read_mode_file())
-
-    def test_load_device_output_modes_filters_invalid(self) -> None:
-        path = self.config_home / "fxroute" / "audio-output-mode.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "mode": "stereo",
-            "device_modes": {
-                UMC: "subwoofer-2.2",
-                "bad-mode": "bogus",
-                "empty": "",
-                "numeric": 42,
-                "valid-21": "subwoofer-2.1",
-            },
-        }, indent=2) + "\n")
-        self.assertEqual(
-            self._device_modes(),
-            {UMC: "subwoofer-2.2", "valid-21": "subwoofer-2.1"},
-        )
 
     def test_unknown_and_non_selectable_outputs_still_error(self) -> None:
         with self.assertRaises(ValueError):

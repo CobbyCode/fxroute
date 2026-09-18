@@ -16,9 +16,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from measurement.autosub.jobs import _auto_sub_zero_sub_peaks
-from dsp.runtime import DSPRuntime, BassManagementConfig
+from dsp.runtime import DSPRuntime
 import measurement.autosub.measurement as candidate_measurement
-import measurement.session as measurement_session
+from measurement.autosub import deps as autosub_deps
 from measurement.autosub.roles import sub_mute_indices
 
 
@@ -278,7 +278,13 @@ class CandidateRoleMuteTests(unittest.IsolatedAsyncioTestCase):
     """
 
     def setUp(self):
-        self.job = {"cancel_requested": False}
+        self.job = {"id": "role-mute-job", "cancel_requested": False,
+                    # Backend-v2 migration: the funnel requires a service job.
+                    "output_state_context": {
+                        "mode": "stereo", "revision": 0, "output_key": "dev",
+                        "channels": 4, "optimizer_path": "single-sub",
+                        "sub_role_map": {"sub1": "sub1"}, "sub_mute_mask": 4,
+                    }}
         self.native_mask = 0
         self.captured_masks = []
         self.outcome = "success"
@@ -293,6 +299,7 @@ class CandidateRoleMuteTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.read_output_peaks = AsyncMock(side_effect=self.read_peaks)
         self.store = SimpleNamespace(
             start_measurement=AsyncMock(side_effect=self.capture),
+            drain_job=AsyncMock(),
             get_job=lambda _id: {
                 "status": "completed", "result": {"measurement": {
                     "channel": "left",
@@ -307,17 +314,29 @@ class CandidateRoleMuteTests(unittest.IsolatedAsyncioTestCase):
         for target, name, replacement in (
             (candidate_measurement, "_dsp_runtime", lambda: self.runtime),
             (candidate_measurement, "_measurement_store", lambda: self.store),
-            (candidate_measurement, "set_audio_output_mode", lambda *args: {}),
-            (candidate_measurement, "get_audio_output_overview", lambda: {}),
+            # Backend-v2 migration: staging itself is covered by the
+            # owner-prearm suite; the mute-mask contract under test needs
+            # only a staged triple (prediction is canned below).
+            (candidate_measurement, "_stage_auto_sub_service_candidate",
+             AsyncMock(return_value={
+                 "expected_native_layout": [],
+                 "fingerprint": "fp-test",
+                 "expected_native_output_mode": "subwoofer-2.1",
+             })),
             (candidate_measurement, "get_output_volume_unclamped", lambda: 100),
-            (candidate_measurement, "_auto_sub_sync_dsp_runtime", AsyncMock()),
             (candidate_measurement, "_predict_auto_sub_stage_peaks", AsyncMock(side_effect=lambda **kw: _prediction())),
-            (measurement_session, "_sync_dsp_runtime_for_measurement_sweep", AsyncMock()),
             (asyncio, "sleep", AsyncMock()),
         ):
             self.stack.enter_context(patch.object(target, name, replacement))
-        self.stack.enter_context(patch.object(BassManagementConfig, "from_overview", return_value=object()))
-        self.stack.enter_context(patch("audio.samplerate._load_audio_output_mode", return_value={"subwoofer": {"sub_alignment_ms": 2.0}}))
+        self._owner_registration()
+
+    def _owner_registration(self):
+        """Register a fake owner; the funnel pre-arms/restores through it."""
+        owner = SimpleNamespace(committed=False,
+                                ensure_ready=AsyncMock(),
+                                restore=AsyncMock())
+        autosub_deps.register_candidate_owner(self.job["id"], owner)
+        self.addCleanup(autosub_deps.drop_candidate_owner, self.job["id"])
 
     async def control(self, command, **kwargs):
         if command.startswith("mute "):
@@ -383,17 +402,31 @@ class CandidateRoleMuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.captured_masks, [6])
         self.assertEqual(self.native_mask, 0)
 
-    async def test_previous_exact_mute_preserved_legacy_and_explicit(self):
+    async def test_previous_exact_mute_preserved_with_context_and_explicit_masks(self):
         for mask in (None, 6):
             for outcome in ("success", "error", "cancel"):
                 with self.subTest(mask=mask, outcome=outcome):
                     self.job.clear()
+                    self.job.update({
+                        "id": "role-mute-job", "cancel_requested": False,
+                        "output_state_context": {
+                            "mode": "stereo", "revision": 0,
+                            "output_key": "dev", "channels": 4,
+                            "optimizer_path": "single-sub",
+                            "sub_role_map": {"sub1": "sub1"},
+                            "sub_mute_mask": 4,
+                        },
+                    })
                     self.outcome = outcome
-                    options = {} if mask is None else {"mask": mask}
+                    # No explicit mask: previous mute and sweep both use
+                    # the context's role-derived mask (single-sub: 4).
+                    options = {"mask": 4} if mask is None else {"mask": mask}
                     await self.runtime.set_exact_sub_mute(True, **options)
                     result = await self.measure(exact_sub_mute_mask=mask)
                     self.assertEqual(result["status"], {"success": "completed", "error": "error", "cancel": "cancelled"}[outcome])
-                    self.assertEqual(self.native_mask, 12 if mask is None else mask)
+                    # No explicit mask: the context's role-derived sub mask
+                    # applies (single-sub mutes output_3 only).
+                    self.assertEqual(self.native_mask, 4 if mask is None else mask)
                     self.assertTrue(self.runtime.snapshot()["exact_sub_mute"])
                     await self.runtime.set_exact_sub_mute(False, **options)
 

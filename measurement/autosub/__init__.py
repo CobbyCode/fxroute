@@ -38,7 +38,6 @@ from measurement.autosub.deps import (
 )
 
 from measurement.autosub.candidates import (
-    _auto_sub_21_verify_restored,
     _auto_sub_22_candidate_subwoofers,
     _auto_sub_22_global_config,
     _auto_sub_22_name,
@@ -57,8 +56,6 @@ from measurement.autosub.candidates import (
     _auto_sub_snapshot_copy,
     _auto_sub_step_ms,
     _auto_sub_sweep_profile,
-    _auto_sub_sync_dsp_runtime,
-    _restore_auto_sub_original_config,
 )
 
 from measurement.autosub.scoring import (

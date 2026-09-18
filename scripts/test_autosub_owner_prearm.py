@@ -203,10 +203,8 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(autosub_deps.drop_candidate_owner, "job-1")
         self.addCleanup(setattr, autosub_deps, "_autosub_deps", None)
         self.patchers = []
-        self.patch(funnel, "set_audio_output_mode", explode("legacy persist in service sweep")[1])
-        self.patch(samplerate_module, "_load_audio_output_mode", explode("legacy load in service sweep")[1])
-        self.patch(funnel, "get_audio_output_overview", explode("legacy overview in service sweep")[1])
-        self.patch(funnel, "_auto_sub_sync_dsp_runtime", explode("legacy sync in service sweep")[0])
+        # Legacy persist/load/overview/sync entry points are deleted; the
+        # service sweep stages through the owner with no legacy fallback.
         self.patch(measurement_session, "_sync_dsp_runtime_for_measurement_sweep",
                    explode("orchestration sync in service sweep")[0])
         self.patch(funnel, "_auto_sub_fresh_master_percent", self.master_percent)
@@ -388,60 +386,10 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["stage_output_peaks"]["predicted"]["dbfs"]["output_3"], -240.0)
 
-    async def test_legacy_job_keeps_orchestration_sync_and_unstaged_sweep(self):
-        legacy_overview = {
-            "selected_output": {"key": "mock", "channels": 4, "active_rate": 48000},
-            "output_mode": {
-                "mode": "subwoofer-2.1", "crossover_frequency_hz": 80,
-                "main_highpass_enabled": True,
-                "subwoofer": {"crossover_frequency_hz": 80, "main_highpass_enabled": True,
-                              "sub_alignment_ms": 5.0, "sub_level_db": 0.0,
-                              "sub_polarity": "normal"},
-            },
-        }
-        sync_calls = []
-        prearm_calls = []
-
-        async def fake_sync(*args, **kwargs):
-            sync_calls.append((args, kwargs))
-
-        async def fake_prearm(*args, **kwargs):
-            prearm_calls.append((args, kwargs))
-
-        for patcher in self.patchers:
-            patcher.stop()
-        self.patchers.clear()
-        self.patch(funnel, "get_audio_output_overview", lambda: copy.deepcopy(legacy_overview))
-        self.patch(samplerate_module, "_load_audio_output_mode", lambda: copy.deepcopy(legacy_overview["output_mode"]) | {"mode": "subwoofer-2.1"})
-        self.patch(funnel, "set_audio_output_mode",
-                   lambda mode, global_config, subwoofers_config=None: copy.deepcopy(legacy_overview))
-        self.patch(funnel, "_auto_sub_sync_dsp_runtime", fake_sync)
-        self.patch(measurement_session, "_sync_dsp_runtime_for_measurement_sweep", fake_prearm)
-        self.patch(funnel, "_auto_sub_fresh_master_percent", self.master_percent)
-        real_predict = autosub_jobs._predict_auto_sub_stage_peaks
-
-        async def spy_predict(**kwargs):
-            result = await real_predict(**kwargs)
-            self.runtime.captured_prediction = copy.deepcopy(result)
-            self.runtime.captured_sink_gain = kwargs.get("sink_gain", 1.0)
-            return result
-
-        self.patch(funnel, "_predict_auto_sub_stage_peaks", spy_predict)
-        job = {"id": "job-1", "status": "preparing", "cancel_requested": False,
-               "playback_gain": {"linear": 1.0},
-               "reference_channels": {"left": "", "right": ""},
-               "current_sweep_id": ""}
-        result = await self.sweep(job, original_level=0.0)
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(len(sync_calls), 1)
-        self.assertEqual(len(prearm_calls), 1)
-        self.assertEqual(prearm_calls[0][0], (RATE,))
-        child = self.measure_store.starts[0]
-        self.assertNotIn("expected_native_layout", child)
-        self.assertNotIn("expected_plan_fingerprint", child)
-        self.assertNotIn("model", result["stage_output_peaks"]["predicted"])
-        self.assertEqual(self.hardware.transitions, [])
-
+    # NOTE (backend-v2 migration): test_legacy_job_keeps_orchestration_sync_and_unstaged_sweep
+    # pinned the deleted legacy funnel path (persist/sync/prearm through the
+    # mode file). The funnel now requires a service job; service coverage is
+    # the surrounding sweep tests in this file.
 
 class ScanKnobsTests(unittest.TestCase):
     def start_state(self, roles=("sub1",), mode="stereo-sub"):

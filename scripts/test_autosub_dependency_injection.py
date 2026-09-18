@@ -89,32 +89,10 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
     def test_autosub_import_does_not_import_main(self):
         self.assertNotIn("main", sys.modules)
 
-    async def test_sync_uses_injected_dsp_runtime(self):
-        runtime = FakeDSPRuntime()
-        _configure(dsp_runtime=runtime)
-        persisted = overview_21()
-        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
-            await autosub_candidates._auto_sub_sync_dsp_runtime(
-                output_mode="subwoofer-2.1", persisted_overview=persisted)
-        runtime.sync.assert_awaited_once()
-
-    async def test_late_bound_accessor_observes_reconfiguration(self):
-        first = FakeDSPRuntime()
-        replacement = FakeDSPRuntime()
-        _configure(dsp_runtime=first)
-        _configure(dsp_runtime=replacement)
-        persisted = overview_21()
-        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
-            await autosub_candidates._auto_sub_sync_dsp_runtime(
-                output_mode="subwoofer-2.1", persisted_overview=persisted)
-        replacement.sync.assert_awaited_once()
-        first.sync.assert_not_awaited()
-
-    async def test_none_dsp_runtime_is_a_noop(self):
-        _configure(dsp_runtime=None)
-        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
-            await autosub_candidates._auto_sub_sync_dsp_runtime(
-                output_mode="subwoofer-2.1", persisted_overview=overview_21())
+    # NOTE (backend-v2 migration): the three _auto_sub_sync_dsp_runtime tests
+    # pinned the deleted legacy persist-then-sync helper. Late-bound
+    # dependency injection itself is still covered by the service suites
+    # configuring AutoSubDependencies (owner prearm, service start, runner IO).
 
     async def test_shutdown_uses_injected_measurement_store(self):
         store = FakeStore()

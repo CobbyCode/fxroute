@@ -370,11 +370,8 @@ class ApplyCandidateOwnerTests(unittest.IsolatedAsyncioTestCase):
         autosub_deps.register_candidate_owner("apply-job", self.owner)
         self.addCleanup(autosub_deps.drop_candidate_owner, "apply-job")
         self.addCleanup(setattr, autosub_deps, "_autosub_deps", None)
-        self.legacy = patch.object(
-            autosub_candidates, "set_audio_output_mode",
-            side_effect=AssertionError("legacy persist in service apply"))
-        self.legacy.start()
-        self.addCleanup(self.legacy.stop)
+        # Legacy persist entry points are deleted; the service apply stages
+        # through the owner with no legacy fallback to guard.
 
     async def test_service_apply_stages_without_persisting(self):
         before = self.service.load()["revision"]
@@ -419,14 +416,10 @@ def _explode(message):
 
 
 def _runner_common_patches(stack, runner, runtime):
-    stack.enter_context(patch.object(runner, "set_audio_output_mode", side_effect=_explode("runner persist")))
-    stack.enter_context(patch.object(runner, "get_audio_output_overview", side_effect=_explode("runner overview")))
-    stack.enter_context(patch.object(samplerate_module, "set_audio_output_mode", side_effect=_explode("samplerate persist")))
-    stack.enter_context(patch.object(samplerate_module, "_load_audio_output_mode", side_effect=_explode("samplerate load")))
-    stack.enter_context(patch.object(samplerate_module, "get_audio_output_overview", side_effect=_explode("samplerate overview")))
-    stack.enter_context(patch.object(autosub_candidates, "set_audio_output_mode", side_effect=_explode("candidates persist")))
-    stack.enter_context(patch.object(autosub_candidates, "get_audio_output_overview", side_effect=_explode("candidates overview")))
-    stack.enter_context(patch.object(runner, "_dsp_runtime", return_value=runtime))
+    # Legacy persistence entry points are deleted (backend-v2 migration):
+    # there is nothing left to patch-raising. The service path stages
+    # exclusively through the owner; this helper keeps the shared
+    # measurement-rate pin for all three runner suites.
     stack.enter_context(patch("measurement.session._resolve_measurement_start_sample_rate", return_value=RATE))
 
 
@@ -744,33 +737,29 @@ class Runner21ServiceIOTests(RunnerServiceIOTestBase):
         self.assertEqual(len(self.harness.stage_calls), 3)
         self.assert_service_end_state()
 
-    async def test_service_path_never_touches_legacy_persistence(self):
-        """Task-1 contract: full service run green while legacy writers raise.
+    async def test_service_path_has_no_legacy_persistence_surface(self):
+        """Task-1 contract, post-deletion form: the legacy writers are gone.
 
-        Adaptation of the plan sketch to this file's harness: the service
-        start is the base-class ServiceHarness job (start.py attaches
-        ``output_state_context`` to every job while the gate is open);
-        ``runners.start`` exposes no ``set_audio_output_mode``, so the
-        funnel measurement module takes its patch slot (audit-verified).
-        ``persist_audio_output_mode`` and ``save_assignments`` are the delta
-        over the base patches.
+        The full service run (happy path below) proves the behavior; this
+        test pins the structural fact the migration requires — no legacy
+        persist/load/overview entry point remains importable on the
+        service-path modules, so no runner can reach it.
         """
         import measurement.autosub.measurement as funnel_measurement
         from audio import output_routing as routing_module
+        for module, names in (
+            (autosub_candidates, ("set_audio_output_mode",
+                                  "get_audio_output_overview")),
+            (funnel_measurement, ("set_audio_output_mode",)),
+            (samplerate_module, ("set_audio_output_mode",
+                                 "persist_audio_output_mode",
+                                 "_load_audio_output_mode")),
+            (routing_module, ("save_assignments",)),
+        ):
+            for name in names:
+                self.assertFalse(hasattr(module, name), f"{module.__name__}.{name}")
         stack = ExitStack()
         with stack:
-            stack.enter_context(patch.object(
-                autosub_candidates, "set_audio_output_mode",
-                side_effect=AssertionError("legacy persist")))
-            stack.enter_context(patch.object(
-                funnel_measurement, "set_audio_output_mode",
-                side_effect=AssertionError("legacy persist")))
-            stack.enter_context(patch.object(
-                samplerate_module, "persist_audio_output_mode",
-                side_effect=AssertionError("legacy persist")))
-            stack.enter_context(patch.object(
-                routing_module, "save_assignments",
-                side_effect=AssertionError("legacy persist")))
             stack.enter_context(patch.object(
                 self.runner, "_measure_auto_sub_combined_candidate",
                 side_effect=self.combined_measure()))

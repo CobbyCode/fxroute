@@ -352,7 +352,6 @@ import dsp.preset_loading as preset_loading
 import playback.orchestration as playback_orchestration
 from audio import pw_link
 from audio.output_ports import hardware_playback_port_fallback_from_mode
-from audio.output_routing import all_saved_routes
 from audio.output_service import MeasurementActiveError, OutputService, OutputServiceDeps
 from audio.output_state import (
     FILTER_SLOPES,
@@ -3934,22 +3933,6 @@ def _resolve_state_ir(kernel):
     return {"path": str(path), "channels": params["channels"]}
 
 
-def _legacy_output_snapshot() -> dict:
-    """Capture legacy documents once for the one-time output-state migration."""
-    overview = get_audio_output_overview()
-    selected = overview.get("selected_output") or {}
-    manager = _require_dsp_manager()
-    return {
-        "mode": samplerate._load_raw_audio_output_mode() or {"mode": "stereo"},
-        "routing": all_saved_routes(),
-        "active_preset": manager.get_active_preset() or "Neutral",
-        "compare": manager.load_compare_state(),
-        "extras": manager.load_global_extras(),
-        "output_key": str(selected.get("key") or ""),
-        "channels": int(selected.get("channels") or 0),
-    }
-
-
 def get_output_service() -> OutputService:
     """Return the authoritative output-state service (late-bound singleton)."""
     global _output_service_instance
@@ -3960,7 +3943,6 @@ def get_output_service() -> OutputService:
             resolve_ir=_resolve_state_ir,
             measurement_active=lambda: measurement_sr_session is not None and bool(
                 measurement_sr_session.has_active_jobs),
-            legacy_snapshot_loader=_legacy_output_snapshot,
         ))
     return _output_service_instance
 

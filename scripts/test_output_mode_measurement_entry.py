@@ -727,8 +727,6 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}
         ), patch.object(
-            samplerate, "_load_raw_audio_output_mode", return_value={"mode": "stereo"}
-        ), patch.object(
             main, "get_spotify_ui_state", new=AsyncMock(return_value={"status": "Paused"})
         ), patch.object(
             main, "get_qobuz_ui_state", new=AsyncMock(return_value={"status": "Playing"})
@@ -1043,24 +1041,10 @@ class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
-class OutputModePersistenceSplitTests(unittest.TestCase):
-    def test_prepare_does_not_persist_and_commit_persists_validated_config(self):
-        with tempfile.TemporaryDirectory(prefix="fxroute-output-mode-test-") as directory:
-            path = pathlib.Path(directory) / "audio-output-mode.json"
-            overview = {
-                "output_mode": {
-                    "mode": "stereo",
-                    "available": True,
-                }
-            }
-            with patch.object(samplerate.overview, "_audio_output_mode_path", return_value=path), patch.object(
-                samplerate.overview, "get_audio_output_overview", return_value=overview
-            ):
-                target = samplerate.prepare_audio_output_mode("stereo")
-                self.assertFalse(path.exists())
-                samplerate.persist_audio_output_mode(target["config"])
-            self.assertTrue(path.exists())
-            self.assertEqual(path.read_text() and target["config"]["mode"], "stereo")
+        # NOTE (backend-v2 migration): OutputModePersistenceSplitTests pinned
+        # the deleted prepare/persist split. The v2 equivalent
+        # (prepare-then-commit-after-readback) is covered by the
+        # CommitV2Tests in test_output_state_coordinator.py.
 
 
 if __name__ == "__main__":

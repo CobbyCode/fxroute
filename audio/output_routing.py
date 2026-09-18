@@ -58,49 +58,6 @@ def validate_assignments(values: Any, channels: int) -> list[int]:
     return list(values)
 
 
-def save_assignments(output_key: str, values: Any, channels: int) -> None:
-    assignments = validate_assignments(values, channels)
-    data = _load()
-    previous = data.get(device_key(output_key))
-    if _valid(previous):
-        assignments.extend(previous[channels:])
-    data[device_key(output_key)] = assignments
-    _write(data)
-
-
-def saved_routing_state(output_key: str) -> list[int] | None:
-    values = _load().get(device_key(output_key))
-    return list(values) if _valid(values) else None
-
-
-def all_saved_routes() -> dict[str, list[int]]:
-    """Return every stored device routing for migration snapshots.
-
-    Only validated assignments are reported; corrupt entries are skipped so
-    a single bad device map cannot poison a whole-state migration.
-    """
-    data = _load()
-    return {key: list(value) for key, value in data.items()
-            if isinstance(key, str) and _valid(value)}
-
-
-def restore_routing_state(output_key: str, state: list[int] | None) -> None:
-    data = _load()
-    if _valid(state):
-        data[device_key(output_key)] = list(state)
-    else:
-        data.pop(device_key(output_key), None)
-    _write(data)
-
-
-def _write(data: dict) -> None:
-    path = _path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(data, indent=2) + "\n")
-    temporary.replace(path)
-
-
 def output_route_pairs(mode: Mapping[str, Any], ports: Sequence[str]) -> tuple[tuple[int, str], ...]:
     """Resolve physical edges; Off and unavailable channels create no link."""
     assignments = (mode.get("output_routing") or {}).get("assignments")

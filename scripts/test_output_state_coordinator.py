@@ -3,6 +3,7 @@
 """v2 coordinator path: planned diagnosis, staging, commit, verify, rollback."""
 
 import asyncio
+import inspect
 import sys
 import tempfile
 import unittest
@@ -602,29 +603,39 @@ class LegacyFilesUntouchedTests(unittest.TestCase):
         self.mode_path.write_bytes(b'{"mode": "sentinel"}')
         self.routing_path.write_bytes(b'{"sentinel": [1, 2, 3, 4]}')
 
-    def legacy_raises(self):
+    def legacy_absent(self):
+        """Structural pin: no legacy persist/restore surface remains."""
         import audio.samplerate as samplerate_module
         from audio import output_routing as routing_module
-        return (
-            mock.patch.object(samplerate_module, "persist_audio_output_mode",
-                              side_effect=AssertionError("legacy persist")),
-            mock.patch.object(routing_module, "save_assignments",
-                              side_effect=AssertionError("legacy persist")),
-            mock.patch.object(routing_module, "restore_routing_state",
-                              side_effect=AssertionError("legacy restore")),
-            mock.patch.object(routing_module, "saved_routing_state",
-                              side_effect=AssertionError("legacy read")),
-        )
+        import playback.runtime.output_mode as runtime_output_mode
+        import playback.runtime.snapshot as runtime_snapshot
+        for module, names in (
+            (samplerate_module, ("persist_audio_output_mode",
+                                 "set_audio_output_mode")),
+            (routing_module, ("save_assignments", "restore_routing_state",
+                              "saved_routing_state")),
+            (runtime_output_mode, ("persist_audio_output_mode",
+                                   "save_assignments",
+                                   "restore_routing_state")),
+            (runtime_snapshot, ("saved_routing_state",)),
+        ):
+            for name in names:
+                self.assertFalse(hasattr(module, name),
+                                 f"{module.__name__}.{name}")
+        source = inspect.getsource(runtime_output_mode) + inspect.getsource(runtime_snapshot)
+        for token in ("persist_audio_output_mode", "save_assignments",
+                      "restore_routing_state", "saved_routing_state",
+                      "output_mode_config", "output_routing_config"):
+            self.assertNotIn(token, source)
 
     def legacy_bytes(self):
         return (self.mode_path.read_bytes(), self.routing_path.read_bytes())
 
     def test_topology_switch_never_touches_legacy_files(self):
         before = self.legacy_bytes()
+        self.legacy_absent()
         runtime = make_transition_runtime()
-        raises = self.legacy_raises()
-        with raises[0], raises[1], raises[2], raises[3], \
-                mock.patch.object(main, "get_output_service", return_value=self.service):
+        with mock.patch.object(main, "get_output_service", return_value=self.service):
             result = asyncio.run(runtime.commit_output_mode_runtime(
                 v2_request(v2_payload(self.service, self.candidate, self.base))))
         self.assertTrue(result["output_mode_persisted"])
@@ -634,12 +645,11 @@ class LegacyFilesUntouchedTests(unittest.TestCase):
     def test_rollback_never_touches_legacy_files(self):
         self.service.commit(self.candidate, expected_revision=1)
         before = self.legacy_bytes()
+        self.legacy_absent()
         runtime = make_transition_runtime()
         fake = mock.MagicMock()
         fake.sync_rendered = AsyncMock()
-        raises = self.legacy_raises()
-        with raises[0], raises[1], raises[2], raises[3], \
-                mock.patch.object(main, "get_output_service", return_value=self.service), \
+        with mock.patch.object(main, "get_output_service", return_value=self.service), \
                 mock.patch.object(main.runtime, "dsp_runtime", fake), \
                 mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis",
                                   new=AsyncMock(return_value={"links_complete": True,

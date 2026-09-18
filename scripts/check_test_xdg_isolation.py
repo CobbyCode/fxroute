@@ -33,10 +33,10 @@ SCRIPTS = ROOT / "scripts"
 
 # Write entry points that can reach real product configuration on disk.
 # (Files that merely mention XDG_* to sandbox themselves need no audit.)
+# Backend-v2 migration: the legacy mode persist/set helpers are deleted, so
+# only the still-existing path/file triggers remain for the mode file.
 TRIGGERS = (
     "_audio_output_mode_path",
-    "persist_audio_output_mode",
-    "set_audio_output_mode",
     "_save_audio_output_selection",
     "persist_sample_rate_policy",
     "audio-output-mode.json",

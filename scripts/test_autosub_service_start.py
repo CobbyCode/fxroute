@@ -93,8 +93,9 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         self.patch(start, "_auto_sub_lock", asyncio.Lock())
         self.rollout_patch = self.patch(start, "_AUTO_SUB_SERVICE_INTEGRATION_READY", True)
         self.patch(start, "_start_auto_sub_worker", self.capture_worker)
-        self.patch(main.samplerate, "_load_audio_output_mode",
-                   lambda: self.fail("Authoritative start read legacy persistence"))
+        # Legacy persistence is deleted: the authoritative start cannot read
+        # it by construction (no such name remains on the samplerate
+        # package); dispatch + owner assertions below carry the contract.
         for name in ("_run_auto_sub_optimize", "_run_auto_sub_22_optimize",
                      "_run_auto_sub_22_stereo_optimize"):
             async def runner(_name=name, **kwargs):
@@ -433,10 +434,6 @@ class RunnerOwnerEntryTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(module, "_auto_sub_lock", lock), \
                 patch.object(jobs, "_auto_sub_lock", lock), \
                 patch.object(module, "_capture_auto_sub_main_references", capture), \
-                patch.object(main.samplerate, "set_audio_output_mode",
-                             side_effect=AssertionError("Service entry wrote legacy persistence")), \
-                patch.object(candidates, "set_audio_output_mode",
-                             side_effect=AssertionError("Service restore wrote legacy persistence")), \
                 patch("measurement.session._resolve_measurement_start_sample_rate",
                       side_effect=AssertionError("Re-resolved the registered measurement rate")):
             await runner(**args)
