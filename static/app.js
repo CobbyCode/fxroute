@@ -474,6 +474,7 @@ const elements = {
     settingsOutputSummary: document.getElementById('settings-output-summary'),
     settingsOutputSelect: document.getElementById('settings-output-select'),
     settingsOutputModeSelect: document.getElementById('settings-output-mode-select'),
+    settingsModeGroup: document.getElementById('settings-mode-group'),
     settingsOutputModeHint: document.getElementById('settings-output-mode-hint'),
     settingsSamplerateSelect: document.getElementById('settings-samplerate-select'),
     settingsSamplerateHint: document.getElementById('settings-samplerate-hint'),
@@ -3603,6 +3604,7 @@ function renderOutputSystemSection() {
     if (!mod || !catalog) {
         if (elements.settingsOutputModeHint) elements.settingsOutputModeHint.textContent = 'Output configuration unavailable.';
         if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = true;
+        if (elements.settingsModeGroup) elements.settingsModeGroup.classList.add('hidden');
         if (elements.settingsCrossoverSelect) elements.settingsCrossoverSelect.disabled = true;
         if (elements.settingsRoutingGrid) elements.settingsRoutingGrid.innerHTML = '';
         if (elements.osTopology) elements.osTopology.textContent = '';
@@ -3614,6 +3616,9 @@ function renderOutputSystemSection() {
     const mode = catalog.active_mode || 'stereo';
     const modeConfig = catalog.modes[mode] || {};
     const busy = state.outputSystem.busy;
+    if (elements.settingsModeGroup) {
+        elements.settingsModeGroup.classList.toggle('hidden', !mod.modeSelectorVisible(device.channels || 0));
+    }
     mod.renderModeSelect(elements.settingsOutputModeSelect, catalog, mode);
     if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = busy;
     if (elements.settingsCrossoverSelect) {

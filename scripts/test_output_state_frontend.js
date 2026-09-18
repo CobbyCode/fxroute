@@ -68,6 +68,14 @@ assert.deepEqual(OutputState.rolesForMode('surround', catalog().capabilities), [
 assert.equal(OutputState.modeLabel('stereo'), 'Stereo');
 assert.equal(OutputState.modeLabel('stereo-sub'), 'Stereo + Sub');
 
+// 2-channel devices hide the Mode selector (internally fixed Stereo);
+// 3+ channels show Stereo and Stereo + Sub.
+assert.equal(OutputState.modeSelectorVisible(0), false);
+assert.equal(OutputState.modeSelectorVisible(1), false);
+assert.equal(OutputState.modeSelectorVisible(2), false);
+assert.equal(OutputState.modeSelectorVisible(3), true);
+assert.equal(OutputState.modeSelectorVisible(18), true);
+
 assert.equal(OutputState.topologySummary(catalog().modes['stereo-sub'].topology), 'Stereo · Mono sub');
 assert.equal(
     OutputState.topologySummary({ sub_mode: 'stereo', way_count: null, issues: [] }),
