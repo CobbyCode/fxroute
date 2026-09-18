@@ -132,3 +132,78 @@ Für Runner-Änderungen zusätzlich die bestehenden `scripts/test_auto_sub_*`-Su
 - Lokal fehlen Native-Build-Abhängigkeiten; Native-Suiten auf `.104` prüfen. Neue Native-Suite in `NATIVE_HELPER_TESTS` in `scripts/run_tests.sh` registrieren.
 - Bekannte `.104`-Umgebungslücken (vorbestehend, nicht regressionsverdächtig): `httpx`, `PIL`, `node`, `playwright` fehlen; kein Git-Verlauf im Scratch; ein qbzd-Shell-Env-Problem. Vollsweep dort: 291/13/98 mit genau diesen Ursachen.
 - Keine zweite Live-Engine neben der Produktinstanz starten (Node-Namenskollision). Reale akustische Verifikation erfordert abgestimmtes Wartungsfenster/isolierten Aufbau.
+
+## Backend-v2-Migration Task 0 Audit (2026-09-18)
+
+Read-only-Audit der Legacy-Mode-/Routing-Call-Sites. Jede Site genau ein Verdikt:
+`migrate Task N` oder `keep (Grund)`. Grep-Basis: Step-1-/Step-2-Befehle aus dem
+Plan (Stand `680f16f`), verfeinert um `saved_routing_state`/`restore_audio_output_mode_raw`/
+`output_route_pairs`/`set_bass`/beide POST-Routen. `__pycache__`-Treffer ignoriert.
+
+### Reader
+
+- `audio/samplerate/constants.py:13-19` (Modus-Definitionen): keep (Algorithmuslabels + Validierungsmenge; nur Persistenz geht).
+- `audio/samplerate/__init__.py:32-37,171-176` (Konstanten-Re-Exporte): keep (Labels; Persistenz-Re-Exporte entfallen mit Task 4).
+- `audio/samplerate/overview.py:27-31` (Konstanten-Imports): keep bis Task 4 (vom zu loeschenden Payload-Code benoetigt).
+- `audio/samplerate/overview.py:392-405` (Overview-Notes + `routing_status` aus Mode-Label): migrate Task 3 (Anzeige/Topologie aus v2-Plan-Rollen; Port-Discovery keep).
+- `audio/samplerate/overview.py:633-640` (`_output_mode_label`): migrate Task 4 (Display-Helper stirbt mit der Persistenz).
+- `audio/samplerate/overview.py:666-707` (`set_audio_output_selection` Device-Mode-Fallback + Remember): migrate Task 4 (Device-Wechsel appliziert via OutputService; Selektion selbst keep).
+- `audio/samplerate/overview.py:709-743` (`prepare_audio_output_mode` Validierung + Overlay): migrate Task 5 (Routen-Body entfällt; Validierung wandert in den v2-Apply).
+- `audio/samplerate/persistence.py:200-245,322ff` (`_load/_build` Normalisierung): migrate Task 4 (delete).
+- `audio/samplerate/persistence.py:267-291` (`read/restore_audio_output_mode_raw`): migrate Task 4 (delete; Verbraucher Task 2/5 zuerst auf Revisionen).
+- `audio/output_routing.py:37-51` (`routing_payload` assignments/customized/inactive): migrate Task 4 (Overview braucht es nicht mehr; reine Port-Ableitung via `output_ports` keep).
+- `audio/output_routing.py:71-84` (`saved_routing_state`, `all_saved_routes`): `saved_routing_state` migrate Task 2 (Snapshot -> v2-Revision), danach delete Task 4; `all_saved_routes` keep bis Task 4 (Einmal-Loader `main._legacy_output_snapshot`).
+- `audio/output_routing.py:104-109` (`output_route_pairs`): migrate Task 3 (Plan-`physical_routes`).
+- `audio/output_ports.py:221-256` (`hardware_playback_ports*_from_mode`): keep (Hardware-Discovery, planseitig explizit unberuehrt).
+- `playback/orchestration.py:471,502,508-523` (Diagnose `mode_minimum`, `output_routing.available`, `route_pairs`-Fallback, `planned_routes`): migrate Task 3 (Counts/Paare aus Plan-Topologie; Port-Discovery keep).
+- `playback/orchestration.py:730` (Repairable-Gate auf Mode-Membership): migrate Task 3 (Gate auf Diagnose-Routen/Topologie).
+- `playback/orchestration.py:863` (Effects-Stage Mode-Read): migrate Task 3 (ungenutztes Label; `v2_pending` gatet bereits).
+- `playback/runtime/deps.py:51` (`persist_audio_output_mode`-Feld): migrate Task 2 (entfällt nach Coordinator-Migration).
+- `playback/runtime/output_mode.py:145-172` (Rollback Alt-Mode-Rekonstruktion inkl. Sub-Blöcke): migrate Task 2.
+- `playback/runtime/output_mode.py:296-299` (Finalize-Gate `mode in SUBWOOFER_MODES and v2.target None`): migrate Task 2 (Gate auf v2-Target/Topologie).
+- `playback/runtime/snapshot.py:56-62` (Session-Graph-Reconcile-Verzweigung): migrate Task 3 (Repair-Pfad aus Topologie/Diagnose).
+- `playback/runtime/verification.py:220-227` (Stabilisierungs-Repair-Verzweigung): migrate Task 3.
+- `playback/runtime/verification.py:417-430` (Commit-Helper-Readback, gated auf Mode-Label): migrate Task 3 (Helper-Pflicht aus Plan-Rollen).
+- `playback/silent_active.py:72-101` (Mode-Check + `output_route_pairs` mit `signal <= 2`): migrate Task 3 (Rollen + Plan-Routen; Port-Discovery keep).
+- `playback/silent_active.py:139-144` (Snapshot Mode-Echo): migrate Task 3 (Snapshot trägt Topologie).
+- `playback/transition/models.py:100-102` (`output_mode_config/routing_config/output_mode_target`): migrate Task 2 (write-never-Felder loeschen, sobald kein Reader mehr).
+- `dsp/orchestration.py:115-125` (`with_subwoofer_derived_delays` Mode-Gate): migrate Task 3 (Delays aus Plan).
+- `dsp/orchestration.py:855-883` (Link-Watcher `cheap_mode`/Overview-Gates): migrate Task 3 (Gate aus Runtime-Config/v2-Topologie).
+- `dsp/runtime.py:170-241` (`BassManagementConfig.from_overview`): migrate Task 3 (Verbraucher auf Plan; Struct-Nutzung Messkontext bis dahin keep).
+- `dsp/runtime.py:310-399` (`DSPRuntimeConfig.from_overview`, `_resolve_ports`-Verzweigung, `output_route_pairs`-Nutzen): migrate Task 3 (`from_plan` only; Port-Discovery keep).
+- `dsp/runtime.py:821-850` (`_resolve_hardware_ports` + `_sync` via `from_overview`): `_sync`-Pfad migrate Task 3 (`sync_rendered`); `_resolve_hardware_ports` keep (Discovery).
+- `measurement/autosub/runners/start.py:75-88,98,166,209-227,267-308` (`algorithm_mode`-Map, Snapshot-`mode`, `output_state_context`, Stereo/22-Dispatch): keep (reine Dispatch/Display-Labels aus gefrorener Topologie).
+- `measurement/autosub/runners/optimize.py`, `optimize_22.py`, `optimize_22_stereo.py` (alle `OUTPUT_MODE_*`-Konstanten, `output_mode=`/`mode=`-Kwargs, Gain/Scoring-Mode-Args, `_auto_sub_22_verify_*`-Args, Service-Branch `BassManagementConfig(...)`-Display-Konstruktion): keep (Algorithmuslabels; Service-Branch-Konstruktion display-only ohne Persistenz).
+- `measurement/autosub/candidates.py:85,209,454-456` (Legacy-Payload-Shape-Verifikation): keep bis Task 4 (Legacy-Payload-Validierung; entfällt mit der Persistenz).
+- `measurement/autosub/measurement.py:92,143,404,441,450,459` u. Fingerprint/Verify-Helper (Mode-Verzweigungen, Defaults `261/1899`, Gain `1280/1289/1317/1716/1785/1948/2051`): keep (Algorithmus-Dispatch + Fingerprint/Scoring-Mathematik, unverändert lassen).
+- `measurement/autosub/scoring.py:280,288,299`: keep (Scoring-Mathematik, unverändert lassen).
+- `measurement/session.py:996-1011,1014-1066` (Sweep-Log-Gate, Save-Kontext, Sweep-Sync-Gate auf Mode-Label): migrate Task 3 (aus Plan-Topologie/Rollen ableiten).
+- `measurement/routing.py:354-364` (Mode-String + `from_overview`-Layout): migrate Task 3 (Route aus gestagtem Plan-Layout; Mode-Echo aus Topologie).
+- `measurement/store.py:1287` (Electrical-Reference-Keep-Gate): migrate Task 3 (Gate auf Plan-Rollen).
+- `main.py:430-434` (Konstanten-Imports): keep (Labels).
+- `main.py:1460` (`api_mode` im Debug-Dump): migrate Task 5 (Debug-Payload auf v2-Topologie mit Routen-Entfernung).
+- `main.py:2679-2692` (`_current_output_mode` mit Persistenz-Fallback): migrate Task 3 (Gate aus Runtime-Config; Fallback entfällt Task 4).
+- `main.py:2731` (`get_output_mode`-Verdrahtung): migrate Task 3 (mit Watcher-Gate).
+- `main.py:3930-3943` (`_legacy_output_snapshot` via Raw-Mode + `all_saved_routes`): keep (Einmal-Migrations-Loader; delete Task 4 nach Fenster).
+- `static/measurement_flows.js`: keep (keine Legacy-Routen-Calls).
+- `static/output_state.js`, `static/app.js` (output-state-Endpunkte): keep (v2-Pfad).
+- `scripts/check_test_xdg_isolation.py:38-43` (Writer/Routen-Auditliste): migrate Task 4/5 (mit den Delete-Slices aktualisieren).
+
+### Writer (Produktion, ohne Tests)
+
+- `audio/samplerate/overview.py:681` (Device-Switch-Persist): migrate Task 4.
+- `audio/samplerate/overview.py:745` (`persist_audio_output_mode`-Def): migrate Task 4 (delete).
+- `audio/samplerate/overview.py:765` (`set_audio_output_mode`-Def): migrate Task 4 (delete; Task-1-Caller zuerst umgezogen).
+- `audio/samplerate/persistence.py:279` (`restore_audio_output_mode_raw`): migrate Task 4 (delete; Same-Mode-Restore wandert Task 5 nach `revert`).
+- `audio/output_routing.py:61` (`save_assignments`): migrate Task 2 (Commit -> `OutputService.commit`), delete Task 4.
+- `audio/output_routing.py:87` (`restore_routing_state`): migrate Task 2 (Rollback -> `revert`), delete Task 4.
+- `playback/runtime/output_mode.py:61,65` (Commit-Persist + Save): migrate Task 2.
+- `playback/runtime/output_mode.py:139,159` (Rollback-Restore + Alt-Config-Re-Persist): migrate Task 2.
+- `playback/runtime/snapshot.py:92` (Routing-Snapshot): migrate Task 2 (v2-Vorgänger-Revision).
+- `measurement/autosub/candidates.py:338` (Legacy-Branch `set_audio_output_mode`): migrate Task 1.
+- `measurement/autosub/measurement.py:417-430` (Kandidaten-Config `set_audio_output_mode` + `_load`-Verify): migrate Task 1.
+- `measurement/autosub/runners/optimize.py:640,694,738,770,814,981`, `optimize_22.py:599,631,678,821`, `optimize_22_stereo.py:905,1057,1130,1153,1208,1306,1338` (Legacy-`else`-Branches `set_audio_output_mode` + DSP-Sync + `_load_audio_output_mode` als `load_overview`): migrate Task 1.
+- `main.py:893` (Deps-`persist`-Lambda): migrate Task 2.
+- `main.py:4756,4770` (Same-Mode-Routen-Body Persist/Restore): migrate Task 5 (entfällt mit der Route).
+- `main.py:4679,4718` (POST `/api/audio/output-routing`, `/api/audio/output-mode`): migrate Task 5 (delete).
+- `main.py:4124-4129` (`set_bass`-Mutation): migrate Task 5 (delete).
