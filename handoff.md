@@ -14,10 +14,39 @@
 
 - Fertig und live auf `.104` (`http://192.168.178.104:8000`): Unified Output Model (Stereo / Stereo + Sub, Crossover als On/Off-Schalter, ein Hardware-Routing), kanalabhängiger Mode-Selektor, Settings-Reihenfolge, Crossover-Kachel im Sub-Stil mit Pro-Filter-Gruppen — **plus Backend-v2-Migration** (`1425b6d`): Legacy-Routen weg (404), `output_state.js?v=0.9.7`, State rev 98 intakt.
 - Verifikation: lokal **405/0/14**; `.104`-Scratch: native Plan-Peak-Parität PASS + 8/8 Migrations-Suiten grün (JS nur lokal, kein Node dort); Produkt neu gestartet, aktiv, HTTP 200, Backup `~/deploy-backup/fxroute-1425b6d-pre-v2.tar`; Demo nie auf `.104`.
-- Backend-v2-Migration: Tasks 0–6 **fertig und deployed** (Details unten). Kein Push/Release erfolgt.
+- Backend-v2-Migration: Tasks 0–6 **fertig und deployed** (Details unten); danach Post-Migration-Cleanup `32635df` ebenfalls deployed (Details unten). Kein Push/Release erfolgt.
 - Regeln: `./AGENTS.md` (Git-ignoriert), kein Push/Release, Deploy nur Backup → Transfer (ohne `demo/`) → Restart → Verify.
 
-## Backend-v2-Migration — Stand (Tasks 0–5 fertig)
+## Post-Migration-Cleanup (2026-09-18)
+
+`32635df` — vestigiale Legacy-Parameter aus der Service-Welt entfernt:
+
+- `_auto_sub_apply_candidate` liest nur noch `global_config`/`subwoofers_config`/`job`;
+  `output_mode`/`verify`/`load_overview` gelöscht. Fünf Runner-Call-Sites ohne
+  `verify`-Lambdas; toter `_verify_final_config` in `optimize.py` entfernt;
+  `_auto_sub_22_verify_alignment` bleibt für `measurement.py`,
+  `_auto_sub_22_verify_subwoofers` für `test_auto_sub_candidate_lifecycle.py`.
+- 11 Test-Doubles auf Stage-and-Return umgestellt; die beiden Failure-Injection-Doubles
+  geben explizit `False`; das 2.1-Confirmation-Double modelliert die Mode-Mismatch-
+  Verweigerung am Recommit statt über einen Real-Readback-`verify` (Testvertrag erhalten:
+  `test_final_recommit_verifies_complete_mode_state` further grün).
+- `overview.py`: vier veraltete Kommentare („falls back to the mode file") korrigiert —
+  ohne nutzbaren v2-Head degradiert das Overview zu Stereo.
+- Verifikation: 16 Fokus-Suiten lokal grün, `py_compile` + `git diff --check` clean,
+  keine leftover `verify=`/`output_mode=`/`load_overview=`-Kwargs.
+- Deploy `.104`: Backup `~/deploy-backup/fxroute-32635df-pre-cleanup.tar` (19 Dateien),
+  Transfer ohne `demo/`/`media/cache`, 14 Fokus-Suiten im App-Venv grün, Service
+  neu gestartet, `active`, HTTP 200 (`/api/status`, `/`). Keine Asset-Änderung, kein
+  Version-Bump nötig.
+- Produkt-Sanity auf `.104`: Preset-Katalog + aktives Preset aufgelöst
+  (`/api/dsp/presets`); `set_crossover` on/off-Roundtrip über den v2-Apply
+  (`/api/audio/output-state/apply`) 200/200 mit Revisions-Guard; State-Inhalt
+  unverändert (rev 98→100 nur Revisionen), `crossover_enabled` wieder `False`,
+  Bank `global`/Preset A `Neutral` unberührt, Topologie `stereo-sub` ohne Issues.
+  Kein Preset-Reload gegen die Live-Instanz (Restart hat den DSP-/Preset-Pfad
+  bereits ausgeübt).
+
+## Backend-v2-Migration — Stand (fertig)
 
 Plan: `docs/superpowers/plans/2026-09-18-backend-v2-migration.md`. Tasks 1–3 waren
 per Plan-RED nicht reproduzierbar (v2-Pfad längst aktiv) und sind als
