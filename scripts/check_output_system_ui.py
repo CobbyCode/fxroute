@@ -159,6 +159,12 @@ def main() -> int:
                     return v / Math.max(1, n);
                 })()""")
             check("crossover graph painted", variance > 0)
+            steppers = page.locator("#effects-crossover-card .crossover-controls .stepper-control")
+            check(f"crossover uses sub-style steppers ({steppers.count()} found)", steppers.count() == 4)
+            units = page.locator("#effects-crossover-card .crossover-controls .stepper-unit").all_text_contents()
+            check(f"stepper units ({units})", units == ['Hz', 'Hz', 'dB', 'ms'])
+            pol_cls = page.locator("#effects-crossover-polarity").get_attribute("class") or ""
+            check("polarity select shares sub-tile style", "effects-subwoofer-polarity-select" in pol_cls)
             overflowing = page.evaluate(
                 """(() => {
                     const card = document.getElementById('effects-crossover-card').getBoundingClientRect();
@@ -217,6 +223,26 @@ def main() -> int:
                         return JSON.stringify((entry.lowpass || entry.highpass || {}).slope_db_oct);
                     })""")
             check(f"way slope edit persists ({slope_back})", slope_back == "48")
+
+            # Cutoff changes must not move the layout: card width is identical
+            # for a 3-digit and a 5-digit frequency.
+            card_width = lambda: page.locator("#effects-crossover-card").bounding_box()["width"]
+            width_before = card_width()
+            page.evaluate(
+                """(() => {
+                    const input = document.getElementById('effects-crossover-frequency-lowpass');
+                    input.value = '200'; input.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            page.evaluate(
+                """(() => {
+                    const input = document.getElementById('effects-crossover-frequency-lowpass');
+                    input.value = '2000'; input.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            width_after = card_width()
+            check(f"card width stable across cutoff change ({width_before} vs {width_after})",
+                  width_before == width_after)
 
             # Existing sub tile edits the same role processing in v2.
             check("stereo sub labels", page.locator('.effects-card-subwoofer').is_visible())

@@ -227,6 +227,11 @@
     min-width: 0;
     width: 100%;
 }
+#tab-effects .crossover-controls .stepper-input-freq {
+    /* Five-digit crossover frequencies need more room than the compact
+       sub-tile value field. */
+    width: 3.9rem;
+}
 .crossover-actions {
     display: flex;
     align-items: center;

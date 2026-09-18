@@ -14791,7 +14791,7 @@ function drawCrossoverResponse(canvas, ways, activeRole) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const width = displayWidth;
     const height = displayHeight;
-    const pad = { left: 48, right: 16, top: 14, bottom: 22 };
+    const pad = { left: 56, right: 24, top: 18, bottom: 24 };
     const plotW = Math.max(1, width - pad.left - pad.right);
     const plotH = Math.max(1, height - pad.top - pad.bottom);
     const minHz = 20;
@@ -14801,7 +14801,7 @@ function drawCrossoverResponse(canvas, ways, activeRole) {
     const xForHz = (hz) => pad.left + ((Math.log10(Math.max(minHz, hz)) - Math.log10(minHz)) / (Math.log10(maxHz) - Math.log10(minHz))) * plotW;
     const yForDb = (db) => pad.top + ((maxDb - Math.max(minDb, Math.min(maxDb, db))) / (maxDb - minDb)) * plotH;
     const formatHz = (hz) => hz >= 1000 ? `${parseFloat((hz / 1000).toFixed(1))} kHz` : `${Math.round(hz)} Hz`;
-    const formatTickHz = (hz) => hz >= 1000 ? `${parseFloat((hz / 1000).toFixed(1))}k` : `${hz}`;
+    const formatTickHz = (hz) => hz >= 1000 ? `${parseFloat((hz / 1000).toFixed(1))} kHz` : `${hz} Hz`;
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#08111f';
     ctx.fillRect(0, 0, width, height);
@@ -14879,7 +14879,7 @@ function drawCrossoverResponse(canvas, ways, activeRole) {
         ctx.textAlign = 'center';
         const labelWidth = ctx.measureText(label).width + 12;
         const labelX = Math.max(pad.left + labelWidth / 2 + 2, Math.min(pad.left + plotW - labelWidth / 2 - 2, x));
-        const labelY = pad.top + 12;
+        const labelY = pad.top + plotH * 0.72;
         ctx.fillStyle = 'rgba(12,18,28,0.82)';
         ctx.fillRect(labelX - labelWidth / 2, labelY - 9, labelWidth, 18);
         ctx.strokeStyle = 'rgba(255,255,255,0.16)';
