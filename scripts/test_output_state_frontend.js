@@ -214,6 +214,10 @@ applyFlow().then(() => {
     assert.match(indexSource, /id="effects-bank-select"/);
     assert.doesNotMatch(indexSource, /id="os-mode-select"/);
     assert.doesNotMatch(indexSource, /id="os-routing-grid"/);
+    // Routing UI shows only the topology status line: no dormant-role
+    // note, no revision counter.
+    assert.doesNotMatch(indexSource, /id="os-revision"/);
+    assert.doesNotMatch(indexSource, /Roles not on any output/);
     // Settings order: Source before Music Library, Device Name directly
     // above Maintenance (Amplifier hidden), Maintenance last.
     const sectionOrder = ['<h3>Audio Output</h3>', '<h3>Source</h3>', '<h3>Music Library</h3>',

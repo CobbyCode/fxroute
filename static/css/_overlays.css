@@ -181,9 +181,6 @@
 .effects-bank-row .settings-inline-note {
     margin: 0;
 }
-#os-revision {
-    opacity: 0.75;
-}
 /* Crossover / Speaker tile: way tabs, response graph, control grid. */
 .crossover-tabs {
     display: flex;

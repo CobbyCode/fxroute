@@ -484,7 +484,6 @@ const elements = {
     settingsCrossoverSelect: document.getElementById('settings-crossover-select'),
     settingsCrossoverGroup: document.getElementById('settings-crossover-group'),
     osTopology: document.getElementById('os-topology'),
-    osRevision: document.getElementById('os-revision'),
     osFeedback: document.getElementById('os-feedback'),
     effectsBankSelect: document.getElementById('effects-bank-select'),
     effectsBankInfo: document.getElementById('effects-bank-info'),
@@ -3610,7 +3609,6 @@ function renderOutputSystemSection() {
         if (elements.settingsCrossoverSelect) elements.settingsCrossoverSelect.disabled = true;
         if (elements.settingsRoutingGrid) elements.settingsRoutingGrid.innerHTML = '';
         if (elements.osTopology) elements.osTopology.textContent = '';
-        if (elements.osRevision) elements.osRevision.textContent = '';
         if (elements.osFeedback) elements.osFeedback.innerHTML = '';
         return;
     }
@@ -3640,14 +3638,7 @@ function renderOutputSystemSection() {
         elements.settingsOutputModeHint.textContent = `${mod.modeLabel(mode)} · ${device.channels || 0} hardware outputs`;
     }
     if (elements.settingsRoutingHint) {
-        const dormant = Object.keys(modeConfig.banks || {}).filter(
-            (id) => id !== 'global' && !topology.roles?.includes(id));
-        elements.settingsRoutingHint.textContent = dormant.length
-            ? `Roles not on any output keep their settings: ${dormant.map((id) => mod.roleLabel(id)).join(', ')}.`
-            : 'Assign a role to each hardware output. Off leaves an output silent.';
-    }
-    if (elements.osRevision) {
-        elements.osRevision.textContent = `Revision ${catalog.revision}`;
+        elements.settingsRoutingHint.textContent = 'Assign a role to each hardware output. Off leaves an output silent.';
     }
 }
 
