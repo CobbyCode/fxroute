@@ -41,6 +41,8 @@ elif name == 'apt-get':
 elif name == 'snap':
     if args[:1] == ['list'] and len(args) == 1:
         sys.exit(int(os.environ.get('SNAPD_DOWN', '0')))
+    if args[:3] == ['wait', 'system', 'seed.loaded']:
+        sys.exit(0)
     if args[:2] == ['list', 'firefox']:
         state_file = root / 'var/lib/snapd/state.json'
         present = state_file.exists() and 'firefox' in json.loads(state_file.read_text())['data']['snaps']
@@ -265,6 +267,7 @@ class FirstBootProfileTest(IsolatedScripts):
         self.assertEqual(self.calls('snap'),
                          [['snap', 'list'],
                           ['snap', 'list', 'firefox'],
+                          ['snap', 'wait', 'system', 'seed.loaded'],
                           ['snap', 'remove', '--purge', 'firefox'],
                           ['snap', 'list', 'firefox']])
         state = self.root / 'var/lib/snapd/state.json'

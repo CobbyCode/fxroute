@@ -164,6 +164,11 @@ remove_headless_browser_snap() {
     sleep 2
   done
   if snap list firefox >/dev/null 2>&1; then
+    # Seeding runs on first boot; per-snap changes are rejected until done.
+    snap wait system seed.loaded || {
+      printf '%s\n' "snap seeding did not complete; cannot remove Firefox yet" >&2
+      exit 1
+    }
     snap remove --purge firefox || {
       printf '%s\n' "Could not remove Firefox snap; refusing a partial headless target" >&2
       exit 1
