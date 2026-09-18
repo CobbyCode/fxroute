@@ -2748,6 +2748,7 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         # Idle-graph renegotiation trigger for the stale-helper sink nudge: a
         # fully idle sink ignores force-rate writes and suspend/resume pulses.
         trigger_idle_sink_renegotiation=lambda *a, **k: samplerate.trigger_idle_sink_renegotiation(*a, **k),
+        try_render_v2_target=lambda rate, overview: _try_render_v2_sync_target(rate, overview),
     )
 
 
@@ -4189,6 +4190,58 @@ def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
     return PlannedSyncTarget(config=config, text=text)
 
 
+async def _try_render_v2_sync_target(rate: int, overview: dict):
+    """Render the committed v2 head for a runtime sync, or None for legacy.
+
+    Used by the DSP orchestrator so every helper (re)build -- startup,
+    playback transitions, link-watch repairs -- serves the authoritative
+    output state instead of the legacy overview graph.  Any failure (no
+    device, undiscovered ports, a draft that cannot activate) returns None
+    and the caller keeps the legacy overview sync, so unmigrated states are
+    byte-for-byte unchanged.
+    """
+    try:
+        if not isinstance(rate, int) or rate <= 0:
+            return None
+        if not isinstance(overview, dict):
+            return None
+        service = get_output_service()
+        try:
+            output_key, channels = _output_state_device(overview)
+        except HTTPException:
+            return None
+        if not channels:
+            return None
+        ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
+        if not ports:
+            return None
+        try:
+            state = service.load()
+        except ValueError:
+            return None
+        try:
+            plan = await asyncio.to_thread(
+                service.compile_plan, state, output_key=output_key,
+                channels=channels, sample_rate_hz=rate)
+        except (FileNotFoundError, ValueError):
+            return None
+        fingerprint = service.fingerprint_plan(plan)
+        manager = _require_dsp_manager()
+        try:
+            target = await asyncio.to_thread(
+                _build_plan_target, service, manager, plan,
+                output_key=output_key, rate=rate,
+                hardware_ports=list(ports), fingerprint=fingerprint)
+        except (RuntimeError, ValueError):
+            return None
+        logger.info("DSP sync serving v2 plan: mode=%s rate=%s fingerprint=%s",
+                    plan.get("mode"), rate, (fingerprint or "")[:12])
+        return target
+    except Exception as exc:
+        logger.warning("V2 plan render for DSP sync failed, using legacy overview: %s", exc)
+        return None
+
+
 def _create_autosub_release_adapter(*, service, output_key: str, channels: int):
     """Compose a release adapter for one committed AutoSub device context.
 
@@ -4573,8 +4626,48 @@ async def _apply_audio_output_state_body(body: dict):
 
     if not live_known:
         return draft_response("rate-unknown" if not target_rate else "output-capacity-unknown")
-    if old_plan is None or new_plan is None:
+    if new_plan is None:
         return draft_response("not-activatable")
+    if old_plan is None:
+        # The stored head becomes activatable with this commit (e.g. the
+        # missing crossover starter filters were just supplied).  There is no
+        # previous valid graph to guard against or roll back to: commit first,
+        # then sync the new plan directly.  Returning "not-activatable" here
+        # would persist the valid head while leaving the stale engine behind,
+        # so every later edit looks like the first audible change.
+        if runtime.dsp_runtime is None:
+            return draft_response("dsp-runtime-unavailable")
+        ports = (overview.get("output_mode") or {}).get("hardware_playback_ports") or []
+        if not ports:
+            return draft_response("output-ports-undiscovered")
+        manager = _require_dsp_manager()
+        try:
+            new_target = _build_plan_target(service, manager, new_plan, output_key=output_key,
+                                            rate=target_rate, hardware_ports=list(ports),
+                                            fingerprint=new_fp)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
+        try:
+            await runtime.dsp_runtime.sync_rendered(new_target)
+        except BaseException as exc:
+            try:
+                service.revert(state, expected_revision=committed["revision"])
+            except BaseException:
+                logger.exception("Output-state activation rollback failed")
+            raise HTTPException(status_code=500, detail={
+                "code": "live-apply-failed", "message": str(exc),
+                "revision": service.load()["revision"],
+                "rollback": "committed"}) from exc
+        return {
+            "status": "ok",
+            "revision": committed["revision"],
+            "active_mode": committed["active_mode"],
+            "fingerprint": new_fp,
+            "fingerprint_changed": True,
+            "live_applied": True,
+            "live_reason": None,
+            "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
+        }
     if old_fp == new_fp:
         return draft_response("nothing-to-apply")
     if runtime.dsp_runtime is None:

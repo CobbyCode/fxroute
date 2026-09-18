@@ -102,6 +102,12 @@ class DspOrchestrationDeps:
     # early return before paying for the full samplerate status.  When absent
     # the repair keeps reading the full status first, as before.
     get_current_force_rate: Callable[[], Any] | None = None
+    # V2 plan renderer for the live helper sync.  Takes the authoritative
+    # rate plus the current overview (device/ports) and returns a prebuilt
+    # sync target, or None when the committed head cannot activate (then the
+    # legacy overview sync below keeps its previous behavior).  Injected by
+    # the composition root; absent in unit tests that cover the legacy path.
+    try_render_v2_target: Callable[[int, dict], Awaitable[Any | None]] | None = None
 
 
 def helper_argument_sample_rate(snapshot: dict | None) -> int | None:
@@ -208,6 +214,10 @@ class DspOrchestrator:
                 repair_overview = samplerate.audio_output_overview_with_effective_rate(
                     target_overview or overview, requested_rate,
                 )
+                v2_target = await self._render_v2_target(requested_rate, repair_overview)
+                if v2_target is not None:
+                    await dsp_runtime.sync_rendered(v2_target)
+                    return repair_overview
                 await dsp_runtime.sync(repair_overview)
                 return repair_overview
 
@@ -280,6 +290,10 @@ class DspOrchestrator:
                     reason, requested_rate, authoritative_rate, final_rate,
                 )
                 return current_overview
+            v2_target = await self._render_v2_target(authoritative_rate, current_overview)
+            if v2_target is not None:
+                await dsp_runtime.sync_rendered(v2_target)
+                return current_overview
             await dsp_runtime.sync(current_overview)
             return current_overview
 
@@ -288,6 +302,23 @@ class DspOrchestrator:
             return await _sync_locked()
         async with measurement_sr_session.lock:
             return await _sync_locked()
+
+    async def _render_v2_target(self, rate: int, overview: dict) -> Any | None:
+        """Render the committed v2 head for one sync, or None to keep legacy.
+
+        A None renderer (tests), a renderer failure, or a head that cannot
+        activate all fall back to the legacy overview sync at the call site,
+        so unmigrated states keep their previous behavior byte for byte.
+        """
+        render = getattr(self._deps, "try_render_v2_target", None)
+        if render is None:
+            return None
+        try:
+            target = await render(rate, overview)
+        except Exception as exc:
+            logger.warning("V2 plan render for DSP sync failed, using legacy overview: %s", exc)
+            return None
+        return target
 
     async def _sync_after_stale_settle(
         self,
