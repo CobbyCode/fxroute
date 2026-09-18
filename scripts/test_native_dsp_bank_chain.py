@@ -21,7 +21,7 @@ DSP = ROOT / "native_dsp" / "build" / "fxroute-dsp-offline"
 
 sys.path.insert(0, str(ROOT))
 
-from audio.output_state import default_output_state, set_mode_routing, switch_mode
+from audio.output_state import default_output_state, set_crossover, set_mode_routing, switch_mode
 from dsp.crossover import design_crossover
 from dsp.manager import DSPManager, build_wav_bytes
 from dsp.native_config import layout_from_plan
@@ -87,17 +87,23 @@ def test_full_bank_chain_matches_python_prediction(tmp_path):
                                "params": {"kernel": "mid-long"}}]})
 
     assignments = [f"{side}_{way}" for side in ("left", "right") for way in ("low", "mid", "high")]
-    state = switch_mode(set_mode_routing(default_output_state(), "crossover", "A", assignments),
-                        "crossover")
-    for role, settings in state["modes"]["crossover"]["processing"].items():
+    state = switch_mode(set_mode_routing(
+        set_crossover(default_output_state(), "stereo-sub", True),
+        "stereo-sub", "A", assignments), "stereo-sub")
+    for role, settings in state["modes"]["stereo-sub"]["processing"].items():
+        if not role.startswith(("left_", "right_")):
+            continue
         if not role.endswith("low"):
             settings["highpass"] = {"family": "linkwitz-riley", "slope_db_oct": 24,
                                     "frequency_hz": 300 if role.endswith("mid") else 2500}
         if not role.endswith("high"):
             settings["lowpass"] = {"family": "linkwitz-riley", "slope_db_oct": 24,
                                    "frequency_hz": 300 if role.endswith("low") else 2500}
-    state["modes"]["crossover"]["banks"]["left_mid"]["preset"] = "Short IR"
-    state["modes"]["crossover"]["banks"]["right_mid"]["preset"] = "Long IR"
+    # Divergent per-channel chains predate pair banks; the native layer still
+    # renders each stored role binding, so assign them directly.
+    for role, preset in (("left_mid", "Short IR"), ("right_mid", "Long IR")):
+        state["modes"]["stereo-sub"]["banks"][role] = {
+            "preset": preset, "preset_a": preset, "preset_b": None}
     plan = compile_processing_plan(state, output_key="A", channels=6, sample_rate_hz=48000,
                                    preset_loader=manager.preset_store.read)
 
