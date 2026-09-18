@@ -7,7 +7,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import main
+from audio.samplerate import (
+    OUTPUT_MODE_SUBWOOFER_21,
+    OUTPUT_MODE_SUBWOOFER_22,
+    OUTPUT_MODE_SUBWOOFER_22_STEREO,
+)
 import measurement.autosub.measurement as autosub_measurement
 import measurement.autosub.scoring as autosub_scoring
 
@@ -37,7 +41,7 @@ class GainCalculationTests(unittest.TestCase):
         }
         self.assertIsNone(autosub_measurement._auto_sub_gain_log_score(diagnostics))
 
-    def calculate(self, mode=main.OUTPUT_MODE_SUBWOOFER_21, left=-20.0, right=-20.0, **kwargs):
+    def calculate(self, mode=OUTPUT_MODE_SUBWOOFER_21, left=-20.0, right=-20.0, **kwargs):
         curves = kwargs.pop("winner_curves", {"left": curve(left), "right": curve(right)})
         return autosub_measurement._calculate_auto_sub_gain(
             mode=mode, target_curve=kwargs.pop("target", self.target),
@@ -54,11 +58,11 @@ class GainCalculationTests(unittest.TestCase):
         self.assertAlmostEqual(result["recommendation"]["delta_db"], 0.0, places=2)
 
     def test_common_modes_and_stereo_channel_rule(self):
-        mono = self.calculate(mode=main.OUTPUT_MODE_SUBWOOFER_22, left=-22, right=-18)
+        mono = self.calculate(mode=OUTPUT_MODE_SUBWOOFER_22, left=-22, right=-18)
         self.assertEqual(mono["recommendation"]["type"], "common")
         self.assertEqual(mono["recommendation"]["delta_db"], 0.0)
         self.assertTrue(mono["recommendation"]["preserves_relative_sub_gain"])
-        stereo = self.calculate(mode=main.OUTPUT_MODE_SUBWOOFER_22_STEREO, left=-22, right=-18)
+        stereo = self.calculate(mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, left=-22, right=-18)
         self.assertEqual(stereo["recommendation"]["left_delta_db"], 2.0)
         self.assertEqual(stereo["recommendation"]["right_delta_db"], -2.0)
 

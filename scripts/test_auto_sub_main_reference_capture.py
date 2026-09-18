@@ -13,6 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+from audio.samplerate import (
+    OUTPUT_MODE_SUBWOOFER_21,
+    OUTPUT_MODE_SUBWOOFER_22,
+    OUTPUT_MODE_SUBWOOFER_22_STEREO,
+)
 import measurement.session as measurement_session
 import measurement.autosub as autosub
 import measurement.autosub.candidates as autosub_candidates
@@ -45,7 +50,7 @@ def runtime_config() -> BassManagementConfig:
 
 
 def original_snapshot(mode: str) -> dict:
-    if mode == main.OUTPUT_MODE_SUBWOOFER_21:
+    if mode == OUTPUT_MODE_SUBWOOFER_21:
         return {"subwoofer": {"sub_alignment_ms": 2.0, "sub_level_db": -3.0, "sub_polarity": "normal", "main_highpass_enabled": True}}
     return {
         "main_highpass_enabled": True,
@@ -85,9 +90,9 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_exactly_two_structurally_identical_references_for_all_modes(self):
         for mode in (
-            main.OUTPUT_MODE_SUBWOOFER_21,
-            main.OUTPUT_MODE_SUBWOOFER_22,
-            main.OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            OUTPUT_MODE_SUBWOOFER_21,
+            OUTPUT_MODE_SUBWOOFER_22,
+            OUTPUT_MODE_SUBWOOFER_22_STEREO,
         ):
             calls = []
 
@@ -140,8 +145,8 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 job=job, fc=80, input_id="mic", mic_input_channel="1", reference_input_channel="",
                 calibration_ref="", calibration_filename=None, calibration_bytes=None,
                 auto_sub_rate=48_000,
-                output_mode=main.OUTPUT_MODE_SUBWOOFER_21,
-                original_config_snapshot=original_snapshot(main.OUTPUT_MODE_SUBWOOFER_21),
+                output_mode=OUTPUT_MODE_SUBWOOFER_21,
+                original_config_snapshot=original_snapshot(OUTPUT_MODE_SUBWOOFER_21),
             )
         self.assertEqual(job["main_references"]["status"], "unavailable")
         self.assertIn("left", job["auto_gain"]["reason"])

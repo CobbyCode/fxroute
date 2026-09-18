@@ -439,7 +439,6 @@ from audio.samplerate import (
     get_samplerate_status,
     is_bluetooth_audio_streaming,
     normalize_sample_rate_policy,
-    persist_audio_output_mode,
     recover_saved_output_sink,
     set_audio_output_selection,
     set_audio_source_selection,
@@ -886,7 +885,6 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         ensure_playback_samplerate_force=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.ensure_playback_samplerate_force(
             *a, measurement_blocks_rate=measurement_blocks_rate, **k
         ),
-        persist_audio_output_mode=lambda *a, **k: persist_audio_output_mode(*a, **k),
         trigger_idle_sink_renegotiation=lambda *a, **k: samplerate.trigger_idle_sink_renegotiation(*a, **k),
         recover_stale_samplerate_helper=lambda *a, **k: dsp_orchestrator.recover_stale_helper_samplerate(*a, **k),
         reconcile_transition_sink_rate=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.reconcile_transition_sink_rate(
@@ -2675,9 +2673,10 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
 def _current_output_mode() -> str:
     """Cheap current output mode for the subwoofer link-watcher gate.
 
-    Prefers the committed DSP runtime config; falls back to the persisted
-    audio output mode (the same source the output-mode route uses).  It never
-    builds the PipeWire overview, so the idle link-watcher tick stays cheap.
+    Prefers the committed DSP runtime config, then the committed v2 output
+    state (any routed sub role reads as a subwoofer mode), then stereo.  It
+    never builds the PipeWire overview, so the idle link-watcher tick stays
+    cheap.
     """
     dsp_runtime = runtime.dsp_runtime
     if dsp_runtime is not None:
@@ -2685,7 +2684,19 @@ def _current_output_mode() -> str:
         mode = (snapshot.get("config") or {}).get("output_mode")
         if mode:
             return str(mode)
-    return samplerate._load_audio_output_mode().get("mode") or OUTPUT_MODE_STEREO
+    try:
+        head = get_output_service().load()
+        modes = head.get("modes") if isinstance(head, Mapping) else None
+        spec = modes.get(head.get("active_mode")) if isinstance(modes, Mapping) else None
+        routing = spec.get("routing") if isinstance(spec, Mapping) else None
+        if isinstance(routing, Mapping):
+            for assignments in routing.values():
+                if any(role not in ("off", "main_l", "main_r")
+                       for role in (assignments or [])):
+                    return OUTPUT_MODE_SUBWOOFER_22
+    except Exception:
+        pass
+    return OUTPUT_MODE_STEREO
 
 
 def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
@@ -3952,6 +3963,17 @@ def get_output_service() -> OutputService:
             legacy_snapshot_loader=_legacy_output_snapshot,
         ))
     return _output_service_instance
+
+
+def _v2_head_for_overview() -> dict | None:
+    """Total v2 head for the derived overview mode payload (None if unusable)."""
+    try:
+        return get_output_service().load()
+    except Exception:
+        return None
+
+
+samplerate.configure_output_state_head(_v2_head_for_overview)
 
 
 def _output_state_device(overview: dict) -> tuple[str, int | None]:

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Focused tests: output device switch auto-falls back the output mode.
+"""Focused tests: output device switches are selection-only.
 
-A deliberate switch to a stereo-only device while a subwoofer mode is active
-must succeed by falling back to Stereo instead of refusing the switch, and
-the last valid mode per output device must be remembered so a later switch
-back restores it.  Only valid, capability-checked combinations are stored.
+A deliberate device switch changes the selection (and the default sink) and
+nothing else: topology and DSP state live in the v2 output state and follow
+explicitly through its own apply path. There is no per-device mode memory;
+stale device_modes entries in old mode files are ignored and mode files are
+never written by a device switch.
 """
 
 from __future__ import annotations
@@ -94,40 +95,33 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
 
     # -- scenarios ----------------------------------------------------------
 
-    def test_fallback_to_stereo_on_stereo_only_device(self) -> None:
+    def test_switch_to_stereo_only_device_keeps_selection_only(self) -> None:
         samplerate._save_audio_output_selection(UMC)
         self._persist_mode("subwoofer-2.2")
-        self.assertEqual(self._device_modes().get(UMC), "subwoofer-2.2")
 
         result = self._select(SMSL, {UMC: 4, SMSL: 2})
 
-        file_payload = self._read_mode_file()
-        self.assertEqual(file_payload["mode"], "stereo")
-        self.assertEqual(self._device_modes().get(UMC), "subwoofer-2.2")
-        self.assertEqual(self._device_modes().get(SMSL), "stereo")
+        # The mode file is untouched by the switch: no fallback persist,
+        # no new device memory (UMC was recorded by the earlier persist).
+        self.assertEqual(self._read_mode_file()["mode"], "subwoofer-2.2")
+        self.assertNotIn(SMSL, self._device_modes())
         self.assertEqual(
             samplerate._load_audio_output_selection()["selected_key"], SMSL
         )
-        adjustment = result["output_mode"]["mode_adjustment"]
-        self.assertTrue(adjustment["adjusted"])
-        self.assertEqual(adjustment["reason"], "device-channel-capacity")
-        self.assertEqual(adjustment["previous_mode"], "subwoofer-2.2")
-        self.assertIn("Stereo", adjustment["message"])
-        self.assertIn("2 channels", adjustment["message"])
+        self.assertNotIn("mode_adjustment", result["output_mode"])
 
-    def test_restores_remembered_mode_on_return(self) -> None:
+    def test_return_switch_has_no_mode_memory(self) -> None:
         samplerate._save_audio_output_selection(UMC)
         self._persist_mode("subwoofer-2.2")
-        self._select(SMSL, {UMC: 4, SMSL: 2})  # fallback to stereo on SMSL
-        self.assertEqual(self._device_modes().get(SMSL), "stereo")
+        self._select(SMSL, {UMC: 4, SMSL: 2})
 
         result = self._select(UMC, {UMC: 4, SMSL: 2})
 
         self.assertEqual(self._read_mode_file()["mode"], "subwoofer-2.2")
-        self.assertEqual(self._device_modes().get(UMC), "subwoofer-2.2")
-        adjustment = result["output_mode"]["mode_adjustment"]
-        self.assertEqual(adjustment["reason"], "device-remembered-mode")
-        self.assertIn("2.2", adjustment["message"])
+        self.assertEqual(
+            samplerate._load_audio_output_selection()["selected_key"], UMC
+        )
+        self.assertNotIn("mode_adjustment", result["output_mode"])
 
     def test_stereo_to_other_stereo_device_no_mode_change(self) -> None:
         samplerate._save_audio_output_selection(SMSL)
@@ -139,8 +133,8 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
         self.assertNotIn(OTHER, self._device_modes())
         self.assertNotIn("mode_adjustment", result["output_mode"])
 
-    def test_multichannel_device_uses_remembered_mode(self) -> None:
-        # MULTI previously ran 2.1; current persisted mode is stereo.
+    def test_multichannel_switch_ignores_stale_device_memory(self) -> None:
+        # MULTI was once remembered as 2.1; current persisted mode is stereo.
         samplerate._save_audio_output_selection(SMSL)
         self._persist_mode("stereo")
         payload = self._read_mode_file()
@@ -151,13 +145,14 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
 
         result = self._select(MULTI, {MULTI: 4, SMSL: 2})
 
-        self.assertEqual(self._read_mode_file()["mode"], "subwoofer-2.1")
-        adjustment = result["output_mode"]["mode_adjustment"]
-        self.assertEqual(adjustment["reason"], "device-remembered-mode")
-        self.assertIn("2.1", adjustment["message"])
+        self.assertEqual(self._read_mode_file()["mode"], "stereo")
+        self.assertEqual(
+            samplerate._load_audio_output_selection()["selected_key"], MULTI
+        )
+        self.assertNotIn("mode_adjustment", result["output_mode"])
 
-    def test_stale_remembered_mode_falls_back_to_capability(self) -> None:
-        # SMSL was (incorrectly) remembered as 2.1; it only supports 2 channels.
+    def test_bogus_device_memory_is_ignored(self) -> None:
+        # SMSL was (incorrectly) remembered as 2.1; the memory is ignored.
         samplerate._save_audio_output_selection(UMC)
         self._persist_mode("subwoofer-2.2")
         payload = self._read_mode_file()
@@ -168,10 +163,11 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
 
         result = self._select(SMSL, {UMC: 4, SMSL: 2})
 
-        self.assertEqual(self._read_mode_file()["mode"], "stereo")
-        self.assertEqual(self._device_modes().get(SMSL), "stereo")
-        adjustment = result["output_mode"]["mode_adjustment"]
-        self.assertEqual(adjustment["reason"], "device-channel-capacity")
+        self.assertEqual(self._read_mode_file()["mode"], "subwoofer-2.2")
+        self.assertEqual(
+            samplerate._load_audio_output_selection()["selected_key"], SMSL
+        )
+        self.assertNotIn("mode_adjustment", result["output_mode"])
 
     def test_persist_audio_output_mode_records_current_device(self) -> None:
         samplerate._save_audio_output_selection(OTHER)

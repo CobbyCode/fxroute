@@ -14,7 +14,7 @@
 
 const OUTPUT_MODES = ['stereo', 'stereo-sub'];
 const MUTATION_KINDS = ['set_routing', 'switch_mode', 'select_bank', 'set_bank_preset',
-    'set_crossover', 'set_subwoofers', 'set_processing', 'set_bass', 'set_extras'];
+    'set_crossover', 'set_subwoofers', 'set_processing', 'set_extras'];
 
 function esc(value) {
     return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
