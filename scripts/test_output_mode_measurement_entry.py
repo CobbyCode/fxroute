@@ -221,7 +221,6 @@ def _request(
         rate_change=operation == "measurement-entry",
         reload_source=False,
         output_mode_target={"output_mode": {"mode": "subwoofer-2.1"}},
-        output_mode_config={"mode": "subwoofer-2.1", "subwoofer": {}},
     )
 
 
@@ -614,7 +613,6 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=False,
             output_mode_target=overview,
-            output_mode_config={"mode": "subwoofer-2.2"},
         )
         with patch.object(main.runtime, "dsp_runtime", SimpleNamespace()), patch.object(
             main, "dsp_manager", None
@@ -679,7 +677,6 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=False,
             output_mode_target=overview,
-            output_mode_config={"mode": "stereo"},
         )
         with patch.object(main.runtime, "dsp_runtime", None), patch.object(
             main, "dsp_manager", None
@@ -724,7 +721,6 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
             target_rate=88200,
             should_play=True,
             output_mode_target={"output_mode": {"mode": "stereo"}},
-            output_mode_config={"mode": "stereo"},
         )
         with patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 88200}
@@ -749,7 +745,6 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
             target_rate=88200,
             should_play=True,
             output_mode_target={"output_mode": {"mode": "stereo"}},
-            output_mode_config={"mode": "stereo"},
         )
         with patch.object(
             main, "qobuz_play", new=AsyncMock(return_value={"status": "Playing"})
@@ -773,7 +768,6 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
             should_play=True,
             target_track={"source": "qobuz"},
             output_mode_target={"output_mode": {"mode": "stereo"}},
-            output_mode_config={"mode": "stereo"},
         )
         diagnosis = {
             "links_complete": True,

@@ -437,7 +437,6 @@ def _mode_request(mode: str, *, operation: str = "output-mode-switch") -> Transi
         rate_change=False,
         reload_source=False,
         output_mode_target={"output_mode": {"mode": mode}},
-        output_mode_config={"mode": mode, "subwoofer": {}},
     )
 
 

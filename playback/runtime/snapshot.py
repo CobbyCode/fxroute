@@ -87,17 +87,6 @@ class _RuntimeSnapshotMixin:
         if request.operation == "sample-rate-policy":
             snapshot["sample_rate_policy"] = samplerate.load_sample_rate_policy()
         if request.operation == "output-mode-switch":
-            if getattr(request, "output_routing_config", None):
-                from audio.output_routing import saved_routing_state
-                snapshot["output_routing_state"] = saved_routing_state(str(request.output_routing_config["key"]))
-            snapshot["output_mode_overview"] = copy.deepcopy(
-                await asyncio.to_thread(
-                    self._deps.get_audio_output_overview, overview_status
-                )
-            )
-            snapshot["output_mode_config"] = copy.deepcopy(
-                samplerate._load_raw_audio_output_mode()
-            )
             snapshot["dsp_active_preset"] = (
                 self._dsp_manager.get_active_preset()
                 if self._dsp_manager is not None

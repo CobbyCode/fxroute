@@ -650,7 +650,6 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=False,
             output_mode_target=self.overview,
-            output_mode_config={"mode": "subwoofer-2.2"},
         )
         with patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", None
@@ -667,60 +666,6 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["links_reconciled"])
         reconciler.assert_awaited_once()
         self.assertEqual(events, ["diagnosis", "sync", "reconcile", "diagnosis"])
-
-    async def test_output_mode_rollback_reconciles_subwoofer_links_before_verify(self):
-        """Rollback repairs the old subwoofer links before evaluating the graph."""
-        runtime = make_transition_runtime()
-        old_overview = {
-            "output_mode": {
-                "mode": "subwoofer-2.2",
-                "effective_output_key": OUTPUT_KEY,
-            }
-        }
-        snapshot = {
-            "output_mode_overview": old_overview,
-            "output_mode_config": {"mode": "subwoofer-2.2"},
-        }
-        link_state = {"lost": False}
-        events = []
-
-        async def sync_helper(*_args, **_kwargs):
-            events.append("sync")
-            link_state["lost"] = True
-
-        async def reconcile():
-            events.append("reconcile")
-            link_state["lost"] = False
-
-        async def diagnose(*_args, **_kwargs):
-            events.append("verify")
-            complete = not link_state["lost"]
-            return {
-                "links_complete": complete,
-                "signature": "old-subwoofer|complete" if complete else "old-subwoofer|missing",
-            }
-
-        request = TransitionRequest(
-            operation="output-mode-switch",
-            source="local",
-            target_rate=48000,
-            target_url="/music/current.flac",
-            should_play=True,
-            output_mode_target={"output_mode": {"mode": "stereo"}},
-            output_mode_config={"mode": "stereo"},
-        )
-        with patch.object(main, "persist_audio_output_mode", return_value={}), patch.object(
-            main, "dsp_manager", None
-        ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper), patch.object(
-            playback_orchestration.configured(), "reconcile_subwoofer_links_only", side_effect=reconcile
-        ) as reconciler, patch.object(
-            playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
-        ):
-            await runtime.rollback_output_mode_runtime(request, snapshot)
-
-        reconciler.assert_awaited_once()
-        self.assertEqual(events, ["sync", "reconcile", "verify", "verify"])
-        self.assertLess(events.index("reconcile"), events.index("verify"))
 
 
 class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):

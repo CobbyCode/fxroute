@@ -8,17 +8,11 @@ adapter instance and reads the attributes declared on the class below.
 
 from __future__ import annotations
 
-import copy
 import logging
 from dataclasses import replace
 from typing import Any, Mapping
 
 import audio.samplerate as samplerate
-from audio.samplerate import (
-    OUTPUT_MODE_STEREO,
-    OUTPUT_MODE_SUBWOOFER_22_MODES,
-    OUTPUT_MODE_SUBWOOFER_MODES,
-)
 from streaming.spotify.provider import play as spotify_play
 import playback.source_policy as source_policy
 from playback.transition import TransitionRequest, stable_graph_readbacks
@@ -42,30 +36,20 @@ class _RuntimeOutputModeMixin:
         return service
 
     async def commit_output_mode_runtime(self, request: TransitionRequest) -> dict[str, Any]:
-        """Write the target mode only after the guarded graph readback."""
+        """Commit the v2 candidate only after the guarded graph readback."""
         v2 = request.output_state_transition or {}
-        if v2.get("candidate_state") is not None:
-            service = self._output_state_service()
-            expected_revision = v2.get("expected_revision")
-            if type(expected_revision) is bool or not isinstance(expected_revision, int):
-                raise RuntimeError("output-state transition has no base revision")
-            committed = service.commit(v2["candidate_state"],
-                                       expected_revision=expected_revision)
-            return {
-                "output_mode_persisted": True,
-                "output_state_revision": committed["revision"],
-                "output_fingerprint": v2.get("fingerprint"),
-            }
-        if not request.output_mode_config:
-            raise RuntimeError("output-mode transition has no durable target config")
-        result = self._deps.persist_audio_output_mode(request.output_mode_config)
-        if getattr(request, "output_routing_config", None):
-            from audio.output_routing import save_assignments
-            routing = request.output_routing_config
-            save_assignments(str(routing["key"]), list(routing["assignments"]), int(routing["channels"]))
+        if v2.get("candidate_state") is None:
+            raise RuntimeError("output-mode transition has no v2 candidate state")
+        service = self._output_state_service()
+        expected_revision = v2.get("expected_revision")
+        if type(expected_revision) is bool or not isinstance(expected_revision, int):
+            raise RuntimeError("output-state transition has no base revision")
+        committed = service.commit(v2["candidate_state"],
+                                   expected_revision=expected_revision)
         return {
             "output_mode_persisted": True,
-            "output_mode": dict(result.get("output_mode") or {}),
+            "output_state_revision": committed["revision"],
+            "output_fingerprint": v2.get("fingerprint"),
         }
 
     async def commit_sample_rate_policy(self, request: TransitionRequest) -> dict[str, Any]:
@@ -128,48 +112,11 @@ class _RuntimeOutputModeMixin:
         request: TransitionRequest,
         snapshot: Mapping[str, Any] | None,
     ) -> None:
-        """Restore the old mode graph/config while the failure gate is closed."""
+        """Revert a v2 candidate while the failure gate is closed."""
         v2 = request.output_state_transition or {}
-        if v2.get("candidate_state") is not None:
-            await self._rollback_output_state(request, v2)
-            return
-        snapshot = snapshot or {}
-        if getattr(request, "output_routing_config", None):
-            from audio.output_routing import restore_routing_state
-            restore_routing_state(str(request.output_routing_config["key"]), snapshot.get("output_routing_state"))
-        old_overview = snapshot.get("output_mode_overview")
-        old_config = snapshot.get("output_mode_config")
-        if not isinstance(old_overview, Mapping):
-            raise RuntimeError("output-mode rollback has no previous overview")
-        old_overview = copy.deepcopy(dict(old_overview))
-        old_mode = (old_overview.get("output_mode") or {}).get("mode")
-        old_preset = snapshot.get("dsp_active_preset")
-        if not isinstance(old_config, Mapping) or not old_config:
-            old_output_mode = dict(old_overview.get("output_mode") or {})
-            old_config = {"mode": old_mode or OUTPUT_MODE_STEREO}
-            if old_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-                if old_output_mode.get("subwoofers"):
-                    old_config["subwoofers"] = copy.deepcopy(old_output_mode["subwoofers"])
-                if old_output_mode.get("subwoofer"):
-                    old_config["subwoofer"] = copy.deepcopy(old_output_mode["subwoofer"])
-            else:
-                old_config["subwoofer"] = copy.deepcopy(old_output_mode.get("subwoofer") or {})
-        # Restore persistence first.  If the old graph cannot be rebuilt, the
-        # durable mode still cannot claim the failed target configuration.
-        self._deps.persist_audio_output_mode(old_config)
-        if self._dsp_manager is not None and old_preset:
-            current_preset = self._dsp_manager.get_active_preset()
-            if current_preset != old_preset:
-                await self._deps.load_dsp_preset(old_preset, convolver_sample_rate_hz=request.target_rate)
-        await self._deps.sync_dsp_runtime(
-            old_overview,
-            reason="coordinator-output-mode-rollback",
-            target_overview=old_overview,
-        )
-        if old_mode in OUTPUT_MODE_SUBWOOFER_MODES:
-            await self._deps.coordinator_reconcile_subwoofer_links_only()
-        rollback_request = replace(request, output_mode_target=old_overview)
-        await self._verify_output_mode_rollback(rollback_request, old_mode)
+        if v2.get("candidate_state") is None:
+            raise RuntimeError("output-mode rollback has no v2 candidate state")
+        await self._rollback_output_state(request, v2)
 
     async def _rollback_output_state(self, request: TransitionRequest, v2: Mapping[str, Any]) -> None:
         """Revert a v2 candidate and resync the previous graph, best-effort.
@@ -225,21 +172,6 @@ class _RuntimeOutputModeMixin:
         if not stable:
             raise RuntimeError("previous plan graph could not be restored")
 
-    async def _verify_output_mode_rollback(
-        self,
-        request: TransitionRequest,
-        _old_mode: Any,
-    ) -> None:
-        readbacks, _, stable = await stable_graph_readbacks(
-            lambda: self._deps.playback_graph_diagnosis(
-                request.output_mode_target,
-                target_rate=request.target_rate,
-                require_source=False,
-            )
-        )
-        if not stable:
-            raise RuntimeError("previous output-mode graph could not be restored")
-
     async def restore_output_mode_transport(
         self,
         request: TransitionRequest,
@@ -293,10 +225,6 @@ class _RuntimeOutputModeMixin:
         overview = request.output_mode_target
         if not isinstance(overview, Mapping):
             raise RuntimeError("output-mode transition has no target overview")
-        mode = (overview.get("output_mode") or {}).get("mode")
-        v2 = request.output_state_transition or {}
-        if mode in OUTPUT_MODE_SUBWOOFER_MODES and v2.get("target") is None:
-            await self._deps.coordinator_reconcile_subwoofer_links_only()
 
         # An output-mode switch never (re)starts its source (see the
         # post-start reconcile): only a playing source has stream links.

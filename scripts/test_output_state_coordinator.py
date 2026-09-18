@@ -346,17 +346,6 @@ class FinalizeV2Tests(unittest.TestCase):
         self.assertTrue(result["graph_complete"])
         sub.assert_not_awaited()
 
-    def test_finalize_keeps_legacy_sub_reconcile_without_v2(self):
-        from audio.samplerate import OUTPUT_MODE_SUBWOOFER_21
-        overview = v2_overview()
-        overview["output_mode"] = {**overview["output_mode"], "mode": OUTPUT_MODE_SUBWOOFER_21}
-        del overview["output_mode"]["planned_routes"]
-        request = TransitionRequest(
-            operation="output-mode-switch", source="local", target_rate=48000,
-            should_play=False, output_mode_target=overview)
-        _, sub = self.finalize(request)
-        sub.assert_awaited_once()
-
 
 class VerifyFingerprintTests(unittest.TestCase):
     def setUp(self):
@@ -617,8 +606,6 @@ class LegacyFilesUntouchedTests(unittest.TestCase):
         import audio.samplerate as samplerate_module
         from audio import output_routing as routing_module
         return (
-            mock.patch.object(main, "persist_audio_output_mode",
-                              side_effect=AssertionError("legacy persist")),
             mock.patch.object(samplerate_module, "persist_audio_output_mode",
                               side_effect=AssertionError("legacy persist")),
             mock.patch.object(routing_module, "save_assignments",
@@ -636,7 +623,7 @@ class LegacyFilesUntouchedTests(unittest.TestCase):
         before = self.legacy_bytes()
         runtime = make_transition_runtime()
         raises = self.legacy_raises()
-        with raises[0], raises[1], raises[2], raises[3], raises[4], \
+        with raises[0], raises[1], raises[2], raises[3], \
                 mock.patch.object(main, "get_output_service", return_value=self.service):
             result = asyncio.run(runtime.commit_output_mode_runtime(
                 v2_request(v2_payload(self.service, self.candidate, self.base))))
@@ -651,7 +638,7 @@ class LegacyFilesUntouchedTests(unittest.TestCase):
         fake = mock.MagicMock()
         fake.sync_rendered = AsyncMock()
         raises = self.legacy_raises()
-        with raises[0], raises[1], raises[2], raises[3], raises[4], \
+        with raises[0], raises[1], raises[2], raises[3], \
                 mock.patch.object(main, "get_output_service", return_value=self.service), \
                 mock.patch.object(main.runtime, "dsp_runtime", fake), \
                 mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis",
