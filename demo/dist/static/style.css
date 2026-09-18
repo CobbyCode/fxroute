@@ -1062,7 +1062,9 @@ select.url-input {
     color: var(--text);
 }
 .crossover-graph {
+    display: block;
     width: 100%;
+    max-width: 40rem;
     height: auto;
     margin-bottom: 0.6rem;
     border: 1px solid var(--border);
@@ -1087,6 +1089,13 @@ select.url-input {
     grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
     gap: 0.5rem;
     margin-bottom: 0.6rem;
+}
+.crossover-controls .field-group {
+    min-width: 0;
+}
+.crossover-controls .url-input {
+    min-width: 0;
+    width: 100%;
 }
 .crossover-actions {
     display: flex;

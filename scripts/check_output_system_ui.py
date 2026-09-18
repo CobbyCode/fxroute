@@ -143,6 +143,18 @@ def main() -> int:
             check(f"six way tabs ({tabs.count()} found)", tabs.count() == 6)
             paths = page.locator("#effects-crossover-graph polyline")
             check(f"six graph paths ({paths.count()} found)", paths.count() == 6)
+            box = page.locator("#effects-crossover-card").bounding_box()
+            graph_box = page.locator("#effects-crossover-graph").bounding_box()
+            check(f"graph height bounded ({graph_box['height']:.0f}px)", graph_box['height'] < 320)
+            overflowing = page.evaluate(
+                """(() => {
+                    const card = document.getElementById('effects-crossover-card').getBoundingClientRect();
+                    return [...document.querySelectorAll('#effects-crossover-card .crossover-controls .url-input')]
+                        .filter((el) => el.getBoundingClientRect().width > 0)
+                        .filter(el => { const r = el.getBoundingClientRect();
+                            return r.left < card.left - 1 || r.right > card.right + 1; }).length;
+                })()""")
+            check(f"no control overflows the card ({overflowing} found)", overflowing == 0)
             check("family select populated",
                   page.locator("#effects-crossover-family option").count() >= 3)
             check("slope select populated",
