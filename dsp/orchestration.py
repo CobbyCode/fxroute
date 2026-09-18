@@ -222,13 +222,29 @@ class DspOrchestrator:
                 return repair_overview
 
             sink_rate = samplerate_status.get("active_rate")
-            if sink_rate != authoritative_rate:
+            try:
+                engine_alive = bool((dsp_runtime.snapshot() or {}).get("active"))
+            except Exception:
+                engine_alive = False
+            if engine_alive and sink_rate != authoritative_rate:
                 logger.info(
                     "Subwoofer runtime sync deferred until sink reaches authoritative rate: "
                     "reason=%s requested_rate=%s authoritative_rate=%s hardware_sink_rate=%s",
                     reason, requested_rate, authoritative_rate, sink_rate,
                 )
                 return overview
+            if not engine_alive:
+                # No running helper pins the sink: rebuilding is the only way
+                # to move it, so the sink-alignment gates below (which a live
+                # helper at the wrong rate could never pass either) are
+                # bypassed.  Without this a dead engine under a rate pin
+                # defers forever and never revives.
+                logger.warning(
+                    "Native DSP helper is down; rebuilding at authoritative rate "
+                    "despite sink misalignment: reason=%s authoritative_rate=%s "
+                    "hardware_sink_rate=%s",
+                    reason, authoritative_rate, sink_rate,
+                )
 
             if requested_rate is not None and requested_rate != authoritative_rate:
                 logger.info(
@@ -271,7 +287,7 @@ class DspOrchestrator:
             )
             pre_start_rate = samplerate.authoritative_sample_rate(pre_start_status)
             pre_start_sink_rate = pre_start_status.get("active_rate")
-            if pre_start_rate != authoritative_rate or pre_start_sink_rate != authoritative_rate:
+            if (pre_start_rate != authoritative_rate or pre_start_sink_rate != authoritative_rate) and engine_alive:
                 logger.info(
                     "Subwoofer runtime sync stale immediately before helper start; restart suppressed: "
                     "reason=%s requested_rate=%s authoritative_rate=%s pre_start_rate=%s pre_start_sink_rate=%s",
@@ -283,7 +299,7 @@ class DspOrchestrator:
             )
             final_status = await asyncio.to_thread(self._deps.get_samplerate_status)
             final_rate = samplerate.authoritative_sample_rate(final_status)
-            if final_rate != authoritative_rate:
+            if final_rate != authoritative_rate and engine_alive:
                 logger.info(
                     "Native DSP sync stale at start gate; restart suppressed: "
                     "reason=%s requested_rate=%s expected_rate=%s final_rate=%s",

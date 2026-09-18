@@ -235,6 +235,32 @@ class V2SyncPreferenceTests(unittest.TestCase):
         self.assertEqual(deps.runtime.rendered_calls, [])
         self.assertEqual(len(deps.runtime.sync_calls), 1)
 
+    def test_dead_engine_bypasses_sink_misalignment_deferral(self):
+        # A dead helper pins nothing: the sync must rebuild at the
+        # authoritative rate instead of deferring forever behind a rate pin.
+        deps = _FakeDeps(v2_target=None)
+        deps.status = {"active_rate": 44_100, "force_rate": 48_000}
+        deps.runtime.snapshot_value = {"active": False, "config": {}}
+        run_sync(deps)
+        self.assertEqual(deps.runtime.rendered_calls, [])
+        self.assertEqual(len(deps.runtime.sync_calls), 1)
+
+    def test_live_engine_keeps_sink_misalignment_deferral(self):
+        deps = _FakeDeps(v2_target=object())
+        deps.status = {"active_rate": 44_100, "force_rate": 48_000}
+        deps.runtime.snapshot_value = {"active": True, "config": {}}
+        run_sync(deps)
+        self.assertEqual(deps.runtime.rendered_calls, [])
+        self.assertEqual(deps.runtime.sync_calls, [])
+
+    def test_dead_engine_prefers_v2_over_legacy(self):
+        deps = _FakeDeps(v2_target=object())
+        deps.status = {"active_rate": 44_100, "force_rate": 48_000}
+        deps.runtime.snapshot_value = {"active": False, "config": {}}
+        run_sync(deps)
+        self.assertEqual(len(deps.runtime.rendered_calls), 1)
+        self.assertEqual(deps.runtime.sync_calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()
