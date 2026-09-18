@@ -39,7 +39,6 @@ TRIGGERS = (
     "set_audio_output_mode",
     "_save_audio_output_selection",
     "persist_sample_rate_policy",
-    "save_audio_output_mode_route",
     "audio-output-mode.json",
     "audio-output-selection.json",
     "sample-rate-policy.json",

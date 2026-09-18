@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Measurement locks: samplerate policy and output-mode switches are 423-locked.
+"""Measurement locks: samplerate policy and output-state apply are 423-locked.
 
 Observable contracts of the two privileged audio routes while a measurement
 session has active jobs:
 
 - POST /api/audio/samplerate -> HTTP 423, the rate-policy transition never
   starts (the lock runs before any body parsing or mutation);
-- POST /api/audio/output-mode -> HTTP 423, the output-mode preparation never
-  runs (the lock runs before any DSP/routing mutation).
+- POST /api/audio/output-state/apply -> HTTP 423, the output-state mutation
+  never runs (the lock runs before the output service is even resolved).
 
-A dropped or reordered lock would let a policy/mode change fight the active
-measurement rate. Only the lock ordering is pinned here (status code plus
-proof that the downstream mutation entry points were never reached).
+A dropped or reordered lock would let a policy/topology change fight the
+active measurement rate. Only the lock ordering is pinned here (status code
+plus proof that the downstream mutation entry points were never reached).
 """
 
 from __future__ import annotations
@@ -71,19 +71,23 @@ class MeasurementLockTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("locked", ctx.exception.detail)
         transition.assert_not_awaited()
 
-    async def test_output_mode_change_is_locked_during_measurement(self):
-        prepare = Mock()
+    async def test_output_state_apply_is_locked_during_measurement(self):
+        service = Mock(side_effect=AssertionError("service resolved during lock"))
         with (
             _active_measurement(),
-            patch.object(main, "prepare_audio_output_mode", new=prepare),
+            patch.object(main, "get_output_service", new=service),
         ):
             with self.assertRaises(HTTPException) as ctx:
-                await main.save_audio_output_mode_route(
-                    _request("/api/audio/output-mode", {"mode": "stereo"})
+                await main.apply_audio_output_state(
+                    _request("/api/audio/output-state/apply", {
+                        "expected_revision": 1,
+                        "mutation": {"kind": "set_bank_preset", "mode": "stereo-sub",
+                                     "bank_id": "sub1", "preset": "Room"},
+                    })
                 )
         self.assertEqual(ctx.exception.status_code, 423)
         self.assertIn("locked", ctx.exception.detail)
-        prepare.assert_not_called()
+        service.assert_not_called()
 
 
 if __name__ == "__main__":

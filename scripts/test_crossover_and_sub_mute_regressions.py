@@ -6,11 +6,11 @@ Bug 1: A 2.2 crossover edit was persisted to the top-level 2.2 payload, but
 2.1 `subwoofer` block (or the 80 Hz default when no legacy block existed), so
 every readback forced the UI back to 80 Hz.
 
-Bug 2: Every `/api/audio/output-mode` POST went through the Coordinator's
-muted `output-mode-switch` transition, closing the hardware-output gate even
+Bug 2: Every topology edit went through the Coordinator's muted
+`output-mode-switch` transition, closing the hardware-output gate even
 for pure DSP parameter changes (level, alignment, polarity, crossover) that
-change no routing, samplerate or graph topology.  Same-mode saves must use
-the direct persist + `dsp_orchestrator.sync_runtime` path instead.
+change no routing, samplerate or graph topology. Non-topology v2 mutations
+must commit directly without the Coordinator instead.
 """
 
 from __future__ import annotations
@@ -134,78 +134,86 @@ class FakeRequest:
         return self._body
 
 
-def _target(mode: str) -> dict:
-    return {
-        "overview": {"output_mode": {"mode": mode}},
-        "config": {"mode": mode, "subwoofer": {}},
-    }
+def _v2_seed(service):
+    from audio.output_state import set_mode_routing, switch_mode
+    return service.apply(
+        lambda state: switch_mode(set_mode_routing(
+            state, "stereo-sub", "A", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub"),
+        expected_revision=0)
 
 
-def _route_patch_context(*, current_mode: str, target_mode: str):
-    """Return (exit_stack, sync, run, set_mode) with the route fully mocked."""
-    sync = mock.AsyncMock()
-    run = mock.AsyncMock(return_value=mock.MagicMock(committed=True))
-    set_mode = mock.MagicMock(return_value={"output_mode": {"mode": target_mode}, "selected_output": None})
+def _v2_context(service, manager, run):
+    """Route harness for the v2 apply endpoint (mirrors the coordinator suite)."""
     stack = contextlib.ExitStack()
     stack.enter_context(mock.patch.multiple(
         main,
         measurement_sr_session=mock.MagicMock(has_active_jobs=False),
-        prepare_audio_output_mode=mock.MagicMock(return_value=_target(target_mode)),
-        persist_audio_output_mode=set_mode,
-        with_subwoofer_derived_delays=lambda value: value,
+        get_output_service=mock.MagicMock(return_value=service),
+        get_audio_output_overview=mock.MagicMock(return_value={
+            "selected_output": {"key": "A", "channels": 4},
+            "output_mode": {"effective_output_key": "A", "effective_output_channels": 4,
+                            "hardware_playback_ports": [f"playback_AUX{i}" for i in range(4)]},
+        }),
+        get_samplerate_status=mock.MagicMock(return_value={"active_rate": 48000}),
+        _require_dsp_manager=mock.MagicMock(return_value=manager),
         _coordinator_current_playback_context=mock.AsyncMock(return_value={
             "source": "local", "target_url": None, "target_track": {}, "should_play": False,
         }),
-        get_samplerate_status=mock.MagicMock(return_value={"active_rate": 44100}),
         _run_coordinated_transition=run,
-        get_audio_output_overview=mock.MagicMock(return_value={"output_mode": {"mode": target_mode}}),
     ))
-    stack.enter_context(mock.patch.multiple(main.runtime, dsp_runtime=None))
-    stack.enter_context(mock.patch.object(main.dsp_orchestrator, "sync_runtime", sync))
-    stack.enter_context(mock.patch.object(
-        main.dsp_orchestrator, "refresh_peak_monitor_after_effects_change", mock.AsyncMock()
-    ))
-    stack.enter_context(mock.patch.object(
-        main.samplerate,
-        "_load_audio_output_mode",
-        return_value={"mode": current_mode},
-    ))
-    return stack, sync, run, set_mode
+    stack.enter_context(mock.patch.object(main.runtime, "dsp_runtime", None))
+    return stack
+
+
+def _v2_service(raw: str):
+    from audio.output_service import OutputService, OutputServiceDeps
+    from audio.output_state_store import OutputStateStore
+    from dsp.manager import DSPManager
+    manager = DSPManager(home=Path(raw) / "home")
+    service = OutputService(OutputServiceDeps(
+        store=OutputStateStore(Path(raw) / "output-state.json"),
+        preset_loader=manager.preset_store.read,
+        resolve_ir=lambda kernel: (_ for _ in ()).throw(AssertionError(kernel)),
+        measurement_active=lambda: False))
+    _v2_seed(service)
+    return service, manager
 
 
 async def _route_same_mode_direct() -> None:
-    """Bug 2: same-mode DSP edit must bypass the Coordinator/gate entirely."""
-    stack, sync, run, set_mode = _route_patch_context(
-        current_mode="subwoofer-2.2-stereo", target_mode="subwoofer-2.2-stereo"
-    )
-    with stack:
-        result = await main.save_audio_output_mode_route(FakeRequest({
-            "mode": "subwoofer-2.2-stereo",
-            "subwoofer": {"crossover_frequency_hz": 150},
-        }))
-    run.assert_not_awaited()
-    sync.assert_awaited_once()
-    set_mode.assert_called_once()
-    assert result["output_mode"]["mode"] == "subwoofer-2.2-stereo"
-    print("same-mode route uses direct sync (no gate): ok")
+    """Bug 2 (v2): a non-topology param edit commits directly, no coordinator."""
+    with tempfile.TemporaryDirectory() as raw:
+        service, manager = _v2_service(raw)
+        run = mock.AsyncMock()
+        with _v2_context(service, manager, run):
+            result = await main.apply_audio_output_state(FakeRequest({
+                "expected_revision": 1,
+                "mutation": {"kind": "set_crossover", "mode": "stereo-sub",
+                             "enabled": False},
+            }))
+        run.assert_not_awaited()
+        assert result["live_applied"] is False
+        assert service.load()["revision"] == 2
+    print("same-param edit commits directly without coordinator: ok")
 
 
 async def _route_mode_switch_coordinated() -> None:
-    """A real mode switch still needs the muted Coordinator transition."""
-    stack, sync, run, set_mode = _route_patch_context(
-        current_mode="stereo", target_mode="subwoofer-2.1"
-    )
-    with stack:
-        await main.save_audio_output_mode_route(FakeRequest({
-            "mode": "subwoofer-2.1",
-            "subwoofer": {"crossover_frequency_hz": 150},
-        }))
-    run.assert_awaited_once()
-    sync.assert_not_awaited()
-    set_mode.assert_not_called()
-    request = run.await_args.args[0]
-    assert request.operation == "output-mode-switch"
-    print("mode-switch route keeps coordinated transition: ok")
+    """A real topology switch still needs the muted Coordinator transition."""
+    with tempfile.TemporaryDirectory() as raw:
+        service, manager = _v2_service(raw)
+        run = mock.AsyncMock()
+        with _v2_context(service, manager, run):
+            result = await main.apply_audio_output_state(FakeRequest({
+                "expected_revision": 1,
+                "mutation": {"kind": "set_routing", "mode": "stereo-sub",
+                             "assignments": ["main_l", "main_r", "sub1", "sub2"]},
+            }))
+        run.assert_awaited_once()
+        request = run.await_args.args[0]
+        assert request.operation == "output-mode-switch"
+        assert request.output_state_transition["expected_revision"] == 1
+        assert "candidate_state" in request.output_state_transition
+        assert result["live_applied"] is True
+    print("topology switch keeps coordinated transition: ok")
 
 
 

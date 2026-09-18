@@ -166,12 +166,20 @@ class AudioStateApiTests(unittest.TestCase):
                  "assignments": ["left_low", "main_r"]},
                 {"kind": "set_routing", "mode": "stereo-sub", "assignments": ["main_l"],
                  "unexpected": True},
+                # Removed legacy kind: bass is set via set_subwoofers.
+                {"kind": "set_bass", "mode": "stereo-sub",
+                 "frequency_hz": 80, "main_highpass_enabled": True},
             ):
                 with self.subTest(mutation=mutation):
                     with self.assertRaises(main.HTTPException) as ctx:
                         asyncio.run(main.apply_audio_output_state(FakeRequest({
                             "expected_revision": 1, "mutation": mutation})))
                     self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_removed_legacy_routes_are_unknown(self):
+        routes = {getattr(route, "path", "") for route in main.app.routes}
+        self.assertNotIn("/api/audio/output-mode", routes)
+        self.assertNotIn("/api/audio/output-routing", routes)
 
 
 def dsp_deps(service, manager):

@@ -428,9 +428,6 @@ from playback.runtime import (
 
 from audio.samplerate import (
     OUTPUT_MODE_STEREO,
-    OUTPUT_MODE_SUBWOOFER_21,
-    OUTPUT_MODE_SUBWOOFER_22,
-    OUTPUT_MODE_SUBWOOFER_22_STEREO,
     OUTPUT_MODE_SUBWOOFER_MODES,
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
@@ -443,7 +440,6 @@ from audio.samplerate import (
     is_bluetooth_audio_streaming,
     normalize_sample_rate_policy,
     persist_audio_output_mode,
-    prepare_audio_output_mode,
     recover_saved_output_sink,
     set_audio_output_selection,
     set_audio_source_selection,
@@ -4121,12 +4117,6 @@ def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: i
         options.update({name: args[name] for name in ("level_db", "alignment_ms", "polarity")
                         if args.get(name) is not None})
         return lambda state: set_output_processing(state, mode, role, **options)
-    if kind == "set_bass":
-        args = strict({"mode", "frequency_hz", "main_highpass_enabled"})
-        mode = _require_state_mode(args.get("mode"))
-        options = {name: args[name] for name in ("frequency_hz", "main_highpass_enabled")
-                   if args.get(name) is not None}
-        return lambda state: set_bass_management(state, mode, **options)
     if kind == "set_extras":
         args = strict({"mode", "extras"})
         mode = _require_state_mode(args.get("mode"))
@@ -4673,151 +4663,6 @@ async def get_audio_output_state_crossover_response():
     return {"status": "ok", "revision": state["revision"], "mode": mode,
             "crossover_enabled": topology["crossover_enabled"],
             "sample_rate_hz": rate, "ways": ways}
-
-
-@app.post("/api/audio/output-routing")
-async def save_audio_output_routing_route(request: Request):
-    from audio.output_routing import validate_assignments
-
-    if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
-        raise HTTPException(status_code=423, detail="Measurement is active; output routing is locked")
-    try:
-        body = await request.json()
-        overview = await asyncio.to_thread(get_audio_output_overview)
-        output = overview.get("selected_output") or {}
-        if body.get("key") != output.get("key"):
-            raise ValueError("Selected output changed; refresh audio settings")
-        channels = int(output.get("channels") or 0)
-        assignments = validate_assignments(body.get("assignments"), channels)
-        target = copy.deepcopy(overview)
-        target["output_mode"]["output_routing"]["assignments"] = assignments
-        context = await _coordinator_current_playback_context()
-        status = get_samplerate_status()
-        target_rate = status.get("active_rate")
-        if not isinstance(target_rate, int) or target_rate <= 0:
-            target_rate = status.get("force_rate")
-        if not isinstance(target_rate, int) or target_rate <= 0:
-            raise RuntimeError("current hardware sample rate is unavailable")
-        await _run_coordinated_transition(TransitionRequest(
-            operation="output-mode-switch", source=str(context.get("source") or "local"),
-            target_rate=target_rate, target_url=context.get("target_url"),
-            target_track=dict(context.get("target_track") or {}),
-            should_play=bool(context.get("should_play")), reload_source=False,
-            detail="api-audio-output-routing",            output_mode_target=target,
-            output_mode_config=samplerate.load_audio_output_mode_snapshot(),
-            output_routing_config={"key": output["key"], "channels": channels, "assignments": assignments},
-        ))
-        return await audio_output_overview()
-    except (ValueError, TypeError, KeyError) as exc:
-        raise bad_request(exc) from exc
-    except PlaybackTransitionFailure as exc:
-        raise _transition_error_http(exc) from exc
-
-
-@app.post("/api/audio/output-mode")
-async def save_audio_output_mode_route(request: Request):
-    try:
-        body = await request.json()
-        mode = str(body.get("mode", "")).strip()
-        subwoofer = body.get("subwoofer") if isinstance(body.get("subwoofer"), dict) else None
-        subwoofers = body.get("subwoofers") if isinstance(body.get("subwoofers"), dict) else None
-    except Exception:
-        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "subwoofer": <object?>, "subwoofers": <object?>}')
-
-    if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
-        raise HTTPException(status_code=423, detail="Measurement is active; output mode switch is locked")
-
-    try:
-        target = prepare_audio_output_mode(mode, subwoofer, subwoofers)
-        target_mode = str(target["config"].get("mode") or "").strip()
-
-        def mode_transition_guard(target_overview: dict) -> float:
-            runtime_snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime else {}
-            previous_gain = float(runtime_snapshot.get("output_gain_db") or 0.0)
-            current_layout = ((runtime_snapshot.get("config") or {}).get("layout") or [])
-            target_layout = DSPRuntimeConfig.from_overview(target_overview).layout
-            current_peak_gain = max((float(channel.get("gain_db", 0.0)) for channel in current_layout), default=0.0)
-            target_peak_gain = max((float(channel.get("gain_db", 0.0)) for channel in target_layout), default=0.0)
-            positive_gain_delta = max(0.0, target_peak_gain - current_peak_gain)
-            return min(0.0, previous_gain - max(1.0, positive_gain_delta + 1.0))
-
-        # A same-mode request is a pure DSP parameter change (crossover, level,
-        # alignment, polarity, highpass).  It changes no routing, samplerate or
-        # graph topology, so it must not enter the Coordinator's muted
-        # output-mode transition.  Restore the pre-coordinator direct sync:
-        # persist the settings and push them into the native helper without
-        # ever closing the hardware-output gate.
-        current_mode = str(
-            (samplerate._load_audio_output_mode().get("mode") or OUTPUT_MODE_STEREO)
-        ).strip()
-        if target_mode == current_mode:
-            previous_overview = get_audio_output_overview()
-            previous_mode_raw = samplerate.read_audio_output_mode_raw()
-            result = persist_audio_output_mode(target["config"])
-            if runtime.dsp_runtime is None:
-                await dsp_orchestrator.sync_runtime(result, reason="output-mode-params", retry_on_stale=True)
-            else:
-                try:
-                    await runtime.dsp_runtime.guarded_rebuild(
-                        result,
-                        guard_db=mode_transition_guard(result),
-                        apply_candidate=lambda: None,
-                        apply_previous=lambda: None,
-                        settle_seconds=0.0,
-                    )
-                except Exception:
-                    try:
-                        samplerate.restore_audio_output_mode_raw(previous_mode_raw)
-                    except OSError:
-                        logger.exception("Failed to restore persisted output mode after same-mode transition failure")
-                    try:
-                        await runtime.dsp_runtime.sync(previous_overview)
-                    except Exception:
-                        logger.exception("Failed to restore native DSP after same-mode transition failure")
-                    raise
-            result = with_subwoofer_derived_delays(result)
-            if runtime.dsp_runtime is not None:
-                result["output_mode"] = {
-                    **(result.get("output_mode") or {}),
-                    "runtime": runtime.dsp_runtime.snapshot(),
-                }
-            await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-mode-params")
-            return result
-
-        context = await _coordinator_current_playback_context()
-        status = get_samplerate_status()
-        target_rate = status.get("active_rate")
-        if not isinstance(target_rate, int) or target_rate <= 0:
-            target_rate = status.get("force_rate")
-        if not isinstance(target_rate, int) or target_rate <= 0:
-            raise RuntimeError("current hardware sample rate is unavailable")
-        await _run_coordinated_transition(TransitionRequest(
-            operation="output-mode-switch",
-            source=str(context.get("source") or "local"),
-            target_rate=target_rate,
-            target_url=context.get("target_url"),
-            target_track=dict(context.get("target_track") or {}),
-            should_play=bool(context.get("should_play")),
-            rate_change=False,
-            reload_source=False,
-            detail="api-audio-output-mode",
-            output_mode_target=dict(target["overview"]),
-            output_mode_config=dict(target["config"]),
-        ))
-        result = with_subwoofer_derived_delays(get_audio_output_overview())
-        if runtime.dsp_runtime is not None:
-            result["output_mode"] = {
-                **(result.get("output_mode") or {}),
-                "runtime": runtime.dsp_runtime.snapshot(),
-            }
-        await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
-        return result
-    except ValueError as exc:
-        raise bad_request(exc)
-    except PlaybackTransitionFailure as exc:
-        raise _transition_error_http(exc) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to save audio output mode: {exc}")
 
 
 @app.post("/api/debug/21-runtime-state")
