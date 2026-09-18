@@ -172,13 +172,10 @@
 .settings-routing-cell select {
     width: 100%;
 }
-/* Output routing (multichannel): bank selector row inside the A/B card.
- * The routing grid reuses the legacy settings-routing classes above unchanged. */
+/* Output routing (multichannel): the bank selector row lives in the A/B
+ * card header and is styled in _effects.css. */
 .effects-bank-row {
-    margin-bottom: 0.6rem;
-}
-.effects-bank-row .settings-inline-note {
-    margin: 0;
+    margin-bottom: 0;
 }
 /* Crossover / Speaker tile: way tabs, response graph, control grid. */
 .effects-card-crossover {

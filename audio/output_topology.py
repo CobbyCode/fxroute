@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from audio.filter_banks import bank_definitions
+
 MODES = ("stereo", "stereo-sub")
 MAIN_ROLES = ("main_l", "main_r")
 SUB_ROLES = ("sub_l", "sub_r", "sub1", "sub2")
@@ -45,7 +47,7 @@ class OutputTopology:
 
     @property
     def bank_ids(self) -> tuple[str, ...]:
-        return ("global", *self.roles)
+        return ("global", *bank_definitions(self.roles))
 
     def require_activatable(self) -> None:
         if self.issues:

@@ -309,6 +309,46 @@
             ...(mode === 'stereo-sub' ? subRoles : [])];
     }
     const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' });
+    const bankPairs = { main: ['main_l', 'main_r'], low: ['left_low', 'right_low'],
+        low_mid: ['left_low_mid', 'right_low_mid'], mid: ['left_mid', 'right_mid'],
+        high: ['left_high', 'right_high'], sub: ['sub_l', 'sub_r'] };
+    function demoBankDefinitions(roles) {
+        const pending = new Set(roles);
+        const definitions = { global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' } };
+        for (const [id, pair] of Object.entries(bankPairs)) {
+            if (!pair.every(role => pending.has(role))) continue;
+            definitions[id] = { id, label: `${id.split('_').map(word => word[0].toUpperCase() + word.slice(1)).join('-')} L/R`,
+                roles: pair, channel_mode: 'stereo' };
+            pair.forEach(role => pending.delete(role));
+        }
+        for (const role of pending) definitions[role] = { id: role,
+            label: role.replace(/^sub(\d+)$/, 'Sub $1').replace(/^center$/, 'Center'), roles: [role], channel_mode: 'mono' };
+        return definitions;
+    }
+    function demoBankSummary(bindings) {
+        const common = values => new Set(values).size === 1 ? values[0] : null;
+        return { preset: common(bindings.map(bank => bank.preset)), preset_a: common(bindings.map(bank => bank.preset_a)),
+            preset_b: common(bindings.map(bank => bank.preset_b)),
+            active_side: common(bindings.map(bank => bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null)),
+            can_a: bindings.length > 0, can_b: bindings.length > 0 && bindings.every(bank => !!bank.preset_b) };
+    }
+    function updateDemoBanks(config, roles, mutation) {
+        const slot = mutation.active_side || demoBankSummary(roles.map(role => config.banks[role])).active_side || 'A';
+        if (!['A', 'B'].includes(slot)) throw new Error('Compare side must be A or B');
+        const updated = {};
+        for (const role of roles) {
+            const bank = { ...config.banks[role] };
+            for (const key of ['preset_a', 'preset_b']) if (key in mutation) bank[key] = mutation[key];
+            if (mutation.preset) { bank[`preset_${slot.toLowerCase()}`] = mutation.preset; bank.preset = mutation.preset; }
+            else if (mutation.active_side) {
+                if (!bank[`preset_${slot.toLowerCase()}`]) throw new Error(`Compare side ${slot} has no assigned preset`);
+                bank.preset = bank[`preset_${slot.toLowerCase()}`];
+            }
+            if (bank.preset_a === bank.preset_b) throw new Error('Compare slots must use distinct presets');
+            updated[role] = bank;
+        }
+        Object.assign(config.banks, updated);
+    }
     const defaultProcessing = () => ({ highpass: null, lowpass: null, level_db: 0.0, alignment_ms: 0.0, polarity: 'normal' });
     const lr24 = (frequency_hz) => ({ family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz });
     const outputStateStore = {
@@ -375,18 +415,21 @@
         for (const mode of ['stereo', 'stereo-sub']) {
             const config = outputStateStore.modes[mode];
             const routing = (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+            const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length));
             const banks = {};
-            for (const [id, bank] of Object.entries(config.banks)) {
-                banks[id] = { ...bank, active_side: bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null };
+            for (const [id, definition] of Object.entries(demoBankDefinitions(topology.roles))) {
+                banks[id] = { ...definition, ...demoBankSummary(definition.roles.map(role => config.banks[role])) };
             }
+            const pureStereo = topology.roles.length === 2 && topology.roles.includes('main_l') && topology.roles.includes('main_r');
             modes[mode] = {
                 crossover_enabled: config.crossover_enabled,
-                selected_bank: config.selected_bank,
+                selected_bank: pureStereo ? 'global' : (config.selected_bank === 'all' || banks[config.selected_bank] ? config.selected_bank : 'global'),
                 banks,
+                all_banks: demoBankSummary(topology.roles.map(role => config.banks[role])),
                 processing: JSON.parse(JSON.stringify(config.processing)),
                 bass_management: { ...config.bass_management },
                 extras: JSON.parse(JSON.stringify(config.extras)),
-                topology: outputStateTopology(mode, routing.slice(0, channels || routing.length)),
+                topology,
             };
         }
         const deviceRouting = {};
@@ -420,13 +463,12 @@
             return { error: 'expected_revision must be a non-negative integer', status: 400 };
         }
         const config = outputStateStore.modes[mode];
-        const bank = config && config.banks[bankId];
+        const bank = config && outputStateCatalog().modes[mode].banks[bankId];
         if (!bank) return { error: `Unknown bank ${bankId}`, status: 400 };
         if (revision !== outputStateStore.revision) {
             return { conflict: true, created: createdName };
         }
-        bank.preset_a = bank.preset_a || createdName;
-        bank.preset = createdName;
+        updateDemoBanks(config, bank.roles, { preset: createdName });
         outputStateStore.revision += 1;
         return { assigned: true, mode, bank_id: bankId, revision: outputStateStore.revision };
     }
@@ -2115,7 +2157,9 @@
                         }
                     }
                 }
-                if (!allowed.includes(config.selected_bank)) config.selected_bank = 'global';
+                if (config.selected_bank !== 'global' && config.selected_bank !== 'all'
+                    && !allowed.includes(config.selected_bank)
+                    && !Object.values(demoBankDefinitions(allowed)).some(definition => definition.id === config.selected_bank)) config.selected_bank = 'global';
             } else if (mutation.kind === 'set_routing') {
                 const assignments = mutation.assignments;
                 if (!Array.isArray(assignments)) return fail('Routing assignments must be an array');
@@ -2129,18 +2173,28 @@
                         config.processing[role] = defaultProcessing();
                     }
                 }
-                if (!assignments.includes(config.selected_bank)) config.selected_bank = 'global';
+                const routedRoles = assignments.filter(role => role !== 'off');
+                const routedBanks = demoBankDefinitions(routedRoles);
+                let selected = config.selected_bank;
+                for (const definition of Object.values(routedBanks)) {
+                    if (definition.id === selected || definition.roles.includes(selected)) { selected = definition.id; break; }
+                }
+                const pureStereo = routedRoles.length === 2 && routedRoles.includes('main_l') && routedRoles.includes('main_r');
+                if (pureStereo || (selected !== 'all' && !routedBanks[selected])) selected = 'global';
+                config.selected_bank = selected;
             } else if (mutation.kind === 'select_bank') {
-                const active = outputStateCatalog().modes[mode].topology.roles;
-                if (mutation.bank_id !== 'global' && !active.includes(mutation.bank_id)) return fail(`Unknown bank ${mutation.bank_id}`);
+                const active = outputStateCatalog().modes[mode].banks;
+                const roles = outputStateCatalog().modes[mode].topology.roles;
+                if (roles.length === 2 && roles.includes('main_l') && roles.includes('main_r') && mutation.bank_id !== 'global') return fail('Pure stereo uses the Global bank; no bank selection is shown');
+                if (mutation.bank_id !== 'all' && !active[mutation.bank_id]) return fail(`Unknown bank ${mutation.bank_id}`);
                 config.selected_bank = mutation.bank_id;
             } else if (mutation.kind === 'set_bank_preset') {
-                const bank = config.banks[mutation.bank_id];
+                const bank = outputStateCatalog().modes[mode].banks[mutation.bank_id];
                 if (!bank) return fail(`Unknown bank ${mutation.bank_id}`);
-                if (mutation.preset) {
-                    bank.preset_a = bank.preset_a || mutation.preset;
-                    bank.preset = mutation.preset;
-                }
+                try { updateDemoBanks(config, bank.roles, mutation); } catch (error) { return fail(error.message); }
+            } else if (mutation.kind === 'switch_all_banks') {
+                const roles = outputStateCatalog().modes[mode].topology.roles;
+                try { updateDemoBanks(config, roles, mutation); } catch (error) { return fail(error.message); }
             } else if (mutation.kind === 'set_processing') {
                 const settings = config.processing[mutation.role];
                 if (!settings) return fail(`Unknown role ${mutation.role}`);
@@ -2442,7 +2496,10 @@
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [] });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const binding = assignDemoBankTarget(body, name);
+            if (binding?.error) return err(binding.error, binding.status);
+            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
+            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
         }
         if (p === '/api/dsp/presets/import-bundle' && post) {
             const name = String(body.preset_name || body.name || 'Imported Bundle').trim() || 'Imported Bundle';
@@ -2450,7 +2507,10 @@
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [] });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const binding = assignDemoBankTarget(body, name);
+            if (binding?.error) return err(binding.error, binding.status);
+            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
+            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
         }
         if (p === '/api/dsp/presets/import-filter-dual' && post) {
             const name = String(body.preset_name || body.name || 'Dual Filter Preset').trim() || 'Dual Filter Preset';
@@ -2458,7 +2518,10 @@
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], convolver: true });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const binding = assignDemoBankTarget(body, name);
+            if (binding?.error) return err(binding.error, binding.status);
+            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
+            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
         }
         if (p === '/api/dsp/presets/import-rew-peq' && post) {
             const name = String(body.preset_name || body.name || 'REW PEQ Preset').trim() || 'REW PEQ Preset';

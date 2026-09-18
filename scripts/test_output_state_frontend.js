@@ -21,9 +21,8 @@ function catalog() {
                 selected_bank: 'sub1',
                 banks: {
                     global: { preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' },
-                    main_l: { preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' },
-                    main_r: { preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' },
-                    sub1: { preset: 'Room', preset_a: 'Room', preset_b: 'Room IR', active_side: 'A' },
+                    main: { label: 'Main L/R', roles: ['main_l', 'main_r'], channel_mode: 'stereo', preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' },
+                    sub1: { label: 'Sub 1', roles: ['sub1'], channel_mode: 'mono', preset: 'Room', preset_a: 'Room', preset_b: 'Room IR', active_side: 'A' },
                 },
                 processing: {},
                 bass_management: { frequency_hz: 80, main_highpass_enabled: true },
@@ -95,12 +94,12 @@ assert.match(
 
 assert.deepEqual(
     OutputState.bankOptions(catalog().modes['stereo-sub'], catalog().capabilities).map(o => o.id),
-    ['global', 'main_l', 'main_r', 'sub1']);
+    ['global', 'all', 'main', 'sub1']);
 assert.equal(
     OutputState.bankOptions(catalog().modes['stereo-sub'], catalog().capabilities)[3].label, 'Sub 1');
 
-assert.match(OutputState.bankInfoLine(catalog().modes['stereo-sub'].banks.sub1), /Room/);
-assert.match(OutputState.bankInfoLine(catalog().modes['stereo-sub'].banks.sub1), /Room IR/);
+assert.equal(OutputState.compareState(catalog()).activePreset, 'Room');
+assert.equal(OutputState.compareState(catalog()).presetB, 'Room IR');
 
 assert.deepEqual(
     OutputState.buildMutation('set_routing', { mode: 'stereo-sub', assignments: ['main_l', 'main_r'] }),
@@ -155,48 +154,25 @@ function measurementAreaTests() {
         bank_id: 'sub1',
         label: 'Sub 1',
         channel: 'stereo',
+        channel_mode: 'mono',
+        available: true,
         note: 'Only Sub 1 stays audible; every other output is muted for this sweep.',
-        // A mono sub is fed by both inputs, so an L/R repeat compares two sides.
-        repeat_supported: true,
-        repeat_note: '',
+        repeat_supported: false,
+        repeat_note: 'Sub 1 is a mono target. Use a single sweep.',
     });
     assert.equal(OutputState.measurementArea(selected, 'global').repeat_supported, true);
     assert.equal(OutputState.measurementArea(selected, 'global').channel, 'stereo');
-    assert.equal(OutputState.measurementArea(selected, 'main_l').channel, 'left');
-    assert.equal(OutputState.measurementArea(selected, 'main_r').channel, 'right');
-    assert.equal(OutputState.measurementArea(selected, 'sub_r').channel, 'right');
-    assert.equal(OutputState.measurementArea(selected, 'sub2').channel, 'stereo');
-    // A role the routing sums from both inputs needs both channels to reach
-    // its operating level: a lone sub_l in a mono routing is not left-only.
-    const withTopology = (topology) => ({ ...selected, modes: { ...selected.modes, 'stereo-sub': {
-        ...selected.modes['stereo-sub'], topology: { ...selected.modes['stereo-sub'].topology, ...topology } } } });
-    const monoSubL = withTopology({ sub_roles: ['sub_l'], sub_mode: 'mono' });
-    assert.equal(OutputState.measurementArea(monoSubL, 'sub_l').channel, 'stereo');
-    assert.equal(OutputState.measurementArea(monoSubL, 'main_l').channel, 'left');
-    const dualMono = withTopology({ sub_roles: ['sub1', 'sub2'], sub_mode: 'dual-mono' });
-    assert.equal(OutputState.measurementArea(dualMono, 'sub1').channel, 'stereo');
-    const stereoSubs = withTopology({ sub_roles: ['sub_l', 'sub_r'], sub_mode: 'stereo' });
-    assert.equal(OutputState.measurementArea(stereoSubs, 'sub_l').channel, 'left');
-    assert.equal(OutputState.measurementArea(stereoSubs, 'sub_r').channel, 'right');
+    assert.equal(OutputState.measurementArea(selected, 'main').channel, 'stereo');
+    assert.equal(OutputState.measurementArea(selected, 'main').repeat_supported, true);
     assert.deepEqual(OutputState.summedRoleIds({ sub_roles: ['sub_l'], sub_mode: 'mono' }), ['sub_l']);
     assert.deepEqual(OutputState.summedRoleIds({ sub_roles: ['sub_l', 'sub_r'], sub_mode: 'stereo' }), []);
     assert.deepEqual(OutputState.summedRoleIds({ sub_roles: [], sub_mode: 'none' }), []);
     assert.deepEqual(OutputState.summedRoleIds({}), []);
 
     const crossover = { ...selected, active_mode: 'stereo' };
-    assert.equal(OutputState.measurementArea(crossover, 'left_low').channel, 'left');
-    assert.equal(OutputState.measurementArea(crossover, 'right_high').channel, 'right');
-    assert.equal(OutputState.measurementArea(crossover, 'left_low_mid').label, 'Low-Mid L');
-    // One-sided areas carry no second side to compare, and say so.
-    const oneSided = OutputState.measurementArea(crossover, 'left_low');
-    assert.equal(oneSided.repeat_supported, false);
-    assert.match(oneSided.repeat_note, /fed by one input only/);
-    assert.match(oneSided.repeat_note, /Use a single sweep/);
-    assert.equal(OutputState.measurementArea(stereoSubs, 'sub_l').repeat_supported, false);
-    assert.equal(OutputState.measurementArea(monoSubL, 'sub_l').repeat_supported, true);
-    assert.equal(OutputState.measurementArea(dualMono, 'sub2').repeat_supported, true);
-    assert.equal(OutputState.repeatSupported('global', {}), true);
-    assert.equal(OutputState.repeatSupported('left_mid', {}), false);
+    crossover.modes.stereo.banks.low_mid = { label: 'Low-Mid L/R', roles: ['left_low_mid', 'right_low_mid'], channel_mode: 'stereo' };
+    assert.equal(OutputState.measurementArea(crossover, 'low_mid').label, 'Low-Mid L/R');
+    assert.equal(OutputState.measurementArea(crossover, 'low_mid').repeat_supported, true);
     // Read-only: no bank id falls back to the whole system without inventing one.
     const empty = OutputState.measurementArea(null);
     assert.equal(empty.bank_id, 'global');

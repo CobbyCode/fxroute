@@ -14,7 +14,7 @@
 
 const OUTPUT_MODES = ['stereo', 'stereo-sub'];
 const MUTATION_KINDS = ['set_routing', 'switch_mode', 'select_bank', 'set_bank_preset',
-    'set_crossover', 'set_subwoofers', 'set_processing', 'set_extras'];
+    'switch_all_banks', 'set_crossover', 'set_subwoofers', 'set_processing', 'set_extras'];
 
 function esc(value) {
     return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -23,6 +23,10 @@ function esc(value) {
 
 function roleLabel(roleId) {
     if (roleId === 'global') return 'Global';
+    if (roleId === 'all') return 'All Banks';
+    if (['main', 'low', 'low_mid', 'mid', 'high', 'sub'].includes(roleId)) {
+        return `${roleId.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} L/R`;
+    }
     if (roleId === 'off') return 'Off';
     if (/^(left|right)_/.test(roleId)) {
         const [side, ...way] = roleId.split('_');
@@ -122,71 +126,68 @@ function summedRoleIds(topology) {
     return subs;
 }
 
-// Sweep side per area: left-sided roles excite the left input, right-sided
-// roles the right input, and every summed role (mono/dual-mono subs) or
-// whole-system area needs both channels to reach its operating level.
-function bankSweepChannel(bankId, topology) {
-    const id = String(bankId || '');
-    if (id === 'global') return 'stereo';
-    if (summedRoleIds(topology).includes(id)) return 'stereo';
-    if (id === 'main_l' || id === 'sub_l' || id.startsWith('left_')) return 'left';
-    if (id === 'main_r' || id === 'sub_r' || id.startsWith('right_')) return 'right';
-    return 'stereo';
-}
-
-// An area holds one logical role, so an L/R repeat can only compare two sides
-// when the routing feeds that role from both inputs: a summed mono/dual-mono
-// sub is fed by both, a single speaker way (or one half of a stereo sub pair)
-// is fed by one input only and would be captured twice by the same way.
-function repeatSupported(roleId, topology) {
-    const id = String(roleId || 'global');
-    if (id === 'global') return true;
-    return summedRoleIds(topology).includes(id);
-}
-
 function measurementArea(catalog, bankId) {
     const mode = (catalog && catalog.active_mode) || 'stereo';
     const modeConfig = (catalog && catalog.modes && catalog.modes[mode]) || {};
     const selected = String(bankId || modeConfig.selected_bank || 'global');
-    const label = roleLabel(selected);
-    const channel = bankSweepChannel(selected, modeConfig.topology);
-    const repeat_supported = repeatSupported(selected, modeConfig.topology);
-    const repeat_note = repeat_supported ? ''
-        : `${label} is fed by one input only, so an L/R repeat would capture the same way twice. Use a single sweep.`;
-    if (selected === 'global') {
-        return {
-            bank_id: 'global',
-            label,
-            channel,
-            note: 'Whole system: Global plus every area bank stay audible for this sweep.',
-            repeat_supported,
-            repeat_note,
-        };
-    }
+    const bank = modeConfig.banks?.[selected];
+    const label = bank?.label || roleLabel(selected);
+    const available = selected !== 'all';
+    const channel_mode = bank?.channel_mode || 'stereo';
+    const repeat_supported = available && channel_mode === 'stereo';
+    const repeat_note = !available ? 'Select a filter bank for measurement.'
+        : repeat_supported ? '' : `${label} is a mono target. Use a single sweep.`;
     return {
         bank_id: selected,
         label,
-        channel,
-        note: `Only ${label} stays audible; every other output is muted for this sweep.`,
+        channel: 'stereo',
+        channel_mode,
+        available,
+        note: !available ? repeat_note : selected === 'global'
+            ? 'Whole system: Global plus every area bank stay audible for this sweep.'
+            : `Only ${label} stays audible; every other output is muted for this sweep.`,
         repeat_supported,
         repeat_note,
     };
 }
 
-function bankOptions(modeConfig, capabilities) {
-    const banks = (modeConfig && modeConfig.banks) || {};
-    const canonical = rolesForMode(modeConfig && modeConfig.topology && modeConfig.topology.mode, capabilities);
-    const active = modeConfig?.topology?.roles || [];
-    const ordered = ['global', ...canonical.filter((id) => id in banks && active.includes(id))];
-    return ordered.map((id) => ({ id, label: roleLabel(id) }));
+function bankOptions(modeConfig) {
+    const banks = modeConfig?.banks || {};
+    return [{ id: 'global', label: 'Global' }, { id: 'all', label: 'All Banks' },
+        ...Object.entries(banks).filter(([id]) => id !== 'global').map(([id, bank]) => ({ id, label: bank.label || roleLabel(id) }))];
 }
 
-function bankInfoLine(bank) {
-    if (!bank) return 'No bank selected';
-    const preset = bank.preset || '—';
-    const side = bank.active_side === 'B' ? 'B' : 'A';
-    const other = bank.preset_b ? ` · B: ${bank.preset_b}` : '';
-    return `Listening: ${preset} · A: ${bank.preset_a || '—'}${other} (slot ${side})`;
+function bankSelectorVisible(modeConfig) {
+    const roles = modeConfig?.topology?.roles || [];
+    return roles.length > 0 && !(roles.length === 2 && roles.includes('main_l') && roles.includes('main_r'));
+}
+
+function bankBinding(catalog) {
+    if (!catalog) return null;
+    const bankId = catalog.modes?.[catalog.active_mode]?.selected_bank || 'global';
+    if (bankId === 'all') throw new Error('Select a filter bank for import or measurement.');
+    return { bank_mode: catalog.active_mode, bank_id: bankId, expected_revision: catalog.revision };
+}
+
+function peqParams(channelMode, leftBands, rightBands, eqMode) {
+    return channelMode === 'mono'
+        ? { channelMode: 'stereo-linked', eqMode, bands: leftBands }
+        : { channelMode: 'dual', eqMode, leftBands, rightBands };
+}
+
+function compareState(catalog) {
+    const config = catalog?.modes?.[catalog.active_mode];
+    if (!config) return null;
+    const aggregate = config.selected_bank === 'all';
+    const bank = aggregate ? config.all_banks : config.banks?.[config.selected_bank];
+    if (!bank) return null;
+    const presetA = bank.preset_a || '';
+    const presetB = bank.preset_b || '';
+    return {
+        compare: { presetA, presetB, activeSide: bank.active_side },
+        activePreset: bank.preset || '', effectiveActiveSide: bank.active_side,
+        presetA, presetB, aggregate, canA: bank.can_a ?? !!presetA, canB: bank.can_b ?? !!presetB,
+    };
 }
 
 function buildMutation(kind, fields) {
@@ -268,12 +269,11 @@ function renderRoutingGrid(grid, catalog, mode, assignments, channelCount, disab
     }
 }
 
-function renderBankSelector(select, info, catalog, mode) {
+function renderBankSelector(select, catalog, mode) {
     const modeConfig = catalog && catalog.modes && catalog.modes[mode];
     if (!select) return null;
     if (!modeConfig) {
         select.innerHTML = '';
-        if (info) info.textContent = '';
         return null;
     }
     const options = bankOptions(modeConfig, catalog.capabilities);
@@ -282,7 +282,7 @@ function renderBankSelector(select, info, catalog, mode) {
     if (select.innerHTML !== html) select.innerHTML = html;
     if (select.value !== modeConfig.selected_bank) select.value = modeConfig.selected_bank;
     const bank = modeConfig.banks[modeConfig.selected_bank];
-    if (info) info.textContent = bankInfoLine(bank);
+    select.closest('.effects-bank-row')?.classList.toggle('hidden', !bankSelectorVisible(modeConfig));
     return bank || null;
 }
 
@@ -298,11 +298,12 @@ function renderBankSelector(select, info, catalog, mode) {
         subwooferView,
         topologySummary,
         summedRoleIds,
-        repeatSupported,
-        bankSweepChannel,
         measurementArea,
         bankOptions,
-        bankInfoLine,
+        bankSelectorVisible,
+        bankBinding,
+        peqParams,
+        compareState,
         buildMutation,
         fetchCatalog,
         applyMutation,

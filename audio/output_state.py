@@ -7,6 +7,7 @@ import copy
 import math
 
 from audio.output_routing import device_key
+from audio.filter_banks import bank_definitions, resolve_bank, summarize_banks
 from audio.output_topology import MAIN_ROLES, MODES, derive_topology, roles_for_mode, validate_assignments
 from dsp.banks import BankState
 
@@ -125,7 +126,7 @@ def validate_output_state(payload: object) -> dict:
         for bank in banks.values():
             BankState.from_dict(bank)
         selected = config["selected_bank"]
-        if not isinstance(selected, str) or selected not in banks:
+        if not isinstance(selected, str) or selected not in {"all", *banks, *bank_definitions(banks)}:
             raise ValueError("Selected bank is not stored in its output mode")
         if not isinstance(processing, dict) or set(processing) != set(banks) - {"global"}:
             raise ValueError("Every area bank requires corresponding output processing")
@@ -169,9 +170,17 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
         if role != "off":
             config["banks"].setdefault(role, BankState().to_dict())
             config["processing"].setdefault(role, default_processing())
-    active = derive_topology(mode, values, channels=count, crossover_enabled=config["crossover_enabled"]).bank_ids
-    if config["selected_bank"] not in active:
-        config["selected_bank"] = "global"
+    topology = derive_topology(mode, values, channels=count, crossover_enabled=config["crossover_enabled"])
+    active = topology.bank_ids
+    try:
+        selected = resolve_bank(config, config["selected_bank"], topology.roles)["id"]
+    except ValueError:
+        selected = "global"
+    if selected not in (*active, "all"):
+        selected = "global"
+    if set(topology.roles) == {"main_l", "main_r"}:
+        selected = "global"
+    config["selected_bank"] = selected
     return validate_output_state(result)
 
 
@@ -203,7 +212,7 @@ def set_crossover(state: dict, mode: str, enabled: bool) -> dict:
             if role != "off":
                 config["banks"].setdefault(role, BankState().to_dict())
                 config["processing"].setdefault(role, default_processing())
-    if config["selected_bank"] not in ("global", *allowed):
+    if config["selected_bank"] not in ("global", "all", *allowed, *bank_definitions(allowed)):
         config["selected_bank"] = "global"
     return validate_output_state(result)
 
@@ -212,38 +221,50 @@ _UNCHANGED: object = object()
 
 
 def set_bank_preset(state: dict, mode: str, bank_id: str, *, preset: str | None = None,
-                    preset_a: str | None = None, preset_b: str | None = None,
-                    active_side: str | None = None) -> dict:
+                    preset_a: str | None = None, preset_b: object = _UNCHANGED,
+                    active_side: str | None = None, roles=None) -> dict:
     """Assign bank presets without touching routing or other banks.
 
     ``preset`` writes the currently listened slot (slot A when the bank
     listens to neither slot yet) and listens to it. ``active_side`` alone
     switches listening; an unassigned B side is rejected. Slot arguments
-    set compare slots directly; ``None`` leaves a field unchanged (slot B
-    cannot be cleared through this call).
+    set compare slots directly; an explicit ``preset_b=None`` clears B.
     """
     result = validate_output_state(state)
     roles_for_mode(mode)
     banks = result["modes"][mode]["banks"]
-    if bank_id not in banks:
-        raise ValueError(f"Bank {bank_id} is not stored in output mode {mode}")
-    current = dict(banks[bank_id])
-    if preset_a is not None:
-        current["preset_a"] = preset_a
-    if preset_b is not None:
-        current["preset_b"] = preset_b
-    if preset is not None:
-        slot = active_side or BankState.from_dict(current).active_side or "A"
-        current[f"preset_{slot.lower()}"] = preset
-        current["preset"] = preset
-    elif active_side is not None:
-        if active_side not in {"A", "B"}:
-            raise ValueError("Compare side must be A or B")
-        target = current["preset_b"] if active_side == "B" else current["preset_a"]
-        if target is None:
-            raise ValueError("Compare side B has no assigned preset")
-        current["preset"] = target
-    banks[bank_id] = BankState.from_dict(current).to_dict()
+    members = resolve_bank(result["modes"][mode], bank_id, roles)["roles"]
+    if active_side is not None and active_side not in {"A", "B"}:
+        raise ValueError("Compare side must be A or B")
+    slot = active_side or summarize_banks([banks[role] for role in members])["active_side"] or "A"
+    for role in members:
+        current = dict(banks[role])
+        if preset_a is not None:
+            current["preset_a"] = preset_a
+        if preset_b is not _UNCHANGED:
+            current["preset_b"] = preset_b
+        if preset is not None:
+            current[f"preset_{slot.lower()}"] = preset
+            current["preset"] = preset
+        elif active_side is not None:
+            target = current["preset_b"] if active_side == "B" else current["preset_a"]
+            if target is None:
+                raise ValueError("Compare side B has no assigned preset")
+            current["preset"] = target
+        banks[role] = BankState.from_dict(current).to_dict()
+    return validate_output_state(result)
+
+
+def switch_all_banks(state: dict, mode: str, output_key: str, channels: int, active_side: str) -> dict:
+    """Switch configured area bindings atomically, excluding Global and dormant roles."""
+    result = validate_output_state(state)
+    config = result["modes"][mode]
+    topology = derive_topology(mode, routing_for_device(result, mode, output_key), channels=channels,
+                               crossover_enabled=config["crossover_enabled"])
+    if not topology.roles:
+        raise ValueError("No configured area banks")
+    for role in topology.roles:
+        config["banks"][role] = BankState.from_dict(config["banks"][role]).select(active_side).to_dict()
     return validate_output_state(result)
 
 
@@ -298,6 +319,14 @@ def select_bank(state: dict, mode: str, output_key: str, channels: int, bank_id:
     result = validate_output_state(state)
     active = derive_topology(mode, routing_for_device(result, mode, output_key), channels=channels,
                              crossover_enabled=result["modes"][mode]["crossover_enabled"])
+    if set(active.roles) == {"main_l", "main_r"} and bank_id != "global":
+        raise ValueError("Pure stereo uses the Global bank; no bank selection is shown")
+    if bank_id == "all":
+        if not active.roles:
+            raise ValueError("No configured area banks")
+        result["modes"][mode]["selected_bank"] = "all"
+        return result
+    bank_id = resolve_bank(result["modes"][mode], bank_id, active.roles)["id"]
     if bank_id not in active.bank_ids:
         raise ValueError("Bank is not configured on the available hardware outputs")
     result["modes"][mode]["selected_bank"] = bank_id

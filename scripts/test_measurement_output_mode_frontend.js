@@ -81,10 +81,17 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         MeasurementUI,
         state,
         // Area contract: the sweep side and bank come from the A/B catalog.
+        // Banks are grouped (stereo pairs share one bank, mono roles stand
+        // alone); the catalog carries the projected compare slots.
         OutputState: require('../static/output_state.js'),
         outputCatalog: {
             active_mode: 'stereo',
-            modes: { stereo: { selected_bank: 'main_l', banks: { global: {}, main_l: {} } } },
+            revision: 4,
+            modes: { stereo: { selected_bank: 'main',
+                banks: {
+                    global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' },
+                    main: { id: 'main', label: 'Main L/R', roles: ['main_l', 'main_r'], channel_mode: 'stereo' },
+                } } },
         },
         elements: {
             measurementCalibrationFile: null,
@@ -145,6 +152,7 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         async function pollMeasurementJob() {}
         ${extractFunction('formatTransitionErrorDetail')}
         ${extractFunction('flushSubwooferSettingsBeforeMeasurement')}
+        ${extractFunction('requireConcreteFilterBank')}
         ${extractFunction('startHostMeasurement')}
         ${extractFunction('startLrRepeatMeasurement')}
         ${extractFunction('measurementAreaBadge')}
@@ -190,9 +198,10 @@ async function main() {
     committed.context.releaseSnapshot();
     await committedStart;
     // The selected area decides the sweep side and the frozen bank target.
+    // A stereo pair measures through both inputs together.
     const committedStartForm = committed.startForm;
-    assert.equal(committedStartForm.get('channel'), 'left');
-    assert.equal(committedStartForm.get('measurement_bank'), 'main_l');
+    assert.equal(committedStartForm.get('channel'), 'stereo');
+    assert.equal(committedStartForm.get('measurement_bank'), 'main');
 
     const repeat = makeMeasurementContext();
     const repeatStart = repeat.context.startLrRepeatMeasurement();
@@ -201,15 +210,20 @@ async function main() {
     repeat.context.releaseSnapshot();
     await repeatStart;
     // The repeat freezes the same selected area for its internal way sweeps.
-    assert.equal(repeat.startForm.get('measurement_bank'), 'main_l');
+    assert.equal(repeat.startForm.get('measurement_bank'), 'main');
     assert.equal(repeat.startForm.get('channel'), undefined);
 
-    // A summed-sub bank (both inputs at 0.5) is mono on the preset side: the
-    // take helpers disable the takes that cannot compile there and say why.
+    // A mono bank (one output role) takes the single-sided flow: the take
+    // helpers disable the takes that cannot compile there and say why.
     const summedContext = makeMeasurementContext();
     summedContext.context.outputCatalog = {
         active_mode: 'stereo',
-        modes: { stereo: { selected_bank: 'sub1', banks: { global: {}, sub1: {} } } },
+        revision: 4,
+        modes: { stereo: { selected_bank: 'sub1',
+            banks: {
+                global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' },
+                sub1: { id: 'sub1', label: 'Sub 1', roles: ['sub1'], channel_mode: 'mono' },
+            } } },
     };
     assert.equal(summedContext.context.measurementBankSumsBothInputs(), true);
     const makeButton = () => ({ disabled: false, title: '', dataset: {} });

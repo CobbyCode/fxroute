@@ -96,6 +96,10 @@ class AudioStateApiTests(unittest.TestCase):
         stereo = catalog["modes"]["stereo-sub"]
         self.assertEqual(stereo["selected_bank"], "global")
         self.assertEqual(stereo["banks"]["sub1"]["preset"], "Neutral")
+        self.assertEqual(list(stereo["banks"]), ["global", "main", "sub1"])
+        self.assertEqual(stereo["banks"]["main"]["roles"], ["main_l", "main_r"])
+        self.assertEqual(stereo["banks"]["main"]["channel_mode"], "stereo")
+        self.assertEqual(stereo["banks"]["sub1"]["channel_mode"], "mono")
         self.assertEqual(stereo["topology"]["sub_mode"], "mono")
         self.assertEqual(stereo["topology"]["issues"], [])
         self.assertIn("linkwitz-riley", catalog["capabilities"]["filter_families"])
@@ -162,6 +166,8 @@ class AudioStateApiTests(unittest.TestCase):
                 {"kind": "set_processing", "mode": "stereo-sub", "role": "left_low",
                  "level_db": 0.0},
                 {"kind": "select_bank", "mode": "stereo-sub", "bank_id": "left_low"},
+                {"kind": "set_bank_preset", "mode": "stereo-sub",
+                 "bank_id": "sub1", "preset": "Missing Preset"},
                 {"kind": "set_routing", "mode": "stereo-sub",
                  "assignments": ["left_low", "main_r"]},
                 {"kind": "set_routing", "mode": "stereo-sub", "assignments": ["main_l"],
@@ -217,6 +223,44 @@ class DspBankApiTests(unittest.TestCase):
 
     def tearDown(self):
         dsp_api.configure_dsp_api(self.previous)
+
+    def test_dual_import_projects_each_side_of_shared_main_bank(self):
+        bands = lambda frequency, gain: [{"filterType": "bell", "frequencyHz": frequency, "gainDb": gain, "q": 1}]
+        result = asyncio.run(dsp_api.create_peq_preset(FakeRequest({
+            "presetName": "Pair EQ", "loadAfterCreate": True,
+            "peq": {"enabled": True, "params": {"channelMode": "dual",
+                    "leftBands": bands(900, -2), "rightBands": bands(1100, -4)}},
+            "bank_mode": "stereo-sub", "bank_id": "main", "expected_revision": 1,
+        })))
+        self.assertTrue(result["bank"]["assigned"])
+        state = self.service.load()
+        plan = self.service.compile_plan(state, output_key="A", channels=4, sample_rate_hz=48000)
+        layout = self.service.compile_layout(plan)
+        self.assertEqual(plan["global"]["preset"], "Neutral")
+        self.assertEqual([entry["bank"]["preset"] for entry in plan["outputs"][:2]], ["Pair EQ", "Pair EQ"])
+        self.assertEqual([entry["filters"][0]["frequency_hz"] for entry in layout[:2]], [900, 1100])
+        self.assertEqual([entry["filters"][0]["gain_db"] for entry in layout[:2]], [-2, -4])
+
+    def test_mono_target_rejects_different_lr_correction_before_assignment(self):
+        before = self.service.load()
+        with self.assertRaises(dsp_api.HTTPException) as ctx:
+            asyncio.run(dsp_api.create_peq_preset(FakeRequest({
+                "presetName": "Bad mono", "peq": {"enabled": True, "params": {"channelMode": "dual",
+                    "leftBands": [{"filterType": "bell", "frequencyHz": 100, "gainDb": -2, "q": 1}],
+                    "rightBands": []}},
+                "bank_mode": "stereo-sub", "bank_id": "sub1", "expected_revision": 1,
+            })))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(self.service.load(), before)
+
+    def test_all_banks_cannot_receive_an_import(self):
+        with self.assertRaises(dsp_api.HTTPException) as ctx:
+            asyncio.run(dsp_api.create_peq_preset(FakeRequest({
+                "presetName": "Invalid group", "peq": {"params": {"bands": []}},
+                "bank_mode": "stereo-sub", "bank_id": "all", "expected_revision": 1,
+            })))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertFalse(self.manager.preset_store.path("Invalid group").exists())
 
     def test_delete_pinned_bank_preset_is_refused(self):
         self.service.apply(

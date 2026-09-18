@@ -106,6 +106,9 @@ async function main() {
         'outputSystemModule',
         'outputSystemBankBinding',
         'bankBindingJson',
+        'measurementAreaFromCatalog',
+        'requireConcreteFilterBank',
+        'measurementPeqParams',
         'fetchOutputSystemCatalog',
     ].map(extractFunction).join('\n');
     vm.runInContext(`let peqCreateInFlight = false;\n${functions}`, context);

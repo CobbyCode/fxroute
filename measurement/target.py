@@ -21,6 +21,7 @@ import copy
 from collections.abc import Sequence
 
 from audio.output_routing import device_key
+from audio.filter_banks import resolve_bank, summarize_banks
 from audio.output_state import routing_for_device, validate_output_state
 from audio.output_topology import MAX_CHANNELS, SUB_ROLES, derive_topology
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
@@ -83,8 +84,13 @@ def freeze_measurement_target(
     """
     validated = validate_output_state(state)
     mode = validated["active_mode"]
-    if not isinstance(bank_id, str) or bank_id not in validated["modes"][mode]["banks"]:
-        raise ValueError(f"Bank {bank_id!r} is not stored in output mode {mode}")
+    config = validated["modes"][mode]
+    if not isinstance(bank_id, str):
+        raise ValueError("Measurement bank must be a string")
+    try:
+        definition = resolve_bank(config, bank_id)
+    except ValueError as exc:
+        raise ValueError(f"Bank {bank_id!r} is not stored in output mode {mode}") from exc
     if not isinstance(output_key, str) or not output_key.strip():
         raise ValueError("Output device key must be a non-empty string")
     _bounded_int(channels, "Measurement channel count", MAX_CHANNELS)
@@ -93,7 +99,9 @@ def freeze_measurement_target(
     topology = derive_topology(mode, routing_for_device(validated, mode, output_key), channels=channels,
                                crossover_enabled=validated["modes"][mode]["crossover_enabled"])
     topology.require_activatable()
-    if bank_id != GLOBAL_BANK_ID and bank_id not in topology.roles:
+    # Internal Speaker Align captures can still address one physical way.
+    measured = ([bank_id] if bank_id in topology.roles else definition["roles"])
+    if bank_id != GLOBAL_BANK_ID and not set(measured) <= set(topology.roles):
         raise ValueError(f"Bank {bank_id} is not an active role on the selected outputs")
     banks = validated["modes"][mode]["banks"]
     return {
@@ -102,13 +110,13 @@ def freeze_measurement_target(
         "mode": mode,
         "device_key": device_key(output_key),
         "bank_id": bank_id,
-        "preset": banks[bank_id]["preset"],
+        "preset": summarize_banks([banks[role] for role in (['global'] if bank_id == GLOBAL_BANK_ID else measured)])["preset"],
         "revision": validated["revision"],
         "processing_fingerprint": fingerprint,
         "sample_rate_hz": sample_rate_hz,
         "channels": channels,
         "roles": list(topology.roles),
-        "measured_roles": list(topology.roles) if bank_id == GLOBAL_BANK_ID else [bank_id],
+        "measured_roles": list(topology.roles) if bank_id == GLOBAL_BANK_ID else list(measured),
         "reference_tap": REFERENCE_TAP_INGRESS,
     }
 

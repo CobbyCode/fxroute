@@ -118,9 +118,8 @@ def main() -> int:
             page.evaluate("document.getElementById('tab-btn-effects').click()")
             page.wait_for_selector("#effects-bank-select", state="visible", timeout=5000)
             bank_options = page.locator("#effects-bank-select option").all_inner_texts()
-            check(f"bank selector lists ways ({len(bank_options)} options)", len(bank_options) >= 7)
-            info = page.locator("#effects-bank-info").inner_text()
-            check(f"bank info shows preset ({info})", "Listening" in info)
+            check("bank selector groups stereo ways", bank_options == ['Global', 'All Banks', 'Low L/R', 'Mid L/R', 'High L/R', 'Sub L/R'])
+            check("no redundant bank status", page.locator("#effects-bank-info").count() == 0)
             card = page.locator("#effects-crossover-card")
             check("crossover card visible", card.is_visible())
             order = page.evaluate(
@@ -201,11 +200,10 @@ def main() -> int:
             page.screenshot(path=str(shots / "os-crossover.png"))
 
             # Switch the bank and the way tab; both must update without errors.
-            pick("#effects-bank-select", "left_mid")
+            pick("#effects-bank-select", "mid")
             page.wait_for_timeout(800)
-            check("bank info follows selection",
-                  "Room" in page.locator("#effects-bank-info").inner_text()
-                  or "Neutral" in page.locator("#effects-bank-info").inner_text())
+            check("bank selection follows pair", page.locator("#effects-bank-select").input_value() == 'mid')
+            check("measurement follows pair", page.evaluate("measurementAreaFromCatalog().label") == 'Mid L/R')
             page.locator("[data-crossover-way='right_high']").click()
             page.wait_for_timeout(400)
             check("way tab activates",

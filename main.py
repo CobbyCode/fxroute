@@ -369,7 +369,8 @@ from audio.output_state import (
 )
 from audio.output_state_store import OutputStateStore, StateConflictError
 from audio.output_topology import MODES, SUB_ROLES, derive_topology
-from dsp.banks import BankState
+from audio.filter_banks import bank_catalog, resolve_bank, selected_bank, summarize_banks
+from audio.output_state import switch_all_banks
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
 from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
@@ -3989,7 +3990,9 @@ def _freeze_measurement_target(bank_id: str, sample_rate_hz: int) -> dict:
     overview = get_audio_output_overview()
     output_key, channels = _output_state_device(overview)
     channel_count = int(channels or 0)
-    bank = str(bank_id or "").strip() or state["modes"][state["active_mode"]]["selected_bank"]
+    topology = _output_state_topology(state, state["active_mode"], output_key, channel_count)
+    bank = str(bank_id or "").strip() or selected_bank(state["modes"][state["active_mode"]], topology["roles"])
+    bank = resolve_bank(state["modes"][state["active_mode"]], bank, topology["roles"])["id"]
     fingerprint = service.fingerprint(state, output_key=output_key, channels=channel_count,
                                       sample_rate_hz=sample_rate_hz)
     return freeze_measurement_target(
@@ -4017,6 +4020,9 @@ def _verify_measurement_commit(measurement_id: str, binding: dict) -> None:
     into and the processing the committed state compiles to.  A measurement
     from before the frozen-target era carries no context and is accepted
     unchanged, as is any commit whose area and processing are untouched.
+    Single-role targets frozen before stereo-pair banks existed stay
+    fail-closed: their measured_roles cover one channel only, so committing
+    them into a pair bank is rejected rather than applied to both channels.
     """
     store = measurement_store
     if store is None:
@@ -4110,8 +4116,25 @@ def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: i
         mode = _require_state_mode(args.get("mode"))
         bank_id = _require_bank_id(args.get("bank_id"))
         options = {name: args[name] for name in ("preset", "preset_a", "preset_b", "active_side")
-                   if args.get(name) is not None}
-        return lambda state: set_bank_preset(state, mode, bank_id, **options)
+                   if name in args}
+
+        def update_bank(state):
+            topology = _output_state_topology(state, mode, output_key, channels)
+            definition = resolve_bank(state["modes"][mode], bank_id, topology["roles"])
+            for name in ("preset", "preset_a", "preset_b"):
+                if options.get(name) is not None:
+                    try:
+                        get_output_service().validate_bank_preset(state, mode, definition["id"], options[name], roles=topology["roles"])
+                    except FileNotFoundError as exc:
+                        raise ValueError(f"Unknown preset {options[name]!r}") from exc
+            return set_bank_preset(state, mode, definition["id"], roles=topology["roles"], **options)
+        return update_bank
+    if kind == "switch_all_banks":
+        args = strict({"mode", "active_side"})
+        mode = _require_state_mode(args.get("mode"))
+        if channels is None:
+            raise HTTPException(status_code=400, detail="Output channel capacity is unknown")
+        return lambda state: switch_all_banks(state, mode, output_key, channels, args.get("active_side"))
     if kind == "set_processing":
         args = strict({"mode", "role", "highpass", "lowpass", "level_db",
                        "alignment_ms", "polarity"})
@@ -4354,18 +4377,17 @@ async def get_audio_output_state():
     output_key, channels = _output_state_device(overview)
     modes = {}
     for mode, config in state["modes"].items():
-        banks = {}
-        for bank_id, bank in config["banks"].items():
-            active_side = BankState.from_dict(bank).active_side
-            banks[bank_id] = {**bank, "active_side": active_side}
+        topology = _output_state_topology(state, mode, output_key, channels)
+        banks = bank_catalog(config, topology["roles"])
         modes[mode] = {
             "crossover_enabled": config["crossover_enabled"],
-            "selected_bank": config["selected_bank"],
+            "selected_bank": selected_bank(config, topology["roles"]),
             "banks": banks,
+            "all_banks": summarize_banks([config["banks"][role] for role in topology["roles"]]),
             "processing": config["processing"],
             "bass_management": config["bass_management"],
             "extras": config["extras"],
-            "topology": _output_state_topology(state, mode, output_key, channels),
+            "topology": topology,
         }
     return {
         "status": "ok",
@@ -4395,6 +4417,10 @@ async def apply_audio_output_state(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"expected_revision": <int>, "mutation": {...}}')
+    return await _apply_audio_output_state_body(body)
+
+
+async def _apply_audio_output_state_body(body: dict):
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"expected_revision": <int>, "mutation": {...}}')
     expected_revision = body.get("expected_revision")

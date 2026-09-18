@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.235">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.236">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -528,13 +528,13 @@
                         <div class="effects-card-header effects-import-card-header">
                             <div>
                                 <h3>Import filter</h3>
-                                <p>Stereo goes to both channels; Left and Right stay separate.</p>
+                                <p id="effects-import-bank-target">Target: Global · Stereo L/R</p>
                             </div>
                         </div>
                         <div class="effects-stack">
                             <div class="effects-import-section-head">
-                                <span class="effects-import-section-title">Stereo → both</span>
-                                <span class="effects-import-section-meta">Main path</span>
+                                <span id="effects-import-file-title" class="effects-import-section-title">Stereo file</span>
+                                <span class="effects-import-section-meta">Preset or IR</span>
                             </div>
                             <div id="effects-import-area" class="upload-area upload-area-file-primary effects-filter-import-area">
                                 <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></span>
@@ -543,8 +543,8 @@
                                 <input type="file" id="effects-import-file" class="upload-area-input" accept=".irs,.wav,.json,audio/wav,application/json">
                             </div>
                             <div class="effects-import-section-head effects-import-section-head-secondary">
-                                <span class="effects-import-section-title">Left / Right</span>
-                                <span class="effects-import-section-meta">Channel specific</span>
+                                <span id="effects-import-split-title" class="effects-import-section-title">Left / Right</span>
+                                <span id="effects-import-split-meta" class="effects-import-section-meta">Paired channels</span>
                             </div>
                             <div class="effects-rew-dual-grid">
                                 <div class="effects-rew-pane">
@@ -779,16 +779,17 @@
                         </section>
 
                         <section class="effects-card effects-card-manage effects-card-manage-order">
-                            <div class="effects-card-header">
-                                <h3>A/B compare</h3>
-                                <p>Compare two presets.</p>
+                            <div class="effects-card-header effects-compare-header">
+                                <div>
+                                    <h3>A/B compare</h3>
+                                    <p>Compare two presets.</p>
+                                </div>
+                                <div class="effects-bank-row hidden">
+                                    <label for="effects-bank-select">Bank</label>
+                                    <select id="effects-bank-select" class="url-input" aria-label="Filter bank"></select>
+                                </div>
                             </div>
                             <div class="effects-stack">
-                                <div class="field-group effects-bank-row">
-                                    <label for="effects-bank-select">Filter Bank</label>
-                                    <select id="effects-bank-select" class="url-input"></select>
-                                    <p id="effects-bank-info" class="settings-inline-note"></p>
-                                </div>
                                 <div id="effects-compare-row" class="effects-compare-row" style="display:none">
                                     <div id="effects-compare-active-badge" class="effects-compare-active-badge">
                                         <span id="effects-compare-active" class="effects-compare-active">Listening: —</span>
@@ -1668,11 +1669,11 @@
     <script src="/static/measurement_ui.js?v=0.9.18"></script>
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
     <script src="/static/measurement_flows.js?v=0.9.25"></script>
-    <script src="/static/output_state.js?v=0.9.7"></script>
+    <script src="/static/output_state.js?v=0.9.8"></script>
     <script src="/static/crossover.js?v=0.9.2"></script>
     <script src="/static/speaker_align.js?v=0.9.2"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.180"></script>
+    <script src="/static/app.js?v=0.9.181"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

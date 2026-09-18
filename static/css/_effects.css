@@ -83,6 +83,40 @@
 }
 
 /* Preset compare A/B row */
+.effects-compare-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.65rem 1rem;
+}
+
+.effects-bank-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 100%;
+}
+
+.effects-bank-row label {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.effects-bank-row .url-input {
+    width: auto;
+    min-width: 8.5rem;
+    max-width: 12rem;
+    min-height: 36px;
+    padding-block: 0.35rem;
+    font-size: 0.85rem;
+    background-color: var(--bg-surface);
+}
+
+.effects-rew-dual-grid.is-mono {
+    grid-template-columns: 1fr;
+}
+
 .effects-compare-row {
     display: flex;
     flex-direction: column;

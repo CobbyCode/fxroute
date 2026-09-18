@@ -40,7 +40,7 @@ class OutputTopologyTests(unittest.TestCase):
             self.assertEqual(topology.left_ways, tuple(f"left_{way}" for way in ways))
             self.assertEqual(topology.right_ways, tuple(f"right_{way}" for way in ways))
             self.assertEqual(topology.sub_mode, "mono")
-            self.assertEqual(topology.bank_ids, ("global", *assignments, "sub1"))
+            self.assertEqual(topology.bank_ids, ("global", *ways, "sub1"))
 
     def test_stereo_without_subs_uses_only_stereo_roles(self):
         topology = derive_topology("stereo", ["main_l", "main_r"])

@@ -486,7 +486,6 @@ const elements = {
     osTopology: document.getElementById('os-topology'),
     osFeedback: document.getElementById('os-feedback'),
     effectsBankSelect: document.getElementById('effects-bank-select'),
-    effectsBankInfo: document.getElementById('effects-bank-info'),
     effectsCrossoverCard: document.getElementById('effects-crossover-card'),
     effectsCrossoverSummary: document.getElementById('effects-crossover-summary'),
     effectsCrossoverTabs: document.getElementById('effects-crossover-tabs'),
@@ -3526,7 +3525,7 @@ async function fetchOutputSystemCatalog(force = false) {
         state.outputSystem.catalog = null;
     }
     renderOutputSystemSection();
-    renderEffectsBankSelector();
+    renderEffectsCompare();
     if (state.outputSystem.catalog?.modes?.[state.outputSystem.catalog.active_mode]?.crossover_enabled) {
         void fetchCrossoverResponse();
     } else {
@@ -3591,7 +3590,7 @@ function renderMeasurementArea() {
             : 'Whole system: Global plus every area bank stay audible for this sweep.';
     }
     if (elements.measurementSweepStartBtn) {
-        elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight;
+        elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight || area?.available === false;
     }
     syncSpeakerAlignButton();
 }
@@ -3692,15 +3691,7 @@ async function applyOutputSystemMutation(kind, fields, successMessage, options =
 
 function outputSystemBankBinding() {
     const catalog = (state.outputSystem || {}).catalog;
-    if (!catalog) return null;
-    const mode = catalog.active_mode || 'stereo';
-    const modeConfig = catalog.modes[mode] || {};
-    if (!modeConfig.selected_bank) return null;
-    return {
-        bank_mode: mode,
-        bank_id: modeConfig.selected_bank,
-        expected_revision: catalog.revision,
-    };
+    return outputSystemModule()?.bankBinding(catalog) || null;
 }
 
 function appendBankBindingFields(formData) {
@@ -3716,17 +3707,62 @@ function bankBindingJson() {
     return outputSystemBankBinding() || {};
 }
 
+function measurementPeqParams(leftBands, rightBands, eqMode) {
+    const mod = outputSystemModule();
+    const channelMode = measurementAreaFromCatalog()?.channel_mode;
+    if (mod && typeof mod.peqParams === 'function') {
+        return mod.peqParams(channelMode, leftBands, rightBands, eqMode);
+    }
+    return { channelMode: 'dual', eqMode, leftBands, rightBands };
+}
+
+function requireConcreteFilterBank() {
+    if (measurementAreaFromCatalog()?.available !== false) return true;
+    showToast('Select a filter bank for import or measurement.', 'warning');
+    return false;
+}
+
 function renderEffectsBankSelector() {
     const mod = outputSystemModule();
     const catalog = (state.outputSystem || {}).catalog;
     if (!mod || !elements.effectsBankSelect) return;
     if (!catalog) {
         elements.effectsBankSelect.innerHTML = '';
-        if (elements.effectsBankInfo) elements.effectsBankInfo.textContent = '';
+        elements.effectsBankSelect.closest('.effects-bank-row')?.classList.add('hidden');
         return;
     }
-    mod.renderBankSelector(elements.effectsBankSelect, elements.effectsBankInfo,
-        catalog, catalog.active_mode || 'stereo');
+    mod.renderBankSelector(elements.effectsBankSelect, catalog, catalog.active_mode || 'stereo');
+    elements.effectsBankSelect.disabled = !!state.outputSystem.busy || effectsCompareLoadInFlight;
+    renderMeasurementArea();
+    renderBankImportTarget();
+}
+
+function renderBankImportTarget() {
+    const area = measurementAreaFromCatalog();
+    const mono = area?.channel_mode === 'mono';
+    const note = document.getElementById('effects-import-bank-target');
+    if (note) note.textContent = area?.available === false ? 'Select a filter bank before importing.'
+        : `Target: ${area?.label || 'Global'} · ${mono ? 'Mono' : 'Stereo L/R'}`;
+    const right = elements.effectsRewRightText?.closest('.effects-rew-pane');
+    right?.classList.toggle('hidden', mono);
+    document.querySelector('.effects-rew-dual-grid')?.classList.toggle('is-mono', mono);
+    document.getElementById('effects-peq-right-bands')?.closest('.effects-peq-pane')?.classList.toggle('hidden', mono);
+    const peqLeftLabel = document.getElementById('effects-peq-left-bands-label');
+    if (peqLeftLabel) peqLeftLabel.textContent = mono ? 'Mono bands' : 'Left bands';
+    const importTitle = document.getElementById('effects-import-file-title');
+    if (importTitle) importTitle.textContent = mono ? 'Mono file' : 'Stereo file';
+    const splitTitle = document.getElementById('effects-import-split-title');
+    if (splitTitle) splitTitle.textContent = mono ? 'Mono filter' : 'Left / Right';
+    const splitMeta = document.getElementById('effects-import-split-meta');
+    if (splitMeta) splitMeta.textContent = mono ? 'One output role' : 'Paired channels';
+    const fileText = document.querySelector('#effects-import-area .upload-area-text');
+    if (fileText) fileText.innerHTML = `Drop ${mono ? 'mono' : 'stereo'} file or <u>browse</u>`;
+    const leftText = document.querySelector('#effects-rew-left-area .upload-area-text');
+    if (leftText) leftText.innerHTML = `Drop ${mono ? 'mono' : 'Left'} file or <u>browse</u>`;
+    const leftLabel = document.querySelector('label[for="effects-rew-left-text"]');
+    if (leftLabel) leftLabel.textContent = mono ? 'Mono filter' : 'Left filter';
+    if (elements.effectsRewLeftText) elements.effectsRewLeftText.placeholder = mono ? 'Paste mono REW filter' : 'Paste Left REW filter';
+    if (elements.effectsRewDualCreatePresetBtn) elements.effectsRewDualCreatePresetBtn.disabled = area?.available === false;
 }
 
 function crossoverModule() {
@@ -8237,11 +8273,13 @@ async function populateDualFilterTextareaFromFile(side, file) {
 }
 
 async function createDualFilterPreset() {
+    if (!requireConcreteFilterBank()) return;
+    const mono = measurementBankSumsBothInputs();
     const presetName = elements.effectsRewDualPresetName?.value?.trim() || '';
     const leftText = elements.effectsRewLeftText?.value?.trim() || '';
-    const rightText = elements.effectsRewRightText?.value?.trim() || '';
+    const rightText = mono ? leftText : elements.effectsRewRightText?.value?.trim() || '';
     const leftFile = elements.effectsRewLeftFile?.files?.[0] || null;
-    const rightFile = elements.effectsRewRightFile?.files?.[0] || null;
+    const rightFile = mono ? leftFile : elements.effectsRewRightFile?.files?.[0] || null;
     const leftFileKind = getDualFilterFileKind(leftFile);
     const rightFileKind = getDualFilterFileKind(rightFile);
     const usingDualFiles = !!leftFile && !!rightFile;
@@ -8294,11 +8332,19 @@ async function createDualFilterPreset() {
         formData.append('bass_amount', String(extras.bassAmount));
         formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
         formData.append('tone_effect_mode', extras.toneEffectMode);
-        if (leftFile) formData.append('left_file', leftFile);
-        if (rightFile) formData.append('right_file', rightFile);
+        let endpoint = '/api/dsp/presets/import-filter-dual';
+        if (mono) {
+            formData.delete('left_text');
+            formData.delete('right_text');
+            endpoint = usingDualConvolverFiles ? '/api/dsp/presets/create-with-ir' : '/api/dsp/presets/import-rew-peq';
+            formData.append('file', leftFile || new File([leftText], `${presetName}.txt`, { type: 'text/plain' }));
+        } else {
+            if (leftFile) formData.append('left_file', leftFile);
+            if (rightFile) formData.append('right_file', rightFile);
+        }
         appendBankBindingFields(formData);
 
-        const resp = await fetch('/api/dsp/presets/import-filter-dual', {
+        const resp = await fetch(endpoint, {
             method: 'POST',
             body: formData,
         });
@@ -8315,7 +8361,7 @@ async function createDualFilterPreset() {
         if (leftFilename) leftFilename.textContent = '';
         if (rightFilename) rightFilename.textContent = '';
         if (elements.effectsRewDualPresetName) elements.effectsRewDualPresetName.value = '';
-        const importedKind = data.import_kind === 'dual-convolver' ? 'Dual convolver' : 'Dual PEQ';
+        const importedKind = mono ? 'Mono filter' : data.import_kind === 'dual-convolver' ? 'Dual convolver' : 'Dual PEQ';
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
         showToast(`Created ${importedKind.toLowerCase()} preset: ${data.preset.name}`, 'success');
     } catch (e) {
@@ -9583,6 +9629,7 @@ function resolveMeasurementPeqPresetName(peq, fieldValue, mode) {
 }
 
 async function createMeasurementPeqPresetFromDraft() {
+    if (!requireConcreteFilterBank()) return;
     if (peqCreateInFlight) {
         showToast('PEQ preset creation already in progress', 'warning');
         return;
@@ -9618,12 +9665,7 @@ async function createMeasurementPeqPresetFromDraft() {
                 source_measurement_id: measurementCommitSourceId(),
                 peq: {
                     enabled: true,
-                    params: {
-                        channelMode: 'dual',
-                        eqMode,
-                        leftBands,
-                        rightBands,
-                    },
+                    params: measurementPeqParams(leftBands, rightBands, eqMode),
                 },
             }),
         });
@@ -9964,6 +10006,7 @@ function appendMeasurementConvolverExtras(formData) {
 }
 
 async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, options = {}) {
+    if (!requireConcreteFilterBank()) throw new Error('Select a filter bank for import or measurement.');
     const sampleRate = Number(options.sampleRate) || getMeasurementConvolverSampleRate();
     const length = Number(options.irLength) || getMeasurementConvolverFirLength();
     const phaseMode = measurementConvolverPhaseModes.includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
@@ -10111,6 +10154,7 @@ function resolveMeasurementConvolverItemName(conv, fieldValue, mode, sharedAutoG
 }
 
 async function createMeasurementConvolverPresetFromDraft() {
+    if (!requireConcreteFilterBank()) return;
     if (convolverCreateInFlight) {
         showToast('Convolver preset creation already in progress', 'warning');
         return;
@@ -11808,6 +11852,7 @@ function renderMeasurementPanelDefensively(context = 'measurement render') {
 
 
 async function startHostMeasurement(jobGeneration = state.measurement.jobGeneration) {
+    if (!requireConcreteFilterBank()) return;
     if (!state.measurement.hostCaptureAvailable || !state.measurement.selectedInputId) {
         state.measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
         renderMeasurementPanel();
@@ -11859,6 +11904,7 @@ async function startHostMeasurement(jobGeneration = state.measurement.jobGenerat
 }
 
 async function startLrRepeatMeasurement(jobGeneration = state.measurement.jobGeneration) {
+    if (!requireConcreteFilterBank()) return;
     if (!state.measurement.hostCaptureAvailable || !state.measurement.selectedInputId) {
         state.measurement.statusText = 'No usable host capture source is available for an L/R repeat measurement on this host.';
         renderMeasurementPanel();
@@ -12838,20 +12884,25 @@ function renderMeasurementPanelEditorsSection({ measurementState, current, measu
 }
 
 function measurementBankSumsBothInputs() {
-    /* The selected area is fed by both inputs (mono/dual-mono sub): its bank
-     * plays L and R identically, so per-side takes would stage one half of a
-     * correction the engine applies to both inputs. */
+    /* A mono bank is fed by both inputs (one output role), so per-side takes
+     * would stage one half of a correction the engine applies to both inputs. */
     const area = measurementAreaFromCatalog();
-    return !!area && area.channel === 'stereo' && area.bank_id !== 'global';
+    return area?.channel_mode === 'mono';
 }
 
 function syncMeasurementSummedSubTakeModes() {
-    /* Steer a summed-sub bank away from the takes that cannot compile there:
-     * the engine classifies the bank as mono, so a dual PEQ needs identical
-     * L/R bands (a single-side take would be rejected) and a convolver needs
-     * a mono IR file (a Both take would be rejected). Disabled buttons keep
-     * the tooltip as the reason. */
+    /* Steer a mono bank toward the takes that compile there: the engine sums
+     * both inputs into one output role, so a dual PEQ needs identical L/R
+     * bands and a convolver needs a mono IR file. A mono bank offers one
+     * Take Mono button; side takes are hidden. Disabled buttons keep the
+     * tooltip as the reason. */
     const summed = measurementBankSumsBothInputs();
+    for (const button of [elements.measurementPeqTakeLeftBtn, elements.measurementPeqTakeRightBtn,
+        elements.measurementConvolverTakeRightBtn, elements.measurementConvolverTakeBothBtn]) {
+        button?.classList?.toggle('hidden', summed);
+    }
+    if (elements.measurementPeqTakeBothBtn) elements.measurementPeqTakeBothBtn.textContent = summed ? 'Take Mono' : 'Take Both';
+    if (elements.measurementConvolverTakeLeftBtn) elements.measurementConvolverTakeLeftBtn.textContent = summed ? 'Take Mono' : 'Take L';
     const bothReason = summed ? 'This area is fed by both inputs: its bank needs a mono IR, so take a single side.' : '';
     const sideReason = summed ? 'This area is fed by both inputs: take Both to stage the identical L/R correction.' : '';
     for (const button of [elements.measurementPeqTakeLeftBtn, elements.measurementPeqTakeRightBtn,
@@ -13940,6 +13991,7 @@ function getPeqGainTotal(bands = []) {
     }, 0);
 }
 async function createPeqPreset() {
+    if (!requireConcreteFilterBank()) return;
     if (peqCreateInFlight) {
         showToast('PEQ preset creation already in progress', 'warning');
         return;
@@ -13958,7 +14010,7 @@ async function createPeqPreset() {
         return;
     }
     const leftBands = collectPeqBandsFromDom('left');
-    const rightBands = collectPeqBandsFromDom('right');
+    const rightBands = measurementBankSumsBothInputs() ? leftBands : collectPeqBandsFromDom('right');
     if (!leftBands.length && !rightBands.length) {
         peqCreateInFlight = false;
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please add at least one Left or Right band.</div>';
@@ -13999,12 +14051,7 @@ async function createPeqPreset() {
                 ...bankBindingJson(),
                 peq: {
                     enabled: true,
-                    params: {
-                        channelMode: 'dual',
-                        eqMode,
-                        leftBands,
-                        rightBands,
-                    },
+                    params: measurementPeqParams(leftBands, rightBands, eqMode),
                 },
             }),
         });
@@ -14026,6 +14073,7 @@ async function createPeqPreset() {
     }
 }
 async function importRewPeqPreset() {
+    if (!requireConcreteFilterBank()) return;
     const file = elements.effectsImportFile?.files?.[0];
     const presetName = file ? file.name.replace(/\.[^.]+$/, '') : '';
     if (!file) {
@@ -14113,6 +14161,8 @@ function getEmptyEffectsCompareState() {
 }
 
 function getEffectsCompareState() {
+    const bankState = outputSystemModule()?.compareState((state.outputSystem || {}).catalog);
+    if (bankState) return bankState;
     const fx = state.dsp || {};
     const compare = normalizeEffectsCompareSelection(fx.compare || getEmptyEffectsCompareState());
     const activePreset = fx.active_preset || '';
@@ -14134,9 +14184,17 @@ function getEffectiveEffectsCompareSide(compare, activePreset) {
 
 function setEffectsCompareLoadBusy(isBusy) {
     effectsCompareLoadInFlight = !!isBusy;
-    if (elements.effectsCompareA) elements.effectsCompareA.disabled = effectsCompareLoadInFlight;
-    if (elements.effectsCompareB) elements.effectsCompareB.disabled = effectsCompareLoadInFlight;
-    if (elements.effectsCompareToggle) elements.effectsCompareToggle.disabled = effectsCompareLoadInFlight;
+    const compare = getEffectsCompareState();
+    const busy = effectsCompareLoadInFlight || !!state.outputSystem?.busy;
+    if (elements.effectsCompareA) elements.effectsCompareA.disabled = busy || !!compare.aggregate;
+    if (elements.effectsCompareB) elements.effectsCompareB.disabled = busy || !!compare.aggregate;
+    const unavailable = !!state.outputSystem?.catalog && !(compare.effectiveActiveSide === 'A' ? compare.canB : compare.canA);
+    if (elements.effectsCompareToggle) {
+        elements.effectsCompareToggle.disabled = busy || unavailable;
+        elements.effectsCompareToggle.title = unavailable ? (compare.aggregate
+            ? 'Assign preset B in every configured bank first.' : 'Select preset B to compare.') : '';
+    }
+    if (elements.effectsBankSelect) elements.effectsBankSelect.disabled = busy;
 }
 
 function getEffectsChainLabelForPreset(presetName, presetMap = new Map()) {
@@ -14169,7 +14227,7 @@ function renderEffectsCompare() {
     const presetEntries = fx.presets || [];
     const presets = presetEntries.map(p => p.name);
     const presetMap = new Map(presetEntries.map(preset => [preset.name, preset]));
-    const { compare, activePreset, effectiveActiveSide, presetA, presetB } = getEffectsCompareState();
+    const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate } = getEffectsCompareState();
 
     if (!elements.effectsCompareRow) return;
     if (presets.length === 0) {
@@ -14180,11 +14238,12 @@ function renderEffectsCompare() {
 
     // Rebuilding <option> lists on every WS push closes an open dropdown.
     // Only touch the DOM when the values actually changed.
-    const optionsA = presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
+    const optionsA = aggregate ? '<option>Per-bank A presets</option>' :
+        (!presetA ? '<option value="">Per-channel presets</option>' : '') + presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
     if (elements.effectsCompareA.innerHTML !== optionsA) {
         elements.effectsCompareA.innerHTML = optionsA;
     }
-    const optionsB = [`<option value="" ${!presetB ? 'selected' : ''}>Select preset…</option>`].concat(
+    const optionsB = aggregate ? '<option>Per-bank B presets</option>' : [`<option value="" ${!presetB ? 'selected' : ''}>${!presetB && getEffectsCompareState().canB ? 'Per-channel presets' : 'Select preset…'}</option>`].concat(
         presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetB ? 'selected' : ''}>${escapeHtml(n)}</option>`)
     ).join('');
     if (elements.effectsCompareB.innerHTML !== optionsB) {
@@ -14218,6 +14277,15 @@ function renderEffectsCompare() {
         const chainLabel = getEffectsChainLabelForPreset(chainPresetName, presetMap);
         elements.effectsCompareChain.textContent = chainLabel;
     }
+    if (aggregate) {
+        if (elements.effectsCompareActive) elements.effectsCompareActive.textContent = effectiveActiveSide
+            ? `Listening: ${effectiveActiveSide} · All Banks` : 'Listening: Mixed A/B';
+        if (elements.effectsCompareChain) elements.effectsCompareChain.textContent =
+            `${Object.keys(state.outputSystem.catalog.modes[state.outputSystem.catalog.active_mode].banks).length - 1} area banks`;
+    }
+    if (elements.effectsCompareToggle) elements.effectsCompareToggle.textContent = aggregate
+        ? `Switch all to ${effectiveActiveSide === 'A' ? 'B' : 'A'}` : 'Compare A/B';
+    elements.effectsDeleteBtn?.classList.toggle('hidden', !!aggregate);
     const badge = document.getElementById('effects-compare-active-badge');
     if (badge) {
         badge.classList.toggle('is-side-a', effectiveActiveSide === 'A');
@@ -14226,7 +14294,7 @@ function renderEffectsCompare() {
     document.querySelectorAll('.effects-compare-slot').forEach((slotEl) => {
         const slot = slotEl.dataset.compareSlot;
         const slotPreset = slot === 'A' ? presetA : presetB;
-        slotEl.classList.toggle('is-active', effectiveActiveSide === slot && !!slotPreset);
+        slotEl.classList.toggle('is-active', effectiveActiveSide === slot && (!!slotPreset || aggregate));
         slotEl.classList.toggle('is-armed', effectiveActiveSide !== slot && !!slotPreset);
     });
     renderEffectsBankSelector();
@@ -14338,6 +14406,15 @@ async function loadEffectsComparePreset(target, newSide, targetA, targetB) {
     if (effectsCompareLoadInFlight) return;
     setEffectsCompareLoadBusy(true);
     try {
+        const catalog = state.outputSystem?.catalog;
+        if (catalog) {
+            const bankId = catalog.modes[catalog.active_mode].selected_bank;
+            await applyOutputSystemMutation('set_bank_preset', {
+                mode: catalog.active_mode, bank_id: bankId, active_side: newSide,
+            }, false);
+            renderEffectsCompare();
+            return;
+        }
         const resp = await fetch('/api/dsp/presets/load', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -14360,6 +14437,24 @@ async function loadEffectsComparePreset(target, newSide, targetA, targetB) {
 
 async function handleEffectsCompareSelectionChange(slot) {
     if (effectsCompareLoadInFlight) return;
+    const catalog = state.outputSystem?.catalog;
+    if (catalog) {
+        const current = getEffectsCompareState();
+        if (current.aggregate) return;
+        const selectedValue = (slot === 'A' ? elements.effectsCompareA?.value : elements.effectsCompareB?.value) || null;
+        if (selectedValue && selectedValue === (slot === 'A' ? current.presetB : current.presetA)) {
+            showToast('A and B must use different presets', 'warning');
+            renderEffectsCompare();
+            return;
+        }
+        const fields = { mode: catalog.active_mode, bank_id: catalog.modes[catalog.active_mode].selected_bank,
+            [slot === 'A' ? 'preset_a' : 'preset_b']: selectedValue };
+        if (selectedValue && (!current.effectiveActiveSide || current.effectiveActiveSide === slot)) fields.active_side = slot;
+        if (!selectedValue && slot === 'B' && current.effectiveActiveSide === 'B') fields.active_side = 'A';
+        await applyOutputSystemMutation('set_bank_preset', fields, false);
+        renderEffectsCompare();
+        return;
+    }
     state.dsp.compare = normalizeEffectsCompareSelection(state.dsp.compare || getEmptyEffectsCompareState());
 
     const previousCompare = {
@@ -14411,6 +14506,24 @@ async function toggleComparePreset() {
     if (effectsCompareLoadInFlight) return;
     try {
         const compareState = getEffectsCompareState();
+        if (compareState.aggregate) {
+            const side = compareState.effectiveActiveSide === 'A' ? 'B' : 'A';
+            if (!(side === 'B' ? compareState.canB : compareState.canA)) {
+                showToast('Assign preset B in every configured bank first.', 'warning');
+                return;
+            }
+            await applyOutputSystemMutation('switch_all_banks', {
+                mode: state.outputSystem.catalog.active_mode, active_side: side,
+            }, false);
+            renderEffectsCompare();
+            return;
+        }
+        if (state.outputSystem?.catalog) {
+            const side = compareState.effectiveActiveSide === 'A' ? 'B' : 'A';
+            if (!(side === 'B' ? compareState.canB : compareState.canA)) return;
+            await loadEffectsComparePreset(null, side, compareState.presetA, compareState.presetB);
+            return;
+        }
         if (!compareState.presetA && !compareState.presetB) {
             showToast('Select a preset in A or B first', 'warning');
             return;
@@ -15228,6 +15341,7 @@ function handleEffectsImportFileChange() {
 }
 
 async function submitEffectsImport() {
+    if (!requireConcreteFilterBank()) return;
     const file = elements.effectsImportFile?.files?.[0];
     const detectedType = detectEffectsImportType(file);
     if (!file) {
@@ -15249,6 +15363,7 @@ async function submitEffectsImport() {
 }
 
 async function importEffectsPresetJson() {
+    if (!requireConcreteFilterBank()) return;
     if (effectsImportInFlight) {
         showToast('Import already in progress', 'warning');
         return;
@@ -15263,6 +15378,7 @@ async function importEffectsPresetJson() {
     const formData = new FormData();
     formData.append('load_after_create', 'false');
     formData.append('file', file);
+    appendBankBindingFields(formData);
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Importing preset: <strong>${escapeHtml(file.name)}</strong>…</div>`;
     const importArea = document.getElementById('effects-import-area');
     if (importArea) importArea.classList.add('is-busy');
@@ -15287,6 +15403,7 @@ async function importEffectsPresetJson() {
     }
 }
 async function importEffectsPresetBundle() {
+    if (!requireConcreteFilterBank()) return;
     if (effectsImportInFlight) {
         showToast('Import already in progress', 'warning');
         return;
@@ -15301,6 +15418,7 @@ async function importEffectsPresetBundle() {
     const formData = new FormData();
     formData.append('load_after_create', 'false');
     formData.append('file', file);
+    appendBankBindingFields(formData);
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Importing bundle: <strong>${escapeHtml(file.name)}</strong>…</div>`;
     const importArea = document.getElementById('effects-import-area');
     if (importArea) importArea.classList.add('is-busy');
@@ -15327,6 +15445,7 @@ async function importEffectsPresetBundle() {
 }
 
 async function createConvolverPreset() {
+    if (!requireConcreteFilterBank()) return;
     if (effectsImportInFlight) {
         showToast('Import already in progress', 'warning');
         return;
@@ -15379,7 +15498,7 @@ async function createConvolverPreset() {
     }
 }
 async function deleteEffectsPreset() {
-    const presetName = state.dsp.active_preset;
+    const presetName = getEffectsCompareState().activePreset;
     if (!presetName) {
         showToast('No active preset to delete', 'warning');
         return;

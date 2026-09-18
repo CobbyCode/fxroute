@@ -36,7 +36,7 @@ class BankState:
             raise ValueError("Compare side must be A or B")
         name = self.preset_a if side == "A" else self.preset_b
         if name is None:
-            raise ValueError("Compare side has no assigned preset")
+            raise ValueError(f"Compare side {side} has no assigned preset")
         return replace(self, preset=name)
 
     def to_dict(self) -> dict:

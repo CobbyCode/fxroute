@@ -146,16 +146,21 @@ window.fetch = (url, opts) => {
         return json({ job });
     }
     const outputState = { revision: 1, active_mode: 'stereo', selected_bank: 'global' };
-    const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' });
+    const groupedBank = (id, label, roles, channel_mode) => ({ id, label, roles, channel_mode,
+        preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A', can_a: true, can_b: false });
     const modeCatalog = (mode) => {
-        const ids = mode === 'stereo' ? ['global', 'main_l', 'main_r', 'sub1'] : ['global'];
-        const banks = {};
-        ids.forEach(id => { banks[id] = neutralBank(); });
+        const banks = mode === 'stereo'
+            ? { global: groupedBank('global', 'Global', ['global'], 'stereo'),
+                main: groupedBank('main', 'Main L/R', ['main_l', 'main_r'], 'stereo'),
+                sub1: groupedBank('sub1', 'Sub 1', ['sub1'], 'mono') }
+            : { global: groupedBank('global', 'Global', ['global'], 'stereo') };
         return {
-            // One-sided-area checks boot the page with an init-script override.
+            // Mono-bank checks boot the page with an init-script override.
             selected_bank: mode === outputState.active_mode
                 ? (window.__stubSelectedBank || outputState.selected_bank) : 'global',
             banks,
+            all_banks: { preset: null, preset_a: 'Neutral', preset_b: null,
+                active_side: null, can_a: true, can_b: false },
             processing: {},
             bass_management: { frequency_hz: 80, main_highpass_enabled: true },
             extras: {},
@@ -425,23 +430,21 @@ def _run():
                 effects_import.click()
                 page.close()
 
-            # A one-sided area has no second side to compare: the repeat action
+            # A mono bank has no second side to compare: the repeat action
             # must be disabled and the note must say why.
             page = browser.new_page(viewport={"width": VIEWPORTS[0][0], "height": VIEWPORTS[0][1]})
             page.add_init_script(STUB)
-            page.add_init_script("window.__stubSelectedBank = 'main_l';")
+            page.add_init_script("window.__stubSelectedBank = 'sub1';")
             _open_measurement(page)
             page.locator("#measurement-sweep-toggle").click()
             page.wait_for_function(
-                "() => document.getElementById('measurement-area-indicator')?.textContent === 'Main L'")
+                "() => document.getElementById('measurement-area-indicator')?.textContent === 'Sub 1'")
             assert page.locator("#measurement-repeat-start").is_disabled(), (
-                "a one-sided area must not offer an L/R repeat")
+                "a mono bank must not offer an L/R repeat")
             assert page.locator("#measurement-repeat-note").inner_text() == (
-                "Main L is fed by one input only, so an L/R repeat would capture "
-                "the same way twice. Use a single sweep.")
+                "Sub 1 is a mono target. Use a single sweep.")
             assert page.locator("#measurement-repeat-start").get_attribute("title") == (
-                "Main L is fed by one input only, so an L/R repeat would capture "
-                "the same way twice. Use a single sweep.")
+                "Sub 1 is a mono target. Use a single sweep.")
             # A single sweep of the same area stays available.
             assert not page.locator("#measurement-sweep-start").is_disabled()
             checks += 4

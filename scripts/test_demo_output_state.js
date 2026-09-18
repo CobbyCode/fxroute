@@ -29,7 +29,7 @@ async function request(url, body) {
     const catalog = await request('/api/audio/output-state');
     assert.equal(catalog.revision, 1);
     assert.equal(catalog.active_mode, 'stereo');
-    assert.deepEqual(Object.keys(catalog.modes.stereo.banks), ['global', 'main_l', 'main_r']);
+    assert.deepEqual(Object.keys(catalog.modes.stereo.banks), ['global', 'main']);
     assert.equal(catalog.modes.stereo.topology.sub_mode, 'none');
     assert.equal(catalog.modes['stereo-sub'].topology.sub_mode, 'mono');
     assert.equal(catalog.modes['stereo-sub'].crossover_enabled, false);
@@ -66,21 +66,21 @@ async function request(url, body) {
     assert.equal(result.revision, 4);
     const stereoAfter = (await request('/api/audio/output-state')).modes['stereo-sub'];
     assert.equal(stereoAfter.topology.sub_mode, 'stereo');
-    assert.ok(stereoAfter.banks.sub_l);
+    assert.deepEqual(stereoAfter.banks.sub.roles, ['sub_l', 'sub_r']);
 
     // Bank-bound preset creation assigns the target; conflicts keep the preset.
     const created = await request('/api/dsp/presets/create-peq',
-        { presetName: 'Demo Bank EQ', peq: { params: {} }, bank_mode: 'stereo-sub', bank_id: 'sub1', expected_revision: 4 });
+        { presetName: 'Demo Bank EQ', peq: { params: {} }, bank_mode: 'stereo-sub', bank_id: 'sub', expected_revision: 4 });
     assert.equal(created.bank.assigned, true);
     assert.equal(created.bank.revision, 5);
     const conflicted = await rawRequest('/api/dsp/presets/create-peq',
-        { presetName: 'Demo Bank EQ 2', peq: { params: {} }, bank_mode: 'stereo-sub', bank_id: 'sub1', expected_revision: 4 });
+        { presetName: 'Demo Bank EQ 2', peq: { params: {} }, bank_mode: 'stereo-sub', bank_id: 'sub', expected_revision: 4 });
     assert.equal(conflicted.status, 409);
     assert.equal(conflicted.data.bank.assigned, false);
 
     // Bank-pinned presets cannot be deleted.
     await request('/api/audio/output-state/apply',
-        { expected_revision: 5, mutation: { kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'sub1', preset: 'Demo Bank EQ' } });
+        { expected_revision: 5, mutation: { kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'sub', preset: 'Demo Bank EQ' } });
     const pinned = await rawRequest('/api/dsp/presets/delete', { preset_name: 'Demo Bank EQ' });
     assert.equal(pinned.status, 400);
 
@@ -103,5 +103,28 @@ async function request(url, body) {
         Math.abs(Math.log(point[0] / 300)) < Math.abs(Math.log(best[0] / 300)) ? point : best);
     assert.ok(Math.abs(near[1] + 6.02) < 0.3, `LR24 cutoff level: ${near[1]}`);
     assert.ok(low.points[0][1] > -0.5);
+    let current = await request('/api/audio/output-state');
+    const apply = async mutation => {
+        const result = await rawRequest('/api/audio/output-state/apply', { expected_revision: current.revision,
+            mutation: { mode: 'stereo-sub', ...mutation } });
+        current = await request('/api/audio/output-state');
+        return result;
+    };
+    assert.deepEqual(Object.keys(current.modes['stereo-sub'].banks), ['global', 'low', 'high', 'sub']);
+    await apply({ kind: 'set_bank_preset', bank_id: 'low', preset_b: 'Low B' });
+    const beforeRefusal = JSON.stringify(current);
+    assert.equal((await apply({ kind: 'switch_all_banks', active_side: 'B' })).status, 400);
+    assert.equal(JSON.stringify(current), beforeRefusal);
+    await apply({ kind: 'set_bank_preset', bank_id: 'high', preset_b: 'High B' });
+    await apply({ kind: 'set_bank_preset', bank_id: 'sub', preset_b: 'Sub B' });
+    await apply({ kind: 'select_bank', bank_id: 'all' });
+    assert.equal((await apply({ kind: 'switch_all_banks', active_side: 'B' })).status, 200);
+    const mode = current.modes['stereo-sub'];
+    assert.equal(mode.all_banks.active_side, 'B');
+    assert.equal(mode.banks.global.preset, 'Neutral');
+    assert.equal(mode.banks.low.preset, 'Low B');
+    assert.equal(mode.banks.high.preset, 'High B');
+    assert.equal(mode.banks.sub.preset, 'Sub B');
+    assert.equal(mode.banks.all, undefined);
     console.log('Demo output-state flow passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

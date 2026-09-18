@@ -35,6 +35,7 @@ from dsp.effects_extras import (
 )
 from dsp.persistence import clean_name
 from audio.output_service import MeasurementActiveError
+from audio.filter_banks import resolve_bank
 from audio.output_state import referenced_presets, set_bank_preset
 from audio.output_state_store import StateConflictError
 from library.core import path_within_root
@@ -246,7 +247,11 @@ def _validate_bank_target(service, binding: dict) -> None:
         raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}") from exc
     modes = state.get("modes") if isinstance(state, dict) else None
     config = modes.get(binding["mode"]) if isinstance(modes, dict) else None
-    if config is None or binding["bank_id"] not in (config.get("banks") or {}):
+    try:
+        if config is None:
+            raise ValueError("Unknown output mode")
+        resolve_bank(config, binding["bank_id"])
+    except ValueError:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown bank {binding['bank_id']} for output mode {binding['mode']}")
@@ -256,6 +261,7 @@ async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) ->
     """Assign a just-created preset to its bank; conflicts report partial state."""
     service = _require_output_state_service()
     try:
+        service.validate_bank_preset(service.load(), binding["mode"], binding["bank_id"], created_name)
         committed = await _deps().drain_worker(
             service.apply,
             lambda state: set_bank_preset(
@@ -690,8 +696,14 @@ async def create_convolver_preset(
 async def import_dsp_preset_json(
     file: UploadFile = File(...),
     load_after_create: bool = Form(False),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
+    binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    if binding is not None:
+        _validate_bank_target(_require_output_state_service(), binding)
 
     try:
         content = (await read_upload(file, DSP_PRESET_TEXT_MAX_BYTES)).decode("utf-8-sig")
@@ -702,12 +714,16 @@ async def import_dsp_preset_json(
             preset_name=created["name"],
             refresh_reason="import-preset-json",
         )
-        return {
+        response = {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created["name"], binding=binding)
+        return response
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except UnicodeDecodeError as e:
@@ -720,8 +736,14 @@ async def import_dsp_preset_json(
 async def import_dsp_preset_bundle(
     file: UploadFile = File(...),
     load_after_create: bool = Form(False),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
+    binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    if binding is not None:
+        _validate_bank_target(_require_output_state_service(), binding)
 
     temp_zip_path = None
     import_succeeded = False
@@ -842,13 +864,17 @@ async def import_dsp_preset_bundle(
                 preset_name=created["name"],
                 refresh_reason="import-preset-bundle",
             )
-            return {
+            response = {
                 "status": "ok",
                 "preset": created,
                 "irs": imported_irs,
                 "loaded": bool(load_after_create),
                 "active_preset": status.get("active_preset"),
             }
+            if binding is not None:
+                response["bank"] = await _assign_created_preset_to_bank(
+                    created_name=created["name"], binding=binding)
+            return response
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except zip_album.ZipLimitError as e:
@@ -913,19 +939,19 @@ async def create_convolver_preset_with_ir(
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
+    binding = _parse_bank_binding(
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    if binding is not None:
+        _validate_bank_target(_require_output_state_service(), binding)
+    # The bank is known to exist now, so a target mismatch is a conflict.
+    _verify_measurement_commit(source_measurement_id, binding)
+
     tmp_path = None
     try:
         suffix = Path(file.filename or "upload.ir").suffix
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp_path = Path(tmp.name)
             await save_upload_to_file(file, tmp, DSP_IR_MAX_BYTES)
-
-        binding = _parse_bank_binding(
-            bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
-        if binding is not None:
-            _validate_bank_target(_require_output_state_service(), binding)
-        # The bank is known to exist now, so a target mismatch is a conflict.
-        _verify_measurement_commit(source_measurement_id, binding)
 
         # The canonical loudness read inside _effects_extras_from_form must
         # happen under the same mutation ownership as the preset creation:
@@ -1064,14 +1090,6 @@ async def import_rew_peq_preset(
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
-    try:
-        content = await read_upload(file, DSP_PRESET_TEXT_MAX_BYTES)
-        rew_text = content.decode("utf-8-sig")
-    except UploadTooLargeError as e:
-        raise HTTPException(status_code=413, detail=str(e))
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="REW import file must be UTF-8 text")
-
     if not preset_name.strip():
         raise HTTPException(status_code=400, detail="preset_name is required")
 
@@ -1079,6 +1097,14 @@ async def import_rew_peq_preset(
         bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
     if binding is not None:
         _validate_bank_target(_require_output_state_service(), binding)
+
+    try:
+        content = await read_upload(file, DSP_PRESET_TEXT_MAX_BYTES)
+        rew_text = content.decode("utf-8-sig")
+    except UploadTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="REW import file must be UTF-8 text")
 
     try:
         # Canonical extras resolution under the same mutation ownership as

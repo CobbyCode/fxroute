@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from audio.output_state_migration import migrate_legacy_output_state
+from audio.filter_banks import resolve_bank
 from audio.output_state_store import OutputStateStore, StateConflictError
 from dsp.native_config import layout_from_plan
 from dsp.processing_plan import compile_processing_plan
@@ -110,6 +111,19 @@ class OutputService:
     def compile_layout(self, plan: dict) -> list[dict]:
         """Map a compiled plan to a native engine output layout."""
         return layout_from_plan(plan, resolve_ir=self._deps.resolve_ir)
+
+    def validate_bank_preset(self, state: dict, mode: str, bank_id: str, preset: str, *, roles=None) -> None:
+        """Check an imported/selected preset against its bank's native channel shape."""
+        definition = resolve_bank(state["modes"][mode], bank_id, roles)
+        payload = self._deps.preset_loader(preset)
+        if bank_id == "global":
+            return
+        self.compile_layout({
+            "sample_rate_hz": 48000,
+            "sub_mode": "stereo" if definition["channel_mode"] == "stereo" else "mono",
+            "outputs": [{"role": role, "bank": {"chain": payload["chain"], "bypass": preset == "Direct"}}
+                        for role in definition["roles"]],
+        })
 
     def fingerprint(self, state: dict, *, output_key: str, channels: int,
                     sample_rate_hz: int) -> str:
