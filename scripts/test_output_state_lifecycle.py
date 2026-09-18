@@ -4,6 +4,7 @@
 
 import asyncio
 import contextlib
+import copy
 import sys
 import tempfile
 import unittest
@@ -246,6 +247,42 @@ class FakeRequest:
 
     async def json(self):
         return self._body
+
+
+class EffectsTransitionTargetTests(unittest.TestCase):
+    """Global-extras transitions must render the v2 plan, not legacy.
+
+    The UI saves limiter/headroom/loudness through the manager globals;
+    rendering those snapshots over the committed head keeps the helpers
+    live on crossover/bank graphs instead of wiping the topology.
+    """
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.manager = make_manager(directory.name)
+        self.service = make_service(directory.name, self.manager)
+        seed_sub_state(self.service)
+        self.runtime = mock.MagicMock()
+
+    def test_candidate_and_previous_extras_render_distinct_chains(self):
+        previous = self.manager.load_global_extras()
+        candidate = copy.deepcopy(previous)
+        candidate["limiter"]["enabled"] = True
+        with lifecycle_context(self.service, self.manager, self.runtime):
+            targets = asyncio.run(main._render_effects_transition_targets(previous, candidate))
+        self.assertIsNotNone(targets)
+        new_target, old_target = targets
+        self.assertEqual(new_target.config.plan_fingerprint, old_target.config.plan_fingerprint)
+        self.assertIn("sc_limiter", new_target.text)
+        self.assertNotIn("sc_limiter", old_target.text)
+
+    def test_unusable_overview_falls_back_to_none(self):
+        previous = self.manager.load_global_extras()
+        with lifecycle_context(self.service, self.manager, self.runtime):
+            with mock.patch.object(main, "get_audio_output_overview", return_value={}):
+                self.assertIsNone(asyncio.run(
+                    main._render_effects_transition_targets(previous, previous)))
 
 
 def lifecycle_context(service, manager, runtime):

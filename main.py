@@ -1518,6 +1518,50 @@ async def _apply_remote_volume_value(
         volume_percent, owner=owner, source_active=source_active)
 
 
+async def _render_effects_transition_targets(previous, candidate):
+    """Render old/new v2 plan targets for a global-extras transition.
+
+    Returns (new_target, old_target) for the committed head at the live
+    rate, or None when the head cannot activate (the caller keeps the
+    legacy overview rebuild).  Never raises.
+    """
+    try:
+        service = get_output_service()
+        overview = await asyncio.to_thread(get_audio_output_overview)
+        try:
+            output_key, channels = _output_state_device(overview)
+        except HTTPException:
+            return None
+        if not channels:
+            return None
+        status = get_samplerate_status()
+        rate = status.get("active_rate")
+        if not isinstance(rate, int) or rate <= 0:
+            rate = status.get("force_rate")
+        if not isinstance(rate, int) or rate <= 0:
+            return None
+        ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
+        if not ports:
+            return None
+        manager = _require_dsp_manager()
+        state = service.load()
+        plan = service.compile_plan(state, output_key=output_key, channels=channels,
+                                    sample_rate_hz=rate)
+        fingerprint = service.fingerprint_plan(plan)
+        new_target = _build_plan_target(
+            service, manager, plan, output_key=output_key, rate=rate,
+            hardware_ports=list(ports), fingerprint=fingerprint,
+            extras_override=candidate)
+        old_target = _build_plan_target(
+            service, manager, plan, output_key=output_key, rate=rate,
+            hardware_ports=list(ports), fingerprint=fingerprint,
+            extras_override=previous)
+        return new_target, old_target
+    except Exception as exc:
+        logger.info("Effects transition uses legacy rebuild (v2 head unavailable): %s", exc)
+        return None
+
+
 async def _guarded_effects_transition(previous, candidate, persist_all_presets):
     """Apply extras through a guarded DSP rebuild without touching the master."""
     overview = get_audio_output_overview()
@@ -1538,15 +1582,24 @@ async def _guarded_effects_transition(previous, candidate, persist_all_presets):
             if persist_all_presets else
             dsp_manager.apply_global_extras_to_active_preset(candidate))
 
-    await runtime.dsp_runtime.guarded_rebuild(
-        overview,
-        guard_db=guard_db,
-        apply_candidate=persist_candidate,
-        apply_previous=lambda: dsp_manager.save_global_extras(previous),
-        settle_seconds=settle,
-        candidate_extras=candidate,
-        previous_extras=previous,
-    )
+    targets = await _render_effects_transition_targets(previous, candidate)
+    if targets is None:
+        await runtime.dsp_runtime.guarded_rebuild(
+            overview,
+            guard_db=guard_db,
+            apply_candidate=persist_candidate,
+            apply_previous=lambda: dsp_manager.save_global_extras(previous),
+            settle_seconds=settle,
+            candidate_extras=candidate,
+            previous_extras=previous,
+        )
+    else:
+        new_target, old_target = targets
+        await runtime.dsp_runtime.guarded_rebuild_rendered(
+            new_target, previous=old_target, guard_db=guard_db,
+            apply_candidate=persist_candidate,
+            apply_previous=lambda: dsp_manager.save_global_extras(previous),
+            settle_seconds=settle)
     result = result_holder["result"]
     result["runtime_applied"] = True
     return result
@@ -2413,15 +2466,24 @@ async def lifespan(app: FastAPI):
         def temporary_effects_transition(previous, candidate):
             async def transition():
                 async with _dsp_mutation_lock():
-                    await runtime.dsp_runtime.guarded_rebuild(
-                        get_audio_output_overview(),
-                        guard_db=-18.0,
-                        apply_candidate=lambda: None,
-                        apply_previous=lambda: None,
-                        settle_seconds=dsp_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS,
-                        candidate_extras=candidate,
-                        previous_extras=previous,
-                    )
+                    targets = await _render_effects_transition_targets(previous, candidate)
+                    if targets is None:
+                        await runtime.dsp_runtime.guarded_rebuild(
+                            get_audio_output_overview(),
+                            guard_db=-18.0,
+                            apply_candidate=lambda: None,
+                            apply_previous=lambda: None,
+                            settle_seconds=dsp_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS,
+                            candidate_extras=candidate,
+                            previous_extras=previous,
+                        )
+                    else:
+                        new_target, old_target = targets
+                        await runtime.dsp_runtime.guarded_rebuild_rendered(
+                            new_target, previous=old_target, guard_db=-18.0,
+                            apply_candidate=lambda: None,
+                            apply_previous=lambda: None,
+                            settle_seconds=dsp_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS)
             asyncio.run_coroutine_threadsafe(transition(), runtime_loop).result()
 
         dsp_manager.temporary_runtime_transition_callback = temporary_effects_transition
@@ -4181,15 +4243,25 @@ def _plan_transition_guard(old_layout, new_layout, previous_gain: float) -> floa
 
 
 def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
-                       hardware_ports: list, fingerprint: str | None):
-    """Render one plan to a runtime sync target (pre-commit, may raise)."""
+                       hardware_ports: list, fingerprint: str | None,
+                       extras_override: dict | None = None):
+    """Render one plan to a runtime sync target (pre-commit, may raise).
+
+    The global DSP chain (limiter, loudness, ...) always renders from the
+    manager's global extras -- the surface the UI writes through
+    /api/dsp/extras -- so the same helpers stay live on v2 crossover/bank
+    graphs.  An explicit override (candidate/previous extras during a
+    guarded transition) renders that snapshot instead.
+    """
     layout = service.compile_layout(plan)
     config = DSPRuntimeConfig.from_plan(
         plan, layout=layout, output_key=output_key, sample_rate_hz=rate,
         hardware_ports=hardware_ports, plan_fingerprint=fingerprint)
+    if extras_override is None:
+        extras_override = manager.load_global_extras()
     text = manager.compile_engine_text(
         [dict(entry) for entry in layout], preset_name=plan["global"]["preset"],
-        sample_rate_hz=rate, extras_override=plan["global"]["extras"])
+        sample_rate_hz=rate, extras_override=extras_override)
     return PlannedSyncTarget(config=config, text=text)
 
 
