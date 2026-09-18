@@ -1,5 +1,12 @@
 # Handoff — Multichannel / Task 8 + Unified Output + Backend-v2-Migration
 
+## Arbeitsstand (2026-09-18, paired filter banks)
+- HEAD: `a73fdcf` (darunter `6d644a1` Paired Filter Banks, deployed auf `.104`, State rev 100→102 intakt, Auswahl zurück auf Global).
+- Paired Filter Banks: Stereo-Paare (Main/Low/Low-Mid/Mid/High/Sub L/R) teilen je eine Bank über verlustfrei erhaltenen Pro-Rolle-Bindings (`audio/filter_banks.py`); Mono-Rollen einzeln; Pure-Stereo ohne Auswahl (Global); All Banks schaltet konfigurierte Bereichsbänke atomar (keine eigene Kette); Import/Measurement an konkrete Bänke gebunden; A/B-Kachel mit kompakter Auswahl, Statuszeile entfernt. Plan: `docs/superpowers/plans/2026-09-18-paired-filter-banks.md` (Git-ignoriert).
+- Verifikation: lokal **407/0/14**; `.104`-Scratch: 14 Python-Suiten + nativer Bank-Chain-Test grün (JS nur lokal); Browser-Check `check_output_system_ui.py` ok; Produkt aktiv, HTTP 200, Assets (`app.js?v=0.9.181`, `output_state.js?v=0.9.8`, `style.css?v=0.9.236`), gruppierter Katalog live verifiziert, Select-Roundtrip main→global ohne Fingerprint-Änderung. Backup `~/deploy-backup/fxroute-a73fdcf-pre-banks.tar`. Kein Push/Release.
+- Nebenbefund (pre-existing, gefixt): `test_native_dsp_bank_chain.py` referenzierte den entfernten `crossover`-Modus (auf Base identisch rot); auf Stereo-Sub + Crossover-Flag portiert.
+- Bewusst fail-closed: vor dem Paarmodell eingefrorene Single-Role-Messungen lassen sich nicht in Paar-Bänke committen (409); Re-Messung nötig.
+
 ## Arbeitsstand
 - Worktree: `/home/pbclaw/ai/projects/fxroute-multichannel`
 - Branch: `feature/multichannel-crossover`
