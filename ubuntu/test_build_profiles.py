@@ -196,6 +196,51 @@ class BuildProfilesTest(unittest.TestCase):
             context.repack_iso = check_manifest_at_iso_write
             self.assertTrue(EditContext.repack(context, 'unused.iso'))
 
+    def test_build_installs_live_packages_without_recommends(self):
+        # CLI boundary contract: our own action replaces upstream
+        # --install-packages (which hardcodes `apt-get install -y` with
+        # Recommends on). No ISO build in unit tests.
+        build = (ROOT / 'build-ubuntu-iso.sh').read_text()
+        invocation = build[build.index('livefs-edit "$BASE_ISO" "$OUTPUT"'):]
+        self.assertNotIn('--install-packages', invocation)
+        self.assertIn('livefs-actions/install_packages_no_recommends.py', invocation)
+
+    def test_no_recommends_action_uses_first_layer_and_exact_apt_argv(self):
+        import sys
+        import types
+        fake_actions = types.ModuleType('livefs_edit.actions')
+        fake_actions.get_squash_names = lambda ctxt: ['minimal.en']
+        fake_package = types.ModuleType('livefs_edit')
+        fake_package.actions = fake_actions
+        with patch.dict(sys.modules, {'livefs_edit': fake_package,
+                                      'livefs_edit.actions': fake_actions}):
+            calls = []
+
+            class StubContext:
+                def edit_squashfs(self, name):
+                    calls.append(('edit_squashfs', name))
+                    return '/fake/base'
+
+                def run(self, command, **kwargs):
+                    calls.append(('run', command))
+
+                def log(self, message):
+                    pass
+
+            with patch.dict(os.environ, {'FXROUTE_LIVE_PACKAGES': 'foo bar'}):
+                runpy.run_path(str(ROOT / 'livefs-actions/install_packages_no_recommends.py'),
+                               init_globals={'ctxt': StubContext()})
+        self.assertEqual(calls[0], ('edit_squashfs', 'minimal.en'))
+        self.assertEqual(calls[1][0], 'run')
+        self.assertEqual(calls[1][1][:3], ['chroot', '/fake/base', 'apt-get'])
+        self.assertIn('update', calls[1][1])
+        installs = [call for call in calls if call[0] == 'run' and 'install' in call[1]]
+        self.assertEqual(len(installs), 1)
+        argv = installs[0][1]
+        self.assertIn('-o', argv)
+        self.assertIn('APT::Install-Recommends=false', argv)
+        self.assertEqual(argv[-2:], ['foo', 'bar'])
+
     def test_build_registers_checksum_hook_before_any_rebuild_action(self):
         # The ordering is a CLI boundary contract: no ISO build in unit tests.
         build = (ROOT / 'build-ubuntu-iso.sh').read_text()

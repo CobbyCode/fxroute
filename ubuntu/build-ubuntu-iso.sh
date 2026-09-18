@@ -212,11 +212,14 @@ printf '[ubuntu-iso] editing live ISO with livefs-edit\n'
 # reverse order, so checksums see the rebuilt squashfs/initrd, not old bytes.
 # NOTE: --python takes code, not a path; the .py files stay the maintained
 # source and are inlined here (they contain no backticks/`$`, safe to inline).
+# Live packages install without Recommends (own action: upstream
+# --install-packages has no flag for it). List via env, same array.
+export FXROUTE_LIVE_PACKAGES="${LIVE_PACKAGES[*]}"
 livefs-edit "$BASE_ISO" "$OUTPUT" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/final_checksums.py")" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/remove_cdrom_source.py")" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/prep_chroot.py")" \
-  --install-packages "${LIVE_PACKAGES[@]}" \
+  --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/install_packages_no_recommends.py")" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/cleanup_chroot.py")" \
   --python "$(cat "$ROOT_DIR/ubuntu/livefs-actions/cp_payload.py")" \
   --cp "$ROOT_DIR/ubuntu/scripts/fxroute-live-autostart.sh" '$LAYERS[0]/usr/local/libexec/fxroute-live-autostart.sh' \
