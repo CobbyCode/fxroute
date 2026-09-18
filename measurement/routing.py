@@ -40,8 +40,8 @@ def freeze_expected_native_context(
         return {}
     if any(value is None for value in values):
         raise ValueError("Expected native layout, output mode and plan fingerprint are required together")
-    if measurement_scope != MEASUREMENT_SCOPE_RAW_HELPER:
-        raise ValueError("Expected native context is only supported for raw_helper measurements")
+    if measurement_scope not in (MEASUREMENT_SCOPE_RAW_HELPER, MEASUREMENT_SCOPE_ACTIVE_CHAIN):
+        raise ValueError("Expected native context is only supported for raw_helper and active_chain measurements")
     if not isinstance(expected_native_output_mode, str) or expected_native_output_mode not in MODES:
         raise ValueError("expected_native_output_mode must be a known planned output mode")
     if not isinstance(expected_plan_fingerprint, str) or not expected_plan_fingerprint.strip():

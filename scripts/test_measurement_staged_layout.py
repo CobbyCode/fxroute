@@ -144,10 +144,14 @@ class StagedLayoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.store._job_tasks, {})
             self.assertEqual(list(self.store.job_records_dir.glob("*.json")), [])
 
-    async def test_active_chain_cannot_override_target_with_trusted_context(self):
-        with self.assertRaisesRegex(ValueError, "raw_helper"):
-            await self.capture(self.context, scope="active_chain")
-        self.assertEqual(self.store._jobs, {})
+    async def test_active_chain_accepts_staged_v2_context(self):
+        # Manual bank measurements stage the committed v2 plan (layout/mode/
+        # fingerprint); the pre-sweep check then compares staged-vs-live
+        # instead of refusing on the legacy overview labels.
+        job = await self.capture(dict(self.context), scope="active_chain")
+        self.assertIn("hardware boundary reached", job["error"]["detail"])
+        self.assertIsNone(self.snapshots[0]["validation_failure"])
+        self.assertEqual(self.snapshots[0]["output_mode"], "stereo-sub")
 
     async def test_http_form_fields_cannot_override_expected_context(self):
         import httpx
