@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.233">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.234">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -589,58 +589,69 @@
                             </div>
                             <div class="effects-stack">
                                 <div id="effects-crossover-tabs" class="crossover-tabs" role="tablist" aria-label="Speaker ways"></div>
-                                <canvas id="effects-crossover-graph" class="crossover-graph" width="600" height="170" role="img" aria-label="Crossover filter response"></canvas>
-                                <div class="crossover-controls">
-                                    <div class="field-group" id="effects-crossover-highpass-group">
-                                        <label for="effects-crossover-frequency-highpass">High-pass</label>
-                                        <div class="stepper-control">
-                                            <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease high-pass frequency">&minus;</button>
-                                            <input type="number" id="effects-crossover-frequency-highpass" class="url-input delay-number-input stepper-input stepper-input-freq" min="20" max="20000" step="1">
-                                            <span class="stepper-unit" aria-hidden="true">Hz</span>
-                                            <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase high-pass frequency">+</button>
+                                <div class="effects-subwoofer-preview-wrap">
+                                    <canvas id="effects-crossover-graph" class="crossover-graph effects-subwoofer-preview" width="600" height="136" role="img" aria-label="Crossover filter response"></canvas>
+                                </div>
+                                <div class="crossover-control-groups">
+                                    <div class="effects-subwoofer-control-group crossover-duo-group">
+                                        <div class="effects-subwoofer-group-label">Filters</div>
+                                        <div class="field-group" id="effects-crossover-highpass-group">
+                                            <label for="effects-crossover-frequency-highpass">High-pass</label>
+                                            <div class="stepper-control">
+                                                <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease high-pass frequency">&minus;</button>
+                                                <input type="number" id="effects-crossover-frequency-highpass" class="url-input delay-number-input stepper-input stepper-input-freq" min="20" max="20000" step="1">
+                                                <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase high-pass frequency">+</button>
+                                            </div>
+                                        </div>
+                                        <div class="field-group" id="effects-crossover-lowpass-group">
+                                            <label for="effects-crossover-frequency-lowpass">Low-pass</label>
+                                            <div class="stepper-control">
+                                                <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease low-pass frequency">&minus;</button>
+                                                <input type="number" id="effects-crossover-frequency-lowpass" class="url-input delay-number-input stepper-input stepper-input-freq" min="20" max="20000" step="1">
+                                                <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase low-pass frequency">+</button>
+                                            </div>
                                         </div>
                                     </div>
-                                    <div class="field-group" id="effects-crossover-lowpass-group">
-                                        <label for="effects-crossover-frequency-lowpass">Low-pass</label>
-                                        <div class="stepper-control">
-                                            <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease low-pass frequency">&minus;</button>
-                                            <input type="number" id="effects-crossover-frequency-lowpass" class="url-input delay-number-input stepper-input stepper-input-freq" min="20" max="20000" step="1">
-                                            <span class="stepper-unit" aria-hidden="true">Hz</span>
-                                            <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase low-pass frequency">+</button>
+                                    <div class="effects-subwoofer-control-group crossover-duo-group">
+                                        <div class="effects-subwoofer-group-label">Shape</div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-family">Type</label>
+                                            <select id="effects-crossover-family" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                        </div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-slope">Slope dB/oct</label>
+                                            <select id="effects-crossover-slope" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
                                         </div>
                                     </div>
-                                    <div class="field-group">
-                                        <label for="effects-crossover-family">Type</label>
-                                        <select id="effects-crossover-family" class="url-input effects-headroom-select"></select>
-                                    </div>
-                                    <div class="field-group">
-                                        <label for="effects-crossover-slope">Slope dB/oct</label>
-                                        <select id="effects-crossover-slope" class="url-input effects-headroom-select"></select>
-                                    </div>
-                                    <div class="field-group">
-                                        <label for="effects-crossover-level">Level</label>
-                                        <div class="stepper-control">
-                                            <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease way level">&minus;</button>
-                                            <input type="number" id="effects-crossover-level" class="url-input delay-number-input stepper-input" min="-80" max="24" step="0.5">
-                                            <span class="stepper-unit" aria-hidden="true">dB</span>
-                                            <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase way level">+</button>
+                                    <div class="effects-subwoofer-control-group crossover-trio-group">
+                                        <div class="effects-subwoofer-group-label">Trim</div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-level">Level</label>
+                                            <div class="stepper-control">
+                                                <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease way level">&minus;</button>
+                                                <input type="number" id="effects-crossover-level" class="url-input delay-number-input stepper-input" min="-80" max="24" step="0.5">
+                                                <span class="stepper-unit" aria-hidden="true">dB</span>
+                                                <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase way level">+</button>
+                                            </div>
                                         </div>
-                                    </div>
-                                    <div class="field-group">
-                                        <label for="effects-crossover-delay">Align</label>
-                                        <div class="stepper-control">
-                                            <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease way alignment">&minus;</button>
-                                            <input type="number" id="effects-crossover-delay" class="url-input delay-number-input stepper-input" min="-40" max="40" step="0.5">
-                                            <span class="stepper-unit" aria-hidden="true">ms</span>
-                                            <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase way alignment">+</button>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-delay">Align</label>
+                                            <div class="stepper-control">
+                                                <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease way alignment">&minus;</button>
+                                                <input type="number" id="effects-crossover-delay" class="url-input delay-number-input stepper-input" min="-40" max="40" step="0.5">
+                                                <span class="stepper-unit" aria-hidden="true">ms</span>
+                                                <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase way alignment">+</button>
+                                            </div>
                                         </div>
-                                    </div>
-                                    <div class="field-group">
-                                        <label for="effects-crossover-polarity">Polarity</label>
-                                        <select id="effects-crossover-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
-                                            <option value="normal">Normal</option>
-                                            <option value="invert">Invert</option>
-                                        </select>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-polarity">Polarity</label>
+                                            <select id="effects-crossover-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
+                                                <option value="normal">Normal</option>
+                                                <option value="invert">Invert</option>
+                                            </select>
+                                        </div>
                                     </div>
                                 </div>
                                 <div class="crossover-actions">
@@ -1653,7 +1664,7 @@
     <script src="/static/crossover.js?v=0.9.2"></script>
     <script src="/static/speaker_align.js?v=0.9.2"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.178"></script>
+    <script src="/static/app.js?v=0.9.179"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

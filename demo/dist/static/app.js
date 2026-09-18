@@ -8522,6 +8522,15 @@ function setupEffectsActions() {
         } else {
             window.addEventListener('resize', requestSubwooferPreviewRedrawFromState);
         }
+        if (elements.effectsCrossoverGraph) {
+            if ('ResizeObserver' in window) {
+                const crossoverResizeObserver = new ResizeObserver(() => repaintCrossoverGraph());
+                crossoverResizeObserver.observe(elements.effectsCrossoverGraph);
+                elements.effectsCrossoverGraph._fxrouteResizeObserver = crossoverResizeObserver;
+            } else {
+                window.addEventListener('resize', repaintCrossoverGraph);
+            }
+        }
     }
     // Track focus to avoid resetting input values while user is typing.
     // SELECTs are discrete choices (no typing to protect): they save with
@@ -14565,6 +14574,13 @@ function formatSubwooferDelayMs(value) {
     return Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00';
 }
 
+function repaintCrossoverGraph() {
+    ensureOutputSystemBoxes();
+    const canvas = elements.effectsCrossoverGraph;
+    if (!canvas || !state.crossover.response) return;
+    drawCrossoverResponse(canvas, state.crossover.response.ways, state.crossover.activeWay);
+}
+
 function renderSubwooferPanel() {
     const outputMode = routedSubwooferView();
     if (!state.outputSystem?.catalog) {
@@ -14779,8 +14795,12 @@ function drawCrossoverResponse(canvas, ways, activeRole) {
     if (!ctx) return;
     const mod = crossoverModule();
     const ordered = mod ? mod.orderedWays(ways || {}) : Object.keys(ways || {});
-    const displayWidth = Math.max(320, Math.round(canvas.clientWidth || canvas.width || 560));
-    const displayHeight = 170;
+    const clientWidth = Math.round(canvas.clientWidth || 0);
+    // Hidden cards (other tab, closed panel) report no width: skip instead
+    // of painting a fallback size that would stick after tab switches.
+    if (!clientWidth) return;
+    const displayWidth = Math.max(320, clientWidth);
+    const displayHeight = Math.max(120, Math.round(canvas.clientHeight || 136));
     const dpr = window.devicePixelRatio || 1;
     const targetWidth = Math.round(displayWidth * dpr);
     const targetHeight = Math.round(displayHeight * dpr);

@@ -159,16 +159,36 @@ def main() -> int:
                     return v / Math.max(1, n);
                 })()""")
             check("crossover graph painted", variance > 0)
-            steppers = page.locator("#effects-crossover-card .crossover-controls .stepper-control")
+            backing = page.evaluate(
+                """(() => { const c = document.getElementById('effects-crossover-graph');
+                    const r = c.getBoundingClientRect();
+                    return { w: c.width, cssW: Math.round(r.width), dpr: window.devicePixelRatio || 1 }; })()""")
+            check(f"graph backing matches display ({backing})",
+                  abs(backing['w'] - backing['cssW'] * backing['dpr']) <= 2)
+            page.set_viewport_size({"width": 1000, "height": 900})
+            page.wait_for_timeout(600)
+            backing2 = page.evaluate(
+                """(() => { const c = document.getElementById('effects-crossover-graph');
+                    const r = c.getBoundingClientRect();
+                    return { w: c.width, cssW: Math.round(r.width), dpr: window.devicePixelRatio || 1 }; })()""")
+            check(f"graph follows viewport resize ({backing2})",
+                  abs(backing2['w'] - backing2['cssW'] * backing2['dpr']) <= 2)
+            page.set_viewport_size({"width": 1440, "height": 900})
+            page.wait_for_timeout(600)
+            check("group labels span full row",
+                  page.evaluate("getComputedStyle(document.querySelector('#effects-crossover-card .crossover-trio-group > .effects-subwoofer-group-label')).flexBasis") == "100%")
+            steppers = page.locator("#effects-crossover-card .crossover-control-groups .stepper-control")
             check(f"crossover uses sub-style steppers ({steppers.count()} found)", steppers.count() == 4)
-            units = page.locator("#effects-crossover-card .crossover-controls .stepper-unit").all_text_contents()
+            units = page.locator("#effects-crossover-card .crossover-control-groups .stepper-unit").all_text_contents()
             check(f"stepper units ({units})", units == ['Hz', 'Hz', 'dB', 'ms'])
+            groups = page.locator("#effects-crossover-card .crossover-control-groups > div").all_text_contents()
+            check(f"three control groups ({len(groups)} found)", len(groups) == 3)
             pol_cls = page.locator("#effects-crossover-polarity").get_attribute("class") or ""
             check("polarity select shares sub-tile style", "effects-subwoofer-polarity-select" in pol_cls)
             overflowing = page.evaluate(
                 """(() => {
                     const card = document.getElementById('effects-crossover-card').getBoundingClientRect();
-                    return [...document.querySelectorAll('#effects-crossover-card .crossover-controls .url-input')]
+                    return [...document.querySelectorAll('#effects-crossover-card .crossover-control-groups .url-input')]
                         .filter((el) => el.getBoundingClientRect().width > 0)
                         .filter(el => { const r = el.getBoundingClientRect();
                             return r.left < card.left - 1 || r.right > card.right + 1; }).length;
