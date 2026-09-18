@@ -138,6 +138,28 @@ if ! systemctl --user start fxroute.service 2>/dev/null; then
 fi
 touch "$MARKER"
 
+# Kiosk restart shortcut: after Alt+F4 there is no way back into the kiosk
+# from the live desktop. The launcher waits for the backend if needed.
+install_desktop_shortcut() {
+  local shortcut="$HOME/Desktop/FXRoute.desktop"
+  mkdir -p "$HOME/Desktop" 2>/dev/null || true
+  cat > "$shortcut" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=FXRoute
+Comment=Open the FXRoute control surface (kiosk)
+Exec=/usr/local/bin/fxroute-desktop-launcher
+Icon=firefox
+Terminal=false
+Categories=AudioVideo;Audio;
+EOF
+  chmod +x "$shortcut" 2>/dev/null || true
+  if command -v gio >/dev/null 2>&1; then
+    gio set "$shortcut" metadata::trusted true 2>/dev/null || true
+  fi
+}
+install_desktop_shortcut
+
 # Wait for the backend (generous budget: first live boot compiles the DSP
 # engine), then open the kiosk. This replaces the autostart process.
 status_url="http://127.0.0.1:8000/api/status"

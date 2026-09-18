@@ -43,6 +43,8 @@ elif name == 'systemctl':
 elif name == 'firefox':
     (root / 'firefox-opened').write_text('yes')
     sys.exit(0)
+elif name == 'gio':
+    sys.exit(0)
 else:
     raise RuntimeError('Unexpected tool: ' + name)
 '''
@@ -62,7 +64,7 @@ class LiveAutostartTest(unittest.TestCase):
         self.root = pathlib.Path(self.temp.name)
         self.bin = self.root / 'bin'
         self.bin.mkdir()
-        for name in ('curl', 'nm-online', 'fuser', 'sudo', 'systemctl', 'firefox'):
+        for name in ('curl', 'nm-online', 'fuser', 'sudo', 'systemctl', 'firefox', 'gio'):
             tool = self.bin / name
             tool.write_text(FAKE_TOOL)
             tool.chmod(0o755)
@@ -85,6 +87,12 @@ class LiveAutostartTest(unittest.TestCase):
         return subprocess.run(['bash', str(SCRIPT)], env=self.env,
                               text=True, capture_output=True, timeout=120)
 
+    def calls(self, name=None):
+        import json as _json
+        log = self.root / 'commands'
+        calls = [_json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        return [call for call in calls if name is None or call[0] == name]
+
     def hint(self):
         hint = self.home / 'Desktop' / 'FXRoute-NOT-STARTED.txt'
         return hint.read_text() if hint.exists() else None
@@ -95,6 +103,17 @@ class LiveAutostartTest(unittest.TestCase):
         self.assertTrue((self.home / '.local/share/fxroute/live-ready').exists())
         self.assertTrue((self.root / 'firefox-opened').exists())
         self.assertIsNone(self.hint())
+
+    def test_desktop_shortcut_reopens_kiosk(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shortcut = self.home / 'Desktop' / 'FXRoute.desktop'
+        self.assertTrue(shortcut.exists())
+        content = shortcut.read_text()
+        self.assertIn('Exec=/usr/local/bin/fxroute-desktop-launcher', content)
+        self.assertTrue(shortcut.stat().st_mode & 0o111)
+        gio_calls = [call for call in self.calls('gio') if any('trusted' in part for part in call)]
+        self.assertTrue(gio_calls)
 
     def test_install_failure_leaves_no_marker_and_opens_no_kiosk(self):
         self.env['INSTALL_FAIL'] = '1'
