@@ -744,6 +744,49 @@ class Runner21ServiceIOTests(RunnerServiceIOTestBase):
         self.assertEqual(len(self.harness.stage_calls), 3)
         self.assert_service_end_state()
 
+    async def test_service_path_never_touches_legacy_persistence(self):
+        """Task-1 contract: full service run green while legacy writers raise.
+
+        Adaptation of the plan sketch to this file's harness: the service
+        start is the base-class ServiceHarness job (start.py attaches
+        ``output_state_context`` to every job while the gate is open);
+        ``runners.start`` exposes no ``set_audio_output_mode``, so the
+        funnel measurement module takes its patch slot (audit-verified).
+        ``persist_audio_output_mode`` and ``save_assignments`` are the delta
+        over the base patches.
+        """
+        import measurement.autosub.measurement as funnel_measurement
+        from audio import output_routing as routing_module
+        stack = ExitStack()
+        with stack:
+            stack.enter_context(patch.object(
+                autosub_candidates, "set_audio_output_mode",
+                side_effect=AssertionError("legacy persist")))
+            stack.enter_context(patch.object(
+                funnel_measurement, "set_audio_output_mode",
+                side_effect=AssertionError("legacy persist")))
+            stack.enter_context(patch.object(
+                samplerate_module, "persist_audio_output_mode",
+                side_effect=AssertionError("legacy persist")))
+            stack.enter_context(patch.object(
+                routing_module, "save_assignments",
+                side_effect=AssertionError("legacy persist")))
+            stack.enter_context(patch.object(
+                self.runner, "_measure_auto_sub_combined_candidate",
+                side_effect=self.combined_measure()))
+            self.steering(
+                stack, gain_deltas={"left": 2.0, "right": 2.0},
+                gain_verdicts=[{"accepted": True, "reason": "test", "channels": {}},
+                               {"accepted": True, "reason": "test", "channels": {}}],
+                correction={"available": True, "reason": "test",
+                            "deltas_db": {"left": 1.0}, "channels": {}},
+                dip=_dip_by_shape,
+                veto=(False, {"failed_sides": []}))
+            await self.run_runner(self.runner._run_auto_sub_optimize(**self.runner_args()))
+        self.assertEqual(self.job["status"], "completed", self.job.get("error"))
+        self.assertGreater(len(self.harness.transitions), 0)
+        self.assert_service_end_state()
+
 
 class Runner22ServiceIOTests(RunnerServiceIOTestBase):
     runner = runner_22
