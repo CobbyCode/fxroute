@@ -96,9 +96,9 @@ class AutoSubGateRevertDisplayTests(unittest.IsolatedAsyncioTestCase):
             })
             return overview()
 
-        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
-            persist(output_mode, global_config, subwoofers_config)
-            return bool(verify((load_overview or overview)()))
+        async def apply_candidate(*, global_config, subwoofers_config, job=None):
+            persist("subwoofer-2.1", global_config, subwoofers_config)
+            return True
 
         async def measure_candidate(**kwargs):
             persist(kwargs.get("output_mode", runner.OUTPUT_MODE_SUBWOOFER_21), {

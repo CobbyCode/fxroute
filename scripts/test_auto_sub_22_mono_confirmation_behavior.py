@@ -97,9 +97,9 @@ class AutoSub22MonoConfirmationBehaviorTests(unittest.IsolatedAsyncioTestCase):
             })
             return overview()
 
-        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
-            persist(output_mode, global_config, subwoofers_config)
-            return bool(verify((load_overview or (lambda: copy.deepcopy(state)))()))
+        async def apply_candidate(*, global_config, subwoofers_config, job=None):
+            persist("subwoofer-2.2", global_config, subwoofers_config)
+            return True
 
         async def stage_service_candidate(job, *, global_config, subwoofers_config=None):
             persist(runner.OUTPUT_MODE_SUBWOOFER_22, global_config, subwoofers_config)

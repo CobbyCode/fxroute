@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 # Late-bound v2 output-state head for the derived overview mode payload.
 # The composition root (main.py) installs a total getter (None on any
-# failure); while unset, or when it yields no usable head, the builder
-# falls back to the legacy mode file (removed in the follow-up slice).
+# failure); while unset, or when it yields no usable head, the overview
+# degrades to stereo.
 _output_state_head_loader: Callable[[], dict[str, Any] | None] | None = None
 
 
@@ -58,8 +58,8 @@ def _derived_output_mode(
 ) -> dict[str, Any] | None:
     """Translate a v2 output-state head into the legacy mode payload shape.
 
-    Returns None when the head is unusable (caller falls back to the mode
-    file).  Slot mapping is deterministic: zero sub roles read stereo, one
+    Returns None when the head is unusable (the overview then degrades to
+    stereo).  Slot mapping is deterministic: zero sub roles read stereo, one
     reads 2.1, two or more read 2.2 (stereo-bass label for sub_l/sub_r).
     """
     if not isinstance(head, Mapping):
@@ -80,7 +80,7 @@ def _derived_output_mode(
     routing = routing if isinstance(routing, Mapping) else {}
     if routing and not any(key for key in (output_key, device_key(output_key or "")) if key in routing):
         # A device with no routing entry cannot be attributed roles; callers
-        # fall back to the mode file instead of misreporting stereo.
+        # degrade to stereo instead of misreporting a subwoofer mode.
         return None
     try:
         assignments = routing_for_device(head, mode, output_key or "")
@@ -130,7 +130,7 @@ def _derived_output_mode(
 
 
 def _derived_output_mode_from_head(selection_state: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Best-effort derived mode payload; None keeps the file fallback."""
+    """Best-effort derived mode payload; None degrades to stereo."""
     loader = _output_state_head_loader
     if loader is None:
         return None

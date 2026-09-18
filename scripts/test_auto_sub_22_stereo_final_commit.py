@@ -69,13 +69,11 @@ class AutoSub22StereoFinalCommitTests(unittest.IsolatedAsyncioTestCase):
 
         apply_count = 0
 
-        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
+        async def apply_candidate(*, global_config, subwoofers_config, job=None):
             nonlocal apply_count
             apply_count += 1
-            persist(output_mode, global_config, subwoofers_config)
-            if fail_final_commit and apply_count == 1:
-                return False
-            return bool(verify((load_overview or (lambda: state))()))
+            persist("subwoofer-2.2-stereo", global_config, subwoofers_config)
+            return not (fail_final_commit and apply_count == 1)
 
         async def measure_candidate(**kwargs):
             # Each single-side candidate is one physical sweep in the ledger.

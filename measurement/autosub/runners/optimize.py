@@ -503,10 +503,8 @@ async def _run_auto_sub_optimize(
                     "main_highpass_enabled": original_highpass,
                 }
                 apply_ok = await _auto_sub_apply_candidate(
-                    output_mode=OUTPUT_MODE_SUBWOOFER_21,
                     global_config=sub_config,
                     subwoofers_config=None,
-                    verify=lambda overview: float(overview.get("subwoofer", {}).get("sub_alignment_ms", -999)) == best_delay,
                     job=job,
                 )
                 if apply_ok:
@@ -877,25 +875,9 @@ async def _run_auto_sub_optimize(
                         "main_highpass_enabled": original_highpass,
                     }
 
-                    def _verify_final_config(overview: dict[str, Any]) -> bool:
-                        subwoofer = overview.get("subwoofer") if isinstance(overview.get("subwoofer"), dict) else {}
-                        try:
-                            return (
-                                overview.get("mode") == OUTPUT_MODE_SUBWOOFER_21
-                                and int(subwoofer.get("crossover_frequency_hz", -1)) == fc
-                                and subwoofer.get("main_highpass_enabled") is original_highpass
-                                and abs(float(subwoofer.get("sub_alignment_ms", -9999)) - applied_delay) <= 0.001
-                                and abs(round(float(subwoofer.get("sub_level_db", -9999)), 1) - round(final_gain_level, 1)) <= 0.05
-                                and str(subwoofer.get("sub_polarity") or "normal").lower() == final_polarity
-                            )
-                        except (TypeError, ValueError):
-                            return False
-
                     recommit_ok = await _auto_sub_apply_candidate(
-                        output_mode=OUTPUT_MODE_SUBWOOFER_21,
                         global_config=final_config,
                         subwoofers_config=None,
-                        verify=_verify_final_config,
                         job=job,
                     )
                     if not recommit_ok:

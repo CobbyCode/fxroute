@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable
+from typing import Any
 
 from audio.samplerate import OUTPUT_MODE_SUBWOOFER_22_MODES
 
@@ -149,11 +149,8 @@ async def _commit_auto_sub_service_winner(job: dict[str, Any]) -> dict[str, Any]
 
 async def _auto_sub_apply_candidate(
     *,
-    output_mode: str,
     global_config: dict[str, Any],
     subwoofers_config: dict[str, Any] | None,
-    verify: Callable[[dict[str, Any]], bool] | None = None,
-    load_overview: Callable[[], dict[str, Any]] | None = None,
     job: dict[str, Any] | None = None,
 ) -> bool:
     """Stage one service candidate through its owner.
@@ -161,8 +158,7 @@ async def _auto_sub_apply_candidate(
     Service jobs (``job`` carrying ``output_state_context``) stage the
     retained state through their owner: True once staged and verified,
     False only for recoverable translation/render failures. Revision drift
-    and unrestorable rollback raise run-fatal. ``output_mode``, ``verify``
-    and ``load_overview`` are retained for caller compatibility and unused.
+    and unrestorable rollback raise run-fatal.
     """
     from audio.output_state_store import StateConflictError
 

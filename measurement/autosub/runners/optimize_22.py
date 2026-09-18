@@ -19,7 +19,6 @@ from ..candidates import (
     _auto_sub_22_candidate_subwoofers,
     _auto_sub_22_global_config,
     _auto_sub_22_sub,
-    _auto_sub_22_verify_alignment,
     _auto_sub_apply_candidate,
     _auto_sub_clamped_delay,
     _auto_sub_opposite_polarity,
@@ -534,10 +533,8 @@ async def _run_auto_sub_22_optimize(
             active_subs=("sub1", "sub2"),
         )
         apply_ok = await _auto_sub_apply_candidate(
-            output_mode=OUTPUT_MODE_SUBWOOFER_22,
             global_config=sub_config,
             subwoofers_config=subwoofers_config,
-            verify=lambda overview: _auto_sub_22_verify_alignment(overview, best_sub1, best_sub2),
             job=job,
         )
 

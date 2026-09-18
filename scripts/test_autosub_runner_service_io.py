@@ -376,7 +376,6 @@ class ApplyCandidateOwnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_service_apply_stages_without_persisting(self):
         before = self.service.load()["revision"]
         applied = await autosub_candidates._auto_sub_apply_candidate(
-            output_mode="subwoofer-2.1",
             global_config={"crossover_frequency_hz": 80, "sub_alignment_ms": 4.5,
                            "sub_level_db": 1.5, "sub_polarity": "invert",
                            "main_highpass_enabled": True},
@@ -388,7 +387,6 @@ class ApplyCandidateOwnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_translation_failure_returns_false_without_staging(self):
         applied = await autosub_candidates._auto_sub_apply_candidate(
-            output_mode="subwoofer-2.1",
             global_config={"crossover_frequency_hz": 80},
             subwoofers_config=None, job=self.job)
         self.assertFalse(applied)
@@ -401,7 +399,6 @@ class ApplyCandidateOwnerTests(unittest.IsolatedAsyncioTestCase):
         self.service.commit(drifted, expected_revision=drifted["revision"])
         with self.assertRaises(StateConflictError):
             await autosub_candidates._auto_sub_apply_candidate(
-                output_mode="subwoofer-2.1",
                 global_config={"crossover_frequency_hz": 80, "sub_alignment_ms": 4.5,
                                "sub_level_db": 1.5, "sub_polarity": "invert",
                                "main_highpass_enabled": True},

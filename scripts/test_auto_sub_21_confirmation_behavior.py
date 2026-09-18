@@ -100,9 +100,18 @@ class AutoSub21ConfirmationBehaviorTests(unittest.IsolatedAsyncioTestCase):
             })
             return overview()
 
-        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
-            persist(output_mode, global_config, subwoofers_config)
-            return bool(verify((load_overview or overview)()))
+        apply_count = 0
+
+        async def apply_candidate(*, global_config, subwoofers_config, job=None):
+            nonlocal apply_count
+            apply_count += 1
+            persist("subwoofer-2.1", global_config, subwoofers_config)
+            # The winner apply only checks the alignment; the authoritative
+            # recommit verifies the complete mode state and refuses a
+            # mode-mismatched live head (service-only staging semantics).
+            if wrong_mode and apply_count >= 2:
+                return False
+            return True
 
         async def measure_candidate(**kwargs):
             recorded_stages.append(str(kwargs.get("stage", "")))

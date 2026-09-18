@@ -67,13 +67,13 @@ class AutoSub21ConfirmationRecommitTests(unittest.IsolatedAsyncioTestCase):
 
         apply_count = 0
 
-        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
+        async def apply_candidate(*, global_config, subwoofers_config, job=None):
             nonlocal apply_count
             apply_count += 1
-            persist(output_mode, global_config, subwoofers_config)
+            persist("subwoofer-2.1", global_config, subwoofers_config)
             if fail_recommit and apply_count == 2:
                 state["mode"] = "stereo"
-            return bool(verify((load_overview or overview)()))
+            return False if fail_recommit and apply_count == 2 else True
 
         async def measure_candidate(**kwargs):
             persist(kwargs.get("output_mode", runner.OUTPUT_MODE_SUBWOOFER_21), {

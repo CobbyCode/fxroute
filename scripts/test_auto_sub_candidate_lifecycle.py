@@ -56,14 +56,12 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_apply_without_service_job_raises(self):
         with self.assertRaises(RuntimeError):
             await autosub_candidates._auto_sub_apply_candidate(
-                output_mode="subwoofer-2.1",
                 global_config={"crossover_frequency_hz": 80},
                 subwoofers_config=None,
                 job={"id": "legacy", "status": "running"},
             )
         with self.assertRaises(RuntimeError):
             await autosub_candidates._auto_sub_apply_candidate(
-                output_mode="subwoofer-2.1",
                 global_config={},
                 subwoofers_config=None,
             )

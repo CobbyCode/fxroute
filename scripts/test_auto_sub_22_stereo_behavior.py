@@ -130,9 +130,9 @@ class AutoSub22StereoBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 return copy.deepcopy(_dip(7.0))
             return copy.deepcopy(_flat())
 
-        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None, job=None):
-            persist(output_mode, global_config, subwoofers_config)
-            return bool(verify((load_overview or (lambda: copy.deepcopy(state)))()))
+        async def apply_candidate(*, global_config, subwoofers_config, job=None):
+            persist("subwoofer-2.2-stereo", global_config, subwoofers_config)
+            return True
 
         async def measure_candidate(**kwargs):
             stage = str(kwargs.get("stage", ""))
