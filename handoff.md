@@ -1,9 +1,11 @@
-# Handoff — Multichannel / Task 8
+# Handoff — Multichannel / Task 8 + Unified Output + Backend-v2-Migration
 
 ## Arbeitsstand
 - Worktree: `/home/pbclaw/ai/projects/fxroute-multichannel`
 - Branch: `feature/multichannel-crossover`
-- HEAD: `c76d3f7` (Legacy-Persistenz im Fine-Winner-Test isoliert; darunter `8ae748a` Handoff-Refresh, `6280015` Release-Device-Validierung).
+- HEAD: `8937e62` (Cleanup nach Output-Modell-Vereinheitlichung; darunter `88d2ef6` Polarity N/I, `3b70ab7` Sub-Sprach-Angleichung, `c28a6ab` Crossover-Designfix, `8be89a0` DSP-Layout, `d4ceff8` Crossover-Band, `22a3328` Routing-UI-Cleanup, `3c8f246` Settings-Cleanup, `9bfb099` kanalabhängiger Mode-Selektor, `8988501` Modell-Vereinheitlichung).
+- Unified Output Model ist **implementiert, lokal 405/0/14 verifiziert und auf `.104` deployed** (siehe unten). Nächster Schritt ist die **Backend-v2-Migration**, geplant in `docs/superpowers/plans/2026-09-18-backend-v2-migration.md` (6 Tasks, noch nicht begonnen — Einstieg dort, Task 0).
+- `.104`-Deploy-Praxis nach `../fxroute/AGENTS.md` (im Worktree als `./AGENTS.md` kopiert, Git-ignoriert): Backup nach `~/deploy-backup/fxroute-<sha>-*.tar`, Transfer ohne `demo/`, Restart, Asset-Verifikation. Demo-Server läuft nie auf `.104`; Produkt läuft unter `/home/paul/fxroute` (Port 8000).
 - Tasks 1–7 abgeschlossen einschließlich Task-7-Review und Nacharbeiten. Task 8 ist **implementiert, das AutoSub-Gate geöffnet; reale akustische 2-/3-Wege-Verifikation bleibt offen, ist aber mangels passenden Aufbaus aktuell kein Blocker**.
 - AutoSub-Slices A–G sind implementiert und committet (B zusätzlich reviewed; F durch zwei externe Review-Runden, G durch eine mit SHIP-Verdict). Speaker Align: Analyse-/Proposal-Slice (`583d3be`), interner Full-Resolution-Capture-Evidenztransport (`0d4855f`) und serielle Way-Acquisition mit Common-Input-Attestation (`17cdfb6`) implementiert und committet, alle drei mit Review SHIP für ihren begrenzten Slice. Guarded Apply, Commit/Restore/Release, API, Frontend und Release-Registrierung sind implementiert (Details unten); reale 2-/3-Wege-Verifikation bleibt separat.
 - Der AutoSub-HTTP-Start ist seit `00b596b` geöffnet (`_AUTO_SUB_SERVICE_INTEGRATION_READY = True` in `measurement/autosub/runners/start.py:69`; gestützte Topologie registriert statt 503; ungültige Topologie weiter 400, fehlende Session weiter 503). Kein HTTP-/Environment-Override. Der Verhaltens-Gate-Test ist invertiert (`test_supported_topology_is_open_in_production`): ein versehentlich wieder geschlossenes Gate wird rot.
