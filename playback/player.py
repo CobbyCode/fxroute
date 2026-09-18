@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 LISTENER_RECONNECT_DELAY_INITIAL = 0.2
 LISTENER_RECONNECT_DELAY_MAX = 5.0
 
+# First-run cache generation (fontconfig, etc.) on slow media under load can
+# stall `mpv --version` far beyond a tight timeout; a single failed probe then
+# disables playback until the service is restarted. Probe generously with
+# bounded retries instead. A genuinely missing binary still fails fast: only
+# timeouts are retried.
+MPV_VERSION_PROBE_TIMEOUT_S = 120
+MPV_VERSION_PROBE_ATTEMPTS = 3
+
 
 class MPVError(Exception):
     """Base exception for MPV-related errors."""
@@ -39,6 +47,7 @@ class MPVWrapper:
         self.socket_path = "/tmp/mpv.sock"
         self.process: Optional[subprocess.Popen] = None
         self.lock = threading.RLock()
+        self._start_lock = threading.Lock()
         self._running = False
         self._state = {
             "playing": False,
@@ -85,6 +94,14 @@ class MPVWrapper:
         if self._running:
             logger.warning("MPV already running")
             return
+        with self._start_lock:
+            if self._running:
+                logger.warning("MPV already running")
+                return
+            self._start_locked()
+
+    def _start_locked(self):
+        """MPV startup; callers hold _start_lock (see start)."""
 
         # A previous killed service run may have left FXRoute-owned mpv
         # processes behind; they would compete for the same IPC socket and
@@ -96,12 +113,21 @@ class MPVWrapper:
         except FileNotFoundError:
             pass
 
-        try:
-            subprocess.run(["mpv", "--version"], capture_output=True, check=True, timeout=15)
-        except subprocess.TimeoutExpired as e:
-            raise MPVNotInstalledError("mpv version probe timed out") from e
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raise MPVNotInstalledError("mpv is not installed or not in PATH") from e
+        probed = False
+        for attempt in range(1, MPV_VERSION_PROBE_ATTEMPTS + 1):
+            try:
+                subprocess.run(["mpv", "--version"], capture_output=True, check=True,
+                               timeout=MPV_VERSION_PROBE_TIMEOUT_S)
+                probed = True
+                break
+            except subprocess.TimeoutExpired as e:
+                logger.warning("mpv version probe timed out (attempt %d/%d)",
+                               attempt, MPV_VERSION_PROBE_ATTEMPTS)
+                if attempt == MPV_VERSION_PROBE_ATTEMPTS:
+                    raise MPVNotInstalledError("mpv version probe timed out") from e
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                raise MPVNotInstalledError("mpv is not installed or not in PATH") from e
+        assert probed  # loop breaks only on success or by raising above
 
         cmd = self._mpv_command()
         logger.info(f"Starting mpv: {' '.join(cmd)}")

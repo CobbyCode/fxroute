@@ -539,6 +539,35 @@ measurement_store = None
 measurement_sr_session = None
 hardware_controller = None
 
+# Cooldown between player (re)start attempts from request context: a missing
+# mpv binary must not turn every play press into minutes of blocking probes.
+_player_restart_cooldown_until = 0.0
+PLAYER_RESTART_COOLDOWN_S = 60.0
+
+
+def _ensure_player_running() -> bool:
+    """(Re)start the MPV player when it is missing or stopped.
+
+    Backend-startup start failures are transient (slow first-run probes under
+    load); without lazy recovery one failure 503s every /api/play until the
+    service is restarted. Returns True when a running player is available.
+    """
+    global _player_restart_cooldown_until
+    player = runtime.player_instance
+    if player is not None and getattr(player, "_running", False):
+        return True
+    if time.monotonic() < _player_restart_cooldown_until:
+        return False
+    try:
+        player = player if player is not None else get_player()
+        player.start()
+    except Exception as exc:
+        logger.warning("Player (re)start failed: %s", exc)
+        _player_restart_cooldown_until = time.monotonic() + PLAYER_RESTART_COOLDOWN_S
+        return False
+    runtime.player_instance = player
+    return bool(getattr(player, "_running", False))
+
 
 def _dsp_mutation_lock() -> asyncio.Lock:
     if runtime.dsp_mutation_lock is None:
@@ -2938,7 +2967,8 @@ def _native_mpv_direct_selection_ready(active_queue_ids: list) -> bool:
 @app.post("/api/play")
 async def play_track(req: PlayRequest):
     if not runtime.player_instance or not runtime.player_instance._running:
-        raise HTTPException(status_code=503, detail="Player not available")
+        if not await _drain_worker(_ensure_player_running):
+            raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
         state = runtime.player_instance.state
         return {
