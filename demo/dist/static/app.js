@@ -3753,31 +3753,51 @@ function syncBankActionButtons() {
     }
 }
 
+let _bankImportChannelMode = null;
+
 function renderBankImportTarget() {
     const area = measurementAreaFromCatalog();
     const mono = area?.channel_mode === 'mono';
     const note = document.getElementById('effects-import-bank-target');
     if (note) note.textContent = area?.available === false ? 'Select a filter bank before importing.'
         : `Target: ${area?.label || 'Global'} · ${mono ? 'Mono' : 'Stereo L/R'}`;
+    // Mono banks get a single import field: the stereo file area is hidden
+    // and the remaining pane accepts every mono-supported format. A stale
+    // file selection from the other mode is cleared on switching only, so
+    // unrelated re-renders never eat a chosen file.
+    if (_bankImportChannelMode !== null && _bankImportChannelMode !== mono) {
+        if (elements.effectsImportFile) elements.effectsImportFile.value = '';
+        if (elements.effectsRewLeftFile) elements.effectsRewLeftFile.value = '';
+        if (elements.effectsRewRightFile) elements.effectsRewRightFile.value = '';
+        updateEffectsImportUi();
+    }
+    _bankImportChannelMode = mono;
+    document.getElementById('effects-import-file-head')?.classList.toggle('hidden', mono);
+    document.getElementById('effects-import-area')?.classList.toggle('hidden', mono);
     const right = elements.effectsRewRightText?.closest('.effects-rew-pane');
     right?.classList.toggle('hidden', mono);
     document.querySelector('.effects-rew-dual-grid')?.classList.toggle('is-mono', mono);
     document.getElementById('effects-peq-right-bands')?.closest('.effects-peq-pane')?.classList.toggle('hidden', mono);
     const peqLeftLabel = document.getElementById('effects-peq-left-bands-label');
     if (peqLeftLabel) peqLeftLabel.textContent = mono ? 'Mono bands' : 'Left bands';
-    const importTitle = document.getElementById('effects-import-file-title');
-    if (importTitle) importTitle.textContent = mono ? 'Mono file' : 'Stereo file';
     const splitTitle = document.getElementById('effects-import-split-title');
     if (splitTitle) splitTitle.textContent = mono ? 'Mono filter' : 'Left / Right';
     const splitMeta = document.getElementById('effects-import-split-meta');
-    if (splitMeta) splitMeta.textContent = mono ? 'One output role' : 'Paired channels';
-    const fileText = document.querySelector('#effects-import-area .upload-area-text');
-    if (fileText) fileText.innerHTML = `Drop ${mono ? 'mono' : 'stereo'} file or <u>browse</u>`;
-    const leftText = document.querySelector('#effects-rew-left-area .upload-area-text');
-    if (leftText) leftText.innerHTML = `Drop ${mono ? 'mono' : 'Left'} file or <u>browse</u>`;
+    if (splitMeta) splitMeta.textContent = mono
+        ? 'Mono .irs/.wav, REW text, preset or bundle'
+        : 'Mono .irs/.wav or REW .txt per side';
+    const leftUploadText = document.querySelector('#effects-rew-left-area .upload-area-text');
+    if (leftUploadText) leftUploadText.innerHTML = mono
+        ? 'Drop .irs/.wav/.txt/.json/.zip or <u>browse</u>'
+        : 'Drop Left .irs/.wav/.txt or <u>browse</u>';
+    if (elements.effectsRewLeftFile) {
+        elements.effectsRewLeftFile.accept = mono
+            ? '.irs,.wav,.txt,.json,.zip,text/plain,audio/wav,application/json,application/zip'
+            : '.irs,.wav,.txt,text/plain,audio/wav';
+    }
     const leftLabel = document.querySelector('label[for="effects-rew-left-text"]');
     if (leftLabel) leftLabel.textContent = mono ? 'Mono filter' : 'Left filter';
-    if (elements.effectsRewLeftText) elements.effectsRewLeftText.placeholder = mono ? 'Paste mono REW filter' : 'Paste Left REW filter';
+    if (elements.effectsRewLeftText) elements.effectsRewLeftText.placeholder = mono ? 'Paste mono REW text' : 'Paste Left REW text';
     if (elements.effectsRewDualCreatePresetBtn) elements.effectsRewDualCreatePresetBtn.disabled = area?.available === false;
 }
 
@@ -8269,6 +8289,8 @@ function getDualFilterFileKind(file) {
     const name = (file?.name || '').toLowerCase();
     if (name.endsWith('.txt')) return 'rew-text';
     if (name.endsWith('.irs') || name.endsWith('.wav')) return 'convolver';
+    if (name.endsWith('.json')) return 'preset-json';
+    if (name.endsWith('.zip')) return 'preset-bundle';
     return null;
 }
 
@@ -8300,11 +8322,21 @@ async function createDualFilterPreset() {
     const rightFileKind = getDualFilterFileKind(rightFile);
     const usingDualFiles = !!leftFile && !!rightFile;
     const usingDualConvolverFiles = usingDualFiles && leftFileKind === 'convolver' && rightFileKind === 'convolver';
+    // The single mono field also takes preset files; a stereo bank has a
+    // dedicated file area for those, so they do not belong per side.
+    const monoSingleKind = mono && leftFile ? leftFileKind : null;
+    const monoPresetFile = monoSingleKind === 'preset-json' || monoSingleKind === 'preset-bundle';
 
     if (!presetName) {
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please enter a preset name.</div>';
         showToast('Please enter a preset name', 'error');
         elements.effectsRewDualPresetName?.focus();
+        return;
+    }
+    if (!mono && (leftFileKind === 'preset-json' || leftFileKind === 'preset-bundle'
+        || rightFileKind === 'preset-json' || rightFileKind === 'preset-bundle')) {
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Preset .json/.zip files go in the Stereo file area above.</div>';
+        showToast('Preset .json/.zip files go in the Stereo file area above', 'error');
         return;
     }
     if (usingDualFiles && leftFileKind !== rightFileKind) {
@@ -8317,13 +8349,13 @@ async function createDualFilterPreset() {
         showToast('Provide both Left and Right files', 'error');
         return;
     }
-    if (!usingDualConvolverFiles && !leftText) {
-        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please provide Left filter text or file.</div>';
-        showToast('Please provide Left filter text or file', 'error');
+    if (!usingDualConvolverFiles && !leftText && !monoPresetFile) {
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">Please provide ${mono ? 'a mono filter file or text' : 'Left filter text or file'}.</div>`;
+        showToast(mono ? 'Please provide a mono filter file or text' : 'Please provide Left filter text or file', 'error');
         elements.effectsRewLeftText?.focus();
         return;
     }
-    if (!usingDualConvolverFiles && !rightText) {
+    if (!mono && !usingDualConvolverFiles && !rightText) {
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please provide Right filter text or file.</div>';
         showToast('Please provide Right filter text or file', 'error');
         elements.effectsRewRightText?.focus();
@@ -8352,8 +8384,14 @@ async function createDualFilterPreset() {
         if (mono) {
             formData.delete('left_text');
             formData.delete('right_text');
-            endpoint = usingDualConvolverFiles ? '/api/dsp/presets/create-with-ir' : '/api/dsp/presets/import-rew-peq';
-            formData.append('file', leftFile || new File([leftText], `${presetName}.txt`, { type: 'text/plain' }));
+            if (monoPresetFile) {
+                endpoint = monoSingleKind === 'preset-json'
+                    ? '/api/dsp/presets/import-json' : '/api/dsp/presets/import-bundle';
+                formData.append('file', leftFile);
+            } else {
+                endpoint = usingDualConvolverFiles ? '/api/dsp/presets/create-with-ir' : '/api/dsp/presets/import-rew-peq';
+                formData.append('file', leftFile || new File([leftText], `${presetName}.txt`, { type: 'text/plain' }));
+            }
         } else {
             if (leftFile) formData.append('left_file', leftFile);
             if (rightFile) formData.append('right_file', rightFile);
@@ -8377,9 +8415,14 @@ async function createDualFilterPreset() {
         if (leftFilename) leftFilename.textContent = '';
         if (rightFilename) rightFilename.textContent = '';
         if (elements.effectsRewDualPresetName) elements.effectsRewDualPresetName.value = '';
-        const importedKind = mono ? 'Mono filter' : data.import_kind === 'dual-convolver' ? 'Dual convolver' : 'Dual PEQ';
+        const importedKind = !mono && data.import_kind === 'dual-convolver' ? 'Dual convolver'
+            : !mono ? 'Dual PEQ'
+            : monoSingleKind === 'preset-json' ? 'Preset'
+            : monoSingleKind === 'preset-bundle' ? 'Preset bundle' : 'Mono filter';
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
-        showToast(`Created ${importedKind.toLowerCase()} preset: ${data.preset.name}`, 'success');
+        showToast(monoPresetFile
+            ? `Imported ${importedKind.toLowerCase()}: ${data.preset.name}`
+            : `Created ${importedKind.toLowerCase()} preset: ${data.preset.name}`, 'success');
     } catch (e) {
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">${escapeHtml(e.message || 'Dual filter import failed')}</div>`;
         showToast(e.message || 'Dual filter import failed', 'error');
@@ -15336,7 +15379,7 @@ function updateEffectsImportUi() {
     }
     if (elements.effectsImportFilename) {
         if (!file) {
-            elements.effectsImportFilename.textContent = 'Stereo convolver .irs/.wav, Preset .json, or Bundle .zip';
+            elements.effectsImportFilename.textContent = 'Stereo .irs/.wav IR · preset .json · bundle .zip';
         } else if (detectedType === 'convolver' || detectedType === 'preset-json' || detectedType === 'preset-bundle') {
             elements.effectsImportFilename.textContent = file.name;
         } else {
