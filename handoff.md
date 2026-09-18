@@ -12,9 +12,9 @@
 
 ## Kurz-Handoff (2026-09-18)
 
-- Fertig und live auf `.104` (`http://192.168.178.104:8000`): Unified Output Model (Stereo / Stereo + Sub, Crossover als On/Off-Schalter, ein Hardware-Routing), kanalabhängiger Mode-Selektor, Settings-Reihenfolge, Crossover-Kachel im Sub-Stil mit Pro-Filter-Gruppen.
-- Verifikation: lokal 405/0/14, `.104` inkl. nativer Plan-Peak-Parität; Produkt läuft, Backups unter `~/deploy-backup/`, Demo nie auf `.104`.
-- Backend-v2-Migration: Tasks 0–5 **implementiert und committet** (Details unten); offen nur noch Task 6 Steps 3–4 (`.104`-Staffel + Deploy).
+- Fertig und live auf `.104` (`http://192.168.178.104:8000`): Unified Output Model (Stereo / Stereo + Sub, Crossover als On/Off-Schalter, ein Hardware-Routing), kanalabhängiger Mode-Selektor, Settings-Reihenfolge, Crossover-Kachel im Sub-Stil mit Pro-Filter-Gruppen — **plus Backend-v2-Migration** (`1425b6d`): Legacy-Routen weg (404), `output_state.js?v=0.9.7`, State rev 98 intakt.
+- Verifikation: lokal **405/0/14**; `.104`-Scratch: native Plan-Peak-Parität PASS + 8/8 Migrations-Suiten grün (JS nur lokal, kein Node dort); Produkt neu gestartet, aktiv, HTTP 200, Backup `~/deploy-backup/fxroute-1425b6d-pre-v2.tar`; Demo nie auf `.104`.
+- Backend-v2-Migration: Tasks 0–6 **fertig und deployed** (Details unten). Kein Push/Release erfolgt.
 - Regeln: `./AGENTS.md` (Git-ignoriert), kein Push/Release, Deploy nur Backup → Transfer (ohne `demo/`) → Restart → Verify.
 
 ## Backend-v2-Migration — Stand (Tasks 0–5 fertig)
