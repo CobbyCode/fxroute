@@ -563,5 +563,91 @@ class MainTopologyBranchTests(unittest.TestCase):
                 asyncio.run(main._sync_plan_runtime({"config": "c", "text": "t"}))
 
 
+class LegacyFilesUntouchedTests(unittest.TestCase):
+    """Task-2 contract: v2 commit/rollback never touch legacy files.
+
+    Adaptation of the plan sketch to this file's harness: the topology
+    switch is the CommitV2/RollbackV2 runtime path (the v2 route builds
+    requests with only ``output_state_transition`` and never sets the
+    legacy ``output_mode_config``/``output_routing_config`` fields, so the
+    runtime-level ``output_mode_persisted`` assertion is the equivalent of
+    the sketch's ``live_applied``). Legacy writers raise; pre-existing
+    sentinel legacy files must be byte-identical afterwards (canary).
+    """
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        xdg = tempfile.TemporaryDirectory()
+        self.addCleanup(xdg.cleanup)
+        self.manager = make_manager(directory.name)
+        self.service = make_service(directory.name, self.manager)
+        self.base = seed_sub_state(self.service)
+        self.candidate = set_bank_preset(self.base, "stereo-sub", "sub1", preset="Room")
+        self.previous_target = plan_target(self.service, self.manager, self.base)
+        self.xdg_patch = mock.patch.dict("os.environ", {"XDG_CONFIG_HOME": xdg.name})
+        self.xdg_patch.start()
+        self.addCleanup(self.xdg_patch.stop)
+        from audio.samplerate import persistence as legacy_persistence
+        from audio import output_routing as routing_module
+        self.mode_path = legacy_persistence._audio_output_mode_path()
+        self.routing_path = routing_module._path()
+        self.mode_path.parent.mkdir(parents=True, exist_ok=True)
+        self.mode_path.write_bytes(b'{"mode": "sentinel"}')
+        self.routing_path.write_bytes(b'{"sentinel": [1, 2, 3, 4]}')
+
+    def legacy_raises(self):
+        import audio.samplerate as samplerate_module
+        from audio import output_routing as routing_module
+        return (
+            mock.patch.object(main, "persist_audio_output_mode",
+                              side_effect=AssertionError("legacy persist")),
+            mock.patch.object(samplerate_module, "persist_audio_output_mode",
+                              side_effect=AssertionError("legacy persist")),
+            mock.patch.object(routing_module, "save_assignments",
+                              side_effect=AssertionError("legacy persist")),
+            mock.patch.object(routing_module, "restore_routing_state",
+                              side_effect=AssertionError("legacy restore")),
+            mock.patch.object(routing_module, "saved_routing_state",
+                              side_effect=AssertionError("legacy read")),
+        )
+
+    def legacy_bytes(self):
+        return (self.mode_path.read_bytes(), self.routing_path.read_bytes())
+
+    def test_topology_switch_never_touches_legacy_files(self):
+        before = self.legacy_bytes()
+        runtime = make_transition_runtime()
+        raises = self.legacy_raises()
+        with raises[0], raises[1], raises[2], raises[3], raises[4], \
+                mock.patch.object(main, "get_output_service", return_value=self.service):
+            result = asyncio.run(runtime.commit_output_mode_runtime(
+                v2_request(v2_payload(self.service, self.candidate, self.base))))
+        self.assertTrue(result["output_mode_persisted"])
+        self.assertEqual(self.service.load()["revision"], 2)
+        self.assertEqual(self.legacy_bytes(), before)
+
+    def test_rollback_never_touches_legacy_files(self):
+        self.service.commit(self.candidate, expected_revision=1)
+        before = self.legacy_bytes()
+        runtime = make_transition_runtime()
+        fake = mock.MagicMock()
+        fake.sync_rendered = AsyncMock()
+        raises = self.legacy_raises()
+        with raises[0], raises[1], raises[2], raises[3], raises[4], \
+                mock.patch.object(main, "get_output_service", return_value=self.service), \
+                mock.patch.object(main.runtime, "dsp_runtime", fake), \
+                mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis",
+                                  new=AsyncMock(return_value={"links_complete": True,
+                                                              "signature": "sig"})):
+            asyncio.run(runtime.rollback_output_mode_runtime(
+                v2_request(v2_payload(self.service, self.candidate, self.base,
+                                      previous_target=self.previous_target)),
+                snapshot={}))
+        self.assertEqual(self.service.load()["revision"], 3)
+        fake.sync_rendered.assert_awaited_once_with(self.previous_target)
+        self.assertEqual(self.legacy_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
