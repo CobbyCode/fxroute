@@ -13,10 +13,11 @@ function catalog() {
     return {
         status: 'ok',
         revision: 4,
-        active_mode: 'stereo',
-        device: { key: 'A', channels: 4, routing: { stereo: ['main_l', 'main_r', 'sub1', 'sub1'], crossover: [] } },
+        active_mode: 'stereo-sub',
+        device: { key: 'A', channels: 4, routing: { 'stereo-sub': ['main_l', 'main_r', 'sub1', 'sub1'], stereo: [] } },
         modes: {
-            stereo: {
+            'stereo-sub': {
+                crossover_enabled: false,
                 selected_bank: 'sub1',
                 banks: {
                     global: { preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' },
@@ -27,23 +28,24 @@ function catalog() {
                 processing: {},
                 bass_management: { frequency_hz: 80, main_highpass_enabled: true },
                 extras: {},
-                topology: { mode: 'stereo', roles: ['main_l', 'main_r', 'sub1'], sub_roles: ['sub1'],
+                topology: { mode: 'stereo-sub', crossover_enabled: false, roles: ['main_l', 'main_r', 'sub1'], sub_roles: ['sub1'],
                     sub_mode: 'mono', left_ways: [], right_ways: [], way_count: null, issues: [] },
             },
-            crossover: {
+            stereo: {
+                crossover_enabled: true,
                 selected_bank: 'global',
                 banks: { global: { preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' } },
                 processing: {},
                 bass_management: { frequency_hz: 80, main_highpass_enabled: true },
                 extras: {},
-                topology: { mode: 'crossover', roles: [], sub_roles: [], sub_mode: 'none',
+                topology: { mode: 'stereo', crossover_enabled: true, roles: [], sub_roles: [], sub_mode: 'none',
                     left_ways: [], right_ways: [], way_count: null, issues: ['Crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways'] },
             },
         },
         capabilities: {
-            modes: ['stereo', 'crossover'],
-            roles: { stereo: ['main_l', 'main_r', 'sub_l', 'sub_r', 'sub1', 'sub2'],
-                     crossover: ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low', 'right_low_mid', 'right_mid', 'right_high', 'sub_l', 'sub_r', 'sub1', 'sub2'] },
+            modes: ['stereo', 'stereo-sub'],
+            roles: { 'stereo-sub': ['main_l', 'main_r', 'sub_l', 'sub_r', 'sub1', 'sub2'],
+                     stereo: ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low', 'right_low_mid', 'right_mid', 'right_high'] },
             filter_families: { 'linkwitz-riley': [12, 24, 36, 48, 60, 72], butterworth: [6, 12], bessel: [6, 12] },
             max_slope_db_oct: 72,
             max_biquads_per_output: 32,
@@ -54,19 +56,19 @@ function catalog() {
 assert.equal(OutputState.roleLabel('main_l'), 'Main L');
 assert.equal(OutputState.roleLabel('sub_r'), 'Sub R');
 assert.equal(OutputState.roleLabel('sub1'), 'Sub 1');
-assert.equal(OutputState.roleLabel('left_low_mid'), 'Left Low-Mid');
-assert.equal(OutputState.roleLabel('right_high'), 'Right High');
+assert.equal(OutputState.roleLabel('left_low_mid'), 'Low-Mid L');
+assert.equal(OutputState.roleLabel('right_high'), 'High R');
 assert.equal(OutputState.roleLabel('global'), 'Global');
 assert.equal(OutputState.roleLabel('off'), 'Off');
 
-assert.deepEqual(OutputState.rolesForMode('stereo', catalog().capabilities),
+assert.deepEqual(OutputState.rolesForMode('stereo-sub', catalog().capabilities),
     ['main_l', 'main_r', 'sub_l', 'sub_r', 'sub1', 'sub2']);
 assert.deepEqual(OutputState.rolesForMode('surround', catalog().capabilities), []);
 
 assert.equal(OutputState.modeLabel('stereo'), 'Stereo');
-assert.equal(OutputState.modeLabel('crossover'), 'Crossover');
+assert.equal(OutputState.modeLabel('stereo-sub'), 'Stereo + Sub');
 
-assert.equal(OutputState.topologySummary(catalog().modes.stereo.topology), 'Stereo · Mono sub');
+assert.equal(OutputState.topologySummary(catalog().modes['stereo-sub'].topology), 'Stereo · Mono sub');
 assert.equal(
     OutputState.topologySummary({ sub_mode: 'stereo', way_count: null, issues: [] }),
     'Stereo · Stereo subs');
@@ -80,22 +82,28 @@ assert.equal(
     OutputState.topologySummary({ sub_mode: 'none', way_count: 2, issues: [] }),
     '2-Way');
 assert.match(
-    OutputState.topologySummary(catalog().modes.crossover.topology),
+    OutputState.topologySummary(catalog().modes.stereo.topology),
     /incomplete|requires/i);
 
 assert.deepEqual(
-    OutputState.bankOptions(catalog().modes.stereo, catalog().capabilities).map(o => o.id),
+    OutputState.bankOptions(catalog().modes['stereo-sub'], catalog().capabilities).map(o => o.id),
     ['global', 'main_l', 'main_r', 'sub1']);
 assert.equal(
-    OutputState.bankOptions(catalog().modes.stereo, catalog().capabilities)[3].label, 'Sub 1');
+    OutputState.bankOptions(catalog().modes['stereo-sub'], catalog().capabilities)[3].label, 'Sub 1');
 
-assert.match(OutputState.bankInfoLine(catalog().modes.stereo.banks.sub1), /Room/);
-assert.match(OutputState.bankInfoLine(catalog().modes.stereo.banks.sub1), /Room IR/);
+assert.match(OutputState.bankInfoLine(catalog().modes['stereo-sub'].banks.sub1), /Room/);
+assert.match(OutputState.bankInfoLine(catalog().modes['stereo-sub'].banks.sub1), /Room IR/);
 
 assert.deepEqual(
-    OutputState.buildMutation('set_routing', { mode: 'stereo', assignments: ['main_l', 'main_r'] }),
-    { kind: 'set_routing', mode: 'stereo', assignments: ['main_l', 'main_r'] });
+    OutputState.buildMutation('set_routing', { mode: 'stereo-sub', assignments: ['main_l', 'main_r'] }),
+    { kind: 'set_routing', mode: 'stereo-sub', assignments: ['main_l', 'main_r'] });
+assert.deepEqual(
+    OutputState.buildMutation('set_crossover', { mode: 'stereo-sub', enabled: true }),
+    { kind: 'set_crossover', mode: 'stereo-sub', enabled: true });
 assert.throws(() => OutputState.buildMutation('teleport', {}), /Unknown mutation kind/);
+
+assert.deepEqual(OutputState.subwooferView(catalog()).roles, ['sub1']);
+assert.equal(OutputState.subwooferView(catalog()).sub_mode, 'mono');
 
 async function applyFlow() {
     const seen = [];
@@ -112,7 +120,7 @@ async function applyFlow() {
     const fresh = { ...catalog(), revision: 5 };
     const getCatalog = async () => fresh;
     const result = await OutputState.applyMutation(fetchImpl, current, getCatalog,
-        { kind: 'select_bank', mode: 'stereo', bank_id: 'main_l' });
+        { kind: 'select_bank', mode: 'stereo-sub', bank_id: 'main_l' });
     assert.equal(seen.length, 2);
     assert.equal(seen[0].expected_revision, 4);
     assert.equal(seen[1].expected_revision, 5);
@@ -120,7 +128,7 @@ async function applyFlow() {
 
     const failing = async () => ({ ok: false, status: 409, json: async () => ({}) });
     await assert.rejects(
-        OutputState.applyMutation(failing, current, getCatalog, { kind: 'switch_mode', mode: 'crossover' }),
+        OutputState.applyMutation(failing, current, getCatalog, { kind: 'set_crossover', mode: 'stereo-sub', enabled: true }),
         (error) => {
             assert.equal(error.status, 409);
             assert.equal(error.catalog.revision, 5);
@@ -128,7 +136,7 @@ async function applyFlow() {
         });
 
     const locked = async () => ({ ok: false, status: 423, json: async () => ({}) });
-    await assert.rejects(OutputState.applyMutation(locked, current, getCatalog, { kind: 'switch_mode', mode: 'crossover' }),
+    await assert.rejects(OutputState.applyMutation(locked, current, getCatalog, { kind: 'switch_mode', mode: 'stereo-sub' }),
         /423/);
 }
 
@@ -152,8 +160,8 @@ function measurementAreaTests() {
     assert.equal(OutputState.measurementArea(selected, 'sub2').channel, 'stereo');
     // A role the routing sums from both inputs needs both channels to reach
     // its operating level: a lone sub_l in a mono routing is not left-only.
-    const withTopology = (topology) => ({ ...selected, modes: { ...selected.modes, stereo: {
-        ...selected.modes.stereo, topology: { ...selected.modes.stereo.topology, ...topology } } } });
+    const withTopology = (topology) => ({ ...selected, modes: { ...selected.modes, 'stereo-sub': {
+        ...selected.modes['stereo-sub'], topology: { ...selected.modes['stereo-sub'].topology, ...topology } } } });
     const monoSubL = withTopology({ sub_roles: ['sub_l'], sub_mode: 'mono' });
     assert.equal(OutputState.measurementArea(monoSubL, 'sub_l').channel, 'stereo');
     assert.equal(OutputState.measurementArea(monoSubL, 'main_l').channel, 'left');
@@ -167,10 +175,10 @@ function measurementAreaTests() {
     assert.deepEqual(OutputState.summedRoleIds({ sub_roles: [], sub_mode: 'none' }), []);
     assert.deepEqual(OutputState.summedRoleIds({}), []);
 
-    const crossover = { ...selected, active_mode: 'crossover' };
+    const crossover = { ...selected, active_mode: 'stereo' };
     assert.equal(OutputState.measurementArea(crossover, 'left_low').channel, 'left');
     assert.equal(OutputState.measurementArea(crossover, 'right_high').channel, 'right');
-    assert.equal(OutputState.measurementArea(crossover, 'left_low_mid').label, 'Left Low-Mid');
+    assert.equal(OutputState.measurementArea(crossover, 'left_low_mid').label, 'Low-Mid L');
     // One-sided areas carry no second side to compare, and say so.
     const oneSided = OutputState.measurementArea(crossover, 'left_low');
     assert.equal(oneSided.repeat_supported, false);
@@ -191,8 +199,10 @@ measurementAreaTests();
 
 applyFlow().then(() => {
     assert.match(indexSource, /output_state\.js\?v=\d+\.\d+\.\d+/);
-    assert.match(indexSource, /id="os-mode-select"/);
-    assert.match(indexSource, /id="os-routing-grid"/);
+    assert.match(indexSource, /id="settings-crossover-select"/);
+    assert.match(indexSource, /id="settings-routing-grid"/);
     assert.match(indexSource, /id="effects-bank-select"/);
+    assert.doesNotMatch(indexSource, /id="os-mode-select"/);
+    assert.doesNotMatch(indexSource, /id="os-routing-grid"/);
     console.log('output-state frontend tests: ok');
 }).catch((error) => { console.error(error); process.exitCode = 1; });

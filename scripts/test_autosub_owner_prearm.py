@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from audio.output_service import OutputService, OutputServiceDeps  # noqa: E402
-from audio.output_state import default_output_state, set_mode_routing  # noqa: E402
+from audio.output_state import default_output_state, set_crossover, set_mode_routing, switch_mode
 from audio.output_state_store import OutputStateStore  # noqa: E402
 from dsp.manager import DSPManager  # noqa: E402
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget  # noqa: E402
@@ -173,10 +173,9 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
         self.service.manager = self.manager
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1", "sub1"])
-        state["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 2.0
-        state["modes"]["stereo"]["processing"]["sub1"]["level_db"] = -3.0
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub")
+        state["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 2.0
+        state["modes"]["stereo-sub"]["processing"]["sub1"]["level_db"] = -3.0
         self.start = self.service.commit(state, expected_revision=0)
         self.context = {"mode": "stereo", "revision": self.start["revision"],
                         "output_key": "dev", "channels": 4,
@@ -342,7 +341,7 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.measure_store.starts), 1)
         child = self.measure_store.starts[0]
         self.assertEqual(len(child["expected_native_layout"]), 3)
-        self.assertEqual(child["expected_native_output_mode"], "stereo")
+        self.assertEqual(child["expected_native_output_mode"], "stereo-sub")
         self.assertEqual(child["expected_plan_fingerprint"],
                          result["stage_output_peaks"]["predicted"]["plan_fingerprint"])
         self.assertEqual(result["stage_output_peaks"]["predicted"]["model"],
@@ -370,7 +369,7 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_revision_drift_reports_config_failed_without_legacy_fallback(self):
         drifted = self.service.load()
-        drifted["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 9.0
+        drifted["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 9.0
         self.service.commit(drifted, expected_revision=drifted["revision"])
         job = self.service_job()
         result = await self.sweep(job)
@@ -445,16 +444,14 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ScanKnobsTests(unittest.TestCase):
-    def start_state(self, roles=("sub1",), mode="stereo"):
-        state = default_output_state()
-        from audio.output_state import switch_mode
-        state = set_mode_routing(state, mode, "dev", ["main_l", "main_r", *roles]
-                                 if mode == "stereo" else
+    def start_state(self, roles=("sub1",), mode="stereo-sub"):
+        from audio.output_state import set_crossover, switch_mode
+        state = set_crossover(default_output_state(), "stereo-sub", mode != "stereo-sub")
+        state = set_mode_routing(state, "stereo-sub", "dev", ["main_l", "main_r", *roles]
+                                 if mode == "stereo-sub" else
                                  [*(f"left_{way}" for way in ("low", "high")),
                                   *(f"right_{way}" for way in ("low", "high")), *roles])
-        if mode != "stereo":
-            state = switch_mode(state, mode)
-        return state
+        return switch_mode(state, "stereo-sub")
 
     def knobs(self, state, role_map, **overrides):
         args = dict(output_key="dev", channels=4, sub_role_map=role_map,
@@ -468,7 +465,7 @@ class ScanKnobsTests(unittest.TestCase):
 
     def test_single_sub_slot_uses_funnel_level_and_polarity(self):
         state = self.start_state()
-        state["modes"]["stereo"]["processing"]["sub1"].update(
+        state["modes"]["stereo-sub"]["processing"]["sub1"].update(
             alignment_ms=2.0, level_db=-3.0, polarity="invert")
         knobs = self.knobs(state, {"sub1": "sub1"},
                            original_level=2.0, original_polarity="invert")

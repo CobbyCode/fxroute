@@ -480,11 +480,7 @@ const elements = {
     settingsRoutingGroup: document.getElementById('settings-routing-group'),
     settingsRoutingGrid: document.getElementById('settings-routing-grid'),
     settingsRoutingHint: document.getElementById('settings-routing-hint'),
-    osModeSelect: document.getElementById('os-mode-select'),
-    osModeHint: document.getElementById('os-mode-hint'),
-    osRoutingGroup: document.getElementById('os-routing-group'),
-    osRoutingGrid: document.getElementById('os-routing-grid'),
-    osRoutingHint: document.getElementById('os-routing-hint'),
+    settingsCrossoverSelect: document.getElementById('settings-crossover-select'),
     osTopology: document.getElementById('os-topology'),
     osRevision: document.getElementById('os-revision'),
     osFeedback: document.getElementById('os-feedback'),
@@ -1574,11 +1570,9 @@ function setupSettingsActions() {
     }
     if (elements.settingsOutputModeSelect) {
         elements.settingsOutputModeSelect.addEventListener('change', (event) => {
-            if (_audioOutputModeSwitchInProgress) {
-                event.target.value = state.settings.audioOutputs.output_mode?.mode || 'stereo';
-                return;
-            }
-            void switchAudioOutputMode(event.target.value || 'stereo');
+            const mode = event.target.value || 'stereo';
+            event.target.value = state.outputSystem.catalog?.active_mode || 'stereo';
+            void applyOutputSystemMutation('switch_mode', { mode }, 'Output mode updated');
         });
     }
     if (elements.settingsSamplerateSelect) {
@@ -1586,25 +1580,20 @@ function setupSettingsActions() {
             void saveSampleRatePolicy(event.target.value || 'auto');
         });
     }
+    if (elements.settingsCrossoverSelect) {
+        elements.settingsCrossoverSelect.addEventListener('change', (event) => {
+            const catalog = state.outputSystem.catalog;
+            if (!catalog) return;
+            void applyOutputSystemMutation('set_crossover',
+                { mode: catalog.active_mode, enabled: event.target.value === 'on' }, 'Crossover updated');
+        });
+    }
     if (elements.settingsRoutingGrid) {
         elements.settingsRoutingGrid.addEventListener('change', (event) => {
             if (!event.target || event.target.tagName !== 'SELECT') return;
-            void saveOutputRouting();
-        });
-    }
-    if (elements.osModeSelect) {
-        elements.osModeSelect.addEventListener('change', (event) => {
-            const mode = event.target.value || 'stereo';
-            event.target.value = state.outputSystem.catalog?.active_mode || 'stereo';
-            void applyOutputSystemMutation('switch_mode', { mode }, `Output system mode: ${mode}`);
-        });
-    }
-    if (elements.osRoutingGrid) {
-        elements.osRoutingGrid.addEventListener('change', (event) => {
-            if (!event.target || event.target.tagName !== 'SELECT') return;
             const catalog = state.outputSystem.catalog;
             if (!catalog) return;
-            const selects = elements.osRoutingGrid.querySelectorAll('select');
+            const selects = elements.settingsRoutingGrid.querySelectorAll('select');
             const assignments = Array.from(selects).map((sel) => sel.value || 'off');
             void applyOutputSystemMutation('set_routing',
                 { mode: catalog.active_mode, assignments }, 'Output routing updated');
@@ -1754,31 +1743,6 @@ function normalizeSubwoofersSettings(subwoofers = {}, fallbackSubwoofer = {}) {
     };
 }
 
-function applySubwooferDraftToOutputMode(draft = {}, settings = {}) {
-    // 2.2 keeps the global crossover/highpass both top-level (runtime and
-    // readback source of truth) and inside the legacy 2.1 `subwoofer` block.
-    // The draft must keep both in sync: getSubwooferGlobalSettings() prefers
-    // the top-level field, so a stale top-level snaps the Main-highpass
-    // select back to On (and the next save re-reads On) before Off is sent.
-    if (settings && typeof settings === 'object' && settings.subwoofers) {
-        const next = {
-            ...(draft || {}),
-            ...settings,
-        };
-        if (settings.subwoofer?.crossover_frequency_hz !== undefined) {
-            next.crossover_frequency_hz = settings.subwoofer.crossover_frequency_hz;
-        }
-        if (settings.subwoofer?.main_highpass_enabled !== undefined) {
-            next.main_highpass_enabled = settings.subwoofer.main_highpass_enabled;
-        }
-        return next;
-    }
-    return {
-        ...(draft || {}),
-        ...(settings?.subwoofers ? settings : { subwoofer: settings }),
-    };
-}
-
 function collectSubwooferSettings() {
     return normalizeSubwooferSettings({
         crossover_frequency_hz: elements.effectsSubwooferFrequencyNumber?.value || 80,
@@ -1899,170 +1863,13 @@ function formatStreamingMetaLine(data) {
         : '';
 }
 
-function buildAudioOutputModeRequest(mode, settings = null, options = {}) {
-    const nextMode = normalizeOutputModeName(mode);
-    if (options.modeOnly) {
-        return { mode: nextMode };
-    }
-    const outputMode = state.settings.audioOutputs.output_mode || {};
-    const fallbackSubwoofer = getSubwooferGlobalSettings(outputMode, outputMode.subwoofer || {});
-    if (isSubwoofer22Mode(nextMode)) {
-        const source = settings && typeof settings === 'object' ? settings : {};
-        const switchingTo22 = !isSubwoofer22Mode(outputMode.mode) && !settings;
-        const sourceHasSettings = Object.keys(source).length > 0;
-        const subwooferSource = source.subwoofer || (sourceHasSettings ? source : getSubwooferGlobalSettings(outputMode, fallbackSubwoofer));
-        const subwoofer = normalizeSubwooferSettings(subwooferSource);
-        const subwoofers = normalizeSubwoofersSettings(source.subwoofers || (switchingTo22 ? {} : outputMode.subwoofers) || {}, subwoofer);
-        return {
-            mode: nextMode,
-            subwoofer,
-            subwoofers,
-        };
-    }
-    return {
-        mode: nextMode,
-        subwoofer: normalizeSubwooferSettings(settings?.subwoofer || settings || fallbackSubwoofer),
-    };
-}
-
-let _audioOutputModeRequestId = 0;
-let _audioOutputModeMutationGeneration = 0;
-let _audioOutputModeSwitchInProgress = false;
-let _audioRoutingInProgress = false;
-function getAudioOutputModeSignature(mode, settings = null, options = {}) {
-    return JSON.stringify(buildAudioOutputModeRequest(mode, settings, options));
-}
-
-async function saveAudioOutputMode(mode, settings = null, options = {}) {
-    const modeOnly = !!options.modeOnly;
-    const suppressApply = !!options.suppressApply;
-    const propagateError = !!options.propagateError;
-    const requestBody = buildAudioOutputModeRequest(mode, settings, options);
-    const nextMode = requestBody.mode;
-    const previousMode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
-    const requestSignature = JSON.stringify(requestBody);
-    const requestId = ++_audioOutputModeRequestId;
-    const mutationGeneration = ++_audioOutputModeMutationGeneration;
-    if (!modeOnly && !suppressApply) {
-        const bodySettings = ('subwoofers' in requestBody)
-            ? { subwoofer: requestBody.subwoofer, subwoofers: requestBody.subwoofers }
-            : (('subwoofer' in requestBody) ? requestBody.subwoofer : {});
-        state.settings.audioOutputs.output_mode = {
-            ...applySubwooferDraftToOutputMode(state.settings.audioOutputs.output_mode || {}, bodySettings),
-            mode: nextMode,
-        };
-        renderSettingsPanel();
-    }
-    try {
-        const resp = await fetch('/api/audio/output-mode', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestBody),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save output mode'));
-        if (
-            requestId !== _audioOutputModeRequestId
-            || mutationGeneration !== _audioOutputModeMutationGeneration
-            || (!modeOnly && requestSignature !== getAudioOutputModeSignature(
-                state.settings.audioOutputs.output_mode?.mode,
-                state.settings.audioOutputs.output_mode,
-            ))
-        ) {
-            return null;
-        }
-        if (suppressApply) return data;
-        state.settings.audioOutputs = {
-            loaded: true,
-            available: !!data.available,
-            default_output: data.default_output || null,
-            selected_output: data.selected_output || null,
-            current_output: data.current_output || null,
-            outputs: Array.isArray(data.outputs) ? data.outputs : [],
-            notes: Array.isArray(data.notes) ? data.notes : [],
-            pendingSelectionKey: null,
-            output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
-        };
-        renderSettingsPanel();
-        setSubwooferFeedback('Saved', 'success');
-        void postRuntimeDebugSnapshot(`ui-output-mode-saved-${nextMode}`, { requestedMode: nextMode });
-        syncAutoSubButton();
-        syncSpeakerAlignButton();
-        return data;
-    } catch (error) {
-        if (requestId !== _audioOutputModeRequestId || mutationGeneration !== _audioOutputModeMutationGeneration) return null;
-        if (!modeOnly && requestSignature !== getAudioOutputModeSignature(
-            state.settings.audioOutputs.output_mode?.mode,
-            state.settings.audioOutputs.output_mode,
-        )) {
-            return null;
-        }
-        _subwooferLastRequestedSignature = '';
-        if (!suppressApply) {
-            state.settings.audioOutputs.output_mode = {
-                ...(state.settings.audioOutputs.output_mode || {}),
-                mode: previousMode,
-            };
-        }
-        renderSettingsPanel();
-        setSubwooferFeedback('Failed', 'error');
-        if (propagateError) throw error;
-        showToast(error.message || 'Failed to save output mode', 'error');
-        return null;
-    }
-}
-
-async function switchAudioOutputMode(mode) {
-    const nextMode = normalizeOutputModeName(mode);
-    const currentMode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
-    if (_audioOutputModeSwitchInProgress) {
-        if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.value = currentMode;
-        return;
-    }
-    if (nextMode === currentMode) return;
-    _audioOutputModeSwitchInProgress = true;
-    cancelPendingSubwooferSave();
-    _subwooferLastRequestedSignature = '';
-
-    // Lock UI immediately — disable select and show "Switching…" label
-    if (elements.settingsOutputModeSelect) {
-        elements.settingsOutputModeSelect.disabled = true;
-    }
-    if (elements.settingsOutputModeHint) {
-        elements.settingsOutputModeHint.textContent = 'Switching…';
-        elements.settingsOutputModeHint.classList.add('switching');
-    }
-
-    try {
-        if (isSubwooferModeName(currentMode)) {
-            const currentSettings = isSubwoofer22Mode(currentMode)
-                ? collectSubwoofer22Settings()
-                : collectSubwooferSettings();
-            await saveAudioOutputMode(currentMode, currentSettings, { suppressApply: true });
-        }
-        clearSubwooferActiveEditing();
-        setSubwooferFeedback('Applying…');
-        await saveAudioOutputMode(nextMode, null, { modeOnly: true });
-    } finally {
-        _audioOutputModeSwitchInProgress = false;
-        if (elements.settingsOutputModeSelect) {
-            elements.settingsOutputModeSelect.disabled = false;
-        }
-        if (elements.settingsOutputModeHint) {
-            elements.settingsOutputModeHint.textContent = '';
-            elements.settingsOutputModeHint.classList.remove('switching');
-        }
-        renderSettingsPanel();
-    }
-}
-
 /**
  * Await only a real pending/running debounced subwoofer save before a
  * measurement. A committed mode must not be posted again just because the
  * measurement panel was opened.
  */
 async function flushSubwooferSettingsBeforeMeasurement() {
-    const outputMode = state.settings.audioOutputs?.output_mode || {};
+    const outputMode = routedSubwooferView();
     if (!isSubwooferModeName(outputMode.mode)) return;
 
     let pendingPromise = null;
@@ -3163,9 +2970,6 @@ function renderSettingsPanel() {
     const pendingSelectionKey = overview.pendingSelectionKey || null;
     const selectableOutputs = outputs.filter((output) => !!output.selectable);
     const effectiveSelectedKey = selectedOutput?.key || currentOutput?.key || defaultOutput?.target_name || '';
-    const outputMode = overview.output_mode || {};
-    const mode = outputMode.mode || 'stereo';
-
     if (elements.settingsOutputSummary) {
         if (!overview.available) {
             elements.settingsOutputSummary.textContent = 'Outputs unavailable.';
@@ -3194,40 +2998,6 @@ function renderSettingsPanel() {
         elements.settingsOutputSelect.disabled = !overview.available || !!pendingSelectionKey || !selectableOutputs.length;
     }
 
-    if (elements.settingsOutputModeSelect && (_audioOutputModeSwitchInProgress || !isSelectFocused(elements.settingsOutputModeSelect))) {
-        const optionsHtml = [
-            '<option value="stereo">Stereo</option>',
-            '<option value="subwoofer-2.1">2.1 Subwoofer</option>',
-            '<option value="subwoofer-2.2">2.2 Subwoofer</option>',
-            '<option value="subwoofer-2.2-stereo">2.2 Stereo Bass</option>',
-        ].join('');
-        if (elements.settingsOutputModeSelect.innerHTML !== optionsHtml) {
-            elements.settingsOutputModeSelect.innerHTML = optionsHtml;
-        }
-        elements.settingsOutputModeSelect.value = mode;
-        elements.settingsOutputModeSelect.disabled = !overview.available || _audioOutputModeSwitchInProgress || _audioRoutingInProgress;
-    }
-    if (elements.settingsOutputModeHint) {
-        const channels = outputMode.effective_output_channels;
-        if (mode === 'subwoofer-2.1') {
-            elements.settingsOutputModeHint.textContent = outputMode.available
-                ? `2.1 fixed routing active: ${outputMode.routing?.status || 'Out 1/2 Main · Out 3/4 Sub'}.`
-                : '2.1 requires a selected output device with at least 4 channels.';
-        } else if (mode === 'subwoofer-2.2') {
-            elements.settingsOutputModeHint.textContent = outputMode.available
-                ? `2.2 fixed routing active: Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2.`
-                : '2.2 requires a selected output device with at least 4 channels.';
-        } else if (mode === 'subwoofer-2.2-stereo') {
-            elements.settingsOutputModeHint.textContent = outputMode.available
-                ? `2.2 Stereo Bass fixed routing active: Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2.`
-                : '2.2 Stereo Bass requires a selected output device with at least 4 channels.';
-        } else {
-            elements.settingsOutputModeHint.textContent = channels
-                ? `Stereo mode active. Selected output reports ${channels} channels.`
-                : 'Stereo output mode active.';
-        }
-    }
-
     const deviceProfile = selectedOutput?.device_profile || null;
     const tiers = Array.isArray(deviceProfile?.tiers) ? deviceProfile.tiers : [];
     const activeTier = tiers.find((tier) => tier.id === deviceProfile?.active_tier) || null;
@@ -3249,52 +3019,6 @@ function renderSettingsPanel() {
         elements.settingsSamplerateHint.textContent = sampleRatePolicy.mode === 'fixed'
             ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}${tierNote}.`
             : `Follows the effective playback sample rate${activeTier ? '; the device switches channel inventory automatically' : ''}.`;
-    }
-
-    const outputRouting = outputMode.output_routing || {};
-    const routingChannels = Number(outputMode.effective_output_channels || 0);
-    const routingAvailable = !!outputRouting.available && routingChannels > 2;
-    if (elements.settingsRoutingGroup) {
-        elements.settingsRoutingGroup.classList.toggle('hidden', !routingAvailable);
-    }
-    if (routingAvailable && elements.settingsRoutingGrid) {
-        const signals = Array.isArray(outputRouting.signals) ? outputRouting.signals : [];
-        const assignments = Array.isArray(outputRouting.assignments) ? outputRouting.assignments : [];
-        const busy = _audioRoutingInProgress || _audioOutputModeSwitchInProgress;
-        const routingHtml = assignments.map((signal, index) => {
-            const options = signals.map((entry) => `<option value="${entry.id}">${escapeHtml(entry.label)}</option>`).join('');
-            return `<div class="settings-routing-cell"><label for="settings-routing-out-${index + 1}">Out ${index + 1}</label>`
-                + `<select id="settings-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="Output ${index + 1} signal"${busy ? ' disabled' : ''}>${options}</select></div>`;
-        }).join('');
-        // Replacing the <select> nodes closes an open native dropdown, so the
-        // grid is only touched when its rendered matrix really differs and no
-        // routing select is being operated. Rebuilding on every render tore the
-        // grid down under the user: the periodic settings refresh (2.5 s status
-        // poll) closed the dropdown within one poll interval. The signature
-        // carries the assignments and the in-flight flag too, since those are
-        // applied to the selects rather than to the options markup.
-        const routingSignature = [routingHtml, assignments.join(','), busy ? 'busy' : 'idle'].join('|');
-        const routingSelectActive = !!document.activeElement
-            && elements.settingsRoutingGrid.contains(document.activeElement);
-        if (!routingSelectActive && elements.settingsRoutingGrid.dataset.routingSignature !== routingSignature) {
-            elements.settingsRoutingGrid.innerHTML = routingHtml;
-            elements.settingsRoutingGrid.dataset.routingSignature = routingSignature;
-            Array.from(elements.settingsRoutingGrid.querySelectorAll('select')).forEach((sel, index) => {
-                sel.value = String(assignments[index] ?? 0);
-            });
-        }
-    }
-    if (elements.settingsRoutingHint) {
-        if (_audioRoutingInProgress) {
-            elements.settingsRoutingHint.textContent = 'Saving output routing…';
-            elements.settingsRoutingHint.classList.add('switching');
-        } else {
-            elements.settingsRoutingHint.classList.remove('switching');
-            const inactive = Array.isArray(outputRouting.inactive_assignments) ? outputRouting.inactive_assignments : [];
-            elements.settingsRoutingHint.textContent = inactive.length
-                ? `Saved assignments for output${inactive.length === 1 ? '' : 's'} ${inactive.join(', ')} are inactive in this tier and kept.`
-                : 'Assign Main L/R and Sub 1/2 to hardware outputs. Off leaves an output silent.';
-        }
     }
 
     const sourceOverview = state.settings?.sourceMode || {};
@@ -3676,6 +3400,7 @@ async function saveAudioOutputSelection(key) {
         };
         renderSettingsPanel();
         const modeAdjustment = data.output_mode?.mode_adjustment;
+        await fetchOutputSystemCatalog(true);
         if (modeAdjustment?.message) {
             showToast(modeAdjustment.message, 'info');
         } else {
@@ -3689,12 +3414,11 @@ async function saveAudioOutputSelection(key) {
 }
 
 async function fetchAudioOutputOverview() {
-    const mutationGeneration = _audioOutputModeMutationGeneration;
     try {
         const resp = await fetch('/api/audio/outputs');
         if (!resp.ok) throw new Error('Failed to fetch audio outputs');
         const data = await resp.json();
-        if (mutationGeneration !== _audioOutputModeMutationGeneration || _audioOutputModeSwitchInProgress || _audioRoutingInProgress) return;
+        if (state.settings.audioOutputs.pendingSelectionKey) return;
         state.settings.audioOutputs = {
             loaded: true,
             available: !!data.available,
@@ -3710,7 +3434,7 @@ async function fetchAudioOutputOverview() {
         renderSubwooferPanel();
         syncAutoSubButton();
         syncSpeakerAlignButton();
-        void fetchOutputSystemCatalog();
+        void fetchOutputSystemCatalog(true);
     } catch (e) {
         state.settings.audioOutputs = {
             loaded: true,
@@ -3773,42 +3497,12 @@ function applyAudioOutputOverview(data) {
     renderSettingsPanel();
 }
 
-async function saveOutputRouting() {
-    const overview = state.settings?.audioOutputs || {};
-    const outputMode = overview.output_mode || {};
-    const routing = outputMode.output_routing || {};
-    const key = overview.selected_output?.key || '';
-    const channels = Number(outputMode.effective_output_channels || 0);
-    if (!key || !routing.available || _audioRoutingInProgress) return;
-    const selects = elements.settingsRoutingGrid ? elements.settingsRoutingGrid.querySelectorAll('select') : [];
-    const assignments = Array.from(selects).map((sel) => Number(sel.value || 0));
-    if (assignments.length !== channels || assignments.some((v) => !Number.isInteger(v) || v < 0 || v > 4)) {
-        showToast('Assign one signal to each available hardware output', 'error');
-        return;
-    }
-    _audioRoutingInProgress = true;
-    renderSettingsPanel();
-    try {
-        const resp = await fetch('/api/audio/output-routing', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key, assignments }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save output routing'));
-        applyAudioOutputOverview(data);
-        showToast('Output routing updated', 'success');
-    } catch (error) {
-        renderSettingsPanel();
-        showToast(error.message || 'Failed to save output routing', 'error');
-    } finally {
-        _audioRoutingInProgress = false;
-        renderSettingsPanel();
-    }
-}
-
 function outputSystemModule() {
     return (typeof window !== 'undefined' && window.FXRouteOutputState) || null;
+}
+
+function routedSubwooferView() {
+    return outputSystemModule()?.subwooferView(state.outputSystem?.catalog) || { mode: 'stereo', roles: [] };
 }
 
 function ensureOutputSystemBoxes() {
@@ -3828,13 +3522,15 @@ async function fetchOutputSystemCatalog(force = false) {
     }
     renderOutputSystemSection();
     renderEffectsBankSelector();
-    if (state.outputSystem.catalog?.active_mode === 'crossover') {
+    if (state.outputSystem.catalog?.modes?.[state.outputSystem.catalog.active_mode]?.crossover_enabled) {
         void fetchCrossoverResponse();
     } else {
         state.crossover.response = null;
         renderCrossoverTile();
     }
     syncSpeakerAlignButton();
+    renderSubwooferPanel();
+    syncAutoSubButton();
     return state.outputSystem.catalog;
 }
 
@@ -3905,7 +3601,10 @@ function renderOutputSystemSection() {
     const mod = outputSystemModule();
     const catalog = state.outputSystem.catalog;
     if (!mod || !catalog) {
-        if (elements.osModeHint) elements.osModeHint.textContent = '';
+        if (elements.settingsOutputModeHint) elements.settingsOutputModeHint.textContent = 'Output configuration unavailable.';
+        if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = true;
+        if (elements.settingsCrossoverSelect) elements.settingsCrossoverSelect.disabled = true;
+        if (elements.settingsRoutingGrid) elements.settingsRoutingGrid.innerHTML = '';
         if (elements.osTopology) elements.osTopology.textContent = '';
         if (elements.osRevision) elements.osRevision.textContent = '';
         if (elements.osFeedback) elements.osFeedback.innerHTML = '';
@@ -3915,21 +3614,25 @@ function renderOutputSystemSection() {
     const mode = catalog.active_mode || 'stereo';
     const modeConfig = catalog.modes[mode] || {};
     const busy = state.outputSystem.busy;
-    mod.renderModeSelect(elements.osModeSelect, catalog, mode);
-    if (elements.osModeSelect) elements.osModeSelect.disabled = busy;
+    mod.renderModeSelect(elements.settingsOutputModeSelect, catalog, mode);
+    if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = busy;
+    if (elements.settingsCrossoverSelect) {
+        elements.settingsCrossoverSelect.value = modeConfig.crossover_enabled ? 'on' : 'off';
+        elements.settingsCrossoverSelect.disabled = busy;
+    }
     const assignments = (device.routing && device.routing[mode]) || [];
-    mod.renderRoutingGrid(elements.osRoutingGrid, catalog, mode, assignments, device.channels || 0, busy);
+    mod.renderRoutingGrid(elements.settingsRoutingGrid, catalog, mode, assignments, device.channels || 0, busy);
     const topology = modeConfig.topology || {};
     if (elements.osTopology) {
         elements.osTopology.textContent = mod.topologySummary(topology);
     }
-    if (elements.osModeHint) {
-        elements.osModeHint.textContent = `${mod.modeLabel(mode)} output system active.`;
+    if (elements.settingsOutputModeHint) {
+        elements.settingsOutputModeHint.textContent = `${mod.modeLabel(mode)} · ${device.channels || 0} hardware outputs`;
     }
-    if (elements.osRoutingHint) {
+    if (elements.settingsRoutingHint) {
         const dormant = Object.keys(modeConfig.banks || {}).filter(
             (id) => id !== 'global' && !topology.roles?.includes(id));
-        elements.osRoutingHint.textContent = dormant.length
+        elements.settingsRoutingHint.textContent = dormant.length
             ? `Roles not on any output keep their settings: ${dormant.map((id) => mod.roleLabel(id)).join(', ')}.`
             : 'Assign a role to each hardware output. Off leaves an output silent.';
     }
@@ -3941,7 +3644,7 @@ function renderOutputSystemSection() {
 async function applyOutputSystemMutation(kind, fields, successMessage, options = {}) {
     ensureOutputSystemBoxes();
     const mod = outputSystemModule();
-    if (!mod || !state.outputSystem.catalog) return null;
+    if (!mod || !state.outputSystem.catalog || state.outputSystem.busy) return null;
     state.outputSystem.busy = true;
     renderOutputSystemSection();
     renderEffectsBankSelector();
@@ -4028,7 +3731,7 @@ function crossoverModule() {
 async function fetchCrossoverResponse() {
     ensureOutputSystemBoxes();
     const catalog = state.outputSystem.catalog;
-    if (!catalog || catalog.active_mode !== 'crossover') {
+    if (!catalog?.modes?.[catalog.active_mode]?.crossover_enabled) {
         state.crossover.response = null;
         renderCrossoverTile();
         return null;
@@ -4052,13 +3755,13 @@ function renderCrossoverTile() {
     const card = elements.effectsCrossoverCard;
     if (!card) return;
     const response = state.crossover.response;
-    const roles = mod && response && response.mode === 'crossover'
+    const roles = mod && response && response.crossover_enabled
         ? mod.orderedWays(response.ways) : [];
     card.classList.toggle('hidden', roles.length === 0);
     if (!roles.length) return;
     if (!roles.includes(state.crossover.activeWay)) state.crossover.activeWay = roles[0];
     const active = state.crossover.activeWay;
-    const modeConfig = catalog.modes.crossover || {};
+    const modeConfig = catalog.modes[catalog.active_mode] || {};
     const processing = modeConfig.processing || {};
     const settings = processing[active] || {};
     const busy = state.crossover.busy || state.outputSystem.busy;
@@ -4124,7 +3827,7 @@ function renderCrossoverTile() {
     if (elements.effectsCrossoverSummary) {
         elements.effectsCrossoverSummary.textContent = wayCount
             ? `${wayCount}-Way system · ${roles.length} ways configured`
-            : 'Configure speaker ways in Output System first.';
+            : 'Configure speaker ways in Output Routing first.';
     }
     if (elements.effectsCrossoverStarterHint) {
         try {
@@ -4154,7 +3857,7 @@ function collectCrossoverWayMutation() {
         if (!el || el.value === '' || el.value === null) return fallback;
         return mod.clampFrequencyHz(el.value);
     };
-    const current = catalog.modes.crossover?.processing?.[active] || {};
+    const current = catalog.modes[catalog.active_mode]?.processing?.[active] || {};
     const family = elements.effectsCrossoverFamily?.value || current.highpass?.family || current.lowpass?.family || 'linkwitz-riley';
     const slope = Number(elements.effectsCrossoverSlope?.value || current.highpass?.slope_db_oct || current.lowpass?.slope_db_oct || 24);
     const build = (previous, enabled, freqEl) => {
@@ -4165,7 +3868,7 @@ function collectCrossoverWayMutation() {
     };
     return {
         kind: 'set_processing',
-        mode: 'crossover',
+        mode: catalog.active_mode,
         role: active,
         highpass: build(current.highpass, applicable.includes('highpass'), elements.effectsCrossoverFrequencyHighpass),
         lowpass: build(current.lowpass, applicable.includes('lowpass'), elements.effectsCrossoverFrequencyLowpass),
@@ -4195,7 +3898,7 @@ async function applyCrossoverStarters() {
     const mod = crossoverModule();
     const catalog = state.outputSystem.catalog;
     if (!mod || !catalog) return;
-    const modeConfig = catalog.modes.crossover || {};
+    const modeConfig = catalog.modes[catalog.active_mode] || {};
     const wayCount = modeConfig.topology?.way_count || 0;
     if (!wayCount) {
         showToast('Complete the crossover routing first (2/3/4-way).', 'warning');
@@ -4219,7 +3922,7 @@ async function applyCrossoverStarters() {
         for (const role of missing) {
             const wanted = starters[role] || {};
             const current = modeConfig.processing?.[role] || {};
-            const fields = { mode: 'crossover', role };
+            const fields = { mode: catalog.active_mode, role };
             if (wanted.highpass && !current.highpass) fields.highpass = wanted.highpass;
             if (wanted.lowpass && !current.lowpass) fields.lowpass = wanted.lowpass;
             await applyOutputSystemMutation('set_processing', fields, false, { quiet: true });
@@ -13271,7 +12974,7 @@ function measurementAreaBadge(measurement) {
         mode,
         stale,
         title: mode
-            ? `${label} · ${mode === 'crossover' ? 'Crossover' : 'Stereo'} · measured ${label === 'Global' ? 'whole system' : 'area only'}`
+            ? `${label} · ${(mod && typeof mod.modeLabel === 'function' ? mod.modeLabel(mode) : mode)} · measured ${label === 'Global' ? 'whole system' : 'area only'}`
             : label,
     };
 }
@@ -14836,10 +14539,7 @@ function updateEffectsExtrasUi() {
 let _subwooferPreviewDrawFrame = null;
 
 function getSubwooferPreviewSettingsFromState() {
-    const outputMode = state.settings.audioOutputs?.output_mode || {};
-    return isSubwoofer22Mode(outputMode.mode)
-        ? getSubwooferGlobalSettings(outputMode, outputMode.subwoofer || {})
-        : normalizeSubwooferSettings(outputMode.subwoofer || {});
+    return routedSubwooferView().subwoofer || normalizeSubwooferSettings({});
 }
 
 function primeSubwooferPreview() {
@@ -14869,8 +14569,8 @@ function formatSubwooferDelayMs(value) {
 }
 
 function renderSubwooferPanel() {
-    const outputMode = state.settings.audioOutputs?.output_mode || {};
-    if (!state.settings.audioOutputs?.loaded) {
+    const outputMode = routedSubwooferView();
+    if (!state.outputSystem?.catalog) {
         elements.effectsSubwooferCard?.classList.add('hidden');
         return;
     }
@@ -14889,24 +14589,23 @@ function renderSubwooferPanel() {
         : normalizeSubwooferSettings(outputMode.subwoofer || {});
     const subwoofers = normalizeSubwoofersSettings(outputMode.subwoofers || {}, subwoofer);
     if (elements.effectsSubwooferRouting) {
-        const routingStatus = is22Mode
-            ? 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2'
-            : (outputMode.routing?.status || 'Out 1/2 Main · Out 3/4 Sub');
+        const routingStatus = outputMode.routing?.status || '';
         const slope = subwoofer.slope || 'LR24';
         elements.effectsSubwooferRouting.textContent = `${routingStatus} · ${slope}`;
     }
     if (elements.effectsSubwooferModeBadge) {
-        elements.effectsSubwooferModeBadge.textContent = is22StereoMode ? '2.2 Stereo Bass active' : is22Mode ? '2.2 active' : '2.1 active';
+        elements.effectsSubwooferModeBadge.textContent = outputSystemModule().subModeLabel(outputMode.sub_mode);
         elements.effectsSubwooferModeBadge.classList.toggle('is-active', true);
     }
-    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = is22Mode ? 'Sub 1 level' : 'Sub level';
-    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = is22Mode ? 'Sub 1 alignment' : 'Sub alignment';
-    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = is22Mode ? 'Sub 1 polarity' : 'Sub polarity';
-    if (elements.effectsSubwooferSub1GroupLabel) elements.effectsSubwooferSub1GroupLabel.textContent = is22Mode ? 'Sub 1' : 'Subwoofer';
-    if (elements.effectsSubwooferSub2GroupLabel) elements.effectsSubwooferSub2GroupLabel.textContent = 'Sub 2';
-    if (elements.effectsSubwooferSub2LevelLabel) elements.effectsSubwooferSub2LevelLabel.textContent = 'Sub 2 level';
-    if (elements.effectsSubwooferSub2DelayLabel) elements.effectsSubwooferSub2DelayLabel.textContent = 'Sub 2 alignment';
-    if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = 'Sub 2 polarity';
+    const [firstLabel, secondLabel] = outputMode.roles.map(outputSystemModule().roleLabel);
+    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = `${firstLabel} level`;
+    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = `${firstLabel} alignment`;
+    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = `${firstLabel} polarity`;
+    if (elements.effectsSubwooferSub1GroupLabel) elements.effectsSubwooferSub1GroupLabel.textContent = firstLabel;
+    if (elements.effectsSubwooferSub2GroupLabel) elements.effectsSubwooferSub2GroupLabel.textContent = secondLabel || '';
+    if (elements.effectsSubwooferSub2LevelLabel) elements.effectsSubwooferSub2LevelLabel.textContent = `${secondLabel || 'Sub 2'} level`;
+    if (elements.effectsSubwooferSub2DelayLabel) elements.effectsSubwooferSub2DelayLabel.textContent = `${secondLabel || 'Sub 2'} alignment`;
+    if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = `${secondLabel || 'Sub 2'} polarity`;
     elements.effectsSubwooferSub2Fields?.forEach(field => field.classList.toggle('hidden', !is22Mode));
     elements.effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
     if (elements.effectsSubwooferFrequencyNumber && !_activeEditing.has(elements.effectsSubwooferFrequencyNumber)) {
@@ -15097,13 +14796,9 @@ let _subwooferLastRequestedSignature = '';
 const SUBWOOFER_COMMIT_DEBOUNCE_MS = 600;
 
 function updateSubwooferDraftFromControls() {
-    const mode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
+    const mode = routedSubwooferView().mode;
     const settings = isSubwoofer22Mode(mode) ? collectSubwoofer22Settings() : collectSubwooferSettings();
-    state.settings.audioOutputs.output_mode = applySubwooferDraftToOutputMode(
-        state.settings.audioOutputs.output_mode || {},
-        settings,
-    );
-    renderSubwooferPanel();
+    scheduleSubwooferPreviewDraw(settings.subwoofer || settings);
     return settings;
 }
 
@@ -15113,7 +14808,9 @@ function beginSubwooferSave(pending) {
         if (previousSave) await previousSave;
         _subwooferLastRequestedSignature = pending.signature;
         setSubwooferFeedback('Applying…');
-        const result = await saveAudioOutputMode(pending.mode, pending.settings, { propagateError: true });
+        const catalog = state.outputSystem.catalog;
+        if (!catalog || catalog.active_mode !== pending.mode) throw new Error('Output mode changed before sub settings commit');
+        const result = await applyOutputSystemMutation('set_subwoofers', pending.settings, false);
         if (!result) throw new Error('Subwoofer settings save was superseded before commit');
         return result;
     })();
@@ -15171,16 +14868,19 @@ function cancelPendingSubwooferSave(reason = 'Subwoofer settings save superseded
 
 function saveSubwooferDebounced(delayMs = SUBWOOFER_COMMIT_DEBOUNCE_MS) {
     cancelPendingSubwooferSave();
-    const settings = updateSubwooferDraftFromControls();
-    const mode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
-    const signature = getAudioOutputModeSignature(mode, settings);
+    const controls = updateSubwooferDraftFromControls();
+    const catalog = state.outputSystem.catalog;
+    if (!catalog) return Promise.resolve(null);
+    const mode = catalog.active_mode;
+    const bass = controls.subwoofer || controls;
+    const subs = controls.subwoofers || { sub1: subwoofer21ToSub22Sub(bass) };
+    const settings = { mode, frequency_hz: bass.crossover_frequency_hz,
+        main_highpass_enabled: bass.main_highpass_enabled,
+        processing: Object.fromEntries(routedSubwooferView().roles.map((role, index) => [role, subs[`sub${index + 1}`]])) };
+    const signature = JSON.stringify(settings);
     if (signature === _subwooferLastRequestedSignature) {
         return _subwooferSavePromise || Promise.resolve(null);
     }
-    state.settings.audioOutputs.output_mode = applySubwooferDraftToOutputMode(
-        state.settings.audioOutputs.output_mode || {},
-        settings,
-    );
     const pending = createPendingSubwooferSave(mode, settings, signature);
     _subwooferPendingSave = pending;
     _subwooferSaveTimer = window.setTimeout(() => pending.start(), delayMs);

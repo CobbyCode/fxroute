@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 import main
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state import default_output_state, set_mode_routing, switch_mode
+from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
 from audio.output_state_store import OutputStateStore
 from dsp.manager import DSPManager
 
@@ -37,9 +37,11 @@ def make_service(directory):
 
 def crossover_state(service):
     assignments = [f"{side}_{way}" for side in ("left", "right") for way in ("low", "mid", "high")]
-    state = switch_mode(set_mode_routing(default_output_state(), "crossover", "A", assignments),
-                        "crossover")
-    for role, settings in state["modes"]["crossover"]["processing"].items():
+    state = switch_mode(set_mode_routing(set_crossover(default_output_state(), "stereo-sub", True), "stereo-sub", "A", assignments),
+                        "stereo-sub")
+    for role, settings in state["modes"]["stereo-sub"]["processing"].items():
+        if not role.startswith(("left_", "right_")):
+            continue
         if not role.endswith("low"):
             settings["highpass"] = {"family": "linkwitz-riley", "slope_db_oct": 24,
                                     "frequency_hz": 300 if role.endswith("mid") else 2500}
@@ -61,12 +63,17 @@ class WayResponseTests(unittest.TestCase):
             main,
             get_output_service=mock.MagicMock(return_value=self.service),
             get_samplerate_status=mock.MagicMock(return_value={"active_rate": rate}),
+            get_audio_output_overview=mock.MagicMock(return_value={
+                "selected_output": {"key": "A", "channels": 6},
+                "output_mode": {"effective_output_key": "A", "effective_output_channels": 6},
+            }),
         ):
             return asyncio.run(main.get_audio_output_state_crossover_response())
 
     def test_lr24_cutoff_and_structure(self):
         payload = self.fetch()
-        self.assertEqual(payload["mode"], "crossover")
+        self.assertEqual(payload["mode"], "stereo-sub")
+        self.assertTrue(payload["crossover_enabled"])
         self.assertEqual(payload["sample_rate_hz"], 48000)
         ways = payload["ways"]
         self.assertEqual(sorted(ways), ["left_high", "left_low", "left_mid",
@@ -85,7 +92,7 @@ class WayResponseTests(unittest.TestCase):
 
     def test_incomplete_way_reports_null_points(self):
         state = self.service.load()
-        state["modes"]["crossover"]["processing"]["left_high"]["highpass"] = None
+        state["modes"]["stereo-sub"]["processing"]["left_high"]["highpass"] = None
         self.service._deps.store.commit(state, expected_revision=1)
         payload = self.fetch()
         high = payload["ways"]["left_high"]
@@ -93,11 +100,12 @@ class WayResponseTests(unittest.TestCase):
         self.assertIsNone(high["points"])
 
     def test_stereo_mode_has_no_ways(self):
-        state = self.service.load()
-        state["active_mode"] = "stereo"
+        from audio.output_state import set_crossover
+        state = set_crossover(self.service.load(), "stereo-sub", False)
         self.service._deps.store.commit(state, expected_revision=1)
         payload = self.fetch()
-        self.assertEqual(payload["mode"], "stereo")
+        self.assertEqual(payload["mode"], "stereo-sub")
+        self.assertFalse(payload["crossover_enabled"])
         self.assertEqual(payload["ways"], {})
 
 

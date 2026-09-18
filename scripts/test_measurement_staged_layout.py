@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from audio.output_state import default_output_state, set_mode_routing, switch_mode
+from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
 from dsp.manager import DSPManager
 from dsp.native_config import layout_from_plan
 from dsp.processing_plan import compile_processing_plan
@@ -33,10 +33,10 @@ class StagedLayoutTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(environment.stop)
         manager = DSPManager(home=home)
         roles = [f"{side}_{way}" for side in ("left", "right") for way in ("low", "mid", "high")]
-        state = switch_mode(set_mode_routing(default_output_state(), "crossover", "dev",
-                                             roles + ["sub1", "sub2"]), "crossover")
+        state = switch_mode(set_mode_routing(set_crossover(default_output_state(), "stereo-sub", True), "stereo-sub", "dev",
+                                             roles + ["sub1", "sub2"]), "stereo-sub")
         for role in roles:
-            processing = state["modes"]["crossover"]["processing"][role]
+            processing = state["modes"]["stereo-sub"]["processing"][role]
             for kind, frequency in (("highpass", 300 if role.endswith("mid") else 2500),
                                     ("lowpass", 300 if role.endswith("low") else 2500)):
                 if (kind == "highpass" and not role.endswith("low")) or (kind == "lowpass" and not role.endswith("high")):
@@ -49,10 +49,10 @@ class StagedLayoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.layout), 8)
         self.assertTrue(self.layout[0]["sos"])
         self.context = {"expected_native_layout": self.layout,
-                        "expected_native_output_mode": "crossover",
+                        "expected_native_output_mode": "stereo-sub",
                         "expected_plan_fingerprint": "staged-plan-1"}
         self.runtime = {"active": True, "effect_bypass": True, "config": {
-            "sample_rate": 48000, "output_mode": "crossover", "layout": deepcopy(self.layout),
+            "sample_rate": 48000, "output_mode": "stereo-sub", "layout": deepcopy(self.layout),
             "plan_fingerprint": "staged-plan-1"}}
 
         async def bypass(_value):
@@ -98,7 +98,7 @@ class StagedLayoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("hardware boundary reached", job["error"]["detail"])
         self.assertEqual(self.spawned, ["pw-record"])
         self.assertIsNone(self.snapshots[0]["validation_failure"])
-        self.assertEqual(self.snapshots[0]["output_mode"], "crossover")
+        self.assertEqual(self.snapshots[0]["output_mode"], "stereo-sub")
 
     async def test_context_is_detached_before_first_await_and_from_returned_job(self):
         self.assertIn("expected_native_layout", inspect.signature(self.store.start_measurement).parameters)
@@ -169,7 +169,7 @@ class StagedLayoutTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.post("/api/measurements/start", data={
                     "input_id": "mic", "channel": "left", "measurement_scope": "raw_helper",
                     "expected_native_layout": json.dumps(self.layout),
-                    "expected_native_output_mode": "crossover",
+                    "expected_native_output_mode": "stereo-sub",
                     "expected_plan_fingerprint": "http-override"})
             self.assertEqual(response.status_code, 200, response.text)
             job_id = response.json()["job"]["id"]

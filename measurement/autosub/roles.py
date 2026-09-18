@@ -101,7 +101,7 @@ def main_roles_for_side(topology: OutputTopology, side: str) -> tuple[str, ...]:
     """
     if side not in ("left", "right"):
         raise ValueError("Side must be left or right")
-    if topology.mode == "stereo":
+    if not topology.crossover_enabled:
         main_role = "main_l" if side == "left" else "main_r"
         return tuple(role for role in topology.roles if role == main_role)
     return topology.left_ways if side == "left" else topology.right_ways
@@ -114,6 +114,7 @@ def autosub_topology_from_state(state: dict, *, output_key: str,
     mode = validated["active_mode"]
     return derive_topology(
         mode, routing_for_device(validated, mode, output_key), channels=channels,
+        crossover_enabled=validated["modes"][mode]["crossover_enabled"],
     )
 
 

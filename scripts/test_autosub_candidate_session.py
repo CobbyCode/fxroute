@@ -20,7 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state import default_output_state, set_mode_routing, validate_output_state
+from audio.output_state import default_output_state, set_crossover, set_mode_routing, switch_mode, validate_output_state
 from audio.output_state_store import OutputStateStore, StateConflictError
 from dsp.manager import DSPManager
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget
@@ -84,8 +84,7 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
             store=self.store, preset_loader=self.manager.preset_store.read,
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1", "sub2"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub2"]), "stereo-sub")
         self.base = self.store.commit(state, expected_revision=0)
         self.context = dict(output_key="dev", channels=4)
         self.initial = self.target_for(self.base)
@@ -127,7 +126,7 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
 
     def newer_winner(self):
         winner = self.service.load()
-        winner["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 9
+        winner["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 9
         winner = self.service.commit(winner, expected_revision=winner["revision"])
         self.hardware.target = self.target_for(winner)
         return winner
@@ -220,8 +219,8 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
             sub_polarities={"sub1": "invert", "sub2": "invert"}))
         result = await self.owner.stage(self.proposal(sub_delays={"sub1": 4, "sub2": 2}))
         expected = copy.deepcopy(self.base)
-        expected["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 4
-        expected["modes"]["stereo"]["processing"]["sub2"]["alignment_ms"] = 2
+        expected["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 4
+        expected["modes"]["stereo-sub"]["processing"]["sub2"]["alignment_ms"] = 2
         self.assertEqual(result["state"], validate_output_state(expected))
         self.assertEqual(self.path.read_bytes(), self.before_bytes)
 
@@ -231,18 +230,18 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(result), {"state", "plan", "fingerprint", "expected_native_layout",
                                       "expected_native_output_mode"})
         self.assertEqual(result["expected_native_layout"], self.service.compile_layout(result["plan"]))
-        self.assertEqual(result["expected_native_output_mode"], "stereo")
+        self.assertEqual(result["expected_native_output_mode"], "stereo-sub")
         self.assertEqual(result["fingerprint"], self.service.fingerprint_plan(result["plan"]))
         self.assertEqual(result["plan"]["sample_rate_hz"], 44100)
         self.assertEqual(self.hardware.target.config.plan_fingerprint, result["fingerprint"])
-        result["state"]["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 25
+        result["state"]["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 25
         result["plan"].clear()
         result["expected_native_layout"].clear()
         result["fingerprint"] = "tampered"
         snapshot = await self.owner.ensure_ready(44100)
         self.assertEqual(snapshot["config"]["plan_fingerprint"], self.hardware.target.config.plan_fingerprint)
         committed = await self.owner.commit_winner(self.proposal(sub_delays={"sub1": 4, "sub2": 0}))
-        self.assertEqual(committed["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"], 4)
+        self.assertEqual(committed["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"], 4)
 
     def ir_info(self, resolution):
         path = self.path.parent / f"resolution-{resolution}.wav"
@@ -258,7 +257,7 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
             "schema": "fxroute.dsp.preset", "version": 1,
             "chain": [{"id": "conv", "type": "convolver", "params": {"kernel": "sub"}}]})
         state = self.service.load()
-        state["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Sub IR"
+        state["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Sub IR"
         self.base = self.store.commit(state, expected_revision=state["revision"])
         self.service = OutputService(OutputServiceDeps(
             store=self.store, preset_loader=self.manager.preset_store.read,
@@ -552,7 +551,7 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await asyncio.wait_for(staging, 1)
         committed = await asyncio.wait_for(committing, 1)
-        self.assertEqual(committed["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"], 4)
+        self.assertEqual(committed["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"], 4)
         self.assertEqual(self.hardware.gain, -12)
         self.assertTrue(self.owner.committed)
 
@@ -625,7 +624,7 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await asyncio.wait_for(checking, 1)
         result = await asyncio.wait_for(staging, 1)
-        self.assertEqual(result["state"]["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"], 4)
+        self.assertEqual(result["state"]["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"], 4)
         self.assertEqual(self.path.read_bytes(), self.before_bytes)
 
     async def test_commit_winner_persists_staged_normalized_state(self):

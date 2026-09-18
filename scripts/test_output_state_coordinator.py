@@ -22,7 +22,7 @@ from playback.orchestration import PlaybackOrchestrator, PlaybackOrchestrationDe
 from playback.transition import PlaybackTransitionFailure, TransitionRequest
 from playback_transition_test_support import make_transition_runtime
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state import set_bank_preset, set_mode_routing
+from audio.output_state import set_bank_preset, set_crossover, set_mode_routing, switch_mode
 from audio.output_state_store import OutputStateStore, StateConflictError
 from dsp.manager import DSPManager
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget, _contains_link
@@ -235,7 +235,7 @@ def make_manager(directory):
 
 def seed_sub_state(service):
     return service.apply(
-        lambda state: set_mode_routing(state, "stereo", "A", ["main_l", "main_r", "sub1", "sub1"]),
+        lambda state: switch_mode(set_mode_routing(state, "stereo-sub", "A", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub"),
         expected_revision=0)
 
 
@@ -277,7 +277,7 @@ class CommitV2Tests(unittest.TestCase):
         self.manager = make_manager(directory.name)
         self.service = make_service(directory.name, self.manager)
         self.base = seed_sub_state(self.service)
-        self.candidate = set_bank_preset(self.base, "stereo", "sub1", preset="Room")
+        self.candidate = set_bank_preset(self.base, "stereo-sub", "sub1", preset="Room")
 
     def test_commit_persists_candidate_with_revision(self):
         runtime = make_transition_runtime()
@@ -293,7 +293,7 @@ class CommitV2Tests(unittest.TestCase):
 
     def test_commit_conflict_propagates(self):
         runtime = make_transition_runtime()
-        self.service.apply(lambda state: set_bank_preset(state, "stereo", "global", preset="Room"),
+        self.service.apply(lambda state: set_bank_preset(state, "stereo-sub", "global", preset="Room"),
                            expected_revision=1)
         with mock.patch.object(main, "get_output_service", return_value=self.service):
             with self.assertRaises(StateConflictError):
@@ -348,7 +348,7 @@ class VerifyFingerprintTests(unittest.TestCase):
         self.manager = make_manager(directory.name)
         self.service = make_service(directory.name, self.manager)
         self.base = seed_sub_state(self.service)
-        self.candidate = set_bank_preset(self.base, "stereo", "sub1", preset="Room")
+        self.candidate = set_bank_preset(self.base, "stereo-sub", "sub1", preset="Room")
 
     def verify(self, payload, fingerprint):
         runtime = make_transition_runtime()
@@ -381,7 +381,7 @@ class RollbackV2Tests(unittest.TestCase):
         self.manager = make_manager(directory.name)
         self.service = make_service(directory.name, self.manager)
         self.base = seed_sub_state(self.service)
-        self.candidate = set_bank_preset(self.base, "stereo", "sub1", preset="Room")
+        self.candidate = set_bank_preset(self.base, "stereo-sub", "sub1", preset="Room")
         self.previous_target = plan_target(self.service, self.manager, self.base)
         self.runtime = make_transition_runtime()
 
@@ -405,12 +405,12 @@ class RollbackV2Tests(unittest.TestCase):
             self.rollback(v2_payload(self.service, self.candidate, self.base,
                                      previous_target=self.previous_target))
         self.assertEqual(self.service.load()["revision"], 3)
-        self.assertEqual(self.service.load()["modes"]["stereo"]["banks"]["sub1"]["preset"], "Neutral")
+        self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]["preset"], "Neutral")
         fake.sync_rendered.assert_awaited_once_with(self.previous_target)
 
     def test_concurrent_winner_skips_rollback(self):
         self.service.commit(self.candidate, expected_revision=1)
-        self.service.apply(lambda state: set_bank_preset(state, "stereo", "global", preset="Room"),
+        self.service.apply(lambda state: set_bank_preset(state, "stereo-sub", "global", preset="Room"),
                            expected_revision=2)
         fake = self.synced()
         with mock.patch.object(main.runtime, "dsp_runtime", fake):
@@ -494,7 +494,7 @@ class MainTopologyBranchTests(unittest.TestCase):
                  guarded_rebuild_rendered=guarded, sync_rendered=AsyncMock())):
             result = asyncio.run(main.apply_audio_output_state(FakeRequest({
                 "expected_revision": 1,
-                "mutation": {"kind": "set_routing", "mode": "stereo",
+                "mutation": {"kind": "set_routing", "mode": "stereo-sub",
                              "assignments": ["main_l", "main_r", "sub1", "sub2"]},
             })))
         run.assert_awaited_once()
@@ -515,7 +515,7 @@ class MainTopologyBranchTests(unittest.TestCase):
         # response revision is read back after the transition.
         self.assertEqual(result["revision"], self.service.load()["revision"])
         self.assertEqual(result["revision"], 1)
-        candidate_roles = payload["candidate_state"]["modes"]["stereo"]["routing"]["A"]
+        candidate_roles = payload["candidate_state"]["modes"]["stereo-sub"]["routing"]["A"]
         self.assertIn("sub2", candidate_roles)
 
     def test_coordinator_failure_leaves_candidate_uncommitted(self):
@@ -526,7 +526,7 @@ class MainTopologyBranchTests(unittest.TestCase):
             with self.assertRaises(main.HTTPException) as ctx:
                 asyncio.run(main.apply_audio_output_state(FakeRequest({
                     "expected_revision": 1,
-                    "mutation": {"kind": "set_routing", "mode": "stereo",
+                    "mutation": {"kind": "set_routing", "mode": "stereo-sub",
                                  "assignments": ["main_l", "main_r", "sub1", "sub2"]},
                 })))
         self.assertEqual(ctx.exception.status_code, 500)
@@ -543,7 +543,7 @@ class MainTopologyBranchTests(unittest.TestCase):
             with self.assertRaises(main.HTTPException) as ctx:
                 asyncio.run(main.apply_audio_output_state(FakeRequest({
                     "expected_revision": 1,
-                    "mutation": {"kind": "set_routing", "mode": "stereo",
+                    "mutation": {"kind": "set_routing", "mode": "stereo-sub",
                                  "assignments": ["main_l", "main_r", "sub1", "sub2"]},
                 })))
         self.assertEqual(ctx.exception.status_code, 409)

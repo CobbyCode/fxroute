@@ -74,7 +74,7 @@ class SpeakerAlignment:
         if side not in ("left", "right"):
             raise ValueError("Speaker Align side must be left or right")
         self._state = validate_output_state(state)
-        if self._state["active_mode"] != "crossover":
+        if not self._state["modes"][self._state["active_mode"]]["crossover_enabled"]:
             raise ValueError("Speaker Align requires crossover speaker ways")
         self._reference_id = _identity(reference_id, "upstream reference")
         self._position_id = _identity(microphone_position_id, "microphone position")
@@ -92,7 +92,7 @@ class SpeakerAlignment:
                 "reference_id": self._reference_id, "microphone_position_id": self._position_id,
                 "reference_tap": REFERENCE_TAP_INGRESS,
             })
-        processing = self._state["modes"]["crossover"]["processing"]
+        processing = self._state["modes"][self._state["active_mode"]]["processing"]
         self._bands = []
         for low_role, high_role in zip(self._roles, self._roles[1:]):
             lowpass = processing[low_role]["lowpass"]
@@ -242,7 +242,7 @@ class SpeakerAlignment:
         delays = {role: latest - arrival for role, arrival in arrivals.items()}
         candidate = copy.deepcopy(self._state)
         for role, delay in delays.items():
-            candidate["modes"]["crossover"]["processing"][role]["alignment_ms"] += delay
+            candidate["modes"][candidate["active_mode"]]["processing"][role]["alignment_ms"] += delay
         candidate = validate_output_state(candidate)
         grid = np.unique(np.concatenate([
             np.geomspace(20, self._rate * 0.45, 192), *(band for _, _, band in self._bands),

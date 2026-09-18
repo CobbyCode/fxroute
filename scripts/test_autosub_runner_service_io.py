@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT))
 
 import audio.samplerate as samplerate_module  # noqa: E402
 from audio.output_service import OutputService, OutputServiceDeps  # noqa: E402
-from audio.output_state import default_output_state, set_mode_routing  # noqa: E402
+from audio.output_state import default_output_state, set_crossover, set_mode_routing, switch_mode
 from audio.output_state_store import OutputStateStore, StateConflictError  # noqa: E402
 from dsp.manager import DSPManager  # noqa: E402
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget  # noqa: E402
@@ -84,8 +84,9 @@ def _dip_by_shape(points, lo, hi):
 
 
 def _seed_state(service, roles):
-    state = set_mode_routing(default_output_state(), "stereo", "dev",
-                             ["main_l", "main_r", *roles])
+    from audio.output_state import switch_mode
+    state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev",
+                             ["main_l", "main_r", *roles]), "stereo-sub")
     return service.commit(state, expected_revision=0)
 
 
@@ -195,9 +196,8 @@ class ScanKnobsSnapshotTests(unittest.TestCase):
     """
 
     def start_state(self):
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1", "sub2"])
-        processing = state["modes"]["stereo"]["processing"]
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub2"]), "stereo-sub")
+        processing = state["modes"]["stereo-sub"]["processing"]
         processing["sub1"].update(alignment_ms=1.0, level_db=-2.0, polarity="normal")
         processing["sub2"].update(alignment_ms=3.0, level_db=-4.0, polarity="invert")
         return state
@@ -219,8 +219,7 @@ class ScanKnobsSnapshotTests(unittest.TestCase):
         return autosub_scan_knobs(state, **args)
 
     def test_single_sub_uses_funnel_level_and_polarity(self):
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1"]), "stereo-sub")
         knobs = self.knobs(state, {"sub1": "sub1"}, original_level=2.0,
                            original_polarity="invert")
         self.assertEqual(knobs["sub_delays"], {"sub1": 5.0})
@@ -254,8 +253,7 @@ class ScanKnobsSnapshotTests(unittest.TestCase):
 
 class ExplicitKnobsTests(unittest.TestCase):
     def start_state(self):
-        return set_mode_routing(default_output_state(), "stereo", "dev",
-                                ["main_l", "main_r", "sub1", "sub2"])
+        return switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub2"]), "stereo-sub")
 
     def knobs(self, role_map, delays, levels, polarities, **overrides):
         args = dict(output_key="dev", channels=4, sub_role_map=role_map,
@@ -297,8 +295,9 @@ class ExplicitKnobsTests(unittest.TestCase):
 
 class LegacyTranslatorTests(unittest.TestCase):
     def start_state(self, roles=("sub1", "sub2")):
-        return set_mode_routing(default_output_state(), "stereo", "dev",
-                                ["main_l", "main_r", *roles])
+        from audio.output_state import switch_mode
+        return switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev",
+                                ["main_l", "main_r", *roles]), "stereo-sub")
 
     def test_single_shape_maps_retained_triplet(self):
         knobs = autosub_apply_knobs(
@@ -401,7 +400,7 @@ class ApplyCandidateOwnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_revision_drift_raises_run_fatal(self):
         drifted = self.service.load()
-        drifted["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 9.0
+        drifted["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 9.0
         self.service.commit(drifted, expected_revision=drifted["revision"])
         with self.assertRaises(StateConflictError):
             await autosub_candidates._auto_sub_apply_candidate(

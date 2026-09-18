@@ -17,7 +17,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state import default_output_state, set_mode_routing, validate_output_state
+from audio.output_state import default_output_state, set_mode_routing, validate_output_state, set_crossover
 from audio.output_state_store import OutputStateStore, StateConflictError
 from audio.output_topology import SUB_ROLES
 from dsp.manager import DSPManager
@@ -32,13 +32,14 @@ except ModuleNotFoundError as exc:
 
 
 def state_fixture(ways=0, subs=("sub1",)):
+    from audio.output_state import switch_mode
     state = default_output_state()
-    mode = "crossover" if ways else "stereo"
+    mode = "stereo-sub"
+    state = set_crossover(state, mode, bool(ways))
     speakers = ([f"{side}_{way}" for side in ("left", "right")
                  for way in (("low", "high") if ways == 2 else ("low", "mid", "high"))]
                 if ways else ["main_l", "main_r"])
-    state = set_mode_routing(state, mode, "dev", [*speakers, *subs])
-    state["active_mode"] = mode
+    state = switch_mode(set_mode_routing(state, mode, "dev", [*speakers, *subs]), mode)
     config = state["modes"][mode]
     for index, role in enumerate(speakers):
         settings = config["processing"][role]
@@ -104,13 +105,13 @@ class SubCandidateStateTests(Fixture, unittest.TestCase):
                                 sub_levels={"sub_r": -4}, sub_polarities={"sub1": "invert"},
                                 bass={"frequency_hz": 95, "main_highpass_enabled": False})
         expected = copy.deepcopy(base)
-        config = expected["modes"]["stereo"]
+        config = expected["modes"]["stereo-sub"]
         config["processing"]["sub1"].update(alignment_ms=-3.5, polarity="invert")
         config["processing"]["sub_r"]["level_db"] = -4
         config["bass_management"] = {"frequency_hz": 95, "main_highpass_enabled": False}
         self.assertEqual(result, expected)
-        result["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Direct"
-        self.assertEqual(base["modes"]["stereo"]["banks"]["sub1"]["preset"], "Room")
+        result["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Direct"
+        self.assertEqual(base["modes"]["stereo-sub"]["banks"]["sub1"]["preset"], "Room")
 
     def test_two_and_three_way_banks_and_relative_delays_survive(self):
         for ways in (2, 3):
@@ -130,8 +131,8 @@ class SubCandidateStateTests(Fixture, unittest.TestCase):
                 for old, new in zip(before["outputs"], after["outputs"]):
                     if old["role"] not in SUB_ROLES:
                         self.assertEqual(new["delay_ms"] - old["delay_ms"], 4)
-                        self.assertEqual(result["modes"]["crossover"]["processing"][old["role"]],
-                                         base["modes"]["crossover"]["processing"][old["role"]])
+                        self.assertEqual(result["modes"]["stereo-sub"]["processing"][old["role"]],
+                                         base["modes"]["stereo-sub"]["processing"][old["role"]])
                     self.assertEqual(old["bank"], new["bank"])
 
     def test_fanout_is_one_sub_and_dormant_ports_do_not_authorize_changes(self):
@@ -146,7 +147,7 @@ class SubCandidateStateTests(Fixture, unittest.TestCase):
             with self.subTest(context=context), self.assertRaises(ValueError):
                 self.candidate(base, sub_delays={"sub2": 2}, **context)
         # Stored bank without a port is not an active sub either.
-        base["modes"]["stereo"]["routing"]["dev"] = ["main_l", "main_r", "sub1"]
+        base["modes"]["stereo-sub"]["routing"]["dev"] = ["main_l", "main_r", "sub1"]
         with self.assertRaises(ValueError):
             self.candidate(base, channels=5, sub_delays={"sub2": 2})
 
@@ -168,7 +169,7 @@ class SubCandidateStateTests(Fixture, unittest.TestCase):
 
     def test_entire_state_is_validated_including_inactive_mode(self):
         base = copy.deepcopy(self.base)
-        base["modes"]["crossover"]["bass_management"]["frequency_hz"] = 999
+        base["modes"]["stereo-sub"]["bass_management"]["frequency_hz"] = 999
         with self.assertRaises(ValueError):
             self.candidate(base, sub_delays={"sub1": 2})
         with self.assertRaises(ValueError):
@@ -261,7 +262,7 @@ class CandidateStagerTests(Fixture, unittest.IsolatedAsyncioTestCase):
 
     def newer_winner(self):
         winner = self.service.load()
-        winner["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 9
+        winner["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 9
         winner = self.service.commit(winner, expected_revision=1)
         fp, plan = self.compile(winner)
         self.hardware.target = self.build_target(plan, fingerprint=fp)
@@ -297,8 +298,8 @@ class CandidateStagerTests(Fixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_each_candidate_uses_detached_start_not_last_candidate(self):
         first = await self.stager.stage(sub_delays={"sub1": 5})
-        self.base["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 30
-        first["state"]["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 25
+        self.base["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 30
+        first["state"]["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 25
         second = await self.stager.stage(sub_levels={"sub1": -2})
         self.assertEqual(second["plan"]["outputs"][2]["delay_ms"], 0)
         self.assertEqual(second["plan"]["outputs"][2]["gain_db"], -2)

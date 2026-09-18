@@ -12,9 +12,9 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window, function (root) {
     'use strict';
 
-const OUTPUT_MODES = ['stereo', 'crossover'];
+const OUTPUT_MODES = ['stereo', 'stereo-sub'];
 const MUTATION_KINDS = ['set_routing', 'switch_mode', 'select_bank', 'set_bank_preset',
-    'set_processing', 'set_bass', 'set_extras'];
+    'set_crossover', 'set_subwoofers', 'set_processing', 'set_bass', 'set_extras'];
 
 function esc(value) {
     return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -24,6 +24,10 @@ function esc(value) {
 function roleLabel(roleId) {
     if (roleId === 'global') return 'Global';
     if (roleId === 'off') return 'Off';
+    if (/^(left|right)_/.test(roleId)) {
+        const [side, ...way] = roleId.split('_');
+        return `${way.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} ${side === 'left' ? 'L' : 'R'}`;
+    }
     const raw = String(roleId || '').split('_').filter(Boolean);
     if (!raw.length) return String(roleId || '');
     const words = [];
@@ -49,7 +53,7 @@ function rolesForMode(mode, capabilities) {
 }
 
 function modeLabel(mode) {
-    return mode === 'crossover' ? 'Crossover' : 'Stereo';
+    return { stereo: 'Stereo', 'stereo-sub': 'Stereo + Sub', surround: 'Surround' }[mode] || mode;
 }
 
 function subModeLabel(subMode) {
@@ -57,6 +61,32 @@ function subModeLabel(subMode) {
     if (subMode === 'dual-mono') return 'Dual-mono subs';
     if (subMode === 'mono') return 'Mono sub';
     return '';
+}
+
+// Adapter for the existing sub tile and optimizer algorithms; never persisted.
+function subwooferView(catalog) {
+    const config = catalog?.modes?.[catalog.active_mode];
+    const topology = config?.topology || {};
+    const roles = topology.sub_roles || [];
+    const processing = config?.processing || {};
+    const first = processing[roles[0]] || {};
+    const offset = Math.max(0, ...(topology.roles || []).map(role => -(processing[role]?.alignment_ms || 0)));
+    const bass = config?.bass_management || {};
+    return {
+        mode: { mono: 'subwoofer-2.1', 'dual-mono': 'subwoofer-2.2', stereo: 'subwoofer-2.2-stereo' }[topology.sub_mode] || 'stereo',
+        roles, sub_mode: topology.sub_mode || 'none',
+        subwoofer: { crossover_frequency_hz: bass.frequency_hz ?? 80, slope: 'LR24',
+            main_highpass_enabled: bass.main_highpass_enabled ?? true,
+            sub_level_db: first.level_db || 0, sub_alignment_ms: first.alignment_ms || 0,
+            sub_polarity: first.polarity || 'normal' },
+        subwoofers: { sub1: first, sub2: processing[roles[1]] || {} },
+        derived_main_delay_ms: offset,
+        derived_sub1_delay_ms: offset + (first.alignment_ms || 0),
+        derived_sub2_delay_ms: offset + (processing[roles[1]]?.alignment_ms || 0),
+        routing: { status: (catalog?.device?.routing?.[catalog.active_mode] || [])
+            .map((role, index) => role !== 'off' ? `Out ${index + 1} ${roleLabel(role)}` : '')
+            .filter(Boolean).join(' · ') },
+    };
 }
 
 function topologySummary(topology) {
@@ -139,10 +169,8 @@ function measurementArea(catalog, bankId) {
 function bankOptions(modeConfig, capabilities) {
     const banks = (modeConfig && modeConfig.banks) || {};
     const canonical = rolesForMode(modeConfig && modeConfig.topology && modeConfig.topology.mode, capabilities);
-    const ordered = ['global', ...canonical.filter((id) => id !== 'global' && id in banks)];
-    for (const id of Object.keys(banks)) {
-        if (!ordered.includes(id)) ordered.push(id);
-    }
+    const active = modeConfig?.topology?.roles || [];
+    const ordered = ['global', ...canonical.filter((id) => id in banks && active.includes(id))];
     return ordered.map((id) => ({ id, label: roleLabel(id) }));
 }
 
@@ -206,7 +234,7 @@ async function applyMutation(fetchImpl, catalog, getCatalog, mutation) {
 
 function renderModeSelect(select, catalog, activeMode) {
     if (!select) return;
-    const html = OUTPUT_MODES.map((mode) =>
+    const html = (catalog?.capabilities?.modes || OUTPUT_MODES).map((mode) =>
         `<option value="${mode}"${mode === activeMode ? ' selected' : ''}>${modeLabel(mode)}</option>`).join('');
     if (select.innerHTML !== html) select.innerHTML = html;
     if (select.value !== activeMode) select.value = activeMode;
@@ -220,8 +248,8 @@ function renderRoutingGrid(grid, catalog, mode, assignments, channelCount, disab
         const current = assignments[index] || 'off';
         const options = roles.map((role) =>
             `<option value="${esc(role)}"${role === current ? ' selected' : ''}>${esc(roleLabel(role))}</option>`).join('');
-        cells.push(`<div class="settings-routing-cell"><label for="os-routing-out-${index + 1}">Out ${index + 1}</label>`
-            + `<select id="os-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="Output ${index + 1} role"${disabled ? ' disabled' : ''}>${options}</select></div>`);
+        cells.push(`<div class="settings-routing-cell"><label for="settings-routing-out-${index + 1}">Out ${index + 1}</label>`
+            + `<select id="settings-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="Output ${index + 1} role"${disabled ? ' disabled' : ''}>${options}</select></div>`);
     }
     const html = cells.join('');
     const signature = [html, assignments.join(','), disabled ? 'busy' : 'idle'].join('|');
@@ -259,6 +287,7 @@ function renderBankSelector(select, info, catalog, mode) {
         rolesForMode,
         modeLabel,
         subModeLabel,
+        subwooferView,
         topologySummary,
         summedRoleIds,
         repeatSupported,

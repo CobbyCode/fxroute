@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_service import MeasurementActiveError, OutputService, OutputServiceDeps
 from audio.output_state import (
-    default_output_state, set_bank_preset, set_bass_management, set_mode_extras,
+    default_output_state, set_bank_preset, set_bass_management, set_crossover, set_mode_extras,
     set_mode_routing, set_output_processing, switch_mode, select_bank,
 )
 from audio.output_state_migration import migrate_legacy_output_state
@@ -51,14 +51,14 @@ class ServiceMutationTests(unittest.TestCase):
         self.assertEqual(committed["revision"], 1)
         result = self.service.apply(
             lambda state: set_bank_preset(
-                set_mode_routing(state, "stereo", "A", ["main_l", "main_r", "sub1", "sub1"]),
-                "stereo", "sub1", preset="Room", active_side="A"),
+                set_mode_routing(state, "stereo-sub", "A", ["main_l", "main_r", "sub1", "sub1"]),
+                "stereo-sub", "sub1", preset="Room", active_side="A"),
             expected_revision=1)
         self.assertEqual(result["revision"], 2)
-        self.assertEqual(result["modes"]["stereo"]["routing"]["A"],
+        self.assertEqual(result["modes"]["stereo-sub"]["routing"]["A"],
                          ["main_l", "main_r", "sub1", "sub1"])
-        self.assertEqual(result["modes"]["stereo"]["banks"]["sub1"]["preset"], "Room")
-        self.assertEqual(result["modes"]["stereo"]["banks"]["sub1"]["preset_a"], "Room")
+        self.assertEqual(result["modes"]["stereo-sub"]["banks"]["sub1"]["preset"], "Room")
+        self.assertEqual(result["modes"]["stereo-sub"]["banks"]["sub1"]["preset_a"], "Room")
         reloaded = OutputStateStore(self.path).load()
         self.assertEqual(reloaded, result)
 
@@ -68,35 +68,35 @@ class ServiceMutationTests(unittest.TestCase):
             lambda state: set_mode_extras(
                 set_bass_management(
                     set_output_processing(
-                        set_mode_routing(state, "stereo", "A",
+                        set_mode_routing(state, "stereo-sub", "A",
                                          ["main_l", "main_r", "sub1", "sub1"]),
-                        "stereo", "sub1", level_db=-4.5,
+                        "stereo-sub", "sub1", level_db=-4.5,
                         alignment_ms=-2.0, polarity="invert"),
-                    "stereo", frequency_hz=90, main_highpass_enabled=False),
-                "stereo", {"headroom": {"enabled": True}}),
+                    "stereo-sub", frequency_hz=90, main_highpass_enabled=False),
+                "stereo-sub", {"headroom": {"enabled": True}}),
             expected_revision=1)
-        processing = result["modes"]["stereo"]["processing"]["sub1"]
+        processing = result["modes"]["stereo-sub"]["processing"]["sub1"]
         self.assertEqual((processing["level_db"], processing["alignment_ms"], processing["polarity"]),
                          (-4.5, -2.0, "invert"))
-        self.assertEqual(result["modes"]["stereo"]["bass_management"],
+        self.assertEqual(result["modes"]["stereo-sub"]["bass_management"],
                          {"frequency_hz": 90, "main_highpass_enabled": False})
-        self.assertEqual(result["modes"]["stereo"]["extras"], {"headroom": {"enabled": True}})
+        self.assertEqual(result["modes"]["stereo-sub"]["extras"], {"headroom": {"enabled": True}})
 
     def test_stale_revision_conflict_preserves_committed_bytes(self):
         stereo_state(self.service)
         other = make_service(self.path, manager=self.manager)
-        other.apply(lambda state: switch_mode(state, "crossover"), expected_revision=1)
+        other.apply(lambda state: switch_mode(state, "stereo-sub"), expected_revision=1)
         committed = self.path.read_bytes()
         with self.assertRaises(StateConflictError):
-            self.service.apply(lambda state: switch_mode(state, "crossover"), expected_revision=1)
+            self.service.apply(lambda state: switch_mode(state, "stereo-sub"), expected_revision=1)
         self.assertEqual(self.path.read_bytes(), committed)
 
     def test_commit_prepared_candidate_and_revert_rebases_revision(self):
         committed = stereo_state(self.service)
-        candidate = switch_mode(committed, "crossover")
+        candidate = switch_mode(committed, "stereo-sub")
         second = self.service.commit(candidate, expected_revision=1)
         self.assertEqual(second["revision"], 2)
-        self.assertEqual(second["active_mode"], "crossover")
+        self.assertEqual(second["active_mode"], "stereo-sub")
         third = self.service.revert(committed, expected_revision=2)
         self.assertEqual(third["revision"], 3)
         self.assertEqual(third["active_mode"], "stereo")
@@ -108,7 +108,7 @@ class ServiceMutationTests(unittest.TestCase):
         busy = make_service(self.path, manager=self.manager, active=True)
         before = self.path.read_bytes()
         with self.assertRaises(MeasurementActiveError):
-            busy.apply(lambda state: switch_mode(state, "crossover"), expected_revision=1)
+            busy.apply(lambda state: switch_mode(state, "stereo-sub"), expected_revision=1)
         self.assertEqual(self.path.read_bytes(), before)
 
     def test_invalid_mutation_rejected_before_any_write(self):
@@ -116,12 +116,12 @@ class ServiceMutationTests(unittest.TestCase):
         before = self.path.read_bytes()
         with self.assertRaises(ValueError):
             self.service.apply(
-                lambda state: set_output_processing(state, "stereo", "left_low", level_db=0.0),
+                lambda state: set_output_processing(state, "stereo-sub", "left_low", level_db=0.0),
                 expected_revision=1)
         with self.assertRaises(ValueError):
             self.service.apply(
                 lambda state: set_output_processing(
-                    state, "stereo", "sub1",
+                    state, "stereo-sub", "sub1",
                     lowpass={"family": "linkwitz-riley", "slope_db_oct": 18, "frequency_hz": 80}),
                 expected_revision=1)
         self.assertEqual(self.path.read_bytes(), before)
@@ -137,8 +137,8 @@ class FingerprintTests(unittest.TestCase):
         self.manager.preset_store.write("Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
         self.service = make_service(self.path, manager=self.manager)
         self.base = self.service.apply(
-            lambda state: set_mode_routing(state, "stereo", "A",
-                                           ["main_l", "main_r", "sub1", "sub1"]),
+            lambda state: switch_mode(set_mode_routing(state, "stereo-sub", "A",
+                                           ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub"),
             expected_revision=0)
 
     def fingerprint(self, state):
@@ -148,16 +148,16 @@ class FingerprintTests(unittest.TestCase):
         first = self.fingerprint(self.base)
         self.assertEqual(first, self.fingerprint(self.base))
         self.assertEqual(len(first), 64)
-        reselected = select_bank(self.base, "stereo", "A", 4, "main_l")
+        reselected = select_bank(self.base, "stereo-sub", "A", 4, "main_l")
         self.assertEqual(self.fingerprint(reselected), first)
 
     def test_sensitive_to_effective_processing(self):
         first = self.fingerprint(self.base)
-        with_bank = set_bank_preset(self.base, "stereo", "global", preset="Room")
+        with_bank = set_bank_preset(self.base, "stereo-sub", "global", preset="Room")
         self.assertNotEqual(self.fingerprint(with_bank), first)
-        with_trim = set_output_processing(self.base, "stereo", "main_l", level_db=-3.0)
+        with_trim = set_output_processing(self.base, "stereo-sub", "main_l", level_db=-3.0)
         self.assertNotEqual(self.fingerprint(with_trim), first)
-        with_bass = set_bass_management(self.base, "stereo", frequency_hz=90)
+        with_bass = set_bass_management(self.base, "stereo-sub", frequency_hz=90)
         self.assertNotEqual(self.fingerprint(with_bass), first)
 
 
@@ -179,7 +179,7 @@ class EnsureStateTests(unittest.TestCase):
         service = make_service(self.path, manager=self.manager, legacy=self.legacy)
         first = service.ensure_state()
         self.assertEqual(first["revision"], 1)
-        self.assertEqual(first["modes"]["stereo"]["routing"]["A"],
+        self.assertEqual(first["modes"]["stereo-sub"]["routing"]["A"],
                          ["main_l", "main_r", "sub1", "sub1"])
         self.assertEqual(len(self.calls), 1)
         second = make_service(self.path, manager=self.manager, legacy=self.legacy).ensure_state()

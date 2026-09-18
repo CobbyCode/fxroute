@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_state import (
     default_output_state,
+    set_crossover,
     set_mode_routing,
     switch_mode,
     validate_output_state,
@@ -37,9 +38,9 @@ def crossover_filter(frequency):
 
 def crossover_state():
     assignments = [*CROSSOVER_ROLES, "sub1", "sub2"]
-    state = switch_mode(set_mode_routing(default_output_state(), "crossover", "A", assignments), "crossover")
-    for role, settings in state["modes"]["crossover"]["processing"].items():
-        if role in ("sub1", "sub2"):
+    state = switch_mode(set_mode_routing(set_crossover(default_output_state(), "stereo-sub", True), "stereo-sub", "A", assignments), "stereo-sub")
+    for role, settings in state["modes"]["stereo-sub"]["processing"].items():
+        if not role.startswith(("left_", "right_")):
             continue
         if not role.endswith("low"):
             settings["highpass"] = crossover_filter(300 if "mid" in role else 2500)

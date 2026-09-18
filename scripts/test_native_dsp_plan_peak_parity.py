@@ -23,7 +23,7 @@ DSP = ROOT / "native_dsp" / "build" / "fxroute-dsp-offline"
 sys.path.insert(0, str(ROOT))
 
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state import default_output_state, set_mode_routing
+from audio.output_state import default_output_state, set_mode_routing, switch_mode
 from audio.output_state_store import OutputStateStore
 from dsp.manager import DSPManager, build_wav_bytes
 from measurement.autosub.jobs import (
@@ -73,8 +73,7 @@ def test_plan_peak_parity(tmp_path):
             preset_loader=manager.preset_store.read,
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: False))
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1", "sub1"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub")
         committed = service.commit(state, expected_revision=0)
         plan = service.compile_plan(committed, output_key="dev", channels=4,
                                     sample_rate_hz=RATE)

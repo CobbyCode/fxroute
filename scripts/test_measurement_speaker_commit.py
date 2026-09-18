@@ -16,7 +16,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state import default_output_state, set_mode_routing, switch_mode, validate_output_state
+from audio.output_state import default_output_state, set_mode_routing, switch_mode, validate_output_state, set_crossover
 from audio.output_state_store import OutputStateStore, StateConflictError
 from dsp.manager import DSPManager
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget
@@ -35,9 +35,9 @@ def crossover_state():
     state = default_output_state()
     routes = [f"{side}_{way}" for side in ("right", "left") for way in ("high", "low")]
     routes += ["sub1", "left_low"]
-    state = set_mode_routing(state, "crossover", "dev", routes)
-    state = switch_mode(state, "crossover")
-    processing = state["modes"]["crossover"]["processing"]
+    state = set_mode_routing(set_crossover(state, "stereo-sub", True), "stereo-sub", "dev", routes)
+    state = switch_mode(state, "stereo-sub")
+    processing = state["modes"]["stereo-sub"]["processing"]
     for side in ("left", "right"):
         processing[f"{side}_low"]["lowpass"] = {
             "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000,
@@ -174,13 +174,13 @@ class RequireCandidateTests(SessionFixture, unittest.TestCase):
 
     def test_non_alignment_change_is_rejected(self):
         tampered = copy.deepcopy(self.proposal["candidate_state"])
-        tampered["modes"]["crossover"]["processing"]["left_low"]["level_db"] += 1.0
+        tampered["modes"]["stereo-sub"]["processing"]["left_low"]["level_db"] += 1.0
         with self.assertRaisesRegex(ValueError, "alignment"):
             require_speaker_candidate(self.base, tampered, output_key="dev", channels=6)
 
     def test_bank_change_is_rejected(self):
         tampered = copy.deepcopy(self.proposal["candidate_state"])
-        tampered["modes"]["crossover"]["banks"]["left_low"]["preset"] = "Direct"
+        tampered["modes"]["stereo-sub"]["banks"]["left_low"]["preset"] = "Direct"
         with self.assertRaisesRegex(ValueError, "alignment"):
             require_speaker_candidate(self.base, tampered, output_key="dev", channels=6)
 
@@ -217,7 +217,7 @@ class StageRestoreTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
     async def test_stage_rejects_non_candidate(self):
         session = self.session()
         tampered = copy.deepcopy(self.proposal["candidate_state"])
-        tampered["modes"]["crossover"]["processing"]["left_low"]["level_db"] += 1.0
+        tampered["modes"]["stereo-sub"]["processing"]["left_low"]["level_db"] += 1.0
         with self.assertRaisesRegex(ValueError, "alignment"):
             await session.stage_candidate(tampered)
         self.assertEqual(self.stage_calls, [])
@@ -272,8 +272,8 @@ class CommitTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         committed = await session.commit_candidate(self.proposal["candidate_state"])
         self.assertEqual(committed["revision"], self.base["revision"] + 1)
         self.assertEqual(
-            committed["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"],
-            self.proposal["candidate_state"]["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"])
+            committed["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"],
+            self.proposal["candidate_state"]["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"])
         self.assertTrue(session.committed)
         # A committed session never restores the old start over the winner.
         with self.assertRaisesRegex(RuntimeError, "committed"):
@@ -289,7 +289,7 @@ class CommitTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         session = self.session()
         await session.stage_candidate(self.proposal["candidate_state"])
         other = copy.deepcopy(self.proposal["candidate_state"])
-        other["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"] += 0.5
+        other["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] += 0.5
         with self.assertRaisesRegex(ValueError, "staged"):
             await session.commit_candidate(other)
         self.assertEqual(self.service.load()["revision"], self.base["revision"])

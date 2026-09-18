@@ -17,6 +17,7 @@ from audio.output_state import (
     default_output_state,
     select_bank,
     set_bank_preset,
+    set_crossover,
     set_mode_routing,
     switch_mode,
     validate_output_state,
@@ -58,9 +59,9 @@ def crossover_state(*, with_subs=True, assignments=None, ways=("low", "mid", "hi
         f"{side}_{way}" for side in ("left", "right") for way in ways]
     if with_subs:
         wiring += ["sub1", "sub2"]
-    state = switch_mode(set_mode_routing(default_output_state(), "crossover", "A", wiring), "crossover")
-    for role, settings in state["modes"]["crossover"]["processing"].items():
-        if role in ("sub1", "sub2"):
+    state = switch_mode(set_mode_routing(set_crossover(default_output_state(), "stereo-sub", True), "stereo-sub", "A", wiring), "stereo-sub")
+    for role, settings in state["modes"]["stereo-sub"]["processing"].items():
+        if not role.startswith(("left_", "right_")):
             continue
         if not role.endswith("low"):
             settings["highpass"] = crossover_filter(300 if "mid" in role else 2500)
@@ -155,7 +156,7 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
         target = self.freeze(crossover_state(), GLOBAL_BANK_ID)
         self.assertEqual(target["schema"], "fxroute.measurement-target")
         self.assertEqual(target["version"], 1)
-        self.assertEqual(target["mode"], "crossover")
+        self.assertEqual(target["mode"], "stereo-sub")
         self.assertEqual(target["bank_id"], "global")
         self.assertEqual(target["preset"], "Neutral")
         self.assertEqual(target["revision"], 0)
@@ -167,8 +168,7 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(target)), target)
 
     def test_area_target_mutes_unrelated_outputs_and_keeps_fanout(self):
-        state = set_mode_routing(default_output_state(), "stereo", "A",
-                                 ["sub1", "off", "main_l", "main_r", "sub1"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", ["sub1", "off", "main_l", "main_r", "sub1"]), "stereo-sub")
         target = self.freeze(state, "sub1", channels=5)
         self.assertEqual(target["roles"], ["main_l", "main_r", "sub1"])
         self.assertEqual(target["measured_roles"], ["sub1"])
@@ -183,8 +183,7 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
             self.raw_freeze(stereo, "sub1")
         with self.assertRaisesRegex(ValueError, "not stored in output mode stereo"):
             self.raw_freeze(stereo, "global_extra")
-        incomplete = switch_mode(
-            set_mode_routing(default_output_state(), "crossover", "A", ["left_low", "right_low"]), "crossover")
+        incomplete = switch_mode(set_mode_routing(set_crossover(default_output_state(), "stereo-sub", True), "stereo-sub", "A", ["left_low", "right_low"]), "stereo-sub")
         with self.assertRaisesRegex(ValueError, "complete Low/High"):
             self.raw_freeze(incomplete, "global")
         state = crossover_state()
@@ -201,8 +200,8 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
             self.raw_freeze(state, "left_mid", output_key="   ")
         # A dormant role keeps its bank but is not a measureable area.
         four_way = crossover_state(ways=("low", "low_mid", "mid", "high"))
-        dormant = set_mode_routing(four_way, "crossover", "A", CROSSOVER_ROLES)
-        self.assertIn("left_low_mid", dormant["modes"]["crossover"]["banks"])
+        dormant = set_mode_routing(four_way, "stereo-sub", "A", CROSSOVER_ROLES)
+        self.assertIn("left_low_mid", dormant["modes"]["stereo-sub"]["banks"])
         with self.assertRaisesRegex(ValueError, "not an active role"):
             self.freeze(dormant, "left_low_mid")
 
@@ -210,8 +209,8 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
         state = crossover_state()
         target = self.freeze(state, "left_mid")
         state["revision"] = 9
-        state["modes"]["crossover"]["banks"]["left_mid"]["preset"] = "Room EQ"
-        state["modes"]["crossover"]["selected_bank"] = "left_high"
+        state["modes"]["stereo-sub"]["banks"]["left_mid"]["preset"] = "Room EQ"
+        state["modes"]["stereo-sub"]["selected_bank"] = "left_high"
         self.assertEqual(target["revision"], 0)
         self.assertEqual(target["preset"], "Neutral")
         self.assertEqual(target["bank_id"], "left_mid")
@@ -222,16 +221,16 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
         # compiled fingerprint unchanged: the same capture still applies.
         state = crossover_state()
         frozen = self.freeze(state, "left_mid")
-        selected = select_bank(state, "crossover", "A", 8, "left_mid")
+        selected = select_bank(state, "stereo-sub", "A", 8, "left_mid")
         live = self.freeze(selected, "left_mid")
         self.assertEqual(frozen["processing_fingerprint"], live["processing_fingerprint"])
-        require_commit_target(frozen, live, mode="crossover", bank_id="left_mid")
+        require_commit_target(frozen, live, mode="stereo-sub", bank_id="left_mid")
 
         # A processing edit breaks it; the differing field is named.
-        edited = set_bank_preset(selected, "crossover", "left_mid", preset="Room EQ")
+        edited = set_bank_preset(selected, "stereo-sub", "left_mid", preset="Room EQ")
         with self.assertRaisesRegex(ValueError, "processing '.*' != '.*"):
             require_commit_target(frozen, self.freeze(edited, "left_mid"),
-                                  mode="crossover", bank_id="left_mid")
+                                  mode="stereo-sub", bank_id="left_mid")
 
     def test_merge_compatibility_rejects_mixed_areas_and_accepts_revision_drift(self):
         state = crossover_state()
@@ -243,9 +242,9 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
         self.assertTrue(targets_compatible(mid, copy.deepcopy(mid)))
         self.assertFalse(targets_compatible(mid, self.freeze(state, "left_high")))
         self.assertFalse(targets_compatible(mid, self.freeze(state, GLOBAL_BANK_ID)))
-        edited = set_bank_preset(state, "crossover", "left_mid", preset="Room EQ")
+        edited = set_bank_preset(state, "stereo-sub", "left_mid", preset="Room EQ")
         self.assertFalse(targets_compatible(mid, self.freeze(edited, "left_mid")))
-        second_device = set_mode_routing(state, "crossover", "B", [*CROSSOVER_ROLES, "sub1", "sub2"])
+        second_device = set_mode_routing(state, "stereo-sub", "B", [*CROSSOVER_ROLES, "sub1", "sub2"])
         other = self.freeze(second_device, "left_mid", output_key="B")
         self.assertNotEqual(mid["device_key"], other["device_key"])
         self.assertFalse(targets_compatible(mid, other))
@@ -267,8 +266,8 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
 
     def test_area_context_round_trip_and_explicit_legacy_marker(self):
         target = self.freeze(crossover_state(), "left_mid")
-        context = attach_measurement_target({"output_mode": "crossover", "output_key": "A"}, target)
-        self.assertEqual(context["output_mode"], "crossover")
+        context = attach_measurement_target({"output_mode": "stereo-sub", "output_key": "A"}, target)
+        self.assertEqual(context["output_mode"], "stereo-sub")
         self.assertEqual(context["measurement_target"], target)
         self.assertEqual(measurement_target_from_context(context), target)
         self.assertEqual(measurement_target_from_context(None), LEGACY_TARGET)
@@ -349,15 +348,15 @@ class CommitTargetTests(TargetFixture, unittest.TestCase):
 
     def test_matching_area_and_processing_is_accepted(self):
         target = self.freeze(crossover_state(), "left_mid")
-        require_commit_target(target, copy.deepcopy(target), mode="crossover", bank_id="left_mid")
+        require_commit_target(target, copy.deepcopy(target), mode="stereo-sub", bank_id="left_mid")
 
     def test_commit_into_another_area_is_rejected(self):
         target = self.freeze(crossover_state(), "left_mid")
         live = self.freeze(crossover_state(), "left_high")
-        with self.assertRaisesRegex(ValueError, "captured for crossover area 'left_mid'"):
-            require_commit_target(target, live, mode="crossover", bank_id="left_high")
-        with self.assertRaisesRegex(ValueError, "captured for crossover area 'left_mid'"):
-            require_commit_target(target, copy.deepcopy(target), mode="crossover", bank_id="left_high")
+        with self.assertRaisesRegex(ValueError, "captured for stereo-sub area 'left_mid'"):
+            require_commit_target(target, live, mode="stereo-sub", bank_id="left_high")
+        with self.assertRaisesRegex(ValueError, "captured for stereo-sub area 'left_mid'"):
+            require_commit_target(target, copy.deepcopy(target), mode="stereo-sub", bank_id="left_high")
 
     def test_processing_and_device_changes_are_rejected_with_details(self):
         target = self.freeze(crossover_state(), "left_mid")
@@ -371,17 +370,17 @@ class CommitTargetTests(TargetFixture, unittest.TestCase):
             live = copy.deepcopy(target)
             live[field] = value
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, label):
-                require_commit_target(target, live, mode="crossover", bank_id="left_mid")
+                require_commit_target(target, live, mode="stereo-sub", bank_id="left_mid")
 
     def test_legacy_and_unavailable_contexts(self):
         # A measurement from before the frozen-target era stays committable.
-        require_commit_target(LEGACY_TARGET, {}, mode="crossover", bank_id="left_mid")
+        require_commit_target(LEGACY_TARGET, {}, mode="stereo-sub", bank_id="left_mid")
         with self.assertRaisesRegex(ValueError, "no frozen target"):
-            require_commit_target({}, {}, mode="crossover", bank_id="left_mid")
+            require_commit_target({}, {}, mode="stereo-sub", bank_id="left_mid")
         target = self.freeze(crossover_state(), "left_mid")
         for live in ({}, LEGACY_TARGET, None):
             with self.subTest(live=live), self.assertRaisesRegex(ValueError, "unavailable"):
-                require_commit_target(target, live, mode="crossover", bank_id="left_mid")
+                require_commit_target(target, live, mode="stereo-sub", bank_id="left_mid")
 
     def test_stored_measurement_lookup_keeps_its_target(self):
         target = self.freeze(crossover_state(), "left_mid")
@@ -389,7 +388,7 @@ class CommitTargetTests(TargetFixture, unittest.TestCase):
         stored = self.store.get_measurement("saved-mid")
         self.assertEqual(stored["measurement_target"], target)
         require_commit_target(stored["measurement_target"], copy.deepcopy(target),
-                              mode="crossover", bank_id="left_mid")
+                              mode="stereo-sub", bank_id="left_mid")
         with self.assertRaises(KeyError):
             self.store.get_measurement("missing")
         with self.assertRaisesRegex(ValueError, "Invalid measurement id"):
@@ -400,8 +399,7 @@ class SweepOutputMaskTests(TargetFixture, unittest.TestCase):
     """Internal way sweeps of a two-sided capture over one frozen area."""
 
     def test_global_repeat_masks_the_other_side_per_internal_sweep(self):
-        state = set_mode_routing(default_output_state(), "stereo", "A",
-                                 ["main_l", "main_r", "sub_l", "sub_r"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", ["main_l", "main_r", "sub_l", "sub_r"]), "stereo-sub")
         target = self.freeze(state, GLOBAL_BANK_ID, channels=4)
         roles = target["roles"]
         self.assertEqual(roles, ["main_l", "main_r", "sub_l", "sub_r"])
@@ -411,8 +409,7 @@ class SweepOutputMaskTests(TargetFixture, unittest.TestCase):
         self.assertEqual(target_output_mask(target, roles=roles), 0)
 
     def test_mono_roles_stay_audible_in_both_sweeps(self):
-        state = set_mode_routing(default_output_state(), "stereo", "A",
-                                 ["main_l", "main_r", "sub1", "off"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", ["main_l", "main_r", "sub1", "off"]), "stereo-sub")
         target = self.freeze(state, GLOBAL_BANK_ID, channels=4)
         roles = target["roles"]
         self.assertEqual(roles, ["main_l", "main_r", "sub1"])
@@ -424,8 +421,7 @@ class SweepOutputMaskTests(TargetFixture, unittest.TestCase):
         # A lone sub role is summed from both inputs (mono routing), even when
         # it is called sub_l: muting it during the right sweep would capture
         # silence where the routing still feeds it.
-        state = set_mode_routing(default_output_state(), "stereo", "A",
-                                 ["main_l", "main_r", "sub_l", "off"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", ["main_l", "main_r", "sub_l", "off"]), "stereo-sub")
         target = self.freeze(state, GLOBAL_BANK_ID, channels=4)
         roles = target["roles"]
         self.assertEqual(roles, ["main_l", "main_r", "sub_l"])

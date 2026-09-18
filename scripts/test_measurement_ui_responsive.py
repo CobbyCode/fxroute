@@ -453,7 +453,7 @@ def _run():
                 saved_summary.first.click()
             page.wait_for_selector("[data-measurement-toggle='area-mid']")
             area_badge = page.locator("[data-measurement-toggle='area-mid'] ~ .measurement-area-badge")
-            assert area_badge.inner_text() == "Left Mid"
+            assert area_badge.inner_text() == "Mid L"
             assert "is-stale" not in (area_badge.get_attribute("class") or "")
             assert page.locator("[data-measurement-toggle='legacy-global'] ~ .measurement-area-badge").count() == 0, (
                 "a legacy result without a target must not be labelled as an area")

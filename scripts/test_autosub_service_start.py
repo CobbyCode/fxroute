@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state import default_output_state, set_mode_routing, switch_mode
+from audio.output_state import default_output_state, set_crossover, set_mode_routing, switch_mode
 from audio.output_state_store import OutputStateStore, StateConflictError
 from dsp.manager import DSPManager
 from fastapi import HTTPException
@@ -112,10 +112,13 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(patcher.stop)
         return patcher
 
-    def seed(self, roles, *, mode="stereo", channels=None):
-        state = set_mode_routing(default_output_state(), mode, "dev", roles)
-        state = switch_mode(state, mode)
-        active = state["modes"][mode]
+    def seed(self, roles, *, mode="stereo-sub", channels=None):
+        from audio.output_state import set_crossover
+        crossover_enabled = mode == "crossover" or any(r.startswith(("left_", "right_")) for r in roles)
+        target = "stereo-sub"
+        state = set_mode_routing(set_crossover(default_output_state(), target, crossover_enabled), target, "dev", roles)
+        state = switch_mode(state, target)
+        active = state["modes"][target]
         active["bass_management"] = {"frequency_hz": 90, "main_highpass_enabled": False}
         for role, delay, level, polarity in (("sub_l", 3, -4, "invert"),
                                              ("sub_r", -7, -8, "normal"),
@@ -124,8 +127,10 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
             if role in active["processing"]:
                 active["processing"][role].update(
                     alignment_ms=delay, level_db=level, polarity=polarity)
-        if mode == "crossover":
+        if crossover_enabled:
             for role, processing in active["processing"].items():
+                if not role.startswith(("left_", "right_")):
+                    continue
                 if role.endswith("_low"):
                     processing["lowpass"] = {"family": "linkwitz-riley", "slope_db_oct": 24,
                                               "frequency_hz": 2000}
@@ -171,7 +176,7 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         job = response["job"]
         self.assertEqual(job["mode"], "subwoofer-2.1")
         self.assertEqual(job["output_state_context"], {
-            "mode": "stereo", "revision": 1, "output_key": "dev", "channels": 4,
+            "mode": "stereo-sub", "revision": 1, "output_key": "dev", "channels": 4,
             "optimizer_path": "single-sub", "sub_role_map": {"sub1": "sub_l"},
             "sub_mute_mask": 4})
         self.assertEqual(job["original_config_snapshot"]["subwoofer"], {
@@ -208,7 +213,7 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
                   mode="crossover")
         job = (await self.request())["job"]
         context = job["output_state_context"]
-        self.assertEqual(context["mode"], "crossover")
+        self.assertEqual(context["mode"], "stereo-sub")
         self.assertEqual(context["sub_role_map"], {"sub1": "sub_l", "sub2": "sub_r"})
         self.assertEqual(context["sub_mute_mask"], 48)
         self.assertEqual(job["scan_delays"]["left_sub"][4], 3)

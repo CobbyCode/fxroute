@@ -55,24 +55,24 @@ async function main() {
         referenceChannel: '2', referenceId: 'r', microphonePositionId: ' ',
     }), /microphone position/);
 
-    // Visibility follows the crossover catalog, never legacy mode strings.
+    // Visibility follows the crossover flag, never legacy mode strings.
     assert.equal(speakerModule.speakerAlignVisible(null), false);
     assert.equal(speakerModule.speakerAlignVisible({}), false);
     assert.equal(speakerModule.speakerAlignVisible({
         active_mode: 'stereo',
-        modes: { stereo: { topology: { way_count: 0 } }, crossover: { topology: { way_count: 2 } } },
+        modes: { stereo: { crossover_enabled: false, topology: { way_count: 0 } } },
     }), false);
     assert.equal(speakerModule.speakerAlignVisible({
-        active_mode: 'crossover',
-        modes: { crossover: { topology: { way_count: 1 } } },
+        active_mode: 'stereo',
+        modes: { stereo: { crossover_enabled: true, topology: { way_count: 1 } } },
     }), false);
     assert.equal(speakerModule.speakerAlignVisible({
-        active_mode: 'crossover',
-        modes: { crossover: { topology: { way_count: 2 } } },
+        active_mode: 'stereo-sub',
+        modes: { 'stereo-sub': { crossover_enabled: true, topology: { way_count: 2 } } },
     }), true);
     assert.equal(speakerModule.speakerAlignVisible({
-        active_mode: 'crossover',
-        modes: { crossover: { topology: { way_count: 4 } } },
+        active_mode: 'stereo',
+        modes: { stereo: { crossover_enabled: true, topology: { way_count: 4 } } },
     }), true);
 
     // Status text never renders [object Object] and never leaves placeholders.

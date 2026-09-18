@@ -14,68 +14,95 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_state import (
     default_output_state, referenced_presets, routing_for_device, select_bank,
-    set_mode_routing, switch_mode, validate_output_state,
+    set_crossover, set_mode_routing, switch_mode, validate_output_state,
 )
 from audio.output_state_store import OutputStateStore, StateConflictError
 
-STEREO = ["main_l", "main_r", "sub1", "off"]
-CROSSOVER = ["left_low", "left_high", "right_low", "right_high"]
+STEREO_SUB = ["main_l", "main_r", "sub1", "off"]
+WAYS = ["left_low", "left_high", "right_low", "right_high"]
 USB = "alsa_output.usb-Test-00.multichannel-output"
 PRO = "alsa_output.usb-Test-00.pro-output-0"
 
 
+def crossover_state(state, device, assignments):
+    state = set_crossover(state, "stereo-sub", True)
+    return set_mode_routing(state, "stereo-sub", device, assignments)
+
+
 class OutputStateTests(unittest.TestCase):
     def test_mode_roundtrip_preserves_complete_independent_settings(self):
-        state = set_mode_routing(default_output_state(), "stereo", USB, STEREO)
-        stereo = state["modes"]["stereo"]
-        stereo["banks"]["global"] = {"preset": "Room B", "preset_a": "Room A", "preset_b": "Room B"}
-        stereo["extras"] = {"headroom": {"enabled": True, "params": {"gainDb": -6}}}
-        stereo["processing"]["sub1"]["alignment_ms"] = -4
-        state = select_bank(state, "stereo", USB, 4, "sub1")
-        saved_stereo = copy.deepcopy(state["modes"]["stereo"])
-        state = set_mode_routing(state, "crossover", USB, CROSSOVER)
-        state = switch_mode(state, "crossover")
-        state["modes"]["crossover"]["banks"]["left_low"]["preset"] = "Low IR"
-        state = select_bank(state, "crossover", USB, 4, "left_low")
-        state = switch_mode(state, "stereo")
-        self.assertEqual(state["modes"]["stereo"], saved_stereo)
-        self.assertEqual(routing_for_device(state, "stereo", PRO), STEREO)
-        self.assertEqual(routing_for_device(state, "crossover", PRO), CROSSOVER)
-        self.assertEqual(state["modes"]["crossover"]["selected_bank"], "left_low")
-        self.assertEqual(state["modes"]["crossover"]["banks"]["global"]["preset"], "Neutral")
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", USB, STEREO_SUB),
+                            "stereo-sub")
+        stereo_sub = state["modes"]["stereo-sub"]
+        stereo_sub["banks"]["global"] = {"preset": "Room B", "preset_a": "Room A", "preset_b": "Room B"}
+        stereo_sub["extras"] = {"headroom": {"enabled": True, "params": {"gainDb": -6}}}
+        stereo_sub["processing"]["sub1"]["alignment_ms"] = -4
+        state = select_bank(state, "stereo-sub", USB, 4, "sub1")
+        saved_sub = copy.deepcopy(state["modes"]["stereo-sub"])
+        state = crossover_state(state, USB, WAYS)
+        state["modes"]["stereo-sub"]["banks"]["left_low"]["preset"] = "Low IR"
+        state = select_bank(state, "stereo-sub", USB, 4, "left_low")
+        state = set_crossover(state, "stereo-sub", False)
+        self.assertEqual(routing_for_device(state, "stereo-sub", USB),
+                         ["main_l", "off", "main_r", "off"])
+        state = set_mode_routing(state, "stereo-sub", USB, STEREO_SUB)
+        state["modes"]["stereo-sub"]["banks"]["global"] = saved_sub["banks"]["global"]
+        state["modes"]["stereo-sub"]["extras"] = saved_sub["extras"]
+        state["modes"]["stereo-sub"]["processing"]["sub1"] = saved_sub["processing"]["sub1"]
+        state = select_bank(state, "stereo-sub", USB, 4, "sub1")
+        self.assertEqual(state["modes"]["stereo-sub"]["banks"]["global"], saved_sub["banks"]["global"])
+        # Stereo stays an independent full-band configuration without subs.
+        plain = set_mode_routing(default_output_state(), "stereo", PRO, ["main_l", "main_r"])
+        self.assertEqual(routing_for_device(plain, "stereo", PRO), ["main_l", "main_r"])
+        self.assertEqual(state["modes"]["stereo-sub"]["selected_bank"], "sub1")
 
     def test_routing_edits_retain_dormant_banks_and_smaller_tier_assignments(self):
-        state = set_mode_routing(default_output_state(), "stereo", "A", STEREO + ["sub2", "off"])
-        state["modes"]["stereo"]["banks"]["sub2"]["preset"] = "Dormant IR"
-        state = select_bank(state, "stereo", "A", 6, "sub2")
-        state = set_mode_routing(state, "stereo", "A", ["main_r", "main_l", "off", "off"])
-        self.assertEqual(routing_for_device(state, "stereo", "A"), ["main_r", "main_l", "off", "off", "sub2", "off"])
-        self.assertEqual(state["modes"]["stereo"]["selected_bank"], "global")
-        self.assertEqual(state["modes"]["stereo"]["banks"]["sub2"]["preset"], "Dormant IR")
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A",
+                                             STEREO_SUB + ["sub2", "off"]), "stereo-sub")
+        state["modes"]["stereo-sub"]["banks"]["sub2"]["preset"] = "Dormant IR"
+        state = select_bank(state, "stereo-sub", "A", 6, "sub2")
+        state = set_mode_routing(state, "stereo-sub", "A", ["main_r", "main_l", "off", "off"])
+        self.assertEqual(routing_for_device(state, "stereo-sub", "A"),
+                         ["main_r", "main_l", "off", "off", "sub2", "off"])
+        self.assertEqual(state["modes"]["stereo-sub"]["selected_bank"], "global")
+        self.assertEqual(state["modes"]["stereo-sub"]["banks"]["sub2"]["preset"], "Dormant IR")
         self.assertIn("Dormant IR", referenced_presets(state))
         with self.assertRaises(ValueError):
-            select_bank(state, "stereo", "A", 4, "sub2")
+            select_bank(state, "stereo-sub", "A", 4, "sub2")
 
     def test_default_stereo_is_not_an_implicit_sub_assignment(self):
         state = default_output_state()
         self.assertEqual(routing_for_device(state, "stereo", "new"), ["main_l", "main_r"])
-        self.assertEqual(routing_for_device(state, "crossover", "new"), [])
+        self.assertEqual(routing_for_device(state, "stereo-sub", "new"), ["main_l", "main_r"])
+
+    def test_crossover_toggle_keeps_one_routing_and_dormant_banks(self):
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", STEREO_SUB),
+                            "stereo-sub")
+        state = set_crossover(state, "stereo-sub", True)
+        self.assertEqual(routing_for_device(state, "stereo-sub", "A"),
+                         ["left_low", "right_low", "sub1", "off"])
+        state = set_mode_routing(state, "stereo-sub", "A", WAYS + ["sub1", "off"])
+        state["modes"]["stereo-sub"]["processing"]["left_high"]["level_db"] = -8
+        state = set_crossover(state, "stereo-sub", False)
+        self.assertEqual(routing_for_device(state, "stereo-sub", "A"),
+                         ["main_l", "off", "main_r", "off", "sub1", "off"])
+        self.assertEqual(state["modes"]["stereo-sub"]["processing"]["left_high"]["level_db"], -8)
 
     def test_mutations_and_validation_return_detached_values(self):
         original = default_output_state()
-        changed = set_mode_routing(original, "crossover", "A", CROSSOVER)
-        changed["modes"]["crossover"]["banks"]["global"]["preset"] = "Other"
-        self.assertEqual(original["modes"]["crossover"]["banks"]["global"]["preset"], "Neutral")
+        changed = crossover_state(original, "A", WAYS)
+        changed["modes"]["stereo-sub"]["banks"]["global"]["preset"] = "Other"
+        self.assertEqual(original["modes"]["stereo-sub"]["banks"]["global"]["preset"], "Neutral")
         validated = validate_output_state(changed)
-        validated["modes"]["crossover"]["routing"]["A"][0] = "off"
-        self.assertEqual(changed["modes"]["crossover"]["routing"]["A"][0], "left_low")
+        validated["modes"]["stereo-sub"]["routing"]["A"][0] = "off"
+        self.assertEqual(changed["modes"]["stereo-sub"]["routing"]["A"][0], "left_low")
 
     def test_filter_combinations_and_hidden_mode_data_are_validated(self):
-        state = set_mode_routing(default_output_state(), "crossover", "A", CROSSOVER)
+        state = crossover_state(default_output_state(), "A", WAYS)
         for family, slopes in (("linkwitz-riley", range(12, 73, 12)),
                                ("butterworth", range(6, 73, 6)), ("bessel", range(6, 73, 6))):
             for slope in slopes:
-                state["modes"]["crossover"]["processing"]["left_low"]["lowpass"] = {
+                state["modes"]["stereo-sub"]["processing"]["left_low"]["lowpass"] = {
                     "family": family, "slope_db_oct": slope, "frequency_hz": 2000}
                 validate_output_state(state)
         invalid_filters = [
@@ -87,18 +114,18 @@ class OutputStateTests(unittest.TestCase):
         ]
         for definition in invalid_filters:
             with self.subTest(definition=definition), self.assertRaises(ValueError):
-                state["modes"]["crossover"]["processing"]["left_low"]["lowpass"] = definition
+                state["modes"]["stereo-sub"]["processing"]["left_low"]["lowpass"] = definition
                 validate_output_state(state)
 
     def test_malformed_state_never_silently_discards_settings(self):
-        base = set_mode_routing(default_output_state(), "crossover", "A", CROSSOVER)
+        base = crossover_state(default_output_state(), "A", WAYS)
         for path, value in (
-            (("version",), 2), (("revision",), True), (("active_mode",), "surround"),
+            (("version",), 3), (("revision",), True), (("active_mode",), "surround"),
             (("modes", "stereo", "selected_bank"), "missing"),
             (("modes", "stereo", "banks", "global", "typo"), 1),
-            (("modes", "crossover", "processing", "left_low", "level_db"), float("inf")),
-            (("modes", "crossover", "processing", "left_low", "alignment_ms"), 41),
-            (("modes", "crossover", "processing", "left_low", "polarity"), "bad"),
+            (("modes", "stereo-sub", "processing", "left_low", "level_db"), float("inf")),
+            (("modes", "stereo-sub", "processing", "left_low", "alignment_ms"), 41),
+            (("modes", "stereo-sub", "processing", "left_low", "polarity"), "bad"),
             (("modes", "stereo", "extras", "bad"), float("nan")),
         ):
             state = copy.deepcopy(base)
@@ -108,7 +135,7 @@ class OutputStateTests(unittest.TestCase):
             owner[path[-1]] = value
             with self.subTest(path=path), self.assertRaises(ValueError):
                 validate_output_state(state)
-        del base["modes"]["crossover"]["banks"]["left_high"]
+        del base["modes"]["stereo-sub"]["banks"]["left_high"]
         with self.assertRaises(ValueError):
             validate_output_state(base)
 
@@ -124,7 +151,7 @@ class OutputStateStoreTests(unittest.TestCase):
         initial = self.store.load()
         self.assertFalse(self.path.exists())
         stale = OutputStateStore(self.path).load()
-        candidate = set_mode_routing(initial, "stereo", "A", STEREO)
+        candidate = set_mode_routing(initial, "stereo-sub", "A", STEREO_SUB)
         result = self.store.commit(candidate, expected_revision=0)
         self.assertEqual(result["revision"], 1)
         self.assertEqual(OutputStateStore(self.path).load(), result)
@@ -132,7 +159,7 @@ class OutputStateStoreTests(unittest.TestCase):
         with self.assertRaises(StateConflictError):
             OutputStateStore(self.path).commit(stale, expected_revision=0)
         self.assertEqual(self.path.read_bytes(), committed)
-        result["active_mode"] = "crossover"
+        result = switch_mode(result, "stereo-sub")
         self.assertEqual(self.store.commit(result, expected_revision=1)["revision"], 2)
 
     def test_corrupt_or_future_documents_are_not_overwritten(self):
@@ -147,7 +174,7 @@ class OutputStateStoreTests(unittest.TestCase):
     def test_failed_atomic_replace_keeps_previous_document(self):
         committed = self.store.commit(default_output_state(), expected_revision=0)
         before = self.path.read_bytes()
-        committed["active_mode"] = "crossover"
+        committed = switch_mode(committed, "stereo-sub")
         with patch("common.atomic_write.os.replace", side_effect=OSError("replace failed")):
             with self.assertRaises(OSError):
                 self.store.commit(committed, expected_revision=1)

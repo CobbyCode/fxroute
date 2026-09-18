@@ -119,6 +119,10 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         function isSubwooferModeName(mode) {
             return ['subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'].includes(mode);
         }
+        function routedSubwooferView() {
+            const mode = state.settings?.audioOutputs?.output_mode?.mode || 'stereo';
+            return { mode, roles: [] };
+        }
         function setPendingSave(value) { _subwooferPendingSave = value; }
         function normalizeMeasurementInputChannelSelections() {}
         function getMeasurementReferenceWarning() { return false; }
@@ -238,17 +242,17 @@ async function main() {
     // Saved results carry the frozen area they were captured in; legacy
     // results without a target stay unlabelled.
     const badgeTarget = {
-        schema: 'fxroute.measurement-target', version: 1, mode: 'crossover',
+        schema: 'fxroute.measurement-target', version: 1, mode: 'stereo-sub',
         bank_id: 'left_low', legacy: false,
     };
     const badge = committed.context.measurementAreaBadge({ measurement_target: badgeTarget });
     assert.deepEqual({ ...badge }, {
-        label: 'Left Low', mode: 'crossover', stale: false,
-        title: 'Left Low · Crossover · measured area only',
+        label: 'Low L', mode: 'stereo-sub', stale: false,
+        title: 'Low L · Stereo + Sub · measured area only',
     });
     assert.equal(
         committed.context.measurementAreaBadge({ measurement_target: { ...badgeTarget, bank_id: 'global' } }).title,
-        'Global · Crossover · measured whole system',
+        'Global · Stereo + Sub · measured whole system',
     );
     assert.deepEqual(
         committed.context.measurementAreaBadge({ measurement_target: { legacy: true } }), null,

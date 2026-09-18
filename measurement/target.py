@@ -90,7 +90,8 @@ def freeze_measurement_target(
     _bounded_int(channels, "Measurement channel count", MAX_CHANNELS)
     _bounded_int(sample_rate_hz, "Measurement sample rate", FXROUTE_MAX_PROCESSING_RATE)
     fingerprint = _fingerprint_token(fingerprint)
-    topology = derive_topology(mode, routing_for_device(validated, mode, output_key), channels=channels)
+    topology = derive_topology(mode, routing_for_device(validated, mode, output_key), channels=channels,
+                               crossover_enabled=validated["modes"][mode]["crossover_enabled"])
     topology.require_activatable()
     if bank_id != GLOBAL_BANK_ID and bank_id not in topology.roles:
         raise ValueError(f"Bank {bank_id} is not an active role on the selected outputs")

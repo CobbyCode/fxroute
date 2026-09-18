@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from audio.output_service import OutputService, OutputServiceDeps  # noqa: E402
-from audio.output_state import default_output_state, set_mode_routing  # noqa: E402
+from audio.output_state import switch_mode, default_output_state, set_mode_routing  # noqa: E402
 from audio.output_state_store import OutputStateStore  # noqa: E402
 from dsp.manager import DSPManager  # noqa: E402
 
@@ -242,9 +242,8 @@ class ReleaseAdapterRenderTests(unittest.IsolatedAsyncioTestCase):
             store=self.store, preset_loader=self.manager.preset_store.read,
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1"])
-        state["modes"]["stereo"]["processing"]["sub1"].update(
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1"]), "stereo-sub")
+        state["modes"]["stereo-sub"]["processing"]["sub1"].update(
             alignment_ms=2.0, level_db=-3.0)
         self.start = self.service.commit(state, expected_revision=0)
         self.targets = []
@@ -285,7 +284,7 @@ class ReleaseAdapterRenderTests(unittest.IsolatedAsyncioTestCase):
         adapter = self.build_adapter()
         first = await adapter(RESTORE_RATE)
         winner = self.service.load()
-        winner["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 9.0
+        winner["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 9.0
         committed = self.service.commit(winner, expected_revision=winner["revision"])
         second = await adapter(RESTORE_RATE)
         self.assertEqual(second["revision"], committed["revision"])
@@ -433,8 +432,7 @@ class ReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
             store=self.store, preset_loader=self.manager.preset_store.read,
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1"]), "stereo-sub")
         self.service.commit(state, expected_revision=0)
         self.targets = []
 

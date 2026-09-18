@@ -145,8 +145,7 @@ class ReleaseAdapterWiringTests(unittest.IsolatedAsyncioTestCase):
             store=self.store, preset_loader=self.manager.preset_store.read,
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1"])
+        state = set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1"])
         self.service.commit(state, expected_revision=0)
         self.runtime = FakeRuntime()
         self.overview = overview_for()

@@ -37,8 +37,8 @@ def _input_routes(role: str, sub_mode: str) -> list[dict]:
     return [{"input": 0 if left else 1, "gain": 1.0}]
 
 
-def _crossover_filters(mode: str, role: str, processing: dict, bass: dict, has_subs: bool) -> list[dict]:
-    if mode == "crossover" and role not in SUB_ROLES:
+def _crossover_filters(crossover_enabled: bool, role: str, processing: dict, bass: dict, has_subs: bool) -> list[dict]:
+    if crossover_enabled and role not in SUB_ROLES:
         way = role.split("_", 1)[1]
         required = ("lowpass",) if way == "low" else ("highpass",) if way == "high" else ("highpass", "lowpass")
         if any(processing[kind] is None for kind in required):
@@ -60,7 +60,7 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
     mode = state["active_mode"]
     config = state["modes"][mode]
     assignments = routing_for_device(state, mode, output_key)
-    topology = derive_topology(mode, assignments, channels=channels)
+    topology = derive_topology(mode, assignments, channels=channels, crossover_enabled=config["crossover_enabled"])
     topology.require_activatable()
     processing = config["processing"]
     delay_offset = max(0.0, -min(processing[role]["alignment_ms"] for role in topology.roles))
@@ -69,7 +69,7 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
     outputs = []
     for role in topology.roles:
         settings = processing[role]
-        filters = _crossover_filters(mode, role, settings, config["bass_management"], bool(topology.sub_roles))
+        filters = _crossover_filters(config["crossover_enabled"], role, settings, config["bass_management"], bool(topology.sub_roles))
         if any(item["frequency_hz"] >= sample_rate_hz / 2 for item in filters):
             raise ValueError(f"Crossover frequency for {role} must be below Nyquist")
         outputs.append({
@@ -87,6 +87,7 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
         "schema": "fxroute.dsp.processing-plan", "version": 1,
         "mode": mode, "device_key": device_key(output_key), "sample_rate_hz": sample_rate_hz,
         "sub_mode": topology.sub_mode, "way_count": topology.way_count,
+        "crossover_enabled": config["crossover_enabled"],
         "order": ["global", "matrix", "crossover", "area-bank", "output-trim", "guard-mute"],
         "global": global_bank, "outputs": outputs, "physical_routes": edges,
     }

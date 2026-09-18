@@ -361,6 +361,7 @@ from audio.output_state import (
     select_bank,
     set_bank_preset,
     set_bass_management,
+    set_crossover,
     set_mode_extras,
     set_mode_routing,
     set_output_processing,
@@ -368,7 +369,7 @@ from audio.output_state import (
     validate_output_state,
 )
 from audio.output_state_store import OutputStateStore, StateConflictError
-from audio.output_topology import derive_topology
+from audio.output_topology import MODES, SUB_ROLES, derive_topology
 from dsp.banks import BankState
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
@@ -4036,7 +4037,7 @@ def _verify_measurement_commit(measurement_id: str, binding: dict) -> None:
 
 def _require_state_mode(value) -> str:
     mode = str(value or "").strip()
-    if mode not in {"stereo", "crossover"}:
+    if mode not in MODES:
         raise HTTPException(status_code=400, detail=f"Unknown output mode: {value}")
     return mode
 
@@ -4076,6 +4077,27 @@ def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: i
         args = strict({"mode"})
         mode = _require_state_mode(args.get("mode"))
         return lambda state: switch_mode(state, mode)
+    if kind == "set_crossover":
+        args = strict({"mode", "enabled"})
+        mode = _require_state_mode(args.get("mode"))
+        return lambda state: set_crossover(state, mode, args.get("enabled"))
+    if kind == "set_subwoofers":
+        args = strict({"mode", "frequency_hz", "main_highpass_enabled", "processing"})
+        mode = _require_state_mode(args.get("mode"))
+
+        def update_subwoofers(state):
+            topology = _output_state_topology(state, mode, output_key, channels)
+            processing = args.get("processing")
+            if not isinstance(processing, dict) or set(processing) != set(topology["sub_roles"]):
+                raise ValueError("Sub settings must describe exactly the routed sub roles")
+            result = set_bass_management(state, mode, frequency_hz=args.get("frequency_hz"),
+                                         main_highpass_enabled=args.get("main_highpass_enabled"))
+            for role, settings in processing.items():
+                if not isinstance(settings, dict) or set(settings) != {"level_db", "alignment_ms", "polarity"}:
+                    raise ValueError("Sub settings require level, alignment and polarity")
+                result = set_output_processing(result, mode, role, **settings)
+            return result
+        return update_subwoofers
     if kind == "select_bank":
         args = strict({"mode", "bank_id"})
         if channels is None:
@@ -4124,7 +4146,7 @@ def _live_topology_key(state: dict, *, output_key: str, channels: int | None,
     """
     mode = state.get("active_mode") if isinstance(state, dict) else None
     assignments = routing_for_device(state, mode, output_key) if mode else []
-    return (mode, tuple(assignments[:channels or 0]), channels, rate)
+    return (mode, state["modes"][mode]["crossover_enabled"], tuple(assignments[:channels or 0]), channels, rate)
 
 
 def _plan_transition_guard(old_layout, new_layout, previous_gain: float) -> float:
@@ -4319,8 +4341,9 @@ async def _sync_plan_runtime(target, *, reason: str = "output-state-transition")
 
 
 def _output_state_topology(state: dict, mode: str, output_key: str, channels: int | None) -> dict:
-    topology = derive_topology(mode, routing_for_device(state, mode, output_key), channels=channels)
-    return {"mode": topology.mode, "roles": list(topology.roles),
+    topology = derive_topology(mode, routing_for_device(state, mode, output_key), channels=channels,
+                               crossover_enabled=state["modes"][mode]["crossover_enabled"])
+    return {"mode": topology.mode, "crossover_enabled": topology.crossover_enabled, "roles": list(topology.roles),
             "sub_roles": list(topology.sub_roles), "sub_mode": topology.sub_mode,
             "left_ways": list(topology.left_ways), "right_ways": list(topology.right_ways),
             "way_count": topology.way_count, "issues": list(topology.issues)}
@@ -4342,6 +4365,7 @@ async def get_audio_output_state():
             active_side = BankState.from_dict(bank).active_side
             banks[bank_id] = {**bank, "active_side": active_side}
         modes[mode] = {
+            "crossover_enabled": config["crossover_enabled"],
             "selected_bank": config["selected_bank"],
             "banks": banks,
             "processing": config["processing"],
@@ -4357,12 +4381,13 @@ async def get_audio_output_state():
             "key": output_key,
             "channels": channels,
             "routing": {mode: routing_for_device(state, mode, output_key)
-                        for mode in ("stereo", "crossover")},
+                        for mode in MODES},
         },
         "modes": modes,
         "capabilities": {
-            "modes": ["stereo", "crossover"],
-            "roles": {mode: list(roles_for_mode(mode)) for mode in ("stereo", "crossover")},
+            "modes": list(MODES),
+            "roles": {mode: list(roles_for_mode(mode, crossover_enabled=state["modes"][mode]["crossover_enabled"]))
+                      for mode in MODES},
             "filter_families": {family: list(slopes) for family, slopes in FILTER_SLOPES.items()},
             "max_slope_db_oct": 72,
             "max_biquads_per_output": DSPManager.OUTPUT_FILTER_MAX_BIQUADS,
@@ -4389,6 +4414,10 @@ async def apply_audio_output_state(request: Request):
         state = service.ensure_state()
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
+    if state["revision"] != expected_revision:
+        raise HTTPException(status_code=409, detail={
+            "code": "revision-conflict", "message": "Output state changed; refresh before applying",
+            "revision": state["revision"]})
     overview = await asyncio.to_thread(get_audio_output_overview)
     output_key, channels = _output_state_device(overview)
     mutate = _build_output_state_mutation(
@@ -4627,7 +4656,12 @@ async def get_audio_output_state_crossover_response():
         rate = 48000
     mode = state["active_mode"]
     ways = {}
+    overview = await asyncio.to_thread(get_audio_output_overview)
+    output_key, channels = _output_state_device(overview)
+    topology = _output_state_topology(state, mode, output_key, channels)
     for role, settings in state["modes"][mode]["processing"].items():
+        if not topology["crossover_enabled"] or role not in topology["roles"]:
+            continue
         if not (role.startswith("left_") or role.startswith("right_")):
             continue
         points = _crossover_way_points(role, settings, rate)
@@ -4637,6 +4671,7 @@ async def get_audio_output_state_crossover_response():
             "points": points,
         }
     return {"status": "ok", "revision": state["revision"], "mode": mode,
+            "crossover_enabled": topology["crossover_enabled"],
             "sample_rate_hz": rate, "ways": ways}
 
 

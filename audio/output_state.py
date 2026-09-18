@@ -11,7 +11,7 @@ from audio.output_topology import MAIN_ROLES, MODES, derive_topology, roles_for_
 from dsp.banks import BankState
 
 SCHEMA = "fxroute.output-state"
-VERSION = 1
+VERSION = 2
 FILTER_SLOPES = {
     "linkwitz-riley": tuple(range(12, 73, 12)),
     "butterworth": tuple(range(6, 73, 6)),
@@ -27,9 +27,9 @@ def default_processing() -> dict:
 def default_output_state() -> dict:
     modes = {}
     for mode in MODES:
-        roles = MAIN_ROLES if mode == "stereo" else ()
+        roles = MAIN_ROLES
         modes[mode] = {
-            "routing": {}, "selected_bank": "global",
+            "routing": {}, "crossover_enabled": False, "selected_bank": "global",
             "banks": {role: BankState().to_dict() for role in ("global", *roles)},
             "processing": {role: default_processing() for role in roles},
             "bass_management": {"frequency_hz": 80, "main_highpass_enabled": True},
@@ -112,8 +112,11 @@ def validate_output_state(payload: object) -> dict:
     if not isinstance(payload["legacy"], dict):
         raise ValueError("Legacy snapshot must be an object")
     for mode, config in payload["modes"].items():
-        _object_fields(config, {"routing", "selected_bank", "banks", "processing", "bass_management", "extras"}, "Mode state")
-        allowed = roles_for_mode(mode)
+        _object_fields(config, {"routing", "crossover_enabled", "selected_bank", "banks", "processing", "bass_management", "extras"}, "Mode state")
+        enabled = config["crossover_enabled"]
+        roles_for_mode(mode, crossover_enabled=enabled)
+        # Dormant banks retain their filters when crossover is toggled.
+        allowed = (*roles_for_mode(mode), *roles_for_mode(mode, crossover_enabled=True))
         banks, processing, routing = config["banks"], config["processing"], config["routing"]
         if not isinstance(banks, dict) or "global" not in banks:
             raise ValueError("Every mode requires a Global bank")
@@ -133,7 +136,7 @@ def validate_output_state(payload: object) -> dict:
         for key, assignments in routing.items():
             if _device_identity(key) != key:
                 raise ValueError("Stored routing requires normalized device keys")
-            roles = validate_assignments(mode, assignments)
+            roles = validate_assignments(mode, assignments, crossover_enabled=enabled)
             if any(role != "off" and role not in banks for role in roles):
                 raise ValueError("Every assigned role requires an area bank")
         bass = config["bass_management"]
@@ -148,14 +151,15 @@ def validate_output_state(payload: object) -> dict:
 
 def routing_for_device(state: dict, mode: str, output_key: str) -> list[str]:
     roles_for_mode(mode)
-    fallback = list(MAIN_ROLES) if mode == "stereo" else []
+    fallback = [] if state["modes"][mode]["crossover_enabled"] else list(MAIN_ROLES)
     return list(state["modes"][mode]["routing"].get(_device_identity(output_key), fallback))
 
 
 def set_mode_routing(state: dict, mode: str, output_key: str, assignments: object) -> dict:
     """Update visible ports while retaining assignments in a higher hardware tier."""
     result = validate_output_state(state)
-    values = list(validate_assignments(mode, assignments))
+    config = result["modes"][mode]
+    values = list(validate_assignments(mode, assignments, crossover_enabled=config["crossover_enabled"]))
     count = len(values)
     key = _device_identity(output_key)
     config = result["modes"][mode]
@@ -165,7 +169,7 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
         if role != "off":
             config["banks"].setdefault(role, BankState().to_dict())
             config["processing"].setdefault(role, default_processing())
-    active = derive_topology(mode, values, channels=count).bank_ids
+    active = derive_topology(mode, values, channels=count, crossover_enabled=config["crossover_enabled"]).bank_ids
     if config["selected_bank"] not in active:
         config["selected_bank"] = "global"
     return validate_output_state(result)
@@ -176,6 +180,32 @@ def switch_mode(state: dict, mode: str) -> dict:
     result = validate_output_state(state)
     result["active_mode"] = mode
     return result
+
+
+def set_crossover(state: dict, mode: str, enabled: bool) -> dict:
+    """Change the role domain in the same routing, retaining dormant DSP banks.
+
+    Main ports become Low ports on enable. On disable only Low ports become
+    Main; higher ways turn Off. No second crossover routing is stored.
+    """
+    roles_for_mode(mode, crossover_enabled=enabled)
+    result = validate_output_state(state)
+    config = result["modes"][mode]
+    if config["crossover_enabled"] == enabled:
+        return result
+    mapping = {"main_l": "left_low", "main_r": "right_low"} if enabled else {
+        "left_low": "main_l", "right_low": "main_r"}
+    allowed = (*roles_for_mode(mode, crossover_enabled=enabled), "off")
+    config["crossover_enabled"] = enabled
+    for key, assignments in config["routing"].items():
+        config["routing"][key] = [mapping.get(role, role if role in allowed else "off") for role in assignments]
+        for role in config["routing"][key]:
+            if role != "off":
+                config["banks"].setdefault(role, BankState().to_dict())
+                config["processing"].setdefault(role, default_processing())
+    if config["selected_bank"] not in ("global", *allowed):
+        config["selected_bank"] = "global"
+    return validate_output_state(result)
 
 
 _UNCHANGED: object = object()
@@ -266,7 +296,8 @@ def set_mode_extras(state: dict, mode: str, extras: dict) -> dict:
 
 def select_bank(state: dict, mode: str, output_key: str, channels: int, bank_id: str) -> dict:
     result = validate_output_state(state)
-    active = derive_topology(mode, routing_for_device(result, mode, output_key), channels=channels)
+    active = derive_topology(mode, routing_for_device(result, mode, output_key), channels=channels,
+                             crossover_enabled=result["modes"][mode]["crossover_enabled"])
     if bank_id not in active.bank_ids:
         raise ValueError("Bank is not configured on the available hardware outputs")
     result["modes"][mode]["selected_bank"] = bank_id

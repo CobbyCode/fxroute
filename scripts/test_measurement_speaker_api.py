@@ -163,7 +163,7 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
         import tempfile
         import numpy as np
         from audio.output_service import OutputService, OutputServiceDeps
-        from audio.output_state import default_output_state, set_mode_routing, switch_mode
+        from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
         from dsp.manager import DSPManager
         from audio.output_state_store import OutputStateStore
         from measurement.target import REFERENCE_TAP_INGRESS
@@ -180,13 +180,13 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
             store=store, preset_loader=manager.preset_store.read,
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: False))
-        state = default_output_state()
+        state = set_crossover(default_output_state(), "stereo-sub", True)
         state = set_mode_routing(
-            state, "crossover", "dev",
+            state, "stereo-sub", "dev",
             [f"{side}_{way}" for side in ("right", "left") for way in ("high", "low")]
             + ["sub1", "left_low"])
-        state = switch_mode(state, "crossover")
-        processing = state["modes"]["crossover"]["processing"]
+        state = switch_mode(state, "stereo-sub")
+        processing = state["modes"]["stereo-sub"]["processing"]
         for side in ("left", "right"):
             processing[f"{side}_low"]["lowpass"] = {
                 "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000,

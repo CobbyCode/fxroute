@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-from audio.output_state import set_bank_preset, set_mode_routing, set_output_processing
+from audio.output_state import switch_mode, set_bank_preset, set_mode_routing, set_output_processing
 from audio.output_state_store import OutputStateStore
 from dsp.manager import DSPManager
 from dsp.runtime import CommandResult, DSPRuntime, DSPRuntimeConfig, PlannedSyncTarget
@@ -52,7 +52,7 @@ def make_service(directory, manager):
 
 def seed_sub_state(service):
     return service.apply(
-        lambda state: set_mode_routing(state, "stereo", "A", ["main_l", "main_r", "sub1", "sub1"]),
+        lambda state: switch_mode(set_mode_routing(state, "stereo-sub", "A", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub"),
         expected_revision=0)
 
 
@@ -190,8 +190,8 @@ class SyncRenderedTests(unittest.TestCase):
         async def run():
             runtime = self.make_runtime()
             leveled = set_bank_preset(
-                set_output_processing(self.state, "stereo", "sub1", level_db=-4.0),
-                "stereo", "sub1", preset="Room")
+                set_output_processing(self.state, "stereo-sub", "sub1", level_db=-4.0),
+                "stereo-sub", "sub1", preset="Room")
             new_target = target_for(self.service, self.manager, leveled, fingerprint="fp-new")
             old_target = target_for(self.service, self.manager, self.state, fingerprint="fp-old")
             await runtime.sync_rendered(old_target, initial_output_gain_db=0.0)
@@ -262,7 +262,7 @@ class ApplyLifecycleTests(unittest.TestCase):
         with lifecycle_context(self.service, self.manager, self.runtime):
             result = asyncio.run(main.apply_audio_output_state(FakeRequest({
                 "expected_revision": 1,
-                "mutation": {"kind": "set_bank_preset", "mode": "stereo",
+                "mutation": {"kind": "set_bank_preset", "mode": "stereo-sub",
                              "bank_id": "sub1", "preset": "Room"},
             })))
         self.assertEqual(result["revision"], 2)
@@ -282,12 +282,12 @@ class ApplyLifecycleTests(unittest.TestCase):
             with self.assertRaises(main.HTTPException) as ctx:
                 asyncio.run(main.apply_audio_output_state(FakeRequest({
                     "expected_revision": 1,
-                    "mutation": {"kind": "set_bank_preset", "mode": "stereo",
+                    "mutation": {"kind": "set_bank_preset", "mode": "stereo-sub",
                                  "bank_id": "sub1", "preset": "Room"},
                 })))
         self.assertEqual(ctx.exception.status_code, 500)
         self.assertEqual(self.service.load()["revision"], 3)
-        self.assertEqual(self.service.load()["modes"]["stereo"]["banks"]["sub1"]["preset"], "Neutral")
+        self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]["preset"], "Neutral")
         self.runtime.sync_rendered.assert_awaited_once()
         rollback = self.runtime.sync_rendered.await_args.args[0]
         self.assertEqual(rollback.config.plan_fingerprint,
@@ -298,7 +298,7 @@ class ApplyLifecycleTests(unittest.TestCase):
         with lifecycle_context(self.service, self.manager, self.runtime):
             result = asyncio.run(main.apply_audio_output_state(FakeRequest({
                 "expected_revision": 1,
-                "mutation": {"kind": "select_bank", "mode": "stereo", "bank_id": "sub1"},
+                "mutation": {"kind": "select_bank", "mode": "stereo-sub", "bank_id": "sub1"},
             })))
         self.assertEqual(result["revision"], 2)
         self.assertFalse(result["live_applied"])

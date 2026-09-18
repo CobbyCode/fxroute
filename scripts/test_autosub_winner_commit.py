@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from audio.output_service import OutputService, OutputServiceDeps  # noqa: E402
-from audio.output_state import default_output_state, set_mode_routing  # noqa: E402
+from audio.output_state import switch_mode, default_output_state, set_mode_routing  # noqa: E402
 from audio.output_state_store import OutputStateStore, StateConflictError  # noqa: E402
 from dsp.manager import DSPManager  # noqa: E402
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget  # noqa: E402
@@ -99,8 +99,7 @@ class CommitStagedTests(unittest.IsolatedAsyncioTestCase):
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
         self.service.manager = self.manager
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1", "sub2"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub2"]), "stereo-sub")
         self.start = self.store.commit(state, expected_revision=0)
         self.hardware = HardwareBoundary(self.service, None)
         self.hardware.target = self.target_for(self.start)
@@ -133,7 +132,7 @@ class CommitStagedTests(unittest.IsolatedAsyncioTestCase):
         committed = await self.owner.commit_staged()
         self.assertEqual(committed["revision"], self.start["revision"] + 1)
         self.assertEqual(
-            committed["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"], 4.0)
+            committed["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"], 4.0)
         self.assertEqual(self.service.load(), committed)
         self.assertTrue(self.owner.committed)
 
@@ -178,7 +177,7 @@ class CommitStagedTests(unittest.IsolatedAsyncioTestCase):
     async def test_commit_staged_rejects_revision_drift(self):
         await self.staged()
         drifted = self.service.load()
-        drifted["modes"]["stereo"]["processing"]["sub1"]["alignment_ms"] = 9.0
+        drifted["modes"]["stereo-sub"]["processing"]["sub1"]["alignment_ms"] = 9.0
         self.service.commit(drifted, expected_revision=drifted["revision"])
         with self.assertRaises(StateConflictError):
             await self.owner.commit_staged()
@@ -255,7 +254,7 @@ class CommitStagedTests(unittest.IsolatedAsyncioTestCase):
         await self.staged()
         committed = await self.owner.commit_staged()
         follow_up = self.service.load()
-        follow_up["modes"]["stereo"]["processing"]["sub2"]["alignment_ms"] = 1.0
+        follow_up["modes"]["stereo-sub"]["processing"]["sub2"]["alignment_ms"] = 1.0
         self.service.commit(follow_up, expected_revision=follow_up["revision"])
         self.assertEqual(self.service.load()["revision"], committed["revision"] + 1)
         # The runner reports the committed revision it produced; a later
@@ -277,8 +276,7 @@ class RunnerFinalizationTests(unittest.IsolatedAsyncioTestCase):
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
         self.service.manager = self.manager
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1"]), "stereo-sub")
         self.start = self.store.commit(state, expected_revision=0)
         self.commits = []
         self.restores = []

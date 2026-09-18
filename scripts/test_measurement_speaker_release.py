@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 import measurement.session as measurement_session
 from measurement.session import MeasurementSampleRateSession, MeasurementServices
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state import default_output_state, set_mode_routing
+from audio.output_state import default_output_state, set_mode_routing, set_crossover, switch_mode
 from audio.output_state_store import OutputStateStore
 from dsp.manager import DSPManager
 from measurement.speaker_commit import create_speaker_release_adapter
@@ -204,13 +204,14 @@ class SpeakerServiceHookTests(unittest.IsolatedAsyncioTestCase):
 
     def crossover_state(self):
         from audio.output_state import default_output_state, set_mode_routing, switch_mode
-        state = default_output_state()
+        from audio.output_state import set_crossover
+        state = set_crossover(default_output_state(), "stereo-sub", True)
         routes = [f"{side}_{way}" for side in ("right", "left") for way in ("high", "low")]
         routes += ["sub1", "left_low"]
-        state = set_mode_routing(state, "crossover", "dev", routes)
-        state = switch_mode(state, "crossover")
+        state = set_mode_routing(state, "stereo-sub", "dev", routes)
+        state = switch_mode(state, "stereo-sub")
         state["revision"] = 7
-        processing = state["modes"]["crossover"]["processing"]
+        processing = state["modes"]["stereo-sub"]["processing"]
         for side in ("left", "right"):
             processing[f"{side}_low"]["lowpass"] = {
                 "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000,
@@ -451,8 +452,8 @@ class SpeakerReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
             store=self.store, preset_loader=self.manager.preset_store.read,
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev",
+                                 ["main_l", "main_r"]), "stereo-sub")
         self.service.commit(state, expected_revision=0)
         self.targets = []
 

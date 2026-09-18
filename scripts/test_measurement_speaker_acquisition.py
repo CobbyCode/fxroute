@@ -17,7 +17,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from audio.output_state import default_output_state, set_mode_routing, switch_mode
+from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
 from measurement.speaker_acquisition import acquire_speaker_captures
 from measurement.speaker_align import SpeakerAlignment
 from measurement.store import MeasurementStore
@@ -32,10 +32,10 @@ def crossover_state():
     state = default_output_state()
     routes = [f"{side}_{way}" for side in ("right", "left") for way in ("high", "low")]
     routes += ["sub1", "left_low"]
-    state = set_mode_routing(state, "crossover", "dev", routes)
-    state = switch_mode(state, "crossover")
+    state = set_mode_routing(set_crossover(state, "stereo-sub", True), "stereo-sub", "dev", routes)
+    state = switch_mode(state, "stereo-sub")
     state["revision"] = 7
-    processing = state["modes"]["crossover"]["processing"]
+    processing = state["modes"]["stereo-sub"]["processing"]
     for side in ("left", "right"):
         processing[f"{side}_low"]["lowpass"] = {
             "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000,
@@ -191,7 +191,7 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(proposal["added_delay_ms"]["left_high"], 0.0, delta=0.3)
         candidate = proposal["candidate_state"]
         self.assertAlmostEqual(
-            candidate["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"], 5.0, delta=0.3)
+            candidate["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"], 5.0, delta=0.3)
         self.assertEqual(len(proposal["overlap_checks"]), 1)
 
     async def test_invalid_identities_or_missing_reference_fail_before_capture(self):

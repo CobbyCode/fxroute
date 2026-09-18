@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 import dsp.api as dsp_api
 import main
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state import set_bank_preset, set_mode_routing
+from audio.output_state import set_bank_preset, set_mode_routing, switch_mode
 from audio.output_state_store import OutputStateStore
 from dsp.manager import DSPManager
 
@@ -61,7 +61,7 @@ def make_service(directory, manager):
 
 def seed_sub_state(service):
     return service.apply(
-        lambda state: set_mode_routing(state, "stereo", "A", ["main_l", "main_r", "sub1", "sub1"]),
+        lambda state: switch_mode(set_mode_routing(state, "stereo-sub", "A", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub"),
         expected_revision=0)
 
 
@@ -92,8 +92,8 @@ class AudioStateApiTests(unittest.TestCase):
         with audio_context(self.service):
             catalog = asyncio.run(main.get_audio_output_state())
         self.assertEqual(catalog["revision"], 1)
-        self.assertEqual(catalog["active_mode"], "stereo")
-        stereo = catalog["modes"]["stereo"]
+        self.assertEqual(catalog["active_mode"], "stereo-sub")
+        stereo = catalog["modes"]["stereo-sub"]
         self.assertEqual(stereo["selected_bank"], "global")
         self.assertEqual(stereo["banks"]["sub1"]["preset"], "Neutral")
         self.assertEqual(stereo["topology"]["sub_mode"], "mono")
@@ -102,7 +102,7 @@ class AudioStateApiTests(unittest.TestCase):
         self.assertEqual(catalog["capabilities"]["max_slope_db_oct"], 72)
         self.assertEqual(catalog["device"]["key"], "A")
         self.assertEqual(catalog["device"]["channels"], 4)
-        self.assertEqual(catalog["device"]["routing"]["stereo"],
+        self.assertEqual(catalog["device"]["routing"]["stereo-sub"],
                          ["main_l", "main_r", "sub1", "sub1"])
 
     def test_apply_routing_commits_with_fingerprint_report(self):
@@ -110,7 +110,7 @@ class AudioStateApiTests(unittest.TestCase):
         with audio_context(self.service):
             result = asyncio.run(main.apply_audio_output_state(FakeRequest({
                 "expected_revision": 1,
-                "mutation": {"kind": "set_bank_preset", "mode": "stereo",
+                "mutation": {"kind": "set_bank_preset", "mode": "stereo-sub",
                              "bank_id": "sub1", "preset": "Room"},
             })))
         self.assertEqual(result["revision"], 2)
@@ -118,14 +118,14 @@ class AudioStateApiTests(unittest.TestCase):
         self.assertFalse(result["live_applied"])
         self.assertEqual(result["live_reason"], "dsp-runtime-unavailable")
         self.assertEqual(result["topology"]["sub_mode"], "mono")
-        self.assertEqual(self.service.load()["modes"]["stereo"]["banks"]["sub1"]["preset"], "Room")
+        self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]["preset"], "Room")
 
     def test_apply_selection_only_reports_unchanged_fingerprint(self):
         seed_sub_state(self.service)
         with audio_context(self.service):
             result = asyncio.run(main.apply_audio_output_state(FakeRequest({
                 "expected_revision": 1,
-                "mutation": {"kind": "select_bank", "mode": "stereo", "bank_id": "sub1"},
+                "mutation": {"kind": "select_bank", "mode": "stereo-sub", "bank_id": "sub1"},
             })))
         self.assertEqual(result["revision"], 2)
         self.assertFalse(result["fingerprint_changed"])
@@ -137,7 +137,7 @@ class AudioStateApiTests(unittest.TestCase):
             with self.assertRaises(main.HTTPException) as ctx:
                 asyncio.run(main.apply_audio_output_state(FakeRequest({
                     "expected_revision": 0,
-                    "mutation": {"kind": "switch_mode", "mode": "crossover"},
+                    "mutation": {"kind": "switch_mode", "mode": "stereo-sub"},
                 })))
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertEqual(Path(self.directory, "output-state.json").read_bytes(), before)
@@ -149,7 +149,7 @@ class AudioStateApiTests(unittest.TestCase):
             with self.assertRaises(main.HTTPException) as ctx:
                 asyncio.run(main.apply_audio_output_state(FakeRequest({
                     "expected_revision": 1,
-                    "mutation": {"kind": "switch_mode", "mode": "crossover"},
+                    "mutation": {"kind": "switch_mode", "mode": "stereo-sub"},
                 })))
         self.assertEqual(ctx.exception.status_code, 423)
         self.assertEqual(Path(self.directory, "output-state.json").read_bytes(), before)
@@ -158,13 +158,13 @@ class AudioStateApiTests(unittest.TestCase):
         seed_sub_state(self.service)
         with audio_context(self.service):
             for mutation in (
-                {"kind": "teleport", "mode": "stereo"},
-                {"kind": "set_processing", "mode": "stereo", "role": "left_low",
+                {"kind": "teleport", "mode": "stereo-sub"},
+                {"kind": "set_processing", "mode": "stereo-sub", "role": "left_low",
                  "level_db": 0.0},
-                {"kind": "select_bank", "mode": "stereo", "bank_id": "left_low"},
-                {"kind": "set_routing", "mode": "stereo",
+                {"kind": "select_bank", "mode": "stereo-sub", "bank_id": "left_low"},
+                {"kind": "set_routing", "mode": "stereo-sub",
                  "assignments": ["left_low", "main_r"]},
-                {"kind": "set_routing", "mode": "stereo", "assignments": ["main_l"],
+                {"kind": "set_routing", "mode": "stereo-sub", "assignments": ["main_l"],
                  "unexpected": True},
             ):
                 with self.subTest(mutation=mutation):
@@ -212,7 +212,7 @@ class DspBankApiTests(unittest.TestCase):
 
     def test_delete_pinned_bank_preset_is_refused(self):
         self.service.apply(
-            lambda state: set_bank_preset(state, "stereo", "sub1", preset="Room"),
+            lambda state: set_bank_preset(state, "stereo-sub", "sub1", preset="Room"),
             expected_revision=1)
         with self.assertRaises(dsp_api.HTTPException) as ctx:
             asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))
@@ -236,11 +236,11 @@ class DspBankApiTests(unittest.TestCase):
             "presetName": "Bank EQ",
             "peq": {"enabled": True, "params": {"channelMode": "stereo-linked", "bands": [
                 {"filterType": "bell", "frequencyHz": 120, "gainDb": -2, "q": 1}]}},
-            "bank_mode": "stereo", "bank_id": "sub1", "expected_revision": 1,
+            "bank_mode": "stereo-sub", "bank_id": "sub1", "expected_revision": 1,
         })))
         self.assertTrue(result["bank"]["assigned"])
         self.assertEqual(result["bank"]["revision"], 2)
-        bank = self.service.load()["modes"]["stereo"]["banks"]["sub1"]
+        bank = self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]
         self.assertEqual(bank["preset"], "Bank EQ")
 
     def test_create_peq_binding_conflict_keeps_preset_unassigned(self):
@@ -249,13 +249,13 @@ class DspBankApiTests(unittest.TestCase):
                 "presetName": "Bank EQ",
                 "peq": {"enabled": True, "params": {"channelMode": "stereo-linked", "bands": [
                     {"filterType": "bell", "frequencyHz": 120, "gainDb": -2, "q": 1}]}},
-                "bank_mode": "stereo", "bank_id": "sub1", "expected_revision": 0,
+                "bank_mode": "stereo-sub", "bank_id": "sub1", "expected_revision": 0,
             })))
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertFalse(ctx.exception.detail["assigned"])
         self.assertEqual(ctx.exception.detail["created"], "Bank EQ")
         self.assertTrue(self.manager.preset_store.path("Bank EQ").is_file())
-        bank = self.service.load()["modes"]["stereo"]["banks"]["sub1"]
+        bank = self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]
         self.assertEqual(bank["preset"], "Neutral")
 
     def test_create_peq_binding_validates_target_before_creation(self):
@@ -263,7 +263,7 @@ class DspBankApiTests(unittest.TestCase):
             asyncio.run(dsp_api.create_peq_preset(FakeRequest({
                 "presetName": "Orphan EQ",
                 "peq": {"enabled": True, "params": {"channelMode": "stereo-linked", "bands": []}},
-                "bank_mode": "stereo", "bank_id": "left_low", "expected_revision": 1,
+                "bank_mode": "stereo-sub", "bank_id": "left_low", "expected_revision": 1,
             })))
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertFalse(self.manager.preset_store.path("Orphan EQ").exists())
@@ -278,10 +278,10 @@ class DspBankApiTests(unittest.TestCase):
             delay_enabled=False, delay_left_ms=0.0, delay_right_ms=0.0,
             bass_enabled=False, bass_amount=0.0,
             tone_effect_enabled=False, tone_effect_mode="crystalizer",
-            bank_mode="stereo", bank_id="sub1", expected_revision=1,
+            bank_mode="stereo-sub", bank_id="sub1", expected_revision=1,
         ))
         self.assertTrue(result["bank"]["assigned"])
-        bank = self.service.load()["modes"]["stereo"]["banks"]["sub1"]
+        bank = self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]
         self.assertEqual(bank["preset"], "REW Bank")
 
 

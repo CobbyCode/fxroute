@@ -136,17 +136,13 @@ def _check_22_off_roundtrip() -> None:
 def _check_frontend_draft_sync() -> None:
     root = Path(__file__).resolve().parents[1]
     text = (root / "static" / "app.js").read_text()
-    assert "function applySubwooferDraftToOutputMode" in text, "draft helper missing"
-    # The helper must mirror the 2.2 globals to top-level; otherwise the
-    # 2.2 draft keeps a stale top-level true and the select snaps back to On.
-    assert "main_highpass_enabled: settings.subwoofer" in text or \
-        "main_highpass_enabled\" ] = settings.subwoofer" in text or \
-        "next.main_highpass_enabled = settings.subwoofer.main_highpass_enabled" in text, \
-        "draft helper does not sync main_highpass_enabled to top-level"
-    assert "crossover_frequency_hz" in text
-    # All three optimistic/draft sites must use the helper (no stale spread left).
-    assert text.count("applySubwooferDraftToOutputMode(") >= 3, text.count("applySubwooferDraftToOutputMode(")
-    print("frontend 2.2 draft sync helper present and wired: ok")
+    # The sub tile saves through the single v2 state (no legacy output-mode POST):
+    # routed roles map to set_subwoofers with exact sub processing.
+    assert "set_subwoofers" in text, "sub tile must save via set_subwoofers"
+    assert "routedSubwooferView" in text, "sub tile must read routed subs"
+    assert "subwooferView" in (root / "static" / "output_state.js").read_text(), \
+        "sub view adapter missing"
+    print("frontend sub save uses single v2 state: ok")
 
 
 def main() -> None:

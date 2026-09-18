@@ -22,7 +22,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from audio.output_state import default_output_state, set_mode_routing  # noqa: E402
+from audio.output_state import switch_mode, default_output_state, set_mode_routing  # noqa: E402
 import measurement.autosub as autosub  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from measurement.autosub import deps as autosub_deps  # noqa: E402
@@ -48,9 +48,8 @@ def overview_21(alignment=2.34):
 
 
 def mode_state():
-    state = set_mode_routing(default_output_state(), "stereo", "mock",
-                             ["main_l", "main_r", "sub1", "sub1"])
-    state["modes"]["stereo"]["processing"]["sub1"].update(alignment_ms=2.34, level_db=-3)
+    state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "mock", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub")
+    state["modes"]["stereo-sub"]["processing"]["sub1"].update(alignment_ms=2.34, level_db=-3)
     return state
 
 

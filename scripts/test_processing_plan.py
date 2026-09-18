@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from audio.output_state import default_output_state, select_bank, set_mode_routing, switch_mode
+from audio.output_state import default_output_state, select_bank, set_crossover, set_mode_routing, switch_mode
 from dsp.persistence import DSPPresetStore
 from dsp.processing_plan import compile_processing_plan
 
@@ -38,8 +38,10 @@ class ProcessingPlanTests(unittest.TestCase):
 
     def crossover_state(self):
         assignments = [f"{side}_{way}" for side in ("left", "right") for way in ("low", "mid", "high")]
-        state = switch_mode(set_mode_routing(default_output_state(), "crossover", "A", assignments), "crossover")
-        for role, settings in state["modes"]["crossover"]["processing"].items():
+        state = switch_mode(set_mode_routing(set_crossover(default_output_state(), "stereo-sub", True), "stereo-sub", "A", assignments), "stereo-sub")
+        for role, settings in state["modes"]["stereo-sub"]["processing"].items():
+            if not role.startswith(("left_", "right_")):
+                continue
             if not role.endswith("low"):
                 settings["highpass"] = crossover_filter(300 if role.endswith("mid") else 2500)
             if not role.endswith("high"):
@@ -48,7 +50,7 @@ class ProcessingPlanTests(unittest.TestCase):
 
     def test_global_precedes_independent_area_banks_and_selection_is_not_solo(self):
         state = self.crossover_state()
-        mode = state["modes"]["crossover"]
+        mode = state["modes"]["stereo-sub"]
         mode["banks"]["global"]["preset"] = "Global EQ"
         mode["banks"]["left_mid"]["preset"] = "Mid IR"
         mode["extras"] = {"headroom": {"enabled": True, "params": {"gainDb": -3}}}
@@ -60,13 +62,13 @@ class ProcessingPlanTests(unittest.TestCase):
         self.assertNotIn("extras", outputs["left_mid"]["bank"])
         self.assertEqual(plan["global"]["extras"], mode["extras"])
         self.assertLess(plan["order"].index("global"), plan["order"].index("area-bank"))
-        selected = select_bank(state, "crossover", "A", 8, "left_mid")
+        selected = select_bank(state, "stereo-sub", "A", 8, "left_mid")
         self.assertEqual(self.compile(selected), plan)
         plan["outputs"][1]["bank"]["chain"][0]["params"]["kernel"] = "changed"
         self.assertEqual(self.presets.read("Mid IR")["chain"][0]["params"]["kernel"], "mid -1.5dB")
 
     def test_physical_fanout_compiles_one_logical_bank(self):
-        state = set_mode_routing(default_output_state(), "stereo", "A", ["main_r", "off", "sub1", "main_l", "sub1"])
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", ["main_r", "off", "sub1", "main_l", "sub1"]), "stereo-sub")
         plan = self.compile(state, channels=5)
         self.assertEqual([row["role"] for row in plan["outputs"]], ["main_l", "main_r", "sub1"])
         self.assertEqual(plan["physical_routes"], [
@@ -81,14 +83,14 @@ class ProcessingPlanTests(unittest.TestCase):
             (["sub_r"], [[{"input": 0, "gain": 0.5}, {"input": 1, "gain": 0.5}]]),
         ):
             with self.subTest(subs=subs):
-                state = set_mode_routing(default_output_state(), "stereo", "A", ["main_l", "main_r", *subs])
+                state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", ["main_l", "main_r", *subs]), "stereo-sub")
                 self.assertEqual([row["routes"] for row in self.compile(state)["outputs"][2:]], expected)
 
     def test_subs_and_speaker_alignment_coexist_without_negative_delays(self):
         state = self.crossover_state()
-        routing = state["modes"]["crossover"]["routing"]["A"] + ["sub1", "sub2"]
-        state = set_mode_routing(state, "crossover", "A", routing)
-        mode = state["modes"]["crossover"]
+        routing = state["modes"]["stereo-sub"]["routing"]["A"] + ["sub1", "sub2"]
+        state = set_mode_routing(state, "stereo-sub", "A", routing)
+        mode = state["modes"]["stereo-sub"]
         mode["processing"]["left_mid"]["alignment_ms"] = -2
         mode["processing"]["sub1"]["alignment_ms"] = -5
         mode["processing"]["sub2"]["alignment_ms"] = 3
@@ -107,7 +109,7 @@ class ProcessingPlanTests(unittest.TestCase):
 
     def test_direct_does_not_remove_speaker_crossover(self):
         state = self.crossover_state()
-        for bank in state["modes"]["crossover"]["banks"].values():
+        for bank in state["modes"]["stereo-sub"]["banks"].values():
             bank["preset"] = "Direct"
         plan = self.compile(state)
         self.assertTrue(plan["global"]["bypass"])
@@ -120,7 +122,7 @@ class ProcessingPlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.compile(state, channels=4)
         missing = copy.deepcopy(state)
-        missing["modes"]["crossover"]["processing"]["left_high"]["highpass"] = None
+        missing["modes"]["stereo-sub"]["processing"]["left_high"]["highpass"] = None
         with self.assertRaises(ValueError):
             self.compile(missing)
         with self.assertRaises(ValueError):
@@ -131,7 +133,7 @@ class ProcessingPlanTests(unittest.TestCase):
     def test_bad_missing_and_global_only_area_presets_fail_before_a_plan_is_returned(self):
         for name, error in (("missing", FileNotFoundError), ("broken", ValueError), ("Output loudness", ValueError)):
             state = self.crossover_state()
-            state["modes"]["crossover"]["banks"]["left_low"]["preset"] = name
+            state["modes"]["stereo-sub"]["banks"]["left_low"]["preset"] = name
             self.presets.path("broken").write_text('{"schema":"fxroute.dsp.preset","version":1,"chain":[{}]}')
             with self.subTest(name=name), self.assertRaises(error):
                 self.compile(state)

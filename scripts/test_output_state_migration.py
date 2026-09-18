@@ -24,22 +24,24 @@ class OutputStateMigrationTests(unittest.TestCase):
 
     def test_default_routes_preserve_silence_mono_fanout_and_stereo_bass(self):
         cases = [
-            ("stereo", ["main_l", "main_r", "off", "off", "off", "off"], "none"),
-            ("subwoofer-2.1", ["main_l", "main_r", "sub1", "sub1", "off", "off"], "mono"),
-            ("subwoofer-2.2", ["main_l", "main_r", "sub1", "sub2", "off", "off"], "dual-mono"),
-            ("subwoofer-2.2-stereo", ["main_l", "main_r", "sub_l", "sub_r", "off", "off"], "stereo"),
+            ("stereo", "stereo", ["main_l", "main_r", "off", "off", "off", "off"], "none"),
+            ("subwoofer-2.1", "stereo-sub", ["main_l", "main_r", "sub1", "sub1", "off", "off"], "mono"),
+            ("subwoofer-2.2", "stereo-sub", ["main_l", "main_r", "sub1", "sub2", "off", "off"], "dual-mono"),
+            ("subwoofer-2.2-stereo", "stereo-sub", ["main_l", "main_r", "sub_l", "sub_r", "off", "off"], "stereo"),
         ]
-        for legacy, expected, sub_mode in cases:
+        for legacy, mode, expected, sub_mode in cases:
             with self.subTest(legacy=legacy):
                 result = self.migrate({"mode": legacy})
-                self.assertEqual(result["active_mode"], "stereo")
-                self.assertEqual(routing_for_device(result, "stereo", "A"), expected)
-                self.assertEqual(derive_topology("stereo", expected).sub_mode, sub_mode)
-                self.assertEqual(result["modes"]["crossover"]["routing"], {})
+                self.assertEqual(result["active_mode"], mode)
+                self.assertFalse(result["modes"][mode]["crossover_enabled"])
+                self.assertEqual(routing_for_device(result, mode, "A"), expected)
+                self.assertEqual(derive_topology(mode, expected).sub_mode, sub_mode)
+                other = "stereo-sub" if mode == "stereo" else "stereo"
+                self.assertEqual(result["modes"][other]["routing"], {})
 
     def test_custom_port_order_and_dormant_ports_survive(self):
         result = self.migrate({"mode": "subwoofer-2.1"}, {"A": [2, 0, 3, 1, 4, 1]}, channels=4)
-        self.assertEqual(routing_for_device(result, "stereo", "A"), ["main_r", "off", "sub1", "main_l", "sub1", "main_l"])
+        self.assertEqual(routing_for_device(result, "stereo-sub", "A"), ["main_r", "off", "sub1", "main_l", "sub1", "main_l"])
 
     def test_active_stereo_bass_block_wins_without_erasing_other_legacy_data(self):
         mode = {"mode": "subwoofer-2.2-stereo", "crossover_frequency_hz": 110,
@@ -51,7 +53,7 @@ class OutputStateMigrationTests(unittest.TestCase):
                                          "sub2": {"level_db": 2, "alignment_ms": 3.25}}}
         before = copy.deepcopy(mode)
         result = self.migrate(mode)
-        stereo = result["modes"]["stereo"]
+        stereo = result["modes"]["stereo-sub"]
         self.assertEqual(stereo["bass_management"], {"frequency_hz": 110, "main_highpass_enabled": False})
         self.assertEqual(stereo["processing"]["sub_l"]["level_db"], -3)
         self.assertEqual(stereo["processing"]["sub_l"]["alignment_ms"], -2.5)
@@ -65,14 +67,14 @@ class OutputStateMigrationTests(unittest.TestCase):
     def test_21_controls_and_compare_are_only_imported_into_stereo(self):
         result = self.migrate({"mode": "subwoofer-2.1", "subwoofer": {
             "sub_level_db": -7, "sub_alignment_ms": -4, "sub_polarity": "invert", "crossover_frequency_hz": 90}})
-        stereo, crossover = result["modes"]["stereo"], result["modes"]["crossover"]
+        stereo, other = result["modes"]["stereo-sub"], result["modes"]["stereo"]
         self.assertEqual(stereo["banks"]["global"], {"preset": "Room IR -1.5dB", "preset_a": "Room", "preset_b": "Room IR -1.5dB"})
         self.assertEqual(stereo["processing"]["sub1"]["level_db"], -7)
         self.assertEqual(stereo["processing"]["sub1"]["alignment_ms"], -4)
         self.assertEqual(stereo["banks"]["sub1"]["preset"], "Neutral")
         self.assertEqual(stereo["extras"], {"loudness": {"enabled": True}})
-        self.assertEqual(crossover["extras"], {})
-        self.assertEqual(crossover["banks"]["global"]["preset"], "Neutral")
+        self.assertEqual(other["extras"], {})
+        self.assertEqual(other["banks"]["global"]["preset"], "Neutral")
 
     def test_conflicting_device_aliases_and_invalid_legacy_routing_fail(self):
         usb = "alsa_output.usb-Test-00.multichannel-output"

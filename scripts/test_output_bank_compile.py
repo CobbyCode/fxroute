@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from audio.output_state import default_output_state, select_bank, set_mode_routing, switch_mode
+from audio.output_state import default_output_state, select_bank, set_mode_routing, switch_mode, set_crossover
 from dsp.crossover import design_crossover
 from dsp.manager import DSPManager, build_wav_bytes, ensure_kernel_supported_ir, parse_wav_frames
 from dsp.native_config import layout_from_plan
@@ -83,8 +83,10 @@ class BankCompileTests(unittest.TestCase):
 
     def crossover_state(self, rate=48000):
         assignments = [f"{side}_{way}" for side in ("left", "right") for way in ("low", "mid", "high")]
-        state = switch_mode(set_mode_routing(default_output_state(), "crossover", "A", assignments), "crossover")
-        for role, settings in state["modes"]["crossover"]["processing"].items():
+        state = switch_mode(set_mode_routing(set_crossover(default_output_state(), "stereo-sub", True), "stereo-sub", "A", assignments), "stereo-sub")
+        for role, settings in state["modes"]["stereo-sub"]["processing"].items():
+            if not role.startswith(("left_", "right_")):
+                continue
             if not role.endswith("low"):
                 settings["highpass"] = {"family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 300 if role.endswith("mid") else 2500}
             if not role.endswith("high"):
@@ -92,14 +94,14 @@ class BankCompileTests(unittest.TestCase):
         return state
 
     def stereo_state(self):
-        return set_mode_routing(default_output_state(), "stereo", "A", ["main_l", "main_r", "sub1", "sub2"])
+        return switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", ["main_l", "main_r", "sub1", "sub2"]), "stereo-sub")
 
     def plan_for(self, state, rate=48000):
         return self._plan_with_channels(state, len(state["modes"][state["active_mode"]]["routing"]["A"]), rate)
 
     def test_crossover_sos_present_and_bank_edit_selection_irrelevant(self):
         state = self.crossover_state()
-        mode = state["modes"]["crossover"]
+        mode = state["modes"]["stereo-sub"]
         mode["banks"]["left_mid"]["preset"] = "Mid EQ"
         mode["banks"]["left_low"]["preset"] = "Mid IR"
         layout = self.compile(self.plan_for(state))
@@ -111,12 +113,12 @@ class BankCompileTests(unittest.TestCase):
         self.assertEqual(len(rows["left_mid"]["sos"]), 4)
         self.assertIsNone(rows["right_mid"]["oconv"])
         self.assertEqual(rows["right_mid"]["filters"], [])
-        reselected = select_bank(state, "crossover", "A", 6, "left_mid")
+        reselected = select_bank(state, "stereo-sub", "A", 6, "left_mid")
         self.assertEqual(self.compile(self.plan_for(reselected)), layout)
 
     def test_gain_delay_bands_fold_into_output_trim(self):
         state = self.crossover_state()
-        state["modes"]["crossover"]["banks"]["left_mid"]["preset"] = "GainDelay EQ"
+        state["modes"]["stereo-sub"]["banks"]["left_mid"]["preset"] = "GainDelay EQ"
         rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
         self.assertEqual(rows["left_mid"]["gain_db"], 2.0)
         self.assertEqual(rows["left_mid"]["delay_ms"], 1.5)
@@ -124,7 +126,7 @@ class BankCompileTests(unittest.TestCase):
 
     def test_dual_eq_projects_matching_side(self):
         state = self.crossover_state()
-        mode = state["modes"]["crossover"]
+        mode = state["modes"]["stereo-sub"]
         mode["banks"]["left_mid"]["preset"] = "Dual EQ"
         mode["banks"]["right_mid"]["preset"] = "Dual EQ"
         rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
@@ -133,10 +135,10 @@ class BankCompileTests(unittest.TestCase):
 
     def test_dual_eq_on_mono_sum_requires_identical_sides(self):
         state = self.stereo_state()
-        state["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Dual EQ"
+        state["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Dual EQ"
         with self.assertRaises(ValueError):
             self.compile(self._plan_with_channels(state, 4))
-        state["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Same Dual EQ"
+        state["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Same Dual EQ"
         rows = {row["name"]: row for row in self.compile(self._plan_with_channels(state, 4))}
         self.assertEqual(rows["sub1"]["filters"][0]["frequency_hz"], 900)
 
@@ -153,14 +155,14 @@ class BankCompileTests(unittest.TestCase):
         self.manager.preset_store.write("Wide IR", {"schema": "fxroute.dsp.preset", "version": 1,
             "chain": [{"id": "conv", "type": "convolver", "params": {"kernel": "wide"}}]})
         state = self.stereo_state()
-        state = set_mode_routing(state, "stereo", "A", ["main_l", "main_r", "sub1"])
-        state["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Dual EQ"
+        state = set_mode_routing(state, "stereo-sub", "A", ["main_l", "main_r", "sub1"])
+        state["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Dual EQ"
         with self.assertRaises(ValueError):
             self.compile(self.plan_for(state))
-        state["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Same Dual EQ"
+        state["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Same Dual EQ"
         rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
         self.assertEqual(rows["sub1"]["filters"][0]["frequency_hz"], 900)
-        state["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Wide IR"
+        state["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Wide IR"
         with self.assertRaises(ValueError):
             self.compile(self.plan_for(state))
 
@@ -168,17 +170,17 @@ class BankCompileTests(unittest.TestCase):
         # With a real sub_l/sub_r pair each side is fed from its own input,
         # so dual PEQ may differ per side and a stereo IR picks its channel.
         state = self.stereo_state()
-        state = set_mode_routing(state, "stereo", "A", ["main_l", "main_r", "sub_l", "sub_r"])
-        state["modes"]["stereo"]["banks"]["sub_l"]["preset"] = "Dual EQ"
+        state = set_mode_routing(state, "stereo-sub", "A", ["main_l", "main_r", "sub_l", "sub_r"])
+        state["modes"]["stereo-sub"]["banks"]["sub_l"]["preset"] = "Dual EQ"
         rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
         self.assertEqual(rows["sub_l"]["filters"][0]["frequency_hz"], 900)
-        state["modes"]["stereo"]["banks"]["sub_l"]["preset"] = "Mid IR"
+        state["modes"]["stereo-sub"]["banks"]["sub_l"]["preset"] = "Mid IR"
         rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
         self.assertEqual(rows["sub_l"]["oconv"]["channel"], 0)
 
     def test_stereo_ir_channel_follows_role_side(self):
         state = self.crossover_state()
-        mode = state["modes"]["crossover"]
+        mode = state["modes"]["stereo-sub"]
         mode["banks"]["left_mid"]["preset"] = "Mid IR"
         self.manager.preset_store.write("Wide IR", {"schema": "fxroute.dsp.preset", "version": 1,
             "chain": [{"id": "conv", "type": "convolver", "params": {"kernel": "wide"}}]})
@@ -191,13 +193,13 @@ class BankCompileTests(unittest.TestCase):
         state = self.stereo_state()
         self.manager.preset_store.write("Wide IR", {"schema": "fxroute.dsp.preset", "version": 1,
             "chain": [{"id": "conv", "type": "convolver", "params": {"kernel": "wide"}}]})
-        state["modes"]["stereo"]["banks"]["sub1"]["preset"] = "Wide IR"
+        state["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Wide IR"
         with self.assertRaises(ValueError):
             self.compile(self._plan_with_channels(state, 4))
 
     def test_direct_bank_keeps_crossover_without_bank_processing(self):
         state = self.crossover_state()
-        for bank in state["modes"]["crossover"]["banks"].values():
+        for bank in state["modes"]["stereo-sub"]["banks"].values():
             bank["preset"] = "Direct"
         rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
         self.assertTrue(rows["left_low"]["sos"])
@@ -207,26 +209,26 @@ class BankCompileTests(unittest.TestCase):
     def test_unsupported_bank_content_fails_loudly(self):
         for preset in ("Loud", "FIR EQ", "Two IR", "Big EQ"):
             state = self.crossover_state()
-            state["modes"]["crossover"]["banks"]["left_mid"]["preset"] = preset
+            state["modes"]["stereo-sub"]["banks"]["left_mid"]["preset"] = preset
             if preset == "Big EQ":
-                routing = state["modes"]["crossover"]["routing"]["A"] + ["sub1"]
-                state = set_mode_routing(state, "crossover", "A", routing)
-                state["modes"]["crossover"]["processing"]["left_mid"]["highpass"] = {
+                routing = state["modes"]["stereo-sub"]["routing"]["A"] + ["sub1"]
+                state = set_mode_routing(state, "stereo-sub", "A", routing)
+                state["modes"]["stereo-sub"]["processing"]["left_mid"]["highpass"] = {
                     "family": "linkwitz-riley", "slope_db_oct": 72, "frequency_hz": 300}
-                state["modes"]["crossover"]["processing"]["left_mid"]["lowpass"] = {
+                state["modes"]["stereo-sub"]["processing"]["left_mid"]["lowpass"] = {
                     "family": "linkwitz-riley", "slope_db_oct": 72, "frequency_hz": 2500}
             with self.subTest(preset=preset), self.assertRaises(ValueError):
                 self.compile(self.plan_for(state))
 
     def test_missing_bank_preset_fails_loudly(self):
         state = self.crossover_state()
-        state["modes"]["crossover"]["banks"]["left_mid"]["preset"] = "Missing"
+        state["modes"]["stereo-sub"]["banks"]["left_mid"]["preset"] = "Missing"
         with self.assertRaises(FileNotFoundError):
             self.plan_for(state)
 
     def test_alias_band_types_map_to_native_names(self):
         state = self.crossover_state()
-        state["modes"]["crossover"]["banks"]["left_mid"]["preset"] = "Alias EQ"
+        state["modes"]["stereo-sub"]["banks"]["left_mid"]["preset"] = "Alias EQ"
         rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
         self.assertEqual([item["type"] for item in rows["left_mid"]["filters"]],
                          ["bell", "lowshelf", "highpass"])

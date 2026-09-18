@@ -312,8 +312,8 @@ class PlanPeakPredictionTests(unittest.TestCase):
             preset_loader=manager.preset_store.read,
             resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: False))
-        state = set_mode_routing(default_output_state(), "stereo", "dev",
-                                 ["main_l", "main_r", "sub1", "sub1"])
+        from audio.output_state import switch_mode
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub")
         committed = service.commit(state, expected_revision=0)
         plan = service.compile_plan(committed, output_key="dev", channels=4,
                                     sample_rate_hz=RATE)

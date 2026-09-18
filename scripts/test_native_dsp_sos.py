@@ -115,14 +115,16 @@ def test_sos_rejects_unstable_and_malformed_lines(tmp_path):
 
 
 def test_plan_render_end_to_end_matches_prediction(tmp_path):
-    from audio.output_state import default_output_state, set_mode_routing, switch_mode
+    from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
     from dsp.manager import DSPManager
     from dsp.native_config import layout_from_plan
     from dsp.processing_plan import compile_processing_plan
     manager = DSPManager(home=tmp_path / "home")
     assignments = [f"{side}_{way}" for side in ("left", "right") for way in ("low", "mid", "high")]
-    state = switch_mode(set_mode_routing(default_output_state(), "crossover", "A", assignments), "crossover")
-    for role, settings in state["modes"]["crossover"]["processing"].items():
+    state = switch_mode(set_mode_routing(set_crossover(default_output_state(), "stereo-sub", True), "stereo-sub", "A", assignments), "stereo-sub")
+    for role, settings in state["modes"]["stereo-sub"]["processing"].items():
+        if not role.startswith(("left_", "right_")):
+            continue
         if not role.endswith("low"):
             settings["highpass"] = {"family": "linkwitz-riley", "slope_db_oct": 24,
                                     "frequency_hz": 300 if role.endswith("mid") else 2500}

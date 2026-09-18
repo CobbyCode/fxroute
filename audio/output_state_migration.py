@@ -7,7 +7,7 @@ import copy
 
 from audio.output_routing import device_key
 from audio.output_state import default_output_state, default_processing, set_mode_routing, validate_output_state
-from audio.output_topology import MAX_CHANNELS
+from audio.output_topology import MAX_CHANNELS, SUB_ROLES, roles_for_mode
 from audio.samplerate.persistence import _normalize_subwoofer_config, _normalize_subwoofer_22_config
 from dsp.banks import BankState
 
@@ -33,6 +33,8 @@ def migrate_legacy_output_state(*, mode: dict, routing: dict, active_preset: str
     if type(channels) is not int or not 0 <= channels <= MAX_CHANNELS:
         raise ValueError("Migration requires a hardware channel count from 0 to 32")
     state = default_output_state()
+    target_mode = "stereo" if name == "stereo" else "stereo-sub"
+    state["active_mode"] = target_mode
     state["legacy"] = copy.deepcopy({"mode": mode, "routing": routing,
                                       "active_preset": active_preset, "compare": compare,
                                       "extras": extras})
@@ -53,9 +55,9 @@ def migrate_legacy_output_state(*, mode: dict, routing: dict, active_preset: str
     selected = normalized_routing[identity]
     selected.extend([0] * max(0, channels - len(selected)))
     for key, assignments in normalized_routing.items():
-        state = set_mode_routing(state, "stereo", key, [_LEGACY_ROLES[name][signal] for signal in assignments])
+        state = set_mode_routing(state, target_mode, key, [_LEGACY_ROLES[name][signal] for signal in assignments])
 
-    stereo = state["modes"]["stereo"]
+    stereo = state["modes"][target_mode]
     preset_a = compare.get("presetA") or active_preset
     preset_b = compare.get("presetB") or None
     if preset_b == preset_a:
@@ -82,3 +84,55 @@ def migrate_legacy_output_state(*, mode: dict, routing: dict, active_preset: str
         stereo["banks"].setdefault(role, BankState().to_dict())
         stereo["processing"][role] = {**default_processing(), **settings}
     return validate_output_state(state)
+
+
+def upgrade_output_state(payload: dict) -> dict:
+    """Upgrade the old Stereo/Crossover document without an alternate live model.
+
+    The active configuration wins if both old modes map to the same new mode.
+    The complete original document is archived for recovery, never consumed by
+    routing or DSP. Loading does not write; the next revision-checked commit
+    atomically persists the upgraded document.
+    """
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return validate_output_state(payload)
+    if (set(payload) != {"schema", "version", "revision", "active_mode", "modes", "legacy"}
+            or payload["schema"] != "fxroute.output-state"
+            or payload["active_mode"] not in ("stereo", "crossover")
+            or not isinstance(payload["modes"], dict)
+            or set(payload["modes"]) != {"stereo", "crossover"}):
+        raise ValueError("Invalid version-one output state")
+    result = default_output_state()
+    result["revision"] = payload["revision"]
+    if not isinstance(payload["legacy"], dict):
+        raise ValueError("Legacy snapshot must be an object")
+    result["legacy"] = copy.deepcopy(payload["legacy"])
+    result["legacy"]["output_state_v1"] = copy.deepcopy(payload)
+    ordered = [name for name in payload["modes"] if name != payload["active_mode"]] + [payload["active_mode"]]
+    for name in ordered:
+        config = copy.deepcopy(payload["modes"][name])
+        if not isinstance(config, dict) or set(config) != {
+                "routing", "selected_bank", "banks", "processing", "bass_management", "extras"}:
+            raise ValueError("Invalid version-one mode state")
+        enabled = name == "crossover"
+        # Validate every old configuration, including one superseded by the
+        # active configuration. Old stereo was allowed to route sub roles.
+        candidate = default_output_state()
+        config["crossover_enabled"] = enabled
+        candidate["modes"]["stereo-sub"] = config
+        validate_output_state(candidate)
+        old_allowed = roles_for_mode("stereo-sub", crossover_enabled=enabled)
+        if any(role not in ("global", *old_allowed) for role in config["banks"]):
+            raise ValueError("Invalid version-one bank role")
+        has_subs = any(role in SUB_ROLES for assignments in config["routing"].values() for role in assignments)
+        target = "stereo-sub" if has_subs else "stereo"
+        if target == "stereo":
+            # Keep dormant sub data in the archived original, not in Stereo.
+            config["banks"] = {role: bank for role, bank in config["banks"].items() if role not in SUB_ROLES}
+            config["processing"] = {role: settings for role, settings in config["processing"].items() if role not in SUB_ROLES}
+            if config["selected_bank"] in SUB_ROLES:
+                config["selected_bank"] = "global"
+        result["modes"][target] = config
+        if name == payload["active_mode"]:
+            result["active_mode"] = target
+    return validate_output_state(result)

@@ -74,8 +74,9 @@ function syncSubwooferControlsDuringAutoSub() {
 function syncAutoSubButton() {
     if (!deps.getElements().measurementAutoSubStartBtn || !deps.getElements().measurementAutoSubGroup) return;
     const measurementState = deps.getState().measurement || {};
-    const outputMode = deps.getState().settings?.audioOutputs?.output_mode;
-    const isSubwooferMode = deps.isSubwooferModeName(outputMode?.mode || '');
+    const catalog = deps.getState().outputSystem?.catalog;
+    const topology = catalog?.modes?.[catalog.active_mode]?.topology;
+    const isSubwooferMode = ['mono', 'dual-mono', 'stereo'].includes(topology?.sub_mode);
     if (!isSubwooferMode) {
         deps.getElements().measurementAutoSubGroup.classList.add('hidden');
         return;
@@ -559,8 +560,8 @@ function speakerAlignVisible() {
         }
     }
     const catalog = speakerAlignCatalog();
-    return !!catalog && catalog.active_mode === 'crossover'
-        && Number(catalog.modes?.crossover?.topology?.way_count || 0) >= 2;
+    const config = catalog?.modes?.[catalog.active_mode];
+    return !!config?.crossover_enabled && Number(config.topology?.way_count || 0) >= 2;
 }
 
 function formatSpeakerStatus(job) {
@@ -826,7 +827,9 @@ function getHybridWizardState() {
 
 
 function getCurrentOutputModeName() {
-    return deps.normalizeOutputModeName(deps.getState().settings?.audioOutputs?.output_mode?.mode || 'stereo');
+    const catalog = deps.getState().outputSystem?.catalog;
+    const topology = catalog?.modes?.[catalog.active_mode]?.topology;
+    return { mono: 'subwoofer-2.1', 'dual-mono': 'subwoofer-2.2', stereo: 'subwoofer-2.2-stereo' }[topology?.sub_mode] || 'stereo';
 }
 
 

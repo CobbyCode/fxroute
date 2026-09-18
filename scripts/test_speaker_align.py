@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from audio.output_state import default_output_state, set_mode_routing, switch_mode
+from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
 from dsp.crossover import design_crossover
 from measurement.hybrid import build_complex_response
 from measurement.analyzer import MeasurementAnalyzer
@@ -29,10 +29,10 @@ def state_for(ways=("low", "high"), cutoffs=(2000,)):
     # Hardware order is deliberately unlike engine order; Low has fan-out.
     routes = [f"{side}_{way}" for side in ("right", "left") for way in reversed(ways)]
     routes += ["sub1", "left_low"]
-    state = set_mode_routing(state, "crossover", "dev", routes)
-    state = switch_mode(state, "crossover")
+    state = set_mode_routing(set_crossover(state, "stereo-sub", True), "stereo-sub", "dev", routes)
+    state = switch_mode(state, "stereo-sub")
     state["revision"] = 7
-    processing = state["modes"]["crossover"]["processing"]
+    processing = state["modes"]["stereo-sub"]["processing"]
     for side in ("left", "right"):
         for index, way in enumerate(ways):
             for kind, cutoff in (("highpass", cutoffs[index - 1] if index else None),
@@ -172,8 +172,8 @@ class RoutingAndProposalTests(unittest.TestCase):
 
     def test_known_offsets_are_added_to_existing_alignment_without_mutating_input(self):
         state, channels = state_for()
-        state["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"] = -2.0
-        state["modes"]["crossover"]["processing"]["left_high"]["alignment_ms"] = 1.0
+        state["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = -2.0
+        state["modes"]["stereo-sub"]["processing"]["left_high"]["alignment_ms"] = 1.0
         original = copy.deepcopy(state)
         alignment, live = alignment_for(state, channels)
         captures = captures_for(alignment)
@@ -182,7 +182,7 @@ class RoutingAndProposalTests(unittest.TestCase):
         self.assertEqual(proposal["arrival_ms"], {"left_low": 2.0, "left_high": 5.0})
         self.assertEqual(proposal["added_delay_ms"], {"left_low": 3.0, "left_high": 0.0})
         expected = copy.deepcopy(original)
-        expected["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"] = 1.0
+        expected["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 1.0
         self.assertEqual(proposal["candidate_state"], expected)
         self.assertEqual(state, original)
         np.testing.assert_array_equal(captures[0]["impulse_response"], original_ir)
@@ -209,23 +209,23 @@ class RoutingAndProposalTests(unittest.TestCase):
     def test_frozen_start_is_detached_and_proposals_never_accumulate(self):
         state, channels = state_for()
         alignment, live = alignment_for(state, channels)
-        state["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"] = 20
+        state["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 20
         first = alignment.propose(captures_for(alignment), live_target=live)
-        first["candidate_state"]["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"] = 30
+        first["candidate_state"]["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 30
         second = alignment.propose(captures_for(alignment), live_target=live)
-        self.assertEqual(second["candidate_state"]["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"], 3.0)
+        self.assertEqual(second["candidate_state"]["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"], 3.0)
 
     def test_causal_lr12_and_lr24_with_real_arrival_detection(self):
         for rate in (44100, 48000, 96000):
             for slope in (12, 24):
                 with self.subTest(rate=rate, slope=slope):
                     state, channels = state_for()
-                    for settings in state["modes"]["crossover"]["processing"].values():
+                    for settings in state["modes"]["stereo-sub"]["processing"].values():
                         for kind in ("lowpass", "highpass"):
                             if settings[kind] is not None:
                                 settings[kind]["slope_db_oct"] = slope
                     if slope == 12:
-                        state["modes"]["crossover"]["processing"]["left_high"]["polarity"] = "invert"
+                        state["modes"]["stereo-sub"]["processing"]["left_high"]["polarity"] = "invert"
                     alignment, live = alignment_for(state, channels, rate=rate)
                     proposal = alignment.propose(native_captures(alignment, slope=slope, rate=rate), live_target=live)
                     # Known acoustic offset is 144 samples; small peak-detector
@@ -385,7 +385,7 @@ class RejectionTests(unittest.TestCase):
 
     def test_out_of_range_candidate_is_rejected_instead_of_clamped(self):
         state, channels = state_for()
-        state["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"] = 39.0
+        state["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 39.0
         self.alignment, self.live = alignment_for(state, channels)
         self.captures = captures_for(self.alignment)
         self.assert_rejected("alignment")
@@ -393,8 +393,8 @@ class RejectionTests(unittest.TestCase):
     def test_unsupported_topology_and_missing_overlap_filters_fail_before_capture(self):
         for mutate in (
             lambda state: state.update(active_mode="stereo"),
-            lambda state: state["modes"]["crossover"]["processing"]["left_low"].update(lowpass=None),
-            lambda state: state["modes"]["crossover"]["processing"]["left_high"]["highpass"].update(frequency_hz=10000),
+            lambda state: state["modes"]["stereo-sub"]["processing"]["left_low"].update(lowpass=None),
+            lambda state: state["modes"]["stereo-sub"]["processing"]["left_high"]["highpass"].update(frequency_hz=10000),
         ):
             with self.subTest(mutate=mutate):
                 state, channels = state_for()

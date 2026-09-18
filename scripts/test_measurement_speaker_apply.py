@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from audio.output_state import default_output_state, set_mode_routing, switch_mode
+from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
 from measurement.speaker_align import SpeakerAlignment
 from measurement.speaker_apply import (
     MAX_CONFIRMED_RESIDUAL_MS,
@@ -29,10 +29,10 @@ def crossover_state():
     state = default_output_state()
     routes = [f"{side}_{way}" for side in ("right", "left") for way in ("high", "low")]
     routes += ["sub1", "left_low"]
-    state = set_mode_routing(state, "crossover", "dev", routes)
-    state = switch_mode(state, "crossover")
+    state = set_mode_routing(set_crossover(state, "stereo-sub", True), "stereo-sub", "dev", routes)
+    state = switch_mode(state, "stereo-sub")
     state["revision"] = 7
-    processing = state["modes"]["crossover"]["processing"]
+    processing = state["modes"]["stereo-sub"]["processing"]
     for side in ("left", "right"):
         processing[f"{side}_low"]["lowpass"] = {
             "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000,
@@ -227,10 +227,10 @@ def crossover_state_3way():
     state = default_output_state()
     routes = [f"{side}_{way}" for side in ("right", "left") for way in ("high", "mid", "low")]
     routes += ["sub1", "left_low"]
-    state = set_mode_routing(state, "crossover", "dev", routes)
-    state = switch_mode(state, "crossover")
+    state = set_mode_routing(set_crossover(state, "stereo-sub", True), "stereo-sub", "dev", routes)
+    state = switch_mode(state, "stereo-sub")
     state["revision"] = 7
-    processing = state["modes"]["crossover"]["processing"]
+    processing = state["modes"]["stereo-sub"]["processing"]
     for side in ("left", "right"):
         processing[f"{side}_low"]["lowpass"] = {
             "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 300,
@@ -336,7 +336,7 @@ class StageDoubles:
         if "stage" in self.failures:
             raise self.failures["stage"]
         # A stage boundary must never mutate the caller's candidate.
-        candidate["modes"]["crossover"]["processing"]["left_low"]["alignment_ms"] = -999.0
+        candidate["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = -999.0
         return {"staged": True}
 
     async def restore(self):

@@ -37,7 +37,7 @@ def wait_for_server(timeout_s: float = 20.0) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--shots", default="/tmp/fxroute-os-shots")
+    parser.add_argument("--shots", default="/tmp/opencode/fxroute-output-shots")
     args = parser.parse_args()
     shots = pathlib.Path(args.shots)
     shots.mkdir(parents=True, exist_ok=True)
@@ -68,11 +68,12 @@ def main() -> int:
                 if not condition:
                     failures.append(name)
 
-            # Settings overlay: Output System section renders.
+            # One mode, independent crossover, one hardware routing editor.
             page.evaluate("toggleSettingsPanel(true)")
-            page.wait_for_selector("#os-mode-select", state="visible", timeout=5000)
-            check("os mode select visible", page.locator("#os-mode-select").is_visible())
-            check("os routing grid present", page.locator("#os-routing-grid").count() == 1)
+            page.wait_for_selector("#settings-output-mode-select:not([disabled])", state="visible", timeout=5000)
+            check("one routing editor", page.locator(".settings-routing-grid").count() == 1)
+            check("mode choices", page.locator("#settings-output-mode-select option").all_text_contents() == ['Stereo', 'Stereo + Sub'])
+            check("independent crossover visible", page.locator("#settings-crossover-select").is_visible())
 
             # Multichannel device, then Crossover mode.
             # NOTE: Playwright select_option races the settings re-render
@@ -95,10 +96,21 @@ def main() -> int:
                 return 1
             pick("#settings-output-select", scarlett_value)
             page.wait_for_timeout(1500)
-            pick("#os-mode-select", "crossover")
+            pick("#settings-output-mode-select", "stereo-sub")
+            page.wait_for_timeout(700)
+            check("one row per hardware port", page.locator("#settings-routing-grid select").count() == 18)
+            options = page.locator("#settings-routing-out-1 option").all_text_contents()
+            check("full-band and sub roles", 'Main L' in options and 'Sub L' in options and 'Sub 2' in options and 'Low L' not in options)
+            pick("#settings-crossover-select", "on")
+            page.wait_for_timeout(700)
+            options = page.locator("#settings-routing-out-1 option").all_text_contents()
+            check("crossover replaces Main and keeps subs", 'Main L' not in options and 'Low L' in options and 'Low-Mid R' in options and 'Sub L' in options)
+            for index, role in enumerate(['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high', 'sub_l', 'sub_r'], 1):
+                pick(f"#settings-routing-out-{index}", role)
+                page.wait_for_timeout(250)
             page.wait_for_timeout(1500)
             topology = page.locator("#os-topology").inner_text()
-            check(f"os topology mentions 3-Way ({topology})", "3-Way" in topology)
+            check(f"topology follows routing ({topology})", "3-Way" in topology and "Stereo subs" in topology)
             page.screenshot(path=str(shots / "os-settings.png"))
 
             # DSP tab: bank selector and crossover tile.
@@ -111,6 +123,8 @@ def main() -> int:
             check(f"bank info shows preset ({info})", "Listening" in info)
             card = page.locator("#effects-crossover-card")
             check("crossover card visible", card.is_visible())
+            page.locator("#effects-crossover-starter").click()
+            page.wait_for_timeout(1200)
             tabs = page.locator("#effects-crossover-tabs button")
             check(f"six way tabs ({tabs.count()} found)", tabs.count() == 6)
             paths = page.locator("#effects-crossover-graph polyline")
@@ -137,13 +151,13 @@ def main() -> int:
             # Clear one filter, then let the starter refill only the gap.
             page.evaluate(
                 "applyOutputSystemMutation('set_processing',"
-                " { mode: 'crossover', role: 'left_mid', lowpass: null }, false, { quiet: true })")
+                " { mode: 'stereo-sub', role: 'left_mid', lowpass: null }, false, { quiet: true })")
             page.wait_for_timeout(1200)
             page.locator("#effects-crossover-starter").click()
             page.wait_for_timeout(1500)
             starter_back = page.evaluate(
                 """fetch('/api/audio/output-state').then(r => r.json())
-                    .then(j => JSON.stringify(j.modes.crossover.processing.left_mid.lowpass))""")
+                    .then(j => JSON.stringify(j.modes[j.active_mode].processing.left_mid.lowpass))""")
             check(f"starter refills only the gap ({starter_back})",
                   '"frequency_hz":2500' in starter_back)
 
@@ -160,10 +174,30 @@ def main() -> int:
                     .then(j => {
                         const active = document.querySelector('.crossover-tab.is-active')
                             ?.dataset.crossoverWay || 'left_low';
-                        const entry = j.modes.crossover.processing[active];
+                        const entry = j.modes[j.active_mode].processing[active];
                         return JSON.stringify((entry.lowpass || entry.highpass || {}).slope_db_oct);
                     })""")
             check(f"way slope edit persists ({slope_back})", slope_back == "48")
+
+            # Existing sub tile edits the same role processing in v2.
+            check("stereo sub labels", page.locator('.effects-card-subwoofer').is_visible())
+            page.evaluate("""() => {
+                const input = document.getElementById('effects-subwoofer-level');
+                input.value = '-6'; input.dispatchEvent(new Event('change', {bubbles: true}));
+            }""")
+            page.wait_for_timeout(1300)
+            level = page.evaluate("fetch('/api/audio/output-state').then(r => r.json()).then(j => j.modes[j.active_mode].processing.sub_l.level_db)")
+            check("sub tile saves routed Sub L", level == -6)
+
+            page.evaluate("toggleSettingsPanel(true)")
+            pick('#settings-crossover-select', 'off')
+            page.wait_for_timeout(700)
+            check("crossover Off removes way options", 'Low L' not in page.locator('#settings-routing-out-1 option').all_text_contents())
+            pick('#settings-output-mode-select', 'stereo')
+            page.wait_for_timeout(700)
+            check("Stereo uses only stereo roles", page.locator('#settings-routing-out-1 option').all_text_contents() == ['Off', 'Main L', 'Main R'])
+            page.set_viewport_size({'width': 390, 'height': 844})
+            page.screenshot(path=str(shots / 'output-mobile.png'))
 
             browser.close()
     finally:

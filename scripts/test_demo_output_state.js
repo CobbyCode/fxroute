@@ -29,17 +29,17 @@ async function request(url, body) {
     const catalog = await request('/api/audio/output-state');
     assert.equal(catalog.revision, 1);
     assert.equal(catalog.active_mode, 'stereo');
-    assert.deepEqual(Object.keys(catalog.modes.stereo.banks), ['global', 'main_l', 'main_r', 'sub1']);
-    assert.equal(catalog.modes.stereo.topology.sub_mode, 'mono');
-    assert.equal(catalog.modes.crossover.topology.way_count, 3);
-    assert.deepEqual(catalog.modes.crossover.topology.issues, []);
+    assert.deepEqual(Object.keys(catalog.modes.stereo.banks), ['global', 'main_l', 'main_r']);
+    assert.equal(catalog.modes.stereo.topology.sub_mode, 'none');
+    assert.equal(catalog.modes['stereo-sub'].topology.sub_mode, 'mono');
+    assert.equal(catalog.modes['stereo-sub'].crossover_enabled, false);
     assert.ok(catalog.device.channels > 0);
-    assert.ok(Array.isArray(catalog.device.routing.stereo));
-    assert.deepEqual(catalog.capabilities.modes, ['stereo', 'crossover']);
+    assert.ok(Array.isArray(catalog.device.routing['stereo-sub']));
+    assert.deepEqual(catalog.capabilities.modes, ['stereo', 'stereo-sub']);
 
     // Unknown mode and unknown bank are refused without touching the revision.
     for (const mutation of [{ kind: 'switch_mode', mode: 'surround' },
-        { kind: 'select_bank', mode: 'stereo', bank_id: 'left_low' },
+        { kind: 'select_bank', mode: 'stereo-sub', bank_id: 'left_low' },
         { kind: 'teleport' }]) {
         const refused = await rawRequest('/api/audio/output-state/apply', { expected_revision: 1, mutation });
         assert.equal(refused.status, 400);
@@ -48,45 +48,54 @@ async function request(url, body) {
 
     // Mode switch + bank selection persist with revision guards.
     let result = await request('/api/audio/output-state/apply',
-        { expected_revision: 1, mutation: { kind: 'switch_mode', mode: 'crossover' } });
+        { expected_revision: 1, mutation: { kind: 'switch_mode', mode: 'stereo-sub' } });
     assert.equal(result.revision, 2);
-    assert.equal(result.active_mode, 'crossover');
+    assert.equal(result.active_mode, 'stereo-sub');
     result = await request('/api/audio/output-state/apply',
-        { expected_revision: 2, mutation: { kind: 'select_bank', mode: 'crossover', bank_id: 'left_mid' } });
+        { expected_revision: 2, mutation: { kind: 'select_bank', mode: 'stereo-sub', bank_id: 'sub1' } });
     assert.equal(result.revision, 3);
     const stale = await rawRequest('/api/audio/output-state/apply',
-        { expected_revision: 2, mutation: { kind: 'select_bank', mode: 'crossover', bank_id: 'left_low' } });
+        { expected_revision: 2, mutation: { kind: 'select_bank', mode: 'stereo-sub', bank_id: 'main_l' } });
     assert.equal(stale.status, 409);
 
     // Routing edits create banks on demand and report derived topology.
     result = await request('/api/audio/output-state/apply',
         { expected_revision: 3,
-          mutation: { kind: 'set_routing', mode: 'stereo',
+          mutation: { kind: 'set_routing', mode: 'stereo-sub',
                       assignments: ['main_l', 'main_r', 'sub_l', 'sub_r'] } });
     assert.equal(result.revision, 4);
-    const stereoAfter = (await request('/api/audio/output-state')).modes.stereo;
+    const stereoAfter = (await request('/api/audio/output-state')).modes['stereo-sub'];
     assert.equal(stereoAfter.topology.sub_mode, 'stereo');
     assert.ok(stereoAfter.banks.sub_l);
 
     // Bank-bound preset creation assigns the target; conflicts keep the preset.
     const created = await request('/api/dsp/presets/create-peq',
-        { presetName: 'Demo Bank EQ', peq: { params: {} }, bank_mode: 'stereo', bank_id: 'sub1', expected_revision: 4 });
+        { presetName: 'Demo Bank EQ', peq: { params: {} }, bank_mode: 'stereo-sub', bank_id: 'sub1', expected_revision: 4 });
     assert.equal(created.bank.assigned, true);
     assert.equal(created.bank.revision, 5);
     const conflicted = await rawRequest('/api/dsp/presets/create-peq',
-        { presetName: 'Demo Bank EQ 2', peq: { params: {} }, bank_mode: 'stereo', bank_id: 'sub1', expected_revision: 4 });
+        { presetName: 'Demo Bank EQ 2', peq: { params: {} }, bank_mode: 'stereo-sub', bank_id: 'sub1', expected_revision: 4 });
     assert.equal(conflicted.status, 409);
     assert.equal(conflicted.data.bank.assigned, false);
 
     // Bank-pinned presets cannot be deleted.
     await request('/api/audio/output-state/apply',
-        { expected_revision: 5, mutation: { kind: 'set_bank_preset', mode: 'stereo', bank_id: 'sub1', preset: 'Demo Bank EQ' } });
+        { expected_revision: 5, mutation: { kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'sub1', preset: 'Demo Bank EQ' } });
     const pinned = await rawRequest('/api/dsp/presets/delete', { preset_name: 'Demo Bank EQ' });
     assert.equal(pinned.status, 400);
 
-    // Crossover response draws backend-shaped curves per way.
+    // Crossover is an independent switch: enabling it replaces Main with ways.
+    await request('/api/audio/output-state/apply', { expected_revision: 6,
+        mutation: { kind: 'set_crossover', mode: 'stereo-sub', enabled: true } });
+    await request('/api/audio/output-state/apply', { expected_revision: 7,
+        mutation: { kind: 'set_routing', mode: 'stereo-sub',
+            assignments: ['left_low', 'right_low', 'sub_l', 'sub_r', 'left_high', 'right_high'] } });
+    await request('/api/audio/output-state/apply', { expected_revision: 8,
+        mutation: { kind: 'set_processing', mode: 'stereo-sub', role: 'left_low',
+            lowpass: { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 300 } } });
     const response = await request('/api/audio/output-state/crossover-response');
-    assert.equal(response.mode, 'crossover');
+    assert.equal(response.mode, 'stereo-sub');
+    assert.equal(response.crossover_enabled, true);
     const low = response.ways.left_low;
     assert.equal(low.complete, true);
     assert.ok(low.points.length > 100);

@@ -301,11 +301,13 @@
     // tile. Mutations apply to this demo state with revision guards,
     // mirroring the backend contracts (409/400); measurement locking is
     // not simulated here.
-    const outputStateRoles = {
-        stereo: ['main_l', 'main_r', 'sub_l', 'sub_r', 'sub1', 'sub2'],
-        crossover: ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low',
-            'right_low_mid', 'right_mid', 'right_high', 'sub_l', 'sub_r', 'sub1', 'sub2'],
-    };
+    const speakerWays = ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low',
+        'right_low_mid', 'right_mid', 'right_high'];
+    const subRoles = ['sub_l', 'sub_r', 'sub1', 'sub2'];
+    function outputStateRoles(mode) {
+        return [...(outputStateStore.modes[mode].crossover_enabled ? speakerWays : ['main_l', 'main_r']),
+            ...(mode === 'stereo-sub' ? subRoles : [])];
+    }
     const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' });
     const defaultProcessing = () => ({ highpass: null, lowpass: null, level_db: 0.0, alignment_ms: 0.0, polarity: 'normal' });
     const lr24 = (frequency_hz) => ({ family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz });
@@ -314,6 +316,16 @@
         active_mode: 'stereo',
         modes: {
             stereo: {
+                crossover_enabled: false,
+                selected_bank: 'global',
+                banks: { global: neutralBank(), main_l: neutralBank(), main_r: neutralBank() },
+                processing: { main_l: defaultProcessing(), main_r: defaultProcessing() },
+                bass_management: { frequency_hz: 80, main_highpass_enabled: true },
+                extras: {},
+                routing: {},
+            },
+            'stereo-sub': {
+                crossover_enabled: false,
                 selected_bank: 'global',
                 banks: { global: neutralBank(), main_l: neutralBank(), main_r: neutralBank(), sub1: neutralBank() },
                 processing: { main_l: defaultProcessing(), main_r: defaultProcessing(), sub1: defaultProcessing() },
@@ -321,39 +333,20 @@
                 extras: {},
                 routing: {},
             },
-            crossover: {
-                selected_bank: 'global',
-                banks: { global: neutralBank() },
-                processing: {},
-                bass_management: { frequency_hz: 80, main_highpass_enabled: true },
-                extras: {},
-                routing: {},
-            },
         },
     };
-    for (const role of ['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high']) {
-        outputStateStore.modes.crossover.banks[role] = neutralBank();
-        outputStateStore.modes.crossover.processing[role] = defaultProcessing();
-    }
-    for (const [role, highpass, lowpass] of [
-        ['left_low', null, 300], ['left_mid', 300, 2500], ['left_high', 2500, null],
-        ['right_low', null, 300], ['right_mid', 300, 2500], ['right_high', 2500, null],
-    ]) {
-        const settings = outputStateStore.modes.crossover.processing[role];
-        if (highpass) settings.highpass = lr24(highpass);
-        if (lowpass) settings.lowpass = lr24(lowpass);
-    }
-    outputStateStore.modes.stereo.routing[SCARLETT_KEY] = ['main_l', 'main_r', 'sub1', 'sub1'];
-    outputStateStore.modes.crossover.routing[SCARLETT_KEY] = ['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high'];
+    outputStateStore.modes.stereo.routing[SCARLETT_KEY] = ['main_l', 'main_r'];
+    outputStateStore.modes['stereo-sub'].routing[SCARLETT_KEY] = ['main_l', 'main_r', 'sub1', 'off'];
     function outputStateTopology(mode, assignments) {
-        const roles = [...new Set((assignments || []).filter(r => r && r !== 'off'))];
+        const enabled = outputStateStore.modes[mode].crossover_enabled;
+        const roles = outputStateRoles(mode).filter(role => assignments.includes(role));
         const subs = roles.filter(r => ['sub_l', 'sub_r', 'sub1', 'sub2'].includes(r));
         const subMode = !subs.length ? 'none' : subs.length === 1 ? 'mono'
             : subs.length === 2 && subs.includes('sub_l') && subs.includes('sub_r') ? 'stereo'
             : subs.length === 2 ? 'dual-mono' : 'unsupported';
         const issues = [];
         let wayCount = null;
-        if (mode === 'stereo') {
+        if (!enabled) {
             if (!roles.includes('main_l') || !roles.includes('main_r')) issues.push('Stereo routing requires Main L and Main R');
             if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
         } else {
@@ -370,21 +363,24 @@
             }
             if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
         }
-        return { mode, roles, sub_roles: subs, sub_mode: subMode, left_ways: [], right_ways: [], way_count: wayCount, issues };
+        return { mode, crossover_enabled: enabled, roles, sub_roles: subs, sub_mode: subMode,
+            left_ways: roles.filter(role => role.startsWith('left_')),
+            right_ways: roles.filter(role => role.startsWith('right_')), way_count: wayCount, issues };
     }
     function outputStateCatalog() {
         const out = outputEntry(selectedOutput());
         const key = out.key;
         const channels = Number(out.channels || 0);
         const modes = {};
-        for (const mode of ['stereo', 'crossover']) {
+        for (const mode of ['stereo', 'stereo-sub']) {
             const config = outputStateStore.modes[mode];
-            const routing = (config.routing[key] || (mode === 'stereo' ? ['main_l', 'main_r'] : [])).slice();
+            const routing = (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
             const banks = {};
             for (const [id, bank] of Object.entries(config.banks)) {
                 banks[id] = { ...bank, active_side: bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null };
             }
             modes[mode] = {
+                crossover_enabled: config.crossover_enabled,
                 selected_bank: config.selected_bank,
                 banks,
                 processing: JSON.parse(JSON.stringify(config.processing)),
@@ -394,17 +390,17 @@
             };
         }
         const deviceRouting = {};
-        for (const mode of ['stereo', 'crossover']) {
+        for (const mode of ['stereo', 'stereo-sub']) {
             deviceRouting[mode] = (outputStateStore.modes[mode].routing[key]
-                || (mode === 'stereo' ? ['main_l', 'main_r'] : [])).slice();
+                || (outputStateStore.modes[mode].crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
         }
         return {
             status: 'ok', revision: outputStateStore.revision, active_mode: outputStateStore.active_mode,
             device: { key, channels, routing: deviceRouting },
             modes,
             capabilities: {
-                modes: ['stereo', 'crossover'],
-                roles: { stereo: outputStateRoles.stereo.slice(), crossover: outputStateRoles.crossover.slice() },
+                modes: ['stereo', 'stereo-sub'],
+                roles: { stereo: outputStateRoles('stereo'), 'stereo-sub': outputStateRoles('stereo-sub') },
                 filter_families: { 'linkwitz-riley': [12, 24, 36, 48, 60, 72], butterworth: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72], bessel: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72] },
                 max_slope_db_oct: 72,
                 max_biquads_per_output: 32,
@@ -2104,20 +2100,39 @@
             const fail = (message) => err(message, 400);
             if (mutation.kind === 'switch_mode') {
                 outputStateStore.active_mode = mode;
+            } else if (mutation.kind === 'set_crossover') {
+                if (typeof mutation.enabled !== 'boolean') return fail('Crossover enabled must be a boolean');
+                config.crossover_enabled = mutation.enabled;
+                const mapping = mutation.enabled ? { main_l: 'left_low', main_r: 'right_low' }
+                    : { left_low: 'main_l', right_low: 'main_r' };
+                const allowed = outputStateRoles(mode);
+                for (const [key, assignments] of Object.entries(config.routing)) {
+                    config.routing[key] = assignments.map(role => mapping[role] || (allowed.includes(role) ? role : 'off'));
+                    for (const role of config.routing[key]) {
+                        if (role !== 'off' && !config.banks[role]) {
+                            config.banks[role] = neutralBank();
+                            config.processing[role] = defaultProcessing();
+                        }
+                    }
+                }
+                if (!allowed.includes(config.selected_bank)) config.selected_bank = 'global';
             } else if (mutation.kind === 'set_routing') {
                 const assignments = mutation.assignments;
                 if (!Array.isArray(assignments)) return fail('Routing assignments must be an array');
-                const allowed = new Set([...outputStateRoles[mode], 'off']);
+                const allowed = new Set([...outputStateRoles(mode), 'off']);
                 if (assignments.some(role => !allowed.has(role))) return fail('Routing contains an invalid role');
-                config.routing[outputEntry(selectedOutput()).key] = assignments.slice();
+                const key = outputEntry(selectedOutput()).key;
+                config.routing[key] = [...assignments, ...(config.routing[key] || []).slice(assignments.length)];
                 for (const role of assignments) {
                     if (role !== 'off' && !config.banks[role]) {
                         config.banks[role] = neutralBank();
                         config.processing[role] = defaultProcessing();
                     }
                 }
+                if (!assignments.includes(config.selected_bank)) config.selected_bank = 'global';
             } else if (mutation.kind === 'select_bank') {
-                if (!config.banks[mutation.bank_id]) return fail(`Unknown bank ${mutation.bank_id}`);
+                const active = outputStateCatalog().modes[mode].topology.roles;
+                if (mutation.bank_id !== 'global' && !active.includes(mutation.bank_id)) return fail(`Unknown bank ${mutation.bank_id}`);
                 config.selected_bank = mutation.bank_id;
             } else if (mutation.kind === 'set_bank_preset') {
                 const bank = config.banks[mutation.bank_id];
@@ -2135,6 +2150,13 @@
                 for (const key of ['level_db', 'alignment_ms', 'polarity']) {
                     if (mutation[key] !== undefined && mutation[key] !== null) settings[key] = mutation[key];
                 }
+            } else if (mutation.kind === 'set_subwoofers') {
+                const roles = outputStateCatalog().modes[mode].topology.sub_roles;
+                if (!mutation.processing || JSON.stringify(Object.keys(mutation.processing).sort()) !== JSON.stringify(roles.slice().sort())) {
+                    return fail('Sub settings must describe exactly the routed sub roles');
+                }
+                config.bass_management = { frequency_hz: mutation.frequency_hz, main_highpass_enabled: mutation.main_highpass_enabled };
+                for (const role of roles) Object.assign(config.processing[role], mutation.processing[role]);
             } else if (mutation.kind === 'set_bass') {
                 if (mutation.frequency_hz !== undefined && mutation.frequency_hz !== null) {
                     config.bass_management.frequency_hz = mutation.frequency_hz;
@@ -2161,7 +2183,9 @@
         if (p === '/api/audio/output-state/crossover-response' && !post) {
             const catalog = outputStateCatalog();
             const ways = {};
+            const config = catalog.modes[catalog.active_mode];
             for (const [role, settings] of Object.entries(catalog.modes[catalog.active_mode].processing)) {
+                if (!config.crossover_enabled || !config.topology.roles.includes(role)) continue;
                 if (!role.startsWith('left_') && !role.startsWith('right_')) continue;
                 const points = [];
                 const way = role.split('_').slice(1).join('_');
@@ -2180,6 +2204,7 @@
                     complete, points: complete ? points : null };
             }
             return j({ status: 'ok', revision: catalog.revision, mode: catalog.active_mode,
+                crossover_enabled: config.crossover_enabled,
                 sample_rate_hz: 48000, ways });
         }
         if (p === '/api/audio/samplerate') {

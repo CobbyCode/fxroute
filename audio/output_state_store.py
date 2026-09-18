@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from audio.output_state import default_output_state, validate_output_state
+from audio.output_state_migration import upgrade_output_state
 from common.atomic_write import atomic_write_text
 
 
@@ -28,7 +29,7 @@ class OutputStateStore:
             payload = json.loads(text)
         except (ValueError, RecursionError) as exc:
             raise ValueError("Invalid output state JSON") from exc
-        return validate_output_state(payload)
+        return upgrade_output_state(payload)
 
     def commit(self, state: dict, *, expected_revision: int) -> dict:
         candidate = validate_output_state(state)

@@ -93,7 +93,8 @@ def require_speaker_candidate(start_state: dict, candidate_state: dict, *,
         topology = derive_topology(
             candidate["active_mode"],
             routing_for_device(candidate, candidate["active_mode"], output_key),
-            channels=channels)
+            channels=channels,
+            crossover_enabled=candidate["modes"][candidate["active_mode"]]["crossover_enabled"])
         topology.require_activatable()
         unknown = [role for role in changed if role not in topology.roles]
         if unknown:

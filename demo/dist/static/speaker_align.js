@@ -67,8 +67,8 @@
 
     function speakerAlignVisible(catalog) {
         if (!catalog || typeof catalog !== 'object') return false;
-        if (catalog.active_mode !== 'crossover') return false;
-        const modeConfig = catalog.modes && catalog.modes.crossover;
+        const modeConfig = catalog.modes && catalog.modes[catalog.active_mode];
+        if (!modeConfig?.crossover_enabled) return false;
         const wayCount = modeConfig && modeConfig.topology
             ? Number(modeConfig.topology.way_count || 0) : 0;
         return Number.isFinite(wayCount) && wayCount >= 2;
