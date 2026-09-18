@@ -10,6 +10,13 @@
 - AutoSub-Slices A–G sind implementiert und committet (B zusätzlich reviewed; F durch zwei externe Review-Runden, G durch eine mit SHIP-Verdict). Speaker Align: Analyse-/Proposal-Slice (`583d3be`), interner Full-Resolution-Capture-Evidenztransport (`0d4855f`) und serielle Way-Acquisition mit Common-Input-Attestation (`17cdfb6`) implementiert und committet, alle drei mit Review SHIP für ihren begrenzten Slice. Guarded Apply, Commit/Restore/Release, API, Frontend und Release-Registrierung sind implementiert (Details unten); reale 2-/3-Wege-Verifikation bleibt separat.
 - Der AutoSub-HTTP-Start ist seit `00b596b` geöffnet (`_AUTO_SUB_SERVICE_INTEGRATION_READY = True` in `measurement/autosub/runners/start.py:69`; gestützte Topologie registriert statt 503; ungültige Topologie weiter 400, fehlende Session weiter 503). Kein HTTP-/Environment-Override. Der Verhaltens-Gate-Test ist invertiert (`test_supported_topology_is_open_in_production`): ein versehentlich wieder geschlossenes Gate wird rot.
 
+## Kurz-Handoff (2026-09-18)
+
+- Fertig und live auf `.104` (`http://192.168.178.104:8000`): Unified Output Model (Stereo / Stereo + Sub, Crossover als On/Off-Schalter, ein Hardware-Routing), kanalabhängiger Mode-Selektor, Settings-Reihenfolge, Crossover-Kachel im Sub-Stil mit Pro-Filter-Gruppen.
+- Verifikation: lokal 405/0/14, `.104` inkl. nativer Plan-Peak-Parität; Produkt läuft, Backups unter `~/deploy-backup/`, Demo nie auf `.104`.
+- Offen: Backend-v2-Migration nach `docs/superpowers/plans/2026-09-18-backend-v2-migration.md`, Einstieg Task 0 (Audit). Legacy-Layer (AutoSub-Runner, Coordinator-Snapshots, Linkaufbau) ist noch aktiv und tragend — nicht nebenbei anfassen.
+- Regeln: `./AGENTS.md` (Git-ignoriert), kein Push/Release, Deploy nur Backup → Transfer (ohne `demo/`) → Restart → Verify.
+
 ## Maßgebliche Pläne
 Die bestehenden Pläne sind maßgeblich. **Keine Neuplanung oder erneute Implementierung bereits abgeschlossener Arbeiten.**
 - `docs/superpowers/plans/2026-09-16-multichannel-spec.md`
