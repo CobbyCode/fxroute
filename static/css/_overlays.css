@@ -183,7 +183,9 @@
 }
 /* Crossover / Speaker tile: way tabs, response graph, control grid. */
 .effects-card-crossover {
+    /* Full-width band directly above the subwoofer band (order 20). */
     grid-column: 1 / -1;
+    order: 19;
 }
 .crossover-tabs {
     display: flex;

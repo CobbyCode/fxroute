@@ -129,6 +129,11 @@ def main() -> int:
             check(f"dsp card order ({order})",
                   order == ['effects-crossover-card', 'Subwoofer', 'A/B compare',
                             'Output extras', 'Combine', 'Create PEQ preset'])
+            tops = page.evaluate(
+                """Object.fromEntries([...document.querySelectorAll('#tab-effects .effects-grid > section')]
+                    .map(el => [el.id || el.querySelector('h3')?.textContent, Math.round(el.getBoundingClientRect().top)]))""")
+            check(f"crossover visually between create-preset and subwoofer ({tops})",
+                  tops['A/B compare'] < tops['Combine'] < tops['effects-crossover-card'] < tops['Subwoofer'])
             span = page.evaluate(
                 "getComputedStyle(document.getElementById('effects-crossover-card')).gridColumn")
             check(f"crossover spans full width ({span})", span == '1 / -1')
