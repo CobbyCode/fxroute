@@ -92,7 +92,7 @@ def _sections_from_poles(poles: list[complex]) -> list[tuple]:
 
 
 def _analog_coefficients(kind: str, section: tuple, warped: float, scale: float) -> tuple:
-    """Build analog (b0,b1,b2,a0,a1,a2) for one prototype section at cutoff ``warped``.
+    """Build analog (b0,b1,b2,a0,a1,a2) for one (w0, Q) biquad section at cutoff ``warped``.
 
     ``scale`` normalizes the prototype so its magnitude cutoff sits at 1 rad/s
     (1.0 for Butterworth, 1/w3db for Bessel). Lowpass scales the pole radius up
@@ -100,13 +100,9 @@ def _analog_coefficients(kind: str, section: tuple, warped: float, scale: float)
     (``w0 = warped / (w0_proto * scale)``) via the LP->HP substitution. The two
     coincide for Butterworth (unit-circle poles) but differ for Bessel, where
     reusing the lowpass radius would move the highpass -3 dB point.
+    Real-pole (first-order) sections never reach here: ``design_crossover``
+    routes them through ``_first_order_digital``.
     """
-    if len(section) == 1:
-        (w0_proto,) = section
-        w0 = w0_proto * scale * warped if kind == "lowpass" else warped / (w0_proto * scale)
-        if kind == "lowpass":
-            return (w0, 0.0, 0.0, w0, 1.0, 0.0)
-        return (0.0, 1.0, 0.0, w0, 1.0, 0.0)
     w0_proto, quality = section
     w0 = w0_proto * scale * warped if kind == "lowpass" else warped / (w0_proto * scale)
     if kind == "lowpass":
