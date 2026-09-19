@@ -559,9 +559,7 @@ function speakerAlignVisible() {
             return false;
         }
     }
-    const catalog = speakerAlignCatalog();
-    const config = catalog?.modes?.[catalog.active_mode];
-    return !!config?.crossover_enabled && Number(config.topology?.way_count || 0) >= 2;
+    return false;
 }
 
 function formatSpeakerStatus(job) {
@@ -574,7 +572,7 @@ function formatSpeakerStatus(job) {
 
 function syncSpeakerAlignButton() {
     const elements = deps.getElements();
-    if (!elements.measurementSpeakerAlignStartBtn || !elements.measurementSpeakerAlignGroup) return;
+    if (!elements.measurementSpeakerAlignLeftBtn || !elements.measurementSpeakerAlignGroup) return;
     const measurementState = deps.getState().measurement || {};
     if (!speakerAlignVisible()) {
         elements.measurementSpeakerAlignGroup.classList.add('hidden');
@@ -584,33 +582,26 @@ function syncSpeakerAlignButton() {
     const activeKind = deps.getActiveMeasurementKind();
     const speakerActive = activeKind === 'speaker_align' || !!measurementState.speakerAlignInFlight;
     const speakerReadyToCancel = speakerActive && !!measurementState.speakerAlignJobId;
-    elements.measurementSpeakerAlignStartBtn.disabled = speakerActive
-        ? !speakerReadyToCancel
-        : (measurementState.startInFlight || deps.hasActiveMeasurementJob() || !deps.measurementModeReady());
-    elements.measurementSpeakerAlignStartBtn.textContent = speakerActive ? 'Cancel Speaker Align' : 'Speaker Align';
-    const busy = !!measurementState.speakerAlignInFlight;
-    if (elements.measurementSpeakerAlignSide) elements.measurementSpeakerAlignSide.disabled = busy;
-    if (elements.measurementSpeakerAlignDryRun) elements.measurementSpeakerAlignDryRun.disabled = busy;
-    if (elements.measurementSpeakerAlignReference) elements.measurementSpeakerAlignReference.disabled = busy;
-    if (elements.measurementSpeakerAlignPosition) elements.measurementSpeakerAlignPosition.disabled = busy;
+    const disabled = speakerActive || measurementState.startInFlight || deps.hasActiveMeasurementJob() || !deps.measurementModeReady();
+    elements.measurementSpeakerAlignLeftBtn.disabled = disabled;
+    elements.measurementSpeakerAlignRightBtn.disabled = disabled;
+    elements.measurementSpeakerAlignCancelBtn.classList.toggle('hidden', !speakerActive);
+    elements.measurementSpeakerAlignCancelBtn.disabled = !speakerReadyToCancel;
+    const catalog = speakerAlignCatalog();
+    const roles = catalog.modes[catalog.active_mode].topology.left_ways;
+    if (elements.measurementSpeakerAlignSequence) {
+        elements.measurementSpeakerAlignSequence.textContent = `${roles.map(SpeakerAlign.wayLabel).join(' → ')} · then repeat to verify.`;
+    }
     if (!speakerActive && elements.measurementSpeakerAlignStatus && !measurementState.speakerAlignResult) {
         elements.measurementSpeakerAlignStatus.textContent = 'Aligns each way of one speaker with the microphone fixed.';
     }
 }
 
-function readSpeakerAlignPayload() {
+function readSpeakerAlignPayload(side) {
     const measurementState = deps.getState().measurement || {};
-    const elements = deps.getElements();
-    const side = elements.measurementSpeakerAlignSide?.value || 'left';
-    const dryRun = !!elements.measurementSpeakerAlignDryRun?.checked;
-    const referenceInput = elements.measurementSpeakerAlignReference?.value
-        || SpeakerAlign.defaultReferenceId?.(
-            measurementState.selectedInputId,
-            measurementState.selectedReferenceInputChannel || '2')
-        || `${measurementState.selectedInputId || 'mic'}:upstream`;
-    const positionInput = elements.measurementSpeakerAlignPosition?.value
-        || SpeakerAlign.defaultMicrophonePositionId?.() || 'seat-1-fixed';
     deps.normalizeMeasurementInputChannelSelections();
+    const referenceChannel = deps.getMeasurementReferenceWarning() ? ''
+        : (measurementState.selectedReferenceInputChannel || '');
     if (typeof SpeakerAlign.buildSpeakerAlignPayload !== 'function') {
         throw new Error('Speaker Align support is unavailable');
     }
@@ -618,16 +609,15 @@ function readSpeakerAlignPayload() {
         side,
         inputId: measurementState.selectedInputId,
         micChannel: measurementState.selectedMicInputChannel || '1',
-        referenceChannel: deps.getMeasurementReferenceWarning()
-            ? ''
-            : (measurementState.selectedReferenceInputChannel || ''),
-        referenceId: referenceInput,
-        microphonePositionId: positionInput,
-        dryRun,
+        referenceChannel,
+        referenceId: SpeakerAlign.defaultReferenceId(measurementState.selectedInputId, referenceChannel),
+        microphonePositionId: `${side}-fixed-${Date.now()}`,
+        dryRun: false,
     });
 }
 
-async function startSpeakerAlign() {
+async function startSpeakerAlign(side) {
+    if (!speakerAlignVisible()) return;
     const measurementState = deps.getState().measurement || {};
     if (measurementState.speakerAlignInFlight || measurementState.startInFlight
         || measurementState.activeJobId || measurementState.autoSubInFlight) return;
@@ -642,7 +632,7 @@ async function startSpeakerAlign() {
     }
     let payload;
     try {
-        payload = readSpeakerAlignPayload();
+        payload = readSpeakerAlignPayload(side);
     } catch (error) {
         measurementState.statusText = error?.message || 'Speaker Align failed to start';
         deps.showToast(measurementState.statusText, 'error');
@@ -802,6 +792,12 @@ async function handleSpeakerAlignResult(job) {
         return;
     }
     measurementState.speakerAlignResult = job.result;
+    measurementState.speakerAlignResults = { ...measurementState.speakerAlignResults, [job.side]: job.result };
+    const resultsEl = deps.getElements().measurementSpeakerAlignResults;
+    if (resultsEl) {
+        resultsEl.innerHTML = ['left', 'right'].map(side =>
+            SpeakerAlign.renderSpeakerAlignResult(measurementState.speakerAlignResults[side], side)).join('');
+    }
     measurementState.statusText = text;
     if (statusEl) statusEl.textContent = text;
     if (job.status === 'committed') {

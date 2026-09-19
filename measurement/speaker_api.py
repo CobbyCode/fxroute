@@ -14,6 +14,7 @@ wiring the persisted head still keeps the commit for the next transition.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -140,6 +141,8 @@ def build_speaker_align_service(
     capture_runner: Callable[..., Awaitable[dict]] | None = None,
     get_measurement_session: Callable[[], Any] | None = None,
     build_release_adapter: Callable[..., Any] | None = None,
+    prepare_measurement: Callable[..., Awaitable[Any]] | None = None,
+    another_measurement_active: Callable[[], bool] | None = None,
 ) -> SpeakerAlignService:
     """Compose a service from application parts (no ``main`` import).
 
@@ -200,13 +203,50 @@ def build_speaker_align_service(
                       reference_input_channel: str | int | None,
                       reference_id: str, microphone_position_id: str,
                       sweep_profile: dict | None,
-                      cancel_requested: Callable[[], bool] | None = None) -> dict:
+                      cancel_requested: Callable[[], bool] | None = None,
+                      expected_native_context: dict | None = None,
+                      on_progress: Callable | None = None) -> dict:
         return await runner(
             measurement_store, alignment, input_id=input_id,
             mic_input_channel=mic_input_channel,
             reference_input_channel=reference_input_channel,
             reference_id=reference_id, microphone_position_id=microphone_position_id,
-            sweep_profile=sweep_profile, cancel_requested=cancel_requested)
+            sweep_profile=sweep_profile, cancel_requested=cancel_requested,
+            expected_native_context=expected_native_context, on_progress=on_progress)
+
+    def check_available() -> None:
+        session = get_measurement_session() if get_measurement_session else None
+        if ((session is not None and session.has_active_jobs)
+                or (another_measurement_active and another_measurement_active())
+                or (measurement_store is not None and measurement_store.has_active_measurement_job())):
+            raise SpeakerAlignBusyError("Another measurement is already running")
+
+    def job_scope(job_id: str):
+        session = get_measurement_session() if get_measurement_session else None
+        epoch = session.capture_entry_epoch() if session is not None else None
+
+        @asynccontextmanager
+        async def owned():
+            registered = False
+            try:
+                if session is not None:
+                    _, entered = await session.register_speaker_job(job_id, entry_epoch=epoch)
+                    registered = True
+                    if prepare_measurement is not None:
+                        await prepare_measurement(int(get_measurement_rate()), graph_already_verified=entered)
+                yield
+            finally:
+                if registered:
+                    import asyncio
+                    cleanup = asyncio.create_task(session.unregister_speaker_job(job_id))
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            continue
+                    cleanup.result()
+
+        return owned()
 
     def create_session(start_state: dict, *, output_key: str, channels: int,
                        sample_rate_hz: int) -> SpeakerAlignSession:
@@ -274,7 +314,7 @@ def build_speaker_align_service(
     return SpeakerAlignService(
         get_state=get_state, describe=describe, acquire=acquire,
         create_session=create_session, freeze_live=freeze_live,
-        on_committed=on_committed)
+        on_committed=on_committed, job_scope=job_scope, check_available=check_available)
 
 
 __all__ = [

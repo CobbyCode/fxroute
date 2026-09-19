@@ -186,9 +186,9 @@ class RoutingAndProposalTests(unittest.TestCase):
         self.assertEqual(proposal["candidate_state"], expected)
         self.assertEqual(state, original)
         np.testing.assert_array_equal(captures[0]["impulse_response"], original_ir)
-        self.assertGreater(proposal["overlap_checks"][0]["after_sum_db"], -0.01)
+        self.assertEqual(proposal["reference_role"], "left_high")
 
-    def test_three_and_four_ways_validate_every_adjacent_overlap_including_above_2khz(self):
+    def test_three_and_four_ways_follow_configured_roles_and_latest_arrival(self):
         for ways, cutoffs, arrivals, delays in (
             (("low", "mid", "high"), (300, 2500), (96, 144, 240), (3.0, 2.0, 0.0)),
             (("low", "low_mid", "mid", "high"), (300, 1000, 3000), (96, 144, 192, 240), (3.0, 2.0, 1.0, 0.0)),
@@ -198,7 +198,7 @@ class RoutingAndProposalTests(unittest.TestCase):
                 alignment, live = alignment_for(state, channels, side="right")
                 proposal = alignment.propose(captures_for(alignment, arrivals, cutoffs=cutoffs), live_target=live)
                 self.assertEqual(proposal["added_delay_ms"], dict(zip((f"right_{way}" for way in ways), delays)))
-                self.assertEqual(len(proposal["overlap_checks"]), len(ways) - 1)
+                self.assertEqual(list(proposal["arrival_ms"]), [f"right_{way}" for way in ways])
 
     def test_equal_arrivals_produce_an_unchanged_candidate(self):
         state, channels = state_for()
@@ -231,7 +231,30 @@ class RoutingAndProposalTests(unittest.TestCase):
                     # Known acoustic offset is 144 samples; small peak-detector
                     # quantization/group delay is admitted, not a whole cycle.
                     self.assertAlmostEqual(proposal["added_delay_ms"]["left_low"], 144000 / rate, delta=0.06)
-                    self.assertGreater(proposal["overlap_checks"][0]["after_sum_db"], -0.5)
+
+    def test_host_monitor_reference_supports_a_microphone_only_setup(self):
+        alignment, live = alignment_for()
+        captures = captures_for(alignment, (240, 96))
+        for capture in captures:
+            capture["analysis"]["reference_path"].update(
+                electrical_reference_used=False, timing_status="acoustic-only",
+                stability="host-reference", capture_mode="dual-channel",
+                timing_applied_to_mic=True, start_score=1.0, end_score=1.0, ir_sharpness_db=48.0)
+            capture["reference_node"] = REFERENCE_TAP_INGRESS
+        result = alignment.propose(captures, live_target=live)
+        self.assertEqual(result["reference_role"], "left_low")
+        self.assertEqual(result["added_delay_ms"], {"left_low": 0.0, "left_high": 3.0})
+
+    def test_levels_polarity_and_overlap_do_not_turn_timing_into_gain_optimization(self):
+        state, channels = state_for()
+        state["modes"]["stereo-sub"]["processing"]["left_high"]["level_db"] = -18
+        alignment, live = alignment_for(state, channels)
+        captures = captures_for(alignment, cutoffs=(400,))
+        captures[1]["impulse_response"] *= -0.05
+        result = alignment.propose(captures, live_target=live)
+        expected = copy.deepcopy(state)
+        expected["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 3
+        self.assertEqual(result["candidate_state"], expected)
 
 
 class RejectionTests(unittest.TestCase):
@@ -243,50 +266,14 @@ class RejectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, text):
             self.alignment.propose(self.captures, live_target=self.live)
 
-    def test_reversed_polarity_is_rejected_without_guessing_an_inversion(self):
-        self.captures[0]["impulse_response"] *= -1
-        self.assert_rejected("phase|polarity")
-
-    def test_ambiguous_low_way_arrival_is_rejected_by_overlap_phase(self):
-        # A peak detector chooses a late low-way lobe; the actual IR is unchanged.
-        self.captures[0]["analysis"]["impulse_response"]["direct_arrival_index"] += 12
-        self.assert_rejected("phase|combined")
-
-    def test_reversed_polarity_cannot_be_hidden_by_half_cycle_arrival_error(self):
-        self.captures[0]["impulse_response"] *= -1
-        self.captures[0]["analysis"]["impulse_response"]["direct_arrival_index"] += 12
-        self.assert_rejected("phase|timing")
-
-    def test_full_cycle_error_cannot_pass_in_a_steep_native_overlap(self):
-        # LR48 has equal low/high phase, but a narrow enough overlap that an
-        # entire cycle of incorrect compensation can pass the RMS/sum gates.
-        self.captures = native_captures(self.alignment, slope=48, detect_arrival=False)
-        self.captures[0]["analysis"]["impulse_response"]["direct_arrival_index"] += 24
-        self.assert_rejected("phase|timing")
-
-    def test_steep_causal_peak_timing_is_declined_instead_of_forced_into_a_proposal(self):
-        for slope in (48, 72):
-            with self.subTest(slope=slope):
-                self.captures = native_captures(self.alignment, slope=slope)
-                self.assert_rejected("overlap|phase|timing")
-
-    def test_stronger_late_reflections_cannot_replace_direct_phase_evidence(self):
-        detector = MeasurementAnalyzer(None, RuntimeError)
-        for index, capture in enumerate(self.captures):
-            direct = capture["impulse_response"].copy()
-            capture["impulse_response"] = (-direct if index == 0 else direct) + 1.1 * np.roll(direct, 960)
-            reference = np.zeros_like(direct)
-            reference[capture["analysis"]["impulse_response"]["reference_peak_index"]] = 1
-            timing = detector._estimate_impulse_direct_arrival(capture["impulse_response"], reference, RATE)
-            self.assertEqual(timing["direct_arrival_index"], 796 if index == 0 else 1071)
-            capture["analysis"]["impulse_response"].update(
-                direct_arrival_index=timing["direct_arrival_index"], direct_confidence=timing["confidence"],
-            )
-        self.assert_rejected("overlap|phase|timing|combined")
-
-    def test_no_measured_overlap_is_rejected(self):
-        self.captures = captures_for(self.alignment, cutoffs=(400,))
-        self.assert_rejected("overlap")
+    def test_host_reference_from_a_downstream_node_is_rejected(self):
+        for capture in self.captures:
+            capture["analysis"]["reference_path"].update(
+                electrical_reference_used=False, timing_status="acoustic-only",
+                stability="host-reference", capture_mode="dual-channel",
+                timing_applied_to_mic=True, start_score=1.0, end_score=1.0, ir_sharpness_db=48.0)
+            capture["reference_node"] = "hardware.monitor"
+        self.assert_rejected("reference")
 
     def test_missing_duplicate_and_foreign_ways_are_rejected(self):
         original = self.captures
@@ -394,7 +381,6 @@ class RejectionTests(unittest.TestCase):
         for mutate in (
             lambda state: state.update(active_mode="stereo"),
             lambda state: state["modes"]["stereo-sub"]["processing"]["left_low"].update(lowpass=None),
-            lambda state: state["modes"]["stereo-sub"]["processing"]["left_high"]["highpass"].update(frequency_hz=10000),
         ):
             with self.subTest(mutate=mutate):
                 state, channels = state_for()

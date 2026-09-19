@@ -138,7 +138,8 @@ async def start_auto_sub_optimize(
     )
 
     # Reject if any measurement is already running
-    if measurement_store.has_active_measurement_job():
+    if (measurement_store.has_active_measurement_job()
+            or (measurement_sr_session is not None and measurement_sr_session.has_active_jobs)):
         raise HTTPException(status_code=409, detail="Another measurement is already running")
 
     # Clean up stale cancelling jobs before lock acquisition

@@ -1488,6 +1488,10 @@
         }
         const elapsed = (elapsedMs != null) ? elapsedMs : (Date.now() - job.startedAt);
         const base = { id, side: job.side, dry_run: !!job.dryRun, params: job.params };
+        const catalog = outputStateCatalog();
+        const roles = catalog.modes[catalog.active_mode].topology.roles.filter(role => role.startsWith(`${job.side}_`));
+        const arrival = Object.fromEntries(roles.map((role, index) => [role, 2 + index]));
+        const latest = 1 + roles.length;
         if (elapsed < 900) return { ...base, status: 'queued', message: 'Speaker alignment queued.', result: null, error: null };
         if (elapsed < 4000) return { ...base, status: 'acquiring', message: 'Acquiring speaker ways…', result: null, error: null };
         if (elapsed < 6000) return { ...base, status: 'confirming', message: 'Confirming alignment acoustically…', result: null, error: null };
@@ -1497,8 +1501,10 @@
             message: 'Committed speaker alignment at revision 8.',
             result: {
                 confirmed: true,
-                check: { confirmed: true, reasons: [], max_residual_ms: 0.05, max_regression_db: 0.1, min_confirmation_sum_db: 0.0, pairs: [] },
-                proposal: { start_revision: 7, processing_fingerprint: 'demo-fingerprint', arrival_ms: {}, added_delay_ms: {}, overlap_checks: [] },
+                check: { confirmed: true, reasons: [], max_residual_ms: 0.05, before_spread_ms: roles.length - 1,
+                    tolerance_ms: 0.25, after_arrival_ms: Object.fromEntries(roles.map((role, index) => [role, latest + (index ? 0.05 : 0)])), pairs: [] },
+                proposal: { start_revision: 7, processing_fingerprint: 'demo-fingerprint', arrival_ms: arrival,
+                    reference_role: roles[roles.length - 1], added_delay_ms: Object.fromEntries(roles.map(role => [role, latest - arrival[role]])) },
                 provenance: {},
                 committed_revision: 8,
                 dry_run: !!job.dryRun,

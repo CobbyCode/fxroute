@@ -276,11 +276,18 @@ class SpeakerServiceHookTests(unittest.IsolatedAsyncioTestCase):
 
         def create_session(start_state, **kwargs):
             class Session:
+                async def stage_candidate(self, candidate):
+                    pass
+
+                def measurement_context(self):
+                    return {}
+
                 async def confirm_and_commit(self, **kwargs):
                     return {"confirmed": True,
                             "check": {"confirmed": True, "reasons": [],
-                                      "max_residual_ms": 0.05, "max_regression_db": 0.1,
-                                      "min_confirmation_sum_db": 0.0, "pairs": []},
+                                      "max_residual_ms": 0.05, "before_spread_ms": 3.0,
+                                      "after_arrival_ms": {"left_low": 5, "left_high": 5.05},
+                                      "tolerance_ms": 0.25, "pairs": []},
                             "confirmation": {}, "committed": {"revision": 8}}
 
             return Session()
@@ -334,11 +341,18 @@ class SpeakerServiceHookTests(unittest.IsolatedAsyncioTestCase):
     async def test_unconfirmed_never_calls_hook(self):
         def create_session(start_state, **kwargs):
             class Session:
+                async def stage_candidate(self, candidate):
+                    pass
+
+                def measurement_context(self):
+                    return {}
+
                 async def confirm_and_commit(self, **kwargs):
                     return {"confirmed": False,
-                            "check": {"confirmed": False, "reasons": ["regression"],
-                                      "max_residual_ms": 0.05, "max_regression_db": 0.1,
-                                      "min_confirmation_sum_db": 0.0, "pairs": []},
+                            "check": {"confirmed": False, "reasons": ["residual"],
+                                      "max_residual_ms": 1.0, "before_spread_ms": 3.0,
+                                      "after_arrival_ms": {"left_low": 5, "left_high": 6},
+                                      "tolerance_ms": 0.25, "pairs": []},
                             "confirmation": {}, "restored": True}
 
             return Session()

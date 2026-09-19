@@ -659,13 +659,13 @@ const elements = {
     measurementAutoSubStartBtn: document.getElementById('measurement-auto-sub-start'),
     measurementAutoSubGroup: document.getElementById('measurement-auto-sub-group'),
     measurementAutoSubStatus: document.getElementById('measurement-auto-sub-status'),
-    measurementSpeakerAlignStartBtn: document.getElementById('measurement-speaker-align-start'),
+    measurementSpeakerAlignLeftBtn: document.getElementById('measurement-speaker-align-left'),
+    measurementSpeakerAlignRightBtn: document.getElementById('measurement-speaker-align-right'),
+    measurementSpeakerAlignCancelBtn: document.getElementById('measurement-speaker-align-cancel'),
     measurementSpeakerAlignGroup: document.getElementById('measurement-speaker-align-group'),
     measurementSpeakerAlignStatus: document.getElementById('measurement-speaker-align-status'),
-    measurementSpeakerAlignSide: document.getElementById('measurement-speaker-align-side'),
-    measurementSpeakerAlignDryRun: document.getElementById('measurement-speaker-align-dry-run'),
-    measurementSpeakerAlignReference: document.getElementById('measurement-speaker-align-reference'),
-    measurementSpeakerAlignPosition: document.getElementById('measurement-speaker-align-position'),
+    measurementSpeakerAlignSequence: document.getElementById('measurement-speaker-align-sequence'),
+    measurementSpeakerAlignResults: document.getElementById('measurement-speaker-align-results'),
     measurementHybridOpenBtn: document.getElementById('measurement-hybrid-open'),
     measurementHybridPanel: document.getElementById('measurement-hybrid-panel'),
     measurementHybridCloseBtn: document.getElementById('measurement-hybrid-close'),
@@ -11929,8 +11929,8 @@ function syncSpeakerAlignButton() {
     return MeasurementFlows.syncSpeakerAlignButton();
 }
 
-async function startSpeakerAlign() {
-    return MeasurementFlows.startSpeakerAlign();
+async function startSpeakerAlign(side) {
+    return MeasurementFlows.startSpeakerAlign(side);
 }
 
 async function cancelSpeakerAlign() {
@@ -13656,16 +13656,9 @@ function setupMeasurementActions() {
             void startAutoSubOptimize();
         });
     }
-    if (elements.measurementSpeakerAlignStartBtn) {
-        elements.measurementSpeakerAlignStartBtn.addEventListener('click', () => {
-            const measurementState = state.measurement || {};
-            if (measurementState.speakerAlignInFlight) {
-                void cancelSpeakerAlign();
-                return;
-            }
-            void startSpeakerAlign();
-        });
-    }
+    elements.measurementSpeakerAlignLeftBtn?.addEventListener('click', () => { void startSpeakerAlign('left'); });
+    elements.measurementSpeakerAlignRightBtn?.addEventListener('click', () => { void startSpeakerAlign('right'); });
+    elements.measurementSpeakerAlignCancelBtn?.addEventListener('click', () => { void cancelSpeakerAlign(); });
     if (elements.measurementSaveBtn) {
         elements.measurementSaveBtn.addEventListener('click', () => { void saveCurrentMeasurement(); });
     }

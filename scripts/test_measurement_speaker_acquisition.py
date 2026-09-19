@@ -192,11 +192,38 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         candidate = proposal["candidate_state"]
         self.assertAlmostEqual(
             candidate["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"], 5.0, delta=0.3)
-        self.assertEqual(len(proposal["overlap_checks"]), 1)
+        self.assertEqual(proposal["reference_role"], "left_high")
+
+    async def test_host_reference_is_captured_in_the_same_stream_as_input_one(self):
+        result = await self.acquire(reference_input_channel="")
+        self.assertEqual(result["provenance"]["reference_node"], REFERENCE_TAP_INGRESS)
+        self.assertIsNone(result["provenance"]["electrical_reference_channel"])
+        proposal = self.alignment.propose(result["captures"], live_target=live_global_target(self.state))
+        self.assertAlmostEqual(proposal["added_delay_ms"]["left_low"], 5.0, delta=0.3)
+
+    async def test_staged_candidate_context_reaches_every_capture_preflight(self):
+        from dsp.processing_plan import compile_processing_plan
+        # The candidate differs from the persisted head only by the trial delay.
+        candidate = deepcopy(self.state)
+        candidate["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 5
+        from dsp.native_config import layout_from_plan
+        plan = compile_processing_plan(candidate, output_key="dev", channels=6, sample_rate_hz=RATE,
+                                       preset_loader=lambda name: {"chain": []})
+        expected = {"expected_native_layout": layout_from_plan(plan, resolve_ir=lambda name: None),
+                    "expected_native_output_mode": "stereo-sub",
+                    "expected_plan_fingerprint": "candidate-plan"}
+        contexts = []
+        self.store._routing._build_pre_sweep_state_snapshot = lambda **kw: contexts.append(kw["playback_route"]) or {}
+        self.store._routing._build_measurement_playback_route = lambda *args, **kw: {"route": "test", **kw}
+        await self.acquire(expected_native_context=expected)
+        self.assertEqual(len(contexts), 2)
+        for context in contexts:
+            self.assertEqual(context["expected_plan_fingerprint"], "candidate-plan")
+            self.assertEqual(context["expected_native_layout"], expected["expected_native_layout"])
 
     async def test_invalid_identities_or_missing_reference_fail_before_capture(self):
         for options in ({"reference_id": ""}, {"reference_id": "  "},
-                        {"microphone_position_id": ""}, {"reference_input_channel": ""}):
+                         {"microphone_position_id": ""}):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 await self.acquire(**options)
         self.assertEqual(self.captures_started, 0)

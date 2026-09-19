@@ -1,144 +1,92 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
-// Speaker Align frontend contract: payload, visibility, status text,
-// shell IDs, app bindings, flow exports and demo routes.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const Speaker = require('../static/speaker_align.js');
 
-const assert = require('assert/strict');
-const fs = require('fs');
-const path = require('path');
-
-const repoRoot = path.resolve(__dirname, '..');
-const indexSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
-const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
-const flowsSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_flows.js'), 'utf8');
-const demoRoutes = fs.readFileSync(path.join(repoRoot, 'demo', 'routes.js'), 'utf8');
-
-const speakerModule = require('../static/speaker_align.js');
-
-async function main() {
-    // Pure payload builder validates the service contract before any fetch.
-    const payload = speakerModule.buildSpeakerAlignPayload({
-        side: 'left',
-        inputId: 'mic-1',
-        micChannel: '1',
-        referenceChannel: '2',
-        referenceId: 'interface:input-2:upstream',
-        microphonePositionId: 'seat-1-fixed',
-        dryRun: true,
-    });
-    assert.equal(payload.side, 'left');
-    assert.equal(payload.input_id, 'mic-1');
-    assert.equal(payload.mic_input_channel, '1');
-    assert.equal(payload.reference_input_channel, '2');
-    assert.equal(payload.reference_id, 'interface:input-2:upstream');
-    assert.equal(payload.microphone_position_id, 'seat-1-fixed');
-    assert.equal(payload.dry_run, true);
-
-    assert.throws(() => speakerModule.buildSpeakerAlignPayload({
-        side: 'center', inputId: 'mic-1', micChannel: '1',
-        referenceChannel: '2', referenceId: 'r', microphonePositionId: 'm',
-    }), /side must be left or right/);
-    assert.throws(() => speakerModule.buildSpeakerAlignPayload({
-        side: 'left', inputId: '  ', micChannel: '1',
-        referenceChannel: '2', referenceId: 'r', microphonePositionId: 'm',
-    }), /capture input/);
-    assert.throws(() => speakerModule.buildSpeakerAlignPayload({
-        side: 'left', inputId: 'mic-1', micChannel: '1',
-        referenceChannel: '  ', referenceId: 'r', microphonePositionId: 'm',
-    }), /reference input channel/);
-    assert.throws(() => speakerModule.buildSpeakerAlignPayload({
-        side: 'left', inputId: 'mic-1', micChannel: '1',
-        referenceChannel: '2', referenceId: '  ', microphonePositionId: 'm',
-    }), /upstream reference/);
-    assert.throws(() => speakerModule.buildSpeakerAlignPayload({
-        side: 'left', inputId: 'mic-1', micChannel: '1',
-        referenceChannel: '2', referenceId: 'r', microphonePositionId: ' ',
-    }), /microphone position/);
-
-    // Visibility follows the crossover flag, never legacy mode strings.
-    assert.equal(speakerModule.speakerAlignVisible(null), false);
-    assert.equal(speakerModule.speakerAlignVisible({}), false);
-    assert.equal(speakerModule.speakerAlignVisible({
-        active_mode: 'stereo',
-        modes: { stereo: { crossover_enabled: false, topology: { way_count: 0 } } },
-    }), false);
-    assert.equal(speakerModule.speakerAlignVisible({
-        active_mode: 'stereo',
-        modes: { stereo: { crossover_enabled: true, topology: { way_count: 1 } } },
-    }), false);
-    assert.equal(speakerModule.speakerAlignVisible({
-        active_mode: 'stereo-sub',
-        modes: { 'stereo-sub': { crossover_enabled: true, topology: { way_count: 2 } } },
-    }), true);
-    assert.equal(speakerModule.speakerAlignVisible({
-        active_mode: 'stereo',
-        modes: { stereo: { crossover_enabled: true, topology: { way_count: 4 } } },
-    }), true);
-
-    // Status text never renders [object Object] and never leaves placeholders.
-    const committed = speakerModule.formatSpeakerAlignStatus({
-        side: 'left', status: 'committed', message: '',
-        result: { committed_revision: 7 },
-    });
-    assert.match(committed, /committed/i);
-    assert.match(committed, /7/);
-    assert.doesNotMatch(committed, /\?/);
-    assert.doesNotMatch(committed, /\[object Object\]/);
-    const failed = speakerModule.formatSpeakerAlignStatus({
-        side: 'right', status: 'failed', message: 'boom',
-        result: null, error: 'boom',
-    });
-    assert.match(failed, /boom/);
-    const cancelled = speakerModule.formatSpeakerAlignStatus({
-        side: 'left', status: 'cancelled', message: '',
-        result: null, error: null,
-    });
-    assert.match(cancelled, /cancel/i);
-
-    // Shell carries the speaker section with stable IDs.
-    assert.match(indexSource, /id="measurement-speaker-align-group"/);
-    assert.match(indexSource, /id="measurement-speaker-align-start"/);
-    assert.match(indexSource, /id="measurement-speaker-align-status"/);
-    assert.match(indexSource, /id="measurement-speaker-align-side"/);
-    assert.match(indexSource, /id="measurement-speaker-align-dry-run"/);
-    assert.match(indexSource, /id="measurement-speaker-align-reference"/);
-    assert.match(indexSource, /id="measurement-speaker-align-position"/);
-    assert.match(indexSource, /speaker_align\.js\?v=\d+\.\d+\.\d+/);
-
-    // App binds the shell, talks JSON to the speaker endpoints, and tracks one job.
-    assert.match(appSource, /measurementSpeakerAlignStartBtn: document\.getElementById\('measurement-speaker-align-start'\)/);
-    assert.match(appSource, /measurementSpeakerAlignGroup: document\.getElementById\('measurement-speaker-align-group'\)/);
-    assert.match(appSource, /measurementSpeakerAlignStatus: document\.getElementById\('measurement-speaker-align-status'\)/);
-    assert.match(appSource, /measurementSpeakerAlignSide: document\.getElementById\('measurement-speaker-align-side'\)/);
-    assert.match(appSource, /measurementSpeakerAlignDryRun: document\.getElementById\('measurement-speaker-align-dry-run'\)/);
-    assert.match(appSource, /measurementSpeakerAlignReference: document\.getElementById\('measurement-speaker-align-reference'\)/);
-    assert.match(appSource, /measurementSpeakerAlignPosition: document\.getElementById\('measurement-speaker-align-position'\)/);
-    assert.match(appSource, /startSpeakerAlign: \(payload\) => fetch\('\/api\/speaker-align\/start'/);
-    assert.match(appSource, /pollSpeakerAlignJob: \(jobId\) => fetch\(`\/api\/speaker-align\/jobs\/\$\{encodeURIComponent\(jobId\)\}`\)/);
-    assert.match(appSource, /cancelSpeakerAlignJob: \(jobId\) => fetch\(`\/api\/speaker-align\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel`/);
-    assert.match(appSource, /speakerAlignInFlight/);
-    assert.match(appSource, /speaker_align/);
-    assert.match(appSource, /SpeakerAlign/);
-
-    // Flow module owns start/cancel/poll/result behind the injected api.
-    assert.match(flowsSource, /function syncSpeakerAlignButton\(\)/);
-    assert.match(flowsSource, /async function startSpeakerAlign\(\)/);
-    assert.match(flowsSource, /async function cancelSpeakerAlign\(\)/);
-    assert.match(flowsSource, /async function pollSpeakerAlignJob\(jobId\)/);
-    assert.match(flowsSource, /async function handleSpeakerAlignResult\(job\)/);
-    assert.match(flowsSource, /api\.startSpeakerAlign/);
-    assert.match(flowsSource, /api\.pollSpeakerAlignJob/);
-    assert.match(flowsSource, /api\.cancelSpeakerAlignJob/);
-    assert.doesNotMatch(flowsSource, /\[object Object\]/);
-
-    // Demo intercepts the same endpoints so the UI is explorable offline.
-    assert.match(demoRoutes, /\/api\/speaker-align\/start/);
-    assert.match(demoRoutes, /\/api\/speaker-align\/jobs/);
-
-    console.log('speaker align frontend tests: ok');
+function catalog(ways = ['low', 'high']) {
+    const roles = ['left', 'right'].flatMap(side => ways.map(way => `${side}_${way}`));
+    return { active_mode: 'stereo', modes: { stereo: {
+        crossover_enabled: true, selected_bank: 'global',
+        topology: { way_count: ways.length, issues: [], roles,
+            left_ways: roles.filter(role => role.startsWith('left_')),
+            right_ways: roles.filter(role => role.startsWith('right_')) },
+        processing: Object.fromEntries(roles.map(role => [role, {
+            highpass: role.endsWith('_low') ? null : { frequency_hz: 1000 },
+            lowpass: role.endsWith('_high') ? null : { frequency_hz: 3000 },
+        }])),
+    } } };
 }
 
-main().catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-});
+function element() {
+    const classes = new Set();
+    return { disabled: false, textContent: '', innerHTML: '',
+        classList: { add: c => classes.add(c), remove: c => classes.delete(c),
+            toggle: (c, on) => on ? classes.add(c) : classes.delete(c), contains: c => classes.has(c) } };
+}
+
+async function main() {
+    for (const ways of [['low', 'high'], ['low', 'mid', 'high'], ['low', 'low_mid', 'mid', 'high']]) {
+        assert.equal(Speaker.speakerAlignVisible(catalog(ways)), true);
+    }
+    for (const selection of ['low', 'left_low', 'all']) {
+        const value = catalog(); value.modes.stereo.selected_bank = selection;
+        assert.equal(Speaker.speakerAlignVisible(value), false);
+    }
+    const invalid = catalog(); invalid.modes.stereo.topology.issues = ['Incomplete routing'];
+    assert.equal(Speaker.speakerAlignVisible(invalid), false);
+    invalid.modes.stereo.topology.issues = [];
+    invalid.modes.stereo.processing.left_low.lowpass = null;
+    assert.equal(Speaker.speakerAlignVisible(invalid), false);
+    assert.equal(Speaker.speakerAlignVisible(null), false);
+
+    const state = { outputSystem: { catalog: catalog() }, measurement: {
+        selectedInputId: 'mic-1', selectedMicInputChannel: '1', selectedReferenceInputChannel: '',
+    } };
+    const elements = Object.fromEntries(['LeftBtn', 'RightBtn', 'CancelBtn', 'Group', 'Status', 'Results', 'Sequence']
+        .map(key => [`measurementSpeakerAlign${key}`, element()]));
+    const calls = [];
+    const result = { confirmed: true, committed_revision: 8,
+        proposal: { arrival_ms: { right_low: 2, right_high: 5 }, added_delay_ms: { right_low: 3, right_high: 0 }, reference_role: 'right_high' },
+        check: { before_spread_ms: 3, max_residual_ms: 0.021, tolerance_ms: 0.25,
+            after_arrival_ms: { right_low: 5, right_high: 5.021 } } };
+    const context = { console, window: {} };
+    vm.createContext(context);
+    const shell = fs.readFileSync(require.resolve('../static/index.html'), 'utf8');
+    for (const match of shell.matchAll(/src="\/static\/(speaker_align|measurement_flows)\.js\?[^\"]+"/g)) {
+        vm.runInContext(fs.readFileSync(require.resolve(`../static/${match[1]}.js`), 'utf8'), context);
+    }
+    const flows = context.window.FXRouteMeasurementFlows;
+    const response = job => ({ ok: true, json: async () => ({ job }) });
+    flows.init({ getState: () => state, getElements: () => elements, measurementModeReady: () => true,
+        getActiveMeasurementKind: () => state.measurement.activeMeasurementKind,
+        api: { startSpeakerAlign: async payload => {
+            calls.push(payload);
+            assert.equal(elements.measurementSpeakerAlignLeftBtn.disabled, true);
+            assert.equal(elements.measurementSpeakerAlignRightBtn.disabled, true);
+            return response({ id: 'alignment', side: payload.side, status: 'queued' });
+        }, pollSpeakerAlignJob: async () => response({ id: 'alignment', side: 'right', status: 'committed', result }) },
+    });
+    flows.syncSpeakerAlignButton();
+    assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), false);
+    await flows.startSpeakerAlign('right');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].side, 'right');
+    assert.equal(calls[0].mic_input_channel, '1');
+    assert.equal(calls[0].reference_input_channel, '');
+    assert.equal(calls[0].reference_id, 'fxroute_dsp_sink.monitor');
+    assert.equal(calls[0].dry_run, false);
+    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /5\.021/);
+    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /3\.000/);
+    assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.021/);
+    assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.250/);
+    state.outputSystem.catalog.modes.stereo.selected_bank = 'all';
+    flows.syncSpeakerAlignButton();
+    await flows.startSpeakerAlign('left');
+    assert.equal(calls.length, 1, 'Hidden alignment must not be startable');
+    assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), true);
+    console.log('Speaker alignment UI flow: passed');
+}
+
+main().catch(error => { console.error(error); process.exitCode = 1; });

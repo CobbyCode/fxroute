@@ -178,6 +178,7 @@ class MeasurementSampleRateSession:
         self.original_force_rate = 0
         self.active_manual_job_ids: set[str] = set()
         self.active_auto_sub_job_id: str | None = None
+        self.active_speaker_job_id: str | None = None
         self.active_spl_job_ids: set[str] = set()
         self.close_requested = False
         self.deferred_release_pending = False
@@ -205,6 +206,7 @@ class MeasurementSampleRateSession:
             self.active_manual_job_ids
             or self.active_spl_job_ids
             or self.active_auto_sub_job_id is not None
+            or self.active_speaker_job_id is not None
         )
 
     def blocks_playback_rate(self, expected_rate: Optional[int]) -> Optional[int]:
@@ -324,6 +326,7 @@ class MeasurementSampleRateSession:
         report_entry: bool = False,
     ) -> int | tuple[int, bool]:
         async with self.lock:
+            self._require_no_speaker_job()
             self._validate_entry_epoch(entry_epoch)
             entry_established = False
             if not self.active:
@@ -347,6 +350,7 @@ class MeasurementSampleRateSession:
 
     async def register_auto_sub(self, job_id: str, entry_epoch: int | None = None) -> int:
         async with self.lock:
+            self._require_no_speaker_job()
             self._validate_entry_epoch(entry_epoch)
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=auto-sub job_id=%s", job_id)
@@ -356,6 +360,7 @@ class MeasurementSampleRateSession:
 
     async def register_spl_job(self, job_id: str, entry_epoch: int | None = None) -> int:
         async with self.lock:
+            self._require_no_speaker_job()
             self._validate_entry_epoch(entry_epoch)
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=spl-meter job_id=%s", job_id)
@@ -372,6 +377,27 @@ class MeasurementSampleRateSession:
         async with self.lock:
             if self.active_auto_sub_job_id == job_id:
                 self.active_auto_sub_job_id = None
+            await self._check_release()
+
+    def _require_no_speaker_job(self) -> None:
+        if self.active_speaker_job_id is not None:
+            raise RuntimeError("Speaker Auto Alignment is in progress")
+
+    async def register_speaker_job(self, job_id: str, entry_epoch: int | None = None) -> tuple[int, bool]:
+        async with self.lock:
+            self._validate_entry_epoch(entry_epoch)
+            if self.has_active_jobs:
+                raise RuntimeError("Another measurement is already running")
+            entered = not self.active
+            if entered:
+                await self._start_locked(_resolve_measurement_start_sample_rate())
+            self.active_speaker_job_id = job_id
+            return self.generation, entered
+
+    async def unregister_speaker_job(self, job_id: str) -> None:
+        async with self.lock:
+            if self.active_speaker_job_id == job_id:
+                self.active_speaker_job_id = None
             await self._check_release()
 
     async def register_autosub_release_adapter(
@@ -431,7 +457,7 @@ class MeasurementSampleRateSession:
     async def _check_release(self) -> bool:
         if not self.active or not self.close_requested:
             return False
-        if self.active_auto_sub_job_id is not None or self.active_manual_job_ids or self.active_spl_job_ids:
+        if self.has_active_jobs:
             return False
         await self._release()
         return True

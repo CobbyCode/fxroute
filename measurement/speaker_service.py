@@ -21,6 +21,7 @@ import logging
 import math
 import threading
 from copy import deepcopy
+from contextlib import nullcontext
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -57,43 +58,25 @@ def _jsonable(value: Any) -> Any:
 
 def _summarize_proposal(proposal: dict[str, Any]) -> dict[str, Any]:
     """Summarize a real proposal; missing keys raise instead of zero-filling."""
-    checks = []
-    for check in proposal["overlap_checks"]:
-        checks.append({
-            "roles": list(check["roles"]),
-            "lower_hz": float(check["lower_hz"]),
-            "upper_hz": float(check["upper_hz"]),
-            "phase_rms_degrees": float(check["phase_rms_degrees"]),
-            "residual_delay_ms": float(check["residual_delay_ms"]),
-            "before_sum_db": float(check["before_sum_db"]),
-            "after_sum_db": float(check["after_sum_db"]),
-        })
     return _jsonable({
         "start_revision": proposal["start_revision"],
         "processing_fingerprint": proposal["processing_fingerprint"],
         "arrival_ms": dict(proposal["arrival_ms"]),
         "added_delay_ms": dict(proposal["added_delay_ms"]),
-        "overlap_checks": checks,
+        "reference_role": proposal["reference_role"],
     })
 
 
 def _summarize_check(check: dict[str, Any]) -> dict[str, Any]:
     """Summarize a real confirmation check; missing keys raise loudly."""
-    pairs = []
-    for pair in check["pairs"]:
-        pairs.append({
-            "roles": list(pair["roles"]),
-            "baseline_after_sum_db": float(pair["baseline_after_sum_db"]),
-            "confirmation_after_sum_db": float(pair["confirmation_after_sum_db"]),
-            "regression_db": float(pair["regression_db"]),
-        })
     return _jsonable({
         "confirmed": bool(check["confirmed"]),
         "reasons": [str(reason) for reason in check["reasons"]],
         "max_residual_ms": float(check["max_residual_ms"]),
-        "max_regression_db": float(check["max_regression_db"]),
-        "min_confirmation_sum_db": float(check["min_confirmation_sum_db"]),
-        "pairs": pairs,
+        "before_spread_ms": float(check["before_spread_ms"]),
+        "after_arrival_ms": dict(check["after_arrival_ms"]),
+        "tolerance_ms": float(check["tolerance_ms"]),
+        "pairs": check["pairs"],
     })
 
 
@@ -118,7 +101,9 @@ class SpeakerAlignService:
                  acquire: Callable[..., Any],
                  create_session: Callable[..., Any],
                  freeze_live: Callable[..., dict],
-                 on_committed: Callable[[dict], Any] | None = None):
+                 on_committed: Callable[[dict], Any] | None = None,
+                 job_scope: Callable[[str], Any] | None = None,
+                 check_available: Callable[[], None] | None = None):
         for name, bound in (("get_state", get_state), ("describe", describe),
                             ("acquire", acquire), ("create_session", create_session),
                             ("freeze_live", freeze_live)):
@@ -132,11 +117,24 @@ class SpeakerAlignService:
         self._create_session = create_session
         self._freeze_live = freeze_live
         self._on_committed = on_committed
+        self._job_scope = job_scope or (lambda job_id: nullcontext())
+        self._check_available = check_available or (lambda: None)
+        self._scopes: dict[str, Any] = {}
         self._guard = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._active_id: str | None = None
         self.max_retained_jobs = 20
+
+    @property
+    def active(self) -> bool:
+        return self._active_id is not None
+
+    async def shutdown(self) -> None:
+        tasks = list(self._tasks.values())
+        for job_id in list(self._tasks):
+            self.cancel(job_id)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     @staticmethod
     def _public(job: dict[str, Any]) -> dict[str, Any]:
@@ -165,7 +163,7 @@ class SpeakerAlignService:
                 job["status"] = "cancelling"
                 job["message"] = "Cancelling speaker alignment…"
             task = self._tasks.get(job_id)
-        if task is not None:
+        if task is not None and job.get("worker_started"):
             task.cancel()
         # Cross-thread cancels can race a retention eviction between the two
         # guarded reads: a fully populated retention ring evicts the record
@@ -193,11 +191,12 @@ class SpeakerAlignService:
             raise ValueError("Speaker Align side must be left or right")
         if not isinstance(input_id, str) or not input_id.strip():
             raise ValueError("Speaker Align service requires a capture input id")
-        if reference_input_channel is None or not str(reference_input_channel).strip():
-            raise ValueError("Speaker Align service requires an electrical reference input channel")
         reference_id = _session_identity(reference_id, "upstream reference")
         microphone_position_id = _session_identity(microphone_position_id, "microphone position")
         state = deepcopy(self._get_state())
+        if state["modes"][state["active_mode"]]["selected_bank"] != "global":
+            raise ValueError("Speaker Align is available only from Global")
+        self._check_available()
         context = self._describe(state)
         alignment = SpeakerAlignment(
             state, side=side, output_key=context["output_key"], channels=context["channels"],
@@ -229,6 +228,7 @@ class SpeakerAlignService:
                     raise SpeakerAlignBusyError("A speaker alignment is already running")
             self._jobs[job_id] = job
             self._active_id = job_id
+            self._scopes[job_id] = self._job_scope(job_id)
             self._tasks[job_id] = asyncio.get_running_loop().create_task(self._run(job_id))
         return job_id
 
@@ -261,6 +261,10 @@ class SpeakerAlignService:
 
     def _finish(self, job_id: str, status: str, message: str, *,
                 result: dict | None = None, error: str | None = None) -> None:
+        self._jobs[job_id]["outcome"] = (status, message, result, error)
+
+    def _publish_finish(self, job_id: str, status: str, message: str, *,
+                result: dict | None = None, error: str | None = None) -> None:
         with self._guard:
             job = self._jobs[job_id]
             job["status"] = status
@@ -278,6 +282,22 @@ class SpeakerAlignService:
                 self._tasks.pop(evicted, None)
 
     async def _run(self, job_id: str) -> None:
+        self._jobs[job_id]["worker_started"] = True
+        scope = self._scopes.pop(job_id)
+        try:
+            if self._is_cancel_requested(job_id):
+                raise asyncio.CancelledError()
+            async with scope:
+                await self._run_job(job_id)
+        except asyncio.CancelledError:
+            self._finish(job_id, "cancelled", "Speaker alignment cancelled.")
+        except Exception as exc:
+            self._finish(job_id, "failed", f"Speaker alignment failed: {exc}", error=str(exc))
+        finally:
+            status, message, result, error = self._jobs[job_id].pop("outcome")
+            self._publish_finish(job_id, status, message, result=result, error=error)
+
+    async def _run_job(self, job_id: str) -> None:
         with self._guard:
             frozen = deepcopy(self._jobs[job_id]["internal"])
             params = deepcopy(self._jobs[job_id]["params"])
@@ -312,7 +332,11 @@ class SpeakerAlignService:
                 fingerprint=context["fingerprint"])
             self._require_fresh_live(alignment, live_target)
 
-            self._note(job_id, "acquiring", "Acquiring speaker ways…")
+            session = self._create_session(
+                state, output_key=context["output_key"], channels=context["channels"],
+                sample_rate_hz=context["sample_rate_hz"])
+            await session.stage_candidate(state)
+            self._note(job_id, "acquiring", "Measuring speaker ways…")
             first = await self._acquire(
                 alignment, input_id=params["input_id"],
                 mic_input_channel=params["mic_input_channel"],
@@ -320,13 +344,12 @@ class SpeakerAlignService:
                 reference_id=params["reference_id"],
                 microphone_position_id=params["microphone_position_id"],
                 sweep_profile=deepcopy(params["sweep_profile"]),
-                cancel_requested=probe)
+                cancel_requested=probe,
+                expected_native_context=session.measurement_context(),
+                on_progress=lambda role, index, count: self._note(
+                    job_id, "acquiring", f"Measuring {role.replace('_', ' ')} ({index}/{count})…"))
             proposal = alignment.propose(
                 first["captures"], live_target=live_target, cancel_requested=probe)
-            session = self._create_session(
-                state, output_key=context["output_key"], channels=context["channels"],
-                sample_rate_hz=context["sample_rate_hz"])
-
             self._note(job_id, "confirming", "Confirming alignment acoustically…")
 
             async def reacquire() -> list[dict]:
@@ -337,7 +360,14 @@ class SpeakerAlignService:
                     reference_id=params["reference_id"],
                     microphone_position_id=params["microphone_position_id"],
                     sweep_profile=deepcopy(params["sweep_profile"]),
-                    cancel_requested=probe)
+                    cancel_requested=probe,
+                    expected_native_context=session.measurement_context(),
+                    on_progress=lambda role, index, count: self._note(
+                        job_id, "confirming", f"Verifying {role.replace('_', ' ')} ({index}/{count})…"))
+                before_input = {key: value for key, value in first.get("provenance", {}).items() if key != "job_ids"}
+                after_input = {key: value for key, value in second.get("provenance", {}).items() if key != "job_ids"}
+                if before_input != after_input:
+                    raise ValueError("Speaker Align input chain changed before verification")
                 return second["captures"]
 
             if dry_run:

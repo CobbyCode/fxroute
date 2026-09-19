@@ -267,6 +267,14 @@ class SpeakerAlignSession:
         async with self._lock:
             return await self._stage_unlocked(candidate_state)
 
+    def measurement_context(self) -> dict:
+        """Pin each sweep's preflight to the actually staged candidate plan."""
+        self._check_revision()
+        prepared = self._staged or self._start_prepared
+        return {"expected_native_layout": self._service.compile_layout(prepared.plan),
+                "expected_native_output_mode": prepared.plan["mode"],
+                "expected_plan_fingerprint": prepared.fingerprint}
+
     async def _restore_unlocked(self) -> dict:
         self._require_uncommitted()
         return await self._stage_prepared_unlocked(self._start_prepared)
@@ -342,8 +350,7 @@ class SpeakerAlignSession:
                                  live_target: dict,
                                  cancel_requested: Callable[[], bool] | None = None,
                                  acquire_timeout_seconds: float | None = None,
-                                 max_residual_ms: float | None = None,
-                                 max_regression_db: float | None = None) -> dict:
+                                 max_residual_ms: float | None = None) -> dict:
         """Trial-stage, acoustically confirm, and commit — or restore.
 
         This session's lock covers stage, acquisition, verification and
@@ -390,8 +397,6 @@ class SpeakerAlignSession:
             verify_options = {}
             if max_residual_ms is not None:
                 verify_options["max_residual_ms"] = max_residual_ms
-            if max_regression_db is not None:
-                verify_options["max_regression_db"] = max_regression_db
             await self._stage_unlocked(proposal["candidate_state"])
             try:
                 if cancel_requested is not None and cancel_requested():

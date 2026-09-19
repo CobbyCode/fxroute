@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.237">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.238">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -1056,23 +1056,16 @@
                                         </div>
                                     </div>
                                     <div class="measurement-workflow-section measurement-workflow-speaker-align hidden" id="measurement-speaker-align-group">
-                                        <h4 class="measurement-workflow-label">Speaker Align</h4>
+                                        <h4 class="measurement-workflow-label">Speaker Auto Alignment</h4>
                                         <div class="measurement-workflow-row">
-                                            <label for="measurement-speaker-align-side">Side</label>
-                                            <select id="measurement-speaker-align-side" class="url-input">
-                                                <option value="left">Left</option>
-                                                <option value="right">Right</option>
-                                            </select>
-                                            <label for="measurement-speaker-align-dry-run"><input type="checkbox" id="measurement-speaker-align-dry-run"> Dry run</label>
-                                            <button id="measurement-speaker-align-start" class="btn-secondary" type="button">Speaker Align</button>
-                                            <span id="measurement-speaker-align-status" class="measurement-repeat-help">Aligns each way of one speaker with the microphone fixed.</span>
+                                            <button id="measurement-speaker-align-left" class="btn-secondary" type="button">Align Left</button>
+                                            <button id="measurement-speaker-align-right" class="btn-secondary" type="button">Align Right</button>
+                                            <button id="measurement-speaker-align-cancel" class="btn-secondary hidden" type="button">Cancel Alignment</button>
+                                            <span id="measurement-speaker-align-sequence" class="measurement-repeat-help"></span>
                                         </div>
-                                        <div class="measurement-workflow-row">
-                                            <label for="measurement-speaker-align-reference">Reference</label>
-                                            <input type="text" id="measurement-speaker-align-reference" class="url-input" placeholder="interface:input-2:upstream" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-                                            <label for="measurement-speaker-align-position">Mic position</label>
-                                            <input type="text" id="measurement-speaker-align-position" class="url-input" placeholder="seat-1-fixed" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-                                        </div>
+                                        <p class="measurement-repeat-help">Place the mic in front of the chosen speaker. Keep it fixed until verification finishes. Only this speaker’s way delays are adjusted; levels and subs stay unchanged.</p>
+                                        <p id="measurement-speaker-align-status" class="measurement-repeat-help" aria-live="polite"></p>
+                                        <div id="measurement-speaker-align-results"></div>
                                     </div>
                                     <div class="measurement-workflow-section">
                                         <h4 class="measurement-workflow-label">Calibration</h4>
@@ -1656,12 +1649,12 @@
     <script src="/static/hybrid_measurement.js?v=0.9.15"></script>
     <script src="/static/measurement_ui.js?v=0.9.18"></script>
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
-    <script src="/static/measurement_flows.js?v=0.9.25"></script>
+    <script src="/static/speaker_align.js?v=0.9.3"></script>
+    <script src="/static/measurement_flows.js?v=0.9.26"></script>
     <script src="/static/output_state.js?v=0.9.10"></script>
     <script src="/static/crossover.js?v=0.9.3"></script>
-    <script src="/static/speaker_align.js?v=0.9.2"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.191"></script>
+    <script src="/static/app.js?v=0.9.192"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

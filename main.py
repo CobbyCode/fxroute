@@ -823,7 +823,8 @@ def _make_measurement_services() -> MeasurementServices:
     return MeasurementServices(
         get_store=lambda: measurement_store,
         get_session=lambda: measurement_sr_session,
-        auto_sub_active=lambda: autosub.is_optimization_active(),
+        auto_sub_active=lambda: autosub.is_optimization_active() or (
+            _speaker_align_service_instance is not None and _speaker_align_service_instance.active),
         get_dsp_runtime=lambda: runtime.dsp_runtime,
         get_player=lambda: runtime.player_instance,
         get_samplerate_status=lambda *a, **k: get_samplerate_status(*a, **k),
@@ -2681,6 +2682,8 @@ async def _shutdown_lifespan_resources() -> None:
         )
     await cleanup("autosub", autosub.shutdown)
     if measurement_store is not None:
+        if _speaker_align_service_instance is not None:
+            await cleanup("speaker-align", _speaker_align_service_instance.shutdown)
         await cleanup("measurement-store", measurement_store.shutdown)
     await cleanup("spl-calibration", spl_calibration.shutdown)
     if measurement_sr_session is not None:
@@ -4566,6 +4569,8 @@ def get_speaker_align_service():
             describe_device=_describe_speaker_align_device,
             get_measurement_rate=_live_measurement_sample_rate,
             get_measurement_session=lambda: measurement_sr_session,
+            prepare_measurement=measurement_session._measurement_entry_preflight,
+            another_measurement_active=autosub.is_optimization_active,
             build_release_adapter=lambda *, output_key, channels: _create_speaker_align_release_adapter(
                 service=get_output_service(), output_key=output_key, channels=channels))
     return _speaker_align_service_instance

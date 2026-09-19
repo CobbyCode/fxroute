@@ -33,9 +33,6 @@
             throw new Error('Speaker Align requires a capture input id');
         }
         const normalizedRefChannel = trimmed(referenceChannel);
-        if (!normalizedRefChannel) {
-            throw new Error('Speaker Align requires an electrical reference input channel');
-        }
         const normalizedReference = trimmed(referenceId);
         if (!normalizedReference) {
             throw new Error('Speaker Align requires an upstream reference identity');
@@ -56,6 +53,7 @@
     }
 
     function defaultReferenceId(inputId, referenceChannel) {
+        if (!trimmed(referenceChannel)) return 'fxroute_dsp_sink.monitor';
         const input = trimmed(inputId) || 'mic';
         const channel = trimmed(referenceChannel) || '2';
         return `${input}:ch${channel}:upstream`;
@@ -68,10 +66,19 @@
     function speakerAlignVisible(catalog) {
         if (!catalog || typeof catalog !== 'object') return false;
         const modeConfig = catalog.modes && catalog.modes[catalog.active_mode];
-        if (!modeConfig?.crossover_enabled) return false;
+        if (!modeConfig?.crossover_enabled || modeConfig.selected_bank !== 'global') return false;
         const wayCount = modeConfig && modeConfig.topology
             ? Number(modeConfig.topology.way_count || 0) : 0;
-        return Number.isFinite(wayCount) && wayCount >= 2;
+        const topology = modeConfig.topology;
+        if (![2, 3, 4].includes(wayCount) || !Array.isArray(topology.issues) || topology.issues.length) return false;
+        return ['left_ways', 'right_ways'].every(key => {
+            const roles = topology[key];
+            return Array.isArray(roles) && roles.length === wayCount && roles.every((role, index) => {
+                const settings = modeConfig.processing?.[role];
+                return settings && (index === 0 || settings.highpass?.frequency_hz > 0)
+                    && (index === roles.length - 1 || settings.lowpass?.frequency_hz > 0);
+            });
+        });
     }
 
     function formatSpeakerAlignStatus(job) {
@@ -83,7 +90,9 @@
         if (status === 'committed') {
             const revision = result.committed_revision;
             const revisionText = Number.isInteger(revision) ? ` at revision ${revision}` : '';
-            return `Speaker Align ${side} committed${revisionText}.`;
+            const check = result.check;
+            const timing = check ? ` Spread ${Number(check.before_spread_ms).toFixed(3)} → ${Number(check.max_residual_ms).toFixed(3)} ms (limit ${Number(check.tolerance_ms).toFixed(3)} ms).` : '';
+            return `Speaker Align ${side} verified and committed${revisionText}.${timing}`;
         }
         if (status === 'trial-done') {
             const confirmed = result.confirmed === true;
@@ -92,7 +101,7 @@
                 : `Speaker Align ${side} trial did not confirm; nothing changed.`;
         }
         if (status === 'unconfirmed') {
-            return `Speaker Align ${side} did not confirm acoustically; the start rendering was retained.`;
+            return `Speaker Align ${side} not verified: ${(result.check?.reasons || []).join('; ')}. Previous delays restored.`;
         }
         if (status === 'failed') {
             return trimmed(record.error) || message || `Speaker Align ${side} failed.`;
@@ -103,6 +112,18 @@
         return message || `Speaker Align ${side}: ${status}.`;
     }
 
+    function wayLabel(role) {
+        return { low: 'Low', low_mid: 'Low-Mid', mid: 'Mid', high: 'High' }[String(role).replace(/^(left|right)_/, '')] || 'Way';
+    }
+
+    function renderSpeakerAlignResult(result, side) {
+        if (!result?.proposal || !result?.check) return '';
+        const proposal = result.proposal;
+        const number = value => Number.isFinite(value) ? value.toFixed(3) : '—';
+        const rows = Object.keys(proposal.arrival_ms).map(role => `<tr><th scope="row">${wayLabel(role)}${role === proposal.reference_role ? ' · ref' : ''}</th><td>${number(proposal.arrival_ms[role])}</td><td>+${number(proposal.added_delay_ms[role])}</td><td>${number(result.check.after_arrival_ms?.[role])}</td></tr>`).join('');
+        return `<table class="speaker-align-table"><caption>${side === 'right' ? 'Right' : 'Left'} speaker · ${result.confirmed ? 'Verified' : 'Not verified'} · ms</caption><thead><tr><th scope="col">Way</th><th scope="col">Before</th><th scope="col">Delay added</th><th scope="col">After</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
     return {
         SIDES,
         TERMINAL_STATUSES,
@@ -111,5 +132,7 @@
         defaultMicrophonePositionId,
         speakerAlignVisible,
         formatSpeakerAlignStatus,
+        wayLabel,
+        renderSpeakerAlignResult,
     };
 });

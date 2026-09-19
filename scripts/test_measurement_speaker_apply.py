@@ -124,20 +124,19 @@ class VerifyConfirmationTests(unittest.TestCase):
         self.assertGreater(check["max_residual_ms"], MAX_CONFIRMED_RESIDUAL_MS)
         self.assertIn("residual", check["reasons"][0])
 
-    def test_regressed_sum_rejects(self):
+    def test_confirmation_reports_measured_arrivals_and_limit(self):
         confirmation = self.alignment.propose(
             captures_for(self.alignment, (500, 500)), live_target=self.live)
-        tampered = deepcopy(confirmation)
-        tampered["overlap_checks"][0]["after_sum_db"] -= 5.0
-        check = verify_confirmation(self.baseline, tampered)
-        self.assertFalse(check["confirmed"])
-        self.assertIn("regression", check["reasons"][0])
+        check = verify_confirmation(self.baseline, confirmation)
+        self.assertEqual(check["before_spread_ms"], 3.0)
+        self.assertEqual(check["after_arrival_ms"], {"left_low": 500 / 48, "left_high": 500 / 48})
+        self.assertEqual(check["tolerance_ms"], 0.25)
 
-    def test_collapsed_sum_rejects(self):
+    def test_predicted_zero_delays_cannot_hide_a_measured_residual(self):
         confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+            captures_for(self.alignment, (500, 548)), live_target=self.live)
         tampered = deepcopy(confirmation)
-        tampered["overlap_checks"][0]["after_sum_db"] = -10.0
+        tampered["added_delay_ms"] = {"left_low": 0, "left_high": 0}
         check = verify_confirmation(self.baseline, tampered)
         self.assertFalse(check["confirmed"])
 
@@ -149,20 +148,20 @@ class VerifyConfirmationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "revision"):
             verify_confirmation(self.baseline, tampered)
 
-    def test_mismatched_pairs_are_rejected(self):
+    def test_mismatched_ways_are_rejected(self):
         confirmation = self.alignment.propose(
             captures_for(self.alignment, (500, 500)), live_target=self.live)
         tampered = deepcopy(confirmation)
-        tampered["overlap_checks"] = []
-        with self.assertRaisesRegex(ValueError, "pairs"):
+        tampered["arrival_ms"].pop("left_high")
+        with self.assertRaisesRegex(ValueError, "ways"):
             verify_confirmation(self.baseline, tampered)
 
     def test_empty_confirmation_is_rejected(self):
         baseline = deepcopy(self.baseline)
-        baseline["overlap_checks"] = []
+        baseline["arrival_ms"] = {}
         confirmation = deepcopy(self.baseline)
-        confirmation["overlap_checks"] = []
-        with self.assertRaisesRegex(ValueError, "overlap checks"):
+        confirmation["arrival_ms"] = {}
+        with self.assertRaisesRegex(ValueError, "ways"):
             verify_confirmation(baseline, confirmation)
 
     def test_missing_revision_fails_closed(self):
@@ -187,24 +186,24 @@ class VerifyConfirmationTests(unittest.TestCase):
         confirmation = self.alignment.propose(
             captures_for(self.alignment, (500, 500)), live_target=self.live)
         tampered = deepcopy(confirmation)
-        tampered["added_delay_ms"]["left_low"] = float("nan")
+        tampered["arrival_ms"]["left_low"] = float("nan")
         with self.assertRaisesRegex(ValueError, "finite"):
             verify_confirmation(self.baseline, tampered)
 
-    def test_malformed_overlap_check_is_rejected(self):
+    def test_foreign_speaker_ways_are_rejected(self):
         confirmation = self.alignment.propose(
             captures_for(self.alignment, (500, 500)), live_target=self.live)
         tampered = deepcopy(confirmation)
-        tampered["overlap_checks"] = [None]
-        with self.assertRaisesRegex(ValueError, "paired"):
+        tampered["arrival_ms"]["right_high"] = tampered["arrival_ms"].pop("left_high")
+        with self.assertRaisesRegex(ValueError, "ways"):
             verify_confirmation(self.baseline, tampered)
 
-    def test_missing_added_delays_is_rejected(self):
+    def test_missing_arrival_evidence_is_rejected(self):
         confirmation = self.alignment.propose(
             captures_for(self.alignment, (500, 500)), live_target=self.live)
         tampered = deepcopy(confirmation)
-        del tampered["added_delay_ms"]
-        with self.assertRaisesRegex(ValueError, "added delay"):
+        del tampered["arrival_ms"]
+        with self.assertRaisesRegex(ValueError, "ways"):
             verify_confirmation(self.baseline, tampered)
 
     def test_malformed_confirmation_inputs_are_rejected(self):
@@ -217,8 +216,8 @@ class VerifyConfirmationTests(unittest.TestCase):
         confirmation = self.alignment.propose(
             captures_for(self.alignment, (500, 500)), live_target=self.live)
         tampered = deepcopy(confirmation)
-        tampered["added_delay_ms"] = {
-            role: np.float64(value) for role, value in tampered["added_delay_ms"].items()}
+        tampered["arrival_ms"] = {
+            role: np.float64(value) for role, value in tampered["arrival_ms"].items()}
         check = verify_confirmation(self.baseline, tampered)
         self.assertTrue(check["confirmed"])
 
@@ -313,14 +312,12 @@ class VerifyThreeWayTests(unittest.TestCase):
         self.assertEqual([pair["roles"] for pair in check["pairs"]],
                          [["left_low", "left_mid"], ["left_mid", "left_high"]])
 
-    def test_three_way_single_pair_regression_rejects(self):
+    def test_three_way_middle_way_residual_rejects(self):
         confirmation = self.alignment.propose(
-            captures_for_3way(self.alignment, (500, 500, 500)), live_target=self.live)
-        tampered = deepcopy(confirmation)
-        tampered["overlap_checks"][1]["after_sum_db"] -= 5.0
-        check = verify_confirmation(self.baseline, tampered)
+            captures_for_3way(self.alignment, (500, 548, 500)), live_target=self.live)
+        check = verify_confirmation(self.baseline, confirmation)
         self.assertFalse(check["confirmed"])
-        self.assertIn("regression", check["reasons"][0])
+        self.assertEqual(check["max_residual_ms"], 1.0)
 
 
 class StageDoubles:

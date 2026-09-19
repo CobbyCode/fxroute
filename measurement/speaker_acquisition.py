@@ -25,6 +25,7 @@ import asyncio
 from typing import Any, Callable
 
 from measurement.capture_evidence import CaptureEvidence
+from measurement.speaker_align import require_timing_reference
 from measurement.target import REFERENCE_TAP_INGRESS
 
 
@@ -62,20 +63,6 @@ def _job_input_key(job: dict[str, Any], role: str) -> tuple:
     return key
 
 
-def _require_stable_reference(analysis: dict[str, Any], role: str) -> None:
-    reference = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
-    if (reference.get("usable") is not True
-            or reference.get("electrical_reference_used") is not True
-            or reference.get("electrical_reference_fallback")
-            or reference.get("timing_status") != "electrical-reference"
-            or reference.get("stability") != "stable"):
-        status = reference.get("timing_status") or reference.get("stability") or "unusable"
-        raise RuntimeError(
-            f"Speaker Align acquisition for {role} has no stable electrical reference ({status}); "
-            "fix the upstream tap or its level and repeat the acquisition"
-        )
-
-
 async def acquire_speaker_captures(
     store: Any,
     alignment: Any,
@@ -87,6 +74,8 @@ async def acquire_speaker_captures(
     microphone_position_id: str,
     sweep_profile: dict[str, float] | None = None,
     cancel_requested: Callable[[], bool] | None = None,
+    expected_native_context: dict[str, Any] | None = None,
+    on_progress: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Capture every speaker way serially; return propose-ready captures.
 
@@ -96,8 +85,7 @@ async def acquire_speaker_captures(
     """
     reference_id = _session_identity(reference_id, "upstream reference")
     microphone_position_id = _session_identity(microphone_position_id, "microphone position")
-    if reference_input_channel is None or not str(reference_input_channel).strip():
-        raise ValueError("Speaker Align acquisition requires an electrical reference input channel")
+    electrical_requested = reference_input_channel is not None and bool(str(reference_input_channel).strip())
     if getattr(store, "measurement_target_provider", None) is None:
         raise ValueError("Speaker Align acquisition requires a measurement target provider")
     requests = alignment.capture_requests()
@@ -115,11 +103,13 @@ async def acquire_speaker_captures(
     captures: list[dict[str, Any]] = []
     provenance: dict[str, Any] | None = None
     expected_key: tuple | None = None
-    for request in requests:
+    for way_index, request in enumerate(requests):
         role = request["role"]
         if cancel_requested is not None and cancel_requested():
             raise asyncio.CancelledError("Speaker Align acquisition was cancelled")
         owner = CaptureEvidence()
+        if on_progress is not None:
+            on_progress(role, way_index + 1, len(requests))
         job = await store.start_measurement(
             input_id=input_id,
             mic_input_channel=mic_input_channel,
@@ -128,6 +118,7 @@ async def acquire_speaker_captures(
             measurement_bank=role,
             sweep_profile=dict(sweep_profile) if sweep_profile else None,
             capture_evidence=owner,
+            **(expected_native_context or {}),
         )
         job_id = str(job["id"])
         # Fail fast before the worker's first sweep: the frozen target and the
@@ -181,8 +172,13 @@ async def acquire_speaker_captures(
         analysis = evidence["analysis"]
         if analysis.get("sample_rate") != request["measurement_target"].get("sample_rate_hz"):
             raise RuntimeError(f"Speaker Align capture sample rate changed for {role}")
-        _require_stable_reference(analysis, role)
         capture_info = evidence.get("capture") if isinstance(evidence.get("capture"), dict) else {}
+        try:
+            require_timing_reference(analysis, capture_info.get("reference_node"))
+            if electrical_requested and not analysis["reference_path"].get("electrical_reference_used"):
+                raise ValueError("Selected electrical reference was not captured")
+        except ValueError as exc:
+            raise RuntimeError(f"Speaker Align {role} reference failed (electrical reference or ingress monitor): {exc}") from exc
         finished_input = finished.get("input") if isinstance(finished.get("input"), dict) else {}
         observed = {
             "microphone_node": capture_info.get("microphone_node"),
@@ -194,7 +190,8 @@ async def acquire_speaker_captures(
         }
         # Fail closed before comparing: two ways both missing a field must
         # never attest sameness of nothing.
-        missing = [name for name, value in observed.items() if value is None]
+        missing = [name for name, value in observed.items() if value is None
+                   and (name != "electrical_reference_channel" or electrical_requested)]
         if missing:
             raise RuntimeError(
                 f"Speaker Align capture for {role} is missing {', '.join(missing)}; "
@@ -221,6 +218,7 @@ async def acquire_speaker_captures(
             "reference_id": reference_id,
             "microphone_position_id": microphone_position_id,
             "reference_tap": REFERENCE_TAP_INGRESS,
+            "reference_node": observed["reference_node"],
             "time_reference": evidence["time_reference"],
             "impulse_response": evidence["impulse_response"],
             "analysis": analysis,

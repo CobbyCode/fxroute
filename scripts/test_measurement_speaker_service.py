@@ -106,6 +106,9 @@ class FakeSession:
     async def restore_start(self):
         self.calls.append("restore")
 
+    def measurement_context(self):
+        return {}
+
     async def confirm_and_commit(self, *, acquire, alignment, proposal,
                                  live_target, cancel_requested=None, **options):
         from measurement.speaker_apply import apply_and_confirm, verify_confirmation
@@ -197,9 +200,10 @@ class StartValidationTests(ServiceFixture, unittest.TestCase):
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
 
-    def test_missing_reference_channel_fails_before_job_exists(self):
+    def test_non_global_selection_fails_before_job_exists(self):
+        self.state["modes"]["stereo-sub"]["selected_bank"] = "left_low"
         service = self.service()
-        with self.assertRaisesRegex(ValueError, "reference"):
+        with self.assertRaisesRegex(ValueError, "Global"):
             service.start(side="left", input_id="mic", reference_input_channel="",
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
@@ -239,6 +243,9 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(summary["added_delay_ms"]["left_low"], 3.0, delta=0.3)
         self.assertAlmostEqual(summary["added_delay_ms"]["left_high"], 0.0, delta=0.3)
         self.assertEqual(job["side"], "left")
+        self.assertEqual(job["result"]["check"]["before_spread_ms"], 3.0)
+        self.assertEqual(job["result"]["check"]["after_arrival_ms"],
+                         {"left_low": 500 / 48, "left_high": 500 / 48})
         # Progress is observable while running; terminal keeps the last note.
         self.assertIn("commit", job["message"].lower())
 
