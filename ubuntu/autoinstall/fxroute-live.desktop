@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FXRoute Live
+Comment=Try FXRoute directly from the live medium (RAM only, no persistence)
+Exec=/usr/local/libexec/fxroute-live-autostart.sh
+TryExec=/usr/local/libexec/fxroute-live-autostart.sh
+OnlyShowIn=GNOME;
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=10

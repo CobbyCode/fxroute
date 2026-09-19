@@ -1,0 +1,12 @@
+#cloud-config
+# QEMU-only overrides merged onto the common product seed by generate-seeds.py.
+# Never release an ISO built with --test-seed. No interactive sections.
+autoinstall:
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  identity:
+    hostname: fxroute
+    username: test
+    # Password: test (mkpasswd -m sha-512)
+    password: '$6$fxroutetest$fIbg1MbSnoMrKo6PNmlcW3FNPttBXGEzXuicaBBXGBtUAgZ42nW8n/BumKiT7AVVMfMyvOCRF7nJoEQBGLDxS.'
