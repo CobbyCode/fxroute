@@ -25,10 +25,11 @@ PASSBAND_FALLBACK_DB = 3.0
 # Real drivers/headphones vary broadly across the band; 1-octave smoothing
 # removes narrow resonances before the median, the MAD gate only rejects
 # broken captures (silence, clipping, interference). Confidence is graded,
-# only extreme instability fails closed.
+# only extreme instability fails closed. Headphone close-mic proof shows
+# MAD 11-16 dB on real captures with still meaningful medians.
 MIN_PASSBAND_POINTS = 6
 MIN_PASSBAND_OCTAVES = 1.0 / 6.0
-MAX_PASSBAND_MAD_DB = 12.0
+MAX_PASSBAND_MAD_DB = 18.0
 SMOOTHING_OCTAVES = 1.0
 # Physical gain corrections are bounded; larger raw values fail closed.
 MAX_WAY_GAIN_DB = 12.0
