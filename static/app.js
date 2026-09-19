@@ -14356,19 +14356,12 @@ function renderEffectsCompare() {
         return Object.entries(modeConfig.banks || {}).filter(([id]) => id !== 'global');
     })() : [];
     const aggregateLabel = (id, bank) => bank?.label || outputSystemModule()?.roleLabel?.(id) || id;
-    const optionsA = aggregate
-        ? (aggregateBanks.map(([id, bank]) =>
-            `<option value="${escapeHtml(id)}:A">A · ${escapeHtml(aggregateLabel(id, bank))} · ${escapeHtml(bank?.preset_a || '—')}</option>`).join('')
-            || '<option>No area banks</option>')
-        : (!presetA ? '<option value="">Per-channel presets</option>' : '') + presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
+    const optionsA = aggregate ? '<option>All Banks · A</option>' :
+        (!presetA ? '<option value="">Per-channel presets</option>' : '') + presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
     if (elements.effectsCompareA.innerHTML !== optionsA) {
         elements.effectsCompareA.innerHTML = optionsA;
     }
-    const optionsB = aggregate
-        ? (aggregateBanks.map(([id, bank]) =>
-            `<option value="${escapeHtml(id)}:B">B · ${escapeHtml(aggregateLabel(id, bank))} · ${escapeHtml(bank?.preset_b || '—')}</option>`).join('')
-            || '<option>No area banks</option>')
-        : [`<option value="" ${!presetB ? 'selected' : ''}>${!presetB && getEffectsCompareState().canB ? 'Per-channel presets' : 'Select preset…'}</option>`].concat(
+    const optionsB = aggregate ? '<option>All Banks · B</option>' : [`<option value="" ${!presetB ? 'selected' : ''}>${!presetB && getEffectsCompareState().canB ? 'Per-channel presets' : 'Select preset…'}</option>`].concat(
             presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetB ? 'selected' : ''}>${escapeHtml(n)}</option>`)
         ).join('');
     if (elements.effectsCompareB.innerHTML !== optionsB) {
@@ -14406,7 +14399,7 @@ function renderEffectsCompare() {
         if (elements.effectsCompareActive) elements.effectsCompareActive.textContent = effectiveActiveSide
             ? `Listening: ${effectiveActiveSide} · All Banks` : 'Listening: Mixed A/B';
         if (elements.effectsCompareChain) elements.effectsCompareChain.textContent =
-            `${Object.keys(state.outputSystem.catalog.modes[state.outputSystem.catalog.active_mode].banks).length - 1} area banks`;
+            aggregateBanks.map(([id, bank]) => aggregateLabel(id, bank)).join(' · ') || 'No area banks';
     }
     if (elements.effectsCompareToggle) elements.effectsCompareToggle.textContent = aggregate
         ? `Switch all to ${effectiveActiveSide === 'A' ? 'B' : 'A'}` : 'Compare A/B';
