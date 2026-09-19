@@ -207,6 +207,7 @@ let state = {
         selectedReferenceInputChannel: '',
         selectedReferenceInputChannelLeft: '',
         selectedReferenceInputChannelRight: '',
+        sweepSide: 'stereo',
         cancelRequested: false,
         repeatJobActive: false,
         displaySmoothing: '1/6-oct',
@@ -652,6 +653,7 @@ const elements = {
     measurementSweepToggleBtn: document.getElementById('measurement-sweep-toggle'),
     measurementSweepMenu: document.getElementById('measurement-sweep-menu'),
     measurementSweepStartBtn: document.getElementById('measurement-sweep-start'),
+    measurementSweepSideRow: document.getElementById('measurement-sweep-side-row'),
     measurementAreaIndicator: document.getElementById('measurement-area-indicator'),
     measurementAreaNote: document.getElementById('measurement-area-note'),
     measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
@@ -3600,6 +3602,28 @@ function renderMeasurementArea() {
     if (elements.measurementSweepStartBtn) {
         elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight || area?.available === false;
     }
+    syncSweepSideRow(area);
+}
+
+function syncSweepSideRow(area) {
+    /* The side chips only narrow a stereo area (an L/R pair bank or Global)
+     * to one side for the single sweep. Mono areas hide the row and always
+     * sweep both inputs at once. */
+    const row = elements.measurementSweepSideRow;
+    if (!row) return;
+    const resolved = area || measurementAreaFromCatalog();
+    const sides = Array.isArray(resolved?.sides) ? resolved.sides : [];
+    row.classList.toggle('hidden', sides.length === 0);
+    if (!sides.includes(state.measurement.sweepSide)) {
+        state.measurement.sweepSide = 'stereo';
+    }
+    const active = state.measurement.sweepSide || 'stereo';
+    row.querySelectorAll('[data-sweep-side]').forEach((button) => {
+        const selected = button.getAttribute('data-sweep-side') === active;
+        button.classList.toggle('is-active', selected);
+        button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+        button.disabled = !!state.measurement.startInFlight;
+    });
     syncSpeakerAlignButton();
 }
 
@@ -12001,11 +12025,15 @@ async function startHostMeasurement(jobGeneration = state.measurement.jobGenerat
     formData.append('input_id', state.measurement.selectedInputId);
     formData.append('input_key', state.measurement.selectedInputKey || '');
     // The selected area decides the sweep side and the frozen measurement
-    // target; there is no separate channel selector for a single sweep. With
-    // no area catalog loaded the server default of a left-side sweep applies.
+    // target. A stereo area (an L/R pair bank or Global) sweeps the chosen
+    // side; mono areas always sweep both inputs at once. There is no
+    // separate channel selector beyond the area side choice.
     const area = measurementAreaFromCatalog();
     if (area) {
-        formData.append('channel', area.channel);
+        const side = Array.isArray(area.sides) && area.sides.includes(state.measurement.sweepSide)
+            ? state.measurement.sweepSide
+            : 'stereo';
+        formData.append('channel', side);
         formData.append('measurement_bank', area.bank_id);
     }
     formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
@@ -13556,6 +13584,16 @@ function setupMeasurementActions() {
             void startMeasurement();
         });
     }
+    document.querySelectorAll('#measurement-sweep-side-row [data-sweep-side]').forEach((button) => {
+        button.addEventListener('click', () => {
+            if (state.measurement.startInFlight || hasActiveMeasurementJob()) return;
+            const side = button.getAttribute('data-sweep-side') || 'stereo';
+            const area = measurementAreaFromCatalog();
+            if (!Array.isArray(area?.sides) || !area.sides.includes(side)) return;
+            state.measurement.sweepSide = side;
+            syncSweepSideRow(area);
+        });
+    });
     document.querySelectorAll('[data-measurement-smoothing]').forEach((button) => {
         button.addEventListener('click', () => {
             if (getMeasurementGraphView() === 'ir') return;

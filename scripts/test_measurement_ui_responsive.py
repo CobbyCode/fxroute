@@ -327,6 +327,12 @@ def _run():
                 assert "Run Single Sweep" in first_choice
                 assert "L / R / Stereo" not in first_choice
                 assert page.locator("[data-measurement-channel]").count() == 0
+                # Stereo areas offer an area-scoped side choice for the single
+                # sweep; mono areas hide it (covered below).
+                assert page.locator("#measurement-sweep-side-row").is_visible()
+                assert page.locator("#measurement-sweep-side-row").inner_text().split() == [
+                    "Left", "Stereo", "Right"]
+                assert page.locator('[data-sweep-side="stereo"]').get_attribute("aria-pressed") == "true"
                 assert page.locator(".measurement-workflow-menu-choice").nth(1).inner_text() == (
                     "Start LR Repeat\nRepeated L/R sweeps for more precision."
                 )
@@ -363,6 +369,20 @@ def _run():
                 # The demo starts on Global: whole system, both inputs.
                 start_sweep("stereo", "global")
                 checks += 2
+
+                # A stereo area also offers per-side single sweeps; the side
+                # only narrows within the selected bank.
+                page.locator("#measurement-sweep-toggle").click()
+                page.locator('[data-sweep-side="left"]').click()
+                assert page.locator('[data-sweep-side="left"]').get_attribute("aria-pressed") == "true"
+                page.locator("#measurement-sweep-start").click()
+                _wait_for_call(page, "start", "/api/measurements/start", "left")
+                last = page.evaluate("() => window.__measurementCalls.filter(c => c.type === 'start').at(-1)")
+                assert last["bank"] == "global", last
+                _cancel_from_sweep_button(page)
+                page.locator("#measurement-sweep-toggle").click()
+                page.locator('[data-sweep-side="stereo"]').click()
+                checks += 4
 
                 page.locator("#measurement-sweep-toggle").click()
                 page.locator("#measurement-repeat-start").click()
@@ -447,7 +467,10 @@ def _run():
                 "Sub 1 is a mono target. Use a single sweep.")
             # A single sweep of the same area stays available.
             assert not page.locator("#measurement-sweep-start").is_disabled()
-            checks += 4
+            # A mono bank has no sides: the side row hides and the sweep
+            # stays on both inputs at operating level.
+            assert not page.locator("#measurement-sweep-side-row").is_visible()
+            checks += 5
 
             # Saved results show the frozen area they were captured in; a legacy
             # result without a target stays unlabelled.

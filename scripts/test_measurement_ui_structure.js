@@ -20,14 +20,23 @@ assert.doesNotMatch(index, /data-measurement-channel/, 'the area selector owns t
 assert.match(index, /id="measurement-area-row"[^>]*role="group"[^>]*aria-label="Selected measurement area"/);
 assert.match(index, /<span class="measurement-area-label">Measuring area<\/span>/);
 assert.match(index, /id="measurement-area-indicator"[^>]*aria-live="polite">Global<\/span>/);
-assert.match(index, /id="measurement-sweep-start"[^>]*>Run Single Sweep<\/button>/);
+assert.match(index, /id="measurement-sweep-start"[^>]*class="btn-secondary"[^>]*>Run Single Sweep<\/button>/);
+assert.match(index, /id="measurement-sweep-side-row"[^>]*aria-label="Single sweep side"/);
+assert.match(index, /data-sweep-side="left"[^>]*>Left<\/button>/);
+assert.match(index, /data-sweep-side="stereo"[^>]*>Stereo<\/button>/);
+assert.match(index, /data-sweep-side="right"[^>]*>Right<\/button>/);
+assert.doesNotMatch(index, /data-measurement-channel/, 'sides are area-scoped, not output-channel chips');
 assert.ok(index.indexOf('measurement-area-row') < index.indexOf('id="measurement-sweep-start"'), 'the area line sits above the single sweep action');
 assert.match(app, /const area = measurementAreaFromCatalog\(\);/);
-assert.match(app, /if \(area\) \{\n        formData\.append\('channel', area\.channel\);\n        formData\.append\('measurement_bank', area\.bank_id\);\n    \}/);
+assert.match(app, /area\.sides\.includes\(state\.measurement\.sweepSide\)/);
+assert.match(app, /formData\.append\('measurement_bank', area\.bank_id\);\n    \}/);
 assert.doesNotMatch(app, /state\.measurement\.selectedChannel/, 'the area is the only sweep scope; the channel fallback is gone');
 assert.match(app, /elements\.measurementAreaIndicator\.textContent = area \? area\.label : 'Global'/);
 assert.doesNotMatch(app, /\[data-measurement-channel\]/, 'no leftover output-channel chip handlers');
 assert.match(app, /void ensureMeasurementAreaCatalog\(\);/, 'opening the panel loads the area catalog');
+assert.match(app, /state\.measurement\.sweepSide/, 'the single-sweep side persists in measurement state');
+assert.match(app, /area\.sides\.includes\(state\.measurement\.sweepSide\)/, 'a stored side only applies inside a stereo area');
+assert.match(app, /data-sweep-side/, 'side chips drive the single sweep');
 // Saved results show the frozen area they were captured in (legacy results
 // without a target stay unlabelled, never silently "Global").
 assert.match(app, /function measurementAreaBadge\(measurement\) \{/);

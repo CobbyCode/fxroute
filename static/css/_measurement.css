@@ -283,8 +283,27 @@
     border-color: var(--accent-hover);
 }
 
+/* Single-sweep side choice for stereo areas: three compact chips in one
+   row, same language as the other measurement chips. The side only narrows
+   within the selected area, so it can never contradict the bank selector.
+   Mono areas hide the whole row and sweep both inputs at once. */
+.measurement-sweep-side-row {
+    display: flex;
+    gap: 0.4rem;
+    min-width: 0;
+}
+
+.measurement-sweep-side-row .measurement-chip {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 32px;
+    padding: 0.3rem 0.4rem;
+    font-size: 0.78rem;
+}
+
 /* Read-only measurement area: the A/B selector owns the scope, so the sweep
-   menu shows the selected area instead of offering channel chips. */
+   menu shows the selected area; the side chips only narrow a stereo area to
+   one side for the single sweep. */
 .measurement-workflow-menu-panel .measurement-area-row {
     padding: 0.1rem 0.1rem 0.15rem;
 }

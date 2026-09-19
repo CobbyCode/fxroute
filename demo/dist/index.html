@@ -1046,7 +1046,12 @@
                                                             <span class="measurement-area-label">Measuring area</span>
                                                             <span id="measurement-area-indicator" class="measurement-area-indicator" aria-live="polite">Global</span>
                                                         </div>
-                                                        <button id="measurement-sweep-start" class="btn-primary" type="button">Run Single Sweep</button>
+                                                        <div class="measurement-sweep-side-row hidden" id="measurement-sweep-side-row" role="group" aria-label="Single sweep side">
+                                                            <button type="button" class="measurement-chip" data-sweep-side="left" aria-pressed="false">Left</button>
+                                                            <button type="button" class="measurement-chip" data-sweep-side="stereo" aria-pressed="true">Stereo</button>
+                                                            <button type="button" class="measurement-chip" data-sweep-side="right" aria-pressed="false">Right</button>
+                                                        </div>
+                                                        <button id="measurement-sweep-start" class="btn-secondary" type="button">Run Single Sweep</button>
                                                         <span id="measurement-area-note" class="measurement-repeat-help">Whole system: Global plus every area bank stay audible for this sweep.</span>
                                                     </div>
                                                     <div class="measurement-workflow-menu-choice">
@@ -1664,10 +1669,10 @@
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
     <script src="/static/speaker_align.js?v=0.9.4"></script>
     <script src="/static/measurement_flows.js?v=0.9.28"></script>
-    <script src="/static/output_state.js?v=0.9.10"></script>
+    <script src="/static/output_state.js?v=0.9.11"></script>
     <script src="/static/crossover.js?v=0.9.3"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.194"></script>
+    <script src="/static/app.js?v=0.9.195"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

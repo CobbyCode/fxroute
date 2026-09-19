@@ -203,6 +203,37 @@ async function main() {
     assert.equal(committedStartForm.get('channel'), 'stereo');
     assert.equal(committedStartForm.get('measurement_bank'), 'main');
 
+    // A stereo area also offers per-side single sweeps; the side only
+    // narrows within the selected bank and never contradicts it.
+    const sided = makeMeasurementContext();
+    sided.state.measurement.sweepSide = 'left';
+    const sidedStart = sided.context.startHostMeasurement();
+    await new Promise(resolve => setImmediate(resolve));
+    sided.context.releaseSnapshot();
+    await sidedStart;
+    assert.equal(sided.startForm.get('channel'), 'left');
+    assert.equal(sided.startForm.get('measurement_bank'), 'main');
+
+    // A mono bank has no sides: the stored choice is ignored and the sweep
+    // stays on both inputs at operating level.
+    const mono = makeMeasurementContext();
+    mono.context.outputCatalog = {
+        active_mode: 'stereo',
+        revision: 4,
+        modes: { stereo: { selected_bank: 'sub1',
+            banks: {
+                global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' },
+                sub1: { id: 'sub1', label: 'Sub 1', roles: ['sub1'], channel_mode: 'mono' },
+            } } },
+    };
+    mono.state.measurement.sweepSide = 'right';
+    const monoStart = mono.context.startHostMeasurement();
+    await new Promise(resolve => setImmediate(resolve));
+    mono.context.releaseSnapshot();
+    await monoStart;
+    assert.equal(mono.startForm.get('channel'), 'stereo');
+    assert.equal(mono.startForm.get('measurement_bank'), 'sub1');
+
     const repeat = makeMeasurementContext();
     const repeatStart = repeat.context.startLrRepeatMeasurement();
     await new Promise(resolve => setImmediate(resolve));

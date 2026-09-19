@@ -156,14 +156,17 @@ function measurementAreaTests() {
         channel: 'stereo',
         channel_mode: 'mono',
         available: true,
+        sides: [],
         note: 'Only Sub 1 stays audible; every other output is muted for this sweep.',
         repeat_supported: false,
         repeat_note: 'Sub 1 is a mono target. Use a single sweep.',
     });
     assert.equal(OutputState.measurementArea(selected, 'global').repeat_supported, true);
     assert.equal(OutputState.measurementArea(selected, 'global').channel, 'stereo');
+    assert.deepEqual(OutputState.measurementArea(selected, 'global').sides, ['left', 'stereo', 'right']);
     assert.equal(OutputState.measurementArea(selected, 'main').channel, 'stereo');
     assert.equal(OutputState.measurementArea(selected, 'main').repeat_supported, true);
+    assert.deepEqual(OutputState.measurementArea(selected, 'main').sides, ['left', 'stereo', 'right']);
     assert.deepEqual(OutputState.summedRoleIds({ sub_roles: ['sub_l'], sub_mode: 'mono' }), ['sub_l']);
     assert.deepEqual(OutputState.summedRoleIds({ sub_roles: ['sub_l', 'sub_r'], sub_mode: 'stereo' }), []);
     assert.deepEqual(OutputState.summedRoleIds({ sub_roles: [], sub_mode: 'none' }), []);
@@ -173,6 +176,7 @@ function measurementAreaTests() {
     crossover.modes.stereo.banks.low_mid = { label: 'Low-Mid L/R', roles: ['left_low_mid', 'right_low_mid'], channel_mode: 'stereo' };
     assert.equal(OutputState.measurementArea(crossover, 'low_mid').label, 'Low-Mid L/R');
     assert.equal(OutputState.measurementArea(crossover, 'low_mid').repeat_supported, true);
+    assert.deepEqual(OutputState.measurementArea(crossover, 'low_mid').sides, ['left', 'stereo', 'right']);
     // Read-only: no bank id falls back to the whole system without inventing one.
     const empty = OutputState.measurementArea(null);
     assert.equal(empty.bank_id, 'global');

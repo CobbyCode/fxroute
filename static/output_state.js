@@ -134,6 +134,10 @@ function measurementArea(catalog, bankId) {
     const label = bank?.label || roleLabel(selected);
     const available = selected !== 'all';
     const channel_mode = bank?.channel_mode || 'stereo';
+    // A stereo area (an L/R pair bank or Global) can be swept per side or
+    // together; a mono area has no sides and always sweeps both inputs at
+    // once (a summed mono target needs both to reach operating level).
+    const sides = available && channel_mode === 'stereo' ? ['left', 'stereo', 'right'] : [];
     const repeat_supported = available && channel_mode === 'stereo';
     const repeat_note = !available ? 'Select a filter bank for measurement.'
         : repeat_supported ? '' : `${label} is a mono target. Use a single sweep.`;
@@ -143,6 +147,7 @@ function measurementArea(catalog, bankId) {
         channel: 'stereo',
         channel_mode,
         available,
+        sides,
         note: !available ? repeat_note : selected === 'global'
             ? 'Whole system: Global plus every area bank stay audible for this sweep.'
             : `Only ${label} stays audible; every other output is muted for this sweep.`,
