@@ -587,13 +587,8 @@ function syncSpeakerAlignButton() {
     elements.measurementSpeakerAlignRightBtn.disabled = disabled;
     elements.measurementSpeakerAlignCancelBtn.classList.toggle('hidden', !speakerActive);
     elements.measurementSpeakerAlignCancelBtn.disabled = !speakerReadyToCancel;
-    const catalog = speakerAlignCatalog();
-    const roles = catalog.modes[catalog.active_mode].topology.left_ways;
-    if (elements.measurementSpeakerAlignSequence) {
-        elements.measurementSpeakerAlignSequence.textContent = `${roles.map(SpeakerAlign.wayLabel).join(' → ')} · then repeat to verify.`;
-    }
     if (!speakerActive && elements.measurementSpeakerAlignStatus && !measurementState.speakerAlignResult) {
-        elements.measurementSpeakerAlignStatus.textContent = 'Aligns each way of one speaker with the microphone fixed.';
+        elements.measurementSpeakerAlignStatus.textContent = 'Aligns each way of the selected speaker with the microphone fixed.';
     }
 }
 

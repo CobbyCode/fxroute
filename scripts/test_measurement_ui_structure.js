@@ -57,6 +57,19 @@ assert.match(index, /id="measurement-hybrid-open"[^>]*>Advanced<\/button>/);
 assert.match(index, /Combined Speaker and Room Measurement/);
 assert.match(index, /id="measurement-spl-calibration-open"[^>]*>SPL Calibration<\/button>/);
 assert.match(index, /Calibrate your loudness reference\./);
+// Speaker Auto Alignment is compact: two equal buttons side by side, one
+// short note below, status and results underneath. No sequence line and no
+// long explanation paragraphs.
+assert.match(index, /id="measurement-speaker-align-left"[^>]*>Align Left<\/button>/);
+assert.match(index, /id="measurement-speaker-align-right"[^>]*>Align Right<\/button>/);
+assert.match(index, /Aligns each way of the selected speaker with the microphone fixed\./);
+assert.doesNotMatch(index, /measurement-speaker-align-sequence/);
+assert.doesNotMatch(index, /Place the mic in front/);
+assert.doesNotMatch(index, /then repeat to verify/);
+assert.doesNotMatch(flows, /measurementSpeakerAlignSequence/);
+assert.doesNotMatch(flows, /then repeat to verify/);
+assert.match(flows, /Aligns each way of the selected speaker with the microphone fixed\./);
+assert.match(measurementCss, /\.measurement-workflow-speaker-buttons/);
 assert.ok(index.indexOf('id="measurement-repeat-start"') > index.indexOf('id="measurement-sweep-menu"'));
 assert.ok(index.indexOf('id="measurement-hybrid-open"') > index.indexOf('id="measurement-sweep-menu"'));
 assert.doesNotMatch(index, /subwoofer alignment/i);

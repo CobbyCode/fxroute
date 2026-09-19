@@ -664,7 +664,6 @@ const elements = {
     measurementSpeakerAlignCancelBtn: document.getElementById('measurement-speaker-align-cancel'),
     measurementSpeakerAlignGroup: document.getElementById('measurement-speaker-align-group'),
     measurementSpeakerAlignStatus: document.getElementById('measurement-speaker-align-status'),
-    measurementSpeakerAlignSequence: document.getElementById('measurement-speaker-align-sequence'),
     measurementSpeakerAlignResults: document.getElementById('measurement-speaker-align-results'),
     measurementHybridOpenBtn: document.getElementById('measurement-hybrid-open'),
     measurementHybridPanel: document.getElementById('measurement-hybrid-panel'),
@@ -11559,7 +11558,7 @@ function stopMeasurementWindowHeartbeat(keepalive = false) {
 }
 
 const MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT = 'Scans sub delay around crossover, picks best alignment.';
-const MEASUREMENT_SPEAKER_ALIGN_STATUS_DEFAULT_TEXT = 'Aligns each way of one speaker with the microphone fixed.';
+const MEASUREMENT_SPEAKER_ALIGN_STATUS_DEFAULT_TEXT = 'Aligns each way of the selected speaker with the microphone fixed.';
 
 function resetMeasurementTransientStatus() {
     // A cancelled/completed/failed AutoSub (or sweep) leaves its statusText

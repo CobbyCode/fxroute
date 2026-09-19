@@ -44,7 +44,7 @@ async function main() {
     const state = { outputSystem: { catalog: catalog() }, measurement: {
         selectedInputId: 'mic-1', selectedMicInputChannel: '1', selectedReferenceInputChannel: '',
     } };
-    const elements = Object.fromEntries(['LeftBtn', 'RightBtn', 'CancelBtn', 'Group', 'Status', 'Results', 'Sequence']
+    const elements = Object.fromEntries(['LeftBtn', 'RightBtn', 'CancelBtn', 'Group', 'Status', 'Results']
         .map(key => [`measurementSpeakerAlign${key}`, element()]));
     const calls = [];
     const result = { confirmed: true, committed_revision: 8,
@@ -72,6 +72,8 @@ async function main() {
     });
     flows.syncSpeakerAlignButton();
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), false);
+    assert.equal(elements.measurementSpeakerAlignStatus.textContent,
+        'Aligns each way of the selected speaker with the microphone fixed.');
     await flows.startSpeakerAlign('right');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].side, 'right');

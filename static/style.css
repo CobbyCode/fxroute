@@ -4703,12 +4703,54 @@ select.url-input {
     color: var(--warning, #b45309);
 }
 
+.speaker-align-table {
+    width: 100%;
+    margin-top: 12px;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.speaker-align-table caption {
+    text-align: left;
+    padding: 6px 0;
+    font-weight: 600;
+}
+
+.speaker-align-table th,
+.speaker-align-table td {
+    padding: 6px 8px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+}
+
+.speaker-align-table th:first-child {
+    text-align: left;
+}
+
 .measurement-workflow-row {
     display: grid;
     grid-template-columns: 190px minmax(0, 1fr);
     align-items: center;
     gap: 0.55rem;
     min-width: 0;
+}
+
+.measurement-workflow-speaker-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
+.measurement-workflow-speaker-buttons .btn-secondary {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+}
+
+.measurement-workflow-speaker-cancel {
+    grid-column: 1 / -1;
 }
 
 #measurement-sweep-start,
