@@ -58,6 +58,50 @@ class SpeakerOwnershipTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.session.committed)
 
 
+class KeeperWiringTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_keeper_spans_run_with_job_params(self):
+        from contextlib import asynccontextmanager
+        events = []
+
+        @asynccontextmanager
+        async def keeper(job_id, params):
+            events.append(("enter", job_id, params["input_id"]))
+            try:
+                yield {"held": True}
+            finally:
+                events.append(("exit", job_id))
+
+        original = self.acquire
+
+        async def capture(alignment, **kwargs):
+            events.append(("acquire", len(self.acquire_calls)))
+            return await original(alignment, **kwargs)
+
+        service, job_id = self.start(
+            self.service(input_keeper=keeper, acquire=capture),
+            reference_input_channel="")
+        result = await service.wait_for(job_id)
+        self.assertEqual(result["status"], "committed", result)
+        kinds = [event[0] for event in events]
+        self.assertEqual(kinds[0], "enter")
+        self.assertEqual(kinds[-1], "exit")
+        self.assertEqual(events[0][1], job_id)
+        self.assertEqual(events[0][2], "mic")
+        self.assertIn("acquire", kinds)
+        self.assertLess(kinds.index("enter"), kinds.index("acquire"))
+
+    async def test_keeper_failure_fails_job_before_capture(self):
+        def failing_keeper(job_id, params):
+            raise RuntimeError("keeper down")
+
+        service, job_id = self.start(self.service(input_keeper=failing_keeper))
+        result = await service.wait_for(job_id)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("keeper down", result["error"])
+        self.assertEqual(self.acquire_calls, [])
+        self.assertFalse(self.session.committed)
+
+
 class SessionExclusionTests(unittest.IsolatedAsyncioTestCase):
     async def test_speaker_excludes_other_graph_owners_between_way_captures(self):
         session = MeasurementSampleRateSession()

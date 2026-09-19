@@ -22,6 +22,13 @@ from measurement.constants import (
 
 logger = logging.getLogger(__name__)
 
+# Record links must be observed before the sweep plays: creation is async
+# and a link that never materializes records silence on that channel.
+LINK_VERIFY_TIMEOUT_SECONDS = 3.0
+LINK_VERIFY_POLL_SECONDS = 0.05
+# Fixed settle after both links verified so first data quanta are stable.
+LINK_SETTLE_SECONDS = 0.25
+
 
 def freeze_expected_native_context(
     *,
@@ -132,6 +139,38 @@ class MeasurementRouting:
             "channel_label": f"monitor_{'FR' if monitor_channel == 'right' else 'FL'}",
         }
 
+    def _verify_record_links(
+        self,
+        expected: list[tuple[str, str, str]],
+        *,
+        timeout_seconds: float = LINK_VERIFY_TIMEOUT_SECONDS,
+    ) -> dict[str, float | None]:
+        """Poll `pw-link -l` until every expected pair appears, or time out.
+
+        ``expected`` holds ``(source_port, target_port, label)`` triples. A
+        pair matches when one listing line contains both port names (robust
+        to column order and ``(id: N)`` suffixes). Returns
+        ``{label: elapsed_seconds}`` with ``None`` for pairs never observed.
+        Never raises: the caller owns mic-fatal versus reference-lenient.
+        """
+        pending = {label: (src, dst) for src, dst, label in expected}
+        found: dict[str, float] = {}
+        start = time.monotonic()
+        while pending and time.monotonic() - start < timeout_seconds:
+            try:
+                completed = self._run(["pw-link", "-l"], capture_output=True,
+                                      text=True, timeout=3)
+                lines = (completed.stdout or "").splitlines() if completed.returncode == 0 else []
+            except Exception:
+                lines = []
+            for label, (src, dst) in list(pending.items()):
+                if any(src in line and dst in line for line in lines):
+                    found[label] = round(time.monotonic() - start, 3)
+                    del pending[label]
+            if pending:
+                time.sleep(LINK_VERIFY_POLL_SECONDS)
+        return {label: found.get(label) for _, _, label in expected}
+
     def _link_host_reference_capture(
         self,
         *,
@@ -230,7 +269,20 @@ class MeasurementRouting:
                 raise RuntimeError(
                     "Measurement audio path could not be prepared. Please retry."
                 )
-        time.sleep(0.15)
+        verified = self._verify_record_links([
+            (reference_port, input_left, "reference-to-record-left"),
+            (mic_port, input_right, "microphone-to-record-right"),
+        ])
+        if verified["microphone-to-record-right"] is None:
+            raise RuntimeError(
+                "Measurement audio path could not be prepared: microphone link "
+                "never appeared. Please retry."
+            )
+        if verified["reference-to-record-left"] is None:
+            warning = "reference-to-record-left: link never appeared in listing"
+            link_errors.append(warning)
+            logger.warning("Host-reference link issues: %s", warning)
+        time.sleep(LINK_SETTLE_SECONDS)
         result = {
             "reference_source_node": reference_source_node_name,
             "microphone_source_node": mic_source_node_name,
@@ -245,6 +297,7 @@ class MeasurementRouting:
         }
         if link_errors and not any("microphone-to-record" in err for err in link_errors):
             result["link_warning"] = " ".join(link_errors)
+        result["link_verified"] = verified
         return result
 
     def _link_capture_channels_to_record_stream(
@@ -303,13 +356,24 @@ class MeasurementRouting:
                 }
             )
 
-        time.sleep(0.15)
+        verified = self._verify_record_links([
+            (entry["source_port"], entry["target_port"],
+             f"channel-{entry['input_channel']}-to-record")
+            for entry in links
+        ])
+        missing = [label for label, seen in verified.items() if seen is None]
+        if missing:
+            raise RuntimeError(
+                "Measurement audio links never appeared: " + ", ".join(sorted(missing))
+            )
+        time.sleep(LINK_SETTLE_SECONDS)
         return {
             "source_node": source_node_name,
             "record_node": record_node_name,
             "links": links,
             "source_ports": source_ports,
             "record_inputs": record_inputs,
+            "link_verified": verified,
         }
 
     def _list_source_output_ports(self, source_node_name: str) -> list[str]:
@@ -850,12 +914,23 @@ class MeasurementRouting:
             # strip optional (id: ...)
             link_id = None
             if "(id:" in out_port:
-                out_port, link_id_part, _ = out_port.partition("(id:")
+                out_port, _, link_id_part = out_port.partition("(id:")
                 out_port = out_port.strip()
                 link_id = link_id_part.strip().rstrip(")").strip()
             in_node = in_port.rsplit(":", 1)[0] if ":" in in_port else ""
             out_node = out_port.rsplit(":", 1)[0] if ":" in out_port else ""
-            if in_node not in nodes_of_interest and out_node not in nodes_of_interest:
+            # Only links incident to this record node are stale candidates;
+            # taps to other nodes (keeper streams, user monitors) survive.
+            # The far side must be a measurement source: the mic source, a
+            # monitor tap, or their .monitor variants.
+            far_nodes = {node for node in (in_node, out_node) if node != record_node_name}
+            if len(far_nodes) != 1:
+                continue
+            far_node = next(iter(far_nodes))
+            if record_node_name not in (in_node, out_node):
+                continue
+            if (far_node not in nodes_of_interest
+                    and not far_node.endswith(".monitor")):
                 continue
             unlinked = False
             if link_id and link_id.isdigit():

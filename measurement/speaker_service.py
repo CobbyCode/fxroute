@@ -103,7 +103,8 @@ class SpeakerAlignService:
                  freeze_live: Callable[..., dict],
                  on_committed: Callable[[dict], Any] | None = None,
                  job_scope: Callable[[str], Any] | None = None,
-                 check_available: Callable[[], None] | None = None):
+                 check_available: Callable[[], None] | None = None,
+                 input_keeper: Callable[[str, dict], Any] | None = None):
         for name, bound in (("get_state", get_state), ("describe", describe),
                             ("acquire", acquire), ("create_session", create_session),
                             ("freeze_live", freeze_live)):
@@ -111,6 +112,8 @@ class SpeakerAlignService:
                 raise ValueError(f"Speaker Align service requires a {name} boundary")
         if on_committed is not None and not callable(on_committed):
             raise ValueError("Speaker Align service requires a callable on_committed hook")
+        if input_keeper is not None and not callable(input_keeper):
+            raise ValueError("Speaker Align service requires a callable input_keeper factory")
         self._get_state = get_state
         self._describe = describe
         self._acquire = acquire
@@ -119,6 +122,7 @@ class SpeakerAlignService:
         self._on_committed = on_committed
         self._job_scope = job_scope or (lambda job_id: nullcontext())
         self._check_available = check_available or (lambda: None)
+        self._input_keeper = input_keeper
         self._scopes: dict[str, Any] = {}
         self._guard = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
@@ -288,7 +292,9 @@ class SpeakerAlignService:
             if self._is_cancel_requested(job_id):
                 raise asyncio.CancelledError()
             async with scope:
-                await self._run_job(job_id)
+                keeper = self._keeper_scope(job_id)
+                async with keeper:
+                    await self._run_job(job_id)
         except asyncio.CancelledError:
             self._finish(job_id, "cancelled", "Speaker alignment cancelled.")
         except Exception as exc:
@@ -296,6 +302,19 @@ class SpeakerAlignService:
         finally:
             status, message, result, error = self._jobs[job_id].pop("outcome")
             self._publish_finish(job_id, status, message, result=result, error=error)
+
+    def _keeper_scope(self, job_id: str) -> Any:
+        """Hold the capture input open for the whole run, when wired.
+
+        Without a factory the job runs unchanged (backward compatible).
+        Factory failures fail the job loudly: an unheld input cannot
+        guarantee stable timing.
+        """
+        if self._input_keeper is None:
+            return nullcontext()
+        with self._guard:
+            params = deepcopy(self._jobs[job_id]["params"])
+        return self._input_keeper(job_id, params)
 
     async def _run_job(self, job_id: str) -> None:
         with self._guard:

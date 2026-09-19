@@ -143,6 +143,7 @@ def build_speaker_align_service(
     build_release_adapter: Callable[..., Any] | None = None,
     prepare_measurement: Callable[..., Awaitable[Any]] | None = None,
     another_measurement_active: Callable[[], bool] | None = None,
+    input_keeper: Callable[[str, dict], Any] | None = None,
 ) -> SpeakerAlignService:
     """Compose a service from application parts (no ``main`` import).
 
@@ -177,6 +178,8 @@ def build_speaker_align_service(
         raise ValueError("Speaker Align composition requires a callable get_measurement_session")
     if build_release_adapter is not None and not callable(build_release_adapter):
         raise ValueError("Speaker Align composition requires a callable build_release_adapter")
+    if input_keeper is not None and not callable(input_keeper):
+        raise ValueError("Speaker Align composition requires a callable input_keeper")
 
     def get_state() -> dict:
         return output_service.load()
@@ -314,7 +317,8 @@ def build_speaker_align_service(
     return SpeakerAlignService(
         get_state=get_state, describe=describe, acquire=acquire,
         create_session=create_session, freeze_live=freeze_live,
-        on_committed=on_committed, job_scope=job_scope, check_available=check_available)
+        on_committed=on_committed, job_scope=job_scope, check_available=check_available,
+        input_keeper=input_keeper)
 
 
 __all__ = [

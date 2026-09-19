@@ -4557,6 +4557,20 @@ def _create_speaker_align_release_adapter(*, service, output_key: str, channels:
         resolve_live_device=_live_release_device_context)
 
 
+def _speaker_align_input_keeper(job_id: str, params: dict):
+    """Hold the job's mic source open for the whole alignment run.
+
+    The keeper tap keeps the capture device streaming between way captures
+    so no suspend/resume cycle can slip the mic timing mid-run. Returned as
+    an async context manager for the service's keeper scope.
+    """
+    from measurement.input_keeper import input_keeper_scope
+    return input_keeper_scope(
+        measurement_store, input_id=str(params.get("input_id") or ""),
+        mic_input_channel=params.get("mic_input_channel", "1"),
+        owner=f"speaker-align-{job_id}")
+
+
 def get_speaker_align_service():
     """Return the Speaker Align application service (late-bound singleton).
 
@@ -4577,7 +4591,8 @@ def get_speaker_align_service():
             prepare_measurement=measurement_session._measurement_entry_preflight,
             another_measurement_active=autosub.is_optimization_active,
             build_release_adapter=lambda *, output_key, channels: _create_speaker_align_release_adapter(
-                service=get_output_service(), output_key=output_key, channels=channels))
+                service=get_output_service(), output_key=output_key, channels=channels),
+            input_keeper=_speaker_align_input_keeper)
     return _speaker_align_service_instance
 
 
