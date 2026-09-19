@@ -2896,21 +2896,24 @@ function providerAdminButtonHtml(provider) {
     if (provider.installed) {
         // Account providers (TIDAL, Qobuz) show exactly one auth action for
         // their real state: Disconnect while connected, Connect otherwise.
-        // Order is Update, Uninstall, Connect/Disconnect: the auth action
-        // stays last so a line wrap pushes it down while Update and
-        // Uninstall keep their position. spotifyd has no account login
-        // (Spotify Connect pairs from the Spotify app).
+        // Uninstall is only offered while disconnected. Order is Update
+        // first, Connect/Disconnect last, so a line wrap pushes the auth
+        // action down while Update and Uninstall keep their position.
+        // spotifyd has no account login (Spotify Connect pairs from the
+        // Spotify app).
         if (provider.id === 'tidal') {
             buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
             if (connected) {
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
             } else {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
             }
         } else if (provider.id === 'qobuz') {
             buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
+            if (!connected) {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
+            }
             // Restart is recovery, not a primary action: it makes qbzd
             // re-read a (restored) credential file without SSH and acts as
             // Start on an inactive unit. Only show it while qbzd is down.
