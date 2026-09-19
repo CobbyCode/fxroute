@@ -73,6 +73,19 @@ class GainTests(unittest.TestCase):
         wide_estimate = estimate_way_level(wide, (100.0, 8000.0))
         self.assertAlmostEqual(narrow_estimate["level_db"], wide_estimate["level_db"], delta=0.01)
 
+    def test_narrow_resonances_do_not_move_smoothed_median(self):
+        import math
+        capture = _capture(-10.0, count=96)
+        for point in capture["analysis"]["review_points"]:
+            frequency = point[0]
+            # Narrow +12 dB resonances every octave, plus broadband tilt.
+            if abs(math.log2(frequency / 1000.0) % 1.0) < 0.05:
+                point[1] += 12.0
+            point[1] += 2.0 * math.log2(frequency / 1000.0)
+        estimate = estimate_way_level(capture, (200.0, 8000.0))
+        self.assertLess(estimate["mad_db"], 6.0)
+        self.assertAlmostEqual(estimate["level_db"], -10.0, delta=2.0)
+
     def test_insufficient_points_fail_closed(self):
         capture = _capture(-10.0, count=4)
         with self.assertRaises(ValueError):

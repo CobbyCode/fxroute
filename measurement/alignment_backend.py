@@ -22,9 +22,13 @@ from dsp.crossover import crossover_response, design_crossover
 PASSBAND_FLAT_DB = 1.0
 PASSBAND_FALLBACK_DB = 3.0
 # Robustness gates for one way's level estimate.
+# Real drivers/headphones vary broadly across the band; 1-octave smoothing
+# removes narrow resonances before the median, the MAD gate only rejects
+# broken captures (silence, clipping, interference).
 MIN_PASSBAND_POINTS = 6
 MIN_PASSBAND_OCTAVES = 1.0 / 6.0
-MAX_PASSBAND_MAD_DB = 3.0
+MAX_PASSBAND_MAD_DB = 6.0
+SMOOTHING_OCTAVES = 1.0
 # Physical gain corrections are bounded; larger raw values fail closed.
 MAX_WAY_GAIN_DB = 12.0
 # Post-alignment verification: ways of one side must agree within this.
@@ -166,15 +170,27 @@ def _crossover_correction_db(processing: dict | None, frequency_hz: float,
     return 20.0 * math.log10(max(abs(total), 1e-12))
 
 
+def _octave_smooth(values: list[tuple[float, float]], *, octaves: float = SMOOTHING_OCTAVES) -> list[float]:
+    """Moving-median smooth levels in log frequency (robust to narrow peaks)."""
+    half = 2.0 ** (octaves / 2.0)
+    smoothed = []
+    for frequency, _ in values:
+        window = [level for other_freq, level in values
+                  if frequency / half <= other_freq <= frequency * half]
+        smoothed.append(float(statistics.median(window)) if window else 0.0)
+    return smoothed
+
+
 def estimate_way_level(capture: dict, passband: tuple[float, float],
                        *, processing: dict | None = None,
                        sample_rate_hz: int | None = None) -> dict:
     """Estimate one way's robust passband level (median, never single-point).
 
-    Uses the median of all calibrated points inside the way's usable
-    passband, corrected for the known crossover shape, with MAD as stability
-    gate. Total energy is never compared across differently wide ways: only
-    the robust level per unit bandwidth (median dB) enters the gain proposal.
+    Uses the median of 1-octave smoothed calibrated points inside the way's
+    usable passband, corrected for the known crossover shape, with MAD as
+    stability gate. Total energy is never compared across differently wide
+    ways: only the robust level per unit bandwidth (median dB) enters the
+    gain proposal.
     """
     low_hz, high_hz = passband
     _finite(low_hz, "passband low")
@@ -186,15 +202,16 @@ def estimate_way_level(capture: dict, passband: tuple[float, float],
     for frequency, level in calibrated:
         if low_hz <= frequency <= high_hz:
             correction = _crossover_correction_db(processing, frequency, sample_rate_hz=sample_rate_hz)
-            inside.append(level - correction)
+            inside.append((frequency, level - correction))
     if len(inside) < MIN_PASSBAND_POINTS:
         raise ValueError(
             f"Alignment way has {len(inside)} passband points; {MIN_PASSBAND_POINTS} required")
     span_octaves = math.log2(high_hz / low_hz)
     if span_octaves < MIN_PASSBAND_OCTAVES:
         raise ValueError("Alignment passband is too narrow for a robust level")
-    level_db = float(statistics.median(inside))
-    mad_db = float(statistics.median(abs(value - level_db) for value in inside))
+    smoothed = _octave_smooth(inside)
+    level_db = float(statistics.median(smoothed))
+    mad_db = float(statistics.median(abs(value - level_db) for value in smoothed))
     if not math.isfinite(level_db) or not math.isfinite(mad_db):
         raise ValueError("Alignment way level is not finite")
     if mad_db > MAX_PASSBAND_MAD_DB:
