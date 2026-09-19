@@ -4750,6 +4750,16 @@ select.url-input {
     min-height: 44px;
 }
 
+/* Same horizontal pattern as the other measurement actions: the compact
+   button pair sits left, the one-line note to its right. */
+.measurement-workflow-speaker-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
 #measurement-sweep-start,
 #measurement-repeat-start,
 #measurement-hybrid-open {
@@ -8559,6 +8569,12 @@ input[type="number"]::-webkit-outer-spin-button {
 
         /* Speaker alignment keeps its two-column button pair on mobile,
            like the desktop layout; only this group is exempt from stacking. */
+        .measurement-workflow-speaker-row {
+            display: flex;
+            align-items: stretch;
+            flex-direction: column;
+        }
+
         .measurement-workflow-speaker-buttons {
             flex-direction: row;
         }

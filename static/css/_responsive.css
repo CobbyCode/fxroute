@@ -1025,6 +1025,12 @@
 
         /* Speaker alignment keeps its two-column button pair on mobile,
            like the desktop layout; only this group is exempt from stacking. */
+        .measurement-workflow-speaker-row {
+            display: flex;
+            align-items: stretch;
+            flex-direction: column;
+        }
+
         .measurement-workflow-speaker-buttons {
             flex-direction: row;
         }

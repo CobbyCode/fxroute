@@ -371,6 +371,16 @@
     min-height: 44px;
 }
 
+/* Same horizontal pattern as the other measurement actions: the compact
+   button pair sits left, the one-line note to its right. */
+.measurement-workflow-speaker-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
 #measurement-sweep-start,
 #measurement-repeat-start,
 #measurement-hybrid-open {

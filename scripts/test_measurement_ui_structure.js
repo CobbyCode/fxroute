@@ -61,6 +61,11 @@ assert.match(index, /Calibrate your loudness reference\./);
 // long explanation paragraphs.
 assert.match(index, /id="measurement-speaker-align-left"[^>]*>Align Left<\/button>/);
 assert.match(index, /id="measurement-speaker-align-right"[^>]*>Align Right<\/button>/);
+// Horizontal pattern like the other actions: button pair left, one-line
+// note to its right inside a speaker row wrapper.
+assert.match(index, /class="measurement-workflow-speaker-row"/);
+assert.ok(index.indexOf('measurement-workflow-speaker-buttons') < index.indexOf('Aligns each way of the selected speaker with the microphone fixed.'),
+    'the note sits right of the button pair');
 assert.match(index, /Aligns each way of the selected speaker with the microphone fixed\./);
 // The sentence lives exactly once in the static note; the status line stays
 // empty while idle so it never renders twice.
@@ -74,6 +79,8 @@ assert.doesNotMatch(flows, /measurementSpeakerAlignSequence/);
 assert.doesNotMatch(flows, /then repeat to verify/);
 assert.match(measurementCss, /\.measurement-workflow-speaker-buttons/);
 assert.match(measurementCss, /\.measurement-workflow-speaker-buttons[\s\S]*?width:\s*190px/);
+assert.match(measurementCss, /\.measurement-workflow-speaker-row[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
+assert.match(responsiveCss, /\.measurement-workflow-speaker-row[\s\S]*?flex-direction:\s*column/);
 assert.match(responsiveCss, /\.measurement-workflow-speaker-buttons[\s\S]*?flex:\s*1 1 0/);
 assert.doesNotMatch(index, /measurement-workflow-speaker-cancel/);
 assert.ok(index.indexOf('id="measurement-repeat-start"') > index.indexOf('id="measurement-sweep-menu"'));
