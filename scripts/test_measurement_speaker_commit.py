@@ -174,9 +174,16 @@ class RequireCandidateTests(SessionFixture, unittest.TestCase):
 
     def test_non_alignment_change_is_rejected(self):
         tampered = copy.deepcopy(self.proposal["candidate_state"])
-        tampered["modes"]["stereo-sub"]["processing"]["left_low"]["level_db"] += 1.0
+        tampered["modes"]["stereo-sub"]["processing"]["left_low"]["polarity"] = "invert"
         with self.assertRaisesRegex(ValueError, "alignment"):
             require_speaker_candidate(self.base, tampered, output_key="dev", channels=6)
+
+    def test_gain_change_is_accepted(self):
+        tampered = copy.deepcopy(self.proposal["candidate_state"])
+        tampered["modes"]["stereo-sub"]["processing"]["left_low"]["level_db"] += 1.0
+        result = require_speaker_candidate(self.base, tampered, output_key="dev", channels=6)
+        self.assertEqual(result["modes"]["stereo-sub"]["processing"]["left_low"]["level_db"],
+                         self.proposal["candidate_state"]["modes"]["stereo-sub"]["processing"]["left_low"]["level_db"] + 1.0)
 
     def test_bank_change_is_rejected(self):
         tampered = copy.deepcopy(self.proposal["candidate_state"])
@@ -217,7 +224,7 @@ class StageRestoreTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
     async def test_stage_rejects_non_candidate(self):
         session = self.session()
         tampered = copy.deepcopy(self.proposal["candidate_state"])
-        tampered["modes"]["stereo-sub"]["processing"]["left_low"]["level_db"] += 1.0
+        tampered["modes"]["stereo-sub"]["processing"]["left_low"]["polarity"] = "invert"
         with self.assertRaisesRegex(ValueError, "alignment"):
             await session.stage_candidate(tampered)
         self.assertEqual(self.stage_calls, [])

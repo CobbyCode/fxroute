@@ -55,22 +55,30 @@ class SpeakerAlignRestoreError(RuntimeError):
 
 def compile_speaker_candidate(state: dict, *, service: OutputService, output_key: str,
                               channels: int, sample_rate_hz: int) -> tuple[str, dict]:
-    """Compile and fingerprint through the authoritative service, without writes."""
-    plan = service.compile_plan(state, output_key=output_key, channels=channels,
-                                sample_rate_hz=sample_rate_hz)
+    """Compile and fingerprint the neutralized alignment rendering, without writes.
+
+    Shared alignment principle: crossover, trims and routing stay active,
+    Global/area PEQ-convolver banks render bypassed. The returned plan is
+    what the runtime stages and sweeps validate against; the full candidate
+    state (with banks preserved) is what gets committed.
+    """
+    plan = service.compile_alignment_plan(state, output_key=output_key, channels=channels,
+                                          sample_rate_hz=sample_rate_hz)
     return service.fingerprint_plan(plan), plan
 
 
 def require_speaker_candidate(start_state: dict, candidate_state: dict, *,
                               output_key: str, channels: int) -> dict:
-    """Return a detached validated candidate that changes only alignment.
+    """Return a detached validated candidate that changes only alignment and gain.
 
-    Every other field — routing, filters, levels, polarities, subs, bass,
-    banks, extras, mode — must equal the frozen start, and changed ways must
-    be actively routed (dormant stored banks authorize nothing). The revision
-    must still be the start revision: no rebase. Bounds come from
-    ``validate_output_state``; an equal-to-start candidate is accepted so the
-    session can verify it as a no-op.
+    Every other field — routing, filters, polarities, subs, bass, banks,
+    extras, mode — must equal the frozen start, and changed ways must be
+    actively routed (dormant stored banks authorize nothing). Delay/Gain are
+    the shared physical base tuning measured through the active crossover
+    with PEQ/convolver neutralized; PEQ/convolver correction happens
+    afterwards. The revision must still be the start revision: no rebase.
+    Bounds come from ``validate_output_state``; an equal-to-start candidate
+    is accepted so the session can verify it as a no-op.
     """
     start = validate_output_state(start_state)
     candidate = validate_output_state(candidate_state)
@@ -85,10 +93,12 @@ def require_speaker_candidate(start_state: dict, candidate_state: dict, *,
     for document in (masked_start, masked_candidate):
         for settings in document["modes"][document["active_mode"]]["processing"].values():
             settings["alignment_ms"] = 0.0
+            settings["level_db"] = 0.0
     if masked_start != masked_candidate:
         raise ValueError("Speaker Align candidate changes more than speaker alignment")
     changed = [role for role in candidate_processing
-               if candidate_processing[role]["alignment_ms"] != start_processing[role]["alignment_ms"]]
+               if (candidate_processing[role]["alignment_ms"] != start_processing[role]["alignment_ms"]
+                   or candidate_processing[role]["level_db"] != start_processing[role]["level_db"])]
     if changed:
         topology = derive_topology(
             candidate["active_mode"],
@@ -350,7 +360,8 @@ class SpeakerAlignSession:
                                  live_target: dict,
                                  cancel_requested: Callable[[], bool] | None = None,
                                  acquire_timeout_seconds: float | None = None,
-                                 max_residual_ms: float | None = None) -> dict:
+                                 max_residual_ms: float | None = None,
+                                 max_gain_spread_db: float | None = None) -> dict:
         """Trial-stage, acoustically confirm, and commit — or restore.
 
         This session's lock covers stage, acquisition, verification and
@@ -397,6 +408,8 @@ class SpeakerAlignSession:
             verify_options = {}
             if max_residual_ms is not None:
                 verify_options["max_residual_ms"] = max_residual_ms
+            if max_gain_spread_db is not None:
+                verify_options["max_gain_spread_db"] = max_gain_spread_db
             await self._stage_unlocked(proposal["candidate_state"])
             try:
                 if cancel_requested is not None and cancel_requested():

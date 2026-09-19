@@ -143,7 +143,17 @@ class SpeakerAlignment:
 
     def propose(self, captures: Sequence[dict], *, live_target: dict,
                 cancel_requested: Callable[[], bool] | None = None) -> dict:
-        """Add max(arrival)-arrival to the frozen delays; never alter levels or polarity."""
+        """Add max(arrival)-arrival delays and equalize way gains in passbands.
+
+        Timing stays level-independent (arrival detection only). Gain is the
+        robust median level inside each way's usable crossover passband, never
+        a single point and never total energy across differently wide ways.
+        Captures without response points keep levels unchanged (legacy unit
+        shape); captures with points on every way propose start-relative
+        level corrections equalizing the side to its median way level.
+        Polarity is never altered.
+        """
+        from measurement.alignment_backend import estimate_way_level, propose_way_gains, way_passband
         _check_cancel(cancel_requested)
         self._require_live_target(live_target)
         roles = [capture.get("role") for capture in captures]
@@ -162,8 +172,38 @@ class SpeakerAlignment:
         candidate = copy.deepcopy(self._state)
         for role, delay in delays.items():
             candidate["modes"][candidate["active_mode"]]["processing"][role]["alignment_ms"] += delay
+        mode = candidate["active_mode"]
+        processing = self._state["modes"][mode]["processing"]
+        point_shapes = []
+        for role in self._roles:
+            analysis = (by_role[role].get("analysis") or {})
+            has_points = isinstance(analysis.get("review_points"), list) or isinstance(
+                analysis.get("trusted_points"), list)
+            point_shapes.append(has_points)
+        way_levels: dict[str, float] = {}
+        added_gains: dict[str, float] = {}
+        if any(point_shapes) and not all(point_shapes):
+            raise ValueError("Speaker Align gain needs response points on every way or none")
+        if all(point_shapes):
+            measured = {}
+            for role in self._roles:
+                _check_cancel(cancel_requested)
+                passband = way_passband(processing[role], sample_rate_hz=self._rate)
+                estimate = estimate_way_level(by_role[role], passband,
+                                              processing=processing[role],
+                                              sample_rate_hz=self._rate)
+                measured[role] = estimate["level_db"]
+            way_levels = dict(measured)
+            added_gains = propose_way_gains(measured)
+            for role, correction in added_gains.items():
+                candidate["modes"][mode]["processing"][role]["level_db"] += correction
+        else:
+            for role in self._roles:
+                way_levels[role] = 0.0
+                added_gains[role] = 0.0
         candidate = validate_output_state(candidate)
         _check_cancel(cancel_requested)
         return {"candidate_state": candidate, "arrival_ms": arrivals, "added_delay_ms": delays,
+                "way_levels_db": way_levels, "added_gain_db": added_gains,
                 "reference_role": reference_role, "start_revision": self._target["revision"],
                 "processing_fingerprint": self._target["processing_fingerprint"]}

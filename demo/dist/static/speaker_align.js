@@ -92,7 +92,9 @@
             const revisionText = Number.isInteger(revision) ? ` at revision ${revision}` : '';
             const check = result.check;
             const timing = check ? ` Spread ${Number(check.before_spread_ms).toFixed(3)} → ${Number(check.max_residual_ms).toFixed(3)} ms (limit ${Number(check.tolerance_ms).toFixed(3)} ms).` : '';
-            return `Speaker Align ${side} verified and committed${revisionText}.${timing}`;
+            const gain = check && Number.isFinite(Number(check.gain_spread_db))
+                ? ` Gain spread ${Number(check.gain_spread_db).toFixed(2)} dB (limit ${Number(check.gain_tolerance_db).toFixed(2)} dB).` : '';
+            return `Speaker Align ${side} verified and committed${revisionText}.${timing}${gain}`;
         }
         if (status === 'trial-done') {
             const confirmed = result.confirmed === true;
@@ -120,8 +122,13 @@
         if (!result?.proposal || !result?.check) return '';
         const proposal = result.proposal;
         const number = value => Number.isFinite(value) ? value.toFixed(3) : '—';
-        const rows = Object.keys(proposal.arrival_ms).map(role => `<tr><th scope="row">${wayLabel(role)}${role === proposal.reference_role ? ' · ref' : ''}</th><td>${number(proposal.arrival_ms[role])}</td><td>+${number(proposal.added_delay_ms[role])}</td><td>${number(result.check.after_arrival_ms?.[role])}</td></tr>`).join('');
-        return `<table class="speaker-align-table"><caption>${side === 'right' ? 'Right' : 'Left'} speaker · ${result.confirmed ? 'Verified' : 'Not verified'} · ms</caption><thead><tr><th scope="col">Way</th><th scope="col">Before</th><th scope="col">Delay added</th><th scope="col">After</th></tr></thead><tbody>${rows}</tbody></table>`;
+        const gain = value => Number.isFinite(value) ? `${value >= 0 ? '+' : ''}${value.toFixed(2)} dB` : '—';
+        const rows = Object.keys(proposal.arrival_ms).map(role => {
+            const gainAdded = proposal.added_gain_db?.[role];
+            const level = proposal.way_levels_db?.[role];
+            return `<tr><th scope="row">${wayLabel(role)}${role === proposal.reference_role ? ' · ref' : ''}</th><td>${number(proposal.arrival_ms[role])}</td><td>+${number(proposal.added_delay_ms[role])}</td><td>${number(result.check.after_arrival_ms?.[role])}</td><td>${gain(gainAdded)}</td><td>${Number.isFinite(level) ? level.toFixed(1) : '—'}</td></tr>`;
+        }).join('');
+        return `<table class="speaker-align-table"><caption>${side === 'right' ? 'Right' : 'Left'} speaker · ${result.confirmed ? 'Verified' : 'Not verified'} · ms/dB</caption><thead><tr><th scope="col">Way</th><th scope="col">Before</th><th scope="col">Delay added</th><th scope="col">After</th><th scope="col">Gain added</th><th scope="col">Level</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
 
     return {

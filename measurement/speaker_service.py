@@ -58,18 +58,23 @@ def _jsonable(value: Any) -> Any:
 
 def _summarize_proposal(proposal: dict[str, Any]) -> dict[str, Any]:
     """Summarize a real proposal; missing keys raise instead of zero-filling."""
-    return _jsonable({
+    summary = {
         "start_revision": proposal["start_revision"],
         "processing_fingerprint": proposal["processing_fingerprint"],
         "arrival_ms": dict(proposal["arrival_ms"]),
         "added_delay_ms": dict(proposal["added_delay_ms"]),
         "reference_role": proposal["reference_role"],
-    })
+    }
+    if isinstance(proposal.get("way_levels_db"), dict):
+        summary["way_levels_db"] = dict(proposal["way_levels_db"])
+    if isinstance(proposal.get("added_gain_db"), dict):
+        summary["added_gain_db"] = dict(proposal["added_gain_db"])
+    return _jsonable(summary)
 
 
 def _summarize_check(check: dict[str, Any]) -> dict[str, Any]:
     """Summarize a real confirmation check; missing keys raise loudly."""
-    return _jsonable({
+    summary = {
         "confirmed": bool(check["confirmed"]),
         "reasons": [str(reason) for reason in check["reasons"]],
         "max_residual_ms": float(check["max_residual_ms"]),
@@ -77,7 +82,16 @@ def _summarize_check(check: dict[str, Any]) -> dict[str, Any]:
         "after_arrival_ms": dict(check["after_arrival_ms"]),
         "tolerance_ms": float(check["tolerance_ms"]),
         "pairs": check["pairs"],
-    })
+    }
+    if check.get("gain_spread_db") is not None:
+        summary["gain_spread_db"] = float(check["gain_spread_db"])
+    if check.get("before_gain_spread_db") is not None:
+        summary["before_gain_spread_db"] = float(check["before_gain_spread_db"])
+    if check.get("gain_tolerance_db") is not None:
+        summary["gain_tolerance_db"] = float(check["gain_tolerance_db"])
+    if isinstance(check.get("after_way_levels_db"), dict):
+        summary["after_way_levels_db"] = dict(check["after_way_levels_db"])
+    return _jsonable(summary)
 
 
 def _session_identity(value: object, label: str) -> str:

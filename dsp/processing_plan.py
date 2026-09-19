@@ -17,7 +17,11 @@ from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
 from dsp.banks import BankState
 
 
-def _bank_plan(bank_id: str, payload: dict, preset_loader: Callable[[str], dict]) -> dict:
+def _bank_plan(bank_id: str, payload: dict, preset_loader: Callable[[str], dict],
+                *, neutralized: bool = False) -> dict:
+    if neutralized:
+        return {"bank_id": bank_id, "preset": "Direct",
+                "bypass": True, "chain": []}
     bank = BankState.from_dict(payload)
     preset = preset_loader(bank.preset)
     chain = copy.deepcopy(preset["chain"])
@@ -52,11 +56,22 @@ def _crossover_filters(crossover_enabled: bool, role: str, processing: dict, bas
 
 
 def compile_processing_plan(state: dict, *, output_key: str, channels: int,
-                            sample_rate_hz: int, preset_loader: Callable[[str], dict]) -> dict:
-    """Resolve banks using a validating loader such as DSPPresetStore.read."""
+                            sample_rate_hz: int, preset_loader: Callable[[str], dict],
+                            neutralize_banks: bool = False) -> dict:
+    """Resolve banks using a validating loader such as DSPPresetStore.read.
+
+    With neutralize_banks, Global and area PEQ/convolver banks render
+    bypassed (Direct, empty chain, no extras) while crossover filters,
+    output trims (gain/delay/polarity), routing and bass stay active.
+    This is the shared alignment measurement rendering: Delay/Gain as
+    physical base tuning is measured through the active crossover, before
+    any PEQ/convolver correction.
+    """
     state = validate_output_state(state)
     if type(sample_rate_hz) is not int or not 0 < sample_rate_hz <= FXROUTE_MAX_PROCESSING_RATE:
         raise ValueError("Processing sample rate must be a positive integer up to 384000")
+    if type(neutralize_banks) is not bool:
+        raise ValueError("neutralize_banks must be a boolean")
     mode = state["active_mode"]
     config = state["modes"][mode]
     assignments = routing_for_device(state, mode, output_key)
@@ -64,8 +79,9 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
     topology.require_activatable()
     processing = config["processing"]
     delay_offset = max(0.0, -min(processing[role]["alignment_ms"] for role in topology.roles))
-    global_bank = _bank_plan("global", config["banks"]["global"], preset_loader)
-    global_bank["extras"] = {} if global_bank["bypass"] else copy.deepcopy(config["extras"])
+    global_bank = _bank_plan("global", config["banks"]["global"], preset_loader,
+                             neutralized=neutralize_banks)
+    global_bank["extras"] = {} if (global_bank["bypass"] or neutralize_banks) else copy.deepcopy(config["extras"])
     outputs = []
     for role in topology.roles:
         settings = processing[role]
@@ -75,7 +91,8 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
         outputs.append({
             "role": role, "routes": _input_routes(role, topology.sub_mode),
             "crossover": filters,
-            "bank": _bank_plan(role, config["banks"][role], preset_loader),
+            "bank": _bank_plan(role, config["banks"][role], preset_loader,
+                               neutralized=neutralize_banks),
             "gain_db": settings["level_db"],
             "delay_ms": settings["alignment_ms"] + delay_offset,
             "invert": settings["polarity"] == "invert",

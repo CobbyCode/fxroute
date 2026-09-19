@@ -108,6 +108,20 @@ class OutputService:
             state, output_key=output_key, channels=channels,
             sample_rate_hz=sample_rate_hz, preset_loader=self._deps.preset_loader)
 
+    def compile_alignment_plan(self, state: dict, *, output_key: str, channels: int,
+                               sample_rate_hz: int) -> dict:
+        """Compile the neutralized alignment measurement plan.
+
+        Shared AutoSub/Speaker alignment rendering: crossover filters,
+        output trims and routing stay active, Global and area PEQ/convolver
+        banks render bypassed. Physical Delay/Gain tuning is measured
+        before any PEQ/convolver correction.
+        """
+        return compile_processing_plan(
+            state, output_key=output_key, channels=channels,
+            sample_rate_hz=sample_rate_hz, preset_loader=self._deps.preset_loader,
+            neutralize_banks=True)
+
     def compile_layout(self, plan: dict) -> list[dict]:
         """Map a compiled plan to a native engine output layout."""
         return layout_from_plan(plan, resolve_ir=self._deps.resolve_ir)

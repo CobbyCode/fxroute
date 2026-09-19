@@ -65,19 +65,27 @@ def verify_confirmation(
     confirmation: dict[str, Any],
     *,
     max_residual_ms: float = MAX_CONFIRMED_RESIDUAL_MS,
+    max_gain_spread_db: float | None = None,
 ) -> dict[str, Any]:
     """Decide from measured evidence whether the staged candidate confirmed.
 
     Both arguments are ``SpeakerAlignment.propose`` outputs: ``baseline``
     from the pre-apply acquisition, ``confirmation`` from the post-apply
-    re-acquisition of the same frozen alignment. Malformed or rebased input
-    raises ``ValueError``; a merely unconvincing measurement returns
-    ``confirmed: False``.
+    re-acquisition of the same frozen alignment. Time residual and gain
+    spread are verified jointly: ways must measure time-aligned and their
+    passband levels must agree within the gain tolerance. Malformed or
+    rebased input raises ``ValueError``; a merely unconvincing measurement
+    returns ``confirmed: False``.
     """
+    from measurement.alignment_backend import MAX_VERIFIED_GAIN_SPREAD_DB
+    if max_gain_spread_db is None:
+        max_gain_spread_db = MAX_VERIFIED_GAIN_SPREAD_DB
     if not isinstance(baseline, dict) or not isinstance(confirmation, dict):
         raise ValueError("Speaker Align confirmation needs proposal outputs on both sides")
     if type(max_residual_ms) not in (int, float) or not 0 < max_residual_ms < 1000:
         raise ValueError("Speaker Align confirmation residual must be a positive time in ms")
+    if type(max_gain_spread_db) not in (int, float) or not 0 < max_gain_spread_db < 24:
+        raise ValueError("Speaker Align confirmation gain spread must be a positive dB tolerance")
     before = baseline.get("arrival_ms")
     after = confirmation.get("arrival_ms")
     if (not isinstance(before, dict) or not isinstance(after, dict)
@@ -96,7 +104,27 @@ def verify_confirmation(
         reasons.append(
             f"residual {residual_ms:.3f} ms exceeds {max_residual_ms:.3f} ms: ways still misaligned"
         )
-    return {
+    before_levels = baseline.get("way_levels_db") or {}
+    after_levels = confirmation.get("after_way_levels_db", confirmation.get("way_levels_db")) or {}
+    gain_spread_db: float | None = None
+    before_gain_spread_db: float | None = None
+    if isinstance(before_levels, dict) and isinstance(after_levels, dict) and set(before_levels) == set(after) and set(after_levels) == set(after):
+        try:
+            before_values = {role: _finite(before_levels[role], "baseline level") for role in after}
+            after_values = {role: _finite(after_levels[role], "confirmation level") for role in after}
+            # Legacy shape without response points reports all-zero levels;
+            # time alone decides then, gain trivially holds.
+            has_gain_evidence = any(abs(value) > 1e-9 for value in list(before_values.values()) + list(after_values.values()))
+            if has_gain_evidence:
+                before_gain_spread_db = max(before_values.values()) - min(before_values.values())
+                gain_spread_db = max(after_values.values()) - min(after_values.values())
+                if gain_spread_db > max_gain_spread_db:
+                    reasons.append(
+                        f"gain spread {gain_spread_db:.3f} dB exceeds {max_gain_spread_db:.3f} dB: ways differ in level"
+                    )
+        except ValueError:
+            raise
+    result = {
         "confirmed": not reasons,
         "reasons": reasons,
         "max_residual_ms": residual_ms,
@@ -104,7 +132,13 @@ def verify_confirmation(
         "after_arrival_ms": after,
         "tolerance_ms": max_residual_ms,
         "pairs": pairs,
+        "gain_spread_db": gain_spread_db,
+        "before_gain_spread_db": before_gain_spread_db,
+        "gain_tolerance_db": max_gain_spread_db,
     }
+    if isinstance(after_levels, dict) and after_levels:
+        result["after_way_levels_db"] = {role: float(after_levels[role]) for role in after_levels}
+    return result
 
 
 async def apply_and_confirm(
@@ -117,6 +151,7 @@ async def apply_and_confirm(
     live_target: dict[str, Any],
     cancel_requested: Callable[[], bool] | None = None,
     max_residual_ms: float | None = None,
+    max_gain_spread_db: float | None = None,
 ) -> dict[str, Any]:
     """Trial-stage a proposal, confirm it acoustically, always restore.
 
@@ -154,6 +189,8 @@ async def apply_and_confirm(
     verify_options = {}
     if max_residual_ms is not None:
         verify_options["max_residual_ms"] = max_residual_ms
+    if max_gain_spread_db is not None:
+        verify_options["max_gain_spread_db"] = max_gain_spread_db
     _check_cancel(cancel_requested)
     receipt = await stage(deepcopy(candidate_state))
     try:

@@ -48,9 +48,11 @@ async function main() {
         .map(key => [`measurementSpeakerAlign${key}`, element()]));
     const calls = [];
     const result = { confirmed: true, committed_revision: 8,
-        proposal: { arrival_ms: { right_low: 2, right_high: 5 }, added_delay_ms: { right_low: 3, right_high: 0 }, reference_role: 'right_high' },
+        proposal: { arrival_ms: { right_low: 2, right_high: 5 }, added_delay_ms: { right_low: 3, right_high: 0 }, reference_role: 'right_high',
+            way_levels_db: { right_low: -12, right_high: -8 }, added_gain_db: { right_low: 2, right_high: -2 } },
         check: { before_spread_ms: 3, max_residual_ms: 0.021, tolerance_ms: 0.25,
-            after_arrival_ms: { right_low: 5, right_high: 5.021 } } };
+            after_arrival_ms: { right_low: 5, right_high: 5.021 },
+            gain_spread_db: 0.2, gain_tolerance_db: 1.0, after_way_levels_db: { right_low: -10, right_high: -10.2 } } };
     const context = { console, window: {} };
     vm.createContext(context);
     const shell = fs.readFileSync(require.resolve('../static/index.html'), 'utf8');
