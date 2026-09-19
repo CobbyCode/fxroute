@@ -61,7 +61,7 @@ session.
 | --- | --- | --- | --- |
 | Spotify Desktop | Native `spotify-client` on apt; `com.spotify.Client` Flatpak otherwise | x86_64 with X11 or Wayland desktop session | Installs the official client, keyring/Secret-Service support, and optional autostart integration |
 | spotifyd | Current stable upstream release (`Spotifyd/spotifyd`, full/MPRIS build) | x86_64, aarch64, or armv7 with a compatible runtime | Installs `~/.local/bin/spotifyd`, a user service, and a minimal MPRIS/PipeWire-Pulse config with fixed Zeroconf TCP port 4444 |
-| Qobuz/qbzd | Current stable upstream release (`yet-another-quentin/qbzd`, MIT fork of the discontinued `vicrodh/qbz`) | amd64, aarch64 | Installs `~/.local/bin/qbzd`, Avahi/mDNS support, the ALSA→PipeWire bridge (`pipewire-alsa`, from trixie-backports where that stack is active), `qconnect.volume_mode=locked`, Qobuz Connect auto-connect (`qconnect.startup_mode=on`, device name untouched), audio output routing (`audio.backend=pipewire`, `audio.device=fxroute_dsp_sink`, `audio.skip_sink_switch=true`), and a `qbzd run` user service |
+| Qobuz/qbzd | Current stable upstream release (`vicrodh/qbz`, fallback: compatible fork `yet-another-quentin/qbzd`) | amd64, aarch64 | Installs `~/.local/bin/qbzd`, Avahi/mDNS support, the ALSA→PipeWire bridge (`pipewire-alsa`, from trixie-backports where that stack is active), `qconnect.volume_mode=locked`, Qobuz Connect auto-connect (`qconnect.startup_mode=on`, device name untouched), audio output routing (`audio.backend=pipewire`, `audio.device=fxroute_dsp_sink`, `audio.skip_sink_switch=true`), and a `qbzd run` user service |
 | TIDAL | Current stable `tidalapi` from PyPI in the FXRoute venv | Any supported FXRoute Python host | Adds the optional dependency used by FXRoute's existing PKCE login flow |
 
 Provider versions are never pinned: a fresh install resolves the current
@@ -71,10 +71,15 @@ via the Settings → Providers Update button — updates an FXRoute-owned
 installation to a newer upstream release in place, without uninstalling
 first. Checksums are verified against the checksum sidecar or digest
 published with the same upstream release. Foreign (not FXRoute-owned)
-binaries are preserved untouched. The original `vicrodh/qbz` upstream was
-discontinued; qbzd now tracks its maintained MIT-licensed fork
-(`yet-another-quentin/qbzd`), which publishes the same `qbzd` daemon under
-the `qbzd-linux-<arch>` release asset names.
+binaries are preserved untouched. Qobuz resolves the current stable release
+from the official upstream (`vicrodh/qbz`) first and uses the compatible
+fork (`yet-another-quentin/qbzd`) only when the official source publishes
+no stable release; nightly/prerelease builds are never installed. The used
+source is recorded alongside the version in the install state
+(`providers.qobuz.upstream_source`), and an update only ever moves to a
+newer upstream tag — never to an older one. When neither source is
+reachable, an existing installation is left untouched and reported
+honestly instead of being replaced.
 
 The base installer supports apt, dnf, zypper, and pacman. Unsupported
 architectures are reported without downloading or building replacement

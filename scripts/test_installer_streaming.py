@@ -161,6 +161,7 @@ spotify_desktop_supported
                 "normalize_release_tag",
                 "verify_github_payload",
                 "provider_binary_version",
+                "provider_version_is_newer",
             )
         )
 
@@ -580,19 +581,44 @@ printf 'version=%s updated=%s\\n' "$SPOTIFYD_INSTALLED_VERSION" "$SPOTIFYD_BINAR
         self.assertIn("QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1", qbzd)
         self.assertIn("user_systemctl enable --now qbzd.service", qbzd)
 
+    def test_qobuz_release_matrix_is_dynamic(self):
+        # No pinned version, no pinned checksum, no version-bound URL: the
+        # installed release is the current stable tag of the preferred
+        # available source (official upstream first, compatible fork as
+        # fallback), resolved at install time like spotifyd.
+        self.assertNotRegex(self.install, r'QBZD_VERSION="[0-9]+\.[0-9]+\.[0-9]+"')
+        self.assertIn('QBZD_UPSTREAM_REPO="vicrodh/qbz"', self.install)
+        self.assertIn('QBZD_UPSTREAM_FALLBACK_REPO="yet-another-quentin/qbzd"', self.install)
+        body = extract_function(self.install, "install_qbzd_binary")
+        self.assertIn('first_asset="qbzd-${upstream_version}-linux-${release_arch}.tar.gz"', body)
+        self.assertIn('first_asset="qbzd-linux-${asset_arch}"', body)
+        self.assertIn("releases/latest", extract_function(self.install, "github_stable_release_json"))
+        self.assertIn("verify_github_payload", body)
+        self.assertIn("already up to date", body)
+        self.assertIn("updating to ${upstream_tag}", body)
+        self.assertIn("QBZD_UPSTREAM_SOURCE", body)
+        self.assertIn("provider_version_is_newer", body)
+
     def test_qobuz_owned_binary_updates_to_newer_upstream_without_uninstall(self):
         body = extract_function(self.install, "install_qbzd_binary")
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             fixtures = root / "fixtures"
             fixtures.mkdir()
-            new_binary = fixtures / "qbzd-linux-amd64"
+            source_dir = root / "source"
+            (source_dir / "qbzd-1.0.1-linux-amd64").mkdir(parents=True)
+            new_binary = source_dir / "qbzd-1.0.1-linux-amd64" / "qbzd"
             new_binary.write_text('#!/bin/sh\necho "qbzd 1.0.1"\n')
             new_binary.chmod(0o755)
-            new_digest = hashlib.sha256(new_binary.read_bytes()).hexdigest()
+            archive_name = "qbzd-1.0.1-linux-amd64.tar.gz"
+            subprocess.run(
+                ["tar", "-czf", str(fixtures / archive_name), "-C", str(source_dir), "qbzd-1.0.1-linux-amd64"],
+                check=True,
+            )
+            archive_bytes = (fixtures / archive_name).read_bytes()
             (fixtures / "release.json").write_text(
-                '{"tag_name": "v1.0.1", "assets": [{"name": "qbzd-linux-amd64", "digest": "sha256:%s"}]}'
-                % new_digest
+                '{"tag_name": "v1.0.1", "assets": [{"name": "%s", "digest": "sha256:%s"}]}'
+                % (archive_name, hashlib.sha256(archive_bytes).hexdigest())
             )
             target_home = root / "home"
             owned_dir = target_home / ".local" / "bin"
@@ -617,19 +643,21 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
 HOME={target_home}
 FIXTURES={fixtures}
 HOST_ARCH=x86_64
-QBZD_UPSTREAM_REPO=yet-another-quentin/qbzd
+QBZD_UPSTREAM_REPO=vicrodh/qbz
+QBZD_UPSTREAM_FALLBACK_REPO=yet-another-quentin/qbzd
 QBZD_INSTALLED_BY_FXROUTE=1
 QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
 QBZD_BINARY_PATH="$HOME/.local/bin/qbzd"
 QBZD_BINARY_SHA256={old_sha}
 QBZD_INSTALLED_VERSION=1.0.0
+QBZD_UPSTREAM_SOURCE=vicrodh/qbz
 QBZD_BINARY_IDENTITY_CHANGED=0
 QBZD_BINARY_UPDATED=0
 QBZD_PRESENT_BEFORE=0
 QOBUZ_PROVIDER_STATUS=''
 install_qbzd_binary
 "$HOME/.local/bin/qbzd" --version
-printf 'version=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_BINARY_UPDATED"
+printf 'version=%s source=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_UPSTREAM_SOURCE" "$QBZD_BINARY_UPDATED"
 """
             result = subprocess.run(
                 ["bash", "-c", harness],
@@ -639,7 +667,7 @@ printf 'version=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_BINARY_UPDATE
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("updating to v1.0.1", result.stdout)
             self.assertIn("qbzd 1.0.1", result.stdout)
-            self.assertIn("version=1.0.1 updated=1", result.stdout)
+            self.assertIn("version=1.0.1 source=vicrodh/qbz updated=1", result.stdout)
 
     def test_qobuz_up_to_date_binary_is_kept_without_download(self):
         body = extract_function(self.install, "install_qbzd_binary")
@@ -671,12 +699,14 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
 HOME={target_home}
 FIXTURES={fixtures}
 HOST_ARCH=x86_64
-QBZD_UPSTREAM_REPO=yet-another-quentin/qbzd
+QBZD_UPSTREAM_REPO=vicrodh/qbz
+QBZD_UPSTREAM_FALLBACK_REPO=yet-another-quentin/qbzd
 QBZD_INSTALLED_BY_FXROUTE=1
 QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
 QBZD_BINARY_PATH="$HOME/.local/bin/qbzd"
 QBZD_BINARY_SHA256={current_sha}
 QBZD_INSTALLED_VERSION=1.0.1
+QBZD_UPSTREAM_SOURCE=vicrodh/qbz
 QBZD_BINARY_IDENTITY_CHANGED=0
 QBZD_BINARY_UPDATED=0
 QBZD_PRESENT_BEFORE=0
@@ -692,6 +722,176 @@ printf 'version=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_BINARY_UPDATE
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("already up to date (v1.0.1)", result.stdout)
             self.assertIn("version=1.0.1 updated=0", result.stdout)
+
+    def test_qobuz_falls_back_to_fork_without_stable_official_release(self):
+        body = extract_function(self.install, "install_qbzd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            new_binary = fixtures / "qbzd-linux-amd64"
+            new_binary.write_text('#!/bin/sh\necho "qbzd 1.0.1"\n')
+            new_binary.chmod(0o755)
+            new_digest = hashlib.sha256(new_binary.read_bytes()).hexdigest()
+            (fixtures / "release.json").write_text(
+                '{"tag_name": "v1.0.1", "assets": [{"name": "qbzd-linux-amd64", "digest": "sha256:%s"}]}'
+                % new_digest
+            )
+            target_home = root / "home"
+            harness = f"""
+set -Eeuo pipefail
+{extract_function(self.install, "qbzd_arch_for_host")}
+{extract_function(self.install, "qbzd_binary_path")}
+{self._provider_upstream_helpers()}
+{body}
+{self._github_curl_stub()}
+github_stable_release_json() {{
+  if [[ ! -f "$FIXTURES/primary-failed" ]]; then : > "$FIXTURES/primary-failed"; return 1; fi
+  cat "$FIXTURES/release.json"
+}}
+run_cmd() {{ "$@"; }}
+run_as_target_user() {{ "$@"; }}
+pass() {{ printf 'pass:%s\\n' "$*"; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+HOME={target_home}
+FIXTURES={fixtures}
+HOST_ARCH=x86_64
+QBZD_UPSTREAM_REPO=vicrodh/qbz
+QBZD_UPSTREAM_FALLBACK_REPO=yet-another-quentin/qbzd
+QBZD_INSTALLED_BY_FXROUTE=0
+QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
+QBZD_BINARY_PATH=''
+QBZD_BINARY_SHA256=''
+QBZD_INSTALLED_VERSION=''
+QBZD_UPSTREAM_SOURCE=''
+QBZD_BINARY_IDENTITY_CHANGED=0
+QBZD_BINARY_UPDATED=0
+QBZD_PRESENT_BEFORE=0
+QOBUZ_PROVIDER_STATUS=''
+install_qbzd_binary
+"$HOME/.local/bin/qbzd" --version
+printf 'version=%s source=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_UPSTREAM_SOURCE" "$QBZD_BINARY_UPDATED"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("qbzd 1.0.1", result.stdout)
+            self.assertIn("version=1.0.1 source=yet-another-quentin/qbzd updated=1", result.stdout)
+
+    def test_qobuz_existing_install_survives_unreachable_upstreams(self):
+        body = extract_function(self.install, "install_qbzd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            target_home = root / "home"
+            owned_dir = target_home / ".local" / "bin"
+            owned_dir.mkdir(parents=True)
+            current_binary = owned_dir / "qbzd"
+            current_binary.write_text('#!/bin/sh\necho "qbzd 1.0.1"\n')
+            current_binary.chmod(0o755)
+            before_sha = hashlib.sha256(current_binary.read_bytes()).hexdigest()
+            harness = f"""
+set -Eeuo pipefail
+{extract_function(self.install, "qbzd_arch_for_host")}
+{extract_function(self.install, "qbzd_binary_path")}
+{self._provider_upstream_helpers()}
+{body}
+github_stable_release_json() {{ return 1; }}
+run_cmd() {{ "$@"; }}
+run_as_target_user() {{ "$@"; }}
+pass() {{ printf 'pass:%s\\n' "$*"; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+HOME={target_home}
+FIXTURES={fixtures}
+HOST_ARCH=x86_64
+QBZD_UPSTREAM_REPO=vicrodh/qbz
+QBZD_UPSTREAM_FALLBACK_REPO=yet-another-quentin/qbzd
+QBZD_INSTALLED_BY_FXROUTE=1
+QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
+QBZD_BINARY_PATH="$HOME/.local/bin/qbzd"
+QBZD_BINARY_SHA256={before_sha}
+QBZD_INSTALLED_VERSION=1.0.1
+QBZD_UPSTREAM_SOURCE=vicrodh/qbz
+QBZD_BINARY_IDENTITY_CHANGED=0
+QBZD_BINARY_UPDATED=0
+QBZD_PRESENT_BEFORE=0
+QOBUZ_PROVIDER_STATUS=''
+if install_qbzd_binary; then
+  printf 'unexpected-success\\n'
+else
+  printf 'upstream-unreachable\\n'
+fi
+printf 'sha=%s updated=%s status=%s\\n' "$(sha256sum "$HOME/.local/bin/qbzd" | awk '{{print $1}}')" "$QBZD_BINARY_UPDATED" "$QOBUZ_PROVIDER_STATUS"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("upstream-unreachable", result.stdout)
+            self.assertIn(f"sha={before_sha} updated=0", result.stdout)
+            self.assertIn("status=unavailable; upstream release metadata unreachable", result.stdout)
+
+    def test_qobuz_never_downgrades_to_an_older_upstream_tag(self):
+        body = extract_function(self.install, "install_qbzd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            (fixtures / "release.json").write_text('{"tag_name": "v1.0.1", "assets": []}')
+            target_home = root / "home"
+            owned_dir = target_home / ".local" / "bin"
+            owned_dir.mkdir(parents=True)
+            current_binary = owned_dir / "qbzd"
+            current_binary.write_text('#!/bin/sh\necho "qbzd 1.0.2"\n')
+            current_binary.chmod(0o755)
+            current_sha = hashlib.sha256(current_binary.read_bytes()).hexdigest()
+            harness = f"""
+set -Eeuo pipefail
+{extract_function(self.install, "qbzd_arch_for_host")}
+{extract_function(self.install, "qbzd_binary_path")}
+{self._provider_upstream_helpers()}
+{body}
+{self._github_curl_stub()}
+github_stable_release_json() {{ cat "$FIXTURES/release.json"; }}
+run_cmd() {{ "$@"; }}
+run_as_target_user() {{ "$@"; }}
+pass() {{ printf 'pass:%s\\n' "$*"; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+HOME={target_home}
+FIXTURES={fixtures}
+HOST_ARCH=x86_64
+QBZD_UPSTREAM_REPO=vicrodh/qbz
+QBZD_UPSTREAM_FALLBACK_REPO=yet-another-quentin/qbzd
+QBZD_INSTALLED_BY_FXROUTE=1
+QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
+QBZD_BINARY_PATH="$HOME/.local/bin/qbzd"
+QBZD_BINARY_SHA256={current_sha}
+QBZD_INSTALLED_VERSION=1.0.2
+QBZD_UPSTREAM_SOURCE=vicrodh/qbz
+QBZD_BINARY_IDENTITY_CHANGED=0
+QBZD_BINARY_UPDATED=0
+QBZD_PRESENT_BEFORE=0
+QOBUZ_PROVIDER_STATUS=''
+install_qbzd_binary
+printf 'version=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_BINARY_UPDATED"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("already up to date (v1.0.1)", result.stdout)
+            self.assertIn("version=1.0.2 updated=0", result.stdout)
 
     def test_provider_upstream_resolution_is_shared_and_version_free(self):
         for helper in (
@@ -1203,12 +1403,14 @@ printf 'caller-tolerated status=<%s>\\n' "$QOBUZ_PROVIDER_STATUS"
         for field in (
             '"installed_version": "${SPOTIFYD_INSTALLED_VERSION}"',
             '"installed_version": "${QBZD_INSTALLED_VERSION}"',
+            '"upstream_source": "${QBZD_UPSTREAM_SOURCE}"',
             '"installed_version": "${TIDAL_INSTALLED_VERSION}"',
         ):
             self.assertIn(field, state_body)
         for field in (
             "providers.spotifyd.installed_version",
             "providers.qobuz.installed_version",
+            "providers.qobuz.upstream_source",
             "providers.tidal.installed_version",
         ):
             self.assertIn(field, ownership_body)

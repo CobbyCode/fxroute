@@ -33,7 +33,10 @@ HOST_ARCH="$(uname -m)"
 # provider versions and no version-bound download URLs, so a new upstream
 # release is picked up without any FXRoute code change.
 SPOTIFYD_UPSTREAM_REPO="Spotifyd/spotifyd"
-QBZD_UPSTREAM_REPO="yet-another-quentin/qbzd"
+# qbzd tracks the official upstream first; the compatible MIT-licensed fork
+# is the fallback when the official source publishes no stable release.
+QBZD_UPSTREAM_REPO="vicrodh/qbz"
+QBZD_UPSTREAM_FALLBACK_REPO="yet-another-quentin/qbzd"
 SPOTIFYD_ZEROCONF_PORT="4444"
 CIFS_HELPER_SHA256="9c6e71ee42440e7924b3a3277cd0c7b7cf2824950a8a0b5f4f9f0ac020195931"
 CIFS_HELPER_LEGACY_SHA256="8c848fc5cff8d1e320c54e99caad66ac53cbf0ba81329e1c651102115ba7aa7d"
@@ -119,6 +122,7 @@ QBZD_AUDIO_SKIP_SINK_SWITCH_BEFORE=""
 QBZD_AUDIO_CHANGED_BY_FXROUTE=0
 QBZD_BINARY_IDENTITY_CHANGED=0
 QBZD_INSTALLED_VERSION=""
+QBZD_UPSTREAM_SOURCE=""
 QBZD_BINARY_UPDATED=0
 TIDAL_PRESENT_BEFORE=0
 TIDAL_INSTALLED_BY_FXROUTE=0
@@ -1085,6 +1089,15 @@ provider_binary_version() {
     | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true
 }
 
+provider_version_is_newer() {
+  # True when the candidate version is strictly newer than the installed
+  # one (version sort). Used so an update never downgrades to an older
+  # upstream tag.
+  local candidate="${1:-}" installed="${2:-}"
+  [[ -n "$candidate" && -n "$installed" && "$candidate" != "$installed" ]] || return 1
+  [[ "$(printf '%s\n%s\n' "$installed" "$candidate" | sort -V | tail -n 1)" == "$candidate" ]]
+}
+
 root_state_is_trusted() {
   local state_dir="$(dirname "$ROOT_INSTALL_STATE_FILE")"
   local state_mode=""
@@ -1254,6 +1267,9 @@ load_provider_ownership_state() {
   [[ "$(previous_install_state_field providers.qobuz.audio_changed_by_fxroute 2>/dev/null || true)" == "true" ]] && QBZD_AUDIO_CHANGED_BY_FXROUTE=1
   if value="$(previous_install_state_field providers.qobuz.installed_version 2>/dev/null)"; then
     [[ -n "$value" ]] && QBZD_INSTALLED_VERSION="$value"
+  fi
+  if value="$(previous_install_state_field providers.qobuz.upstream_source 2>/dev/null)"; then
+    [[ -n "$value" ]] && QBZD_UPSTREAM_SOURCE="$value"
   fi
   [[ "$(previous_install_state_field providers.tidal.installed_by_fxroute 2>/dev/null || true)" == "true" ]] && TIDAL_INSTALLED_BY_FXROUTE=1
   if value="$(previous_install_state_field providers.tidal.installed_version 2>/dev/null)"; then
@@ -3750,9 +3766,15 @@ install_qbzd_binary() {
   local release_arch=""
   local asset_arch=""
   local release_json=""
+  local qbzd_source=""
+  local candidate=""
+  local candidate_json=""
+  local candidate_tag=""
   local upstream_tag=""
   local upstream_version=""
   local installed_version=""
+  local first_asset=""
+  local second_asset=""
   local asset=""
   local asset_url=""
   local work=""
@@ -3780,6 +3802,7 @@ install_qbzd_binary() {
         QBZD_BINARY_PATH=""
         QBZD_BINARY_SHA256=""
         QBZD_INSTALLED_VERSION=""
+        QBZD_UPSTREAM_SOURCE=""
         pass "FXRoute-owned qbzd binary is absent; reinstalling over stale ownership records"
       else
         QBZD_BINARY_IDENTITY_CHANGED=1
@@ -3829,13 +3852,26 @@ install_qbzd_binary() {
     aarch64) asset_arch="arm64" ;;
   esac
 
-  if ! release_json="$(github_stable_release_json "$QBZD_UPSTREAM_REPO")"; then
-    QOBUZ_PROVIDER_STATUS="unavailable; upstream release metadata unreachable"
-    warn "qbzd upstream version could not be determined; leaving the provider unchanged"
-    return 1
-  fi
-  upstream_tag="$(github_release_tag_name "$release_json" || true)"
-  if [[ -z "$upstream_tag" ]]; then
+  # Resolve the current stable upstream release: the official source first,
+  # the compatible fork when the official source publishes no stable
+  # release. The "latest" API document excludes drafts and prereleases, so
+  # nightly builds are never selected. Install, reinstall and update all
+  # use this same mechanism, and no version is pinned in this file. A newer
+  # upstream tag updates an FXRoute-owned binary in place; no uninstall is
+  # required. When neither source is reachable the existing installation is
+  # left untouched.
+  for candidate in "$QBZD_UPSTREAM_REPO" "$QBZD_UPSTREAM_FALLBACK_REPO"; do
+    if candidate_json="$(github_stable_release_json "$candidate")"; then
+      candidate_tag="$(github_release_tag_name "$candidate_json" || true)"
+      if [[ -n "$candidate_tag" ]]; then
+        qbzd_source="$candidate"
+        release_json="$candidate_json"
+        upstream_tag="$candidate_tag"
+        break
+      fi
+    fi
+  done
+  if [[ -z "$qbzd_source" ]]; then
     QOBUZ_PROVIDER_STATUS="unavailable; upstream release metadata unreachable"
     warn "qbzd upstream version could not be determined; leaving the provider unchanged"
     return 1
@@ -3846,30 +3882,40 @@ install_qbzd_binary() {
     if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 || $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]]; then
       installed_version="$(provider_binary_version "$QBZD_BINARY_PATH")"
       [[ -n "$installed_version" ]] || installed_version="$QBZD_INSTALLED_VERSION"
-      if [[ -n "$installed_version" && "$installed_version" == "$upstream_version" ]]; then
+      if [[ -n "$installed_version" ]] && ! provider_version_is_newer "$upstream_version" "$installed_version"; then
         QBZD_INSTALLED_VERSION="$installed_version"
+        QBZD_UPSTREAM_SOURCE="$qbzd_source"
         pass "qbzd already up to date (${upstream_tag})"
         return 0
       fi
-      pass "qbzd ${installed_version:-unknown version} present; updating to ${upstream_tag}"
+      pass "qbzd ${installed_version:-unknown version} present; updating to ${upstream_tag} (${qbzd_source})"
     else
       pass "qbzd binary already present; not reinstalling"
       return 0
     fi
   fi
 
-  asset="qbzd-linux-${asset_arch}"
-  asset_url="https://github.com/${QBZD_UPSTREAM_REPO}/releases/download/${upstream_tag}/${asset}"
+  if [[ "$qbzd_source" == "$QBZD_UPSTREAM_REPO" ]]; then
+    # Official layout (e.g. qbzd-2.1.2-linux-amd64.tar.gz, tag v2.1.2).
+    first_asset="qbzd-${upstream_version}-linux-${release_arch}.tar.gz"
+    second_asset="qbzd-linux-${asset_arch}"
+  else
+    # Fork layout: raw per-arch binaries (plus a versioned-tarball fallback
+    # from the same resolved release).
+    first_asset="qbzd-linux-${asset_arch}"
+    second_asset="qbzd-${upstream_version}-linux-${release_arch}.tar.gz"
+  fi
+  asset="$first_asset"
+  asset_url="https://github.com/${qbzd_source}/releases/download/${upstream_tag}/${asset}"
   work="$(mktemp -d -t fxroute-qbzd.XXXXXX)"
   FXROUTE_ACTIVE_TEMP_DIR="$work"
   trap 'rm -rf "${work:-}" || true; [[ -z "${staged_binary:-}" ]] || run_as_target_user rm -f "$staged_binary" || true; FXROUTE_ACTIVE_STAGED_BINARY=""; FXROUTE_ACTIVE_TEMP_DIR=""; trap - RETURN' RETURN
   payload="$work/$asset"
   if ! run_cmd curl -fL --retry 3 -o "$payload" "$asset_url"; then
-    # Historical layout fallback: a versioned tarball from the same
-    # resolved release (asset names stay derived from the release tag,
-    # never pinned in this file).
-    asset="qbzd-${upstream_version}-linux-${release_arch}.tar.gz"
-    asset_url="https://github.com/${QBZD_UPSTREAM_REPO}/releases/download/${upstream_tag}/${asset}"
+    # Alternate layout from the same resolved release (asset names stay
+    # derived from the release tag, never pinned in this file).
+    asset="$second_asset"
+    asset_url="https://github.com/${qbzd_source}/releases/download/${upstream_tag}/${asset}"
     payload="$work/$asset"
     if ! run_cmd curl -fL --retry 3 -o "$payload" "$asset_url"; then
       warn "qbzd payload could not be downloaded"
@@ -3917,6 +3963,7 @@ install_qbzd_binary() {
   QBZD_BINARY_PATH="$destination"
   QBZD_INSTALLED_BY_FXROUTE=1
   QBZD_INSTALLED_VERSION="$upstream_version"
+  QBZD_UPSTREAM_SOURCE="$qbzd_source"
   QBZD_BINARY_UPDATED=1
   QBZD_BINARY_SHA256="$(sha256sum "$QBZD_BINARY_PATH" | awk '{print $1}')"
   rm -rf "$work"
@@ -4826,6 +4873,7 @@ write_install_state() {
       "present_before": $( [[ $QBZD_PRESENT_BEFORE -eq 1 ]] && echo true || echo false ),
       "installed_by_fxroute": $( [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
       "installed_version": "${QBZD_INSTALLED_VERSION}",
+      "upstream_source": "${QBZD_UPSTREAM_SOURCE}",
       "service_installed_by_fxroute": $( [[ $QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
       "binary_path": "${QBZD_BINARY_PATH}",
       "binary_sha256": "${QBZD_BINARY_SHA256}",
