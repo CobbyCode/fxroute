@@ -27,9 +27,36 @@ function orderedWays(ways) {
     return WAY_ORDER.filter((role) => present.has(role));
 }
 
-function applicableFilters(role) {
+function isLowWayRole(role) {
+    return role === 'left_low' || role === 'right_low';
+}
+
+// Shared bass high-pass from the subwoofer tile: with routed subs and Main
+// highpass on, the DSP runs every speaker way through an LR24 high-pass at
+// the sub crossover. Only the Low way has no stored high-pass of its own,
+// so only there is the derived filter displayed.
+function bassHighpass(bass, subRoles) {
+    const subs = Array.isArray(subRoles) ? subRoles.filter(Boolean) : [];
+    if (!subs.length) return null;
+    if (!bass || bass.main_highpass_enabled !== true) return null;
+    const frequency = Math.round(Number(bass.frequency_hz));
+    if (!Number.isFinite(frequency) || frequency < 40 || frequency > 200) return null;
+    return { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: frequency };
+}
+
+function derivedHighpassForRole(role, bass, subRoles) {
+    if (!isLowWayRole(role)) return null;
+    return bassHighpass(bass, subRoles);
+}
+
+function applicableFilters(role, context) {
     const way = String(role || '').split('_').slice(1).join('_');
-    if (way === 'low') return ['lowpass'];
+    if (way === 'low') {
+        if (context && derivedHighpassForRole(role, context.bass, context.subRoles)) {
+            return ['highpass', 'lowpass'];
+        }
+        return ['lowpass'];
+    }
     if (way === 'high') return ['highpass'];
     return ['highpass', 'lowpass'];
 }
@@ -117,6 +144,9 @@ function renderWayTabs(tabs, roles, activeRole, onSelect) {
         SUB_ROLES,
         esc,
         orderedWays,
+        isLowWayRole,
+        bassHighpass,
+        derivedHighpassForRole,
         applicableFilters,
         slopesForFamily,
         starterValues,

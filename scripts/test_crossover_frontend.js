@@ -25,6 +25,26 @@ assert.deepEqual(Crossover.applicableFilters('right_high'), ['highpass']);
 assert.deepEqual(Crossover.applicableFilters('left_mid'), ['highpass', 'lowpass']);
 assert.deepEqual(Crossover.applicableFilters('left_low_mid'), ['highpass', 'lowpass']);
 
+// Sub-owned Low high-pass: with routed subs and Main highpass on, the Low
+// way additionally shows the sub crossover (read-only, owned by the Sub tile).
+const bass80 = { frequency_hz: 80, main_highpass_enabled: true };
+assert.deepEqual(Crossover.bassHighpass(bass80, ['sub1']), {
+    family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 80 });
+assert.equal(Crossover.bassHighpass(bass80, []), null);
+assert.equal(Crossover.bassHighpass({ frequency_hz: 80, main_highpass_enabled: false }, ['sub1']), null);
+assert.equal(Crossover.bassHighpass({ frequency_hz: 80 }, ['sub1']), null);
+assert.equal(Crossover.bassHighpass(bass80, ['sub1']).frequency_hz, 80);
+assert.deepEqual(Crossover.derivedHighpassForRole('left_low', bass80, ['sub_l']), {
+    family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 80 });
+assert.equal(Crossover.derivedHighpassForRole('right_low', bass80, []), null);
+assert.equal(Crossover.derivedHighpassForRole('left_mid', bass80, ['sub_l']), null);
+assert.equal(Crossover.derivedHighpassForRole('left_high', bass80, ['sub_l']), null);
+assert.deepEqual(Crossover.applicableFilters('left_low', { bass: bass80, subRoles: ['sub1'] }),
+    ['highpass', 'lowpass']);
+assert.deepEqual(Crossover.applicableFilters('left_low', { bass: bass80, subRoles: [] }), ['lowpass']);
+assert.deepEqual(Crossover.applicableFilters('left_mid', { bass: bass80, subRoles: ['sub1'] }),
+    ['highpass', 'lowpass']);
+
 assert.deepEqual(Crossover.slopesForFamily('linkwitz-riley', CAPS), [12, 24, 36, 48, 60, 72]);
 assert.deepEqual(Crossover.slopesForFamily('nope', CAPS), []);
 

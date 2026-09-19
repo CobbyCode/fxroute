@@ -4896,14 +4896,38 @@ async def _apply_audio_output_state_body(body: dict):
     }
 
 
+def _crossover_bass_highpass(mode_config: dict, topology: dict) -> dict | None:
+    """Shared bass high-pass the DSP adds on top of stored way filters.
+
+    Mirrors ``dsp.processing_plan._crossover_filters``: with routed subs and
+    ``main_highpass_enabled`` every speaker way runs through an LR24
+    high-pass at the sub crossover frequency. The speaker tile must show
+    the same curve, so the response endpoint reuses this definition.
+    """
+    bass = (mode_config or {}).get("bass_management") or {}
+    sub_roles = (topology or {}).get("sub_roles") or []
+    if not sub_roles or bass.get("main_highpass_enabled") is not True:
+        return None
+    try:
+        frequency = float(bass.get("frequency_hz"))
+    except (TypeError, ValueError):
+        return None
+    if not 40 <= frequency <= 200:
+        return None
+    return {"family": "linkwitz-riley", "slope_db_oct": 24,
+            "frequency_hz": int(round(frequency))}
+
+
 def _crossover_way_points(role: str, role_settings: dict, sample_rate_hz: int,
-                          point_count: int = 180) -> list | None:
+                          point_count: int = 180, extra_highpass: dict | None = None) -> list | None:
     """Evaluate one way's crossover filters to log-spaced magnitude points.
 
     Returns None when the way is incomplete (a required filter is missing),
     mirroring the activation rule in the processing plan. Only crossover
     filters shape this curve; area-bank PEQ/FIR correction is visualized in
-    the measurement graph instead.
+    the measurement graph instead. ``extra_highpass`` carries the shared
+    bass high-pass from the subwoofer tile; it never satisfies the required
+    stored filter, it only shapes the running curve.
     """
     try:
         required = ("lowpass",) if role.endswith("low") else ("highpass",) if role.endswith("high") \
@@ -4919,6 +4943,11 @@ def _crossover_way_points(role: str, role_settings: dict, sample_rate_hz: int,
                 {"kind": kind, "family": definition["family"],
                  "slope_db_oct": definition["slope_db_oct"],
                  "frequency_hz": definition["frequency_hz"]}, sample_rate_hz))
+        if extra_highpass is not None:
+            sections.extend(design_crossover(
+                {"kind": "highpass", "family": extra_highpass["family"],
+                 "slope_db_oct": extra_highpass["slope_db_oct"],
+                 "frequency_hz": extra_highpass["frequency_hz"]}, sample_rate_hz))
     except (ValueError, KeyError, TypeError):
         return None
     points = []
@@ -4951,19 +4980,24 @@ async def get_audio_output_state_crossover_response():
     overview = await asyncio.to_thread(get_audio_output_overview)
     output_key, channels = _output_state_device(overview)
     topology = _output_state_topology(state, mode, output_key, channels)
-    for role, settings in state["modes"][mode]["processing"].items():
+    mode_config = state["modes"][mode]
+    bass_highpass = _crossover_bass_highpass(mode_config, topology)
+    for role, settings in mode_config["processing"].items():
         if not topology["crossover_enabled"] or role not in topology["roles"]:
             continue
         if not (role.startswith("left_") or role.startswith("right_")):
             continue
-        points = _crossover_way_points(role, settings, rate)
+        points = _crossover_way_points(role, settings, rate, extra_highpass=bass_highpass)
         ways[role] = {
             "filters": {"highpass": settings["highpass"], "lowpass": settings["lowpass"]},
+            "derived_highpass": dict(bass_highpass) if bass_highpass else None,
             "complete": points is not None,
             "points": points,
         }
     return {"status": "ok", "revision": state["revision"], "mode": mode,
             "crossover_enabled": topology["crossover_enabled"],
+            "bass_management": dict(mode_config["bass_management"]),
+            "sub_roles": list(topology["sub_roles"]),
             "sample_rate_hz": rate, "ways": ways}
 
 

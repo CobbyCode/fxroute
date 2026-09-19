@@ -3891,6 +3891,16 @@ function renderCrossoverTile() {
     const processing = modeConfig.processing || {};
     const settings = processing[active] || {};
     const busy = state.crossover.busy || state.outputSystem.busy;
+    const bass = modeConfig.bass_management || {};
+    const subRoles = modeConfig.topology?.sub_roles || [];
+    const bassContext = { bass, subRoles };
+    // Derived sub high-pass for the Low way: owned by the Subwoofer tile,
+    // displayed read-only here. Falls back to the response payload when the
+    // catalog is momentarily stale after a sub save.
+    const responseDerived = response.ways?.[active]?.derived_highpass || null;
+    const catalogDerived = mod.derivedHighpassForRole
+        ? mod.derivedHighpassForRole(active, bass, subRoles) : null;
+    const derivedHighpass = (!settings.highpass && (catalogDerived || responseDerived)) || null;
     mod.renderWayTabs(elements.effectsCrossoverTabs, roles, active, (role) => {
         state.crossover.activeWay = role;
         renderCrossoverTile();
@@ -3898,7 +3908,7 @@ function renderCrossoverTile() {
     if (elements.effectsCrossoverGraph) {
         drawCrossoverResponse(elements.effectsCrossoverGraph, response.ways, active);
     }
-    const applicable = mod.applicableFilters(active);
+    const applicable = mod.applicableFilters(active, bassContext);
     const showHighpass = applicable.includes('highpass');
     const showLowpass = applicable.includes('lowpass');
     if (elements.effectsCrossoverHighpassGroup) {
@@ -3908,8 +3918,11 @@ function renderCrossoverTile() {
         elements.effectsCrossoverLowpassGroup.style.display = showLowpass ? '' : 'none';
     }
     if (elements.effectsCrossoverFrequencyHighpass && document.activeElement !== elements.effectsCrossoverFrequencyHighpass) {
-        elements.effectsCrossoverFrequencyHighpass.value = settings.highpass?.frequency_hz ?? '';
-        elements.effectsCrossoverFrequencyHighpass.disabled = !showHighpass || busy;
+        elements.effectsCrossoverFrequencyHighpass.value = settings.highpass?.frequency_hz
+            ?? derivedHighpass?.frequency_hz ?? '';
+        elements.effectsCrossoverFrequencyHighpass.disabled = !showHighpass || busy || !!derivedHighpass;
+        elements.effectsCrossoverFrequencyHighpass.title = derivedHighpass
+            ? `Set by the Subwoofer tile (${derivedHighpass.frequency_hz} Hz)` : '';
     }
     if (elements.effectsCrossoverFrequencyLowpass && document.activeElement !== elements.effectsCrossoverFrequencyLowpass) {
         elements.effectsCrossoverFrequencyLowpass.value = settings.lowpass?.frequency_hz ?? '';
@@ -3917,13 +3930,14 @@ function renderCrossoverTile() {
     }
     const families = Object.keys(catalog.capabilities?.filter_families || {});
     for (const kind of ['highpass', 'lowpass']) {
-        const definition = settings[kind] || {};
+        const derived = kind === 'highpass' ? derivedHighpass : null;
+        const definition = settings[kind] || derived || {};
         // An unstored filter displays the defaults a save would write.
         const displayFamily = definition.family || 'linkwitz-riley';
         const displaySlope = definition.slope_db_oct ?? 24;
         const familyEl = kind === 'highpass' ? elements.effectsCrossoverFamilyHighpass : elements.effectsCrossoverFamilyLowpass;
         const slopeEl = kind === 'highpass' ? elements.effectsCrossoverSlopeHighpass : elements.effectsCrossoverSlopeLowpass;
-        const kindBusy = busy || !applicable.includes(kind);
+        const kindBusy = busy || !applicable.includes(kind) || !!derived;
         if (familyEl) {
             const html = families.map((family) =>
                 `<option value="${mod.esc(family)}"${family === displayFamily ? ' selected' : ''}>${mod.esc(familyLabel(family))}</option>`).join('');
@@ -3932,6 +3946,8 @@ function renderCrossoverTile() {
                 familyEl.value = displayFamily;
             }
             familyEl.disabled = kindBusy;
+            if (kind === 'highpass') familyEl.title = derived
+                ? `Set by the Subwoofer tile (${derived.frequency_hz} Hz)` : '';
         }
         if (slopeEl) {
             const slopes = mod.slopesForFamily(familyEl?.value || displayFamily, catalog.capabilities);
@@ -3942,6 +3958,8 @@ function renderCrossoverTile() {
                 slopeEl.value = displaySlope;
             }
             slopeEl.disabled = kindBusy;
+            if (kind === 'highpass') slopeEl.title = derived
+                ? `Set by the Subwoofer tile (${derived.frequency_hz} Hz)` : '';
         }
     }
     if (elements.effectsCrossoverLevel && document.activeElement !== elements.effectsCrossoverLevel) {
@@ -3957,10 +3975,13 @@ function renderCrossoverTile() {
         elements.effectsCrossoverPolarity.disabled = busy;
     }
     const wayCount = modeConfig.topology?.way_count || 0;
+    const summaryBass = mod.bassHighpass ? mod.bassHighpass(bass, subRoles) : null;
     if (elements.effectsCrossoverSummary) {
-        elements.effectsCrossoverSummary.textContent = wayCount
+        const base = wayCount
             ? `${wayCount}-Way system · ${roles.length} ways configured`
             : 'Configure speaker ways in Output Routing first.';
+        elements.effectsCrossoverSummary.textContent = summaryBass && wayCount
+            ? `${base} · Sub HPF ${summaryBass.frequency_hz} Hz` : base;
     }
     if (elements.effectsCrossoverStarterHint) {
         try {
@@ -3985,12 +4006,20 @@ function collectCrossoverWayMutation() {
     const catalog = state.outputSystem.catalog;
     const active = state.crossover.activeWay;
     if (!mod || !catalog || !active) return null;
-    const applicable = mod.applicableFilters(active);
+    const modeConfig = catalog.modes[catalog.active_mode] || {};
+    const bassContext = { bass: modeConfig.bass_management || {},
+        subRoles: modeConfig.topology?.sub_roles || [] };
+    const applicable = mod.applicableFilters(active, bassContext);
     const readFreq = (el, fallback) => {
         if (!el || el.value === '' || el.value === null) return fallback;
         return mod.clampFrequencyHz(el.value);
     };
     const current = catalog.modes[catalog.active_mode]?.processing?.[active] || {};
+    // The sub-owned Low high-pass is display-only: never persist it as a
+    // stored way filter, even though the input shows its frequency.
+    const derivedHighpass = !current.highpass && mod.derivedHighpassForRole
+        ? mod.derivedHighpassForRole(active, bassContext.bass, bassContext.subRoles) : null;
+    const highpassEnabled = applicable.includes('highpass') && !derivedHighpass;
     const build = (previous, enabled, freqEl, familyEl, slopeEl) => {
         if (!enabled) return previous ?? null;
         const raw = freqEl ? freqEl.value : '';
@@ -4003,7 +4032,7 @@ function collectCrossoverWayMutation() {
         kind: 'set_processing',
         mode: catalog.active_mode,
         role: active,
-        highpass: build(current.highpass, applicable.includes('highpass'),
+        highpass: build(current.highpass, highpassEnabled,
             elements.effectsCrossoverFrequencyHighpass,
             elements.effectsCrossoverFamilyHighpass, elements.effectsCrossoverSlopeHighpass),
         lowpass: build(current.lowpass, applicable.includes('lowpass'),
@@ -15162,11 +15191,14 @@ function drawCrossoverResponse(canvas, ways, activeRole) {
         .forEach((role) => drawWay(role, 'rgba(107,114,128,0.85)', 1.5));
     drawWay(activeRole, '#60a5fa', 3);
     const activeFilters = ((ways || {})[activeRole] || {}).filters || {};
+    const activeDerived = ((ways || {})[activeRole] || {}).derived_highpass || null;
+    const markerFrequencies = [];
     ctx.font = '600 10px system-ui, sans-serif';
     ctx.textBaseline = 'middle';
     for (const kind of ['highpass', 'lowpass']) {
         const hz = Number(activeFilters[kind] && activeFilters[kind].frequency_hz);
         if (!Number.isFinite(hz) || hz < minHz || hz > maxHz) continue;
+        markerFrequencies.push(hz);
         const x = xForHz(hz);
         ctx.strokeStyle = 'rgba(255,255,255,0.35)';
         ctx.lineWidth = 1;
@@ -15185,6 +15217,33 @@ function drawCrossoverResponse(canvas, ways, activeRole) {
         ctx.strokeRect(labelX - labelWidth / 2, labelY - 9, labelWidth, 18);
         ctx.fillStyle = '#e5e7eb';
         ctx.fillText(label, labelX, labelY);
+    }
+    // Sub-owned Low high-pass: no stored filter, but the running curve
+    // includes it, so mark it like a stored cutoff. Skipped when a stored
+    // high-pass already marks (near-)the same frequency.
+    if (activeDerived && !activeFilters.highpass) {
+        const hz = Number(activeDerived.frequency_hz);
+        if (Number.isFinite(hz) && hz >= minHz && hz <= maxHz
+            && !markerFrequencies.some((marked) => Math.abs(Math.log(marked / hz)) < 0.02)) {
+            const x = xForHz(hz);
+            ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x, pad.top);
+            ctx.lineTo(x, pad.top + plotH);
+            ctx.stroke();
+            const label = formatHz(hz);
+            ctx.textAlign = 'center';
+            const labelWidth = ctx.measureText(label).width + 12;
+            const labelX = Math.max(pad.left + labelWidth / 2 + 2, Math.min(pad.left + plotW - labelWidth / 2 - 2, x));
+            const labelY = pad.top + plotH * 0.72;
+            ctx.fillStyle = 'rgba(12,18,28,0.82)';
+            ctx.fillRect(labelX - labelWidth / 2, labelY - 9, labelWidth, 18);
+            ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+            ctx.strokeRect(labelX - labelWidth / 2, labelY - 9, labelWidth, 18);
+            ctx.fillStyle = '#e5e7eb';
+            ctx.fillText(label, labelX, labelY);
+        }
     }
     ctx.textAlign = 'start';
 }

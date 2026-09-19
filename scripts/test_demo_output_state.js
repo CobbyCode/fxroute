@@ -96,13 +96,20 @@ async function request(url, body) {
     const response = await request('/api/audio/output-state/crossover-response');
     assert.equal(response.mode, 'stereo-sub');
     assert.equal(response.crossover_enabled, true);
+    assert.deepEqual(response.sub_roles, ['sub_l', 'sub_r']);
+    assert.equal(response.bass_management.frequency_hz, 80);
     const low = response.ways.left_low;
     assert.equal(low.complete, true);
+    assert.deepEqual(low.derived_highpass,
+        { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 80 });
+    assert.equal(low.filters.highpass, null);
     assert.ok(low.points.length > 100);
     const near = low.points.reduce((best, point) =>
         Math.abs(Math.log(point[0] / 300)) < Math.abs(Math.log(best[0] / 300)) ? point : best);
     assert.ok(Math.abs(near[1] + 6.02) < 0.3, `LR24 cutoff level: ${near[1]}`);
-    assert.ok(low.points[0][1] > -0.5);
+    // Routed subs with Main highpass on: the running Low curve carries the
+    // sub-owned 80 Hz LR24 high-pass, so 20 Hz is deeply attenuated.
+    assert.ok(low.points[0][1] < -20, `sub HPF shapes low bottom: ${low.points[0][1]}`);
     let current = await request('/api/audio/output-state');
     const apply = async mutation => {
         const result = await rawRequest('/api/audio/output-state/apply', { expected_revision: current.revision,

@@ -108,6 +108,50 @@ class WayResponseTests(unittest.TestCase):
         self.assertFalse(payload["crossover_enabled"])
         self.assertEqual(payload["ways"], {})
 
+    def _commit_sub_crossover_state(self, main_highpass_enabled=True):
+        from audio.output_state import (set_bass_management, set_mode_routing)
+        assignments = ["left_low", "right_low", "left_high", "right_high", "sub_l", "sub_r"]
+        state = set_mode_routing(self.service.load(), "stereo-sub", "A", assignments)
+        proc = state["modes"]["stereo-sub"]["processing"]
+        for role in ("left_low", "right_low"):
+            proc[role]["highpass"] = None
+            proc[role]["lowpass"] = {"family": "linkwitz-riley", "slope_db_oct": 24,
+                                     "frequency_hz": 2000}
+        for role in ("left_high", "right_high"):
+            proc[role]["highpass"] = {"family": "linkwitz-riley", "slope_db_oct": 24,
+                                      "frequency_hz": 2000}
+            proc[role]["lowpass"] = None
+        state = set_bass_management(state, "stereo-sub", frequency_hz=80,
+                                    main_highpass_enabled=main_highpass_enabled)
+        return self.service._deps.store.commit(state, expected_revision=1)
+
+    def test_sub_bass_highpass_shapes_low_way(self):
+        self._commit_sub_crossover_state(main_highpass_enabled=True)
+        payload = self.fetch()
+        self.assertEqual(payload["bass_management"],
+                         {"frequency_hz": 80, "main_highpass_enabled": True})
+        self.assertEqual(sorted(payload["sub_roles"]), ["sub_l", "sub_r"])
+        low = payload["ways"]["left_low"]
+        self.assertTrue(low["complete"])
+        self.assertEqual(low["derived_highpass"],
+                         {"family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 80})
+        self.assertIsNone(low["filters"]["highpass"])
+        points = dict(low["points"])
+        # LR24 high-pass at 80 Hz: the running low curve is deeply
+        # attenuated at 20 Hz, unlike the sub-less ~0 dB bottom.
+        self.assertLess(points[min(points)], -20.0)
+        nearest = min(points, key=lambda hz: abs(math.log(hz / 80.0)))
+        self.assertAlmostEqual(points[nearest], -6.0206, delta=0.6)
+
+    def test_sub_highpass_off_leaves_low_way_full_range(self):
+        self._commit_sub_crossover_state(main_highpass_enabled=False)
+        payload = self.fetch()
+        low = payload["ways"]["left_low"]
+        self.assertTrue(low["complete"])
+        self.assertIsNone(low["derived_highpass"])
+        points = dict(low["points"])
+        self.assertAlmostEqual(points[min(points)], 0.0, delta=0.2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2238,6 +2238,16 @@
             const catalog = outputStateCatalog();
             const ways = {};
             const config = catalog.modes[catalog.active_mode];
+            // Shared bass high-pass from the subwoofer tile: with routed
+            // subs and Main highpass on, every speaker way runs through an
+            // LR24 high-pass at the sub crossover (mirrors the backend plan).
+            const bass = config.bass_management || {};
+            const hasSubs = (config.topology.sub_roles || []).length > 0;
+            const bassFreq = Number(bass.frequency_hz);
+            const derivedHighpass = (hasSubs && bass.main_highpass_enabled === true
+                && Number.isFinite(bassFreq) && bassFreq >= 40 && bassFreq <= 200)
+                ? { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: Math.round(bassFreq) }
+                : null;
             for (const [role, settings] of Object.entries(catalog.modes[catalog.active_mode].processing)) {
                 if (!config.crossover_enabled || !config.topology.roles.includes(role)) continue;
                 if (!role.startsWith('left_') && !role.startsWith('right_')) continue;
@@ -2251,14 +2261,18 @@
                         let level = 0;
                         if (settings.highpass) level += demoCrossoverDb(frequency, settings.highpass, 'highpass');
                         if (settings.lowpass) level += demoCrossoverDb(frequency, settings.lowpass, 'lowpass');
+                        if (derivedHighpass) level += demoCrossoverDb(frequency, derivedHighpass, 'highpass');
                         points.push([Math.round(frequency * 1000) / 1000, Math.round(level * 1000) / 1000]);
                     }
                 }
                 ways[role] = { filters: { highpass: settings.highpass, lowpass: settings.lowpass },
+                    derived_highpass: derivedHighpass ? { ...derivedHighpass } : null,
                     complete, points: complete ? points : null };
             }
             return j({ status: 'ok', revision: catalog.revision, mode: catalog.active_mode,
                 crossover_enabled: config.crossover_enabled,
+                bass_management: { ...config.bass_management },
+                sub_roles: [...(config.topology.sub_roles || [])],
                 sample_rate_hz: 48000, ways });
         }
         if (p === '/api/audio/samplerate') {
