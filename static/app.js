@@ -14377,9 +14377,8 @@ function renderEffectsCompare() {
 
     // Rebuilding <option> lists on every WS push closes an open dropdown.
     // Only touch the DOM when the values actually changed.
-    // All Banks owns no presets: both selects list every configured area
-    // bank's respective A/B slot (read-only, the selects stay disabled),
-    // so the joint-switch tile is never empty.
+    // All Banks owns no presets: both disabled selects show one aggregate
+    // A/B label, and the chain line names the involved area banks below.
     const aggregateBanks = aggregate ? (() => {
         const modeConfig = (state.outputSystem?.catalog?.modes || {})[state.outputSystem?.catalog?.active_mode] || {};
         return Object.entries(modeConfig.banks || {}).filter(([id]) => id !== 'global');
