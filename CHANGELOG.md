@@ -2,26 +2,25 @@
 
 ## 1.0-beta9 (2026-09-19)
 
-Ninth public beta. Distribution channels unchanged: web demo on GitHub Pages,
-Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 ISO via
-SourceForge. Khadas/VIM1S stays internal and gets no public image. No public
-Ubuntu ISO in this cycle (in-tree port only, see below).
+Ninth public beta. Distribution: web demo on GitHub Pages,
+Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 and Ubuntu 26.04
+ISOs via SourceForge. Khadas/VIM1S stays internal and gets no public image.
 
 ### Release provenance
 
 - Source stand: `main`. No Armbian or live-converter changes this cycle;
   installer ships the Evergreen provider resolution (no pinned provider
   versions, see below).
-- The x86_64 Leap 16 ISO and the Pi 4/Pi 5 images are built from the release
-  commit; their SHA-256 digests are recorded in this section once the builds
-  exist.
+- The x86_64 Leap 16 ISO, the x86_64 Ubuntu 26.04 ISO and the Pi 4/Pi 5
+  images are built from the release commit; their SHA-256 digests are
+  recorded in this section once the builds exist.
 - The web demo snapshot was rebuilt from this stand (`demo/dist` parity is
   green).
 - Explicitly not included: the unmerged `feature/multichannel-crossover`
   work and the unmerged `feature/adaptive-headroom` work (convolver
   headroom derived from the realized filter peak).
 
-### Ubuntu 26.04 x86 port (in-tree, QEMU-verified, no public image)
+### Ubuntu 26.04 x86 ISO (QEMU-verified)
 
 - New `ubuntu/` tree beside the unchanged Leap/Agama path: official 26.04.1
   Desktop base customized with livefs-editor (signed Shim/kernel untouched),
@@ -32,8 +31,10 @@ Ubuntu ISO in this cycle (in-tree port only, see below).
   multi-user.target for LAN/SSH operation.
 - Phase 1 QEMU acceptance passed (live, install and appliance phases with
   `/api/status` serving); Phase 2 hardware gates (WLAN, Secure Boot,
-  Scarlett audio) remain open, so no public Ubuntu ISO is published from
-  this stand.
+  Scarlett audio) remain open. The published Ubuntu ISO
+  (`fxroute-1.0-beta9-x86_64-ubuntu26.04.iso`) is built from the release
+  commit (`3791bff`, embedded `VERSION 1.0-beta9`); SHA-256:
+  `d4571e281bd1599eeaff1aac1f462031dbe6d17b77649ece8f945ee4d349eefc`.
 
 ### Providers (Evergreen)
 
@@ -76,6 +77,7 @@ Public release artifact names (to be built from tag `v1.0-beta9`):
 - `fxroute-1.0-beta9-rpi4-trixie-current.img.xz` (+ `.sha256`)
 - `fxroute-1.0-beta9-rpi5-trixie-current.img.xz` (+ `.sha256`)
 - `fxroute-1.0-beta9-x86_64-leap16.iso` (SourceForge, + `.sha256`)
+- `fxroute-1.0-beta9-x86_64-ubuntu26.04.iso` (SourceForge, + `.sha256`)
 
 ## 1.0-beta8 (2026-09-16)
 
