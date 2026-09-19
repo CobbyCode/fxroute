@@ -1,5 +1,82 @@
 # Changelog
 
+## 1.0-beta9 (2026-09-19)
+
+Ninth public beta. Distribution channels unchanged: web demo on GitHub Pages,
+Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 ISO via
+SourceForge. Khadas/VIM1S stays internal and gets no public image. No public
+Ubuntu ISO in this cycle (in-tree port only, see below).
+
+### Release provenance
+
+- Source stand: `main`. No Armbian or live-converter changes this cycle;
+  installer ships the Evergreen provider resolution (no pinned provider
+  versions, see below).
+- The x86_64 Leap 16 ISO and the Pi 4/Pi 5 images are built from the release
+  commit; their SHA-256 digests are recorded in this section once the builds
+  exist.
+- The web demo snapshot was rebuilt from this stand (`demo/dist` parity is
+  green).
+- Explicitly not included: the unmerged `feature/multichannel-crossover`
+  work and the unmerged `feature/adaptive-headroom` work (convolver
+  headroom derived from the realized filter peak).
+
+### Ubuntu 26.04 x86 port (in-tree, QEMU-verified, no public image)
+
+- New `ubuntu/` tree beside the unchanged Leap/Agama path: official 26.04.1
+  Desktop base customized with livefs-editor (signed Shim/kernel untouched),
+  Subiquity autoinstall with `Install FXRoute Desktop` / `Install FXRoute
+  Headless` GRUB entries plus a `Try FXRoute Live` default,
+  `source.tar`/`build-commit` first boot through `install.sh`, GDM autologin
+  with Firefox kiosk on desktop, and a headless target purged to
+  multi-user.target for LAN/SSH operation.
+- Phase 1 QEMU acceptance passed (live, install and appliance phases with
+  `/api/status` serving); Phase 2 hardware gates (WLAN, Secure Boot,
+  Scarlett audio) remain open, so no public Ubuntu ISO is published from
+  this stand.
+
+### Providers (Evergreen)
+
+- No pinned provider versions: fresh installs resolve the current stable
+  upstream release at install time (spotifyd via `Spotifyd/spotifyd`, qbzd
+  via the official `vicrodh/qbz` first with the compatible fork as
+  fallback, `tidalapi` via PyPI), and rerunning the install updates an
+  FXRoute-owned installation in place. Checksums verify against the
+  sidecar or digest published with the same upstream release; foreign
+  binaries stay untouched; Qobuz never moves to an older tag and never
+  installs nightlies or prereleases.
+- ARM64 uses the official upstream full/MPRIS assets (verified via
+  sidecar); the obsolete FXRoute `spotifyd-arm64-v1` prebuilt, its build
+  script and its docs are retired.
+
+### Playback / DSP
+
+- MPV cold-start resilience: slow `mpv --version` probes retry bounded
+  instead of disabling playback, and `/api/play` lazily (re)starts a
+  missing player with a cooldown instead of returning 503 until the
+  service restarts.
+- Scarlett channel tiers: every tier (including the largest inventory)
+  reprobes through the explicit Pro Audio path (`pro-audio` plus
+  `api.acp.pro-channels`/`probe-rate` rule); the gate confirm holds
+  inaudible silence while an idle node accepts the mute.
+
+### UI / internal maintenance
+
+- One shared chevron for every app dropdown (tokenized arrow geometry and
+  reserve); saved-runs disclosure and playlist/PEQ rows aligned; dead
+  endpoints, helpers and asset removed.
+- `audio/samplerate` exposes a public raw snapshot API for the
+  output-mode rollback without behavior change; `/api/volume` returns the
+  standard status envelope; queue-transaction test helpers deduped.
+- Regression coverage for the MPV resilience, tier reprobe, installer
+  streaming and the qbzd controlled-failure harness.
+
+Public release artifact names (to be built from tag `v1.0-beta9`):
+
+- `fxroute-1.0-beta9-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta9-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta9-x86_64-leap16.iso` (SourceForge, + `.sha256`)
+
 ## 1.0-beta8 (2026-09-16)
 
 Eighth public beta. Distribution channels unchanged: web demo on GitHub Pages,
