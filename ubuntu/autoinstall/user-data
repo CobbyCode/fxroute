@@ -1,0 +1,38 @@
+#cloud-config
+# FXRoute Ubuntu 26.04 autoinstall (Subiquity, Desktop-ISO).
+# Gemeinsame Basis fuer generate-seeds.py: Keyboard, Identity und Netzwerk
+# (WLAN) bleiben interaktiv. Locale/Keymap sind englische Startwerte.
+# Netzwerk: kein `network:`-Schluessel -> Subiquity/Curtin uebernimmt die im
+# Installer konfigurierte Verbindung (inkl. WLAN) per Netplan aufs Ziel.
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  source:
+    id: ubuntu-desktop-minimal
+  interactive-sections:
+    # Ubuntu-typische Abfrage: Tastatur, WLAN einmalig, Benutzer hier.
+    # Der Rest (Locale, Storage, Pakete) laeuft automatisch.
+    - keyboard
+    - network
+    - identity
+  # Leave identity unset: Subiquity validates supplied mappings before
+  # showing the interactive page and requires a password in that mapping.
+  storage:
+    layout:
+      name: lvm
+  packages:
+    - openssh-server
+    - git
+    - curl
+    - ca-certificates
+  late-commands:
+    # FXRoute-Payload vom Installationsmedium uebernehmen. Einfache
+    # Anfuehrung nur aussen (Subiquity verschluckt geschachteltes Quoting).
+    - 'cp -r /cdrom/fxroute-iso /target/opt/fxroute-iso'
+    - 'cp /target/opt/fxroute-iso/scripts/first-boot-install-ubuntu.sh /target/usr/local/libexec/fxroute-first-boot-install.sh'
+    - 'chmod 755 /target/usr/local/libexec/fxroute-first-boot-install.sh'
+    - 'cp /target/opt/fxroute-iso/first-boot.service /target/etc/systemd/system/fxroute-first-boot.service'
+    - 'curtin in-target --target=/target -- systemctl enable fxroute-first-boot.service'
+    - 'curtin in-target --target=/target -- systemctl enable ssh.service'

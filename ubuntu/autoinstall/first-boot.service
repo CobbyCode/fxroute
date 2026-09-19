@@ -1,0 +1,14 @@
+[Unit]
+Description=FXRoute first-boot setup
+After=network-online.target
+Wants=network-online.target
+Before=gdm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/fxroute-first-boot-install.sh
+RemainAfterExit=yes
+TimeoutStartSec=2h
+
+[Install]
+WantedBy=multi-user.target

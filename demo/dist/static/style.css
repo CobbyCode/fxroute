@@ -1149,6 +1149,14 @@ select.url-input {
     gap: 0.4rem;
     flex-shrink: 0;
     flex-wrap: wrap;
+    /* Wrapped onto its own row below the provider info, the action
+       group keeps hugging the right edge of the provider area. */
+    margin-left: auto;
+}
+/* Uniform action widths: Uninstall matches Disconnect, so the
+   two-button groups (Spotify, connected Qobuz/TIDAL) align evenly. */
+.settings-provider-actions .btn-secondary {
+    min-width: 7.5rem;
 }
 .settings-provider-operation {
     margin-top: 0.45rem;

@@ -27,12 +27,16 @@ SELECT_QOBUZ=0
 SELECT_TIDAL=0
 HOST_ARCH="$(uname -m)"
 
-SPOTIFYD_VERSION="0.4.2"
-SPOTIFYD_ARM64_ARTIFACT_VERSION="1"
-SPOTIFYD_ARM64_ARCHIVE="spotifyd-${SPOTIFYD_VERSION}-linux-aarch64-fxroute-${SPOTIFYD_ARM64_ARTIFACT_VERSION}.tar.gz"
-SPOTIFYD_ARM64_SHA256="6afe154e14801df34eac5d161b5891155fa7d57f42affb38a4d96c999e5ebbe6"
-SPOTIFYD_ARM64_DOWNLOAD_URL="https://github.com/CobbyCode/fxroute/releases/download/spotifyd-arm64-v${SPOTIFYD_ARM64_ARTIFACT_VERSION}/${SPOTIFYD_ARM64_ARCHIVE}"
-QBZD_VERSION="2.0.2"
+# Upstream provider sources. Only the repository identity is fixed here: the
+# installed release is always the current stable upstream tag resolved at
+# install time through the GitHub releases API. This file contains no pinned
+# provider versions and no version-bound download URLs, so a new upstream
+# release is picked up without any FXRoute code change.
+SPOTIFYD_UPSTREAM_REPO="Spotifyd/spotifyd"
+# qbzd tracks the official upstream first; the compatible MIT-licensed fork
+# is the fallback when the official source publishes no stable release.
+QBZD_UPSTREAM_REPO="vicrodh/qbz"
+QBZD_UPSTREAM_FALLBACK_REPO="yet-another-quentin/qbzd"
 SPOTIFYD_ZEROCONF_PORT="4444"
 CIFS_HELPER_SHA256="9c6e71ee42440e7924b3a3277cd0c7b7cf2824950a8a0b5f4f9f0ac020195931"
 CIFS_HELPER_LEGACY_SHA256="8c848fc5cff8d1e320c54e99caad66ac53cbf0ba81329e1c651102115ba7aa7d"
@@ -90,6 +94,8 @@ SPOTIFYD_CONNECT_NAME=""
 SPOTIFYD_BINARY_PATH=""
 SPOTIFYD_BINARY_SHA256=""
 SPOTIFYD_BINARY_IDENTITY_CHANGED=0
+SPOTIFYD_INSTALLED_VERSION=""
+SPOTIFYD_BINARY_UPDATED=0
 SPOTIFYD_SERVICE_PATH="$HOME/.config/systemd/user/spotifyd.service"
 SPOTIFYD_SERVICE_SHA256=""
 SPOTIFYD_SERVICE_IDENTITY_CHANGED=0
@@ -115,6 +121,9 @@ QBZD_AUDIO_DEVICE_BEFORE=""
 QBZD_AUDIO_SKIP_SINK_SWITCH_BEFORE=""
 QBZD_AUDIO_CHANGED_BY_FXROUTE=0
 QBZD_BINARY_IDENTITY_CHANGED=0
+QBZD_INSTALLED_VERSION=""
+QBZD_UPSTREAM_SOURCE=""
+QBZD_BINARY_UPDATED=0
 TIDAL_PRESENT_BEFORE=0
 TIDAL_INSTALLED_BY_FXROUTE=0
 TIDAL_INSTALLED_VERSION=""
@@ -977,6 +986,118 @@ qbzd_arch_for_host() {
   esac
 }
 
+# Shared upstream-resolution helpers (one principle for every GitHub-backed
+# provider: spotifyd and qbzd). The stable release is the GitHub "latest"
+# release document, which excludes drafts and prereleases by definition, so
+# only stable upstream versions are ever installed. Checksums and digests
+# are read from the same release document or its sidecar files instead of
+# being pinned in this file.
+
+github_stable_release_json() {
+  # Print the GitHub API document for the latest stable release of a
+  # "owner/name" repository. Fails when the network, the API, or the
+  # release itself is unavailable.
+  local repo="$1"
+  curl -fsSL --retry 2 --max-time 20 \
+    "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null
+}
+
+github_release_tag_name() {
+  # Extract the release tag (e.g. "v0.4.2") from a release document.
+  printf '%s' "$1" | python3 -c '
+import json
+import sys
+
+try:
+    print(json.load(sys.stdin).get("tag_name") or "")
+except (ValueError, OSError):
+    raise SystemExit(1)
+' 2>/dev/null
+}
+
+github_release_asset_digest() {
+  # Print the API-reported digest (e.g. "sha256:...") of one release asset,
+  # or nothing when the release carries no digest for it.
+  printf '%s' "$1" | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (ValueError, OSError):
+    raise SystemExit(1)
+for asset in payload.get("assets") or []:
+    if asset.get("name") == sys.argv[1]:
+        print(asset.get("digest") or "")
+        break
+' "$2" 2>/dev/null
+}
+
+normalize_release_tag() {
+  # Strip a leading "v" so "v0.4.2" compares equal to a "0.4.2" version string.
+  local tag="${1:-}"
+  tag="${tag#v}"
+  printf '%s\n' "$tag"
+}
+
+verify_github_payload() {
+  # Verify a downloaded release payload against the integrity metadata of
+  # the same official release (never a pinned hash in this file): the
+  # checksum sidecar published next to the asset first, the API-reported
+  # asset digest second. A mismatch aborts; when the release publishes
+  # neither, only the download size is verified and reported honestly.
+  local dir="$1" name="$2" asset_url="$3" release_json="$4" sidecar_suffix="${5:-}"
+  local sum_cmd="" digest="" expected="" actual=""
+
+  if [[ -n "$sidecar_suffix" ]]; then
+    case "$sidecar_suffix" in
+      .sha256) sum_cmd="sha256sum" ;;
+      .sha512) sum_cmd="sha512sum" ;;
+      *) sum_cmd="" ;;
+    esac
+    if [[ -n "$sum_cmd" ]] \
+      && run_cmd curl -fL --retry 2 -o "$dir/$name$sidecar_suffix" "$asset_url$sidecar_suffix"; then
+      if ( cd "$dir" && "$sum_cmd" -c "$name$sidecar_suffix" ); then
+        return 0
+      fi
+      warn "provider payload checksum mismatch"
+      return 1
+    fi
+  fi
+  digest="$(github_release_asset_digest "$release_json" "$name" || true)"
+  if [[ "$digest" == sha256:* ]]; then
+    expected="${digest#sha256:}"
+    actual="$(sha256sum "$dir/$name" 2>/dev/null | awk '{print $1}')"
+    if [[ -n "$actual" && "$actual" == "$expected" ]]; then
+      return 0
+    fi
+    warn "provider payload checksum mismatch"
+    return 1
+  fi
+  if [[ -s "$dir/$name" ]]; then
+    warn "release publishes no checksum for $name; verified download size only"
+    return 0
+  fi
+  warn "provider payload is empty"
+  return 1
+}
+
+provider_binary_version() {
+  # Print the X.Y.Z version reported by a provider binary ("--version"),
+  # or nothing when the binary reports none. Never fails.
+  run_as_target_user "$1" --version 2>/dev/null \
+    | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true
+}
+
+provider_version_is_newer() {
+  # True when the candidate version is strictly newer than the installed
+  # one (version sort). Used so an update never downgrades to an older
+  # upstream tag.
+  local candidate="${1:-}" installed="${2:-}"
+  [[ -n "$candidate" && -n "$installed" && "$candidate" != "$installed" ]] || return 1
+  [[ "$(printf '%s\n%s\n' "$installed" "$candidate" | sort -V | tail -n 1)" == "$candidate" ]]
+}
+
 root_state_is_trusted() {
   local state_dir="$(dirname "$ROOT_INSTALL_STATE_FILE")"
   local state_mode=""
@@ -1103,6 +1224,9 @@ load_provider_ownership_state() {
   if value="$(previous_install_state_field providers.spotifyd.config_path 2>/dev/null)"; then
     [[ -n "$value" ]] && SPOTIFYD_CONFIG_PATH="$value"
   fi
+  if value="$(previous_install_state_field providers.spotifyd.installed_version 2>/dev/null)"; then
+    [[ -n "$value" ]] && SPOTIFYD_INSTALLED_VERSION="$value"
+  fi
   [[ "$(previous_install_state_field providers.qobuz.installed_by_fxroute 2>/dev/null || true)" == "true" ]] && QBZD_INSTALLED_BY_FXROUTE=1
   [[ "$(previous_install_state_field providers.qobuz.service_installed_by_fxroute 2>/dev/null || true)" == "true" ]] && QBZD_SERVICE_INSTALLED_BY_FXROUTE=1
   if value="$(previous_install_state_field providers.qobuz.binary_path 2>/dev/null)"; then
@@ -1141,6 +1265,12 @@ load_provider_ownership_state() {
     QBZD_AUDIO_SKIP_SINK_SWITCH_BEFORE="$value"
   fi
   [[ "$(previous_install_state_field providers.qobuz.audio_changed_by_fxroute 2>/dev/null || true)" == "true" ]] && QBZD_AUDIO_CHANGED_BY_FXROUTE=1
+  if value="$(previous_install_state_field providers.qobuz.installed_version 2>/dev/null)"; then
+    [[ -n "$value" ]] && QBZD_INSTALLED_VERSION="$value"
+  fi
+  if value="$(previous_install_state_field providers.qobuz.upstream_source 2>/dev/null)"; then
+    [[ -n "$value" ]] && QBZD_UPSTREAM_SOURCE="$value"
+  fi
   [[ "$(previous_install_state_field providers.tidal.installed_by_fxroute 2>/dev/null || true)" == "true" ]] && TIDAL_INSTALLED_BY_FXROUTE=1
   if value="$(previous_install_state_field providers.tidal.installed_version 2>/dev/null)"; then
     [[ -n "$value" ]] && TIDAL_INSTALLED_VERSION="$value"
@@ -3204,10 +3334,12 @@ spotifyd_runtime_missing_libraries() {
 
 install_spotifyd_binary() {
   local release_arch=""
+  local release_json=""
+  local upstream_tag=""
+  local upstream_version=""
+  local installed_version=""
   local archive=""
   local archive_url=""
-  local checksum=""
-  local checksum_algorithm=""
   local work=""
   local extracted=""
   local existing_path=""
@@ -3234,6 +3366,7 @@ install_spotifyd_binary() {
         SPOTIFYD_INSTALLED_BY_FXROUTE=0
         SPOTIFYD_BINARY_PATH=""
         SPOTIFYD_BINARY_SHA256=""
+        SPOTIFYD_INSTALLED_VERSION=""
         pass "FXRoute-owned spotifyd binary is absent; reinstalling over stale ownership records"
       else
         SPOTIFYD_BINARY_IDENTITY_CHANGED=1
@@ -3242,6 +3375,11 @@ install_spotifyd_binary() {
       fi
     fi
   fi
+
+  # Resolve the current stable upstream release: install, reinstall
+  # and update all use this same source, and no version is pinned in this
+  # file. A newer upstream tag updates an FXRoute-owned binary in place;
+  # no uninstall is required.
   if [[ -n "$existing_path" ]]; then
     SPOTIFYD_PRESENT_BEFORE=1
     SPOTIFYD_BINARY_PATH="$existing_path"
@@ -3254,43 +3392,53 @@ install_spotifyd_binary() {
       if [[ -z "$SPOTIFYD_BINARY_SHA256" || "$current_sha256" != "$SPOTIFYD_BINARY_SHA256" ]]; then
         SPOTIFYD_BINARY_IDENTITY_CHANGED=1
         warn "FXRoute-owned spotifyd binary identity is unavailable or changed; preserving it and skipping provider setup"
+        return 0
       fi
     fi
     if [[ ! -x "$SPOTIFYD_BINARY_PATH" ]]; then
       warn "spotifyd path exists but is not executable; preserving it and skipping provider setup"
       return 0
     fi
-    pass "spotifyd binary already present; not reinstalling"
-    return 0
   fi
 
   release_arch="$(spotifyd_arch_for_host || true)"
   [[ -n "$release_arch" ]] || {
     SPOTIFYD_PROVIDER_STATUS="unsupported architecture"
-    warn "spotifyd v${SPOTIFYD_VERSION} has no confirmed binary for ${HOST_ARCH}; skipping"
+    warn "spotifyd has no upstream binary for ${HOST_ARCH}; skipping"
     return 0
   }
 
-  case "$release_arch" in
-    x86_64)
-      archive="spotifyd-linux-x86_64-full.tar.gz"
-      checksum="a5872771a22c0dc4f7cb409cc1e47b09262a4d9939e4e8829592846d2dc93b722254b1e154efecf28a9c2309df5701b6ae6aa7c4862b8a89b34bf851268057b7"
-      archive_url="https://github.com/Spotifyd/spotifyd/releases/download/v${SPOTIFYD_VERSION}/${archive}"
-      checksum_algorithm="sha512"
-      ;;
-    aarch64)
-      archive="$SPOTIFYD_ARM64_ARCHIVE"
-      checksum="$SPOTIFYD_ARM64_SHA256"
-      archive_url="$SPOTIFYD_ARM64_DOWNLOAD_URL"
-      checksum_algorithm="sha256"
-      ;;
-    armv7)
-      archive="spotifyd-linux-armv7-full.tar.gz"
-      checksum="befed77ab3ba5b688ad0c054890576010135a8ba007422385ee3a68763a7ae99a566e010fb29f75c429354245c600da8abc826de4a57ad616c7b2a05dcf8b9b8"
-      archive_url="https://github.com/Spotifyd/spotifyd/releases/download/v${SPOTIFYD_VERSION}/${archive}"
-      checksum_algorithm="sha512"
-      ;;
-  esac
+  if ! release_json="$(github_stable_release_json "$SPOTIFYD_UPSTREAM_REPO")"; then
+    SPOTIFYD_PROVIDER_STATUS="unavailable; upstream release metadata unreachable"
+    warn "spotifyd upstream version could not be determined; leaving the provider unchanged"
+    return 1
+  fi
+  upstream_tag="$(github_release_tag_name "$release_json" || true)"
+  if [[ -z "$upstream_tag" ]]; then
+    SPOTIFYD_PROVIDER_STATUS="unavailable; upstream release metadata unreachable"
+    warn "spotifyd upstream version could not be determined; leaving the provider unchanged"
+    return 1
+  fi
+  upstream_version="$(normalize_release_tag "$upstream_tag")"
+
+  if [[ -n "$existing_path" ]]; then
+    if [[ $SPOTIFYD_INSTALLED_BY_FXROUTE -eq 1 ]]; then
+      installed_version="$(provider_binary_version "$SPOTIFYD_BINARY_PATH")"
+      [[ -n "$installed_version" ]] || installed_version="$SPOTIFYD_INSTALLED_VERSION"
+      if [[ -n "$installed_version" && "$installed_version" == "$upstream_version" ]]; then
+        SPOTIFYD_INSTALLED_VERSION="$installed_version"
+        pass "spotifyd already up to date (${upstream_tag})"
+        return 0
+      fi
+      pass "spotifyd ${installed_version:-unknown version} present; updating to ${upstream_tag}"
+    else
+      pass "spotifyd binary already present; not reinstalling"
+      return 0
+    fi
+  fi
+
+  archive="spotifyd-linux-${release_arch}-full.tar.gz"
+  archive_url="https://github.com/${SPOTIFYD_UPSTREAM_REPO}/releases/download/${upstream_tag}/${archive}"
 
   work="$(mktemp -d -t fxroute-spotifyd.XXXXXX)"
   FXROUTE_ACTIVE_TEMP_DIR="$work"
@@ -3299,16 +3447,10 @@ install_spotifyd_binary() {
     warn "spotifyd archive could not be downloaded"
     return 1
   fi
-  if [[ "$checksum_algorithm" == "sha256" ]]; then
-    if ! printf '%s  %s\n' "$checksum" "$work/$archive" | sha256sum -c -; then
-      warn "spotifyd archive checksum mismatch"
-      return 1
-    fi
-  else
-    if ! printf '%s  %s\n' "$checksum" "$work/$archive" | sha512sum -c -; then
-      warn "spotifyd archive checksum mismatch"
-      return 1
-    fi
+  # Integrity is verified against the checksum sidecar published with the
+  # same upstream release (never a pinned hash in this file).
+  if ! verify_github_payload "$work" "$archive" "$archive_url" "$release_json" ".sha512"; then
+    return 1
   fi
   if ! run_cmd tar -xzf "$work/$archive" -C "$work"; then
     warn "spotifyd archive could not be extracted"
@@ -3338,11 +3480,13 @@ install_spotifyd_binary() {
   FXROUTE_ACTIVE_STAGED_BINARY=""
   SPOTIFYD_BINARY_PATH="$destination"
   SPOTIFYD_INSTALLED_BY_FXROUTE=1
+  SPOTIFYD_INSTALLED_VERSION="$upstream_version"
+  SPOTIFYD_BINARY_UPDATED=1
   SPOTIFYD_BINARY_SHA256="$(sha256sum "$SPOTIFYD_BINARY_PATH" | awk '{print $1}')"
   rm -rf "$work"
   FXROUTE_ACTIVE_TEMP_DIR=""
   trap - RETURN
-  pass "spotifyd v${SPOTIFYD_VERSION} installed (${release_arch}, full/MPRIS)"
+  pass "spotifyd ${upstream_tag} installed (${release_arch}, full/MPRIS)"
 }
 
 configure_spotifyd_service() {
@@ -3481,7 +3625,7 @@ install_spotifyd() {
     if [[ $service_disable_failed -eq 1 ]]; then
       SPOTIFYD_PROVIDER_STATUS+="; service disable failed"
     fi
-    warn "spotifyd cannot run on this host; missing runtime libraries: ${missing_runtime//$'\n'/, }. The pinned prebuilt stays unavailable."
+    warn "spotifyd cannot run on this host; missing runtime libraries: ${missing_runtime//$'\n'/, }. The upstream prebuilt stays unavailable."
     return 0
   fi
   write_spotifyd_config
@@ -3504,6 +3648,14 @@ install_spotifyd() {
       pass "spotifyd restarted with Connect name ${SPOTIFYD_CONNECT_NAME}"
     else
       warn "spotifyd Connect name updated but the service could not be restarted"
+    fi
+  fi
+  if [[ $was_present -eq 1 && $SPOTIFYD_BINARY_UPDATED -eq 1 ]] && user_unit_exists spotifyd.service \
+    && user_systemctl is-active --quiet spotifyd.service >/dev/null 2>&1; then
+    if user_systemctl restart spotifyd.service >/dev/null 2>&1; then
+      pass "spotifyd restarted on the updated binary"
+    else
+      warn "spotifyd binary updated but the service could not be restarted"
     fi
   fi
   if [[ $SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]]; then
@@ -3612,13 +3764,26 @@ qbzd_binary_path() {
 
 install_qbzd_binary() {
   local release_arch=""
-  local archive=""
-  local checksum=""
-  local archive_url=""
+  local asset_arch=""
+  local release_json=""
+  local qbzd_source=""
+  local candidate=""
+  local candidate_json=""
+  local candidate_tag=""
+  local upstream_tag=""
+  local upstream_version=""
+  local installed_version=""
+  local first_asset=""
+  local second_asset=""
+  local asset=""
+  local asset_url=""
   local work=""
+  local payload=""
   local extracted=""
   local current_sha256=""
   local existing_path=""
+  local destination="$HOME/.local/bin/qbzd"
+  local staged_binary=""
 
   existing_path="$(qbzd_binary_path || true)"
   if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 || $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]]; then
@@ -3636,6 +3801,8 @@ install_qbzd_binary() {
         QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
         QBZD_BINARY_PATH=""
         QBZD_BINARY_SHA256=""
+        QBZD_INSTALLED_VERSION=""
+        QBZD_UPSTREAM_SOURCE=""
         pass "FXRoute-owned qbzd binary is absent; reinstalling over stale ownership records"
       else
         QBZD_BINARY_IDENTITY_CHANGED=1
@@ -3644,6 +3811,11 @@ install_qbzd_binary() {
       fi
     fi
   fi
+
+  # Resolve the current stable upstream release: install, reinstall
+  # and update all use this same source, and no version is pinned in this
+  # file. A newer upstream tag updates an FXRoute-owned binary in place;
+  # no uninstall is required.
   if [[ -n "$existing_path" ]]; then
     QBZD_PRESENT_BEFORE=1
     QBZD_BINARY_PATH="$existing_path"
@@ -3657,6 +3829,7 @@ install_qbzd_binary() {
         if [[ -z "$QBZD_BINARY_SHA256" || "$current_sha256" != "$QBZD_BINARY_SHA256" ]]; then
           QBZD_BINARY_IDENTITY_CHANGED=1
           warn "FXRoute-owned qbzd binary identity is unavailable or changed; preserving it and skipping Qobuz provider setup"
+          return 0
         fi
       else
         QBZD_BINARY_SHA256="$current_sha256"
@@ -3666,59 +3839,137 @@ install_qbzd_binary() {
       warn "qbzd path exists but is not executable; preserving it and skipping provider setup"
       return 0
     fi
-    pass "qbzd binary already present; not reinstalling"
-    return 0
   fi
 
   release_arch="$(qbzd_arch_for_host || true)"
   [[ -n "$release_arch" ]] || {
     QOBUZ_PROVIDER_STATUS="unsupported architecture"
-    warn "qbzd v${QBZD_VERSION} has no confirmed binary for ${HOST_ARCH}; skipping"
+    warn "qbzd has no upstream binary for ${HOST_ARCH}; skipping"
     return 0
   }
-
   case "$release_arch" in
-    amd64)
-      archive="qbzd-${QBZD_VERSION}-linux-amd64.tar.gz"
-      checksum="6bcdb2616f339b7905fc58f48edf7e3bc2e0e9eadc1ce6235b60c7fdf34b804c"
-      ;;
-    aarch64)
-      archive="qbzd-${QBZD_VERSION}-linux-aarch64.tar.gz"
-      checksum="adade56509544c00187476d58acef78538d3e5d475370263d98397dc61f200c9"
-      ;;
+    amd64) asset_arch="amd64" ;;
+    aarch64) asset_arch="arm64" ;;
   esac
 
-  archive_url="https://github.com/vicrodh/qbz/releases/download/v${QBZD_VERSION}/${archive}"
+  # Resolve the current stable upstream release: the official source first,
+  # the compatible fork when the official source publishes no stable
+  # release. The "latest" API document excludes drafts and prereleases, so
+  # nightly builds are never selected. Install, reinstall and update all
+  # use this same mechanism, and no version is pinned in this file. A newer
+  # upstream tag updates an FXRoute-owned binary in place; no uninstall is
+  # required. When neither source is reachable the existing installation is
+  # left untouched.
+  for candidate in "$QBZD_UPSTREAM_REPO" "$QBZD_UPSTREAM_FALLBACK_REPO"; do
+    if candidate_json="$(github_stable_release_json "$candidate")"; then
+      candidate_tag="$(github_release_tag_name "$candidate_json" || true)"
+      if [[ -n "$candidate_tag" ]]; then
+        qbzd_source="$candidate"
+        release_json="$candidate_json"
+        upstream_tag="$candidate_tag"
+        break
+      fi
+    fi
+  done
+  if [[ -z "$qbzd_source" ]]; then
+    QOBUZ_PROVIDER_STATUS="unavailable; upstream release metadata unreachable"
+    warn "qbzd upstream version could not be determined; leaving the provider unchanged"
+    return 1
+  fi
+  upstream_version="$(normalize_release_tag "$upstream_tag")"
+
+  if [[ -n "$existing_path" ]]; then
+    if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 || $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]]; then
+      installed_version="$(provider_binary_version "$QBZD_BINARY_PATH")"
+      [[ -n "$installed_version" ]] || installed_version="$QBZD_INSTALLED_VERSION"
+      if [[ -n "$installed_version" ]] && ! provider_version_is_newer "$upstream_version" "$installed_version"; then
+        QBZD_INSTALLED_VERSION="$installed_version"
+        QBZD_UPSTREAM_SOURCE="$qbzd_source"
+        pass "qbzd already up to date (${upstream_tag})"
+        return 0
+      fi
+      pass "qbzd ${installed_version:-unknown version} present; updating to ${upstream_tag} (${qbzd_source})"
+    else
+      pass "qbzd binary already present; not reinstalling"
+      return 0
+    fi
+  fi
+
+  if [[ "$qbzd_source" == "$QBZD_UPSTREAM_REPO" ]]; then
+    # Official layout (e.g. qbzd-2.1.2-linux-amd64.tar.gz, tag v2.1.2).
+    first_asset="qbzd-${upstream_version}-linux-${release_arch}.tar.gz"
+    second_asset="qbzd-linux-${asset_arch}"
+  else
+    # Fork layout: raw per-arch binaries (plus a versioned-tarball fallback
+    # from the same resolved release).
+    first_asset="qbzd-linux-${asset_arch}"
+    second_asset="qbzd-${upstream_version}-linux-${release_arch}.tar.gz"
+  fi
+  asset="$first_asset"
+  asset_url="https://github.com/${qbzd_source}/releases/download/${upstream_tag}/${asset}"
   work="$(mktemp -d -t fxroute-qbzd.XXXXXX)"
   FXROUTE_ACTIVE_TEMP_DIR="$work"
-  trap 'rm -rf "${work:-}"' RETURN
-  if ! run_cmd curl -fL --retry 3 -o "$work/$archive" "$archive_url"; then
-    warn "qbzd archive could not be downloaded"
+  trap 'rm -rf "${work:-}" || true; [[ -z "${staged_binary:-}" ]] || run_as_target_user rm -f "$staged_binary" || true; FXROUTE_ACTIVE_STAGED_BINARY=""; FXROUTE_ACTIVE_TEMP_DIR=""; trap - RETURN' RETURN
+  payload="$work/$asset"
+  if ! run_cmd curl -fL --retry 3 -o "$payload" "$asset_url"; then
+    # Alternate layout from the same resolved release (asset names stay
+    # derived from the release tag, never pinned in this file).
+    asset="$second_asset"
+    asset_url="https://github.com/${qbzd_source}/releases/download/${upstream_tag}/${asset}"
+    payload="$work/$asset"
+    if ! run_cmd curl -fL --retry 3 -o "$payload" "$asset_url"; then
+      warn "qbzd payload could not be downloaded"
+      return 1
+    fi
+  fi
+  # Integrity is verified against the checksum sidecar or the API-reported
+  # digest of the same upstream release (never a pinned hash in this file).
+  if ! verify_github_payload "$work" "$asset" "$asset_url" "$release_json" ".sha256"; then
     return 1
   fi
-  if ! printf '%s  %s\n' "$checksum" "$work/$archive" | sha256sum -c -; then
-    warn "qbzd archive checksum mismatch"
-    return 1
-  fi
-  if ! run_cmd tar -xzf "$work/$archive" -C "$work"; then
-    warn "qbzd archive could not be extracted"
-    return 1
-  fi
-  extracted="$(find "$work" -type f -name qbzd -print -quit)"
-  if [[ -z "$extracted" ]]; then
-    warn "qbzd archive did not contain a binary"
-    return 1
-  fi
+  case "$asset" in
+    *.tar.gz)
+      if ! run_cmd tar -xzf "$payload" -C "$work"; then
+        warn "qbzd archive could not be extracted"
+        return 1
+      fi
+      extracted="$(find "$work" -type f -name qbzd -print -quit)"
+      if [[ -z "$extracted" ]]; then
+        warn "qbzd archive did not contain a binary"
+        return 1
+      fi
+      ;;
+    *)
+      extracted="$payload"
+      ;;
+  esac
   chmod -R a+rX "$work"
-  run_as_target_user mkdir -p "$HOME/.local/bin"
-  run_as_target_user install -m 755 "$extracted" "$HOME/.local/bin/qbzd"
-  QBZD_BINARY_PATH="$HOME/.local/bin/qbzd"
+  run_as_target_user mkdir -p "$(dirname -- "$destination")"
+  if ! staged_binary="$(run_as_target_user mktemp "$HOME/.local/bin/.qbzd.XXXXXX")"; then
+    warn "Could not stage $destination"
+    return 1
+  fi
+  FXROUTE_ACTIVE_STAGED_BINARY="$staged_binary"
+  if ! run_as_target_user install -m 755 "$extracted" "$staged_binary"; then
+    warn "Could not stage $destination"
+    return 1
+  fi
+  if ! run_as_target_user mv -f "$staged_binary" "$destination"; then
+    warn "Could not install $destination atomically"
+    return 1
+  fi
+  staged_binary=""
+  FXROUTE_ACTIVE_STAGED_BINARY=""
+  QBZD_BINARY_PATH="$destination"
   QBZD_INSTALLED_BY_FXROUTE=1
+  QBZD_INSTALLED_VERSION="$upstream_version"
+  QBZD_UPSTREAM_SOURCE="$qbzd_source"
+  QBZD_BINARY_UPDATED=1
   QBZD_BINARY_SHA256="$(sha256sum "$QBZD_BINARY_PATH" | awk '{print $1}')"
   rm -rf "$work"
   FXROUTE_ACTIVE_TEMP_DIR=""
   trap - RETURN
-  pass "qbzd v${QBZD_VERSION} installed (${release_arch})"
+  pass "qbzd ${upstream_tag} installed (${release_arch})"
 }
 
 read_qbzd_volume_mode() {
@@ -4015,6 +4266,14 @@ install_qobuz() {
     QOBUZ_PROVIDER_STATUS="owned service unavailable; preserved"
     return 0
   fi
+  if [[ $QBZD_PRESENT_BEFORE -eq 1 && $QBZD_BINARY_UPDATED -eq 1 ]] \
+    && user_systemctl is-active --quiet qbzd.service >/dev/null 2>&1; then
+    if user_systemctl restart qbzd.service >/dev/null 2>&1; then
+      pass "qbzd restarted on the updated binary"
+    else
+      warn "qbzd binary updated but the service could not be restarted"
+    fi
+  fi
   ensure_lan_firewall_service_open mdns "Qobuz Connect discovery"
   qbzd_path="$(qbzd_binary_path || true)"
   if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 || $QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]]; then
@@ -4128,21 +4387,30 @@ ensure_tidal_dependency() {
   fi
 
   TIDAL_DEPENDENCY_SELECTED=1
-  if [[ "$current_version" == "0.8.11" ]]; then
-    TIDAL_INSTALLED_VERSION="$current_version"
-    TIDAL_PROVIDER_STATUS="already present"
-    pass "TIDAL dependency already available (tidalapi $current_version)"
-    return 0
-  fi
-
   [[ -f "$INSTALL_ROOT/$TIDAL_REQUIREMENTS_FILE" ]] || die "Missing optional TIDAL requirements: $INSTALL_ROOT/$TIDAL_REQUIREMENTS_FILE"
+  # The requirements file carries no version pin: pip resolves the current
+  # stable tidalapi from PyPI (pre-releases are never selected), so install,
+  # reinstall and update all use the same current upstream source and no
+  # FXRoute code change is needed for a new tidalapi release.
   [[ -n "$current_version" ]] || TIDAL_INSTALLED_BY_FXROUTE=1
-  log "$INSTALL_ROOT/.venv/bin/pip install -r $INSTALL_ROOT/$TIDAL_REQUIREMENTS_FILE"
-  run_as_target_user "$INSTALL_ROOT/.venv/bin/pip" install -r "$INSTALL_ROOT/$TIDAL_REQUIREMENTS_FILE"
+  if ! run_as_target_user "$INSTALL_ROOT/.venv/bin/pip" install --upgrade -r "$INSTALL_ROOT/$TIDAL_REQUIREMENTS_FILE"; then
+    if [[ -n "$current_version" ]]; then
+      TIDAL_INSTALLED_VERSION="$current_version"
+      TIDAL_PROVIDER_STATUS="already present; update check failed"
+      warn "TIDAL dependency could not be updated; keeping tidalapi $current_version"
+      return 0
+    fi
+    die "TIDAL dependency installation failed"
+  fi
   run_as_target_user tee "$marker" >/dev/null <<<"$(sha256sum "$INSTALL_ROOT/$TIDAL_REQUIREMENTS_FILE" | awk '{print $1}')"
   TIDAL_INSTALLED_VERSION="$(tidalapi_version || true)"
-  TIDAL_PROVIDER_STATUS="installed by FXRoute"
-  pass "TIDAL dependency installed (PKCE flow remains in FXRoute)"
+  if [[ -n "$current_version" && "$TIDAL_INSTALLED_VERSION" != "$current_version" ]]; then
+    TIDAL_PROVIDER_STATUS="updated by FXRoute"
+    pass "TIDAL dependency updated (tidalapi $current_version -> $TIDAL_INSTALLED_VERSION)"
+  else
+    TIDAL_PROVIDER_STATUS="installed by FXRoute"
+    pass "TIDAL dependency installed (tidalapi ${TIDAL_INSTALLED_VERSION:-unknown}; PKCE flow remains in FXRoute)"
+  fi
 }
 
 write_service_unit() {
@@ -4590,6 +4858,7 @@ write_install_state() {
       "selected": $( [[ $SELECT_SPOTIFYD -eq 1 ]] && echo true || echo false ),
       "present_before": $( [[ $SPOTIFYD_PRESENT_BEFORE -eq 1 ]] && echo true || echo false ),
       "installed_by_fxroute": $( [[ $SPOTIFYD_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+      "installed_version": "${SPOTIFYD_INSTALLED_VERSION}",
       "service_installed_by_fxroute": $( [[ $SPOTIFYD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
       "config_installed_by_fxroute": $( [[ $SPOTIFYD_CONFIG_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
       "binary_path": "${SPOTIFYD_BINARY_PATH}",
@@ -4603,6 +4872,8 @@ write_install_state() {
       "selected": $( [[ $SELECT_QOBUZ -eq 1 ]] && echo true || echo false ),
       "present_before": $( [[ $QBZD_PRESENT_BEFORE -eq 1 ]] && echo true || echo false ),
       "installed_by_fxroute": $( [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+      "installed_version": "${QBZD_INSTALLED_VERSION}",
+      "upstream_source": "${QBZD_UPSTREAM_SOURCE}",
       "service_installed_by_fxroute": $( [[ $QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
       "binary_path": "${QBZD_BINARY_PATH}",
       "binary_sha256": "${QBZD_BINARY_SHA256}",

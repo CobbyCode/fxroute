@@ -38,6 +38,12 @@ def extract_function(text: str, name: str) -> str:
 INSTALL_TEXT = INSTALL_SH.read_text()
 ARCH_HELPER = extract_function(INSTALL_TEXT, "qbzd_arch_for_host")
 PATH_HELPER = extract_function(INSTALL_TEXT, "qbzd_binary_path")
+TAG_HELPER = extract_function(INSTALL_TEXT, "github_release_tag_name")
+DIGEST_HELPER = extract_function(INSTALL_TEXT, "github_release_asset_digest")
+NORMALIZE_HELPER = extract_function(INSTALL_TEXT, "normalize_release_tag")
+VERIFY_HELPER = extract_function(INSTALL_TEXT, "verify_github_payload")
+VERSION_HELPER = extract_function(INSTALL_TEXT, "provider_binary_version")
+NEWER_HELPER = extract_function(INSTALL_TEXT, "provider_version_is_newer")
 INSTALL_QBZD = extract_function(INSTALL_TEXT, "install_qbzd_binary")
 
 
@@ -45,11 +51,15 @@ def run_harness(*, fixture_mode: str, work: Path) -> subprocess.CompletedProcess
     """Run install_qbzd_binary in a subshell; return the harness result.
 
     fixture_mode selects the stubbed failure:
-    - "checksum-mismatch": real download + real sha256sum (mismatches the
-      hardcoded checksum), i.e. a tampered archive;
+    - "checksum-mismatch": real download, sidecar check fails on the
+      fixture content, i.e. a tampered archive;
     - "curl-fails": the curl stub fails, i.e. no network / 404;
     - "missing-binary": sha256sum is stubbed to pass so the extract runs,
       but the archive contains no qbzd file.
+
+    Upstream resolution is stubbed to a fixed stable tag (no network):
+    the payload download, checksum and extract stages under test are
+    unchanged.
     """
     fixture_archive = work / "fixture.tar.gz"
     if fixture_mode == "missing-binary":
@@ -76,6 +86,15 @@ def run_harness(*, fixture_mode: str, work: Path) -> subprocess.CompletedProcess
 set -Eeuo pipefail
 {ARCH_HELPER}
 {PATH_HELPER}
+{TAG_HELPER}
+{DIGEST_HELPER}
+{NORMALIZE_HELPER}
+{VERIFY_HELPER}
+{VERSION_HELPER}
+{NEWER_HELPER}
+github_stable_release_json() {{
+  printf '%s' '{{"tag_name": "v1.2.3", "assets": []}}'
+}}
 {INSTALL_QBZD}
 run_cmd() {{
   if [[ "${{1:-}}" == "curl" ]]; then
@@ -101,7 +120,8 @@ fi
 export PATH="{bin_dir}:$PATH"
 HOME={target_home}
 HOST_ARCH=x86_64
-QBZD_VERSION=1.2.3
+QBZD_UPSTREAM_REPO="vicrodh/qbz"
+QBZD_UPSTREAM_FALLBACK_REPO="yet-another-quentin/qbzd"
 CURL_FAIL={ "1" if fixture_mode == "curl-fails" else "0" }
 FIXTURE_ARCH={fixture_archive}
 QBZD_INSTALLED_BY_FXROUTE=0
@@ -109,6 +129,8 @@ QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
 QBZD_BINARY_PATH=''
 QBZD_BINARY_SHA256=''
 QBZD_BINARY_IDENTITY_CHANGED=0
+QBZD_INSTALLED_VERSION=''
+QBZD_UPSTREAM_SOURCE=''
 QBZD_PRESENT_BEFORE=0
 QOBUZ_PROVIDER_STATUS=''
 ( install_qbzd_binary ) || rc=$?

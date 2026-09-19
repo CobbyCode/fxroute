@@ -2446,7 +2446,7 @@ async function runProviderInstall(providerId) {
         const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/install`, { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Installation failed');
-        renderProviderOperation(providerId, data.installed ? 'Provider installed.' : 'Install finished.', data.log || '');
+        renderProviderOperation(providerId, data.installed ? 'Provider installed/updated.' : 'Install finished.', data.log || '');
         // A Settings uninstall disables the provider; a reinstall must activate
         // it again exactly like the first install, or its checkbox and tab stay off.
         const provider = state.settings.providers.list.find((p) => p.id === providerId);
@@ -2801,25 +2801,28 @@ function providerAdminButtonHtml(provider) {
     if (provider.installed) {
         // Account providers (TIDAL, Qobuz) show exactly one auth action for
         // their real state: Disconnect while connected, Connect otherwise.
-        // Uninstall is only offered while disconnected. spotifyd has no
-        // account login (Spotify Connect pairs from the Spotify app).
+        // Uninstall is only offered while disconnected. Order is Update
+        // first, Connect/Disconnect last, so a line wrap pushes the auth
+        // action down while Update and Uninstall keep their position.
+        // spotifyd has no account login (Spotify Connect pairs from the
+        // Spotify app).
         if (provider.id === 'tidal') {
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
             if (connected) {
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
             } else {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
             }
         } else if (provider.id === 'qobuz') {
-            if (connected) {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
-            } else {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
+            if (!connected) {
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
             }
             // Restart is recovery, not a primary action: it makes qbzd
             // re-read a (restored) credential file without SSH and acts as
             // Start on an inactive unit. Only show it while qbzd is down.
+            // It stays before the auth action so Connect/Disconnect is last.
             if (!provider.available) {
                 // Binary present but daemon never set up (manually placed
                 // binary or interrupted install): route through the regular
@@ -2830,6 +2833,11 @@ function providerAdminButtonHtml(provider) {
                 buttons.push(`<button type="button" class="btn-primary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>Complete setup…</button>`);
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-service="restart" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Restart</button>`);
             }
+            if (connected) {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
+            } else {
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
+            }
         } else if (provider.id !== 'spotify') {
             const label = provider.available ? 'Restart' : 'Start';
             buttons.push(`<button type="button" class="btn-secondary" data-provider-service="start" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>${label}</button>`);
@@ -2838,6 +2846,7 @@ function providerAdminButtonHtml(provider) {
             }
             buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
         } else {
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
             buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
         }
     } else if (provider.implemented !== false) {
