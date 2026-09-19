@@ -4090,8 +4090,13 @@ def _freeze_measurement_target(bank_id: str, sample_rate_hz: int) -> dict:
     output_key, channels = _output_state_device(overview)
     channel_count = int(channels or 0)
     topology = _output_state_topology(state, state["active_mode"], output_key, channel_count)
-    bank = str(bank_id or "").strip() or selected_bank(state["modes"][state["active_mode"]], topology["roles"])
-    bank = resolve_bank(state["modes"][state["active_mode"]], bank, topology["roles"])["id"]
+    raw_bank = str(bank_id or "").strip() or selected_bank(state["modes"][state["active_mode"]], topology["roles"])
+    # A single actively routed way keeps its own target so per-way captures
+    # isolate exactly that way; area ids still resolve to their owning bank.
+    if raw_bank in topology["roles"]:
+        bank = raw_bank
+    else:
+        bank = resolve_bank(state["modes"][state["active_mode"]], raw_bank, topology["roles"])["id"]
     fingerprint = service.fingerprint(state, output_key=output_key, channels=channel_count,
                                       sample_rate_hz=sample_rate_hz)
     return freeze_measurement_target(
