@@ -4737,20 +4737,17 @@ select.url-input {
 }
 
 .measurement-workflow-speaker-buttons {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+    display: flex;
+    flex-wrap: wrap;
     gap: 0.55rem;
     min-width: 0;
 }
 
 .measurement-workflow-speaker-buttons .btn-secondary {
-    width: 100%;
+    width: 190px;
     min-width: 0;
-    min-height: 42px;
-}
-
-.measurement-workflow-speaker-cancel {
-    grid-column: 1 / -1;
+    max-width: 100%;
+    min-height: 44px;
 }
 
 #measurement-sweep-start,

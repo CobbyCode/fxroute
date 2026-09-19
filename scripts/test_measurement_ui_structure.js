@@ -70,6 +70,8 @@ assert.doesNotMatch(flows, /measurementSpeakerAlignSequence/);
 assert.doesNotMatch(flows, /then repeat to verify/);
 assert.match(flows, /Aligns each way of the selected speaker with the microphone fixed\./);
 assert.match(measurementCss, /\.measurement-workflow-speaker-buttons/);
+assert.match(measurementCss, /\.measurement-workflow-speaker-buttons[\s\S]*?width:\s*190px/);
+assert.doesNotMatch(index, /measurement-workflow-speaker-cancel/);
 assert.ok(index.indexOf('id="measurement-repeat-start"') > index.indexOf('id="measurement-sweep-menu"'));
 assert.ok(index.indexOf('id="measurement-hybrid-open"') > index.indexOf('id="measurement-sweep-menu"'));
 assert.doesNotMatch(index, /subwoofer alignment/i);
