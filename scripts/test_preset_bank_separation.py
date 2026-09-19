@@ -117,6 +117,19 @@ class PresetBankSeparationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "belongs to bank"):
             self.service.validate_bank_preset(state, "stereo-sub", "global", "MainCorr")
 
+    def test_legacy_presets_migrate_to_global_once(self):
+        self.manager.preset_store.write("OldStock", {"schema": DSPManager.PRESET_SCHEMA,
+                                                     "version": DSPManager.PRESET_VERSION,
+                                                     "chain": [], "metadata": {}})
+        self.manager.preset_store.write("LowKeep", {"schema": DSPManager.PRESET_SCHEMA,
+                                                    "version": DSPManager.PRESET_VERSION,
+                                                    "chain": [], "metadata": {"bank": "low"}})
+        fresh = DSPManager(home=self.home)
+        self.assertEqual(fresh.preset_bank("OldStock"), "global")
+        self.assertEqual(fresh.preset_bank("LowKeep"), "low")
+        self.assertIsNone(fresh.preset_bank("Direct"))
+        self.assertIsNone(fresh.preset_bank("Neutral"))
+
     def test_builtin_and_legacy_assignable_everywhere(self):
         self.manager.create_peq_preset("UntaggedY", PEQ)
         state = self.service.load()

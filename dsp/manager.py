@@ -426,7 +426,7 @@ class DSPManager:
 
     @staticmethod
     def _normalize_bank_arg(bank: Any) -> Optional[str]:
-        """Owning bank for a new preset; None keeps legacy shared visibility."""
+        """Owning bank for a new preset; None leaves the stored tag untouched."""
         if bank is None:
             return None
         if isinstance(bank, str) and not bank.strip():
@@ -470,10 +470,37 @@ class DSPManager:
             path = self.output_dir / f"{name}.json"
             if not path.exists():
                 self.preset_store.write(name, payload)
+        self._migrate_legacy_preset_banks()
         active = self.state_store.read("active.json", {})
         if not isinstance(active, dict) or active.get("preset") not in {p["name"] for p in self.preset_store.list()}:
             self.state_store.write("active.json", {"schema": "fxroute.dsp.active", "version": 1,
                                                    "preset": "Neutral"})
+
+    def _migrate_legacy_preset_banks(self) -> None:
+        """Tag once untagged presets as Global, where they historically lived.
+
+        Before per-bank ownership the preset library was shared with Global
+        as the default surface, so a file without a bank tag is a former
+        global preset. Built-ins stay universal and tagged files are left
+        untouched; the rewrite is idempotent.
+        """
+        if not self.output_dir.exists():
+            return
+        for path in sorted(self.output_dir.glob("*.json")):
+            if path.stem in self.PROTECTED_PRESETS:
+                continue
+            try:
+                payload = self.preset_store.read(path.stem)
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                logger.warning("Legacy bank migration skipped %s: %s", path.name, exc)
+                continue
+            if preset_bank(payload) is not None:
+                continue
+            payload["metadata"] = {**(payload.get("metadata") or {}), "bank": "global"}
+            try:
+                self.preset_store.write(path.stem, payload)
+            except ValueError as exc:
+                logger.warning("Legacy bank migration failed for %s: %s", path.name, exc)
 
     def list_presets(self) -> List[dict]:
         return self.preset_store.list(("Direct", "Neutral"))

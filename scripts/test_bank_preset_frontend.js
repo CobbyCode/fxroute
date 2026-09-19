@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
-// Strict per-bank preset picker: each bank lists only its own presets
-// (plus built-ins and untagged legacy); All Banks lists none.
+// Strict per-bank preset picker: each bank lists exclusively its own
+// presets (plus built-ins); untagged legacy reads as Global stock, where it
+// historically lived. All Banks lists none (joint A/B switching only).
 const assert = require('node:assert/strict');
 const ui = require('../static/output_state.js');
 
@@ -17,13 +18,19 @@ const presets = [
 ];
 
 assert.deepEqual(ui.presetsForBank(presets, 'low').map(p => p.name),
-    ['Direct', 'Neutral', 'LowCorr', 'LegacyX', 'LegacyNull']);
+    ['Direct', 'Neutral', 'LowCorr']);
 assert.deepEqual(ui.presetsForBank(presets, 'high').map(p => p.name),
-    ['Direct', 'Neutral', 'HighCorr', 'LegacyX', 'LegacyNull']);
+    ['Direct', 'Neutral', 'HighCorr']);
 assert.deepEqual(ui.presetsForBank(presets, 'global').map(p => p.name),
     ['Direct', 'Neutral', 'GlobCorr', 'LegacyX', 'LegacyNull']);
 assert.deepEqual(ui.presetsForBank(presets, 'main').map(p => p.name),
-    ['Direct', 'Neutral', 'MainCorr', 'LegacyX', 'LegacyNull']);
+    ['Direct', 'Neutral', 'MainCorr']);
+// No foreign presets leak into another bank's dropdown.
+for (const bankId of ['low', 'high', 'main']) {
+    const names = ui.presetsForBank(presets, bankId).map(p => p.name);
+    assert.ok(!names.includes('GlobCorr'), `${bankId} must not list Global presets`);
+    assert.ok(!names.includes('LegacyX'), `${bankId} must not list legacy stock`);
+}
 // All Banks owns no presets: joint A/B switching only.
 assert.deepEqual(ui.presetsForBank(presets, 'all'), []);
 assert.deepEqual(ui.presetsForBank(presets, ''), []);

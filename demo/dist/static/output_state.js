@@ -200,9 +200,10 @@ function presetsForBank(presets, bankId) {
         const name = typeof entry === 'string' ? entry : entry?.name;
         if (isBuiltinBankPreset(name)) return true;
         const tag = presetBank(entry);
-        // Legacy files without a tag stay visible everywhere; bank-tagged
-        // files only in their owning bank (Global included).
-        return !tag || tag === wanted;
+        // Untagged legacy files were historically global presets (the
+        // backend migrates them to Global once); show them in Global only.
+        // Bank-tagged files appear exclusively in their owning bank.
+        return tag ? tag === wanted : wanted === 'global';
     });
 }
 

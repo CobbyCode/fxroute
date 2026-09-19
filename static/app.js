@@ -3727,33 +3727,10 @@ function visiblePresetEntriesForBank() {
     const catalog = (state.outputSystem || {}).catalog;
     if (!catalog || !mod || typeof mod.presetsForBank !== 'function') return entries.slice();
     const bankId = catalog.modes?.[catalog.active_mode]?.selected_bank || 'global';
-    if (bankId === 'all') return [];
-    const filtered = mod.presetsForBank(entries, bankId);
-    const keep = new Set(filtered.map((entry) => entry?.name));
-    // Keep assigned A/B/active visible even for legacy cross-bank
-    // assignments so the current selection never vanishes from the picker.
-    const compare = typeof mod.compareState === 'function' ? mod.compareState(catalog) : null;
-    const assigned = [];
-    if (compare) {
-        if (compare.presetA) assigned.push(compare.presetA);
-        if (compare.presetB) assigned.push(compare.presetB);
-        if (compare.activePreset) assigned.push(compare.activePreset);
-    }
-    const draft = state.dsp?.combineDraft || {};
-    for (const name of [draft.preset1, draft.preset2, draft.preset3]) {
-        if (name) assigned.push(name);
-    }
-    if (!assigned.length) return filtered;
-    const byName = new Map(entries.map((entry) => [entry?.name, entry]));
-    for (const name of assigned) {
-        if (!keep.has(name) && byName.has(name)) {
-            filtered.push(byName.get(name));
-            keep.add(name);
-        }
-    }
-    const order = new Map(entries.map((entry, index) => [entry?.name, index]));
-    filtered.sort((a, b) => (order.get(a?.name) ?? 0) - (order.get(b?.name) ?? 0));
-    return filtered;
+    // Strict per-bank stock: only the bank's own presets (plus built-ins;
+    // untagged legacy reads as Global). No foreign presets are merged in,
+    // so switching banks can never leak another bank's stock.
+    return mod.presetsForBank(entries, bankId);
 }
 
 function visiblePresetNamesForBank() {
@@ -14362,7 +14339,7 @@ function renderEffectsCompare() {
     const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate } = getEffectsCompareState();
 
     if (!elements.effectsCompareRow) return;
-    if (presets.length === 0) {
+    if (!aggregate && presets.length === 0) {
         elements.effectsCompareRow.style.display = 'none';
         syncBankActionButtons();
         return;
@@ -14371,14 +14348,29 @@ function renderEffectsCompare() {
 
     // Rebuilding <option> lists on every WS push closes an open dropdown.
     // Only touch the DOM when the values actually changed.
-    const optionsA = aggregate ? '<option>Per-bank A presets</option>' :
-        (!presetA ? '<option value="">Per-channel presets</option>' : '') + presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
+    // All Banks owns no presets: both selects list every configured area
+    // bank's respective A/B slot (read-only, the selects stay disabled),
+    // so the joint-switch tile is never empty.
+    const aggregateBanks = aggregate ? (() => {
+        const modeConfig = (state.outputSystem?.catalog?.modes || {})[state.outputSystem?.catalog?.active_mode] || {};
+        return Object.entries(modeConfig.banks || {}).filter(([id]) => id !== 'global');
+    })() : [];
+    const aggregateLabel = (id, bank) => bank?.label || outputSystemModule()?.roleLabel?.(id) || id;
+    const optionsA = aggregate
+        ? (aggregateBanks.map(([id, bank]) =>
+            `<option value="${escapeHtml(id)}:A">A · ${escapeHtml(aggregateLabel(id, bank))} · ${escapeHtml(bank?.preset_a || '—')}</option>`).join('')
+            || '<option>No area banks</option>')
+        : (!presetA ? '<option value="">Per-channel presets</option>' : '') + presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
     if (elements.effectsCompareA.innerHTML !== optionsA) {
         elements.effectsCompareA.innerHTML = optionsA;
     }
-    const optionsB = aggregate ? '<option>Per-bank B presets</option>' : [`<option value="" ${!presetB ? 'selected' : ''}>${!presetB && getEffectsCompareState().canB ? 'Per-channel presets' : 'Select preset…'}</option>`].concat(
-        presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetB ? 'selected' : ''}>${escapeHtml(n)}</option>`)
-    ).join('');
+    const optionsB = aggregate
+        ? (aggregateBanks.map(([id, bank]) =>
+            `<option value="${escapeHtml(id)}:B">B · ${escapeHtml(aggregateLabel(id, bank))} · ${escapeHtml(bank?.preset_b || '—')}</option>`).join('')
+            || '<option>No area banks</option>')
+        : [`<option value="" ${!presetB ? 'selected' : ''}>${!presetB && getEffectsCompareState().canB ? 'Per-channel presets' : 'Select preset…'}</option>`].concat(
+            presets.map(n => `<option value="${escapeHtml(n)}" ${n === presetB ? 'selected' : ''}>${escapeHtml(n)}</option>`)
+        ).join('');
     if (elements.effectsCompareB.innerHTML !== optionsB) {
         elements.effectsCompareB.innerHTML = optionsB;
     }
