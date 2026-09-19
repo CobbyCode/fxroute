@@ -1,7 +1,9 @@
 # FXRoute Ubuntu 26.04 — Phase-2-Hardware-Testplan
 
-Ziel: den in QEMU voll abgenommenen Port (Commit-Stand `013d8e7`, Produkt-ISO
-`dist/fxroute-ubuntu-26.04-x86_64.iso`) auf echter Hardware zu verifizieren.
+Ziel: den in QEMU voll abgenommenen Port (Produkt-ISO
+`dist/fxroute-ubuntu-26.04-product.iso`, Menü: `Try FXRoute Live` /
+`Install FXRoute Desktop` / `Install FXRoute Headless`) auf echter Hardware
+zu verifizieren.
 Die vier Blöcke bauen aufeinander auf; Abbruch bei einem Block bedeutet Stopp und
 Log-Mitnahme. Alle softwareseitigen Checks übernimmt der Agent per SSH nach
 Absprache; hier stehen die manuellen Schritte + Erwartungen.
@@ -10,7 +12,7 @@ Vorbereitung einmalig:
 
 * Ziel-PC: UEFI-Modus (kein CSM), Secure Boot im Setup **aktiviert** lassen.
 * USB-Stick mit dem Produkt-ISO beschrieben (z. B.
-  `sudo dd if=fxroute-ubuntu-26.04-x86_64.iso of=/dev/sdX bs=4M oflag=direct status=progress`; mindestens so groß wie das ISO).
+  `sudo dd if=fxroute-ubuntu-26.04-product.iso of=/dev/sdX bs=4M oflag=direct status=progress`; mindestens so groß wie das ISO).
 * Ethernet optional verbunden (nicht erforderlich — WLAN wird im Installer
   konfiguriert), Scarlett per USB angeschlossen, Lautsprecher/Monitor am
   Hauptausgang.
@@ -22,7 +24,7 @@ Vorbereitung einmalig:
 1. ISO/Stick im UEFI-Boot-Menü wählen; es muss der Shim lädt (kein MOK-
    Enroll-Screen, keine "Security Violation").
 2. GRUB → `Try FXRoute Live` startet normal (Secure Boot an).
-3. GRUB → `Install FXRoute` → Installation durchlaufen lassen.
+3. GRUB → `Install FXRoute Desktop` (oder Headless) → Installation durchlaufen lassen.
 4. Installiertes System bootet mit Secure Boot an (kein MOK, kein
    "Verification failed").
 
@@ -39,7 +41,7 @@ meldet "SecureBoot enabled"; kein eigener Kernel/MOK nötig war.
 
 ## Block B — WLAN: einmal im Installer, danach automatisch
 
-1. Im Installer (`Install FXRoute`, Subiquity-Netzwerkseite) das Ziel-WLAN
+1. Im Installer (`Install FXRoute Desktop`/`Headless`, Subiquity-Netzwerkseite) das Ziel-WLAN
    auswählen, Passwort eingeben, **weiter** (kein anderer Netzwerkschritt).
 2. Installation abschließen, Stick entfernen, Neustart lassen.
 

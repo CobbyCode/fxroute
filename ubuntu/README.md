@@ -13,16 +13,16 @@ kein Push/Release aus diesem Worktree ohne explizite Anforderung.
   Werkzeug für diesen Zweck. Kein eigener ISO-Bau, kein mkmedia, kein
   Fremd-Tool wie Cubic. Begründung: offiziell vorgesehen, arbeitet direkt auf
   dem signierten Original-ISO (Secure-Boot-Kette aus Shim/signed Kernel bleibt
-  unangetastet), Aktionen (`--install-packages`, `--cp`,
-  `--add-autoinstall-config`) decken genau unseren Bedarf ab.
+  unangetastet), Aktionen (`--python`, `--cp`, eigene No-Recommends-
+  Paketinstallation) decken genau unseren Bedarf ab.
 * **Installer:** Subiquity/Autoinstall mit `subiquity.autoinstallpath`
   (absolut: `/cdrom/fxroute-seed/<profil>.yaml` — Subiquity resolving den
   Pfad relativ zu seinem CWD, dem Live-User-Home, daher absolut) auf zwei
   eigenen GRUB-Einträgen `Install FXRoute Desktop` / `Install FXRoute
-  Headless`, jeweils mit `autoinstall`. Der normale `Try or Install
-  Ubuntu`-Eintrag bleibt Default und unverändert und ohne Seed-Zugang
-  (kein `autoinstall.yaml` im ISO-Root, keine cloud-init-Datasource):
-  normales Ubuntu-Live-/Installer-Modell.
+  Headless`, jeweils mit `autoinstall`. Der Eintrag `Try FXRoute Live`
+  (gleiche Live-Session wie Stock-Ubuntu plus FXRoute-Autostart) bleibt
+  Default und ohne Seed-Zugang (kein `autoinstall.yaml` im ISO-Root, keine
+  cloud-init-Datasource): normales Ubuntu-Live-/Installer-Modell.
 * **Interaktiv bleiben:** Keyboard, Netzwerk (WLAN einmalig im Installer)
   und Identity (Benutzer/Hostname/Passwort) via `interactive-sections` in
   **beiden** Profilen. Ubuntu-typische Abfrage, keine eigenen Dialoge.
@@ -32,9 +32,15 @@ kein Push/Release aus diesem Worktree ohne explizite Anforderung.
   `late-commands` installiert) entpackt `source.tar`, ruft `install.sh` mit
   denselben Flags wie der Leap-Pfad und richtet den Desktop-Stack (GDM-
   Autologin, Firefox-Kiosk, GNOME-Energiesparren aus) ein.
-* **Live (`Try`):** Casper-Live-Session; FXRoute-Abhängigkeiten sind per
-  `--install-packages` bereits im Squashfs, ein Autostart läuft `install.sh`
-  in der RAM-Session und öffnet den Firefox-Kiosk. Live- und Install-Root
+* **Live (`Try FXRoute Live`):** Casper-Live-Session; FXRoute-Abhängigkeiten
+  sind ohne Recommends bereits im Squashfs, ein Autostart läuft `install.sh`
+  in der RAM-Session (erst nach Netz und apt-Lock, `apt-get update` mit
+  Retry) und öffnet den Firefox-Kiosk. **Der Start bis zur FXRoute-Oberfläche
+  kann deutlich länger dauern (DSP-Engine wird in der RAM-Session
+  kompiliert); das ist bekannt und kein Fehler, solange das System danach
+  normal startet.** Scheitert der Start, liegt ein Hinweis auf dem Desktop
+  und es öffnet sich kein toter Kiosk; ein `FXRoute`-Icon auf dem Desktop
+  startet den Kiosk neu (nötig z. B. nach Alt+F4). Live- und Install-Root
   sind bewusst nicht identisch.
 * **Headless-Ziel (Install FXRoute Headless):** dasselbe
   `ubuntu-desktop-minimal`-Setup, aber der Curtin-Late-Command
@@ -51,10 +57,13 @@ kein Push/Release aus diesem Worktree ohne explizite Anforderung.
 Unverändert übernommen (kein Ubuntu-Bedarf zur Änderung):
 
 * `install.sh` — erkennt `apt` per Capability-Probe, alle Paketlisten haben
-  einen `apt`-Zweig. Verifiziert auf Ubuntu 26.04 (resolute, QEMU-VM):
-  sämtliche `apt`-Paketnamen lösen auf, PipeWire ist 1.6.2 (≥ 1.4.9,
-  kein Backport nötig), `caddy` 2.6.2 liegt in den Standard-Repos,
-  Firefox ist der stock Snap. **Keine `install.sh`-Änderung nötig.**
+  einen `apt`-Zweig. Verifiziert auf Ubuntu 26.04 (resolute, QEMU-VM und
+  echte Hardware): sämtliche `apt`-Paketnamen lösen auf, PipeWire ist 1.6.2
+  (≥ 1.4.9, kein Backport nötig), `caddy` 2.6.2 liegt in den Standard-Repos,
+  Firefox ist der stock Snap. Provider kommen per Evergreen-Logik (aktuelle
+  stabile Upstream-Releases: Spotifyd, TIDAL-`tidalapi` per PyPI, Qobuz per
+  offiziellem Upstream mit Fork-Fallback; Stand 09/2026 ist das offizielle
+  Qobuz-Repo in Maintenance und Qobuz daher nicht installierbar).
 * Gesamte FXRoute-Anwendung: DSP, Routing, Provider, Measurement, Library.
 * `fxroute.service` (User-Unit), `source.tar`/`build-commit`-Muster,
   Geräte-Namensableitung (`fxroute-<machine-id>`), SSH-Defaults-Idee.
@@ -65,7 +74,7 @@ Ubuntu-spezifisch neu (Leap-/Agama-Teile, keine Wiederverwendung möglich):
 |---|---|
 | `build-leap-16-iso.sh` (mkmedia) | `build-ubuntu-iso.sh` (livefs-edit) |
 | `profiles/*.jsonnet` (Agama) | `autoinstall/user-data` (Subiquity) |
-| `build-live-from-installed.sh` (dmsquash-LiveFX) | Deps per `--install-packages` im Casper-Squashfs |
+| `build-live-from-installed.sh` (dmsquash-LiveFX) | Deps per eigener No-Recommends-Action im Casper-Squashfs |
 | `live-boot-options.txt` (`rd.live.*`) | kein Ersatz nötig (Casper-Default) |
 | `first-boot-install.sh` (rpm/SDDM/Plasma) | `scripts/first-boot-install-ubuntu.sh` (apt/GDM/GNOME, Firefox-Snap) |
 | `fxroute-live-init.sh` (dracut-Umgebung) | `scripts/fxroute-live-autostart.sh` (Casper-Autostart) |
@@ -83,14 +92,15 @@ ubuntu/
   test_desktop_defaults.py   Unit-Test: dconf-Profil/Keyfile aus first-boot
   autoinstall/
     user-data                Subiquity-Autoinstall (en_US/us, Rest Standard)
-    user-data.test           Test-Seed (QEMU only: autologin test/test)
-    meta-data                 cloud-init NoCloud meta-data (instance-id)
-    99-fxroute-seed.cfg      Seed-Zeiger (seedfrom) für die Live-Session
+    user-data.test           Test-Seed-Overrides (QEMU only: autologin test/test)
     first-boot.service       Oneshot-Unit fürs installierte System
     fxroute-live.desktop     Autostart-Eintrag der Live-Session
+    fxroute-test-ssh.service QEMU-SSH-Hook als Unit (nur Test-Seed)
+  generate-seeds.py          Rendert fxroute-seed/{desktop,headless}.yaml
   livefs-actions/            livefs-edit --python-Aktionen
   scripts/
     first-boot-install-ubuntu.sh
+    prepare-headless-target.sh
     fxroute-live-autostart.sh
     fxroute-ubuntu-launcher.sh
     fxroute-test-ssh.sh      QEMU-SSH-Hook (nur Test-Seed)
