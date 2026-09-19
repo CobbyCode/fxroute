@@ -166,6 +166,7 @@ let state = {
         activeWay: null,
         response: null,
         busy: false,
+        linkLR: true,
     },
     dsp: {
         available: false,
@@ -502,8 +503,7 @@ const elements = {
     effectsCrossoverLevel: document.getElementById('effects-crossover-level'),
     effectsCrossoverDelay: document.getElementById('effects-crossover-delay'),
     effectsCrossoverPolarity: document.getElementById('effects-crossover-polarity'),
-    effectsCrossoverStarter: document.getElementById('effects-crossover-starter'),
-    effectsCrossoverStarterHint: document.getElementById('effects-crossover-starter-hint'),
+    effectsCrossoverLink: document.getElementById('effects-crossover-link'),
     effectsCrossoverFeedback: document.getElementById('effects-crossover-feedback'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
@@ -1575,7 +1575,9 @@ function setupSettingsActions() {
         elements.settingsOutputModeSelect.addEventListener('change', (event) => {
             const mode = event.target.value || 'stereo';
             event.target.value = state.outputSystem.catalog?.active_mode || 'stereo';
-            void applyOutputSystemMutation('switch_mode', { mode }, 'Output mode updated');
+            void applyOutputSystemMutation('switch_mode', { mode }, 'Output mode updated').then((data) => {
+                if (data) void maybeApplyCrossoverStarters();
+            });
         });
     }
     if (elements.settingsSamplerateSelect) {
@@ -1588,7 +1590,9 @@ function setupSettingsActions() {
             const catalog = state.outputSystem.catalog;
             if (!catalog) return;
             void applyOutputSystemMutation('set_crossover',
-                { mode: catalog.active_mode, enabled: event.target.value === 'on' }, 'Crossover updated');
+                { mode: catalog.active_mode, enabled: event.target.value === 'on' }, 'Crossover updated').then((data) => {
+                if (data) void maybeApplyCrossoverStarters();
+            });
         });
     }
     if (elements.settingsRoutingGrid) {
@@ -1599,7 +1603,9 @@ function setupSettingsActions() {
             const selects = elements.settingsRoutingGrid.querySelectorAll('select');
             const assignments = Array.from(selects).map((sel) => sel.value || 'off');
             void applyOutputSystemMutation('set_routing',
-                { mode: catalog.active_mode, assignments }, 'Output routing updated');
+                { mode: catalog.active_mode, assignments }, 'Output routing updated').then((data) => {
+                if (data) void maybeApplyCrossoverStarters();
+            });
         });
     }
     if (elements.effectsBankSelect) {
@@ -1620,8 +1626,10 @@ function setupSettingsActions() {
         elements.effectsCrossoverDelay, elements.effectsCrossoverPolarity]) {
         if (el) el.addEventListener('change', crossoverControlChanged);
     }
-    if (elements.effectsCrossoverStarter) {
-        elements.effectsCrossoverStarter.addEventListener('click', () => { void applyCrossoverStarters(); });
+    if (elements.effectsCrossoverLink) {
+        elements.effectsCrossoverLink.addEventListener('change', (event) => {
+            state.crossover.linkLR = event.target.checked !== false;
+        });
     }
     if (elements.settingsSourceSelect) {
         elements.settingsSourceSelect.addEventListener('change', (event) => {
@@ -3951,16 +3959,18 @@ function renderCrossoverTile() {
         elements.effectsCrossoverFrequencyLowpass.value = settings.lowpass?.frequency_hz ?? '';
         elements.effectsCrossoverFrequencyLowpass.disabled = !showLowpass || busy;
     }
-    const families = Object.keys(catalog.capabilities?.filter_families || {});
+    const families = ['off', ...Object.keys(catalog.capabilities?.filter_families || {})];
     for (const kind of ['highpass', 'lowpass']) {
         const derived = kind === 'highpass' ? derivedHighpass : null;
         const definition = settings[kind] || derived || {};
-        // An unstored filter displays the defaults a save would write.
-        const displayFamily = definition.family || 'linkwitz-riley';
-        const displaySlope = definition.slope_db_oct ?? 24;
+        // An unstored filter displays Off; saving it writes nothing. Clearing
+        // a filter the DSP requires stays fail-closed on the backend.
+        const displayFamily = definition.family || 'off';
+        const displaySlope = definition.slope_db_oct ?? null;
         const familyEl = kind === 'highpass' ? elements.effectsCrossoverFamilyHighpass : elements.effectsCrossoverFamilyLowpass;
         const slopeEl = kind === 'highpass' ? elements.effectsCrossoverSlopeHighpass : elements.effectsCrossoverSlopeLowpass;
         const kindBusy = busy || !applicable.includes(kind) || !!derived;
+        const kindOff = displayFamily === 'off';
         if (familyEl) {
             const html = families.map((family) =>
                 `<option value="${mod.esc(family)}"${family === displayFamily ? ' selected' : ''}>${mod.esc(familyLabel(family))}</option>`).join('');
@@ -3971,16 +3981,23 @@ function renderCrossoverTile() {
             familyEl.disabled = kindBusy;
             if (kind === 'highpass') familyEl.title = derived
                 ? `Set by the Subwoofer tile (${derived.frequency_hz} Hz)` : '';
+            if (kindOff) {
+                const freqEl = kind === 'highpass'
+                    ? elements.effectsCrossoverFrequencyHighpass : elements.effectsCrossoverFrequencyLowpass;
+                if (freqEl) freqEl.disabled = true;
+            }
         }
         if (slopeEl) {
-            const slopes = mod.slopesForFamily(familyEl?.value || displayFamily, catalog.capabilities);
+            const slopes = kindOff ? [] : mod.slopesForFamily(familyEl?.value || displayFamily, catalog.capabilities);
             const html = slopes.map((slope) =>
                 `<option value="${slope}"${slope === displaySlope ? ' selected' : ''}>${slope}</option>`).join('');
             if (slopeEl.innerHTML !== html) slopeEl.innerHTML = html;
-            if (String(slopeEl.value) !== String(displaySlope)) {
+            if (displaySlope === null) {
+                slopeEl.value = '';
+            } else if (String(slopeEl.value) !== String(displaySlope)) {
                 slopeEl.value = displaySlope;
             }
-            slopeEl.disabled = kindBusy;
+            slopeEl.disabled = kindBusy || kindOff;
             if (kind === 'highpass') slopeEl.title = derived
                 ? `Set by the Subwoofer tile (${derived.frequency_hz} Hz)` : '';
         }
@@ -4001,26 +4018,19 @@ function renderCrossoverTile() {
     const summaryBass = mod.bassHighpass ? mod.bassHighpass(bass, subRoles) : null;
     if (elements.effectsCrossoverSummary) {
         const base = wayCount
-            ? `${wayCount}-Way system · ${roles.length} ways configured`
+            ? `${wayCount}-Way Stereo System`
             : 'Configure speaker ways in Output Routing first.';
         elements.effectsCrossoverSummary.textContent = summaryBass && wayCount
             ? `${base} · Sub HPF ${summaryBass.frequency_hz} Hz` : base;
     }
-    if (elements.effectsCrossoverStarterHint) {
-        try {
-            const missing = wayCount ? mod.missingStarterRoles(processing, mod.starterValues(wayCount)) : [];
-            elements.effectsCrossoverStarterHint.textContent = !wayCount ? ''
-                : missing.length ? `Starter values missing for: ${missing.map((r) => mod.esc(r)).join(', ')}`
-                : 'All ways initialized.';
-        } catch (e) {
-            elements.effectsCrossoverStarterHint.textContent = '';
-        }
+    if (elements.effectsCrossoverLink) {
+        elements.effectsCrossoverLink.checked = state.crossover.linkLR !== false;
+        elements.effectsCrossoverLink.disabled = busy;
     }
-    if (elements.effectsCrossoverStarter) elements.effectsCrossoverStarter.disabled = busy;
 }
 
 function familyLabel(family) {
-    return { 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' }[family] || family;
+    return { off: 'Off', 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' }[family] || family;
 }
 
 function collectCrossoverWayMutation() {
@@ -4045,6 +4055,9 @@ function collectCrossoverWayMutation() {
     const highpassEnabled = applicable.includes('highpass') && !derivedHighpass;
     const build = (previous, enabled, freqEl, familyEl, slopeEl) => {
         if (!enabled) return previous ?? null;
+        // Off clears the filter; clearing a filter the DSP requires stays
+        // fail-closed on the backend.
+        if (familyEl?.value === 'off') return null;
         const raw = freqEl ? freqEl.value : '';
         if ((raw === '' || raw === null) && !previous) return null;
         const family = familyEl?.value || previous?.family || 'linkwitz-riley';
@@ -4070,11 +4083,23 @@ function collectCrossoverWayMutation() {
 async function saveCrossoverWay() {
     const fields = collectCrossoverWayMutation();
     if (!fields) return;
+    // The L/R link shares only the crossover filter values with the mirror
+    // way. Trim (level/align/polarity) stays per-way physical tuning.
+    const mod = crossoverModule();
+    const catalog = state.outputSystem.catalog;
+    const mirror = mod?.mirrorRole ? mod.mirrorRole(fields.role) : null;
+    const mirrorProcessing = catalog?.modes?.[catalog.active_mode]?.processing || {};
+    const linked = state.crossover.linkLR !== false && mirror && mirror !== fields.role
+        && Object.prototype.hasOwnProperty.call(mirrorProcessing, mirror);
     state.crossover.busy = true;
     renderCrossoverTile();
     try {
         const { kind, ...rest } = fields;
         await applyOutputSystemMutation(kind, rest, false, { quiet: true });
+        if (linked) {
+            const { role: _role, level_db: _level, alignment_ms: _align, polarity: _polarity, ...mirrorShared } = rest;
+            await applyOutputSystemMutation(kind, { ...mirrorShared, role: mirror }, false, { quiet: true });
+        }
         await fetchCrossoverResponse();
     } finally {
         state.crossover.busy = false;
@@ -4082,46 +4107,45 @@ async function saveCrossoverWay() {
     }
 }
 
-async function applyCrossoverStarters() {
-    ensureOutputSystemBoxes();
+async function maybeApplyCrossoverStarters() {
+    /* First valid 2/3/4-way configuration: every way still empty, so seed
+     * the sensible starter filters instead of asking. Partially configured
+     * ways are manual edits and stay untouched. */
     const mod = crossoverModule();
     const catalog = state.outputSystem.catalog;
-    if (!mod || !catalog) return;
+    if (!mod || !catalog) return false;
     const modeConfig = catalog.modes[catalog.active_mode] || {};
     const wayCount = modeConfig.topology?.way_count || 0;
-    if (!wayCount) {
-        showToast('Complete the crossover routing first (2/3/4-way).', 'warning');
-        return;
-    }
+    if (![2, 3, 4].includes(wayCount)) return false;
     let starters;
     try {
         starters = mod.starterValues(wayCount);
     } catch (e) {
-        showToast(e.message, 'error');
-        return;
+        return false;
     }
-    const missing = mod.missingStarterRoles(modeConfig.processing || {}, starters);
-    if (!missing.length) {
-        showToast('All ways already initialized.', 'info');
-        return;
-    }
+    const processing = modeConfig.processing || {};
+    const roles = Object.keys(starters);
+    const allEmpty = roles.length > 0 && roles.every((role) => {
+        const current = processing[role] || {};
+        return !current.highpass && !current.lowpass;
+    });
+    if (!allEmpty) return false;
     state.crossover.busy = true;
     renderCrossoverTile();
     try {
-        for (const role of missing) {
+        for (const role of roles) {
             const wanted = starters[role] || {};
-            const current = modeConfig.processing?.[role] || {};
-            const fields = { mode: catalog.active_mode, role };
-            if (wanted.highpass && !current.highpass) fields.highpass = wanted.highpass;
-            if (wanted.lowpass && !current.lowpass) fields.lowpass = wanted.lowpass;
-            await applyOutputSystemMutation('set_processing', fields, false, { quiet: true });
+            await applyOutputSystemMutation('set_processing',
+                { mode: catalog.active_mode, role, highpass: wanted.highpass ?? null, lowpass: wanted.lowpass ?? null },
+                false, { quiet: true });
         }
-        showToast(`Starter values applied to ${missing.length} way${missing.length === 1 ? '' : 's'}.`, 'success');
+        showToast(`Starter values applied (${wayCount}-way).`, 'success');
         await fetchCrossoverResponse();
     } finally {
         state.crossover.busy = false;
         renderCrossoverTile();
     }
+    return true;
 }
 
 async function saveAudioSourceSelection(mode, inputKey = '') {
@@ -14938,9 +14962,10 @@ function renderSubwooferPanel() {
         : normalizeSubwooferSettings(outputMode.subwoofer || {});
     const subwoofers = normalizeSubwoofersSettings(outputMode.subwoofers || {}, subwoofer);
     if (elements.effectsSubwooferRouting) {
-        const routingStatus = outputMode.routing?.status || '';
+        const frequency = subwoofer.crossover_frequency_hz ?? 80;
         const slope = subwoofer.slope || 'LR24';
-        elements.effectsSubwooferRouting.textContent = `${routingStatus} · ${slope}`;
+        const hpf = (subwoofer.main_highpass_enabled ?? true) ? 'on' : 'off';
+        elements.effectsSubwooferRouting.textContent = `Crossover ${frequency} Hz · ${slope} · Main HPF ${hpf}`;
     }
     if (elements.effectsSubwooferModeBadge) {
         elements.effectsSubwooferModeBadge.textContent = outputSystemModule().subModeLabel(outputMode.sub_mode);

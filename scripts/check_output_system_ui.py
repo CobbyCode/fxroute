@@ -136,7 +136,8 @@ def main() -> int:
             span = page.evaluate(
                 "getComputedStyle(document.getElementById('effects-crossover-card')).gridColumn")
             check(f"crossover spans full width ({span})", span == '1 / -1')
-            page.locator("#effects-crossover-starter").click()
+            # Starter values applied themselves once the routing first became
+            # a valid 3-way config: no click needed before the way tabs show.
             page.wait_for_timeout(1200)
             tabs = page.locator("#effects-crossover-tabs button")
             check(f"six way tabs ({tabs.count()} found)", tabs.count() == 6)
@@ -221,18 +222,40 @@ def main() -> int:
                   is not None
                   and "is-active" in (page.locator("[data-crossover-way='right_high']").get_attribute("class") or ""))
 
-            # Clear one filter, then let the starter refill only the gap.
+            # Starter values apply automatically to the first valid
+            # configuration: routing the six ways already seeded every
+            # filter, so no starter button exists anymore.
+            check("no starter button",
+                  page.locator("#effects-crossover-starter").count() == 0)
+            starter_state = page.evaluate(
+                """fetch('/api/audio/output-state').then(r => r.json())
+                    .then(j => JSON.stringify(j.modes[j.active_mode].processing.left_mid))""")
+            check(f"first valid config already carries starters ({starter_state})",
+                  '"frequency_hz":300' in starter_state and '"frequency_hz":2500' in starter_state)
+            summary = page.locator("#effects-crossover-summary").inner_text()
+            check(f"speaker header is compact ({summary})",
+                  summary.startswith("3-Way Stereo System"))
+            # The L/R link is on by default; filter type offers Off.
+            check("link L/R checked by default",
+                  page.locator("#effects-crossover-link").is_checked())
+            families = page.locator("#effects-crossover-family-highpass option").all_text_contents()
+            check(f"type offers Off first ({families})",
+                  [t.strip() for t in families][:1] == ["Off"])
+            sub_header = page.locator("#effects-subwoofer-routing").inner_text()
+            check(f"sub header is compact ({sub_header})",
+                  "Out 1" not in sub_header and "Hz" in sub_header)
+
+            # Clearing one filter leaves it cleared: partial edits are manual
+            # and never refilled.
             page.evaluate(
                 "applyOutputSystemMutation('set_processing',"
                 " { mode: 'stereo-sub', role: 'left_mid', lowpass: null }, false, { quiet: true })")
             page.wait_for_timeout(1200)
-            page.locator("#effects-crossover-starter").click()
-            page.wait_for_timeout(1500)
-            starter_back = page.evaluate(
+            cleared = page.evaluate(
                 """fetch('/api/audio/output-state').then(r => r.json())
                     .then(j => JSON.stringify(j.modes[j.active_mode].processing.left_mid.lowpass))""")
-            check(f"starter refills only the gap ({starter_back})",
-                  '"frequency_hz":2500' in starter_back)
+            check(f"cleared filter stays cleared ({cleared})",
+                  cleared == "null")
 
             # Editing a way control persists to the backend state.
             page.evaluate(

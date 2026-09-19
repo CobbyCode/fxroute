@@ -31,6 +31,16 @@ function isLowWayRole(role) {
     return role === 'left_low' || role === 'right_low';
 }
 
+// Mirror a speaker way across sides for the L/R link: only the crossover
+// filter values are shared, never trim (level/align/polarity stays per-way
+// physical tuning, e.g. from Speaker Gain Alignment).
+function mirrorRole(role) {
+    if (typeof role !== 'string') return null;
+    if (role.startsWith('left_')) return `right_${role.slice(5)}`;
+    if (role.startsWith('right_')) return `left_${role.slice(6)}`;
+    return null;
+}
+
 // Shared bass high-pass from the subwoofer tile: with routed subs and Main
 // highpass on, the DSP runs every speaker way through an LR24 high-pass at
 // the sub crossover. Only the Low way has no stored high-pass of its own,
@@ -145,6 +155,7 @@ function renderWayTabs(tabs, roles, activeRole, onSelect) {
         esc,
         orderedWays,
         isLowWayRole,
+        mirrorRole,
         bassHighpass,
         derivedHighpassForRole,
         applicableFilters,

@@ -83,6 +83,12 @@ const processing = {
 };
 assert.deepEqual(Crossover.missingStarterRoles(processing, three), ['left_mid']);
 
+assert.equal(Crossover.mirrorRole('left_low'), 'right_low');
+assert.equal(Crossover.mirrorRole('right_high'), 'left_high');
+assert.equal(Crossover.mirrorRole('left_low_mid'), 'right_low_mid');
+assert.equal(Crossover.mirrorRole('sub1'), null);
+assert.equal(Crossover.mirrorRole(null), null);
+
 assert.equal(Crossover.clampLevelDb(99), 24);
 assert.equal(Crossover.clampLevelDb(-99), -80);
 assert.equal(Crossover.clampAlignmentMs(99), 40);
@@ -92,12 +98,28 @@ assert.equal(Crossover.clampFrequencyHz(30000), 20000);
 
 assert.match(indexSource, /crossover\.js\?v=\d+\.\d+\.\d+/);
 assert.match(indexSource, /<canvas id="effects-crossover-graph"/);
+const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
+// Starter values autofill the first valid 2/3/4-way config; no button, no status text.
+assert.doesNotMatch(appSource, /effectsCrossoverStarter/);
+assert.doesNotMatch(appSource, /Already initialized|All ways initialized|Starter values missing/);
+assert.match(appSource, /maybeApplyCrossoverStarters/);
+// L/R link mirrors only filter values, never trim.
+assert.match(appSource, /mirrorRole/);
+assert.match(indexSource, /Link L\/R/);
+// Filter type Off plus compact headers.
+assert.match(appSource, /off: 'Off'/);
+assert.match(appSource, /-Way Stereo System/);
+assert.match(appSource, /Crossover \$/);
+assert.match(appSource, /Main HPF/);
 for (const id of ['effects-crossover-card', 'effects-crossover-tabs', 'effects-crossover-graph',
     'effects-crossover-frequency-highpass', 'effects-crossover-frequency-lowpass',
     'effects-crossover-family-highpass', 'effects-crossover-slope-highpass',
     'effects-crossover-family-lowpass', 'effects-crossover-slope-lowpass',
     'effects-crossover-level',
-    'effects-crossover-delay', 'effects-crossover-polarity', 'effects-crossover-starter']) {
+    'effects-crossover-delay', 'effects-crossover-polarity', 'effects-crossover-link',
+    'effects-crossover-summary']) {
     assert.match(indexSource, new RegExp(`id="${id}"`), `missing #${id}`);
 }
+assert.doesNotMatch(indexSource, /id="effects-crossover-starter"/, 'starter button is gone: first valid configs autofill');
+assert.match(indexSource, /Link L\/R/);
 console.log('crossover frontend tests: ok');
