@@ -4375,9 +4375,6 @@ def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int) -
         return {"expected_native_layout": [dict(entry) for entry in layout],
                 "expected_native_output_mode": plan["mode"],
                 "expected_plan_fingerprint": service.fingerprint_plan(plan)}
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
-        logger.warning("Bank v2 staging failed for measurement: %s", exc)
-        return None
     except Exception as exc:
         logger.warning("Bank v2 staging failed for measurement: %s", exc)
         return None
