@@ -131,6 +131,19 @@ function clampFrequencyHz(value) {
     return Math.min(20000, Math.max(20, number));
 }
 
+// Starter frequency for re-enabling a cleared filter: picking a type is
+// enough to bring the filter back instead of leaving it off.
+function starterFrequency(wayCount, role, kind) {
+    try {
+        const wanted = starterValues(wayCount)?.[role]?.[kind];
+        const frequency = Number(wanted?.frequency_hz);
+        if (Number.isFinite(frequency)) return clampFrequencyHz(frequency);
+    } catch (e) {
+        // No starters for this configuration; the caller falls back.
+    }
+    return null;
+}
+
 function renderWayTabs(tabs, roles, activeRole, onSelect) {
     if (!tabs) return;
     const html = roles.map((role) => {
@@ -165,6 +178,7 @@ function renderWayTabs(tabs, roles, activeRole, onSelect) {
         clampLevelDb,
         clampAlignmentMs,
         clampFrequencyHz,
+        starterFrequency,
         renderWayTabs,
     };
 });

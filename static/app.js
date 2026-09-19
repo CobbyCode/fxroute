@@ -4053,14 +4053,23 @@ function collectCrossoverWayMutation() {
     const derivedHighpass = !current.highpass && mod.derivedHighpassForRole
         ? mod.derivedHighpassForRole(active, bassContext.bass, bassContext.subRoles) : null;
     const highpassEnabled = applicable.includes('highpass') && !derivedHighpass;
-    const build = (previous, enabled, freqEl, familyEl, slopeEl) => {
+    const wayCount = modeConfig.topology?.way_count || 0;
+    const build = (kind, previous, enabled, freqEl, familyEl, slopeEl) => {
         if (!enabled) return previous ?? null;
         // Off clears the filter; clearing a filter the DSP requires stays
         // fail-closed on the backend.
         if (familyEl?.value === 'off') return null;
         const raw = freqEl ? freqEl.value : '';
-        if ((raw === '' || raw === null) && !previous) return null;
         const family = familyEl?.value || previous?.family || 'linkwitz-riley';
+        if ((raw === '' || raw === null) && !previous) {
+            // Re-enabling a cleared filter: the frequency field is still
+            // empty, so default to the starter frequency instead of dropping
+            // the filter again.
+            const fallback = (mod.starterFrequency
+                ? mod.starterFrequency(wayCount, active, kind) : null) ?? 1000;
+            const slope = Number(slopeEl?.value || 24);
+            return { family, slope_db_oct: slope, frequency_hz: mod.clampFrequencyHz(fallback) };
+        }
         const slope = Number(slopeEl?.value || previous?.slope_db_oct || 24);
         return { family, slope_db_oct: slope, frequency_hz: readFreq(freqEl, previous?.frequency_hz ?? 1000) };
     };
@@ -4068,10 +4077,10 @@ function collectCrossoverWayMutation() {
         kind: 'set_processing',
         mode: catalog.active_mode,
         role: active,
-        highpass: build(current.highpass, highpassEnabled,
+        highpass: build('highpass', current.highpass, highpassEnabled,
             elements.effectsCrossoverFrequencyHighpass,
             elements.effectsCrossoverFamilyHighpass, elements.effectsCrossoverSlopeHighpass),
-        lowpass: build(current.lowpass, applicable.includes('lowpass'),
+        lowpass: build('lowpass', current.lowpass, applicable.includes('lowpass'),
             elements.effectsCrossoverFrequencyLowpass,
             elements.effectsCrossoverFamilyLowpass, elements.effectsCrossoverSlopeLowpass),
         level_db: mod.clampLevelDb(elements.effectsCrossoverLevel?.value ?? 0),

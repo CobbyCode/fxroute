@@ -89,6 +89,13 @@ assert.equal(Crossover.mirrorRole('left_low_mid'), 'right_low_mid');
 assert.equal(Crossover.mirrorRole('sub1'), null);
 assert.equal(Crossover.mirrorRole(null), null);
 
+assert.equal(Crossover.starterFrequency(2, 'left_low', 'lowpass'), 2000);
+assert.equal(Crossover.starterFrequency(2, 'right_high', 'highpass'), 2000);
+assert.equal(Crossover.starterFrequency(3, 'left_mid', 'lowpass'), 2500);
+assert.equal(Crossover.starterFrequency(4, 'right_mid', 'highpass'), 800);
+assert.equal(Crossover.starterFrequency(2, 'left_low', 'highpass'), null);
+assert.equal(Crossover.starterFrequency(5, 'left_low', 'lowpass'), null);
+
 assert.equal(Crossover.clampLevelDb(99), 24);
 assert.equal(Crossover.clampLevelDb(-99), -80);
 assert.equal(Crossover.clampAlignmentMs(99), 40);
