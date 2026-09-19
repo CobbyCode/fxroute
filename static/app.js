@@ -2541,7 +2541,7 @@ async function runProviderInstall(providerId) {
         const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/install`, { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Installation failed');
-        renderProviderOperation(providerId, data.installed ? 'Provider installed.' : 'Install finished.', data.log || '');
+        renderProviderOperation(providerId, data.installed ? 'Provider installed/updated.' : 'Install finished.', data.log || '');
         // A Settings uninstall disables the provider; a reinstall must activate
         // it again exactly like the first install, or its checkbox and tab stay off.
         const provider = state.settings.providers.list.find((p) => p.id === providerId);
@@ -2901,15 +2901,19 @@ function providerAdminButtonHtml(provider) {
         if (provider.id === 'tidal') {
             if (connected) {
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
             } else {
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
             }
         } else if (provider.id === 'qobuz') {
             if (connected) {
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
             } else {
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
+                buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
                 buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
             }
             // Restart is recovery, not a primary action: it makes qbzd
@@ -2933,6 +2937,7 @@ function providerAdminButtonHtml(provider) {
             }
             buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
         } else {
+            buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
             buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
         }
     } else if (provider.implemented !== false) {
@@ -8744,10 +8749,6 @@ function measurementSmoothingHalfWindowOctaves(mode = '1/6-oct') {
 
 function smoothMeasurementTracePoints(points = [], mode = '1/6-oct') {
     return MeasurementDsp.smoothMeasurementTracePoints(points, mode);
-}
-
-function trackFileUrl(trackId = '') {
-    return MeasurementUI.trackFileUrl(trackId);
 }
 
 function measurementFileUrl(measurementId = '') {

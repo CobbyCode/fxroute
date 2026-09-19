@@ -46,6 +46,16 @@
     --radius-xl:  20px;
     --action-gap: 12px;
     --action-gap-mobile: 8px;
+    /* Custom dropdown arrow, shared by every carrier instead of repeating
+       the literals per context: the glyph width, its inset from the right
+       edge, and the right padding each carrier reserves so a long label
+       cannot reach it. The reserve must stay larger than offset + width
+       (0.55rem + 0.68rem = 1.23rem), which keeps the arrow band clear of
+       the content box. Carriers that align the glyph to their own padding
+       edge use their own inset, but keep this width. */
+    --arrow-width: 0.68rem;
+    --arrow-offset: 0.55rem;
+    --arrow-reserve: 1.55rem;
     /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
        cards derive their column sizing from these two values so all three
        surfaces keep one tile rhythm across breakpoints. Radio reads a
@@ -404,6 +414,25 @@ body {
     color: var(--accent);
     background: var(--accent-dim);
     border-color: var(--accent);
+}
+
+/* Shared native-select chevron (every app dropdown carries .url-input):
+   one custom chevron replaces the per-browser native arrow, so the arrow
+   zone is compact and identical everywhere (Chromium/Firefox/Android draw
+   native arrows at different widths). Size and inset come from the shared
+   --arrow-width/--arrow-offset tokens, the --arrow-reserve right padding
+   fits chevron plus breathing room so long labels never slide underneath,
+   and background-position keeps the chevron vertically centered. Contexts
+   with tighter caps keep their own widths; only the arrow zone is
+   unified here. */
+select.url-input {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: var(--arrow-reserve);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right var(--arrow-offset) center;
+    background-size: var(--arrow-width) auto;
 }
 
 /* Visually hidden but available to screen readers (page h1, live labels). */
@@ -2184,6 +2213,14 @@ body {
     min-width: 140px;
     font-size: 0.88rem;
     padding: 0.3rem 0.6rem;
+}
+/* The padding shorthand above is two classes deep, so it would outrank the
+   shared select.url-input arrow zone and reopen the roomy gap the chevron
+   lives in. Re-assert the reserve for selects only (the TIDAL "add to
+   existing playlist" target), where a long playlist name would otherwise
+   slide underneath the arrow. */
+.playlist-save-row select.url-input {
+    padding-right: var(--arrow-reserve);
 }
 .playlist-save-row .btn-secondary {
     flex: 0 0 auto;
@@ -4975,6 +5012,11 @@ body {
     padding: 0.55rem 0.75rem;
     font-size: 0.9rem;
 }
+/* Same shorthand-over-arrow-zone conflict as the playlist save row: the
+   PEQ type select carries the shared chevron, so keep its reserve too. */
+.measurement-peq-editor-grid select.url-input {
+    padding-right: var(--arrow-reserve);
+}
 
 .measurement-peq-stepper {
     display: grid;
@@ -5188,11 +5230,39 @@ body {
     cursor: pointer;
     list-style: none;
     padding: 0.65rem 0.75rem;
+    /* Same arrow reserve the selects carry: the custom marker below is
+       absolutely positioned, so without this a long label would run into
+       the arrow band. */
+    padding-right: var(--arrow-reserve);
     font-weight: 600;
+    position: relative;
 }
 
 .measurement-saved-group > summary::-webkit-details-marker {
     display: none;
+}
+
+/* Same chevron language as the app dropdowns: custom marker on the
+   right, pointing down when closed and rotated 180° when open.
+   Absolutely positioned, so text metrics and spacing stay untouched.
+   Keeps its own 0.75rem inset, aligned with the summary's padding edge,
+   rather than the shared --arrow-offset the selects use. */
+.measurement-saved-group > summary::after {
+    content: "";
+    position: absolute;
+    right: 0.75rem;
+    top: 50%;
+    width: var(--arrow-width);
+    height: 0.45rem;
+    margin-top: -0.225rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-size: contain;
+    transition: transform 0.15s var(--ease);
+}
+
+.measurement-saved-group[open] > summary::after {
+    transform: rotate(180deg);
 }
 
 .measurement-saved-list {
@@ -6175,8 +6245,23 @@ input[type="number"]::-webkit-outer-spin-button {
     min-width: 5.3rem;
     min-height: 46px;
     height: 46px;
-    padding: 0.7rem 2rem 0.7rem 0.85rem;
-    padding-right: 2rem;
+}
+
+/* Shared chevron treatment for the effects selects (headroom, autogain,
+   loudness, tone, PEQ mode, convolver fields, sub crossover
+   highpass/polarity, preset A/B): same single chevron as the global
+   select rule, re-asserted here because the shared #tab-effects sizing
+   rule below would otherwise win its padding shorthand back and reopen
+   the roomy zone. One general selector covers the whole tab, including
+   future selects. */
+#tab-effects select.url-input {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: var(--arrow-reserve);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right var(--arrow-offset) center;
+    background-size: var(--arrow-width) auto;
 }
 
 .effects-inline-control-label {
@@ -7104,6 +7189,16 @@ input[type="number"]::-webkit-outer-spin-button {
     text-align: center;
     text-overflow: ellipsis;
     cursor: pointer;
+    /* Same shared chevron as every app select: the pill keeps its own
+       metrics, only the arrow zone is unified so long source labels
+       never slide underneath. */
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: var(--arrow-reserve);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right var(--arrow-offset) center;
+    background-size: var(--arrow-width) auto;
 }
 .source-select:disabled { opacity: .45; cursor: default; }
 .source-select option { background: #16281f; color: #f0fff8; }
@@ -9021,6 +9116,10 @@ input[type="number"]::-webkit-outer-spin-button {
 
         .measurement-saved-group > summary {
             padding: 0.45rem 0.55rem;
+            /* Not the shorthand's 0.55rem: keep the arrow reserve the
+               desktop rule sets, otherwise the phone layout reopens
+               the collision this guard prevents. */
+            padding-right: var(--arrow-reserve);
         }
 
         .measurement-saved-list {

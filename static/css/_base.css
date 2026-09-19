@@ -318,6 +318,25 @@ body {
     border-color: var(--accent);
 }
 
+/* Shared native-select chevron (every app dropdown carries .url-input):
+   one custom chevron replaces the per-browser native arrow, so the arrow
+   zone is compact and identical everywhere (Chromium/Firefox/Android draw
+   native arrows at different widths). Size and inset come from the shared
+   --arrow-width/--arrow-offset tokens, the --arrow-reserve right padding
+   fits chevron plus breathing room so long labels never slide underneath,
+   and background-position keeps the chevron vertically centered. Contexts
+   with tighter caps keep their own widths; only the arrow zone is
+   unified here. */
+select.url-input {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: var(--arrow-reserve);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right var(--arrow-offset) center;
+    background-size: var(--arrow-width) auto;
+}
+
 /* Visually hidden but available to screen readers (page h1, live labels). */
 .visually-hidden {
     position: absolute !important;

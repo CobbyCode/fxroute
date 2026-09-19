@@ -46,6 +46,16 @@
     --radius-xl:  20px;
     --action-gap: 12px;
     --action-gap-mobile: 8px;
+    /* Custom dropdown arrow, shared by every carrier instead of repeating
+       the literals per context: the glyph width, its inset from the right
+       edge, and the right padding each carrier reserves so a long label
+       cannot reach it. The reserve must stay larger than offset + width
+       (0.55rem + 0.68rem = 1.23rem), which keeps the arrow band clear of
+       the content box. Carriers that align the glyph to their own padding
+       edge use their own inset, but keep this width. */
+    --arrow-width: 0.68rem;
+    --arrow-offset: 0.55rem;
+    --arrow-reserve: 1.55rem;
     /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
        cards derive their column sizing from these two values so all three
        surfaces keep one tile rhythm across breakpoints. Radio reads a
