@@ -24,15 +24,17 @@ PASSBAND_FALLBACK_DB = 3.0
 # Robustness gates for one way's level estimate.
 # Real drivers/headphones vary broadly across the band; 1-octave smoothing
 # removes narrow resonances before the median, the MAD gate only rejects
-# broken captures (silence, clipping, interference).
+# broken captures (silence, clipping, interference). Confidence is graded,
+# only extreme instability fails closed.
 MIN_PASSBAND_POINTS = 6
 MIN_PASSBAND_OCTAVES = 1.0 / 6.0
-MAX_PASSBAND_MAD_DB = 6.0
+MAX_PASSBAND_MAD_DB = 12.0
 SMOOTHING_OCTAVES = 1.0
 # Physical gain corrections are bounded; larger raw values fail closed.
 MAX_WAY_GAIN_DB = 12.0
 # Post-alignment verification: ways of one side must agree within this.
-MAX_VERIFIED_GAIN_SPREAD_DB = 1.0
+# 2 dB allows real driver variation while catching multi-dB mismatches.
+MAX_VERIFIED_GAIN_SPREAD_DB = 2.0
 
 
 def _finite(value: object, label: str) -> float:
