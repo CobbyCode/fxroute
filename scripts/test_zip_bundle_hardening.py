@@ -72,7 +72,7 @@ class FakeDspManager:
     def _find_ir_paths_for_kernel_name(self, name):
         return []
 
-    def import_preset_json(self, filename, text):
+    def import_preset_json(self, filename, text, bank=None):
         if self.fail_import:
             raise ValueError("preset import rejected")
         return {"name": Path(filename).stem}

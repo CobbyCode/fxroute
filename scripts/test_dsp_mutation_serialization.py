@@ -181,7 +181,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                     "format": "irs",
                 }
 
-            def create_convolver_preset(self, preset_name, ir_filename, extras=None):
+            def create_convolver_preset(self, preset_name, ir_filename, extras=None, bank=None):
                 order.append("convolver-entered")
                 return {"name": preset_name}
 

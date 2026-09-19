@@ -3695,7 +3695,60 @@ async function applyOutputSystemMutation(kind, fields, successMessage, options =
 
 function outputSystemBankBinding() {
     const catalog = (state.outputSystem || {}).catalog;
-    return outputSystemModule()?.bankBinding(catalog) || null;
+    try {
+        return outputSystemModule()?.bankBinding(catalog) || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function outputSystemCombineBank() {
+    const catalog = (state.outputSystem || {}).catalog;
+    if (!catalog) return null;
+    try {
+        return outputSystemModule()?.combineBank(catalog) || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function visiblePresetEntriesForBank() {
+    const entries = (state.dsp?.presets || []);
+    const mod = outputSystemModule();
+    const catalog = (state.outputSystem || {}).catalog;
+    if (!catalog || !mod || typeof mod.presetsForBank !== 'function') return entries.slice();
+    const bankId = catalog.modes?.[catalog.active_mode]?.selected_bank || 'global';
+    if (bankId === 'all') return [];
+    const filtered = mod.presetsForBank(entries, bankId);
+    const keep = new Set(filtered.map((entry) => entry?.name));
+    // Keep assigned A/B/active visible even for legacy cross-bank
+    // assignments so the current selection never vanishes from the picker.
+    const compare = typeof mod.compareState === 'function' ? mod.compareState(catalog) : null;
+    const assigned = [];
+    if (compare) {
+        if (compare.presetA) assigned.push(compare.presetA);
+        if (compare.presetB) assigned.push(compare.presetB);
+        if (compare.activePreset) assigned.push(compare.activePreset);
+    }
+    const draft = state.dsp?.combineDraft || {};
+    for (const name of [draft.preset1, draft.preset2, draft.preset3]) {
+        if (name) assigned.push(name);
+    }
+    if (!assigned.length) return filtered;
+    const byName = new Map(entries.map((entry) => [entry?.name, entry]));
+    for (const name of assigned) {
+        if (!keep.has(name) && byName.has(name)) {
+            filtered.push(byName.get(name));
+            keep.add(name);
+        }
+    }
+    const order = new Map(entries.map((entry, index) => [entry?.name, index]));
+    filtered.sort((a, b) => (order.get(a?.name) ?? 0) - (order.get(b?.name) ?? 0));
+    return filtered;
+}
+
+function visiblePresetNamesForBank() {
+    return visiblePresetEntriesForBank().map((entry) => entry?.name).filter(Boolean);
 }
 
 function appendBankBindingFields(formData) {
@@ -3744,12 +3797,22 @@ function renderEffectsBankSelector() {
 
 function syncBankActionButtons() {
     /* All Banks only switches A/B jointly across the area banks: there is
-     * nothing to measure or import there, so both entries stay disabled. */
+     * nothing to measure, import or combine there, so those entries stay
+     * disabled. */
     const aggregate = measurementAreaFromCatalog()?.available === false;
     for (const button of [elements.effectsMeasureOpenBtn, elements.effectsToggleImportBtn]) {
         if (!button) continue;
         button.disabled = aggregate;
         button.title = aggregate ? 'All Banks only switches A/B; select a filter bank to measure or import.' : '';
+    }
+    if (elements.effectsCombineSaveBtn) {
+        renderEffectsCombine();
+    }
+    if (elements.effectsRewDualCreatePresetBtn) {
+        elements.effectsRewDualCreatePresetBtn.disabled = aggregate;
+    }
+    if (elements.effectsPeqCreatePresetBtn) {
+        elements.effectsPeqCreatePresetBtn.disabled = aggregate;
     }
 }
 
@@ -14284,7 +14347,8 @@ function renderPresetDownloadLink(presetName = '') {
 function renderEffectsCompare() {
     const fx = state.dsp;
     const presetEntries = fx.presets || [];
-    const presets = presetEntries.map(p => p.name);
+    const visibleEntries = state.outputSystem?.catalog ? visiblePresetEntriesForBank() : presetEntries.slice();
+    const presets = visibleEntries.map(p => p.name);
     const presetMap = new Map(presetEntries.map(preset => [preset.name, preset]));
     const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate } = getEffectsCompareState();
 
@@ -14368,24 +14432,34 @@ function getEffectsCombineValidationState() {
     const presetName = elements.effectsCombinePresetName?.value?.trim() || '';
     const selectedPresets = [preset1, preset2, preset3].filter(Boolean);
     const isDuplicateSelection = new Set(selectedPresets).size !== selectedPresets.length;
+    const catalog = state.outputSystem?.catalog;
+    const aggregate = catalog ? catalog.modes?.[catalog.active_mode]?.selected_bank === 'all' : false;
+    let crossBank = false;
+    if (catalog && !aggregate && selectedPresets.length) {
+        const visible = new Set(visiblePresetNamesForBank());
+        crossBank = selectedPresets.some((name) => !visible.has(name));
+    }
     return {
         preset1,
         preset2,
         preset3,
         presetName,
         selectedPresets,
-        isValid: selectedPresets.length >= 2 && !!presetName && !isDuplicateSelection,
+        aggregate,
+        crossBank,
+        isValid: selectedPresets.length >= 2 && !!presetName && !isDuplicateSelection && !aggregate && !crossBank,
         isDuplicateSelection,
     };
 }
 
 function renderEffectsCombine() {
     const fx = state.dsp || {};
-    const presets = (fx.presets || []).map(p => p.name);
+    const allNames = (fx.presets || []).map(p => p.name);
+    const presets = state.outputSystem?.catalog ? visiblePresetNamesForBank() : allNames;
     const draft = fx.combineDraft || getDefaultEffectsCombineDraft();
     if (!elements.effectsCombinePreset1 || !elements.effectsCombinePreset2 || !elements.effectsCombinePreset3 || !elements.effectsCombinePresetName) return;
 
-    const normalized = normalizeEffectsCombineDraft(draft, presets);
+    const normalized = normalizeEffectsCombineDraft(draft, allNames);
     fx.combineDraft = normalized;
 
     // Rebuilding <option> lists on every WS push closes an open dropdown.
@@ -14415,11 +14489,28 @@ function renderEffectsCombine() {
     const validation = getEffectsCombineValidationState();
     if (elements.effectsCombineSaveBtn) {
         elements.effectsCombineSaveBtn.disabled = !fx.available || !validation.isValid;
+        if (validation.aggregate) {
+            elements.effectsCombineSaveBtn.title = 'All Banks owns no presets; select a concrete filterbank.';
+        } else if (validation.crossBank) {
+            elements.effectsCombineSaveBtn.title = 'Combine only presets from the selected bank.';
+        } else {
+            elements.effectsCombineSaveBtn.title = '';
+        }
     }
 }
 
 async function createCombinedEffectsPreset() {
     const validation = getEffectsCombineValidationState();
+    if (validation.aggregate) {
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">All Banks owns no presets; select a concrete filterbank.</div>';
+        showToast('All Banks owns no presets; select a concrete filterbank', 'error');
+        return;
+    }
+    if (validation.crossBank) {
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Combine only presets from the selected bank.</div>';
+        showToast('Combine only presets from the selected bank', 'error');
+        return;
+    }
     if (validation.isDuplicateSelection) {
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Each selected preset must be different.</div>';
         showToast('Each selected preset must be different', 'error');
@@ -14440,12 +14531,14 @@ async function createCombinedEffectsPreset() {
     if (elements.effectsCombineSaveBtn) elements.effectsCombineSaveBtn.disabled = true;
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Saving combined preset: <strong>${escapeHtml(validation.presetName)}</strong>…</div>`;
     try {
+        const combineBank = outputSystemCombineBank();
         const resp = await fetch('/api/dsp/presets/combine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 presetName: validation.presetName,
                 presetNames: validation.selectedPresets,
+                ...(combineBank || {}),
             }),
         });
         const data = await resp.json().catch(() => ({}));

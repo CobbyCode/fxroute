@@ -169,6 +169,43 @@ function bankBinding(catalog) {
     return { bank_mode: catalog.active_mode, bank_id: bankId, expected_revision: catalog.revision };
 }
 
+function combineBank(catalog) {
+    if (!catalog) return null;
+    const bankId = catalog.modes?.[catalog.active_mode]?.selected_bank || 'global';
+    if (bankId === 'all') throw new Error('All Banks owns no presets; select a concrete filterbank.');
+    return { bank_mode: catalog.active_mode, bank_id: bankId };
+}
+
+const BUILTIN_BANK_PRESETS = ['Direct', 'Neutral'];
+
+function isBuiltinBankPreset(name) {
+    return BUILTIN_BANK_PRESETS.includes(String(name || ''));
+}
+
+function presetBank(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    const direct = typeof entry.bank === 'string' ? entry.bank.trim() : '';
+    if (direct) return direct;
+    const metadata = entry.metadata;
+    const tagged = metadata && typeof metadata.bank === 'string' ? metadata.bank.trim() : '';
+    return tagged || null;
+}
+
+function presetsForBank(presets, bankId) {
+    if (!Array.isArray(presets)) return [];
+    // All Banks owns no presets: it only switches A/B jointly.
+    if (!bankId || bankId === 'all') return [];
+    const wanted = String(bankId);
+    return presets.filter((entry) => {
+        const name = typeof entry === 'string' ? entry : entry?.name;
+        if (isBuiltinBankPreset(name)) return true;
+        const tag = presetBank(entry);
+        // Legacy files without a tag stay visible everywhere; bank-tagged
+        // files only in their owning bank (Global included).
+        return !tag || tag === wanted;
+    });
+}
+
 function peqParams(channelMode, leftBands, rightBands, eqMode) {
     return channelMode === 'mono'
         ? { channelMode: 'stereo-linked', eqMode, bands: leftBands }
@@ -302,6 +339,10 @@ function renderBankSelector(select, catalog, mode) {
         bankOptions,
         bankSelectorVisible,
         bankBinding,
+        combineBank,
+        isBuiltinBankPreset,
+        presetBank,
+        presetsForBank,
         peqParams,
         compareState,
         buildMutation,

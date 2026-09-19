@@ -113,10 +113,21 @@ class OutputService:
         return layout_from_plan(plan, resolve_ir=self._deps.resolve_ir)
 
     def validate_bank_preset(self, state: dict, mode: str, bank_id: str, preset: str, *, roles=None) -> None:
-        """Check an imported/selected preset against its bank's native channel shape."""
+        """Check a preset against its bank's shape and owning bank.
+
+        Each concrete bank (and Global) owns its presets; All Banks owns
+        none. Built-ins and legacy files without a bank tag stay assignable
+        everywhere, bank-tagged files only in their owning bank.
+        """
         definition = resolve_bank(state["modes"][mode], bank_id, roles)
         payload = self._deps.preset_loader(preset)
-        if bank_id == "global":
+        if preset not in ("Direct", "Neutral"):
+            metadata = payload.get("metadata") if isinstance(payload, dict) else None
+            tag = metadata.get("bank") if isinstance(metadata, dict) else None
+            if isinstance(tag, str) and tag.strip() and tag.strip() != definition["id"]:
+                raise ValueError(
+                    f'Preset "{preset}" belongs to bank "{tag.strip()}", not "{definition["id"]}"')
+        if definition["id"] == "global":
             return
         self.compile_layout({
             "sample_rate_hz": 48000,

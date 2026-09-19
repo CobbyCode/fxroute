@@ -64,20 +64,20 @@ class FakeDspManager:
     def get_status(self):
         return {"status": "ok", "active_preset": None}
 
-    def create_peq_preset(self, name, peq, extras=None):
-        self.calls.append(("create-peq", name))
+    def create_peq_preset(self, name, peq, extras=None, bank=None):
+        self.calls.append(("create-peq", name, bank))
         return {"name": name, "chain": []}
 
-    def create_convolver_preset(self, name, ir_filename, extras=None):
-        self.calls.append(("create-convolver", name))
+    def create_convolver_preset(self, name, ir_filename, extras=None, bank=None):
+        self.calls.append(("create-convolver", name, bank))
         return {"name": name, "chain": []}
 
-    def create_convolver_preset_with_upload(self, name, path, filename, extras=None):
-        self.calls.append(("create-with-ir", name))
+    def create_convolver_preset_with_upload(self, name, path, filename, extras=None, bank=None):
+        self.calls.append(("create-with-ir", name, bank))
         return {"ir": {"name": filename}, "preset": {"name": name, "chain": []}}
 
-    def create_convolver_preset_with_dual_uploads(self, name, *args, **kwargs):
-        self.calls.append(("import-filter-dual", name))
+    def create_convolver_preset_with_dual_uploads(self, name, *args, bank=None, **kwargs):
+        self.calls.append(("import-filter-dual", name, bank))
         return {"preset": {"name": name, "chain": []}}
 
 
@@ -142,7 +142,7 @@ class MeasurementCommitGateTests(unittest.IsolatedAsyncioTestCase):
     async def test_peq_commit_is_created_and_assigned_when_the_target_matches(self):
         response = await dsp_api.create_peq_preset(self.peq_request(source_measurement_id="measure-1"))
 
-        self.assertEqual(self.manager.calls, [("create-peq", "Room correction")])
+        self.assertEqual(self.manager.calls, [("create-peq", "Room correction", "main_l")])
         self.assertEqual(self.assignments, [("Room correction", {"mode": "stereo",
                                                                 "bank_id": "main_l",
                                                                 "expected_revision": 4})])
@@ -154,7 +154,7 @@ class MeasurementCommitGateTests(unittest.IsolatedAsyncioTestCase):
         response = await dsp_api.create_peq_preset(self.peq_request())
 
         self.assertEqual(self.verified, [])
-        self.assertEqual(self.manager.calls, [("create-peq", "Room correction")])
+        self.assertEqual(self.manager.calls, [("create-peq", "Room correction", "main_l")])
         self.assertTrue(response["bank"]["assigned"])
 
     async def test_commit_without_a_bank_binding_is_not_gated(self):
@@ -163,7 +163,7 @@ class MeasurementCommitGateTests(unittest.IsolatedAsyncioTestCase):
             "presetName": "Draft", "peq": PEQ, "source_measurement_id": "measure-1"}))
 
         self.assertEqual(self.verified, [])
-        self.assertEqual(self.manager.calls, [("create-peq", "Draft")])
+        self.assertEqual(self.manager.calls, [("create-peq", "Draft", None)])
         self.assertEqual(self.assignments, [])
 
     async def test_create_with_ir_commit_is_gated(self):

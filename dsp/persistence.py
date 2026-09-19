@@ -43,6 +43,34 @@ def kernel_name(value: Any, fallback: str = "") -> str:
     return name
 
 
+def clean_bank(value: Any) -> str | None:
+    """Owning filterbank of a preset, or None for built-ins/legacy.
+
+    Each concrete filterbank (plus Global) owns its presets; All Banks owns
+    none. Stored as metadata.bank in the preset file.
+    """
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned or cleaned in {".", ".."}:
+        return None
+    if any(char in cleaned for char in ("/", "\\")):
+        return None
+    if any(ord(char) < 32 for char in cleaned):
+        return None
+    return cleaned
+
+
+def preset_bank(payload: Any) -> str | None:
+    """Read the owning bank tag from a preset payload (None when absent)."""
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    return clean_bank(metadata.get("bank"))
+
+
 class DSPPresetStore:
     """Read and write versioned native presets under one owned root."""
 
@@ -84,6 +112,11 @@ class DSPPresetStore:
         metadata = payload.get("metadata", {})
         if not isinstance(metadata, dict):
             raise ValueError("Preset metadata must be an object")
+        if "bank" in metadata:
+            raw = metadata.get("bank")
+            if raw is not None and not (isinstance(raw, str)
+                                        and (not raw.strip() or clean_bank(raw) is not None)):
+                raise ValueError("Preset metadata.bank must be a valid filterbank id")
         return payload
 
     def read(self, name: str) -> Dict[str, Any]:
@@ -113,6 +146,7 @@ class DSPPresetStore:
             payload = self.read(path.stem)
             sources = payload.get("metadata", {}).get("source_presets", [])
             result.append({"name": path.stem, "filename": path.name, "path": str(path),
+                           "bank": preset_bank(payload),
                            "source_presets": list(sources) if isinstance(sources, list) else []})
         return result
 

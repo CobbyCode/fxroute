@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from dsp.persistence import DSPPresetStore, DSPStateStore, clean_name, kernel_name
+from dsp.persistence import DSPPresetStore, DSPStateStore, clean_bank, clean_name, kernel_name, preset_bank
 
 logger = logging.getLogger(__name__)
 
@@ -411,12 +411,57 @@ class DSPManager:
 
     @staticmethod
     def _native_preset(chain: Optional[List[dict]] = None,
-                       source_presets: Optional[List[str]] = None) -> Dict[str, Any]:
-        metadata = {}
+                       source_presets: Optional[List[str]] = None,
+                       bank: Optional[str] = None) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
         if source_presets:
             metadata["source_presets"] = list(source_presets)
+        cleaned = clean_bank(bank) if bank is not None else None
+        if bank is not None and cleaned is None and str(bank).strip():
+            raise ValueError(f"Invalid preset bank: {bank!r}")
+        if cleaned is not None:
+            metadata["bank"] = cleaned
         return {"schema": DSPPresetStore.SCHEMA, "version": DSPPresetStore.VERSION,
                 "chain": list(chain or []), "metadata": metadata}
+
+    @staticmethod
+    def _normalize_bank_arg(bank: Any) -> Optional[str]:
+        """Owning bank for a new preset; None keeps legacy shared visibility."""
+        if bank is None:
+            return None
+        if isinstance(bank, str) and not bank.strip():
+            return None
+        cleaned = clean_bank(bank)
+        if cleaned is None:
+            raise ValueError(f"Invalid preset bank: {bank!r}")
+        return cleaned
+
+    def _bank_for_create(self, name: str, bank: Any) -> Optional[str]:
+        """Resolve the stored owning bank, refusing cross-bank overwrites.
+
+        A preset belongs to exactly one concrete bank (or Global); built-ins
+        stay universal. Rewriting a bank-owned preset from another bank is
+        rejected instead of hijacking it. Legacy files without a tag adopt
+        the requesting bank; callers without a bank keep the stored tag.
+        """
+        requested = self._normalize_bank_arg(bank)
+        try:
+            existing = self.preset_store.read(clean_name(name))
+        except (FileNotFoundError, RuntimeError):
+            return requested
+        stored = preset_bank(existing)
+        if requested is None:
+            return stored
+        if stored is None:
+            return requested
+        if stored != requested:
+            raise ValueError(
+                f'Preset "{clean_name(name)}" belongs to bank "{stored}", not "{requested}"')
+        return requested
+
+    def preset_bank(self, preset_name: str) -> Optional[str]:
+        """Owning bank tag of one preset (None for built-ins/legacy)."""
+        return preset_bank(self.preset_store.read(clean_name(preset_name)))
 
     def _bootstrap(self) -> None:
         direct = self._native_preset()
@@ -1091,7 +1136,7 @@ class DSPManager:
             "channelMode": "stereo-linked", "eqMode": "IIR", "bands": bands}}}
 
     def create_peq_preset(self, preset_name: str, peq_definition: Dict[str, Any],
-                          extras: Optional[Dict[str, Any]] = None) -> dict:
+                          extras: Optional[Dict[str, Any]] = None, bank: Any = None) -> dict:
         del extras
         name = self._ensure_overwritable_name(preset_name)
         if not name:
@@ -1101,17 +1146,18 @@ class DSPManager:
                   "enabled": normalized["enabled"],
                   "params": copy.deepcopy(normalized["params"]),
                   "mix": copy.deepcopy(normalized["mix"])}
-        path = self.preset_store.write(name, self._native_preset([plugin]))
+        bank_id = self._bank_for_create(name, bank)
+        path = self.preset_store.write(name, self._native_preset([plugin], bank=bank_id))
         if normalized["params"].get("channelMode") == "dual":
             band_count = (len(normalized["params"].get("leftBands", []))
                           + len(normalized["params"].get("rightBands", [])))
         else:
             band_count = len(normalized["params"].get("bands", []))
-        return {"name": name, "filename": path.name, "path": str(path),
+        return {"name": name, "filename": path.name, "path": str(path), "bank": bank_id,
                 "band_count": band_count, "channel_mode": normalized["params"]["channelMode"]}
 
     def create_convolver_preset(self, preset_name: str, ir_filename: str,
-                                extras: Optional[Dict[str, Any]] = None) -> dict:
+                                extras: Optional[Dict[str, Any]] = None, bank: Any = None) -> dict:
         del extras
         name = self._ensure_overwritable_name(preset_name)
         if not name:
@@ -1129,8 +1175,9 @@ class DSPManager:
         plugin = {"id": "convolver#0", "type": "convolver", "enabled": True,
                   "params": {"kernel": kernel, "wet_db": 0.0, "dry_db": -100.0,
                              "input_gain_db": 0.0, "output_gain_db": 0.0}}
-        path = self.preset_store.write(name, self._native_preset([plugin]))
-        return {"name": name, "filename": path.name,
+        bank_id = self._bank_for_create(name, bank)
+        path = self.preset_store.write(name, self._native_preset([plugin], bank=bank_id))
+        return {"name": name, "filename": path.name, "bank": bank_id,
                 "path": str(path), "kernel_name": kernel}
 
     @staticmethod
@@ -1142,7 +1189,7 @@ class DSPManager:
         return name
 
     def combine_presets(self, preset_name: str, source_presets: List[str],
-                        extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                        extras: Optional[Dict[str, Any]] = None, bank: Any = None) -> Dict[str, Any]:
         del extras
         name = self._ensure_overwritable_name(preset_name)
         if not name:
@@ -1164,24 +1211,32 @@ class DSPManager:
                 chain.append(item)
         self._validate_supported_chain(chain)
         self._clamp_chain_limiter_params(chain)
-        path = self.preset_store.write(name, self._native_preset(chain, sources))
-        return {"name": name, "filename": path.name, "path": str(path),
+        bank_id = self._bank_for_create(name, bank)
+        path = self.preset_store.write(name, self._native_preset(chain, sources, bank=bank_id))
+        return {"name": name, "filename": path.name, "path": str(path), "bank": bank_id,
                 "source_presets": sources, "plugin_count": len(chain)}
 
-    def import_preset_json(self, preset_filename: str, preset_text: str) -> Dict[str, Any]:
+    def import_preset_json(self, preset_filename: str, preset_text: str, bank: Any = None) -> Dict[str, Any]:
         try:
             source = json.loads(preset_text)
         except json.JSONDecodeError as exc:
             raise ValueError(f"Preset JSON is invalid: {exc}") from exc
         if isinstance(source, dict) and source.get("schema") == self.PRESET_SCHEMA:
-            payload = self.preset_store.validate(source)
+            payload = copy.deepcopy(self.preset_store.validate(source))
             self._validate_supported_chain(payload["chain"])
             self._clamp_chain_limiter_params(payload["chain"])
         else:
             payload = self._translate_legacy_preset(source)
         name = self._ensure_overwritable_name(preset_filename)
+        bank_id = self._bank_for_create(name, bank)
+        metadata = dict(payload.get("metadata") or {})
+        if bank_id is not None:
+            metadata["bank"] = bank_id
+        elif "bank" in metadata and preset_bank(payload) is None:
+            metadata.pop("bank", None)
+        payload["metadata"] = metadata
         path = self.preset_store.write(name, payload)
-        return {"name": name, "filename": path.name, "path": str(path),
+        return {"name": name, "filename": path.name, "path": str(path), "bank": preset_bank(payload),
                 "source_presets": payload.get("metadata", {}).get("source_presets", [])}
 
     def export_preset_json(self, preset_name: str) -> str:
@@ -1360,16 +1415,18 @@ class DSPManager:
                 "path": str(destination), "size": destination.stat().st_size}
 
     def create_convolver_preset_with_upload(self, preset_name: str, source_path: Path,
-                                            filename: str, extras=None) -> dict:
+                                            filename: str, extras=None, bank: Any = None) -> dict:
         # Guard before the IR is written so a protected or empty name can
         # never leave an unreferenced IR file behind.
         name = self._ensure_overwritable_name(preset_name)
         if not name:
             raise ValueError("Invalid preset name")
+        # Refuse cross-bank overwrites before staging any IR file.
+        self._bank_for_create(name, bank)
         uploaded = self.upload_ir(source_path, filename,
                                   f"{name}{Path(filename).suffix}")
         return {"ir": uploaded,
-                "preset": self.create_convolver_preset(name, uploaded["name"], extras)}
+                "preset": self.create_convolver_preset(name, uploaded["name"], extras, bank=bank)}
 
     def upload_ir_pair(self, left_source_path: Path, left_filename: str,
                        right_source_path: Path, right_filename: str,
@@ -1408,34 +1465,35 @@ class DSPManager:
 
     def create_convolver_preset_with_dual_uploads(
         self, preset_name: str, left_source_path: Path, left_filename: str,
-        right_source_path: Path, right_filename: str, extras=None,
+        right_source_path: Path, right_filename: str, extras=None, bank: Any = None,
     ) -> dict:
         # Guard before the merged IR is written so a protected or empty name
         # can never leave an unreferenced IR file behind.
         name = self._ensure_overwritable_name(preset_name)
         if not name:
             raise ValueError("Invalid preset name")
+        self._bank_for_create(name, bank)
         merged_name = f"{name}.irs"
         uploaded = self.upload_ir_pair(left_source_path, left_filename,
                                        right_source_path, right_filename, merged_name)
         return {"ir": uploaded,
-                "preset": self.create_convolver_preset(name, uploaded["name"], extras)}
+                "preset": self.create_convolver_preset(name, uploaded["name"], extras, bank=bank)}
 
     def create_peq_preset_from_rew_text(self, preset_name: str, rew_text: str,
-                                        extras=None) -> Dict[str, Any]:
+                                        extras=None, bank: Any = None) -> Dict[str, Any]:
         imported = self.import_rew_peq_text(rew_text)
-        return {**self.create_peq_preset(preset_name, imported["peq"], extras),
+        return {**self.create_peq_preset(preset_name, imported["peq"], extras, bank=bank),
                 "import_source": imported["source"]}
 
     def create_dual_peq_preset_from_rew_texts(self, preset_name: str,
                                               left_rew_text: str, right_rew_text: str,
-                                              extras=None) -> Dict[str, Any]:
+                                              extras=None, bank: Any = None) -> Dict[str, Any]:
         left = self.import_rew_peq_text(left_rew_text)
         right = self.import_rew_peq_text(right_rew_text)
         definition = {"enabled": True, "params": {"channelMode": "dual",
                       "leftBands": left["peq"]["params"]["bands"],
                       "rightBands": right["peq"]["params"]["bands"]}}
-        return {**self.create_peq_preset(preset_name, definition, extras),
+        return {**self.create_peq_preset(preset_name, definition, extras, bank=bank),
                 "import_source": {"left": left["source"], "right": right["source"]}}
 
     def get_status(self) -> dict:
