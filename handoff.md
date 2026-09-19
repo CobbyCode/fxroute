@@ -1,5 +1,12 @@
 # Handoff — Multichannel / Task 8 + Unified Output + Backend-v2-Migration
 
+## Arbeitsstand (2026-09-19, Live-Session mit User)
+- HEAD: `28cb031` (Worktree clean; `.104`-Produktdateien md5-gleich zu HEAD).
+- `.104`-State (rev 361): `stereo-sub` aktiv mit Speaker-2-Wege (Out 1–4, vom User konfiguriert, gültig, Engine live verifiziert); `stereo` pur dormant, gültig. User testet nur Funktionalität (Schaltverhalten), keine Akustik.
+- Live geklärt: „Crossover ohne Reaktion" = unvollständige Belegung (Right-High fehlte, Duplikat Left-High) → fail-closed Entwürfe; nach Fix auf Right-High sofort live (Peaks verifiziert). „Alle auf Off bleibt laut" = Off-Routing ist ebenfalls nur Entwurf (Fail-Safe); stumm via Level −80/Pause.
+- Offene Frage (Punkt 2, keine Umsetzung): Presets sind frei auf alle Bänke anwendbar (nur Stereo/Mono-Form geprüft), z. B. globaler Convolver auf Sub/Wege. Gemessene Korrekturen sind bereits hart an die Bank gebunden (Commit-Gate); nur manuelle Zuweisung ist frei. Optionen: warnen (empfohlen) / hart beschränken / frei lassen. Crossover-Pairing ebenfalls geparkt.
+- Bekannt: 50-Hz-Brummen hardwareseitig prüfen; Out-7/8-Verkabelung unbekannt (strahlt); Frequenzen asymmetrisch (User-Config: links 1993/3478, rechts 12000/3000).
+
 ## Arbeitsstand (2026-09-18, Multichannel-E2E-Härtung + Real-Verifikation)
 - HEAD: `30b88c6` (+ `713e76d` Revive, `4fa69b6`/`238d067` Measurement-Staging; deployed auf `.104`, md5-verifiziert für `main.py dsp/api.py dsp/crossover.py dsp/orchestration.py measurement/session.py measurement/routing.py`).
 - Endzustand `.104` (rev 313): `stereo` pur (Mains Out 1/2), `stereo-sub` aktiv (Mains Out 1/2 + Subs Out 3/4, AutoSub-Align L 2.54 ms / R 1.17 ms, Bass 80 Hz/HP an), Engine v2, Radio spielt. Backups `~/deploy-backup/fxroute-*.tar`, TEST-Presets entfernt. Kein Push/Release.
