@@ -15230,12 +15230,19 @@ function beginSubwooferSave(pending) {
         return result;
     })();
     _subwooferSavePromise = run;
+    // Terminal feedback belongs to the save itself: applyOutputSystemMutation
+    // only toasts and refetches, so without this the tile would stay on
+    // 'Applying…' forever after a successful commit. Saves run strictly
+    // sequentially (each awaits its predecessor before setting 'Applying…'),
+    // so an older run can never overwrite a newer run's feedback.
     run.then(
         () => {
             if (_subwooferSavePromise === run) _subwooferSavePromise = null;
+            setSubwooferFeedback('Saved', 'success');
         },
-        () => {
+        (error) => {
             if (_subwooferSavePromise === run) _subwooferSavePromise = null;
+            setSubwooferFeedback(error?.message || 'Subwoofer settings save failed', 'error');
         },
     );
     return run;
