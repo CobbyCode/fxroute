@@ -72,8 +72,8 @@ async function main() {
     });
     flows.syncSpeakerAlignButton();
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), false);
-    assert.equal(elements.measurementSpeakerAlignStatus.textContent,
-        'Aligns each way of the selected speaker with the microphone fixed.');
+    assert.equal(elements.measurementSpeakerAlignStatus.textContent, '',
+        'idle status stays empty; the static note carries the description once');
     await flows.startSpeakerAlign('right');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].side, 'right');

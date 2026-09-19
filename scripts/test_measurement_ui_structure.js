@@ -63,12 +63,16 @@ assert.match(index, /Calibrate your loudness reference\./);
 assert.match(index, /id="measurement-speaker-align-left"[^>]*>Align Left<\/button>/);
 assert.match(index, /id="measurement-speaker-align-right"[^>]*>Align Right<\/button>/);
 assert.match(index, /Aligns each way of the selected speaker with the microphone fixed\./);
+// The sentence lives exactly once in the static note; the status line stays
+// empty while idle so it never renders twice.
+assert.equal(index.split('Aligns each way of the selected speaker with the microphone fixed.').length - 1, 1);
+assert.doesNotMatch(flows, /Aligns each way of the selected speaker/);
+assert.doesNotMatch(app, /Aligns each way of the selected speaker/);
 assert.doesNotMatch(index, /measurement-speaker-align-sequence/);
 assert.doesNotMatch(index, /Place the mic in front/);
 assert.doesNotMatch(index, /then repeat to verify/);
 assert.doesNotMatch(flows, /measurementSpeakerAlignSequence/);
 assert.doesNotMatch(flows, /then repeat to verify/);
-assert.match(flows, /Aligns each way of the selected speaker with the microphone fixed\./);
 assert.match(measurementCss, /\.measurement-workflow-speaker-buttons/);
 assert.match(measurementCss, /\.measurement-workflow-speaker-buttons[\s\S]*?width:\s*190px/);
 assert.doesNotMatch(index, /measurement-workflow-speaker-cancel/);

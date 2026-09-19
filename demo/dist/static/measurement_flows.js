@@ -587,8 +587,11 @@ function syncSpeakerAlignButton() {
     elements.measurementSpeakerAlignRightBtn.disabled = disabled;
     elements.measurementSpeakerAlignCancelBtn.classList.toggle('hidden', !speakerActive);
     elements.measurementSpeakerAlignCancelBtn.disabled = !speakerReadyToCancel;
+    // The static note below the buttons already carries the one-line
+    // description; the status line stays empty while idle so the sentence
+    // never renders twice. Progress, results and errors keep writing here.
     if (!speakerActive && elements.measurementSpeakerAlignStatus && !measurementState.speakerAlignResult) {
-        elements.measurementSpeakerAlignStatus.textContent = 'Aligns each way of the selected speaker with the microphone fixed.';
+        elements.measurementSpeakerAlignStatus.textContent = '';
     }
 }
 

@@ -11558,7 +11558,6 @@ function stopMeasurementWindowHeartbeat(keepalive = false) {
 }
 
 const MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT = 'Scans sub delay around crossover, picks best alignment.';
-const MEASUREMENT_SPEAKER_ALIGN_STATUS_DEFAULT_TEXT = 'Aligns each way of the selected speaker with the microphone fixed.';
 
 function resetMeasurementTransientStatus() {
     // A cancelled/completed/failed AutoSub (or sweep) leaves its statusText
@@ -11578,7 +11577,7 @@ function resetMeasurementTransientStatus() {
         elements.measurementAutoSubStatus.textContent = MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT;
     }
     if (elements.measurementSpeakerAlignStatus) {
-        elements.measurementSpeakerAlignStatus.textContent = MEASUREMENT_SPEAKER_ALIGN_STATUS_DEFAULT_TEXT;
+        elements.measurementSpeakerAlignStatus.textContent = '';
     }
 }
 
