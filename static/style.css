@@ -8557,6 +8557,22 @@ input[type="number"]::-webkit-outer-spin-button {
             gap: 0.55rem;
         }
 
+        /* Speaker alignment keeps its two-column button pair on mobile,
+           like the desktop layout; only this group is exempt from stacking. */
+        .measurement-workflow-speaker-buttons {
+            flex-direction: row;
+        }
+
+        .measurement-workflow-speaker-buttons .btn-secondary {
+            flex: 1 1 0;
+            width: auto;
+            min-width: 0;
+        }
+
+        #measurement-speaker-align-cancel {
+            flex: 1 1 100%;
+        }
+
         .measurement-repeat-help {
             flex: 0 0 auto;
         }

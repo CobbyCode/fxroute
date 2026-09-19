@@ -11,7 +11,6 @@ const app = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
 const flows = fs.readFileSync(path.join(root, 'static', 'measurement_flows.js'), 'utf8');
 const measurementCss = fs.readFileSync(path.join(root, 'static', 'css', '_measurement.css'), 'utf8');
 const responsiveCss = fs.readFileSync(path.join(root, 'static', 'css', '_responsive.css'), 'utf8');
-
 assert.match(index, /<h4 class="measurement-workflow-label">Measurements<\/h4>/);
 assert.match(index, /id="measurement-sweep-toggle"[^>]*>Start Sweep<\/button>/);
 assert.match(index, /id="measurement-sweep-menu"[^>]*class="[^"]*hidden[^"]*"/);
@@ -75,6 +74,7 @@ assert.doesNotMatch(flows, /measurementSpeakerAlignSequence/);
 assert.doesNotMatch(flows, /then repeat to verify/);
 assert.match(measurementCss, /\.measurement-workflow-speaker-buttons/);
 assert.match(measurementCss, /\.measurement-workflow-speaker-buttons[\s\S]*?width:\s*190px/);
+assert.match(responsiveCss, /\.measurement-workflow-speaker-buttons[\s\S]*?flex:\s*1 1 0/);
 assert.doesNotMatch(index, /measurement-workflow-speaker-cancel/);
 assert.ok(index.indexOf('id="measurement-repeat-start"') > index.indexOf('id="measurement-sweep-menu"'));
 assert.ok(index.indexOf('id="measurement-hybrid-open"') > index.indexOf('id="measurement-sweep-menu"'));
