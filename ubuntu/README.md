@@ -62,8 +62,7 @@ Unverändert übernommen (kein Ubuntu-Bedarf zur Änderung):
   (≥ 1.4.9, kein Backport nötig), `caddy` 2.6.2 liegt in den Standard-Repos,
   Firefox ist der stock Snap. Provider kommen per Evergreen-Logik (aktuelle
   stabile Upstream-Releases: Spotifyd, TIDAL-`tidalapi` per PyPI, Qobuz per
-  offiziellem Upstream mit Fork-Fallback; Stand 09/2026 ist das offizielle
-  Qobuz-Repo in Maintenance und Qobuz daher nicht installierbar).
+  offiziellem Upstream mit kompatiblem Fork als Fallback).
 * Gesamte FXRoute-Anwendung: DSP, Routing, Provider, Measurement, Library.
 * `fxroute.service` (User-Unit), `source.tar`/`build-commit`-Muster,
   Geräte-Namensableitung (`fxroute-<machine-id>`), SSH-Defaults-Idee.
