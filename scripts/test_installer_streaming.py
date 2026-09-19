@@ -128,80 +128,115 @@ spotify_desktop_supported
         self.assertNotEqual(result.returncode, 0)
 
     def test_spotifyd_release_matrix_uses_mpris_capable_builds(self):
-        self.assertRegex(self.install, r"SPOTIFYD_VERSION=\"0\.4\.2\"")
-        self.assertIn("spotifyd-linux-x86_64-full.tar.gz", self.install)
-        self.assertIn("spotifyd-linux-armv7-full.tar.gz", self.install)
-        self.assertIn(
-            "spotifyd-${SPOTIFYD_VERSION}-linux-aarch64-fxroute-"
-            "${SPOTIFYD_ARM64_ARTIFACT_VERSION}.tar.gz",
-            self.install,
-        )
-        self.assertNotIn("spotifyd-linux-aarch64-full.tar.gz", self.install)
-        self.assertNotIn("spotifyd-linux-x86_64-slim.tar.gz", self.install)
-        self.assertIn("spotifyd_arch_for_host", self.install)
-
-    def test_spotifyd_arm64_uses_a_pinned_fxroute_prebuilt_artifact(self):
-        self.assertRegex(
-            self.install,
-            r'SPOTIFYD_ARM64_ARTIFACT_VERSION="[0-9]+"',
-        )
-        checksum_match = re.search(
-            r'SPOTIFYD_ARM64_SHA256="([0-9a-f]{64})"', self.install
-        )
-        self.assertIsNotNone(checksum_match)
-        self.assertNotEqual(checksum_match.group(1), "0" * 64)
-        self.assertIn("SPOTIFYD_ARM64_ARCHIVE", self.install)
-        self.assertIn("SPOTIFYD_ARM64_DOWNLOAD_URL", self.install)
+        # No pinned version and no version-bound URL: the installed release
+        # is the current stable upstream tag resolved at install time.
+        self.assertNotRegex(self.install, r'SPOTIFYD_VERSION="[0-9]+\.[0-9]+\.[0-9]+"')
+        self.assertIn('SPOTIFYD_UPSTREAM_REPO="Spotifyd/spotifyd"', self.install)
+        self.assertIn("github_stable_release_json", self.install)
         body = extract_function(self.install, "install_spotifyd_binary")
-        self.assertIn('aarch64)', body)
-        self.assertIn('archive="$SPOTIFYD_ARM64_ARCHIVE"', body)
-        self.assertIn('checksum="$SPOTIFYD_ARM64_SHA256"', body)
-        self.assertIn('sha256sum -c -', body)
+        self.assertIn("spotifyd-linux-${release_arch}-full.tar.gz", body)
+        self.assertNotIn("spotifyd-linux-x86_64-slim.tar.gz", body)
+        self.assertNotIn("SPOTIFYD_ARM64_ARCHIVE", self.install)
+        self.assertNotIn("SPOTIFYD_ARM64_DOWNLOAD_URL", self.install)
+        self.assertNotIn("SPOTIFYD_ARM64_SHA256", self.install)
         self.assertNotIn("build_spotifyd_from_source", self.install)
         self.assertNotIn("rustup", self.install.lower())
         self.assertNotIn("cargo", self.install.lower())
+        self.assertIn("spotifyd_arch_for_host", self.install)
 
-    def test_spotifyd_arm64_artifact_is_downloaded_verified_and_installed_atomically(self):
+    def test_spotifyd_aarch64_uses_the_official_upstream_full_build(self):
+        body = extract_function(self.install, "install_spotifyd_binary")
+        self.assertIn("aarch64", extract_function(self.install, "spotifyd_arch_for_host"))
+        self.assertIn(".sha512", body)
+        self.assertIn("verify_github_payload", body)
+        self.assertFalse((ROOT / "scripts" / "build_spotifyd_arm64.sh").exists())
+        self.assertFalse((ROOT / "docs" / "SPOTIFYD-ARM64-BUILD.md").exists())
+
+    def _provider_upstream_helpers(self) -> str:
+        return "\n".join(
+            extract_function(self.install, name)
+            for name in (
+                "github_release_tag_name",
+                "github_release_asset_digest",
+                "normalize_release_tag",
+                "verify_github_payload",
+                "provider_binary_version",
+            )
+        )
+
+    def _github_curl_stub(self) -> str:
+        # Serve upstream release payloads from a fixture directory keyed by
+        # asset basename, so no network is needed. A missing fixture fails
+        # the download exactly like a failed upstream fetch.
+        return (
+            "curl() {\n"
+            '  local out="" url="" want_out=0 arg\n'
+            '  for arg in "$@"; do\n'
+            '    if [[ "$want_out" == 1 ]]; then out="$arg"; want_out=0; continue; fi\n'
+            '    if [[ "$arg" == "-o" ]]; then want_out=1; continue; fi\n'
+            '    url="$arg"\n'
+            "  done\n"
+            '  [[ -n "$out" && -n "$url" ]] || return 1\n'
+            '  cp -f "$FIXTURES/$(basename "$url")" "$out" || return 1\n'
+            "}\n"
+        )
+
+    def test_spotifyd_upstream_release_is_downloaded_verified_and_installed_atomically(self):
         body = extract_function(self.install, "install_spotifyd_binary")
         arch_helper = extract_function(self.install, "spotifyd_arch_for_host")
+        path_helper = extract_function(self.install, "spotifyd_binary_path")
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
             source_dir = root / "source"
             source_dir.mkdir()
             source_binary = source_dir / "spotifyd"
-            source_binary.write_text("portable spotifyd\n")
+            source_binary.write_text('#!/bin/sh\necho "Spotifyd 9.9.9"\n')
             source_binary.chmod(0o755)
-            source_archive = root / "source.tar.gz"
+            archive_name = "spotifyd-linux-x86_64-full.tar.gz"
             subprocess.run(
-                ["tar", "-czf", str(source_archive), "-C", str(source_dir), "spotifyd"],
+                ["tar", "-czf", str(fixtures / archive_name), "-C", str(source_dir), "spotifyd"],
                 check=True,
             )
-            archive_sha256 = hashlib.sha256(source_archive.read_bytes()).hexdigest()
+            archive_bytes = (fixtures / archive_name).read_bytes()
+            archive_sha512 = hashlib.sha512(archive_bytes).hexdigest()
+            (fixtures / f"{archive_name}.sha512").write_text(f"{archive_sha512}  {archive_name}\n")
+            (fixtures / "release.json").write_text(
+                '{"tag_name": "v9.9.9", "assets": [{"name": "%s", "digest": "sha256:%s"}]}'
+                % (archive_name, hashlib.sha256(archive_bytes).hexdigest())
+            )
             target_home = root / "home"
             harness = f"""
 set -Eeuo pipefail
 {arch_helper}
+{path_helper}
+{self._provider_upstream_helpers()}
 {body}
+{self._github_curl_stub()}
+github_stable_release_json() {{ cat "$FIXTURES/release.json"; }}
 run_cmd() {{ "$@"; }}
 run_as_target_user() {{ "$@"; }}
-pass() {{ :; }}
+pass() {{ printf 'pass:%s\\n' "$*"; }}
 warn() {{ printf '%s\\n' "$*" >&2; }}
 die() {{ printf '%s\\n' "$*" >&2; return 1; }}
 HOME={target_home}
-HOST_ARCH=aarch64
-SPOTIFYD_VERSION=0.4.2
-SPOTIFYD_ARM64_ARCHIVE=spotifyd-0.4.2-linux-aarch64-fxroute-1.tar.gz
-SPOTIFYD_ARM64_SHA256={archive_sha256}
-SPOTIFYD_ARM64_DOWNLOAD_URL=file://{source_archive}
+FIXTURES={fixtures}
+HOST_ARCH=x86_64
+SPOTIFYD_UPSTREAM_REPO=Spotifyd/spotifyd
 SPOTIFYD_INSTALLED_BY_FXROUTE=0
 SPOTIFYD_BINARY_PATH=''
 SPOTIFYD_BINARY_SHA256=''
+SPOTIFYD_INSTALLED_VERSION=''
 SPOTIFYD_BINARY_IDENTITY_CHANGED=0
+SPOTIFYD_BINARY_UPDATED=0
 SPOTIFYD_PRESENT_BEFORE=0
+SPOTIFYD_PROVIDER_STATUS=''
 install_spotifyd_binary
 test -f "$HOME/.local/bin/spotifyd"
 test -x "$HOME/.local/bin/spotifyd"
-printf 'installed=%s\\n' "$(<"$HOME/.local/bin/spotifyd")"
+"$HOME/.local/bin/spotifyd" --version
+printf 'version=%s updated=%s\\n' "$SPOTIFYD_INSTALLED_VERSION" "$SPOTIFYD_BINARY_UPDATED"
 printf 'hash=%s\\n' "$SPOTIFYD_BINARY_SHA256"
 """
             result = subprocess.run(
@@ -210,7 +245,8 @@ printf 'hash=%s\\n' "$SPOTIFYD_BINARY_SHA256"
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("installed=portable spotifyd", result.stdout)
+            self.assertIn("Spotifyd 9.9.9", result.stdout)
+            self.assertIn("version=9.9.9 updated=1", result.stdout)
             self.assertIn(
                 hashlib.sha256(source_binary.read_bytes()).hexdigest(),
                 result.stdout,
@@ -218,39 +254,52 @@ printf 'hash=%s\\n' "$SPOTIFYD_BINARY_SHA256"
         self.assertIn("staged_binary", body)
         self.assertIn('mv -f "$staged_binary" "$destination"', body)
 
-    def test_spotifyd_arm64_checksum_failure_leaves_no_installed_binary(self):
+    def test_spotifyd_checksum_failure_leaves_no_installed_binary(self):
         body = extract_function(self.install, "install_spotifyd_binary")
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
             source_binary = root / "spotifyd"
             source_binary.write_text("tampered fixture\n")
             source_binary.chmod(0o755)
-            source_archive = root / "source.tar.gz"
+            archive_name = "spotifyd-linux-x86_64-full.tar.gz"
             subprocess.run(
-                ["tar", "-czf", str(source_archive), "-C", str(root), "spotifyd"],
+                ["tar", "-czf", str(fixtures / archive_name), "-C", str(root), "spotifyd"],
                 check=True,
+            )
+            (fixtures / f"{archive_name}.sha512").write_text(
+                "%s  %s\n" % ("0" * 128, archive_name)
+            )
+            (fixtures / "release.json").write_text(
+                '{"tag_name": "v9.9.9", "assets": []}'
             )
             target_home = root / "home"
             harness = f"""
 set -Eeuo pipefail
 {extract_function(self.install, "spotifyd_arch_for_host")}
+{extract_function(self.install, "spotifyd_binary_path")}
+{self._provider_upstream_helpers()}
 {body}
+{self._github_curl_stub()}
+github_stable_release_json() {{ cat "$FIXTURES/release.json"; }}
 run_cmd() {{ "$@"; }}
 run_as_target_user() {{ "$@"; }}
 pass() {{ :; }}
 warn() {{ :; }}
 die() {{ return 1; }}
 HOME={target_home}
-HOST_ARCH=aarch64
-SPOTIFYD_VERSION=0.4.2
-SPOTIFYD_ARM64_ARCHIVE=spotifyd-0.4.2-linux-aarch64-fxroute-1.tar.gz
-SPOTIFYD_ARM64_SHA256=0000000000000000000000000000000000000000000000000000000000000000
-SPOTIFYD_ARM64_DOWNLOAD_URL=file://{source_archive}
+FIXTURES={fixtures}
+HOST_ARCH=x86_64
+SPOTIFYD_UPSTREAM_REPO=Spotifyd/spotifyd
 SPOTIFYD_INSTALLED_BY_FXROUTE=0
 SPOTIFYD_BINARY_PATH=''
 SPOTIFYD_BINARY_SHA256=''
+SPOTIFYD_INSTALLED_VERSION=''
 SPOTIFYD_BINARY_IDENTITY_CHANGED=0
+SPOTIFYD_BINARY_UPDATED=0
 SPOTIFYD_PRESENT_BEFORE=0
+SPOTIFYD_PROVIDER_STATUS=''
 if install_spotifyd_binary; then
   printf 'unexpected-success\\n'
 else
@@ -266,39 +315,123 @@ test ! -e "$HOME/.local/bin/spotifyd"
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("checksum-rejected", result.stdout)
 
-    def test_spotifyd_arm64_build_recipe_pins_source_toolchain_features_and_baseline(self):
-        builder = ROOT / "scripts" / "build_spotifyd_arm64.sh"
-        recipe = builder.read_text()
-        build_docs = (ROOT / "docs" / "SPOTIFYD-ARM64-BUILD.md").read_text()
-        for text in (
-            "0.4.2",
-            "03a28037db2389a9415cde985dbf8c639c38d8000da5985178833fc5250249da5798f426e9b6e89c18762ff2d05b1331590905ef818f1430fe1c7e2507020898",
-            "1.88.0",
-            "ubuntu:22.04@sha256:",
-            "--no-default-features",
-            "alsa_backend",
-            "pulseaudio_backend",
-            "dbus_mpris",
-            "target-cpu=generic",
-            "sha256sum",
-        ):
-            self.assertIn(text, recipe)
-        self.assertNotIn("march=native", recipe)
-        self.assertNotIn("file -b --format", recipe)
-        self.assertIn('file -b "$binary" | grep -Eq', recipe)
-        self.assertIn('cd /out', recipe)
-        self.assertIn('sha256sum "$ARCHIVE" | tee "$ARCHIVE.sha256"', recipe)
-        for text in (
-            "OpenSSL 3",
-            "glibc 2.35",
-            "aarch64",
-            "Raspberry Pi 4",
-            "Khadas",
-            "source version",
-            "Cargo features",
-            "runtime dependencies",
-        ):
-            self.assertIn(text, build_docs)
+    def test_spotifyd_owned_binary_updates_to_newer_upstream_without_uninstall(self):
+        body = extract_function(self.install, "install_spotifyd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            source_dir = root / "source"
+            source_dir.mkdir()
+            new_binary = source_dir / "spotifyd"
+            new_binary.write_text('#!/bin/sh\necho "Spotifyd 9.9.9"\n')
+            new_binary.chmod(0o755)
+            archive_name = "spotifyd-linux-x86_64-full.tar.gz"
+            subprocess.run(
+                ["tar", "-czf", str(fixtures / archive_name), "-C", str(source_dir), "spotifyd"],
+                check=True,
+            )
+            archive_bytes = (fixtures / archive_name).read_bytes()
+            (fixtures / f"{archive_name}.sha512").write_text(
+                f"{hashlib.sha512(archive_bytes).hexdigest()}  {archive_name}\n"
+            )
+            (fixtures / "release.json").write_text('{"tag_name": "v9.9.9", "assets": []}')
+            target_home = root / "home"
+            owned_dir = target_home / ".local" / "bin"
+            owned_dir.mkdir(parents=True)
+            old_binary = owned_dir / "spotifyd"
+            old_binary.write_text('#!/bin/sh\necho "Spotifyd 9.9.8"\n')
+            old_binary.chmod(0o755)
+            old_sha = hashlib.sha256(old_binary.read_bytes()).hexdigest()
+            harness = f"""
+set -Eeuo pipefail
+{extract_function(self.install, "spotifyd_arch_for_host")}
+{extract_function(self.install, "spotifyd_binary_path")}
+{self._provider_upstream_helpers()}
+{body}
+{self._github_curl_stub()}
+github_stable_release_json() {{ cat "$FIXTURES/release.json"; }}
+run_cmd() {{ "$@"; }}
+run_as_target_user() {{ "$@"; }}
+pass() {{ printf 'pass:%s\\n' "$*"; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+HOME={target_home}
+FIXTURES={fixtures}
+HOST_ARCH=x86_64
+SPOTIFYD_UPSTREAM_REPO=Spotifyd/spotifyd
+SPOTIFYD_INSTALLED_BY_FXROUTE=1
+SPOTIFYD_BINARY_PATH="$HOME/.local/bin/spotifyd"
+SPOTIFYD_BINARY_SHA256={old_sha}
+SPOTIFYD_INSTALLED_VERSION=9.9.8
+SPOTIFYD_BINARY_IDENTITY_CHANGED=0
+SPOTIFYD_BINARY_UPDATED=0
+SPOTIFYD_PRESENT_BEFORE=0
+SPOTIFYD_PROVIDER_STATUS=''
+install_spotifyd_binary
+"$HOME/.local/bin/spotifyd" --version
+printf 'version=%s updated=%s\\n' "$SPOTIFYD_INSTALLED_VERSION" "$SPOTIFYD_BINARY_UPDATED"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("updating to v9.9.9", result.stdout)
+            self.assertIn("Spotifyd 9.9.9", result.stdout)
+            self.assertIn("version=9.9.9 updated=1", result.stdout)
+
+    def test_spotifyd_up_to_date_binary_is_kept_without_download(self):
+        body = extract_function(self.install, "install_spotifyd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            (fixtures / "release.json").write_text('{"tag_name": "v9.9.9", "assets": []}')
+            target_home = root / "home"
+            owned_dir = target_home / ".local" / "bin"
+            owned_dir.mkdir(parents=True)
+            current_binary = owned_dir / "spotifyd"
+            current_binary.write_text('#!/bin/sh\necho "Spotifyd 9.9.9"\n')
+            current_binary.chmod(0o755)
+            current_sha = hashlib.sha256(current_binary.read_bytes()).hexdigest()
+            harness = f"""
+set -Eeuo pipefail
+{extract_function(self.install, "spotifyd_arch_for_host")}
+{extract_function(self.install, "spotifyd_binary_path")}
+{self._provider_upstream_helpers()}
+{body}
+{self._github_curl_stub()}
+github_stable_release_json() {{ cat "$FIXTURES/release.json"; }}
+run_cmd() {{ "$@"; }}
+run_as_target_user() {{ "$@"; }}
+pass() {{ printf 'pass:%s\\n' "$*"; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+HOME={target_home}
+FIXTURES={fixtures}
+HOST_ARCH=x86_64
+SPOTIFYD_UPSTREAM_REPO=Spotifyd/spotifyd
+SPOTIFYD_INSTALLED_BY_FXROUTE=1
+SPOTIFYD_BINARY_PATH="$HOME/.local/bin/spotifyd"
+SPOTIFYD_BINARY_SHA256={current_sha}
+SPOTIFYD_INSTALLED_VERSION=9.9.9
+SPOTIFYD_BINARY_IDENTITY_CHANGED=0
+SPOTIFYD_BINARY_UPDATED=0
+SPOTIFYD_PRESENT_BEFORE=0
+SPOTIFYD_PROVIDER_STATUS=''
+install_spotifyd_binary
+printf 'version=%s updated=%s\\n' "$SPOTIFYD_INSTALLED_VERSION" "$SPOTIFYD_BINARY_UPDATED"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("already up to date (v9.9.9)", result.stdout)
+            self.assertIn("version=9.9.9 updated=0", result.stdout)
 
     def test_spotifyd_archive_binary_is_installed_even_without_archive_exec_bit(self):
         body = extract_function(self.install, "install_spotifyd_binary")
@@ -386,16 +519,17 @@ test ! -e "$HOME/.local/bin/spotifyd"
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), expected)
 
-    def test_spotifyd_debian13_arm_runtime_limit_is_documented(self):
-        for detail in ("Debian 13", "libssl.so.1.1", "libcrypto.so.1.1", "pinned"):
+    def test_spotifyd_docs_describe_official_upstream_aarch64_build(self):
+        for detail in ("aarch64", ".sha512", "ldd"):
             self.assertIn(detail, self.installer_docs)
-        self.assertIn("SPOTIFYD_ARM64_ARTIFACT_VERSION", self.install)
+        self.assertNotIn("SPOTIFYD_ARM64_ARTIFACT_VERSION", self.install)
+        self.assertNotIn("SPOTIFYD-ARM64-BUILD", self.installer_docs)
         self.assertNotIn("build_spotifyd_from_source", self.install)
 
     def test_spotifyd_runtime_failure_keeps_prebuilt_unavailable_without_building(self):
         body = extract_function(self.install, "install_spotifyd")
         self.assertIn("spotifyd_runtime_missing_libraries", body)
-        self.assertIn("pinned prebuilt", body)
+        self.assertIn("upstream prebuilt", body)
         self.assertIn("service_disable_failed", body)
         self.assertNotIn("build_spotifyd", body)
 
@@ -446,12 +580,136 @@ test ! -e "$HOME/.local/bin/spotifyd"
         self.assertIn("QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1", qbzd)
         self.assertIn("user_systemctl enable --now qbzd.service", qbzd)
 
-    def test_qobuz_release_matrix_is_pinned(self):
-        self.assertRegex(self.install, r"QBZD_VERSION=\"2\.0\.2\"")
-        self.assertIn('archive="qbzd-${QBZD_VERSION}-linux-amd64.tar.gz"', self.install)
-        self.assertIn('archive="qbzd-${QBZD_VERSION}-linux-aarch64.tar.gz"', self.install)
-        self.assertIn("6bcdb2616f339b7905fc58f48edf7e3bc2e0e9eadc1ce6235b60c7fdf34b804c", self.install)
-        self.assertIn("adade56509544c00187476d58acef78538d3e5d475370263d98397dc61f200c9", self.install)
+    def test_qobuz_owned_binary_updates_to_newer_upstream_without_uninstall(self):
+        body = extract_function(self.install, "install_qbzd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            new_binary = fixtures / "qbzd-linux-amd64"
+            new_binary.write_text('#!/bin/sh\necho "qbzd 1.0.1"\n')
+            new_binary.chmod(0o755)
+            new_digest = hashlib.sha256(new_binary.read_bytes()).hexdigest()
+            (fixtures / "release.json").write_text(
+                '{"tag_name": "v1.0.1", "assets": [{"name": "qbzd-linux-amd64", "digest": "sha256:%s"}]}'
+                % new_digest
+            )
+            target_home = root / "home"
+            owned_dir = target_home / ".local" / "bin"
+            owned_dir.mkdir(parents=True)
+            old_binary = owned_dir / "qbzd"
+            old_binary.write_text('#!/bin/sh\necho "qbzd 1.0.0"\n')
+            old_binary.chmod(0o755)
+            old_sha = hashlib.sha256(old_binary.read_bytes()).hexdigest()
+            harness = f"""
+set -Eeuo pipefail
+{extract_function(self.install, "qbzd_arch_for_host")}
+{extract_function(self.install, "qbzd_binary_path")}
+{self._provider_upstream_helpers()}
+{body}
+{self._github_curl_stub()}
+github_stable_release_json() {{ cat "$FIXTURES/release.json"; }}
+run_cmd() {{ "$@"; }}
+run_as_target_user() {{ "$@"; }}
+pass() {{ printf 'pass:%s\\n' "$*"; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+HOME={target_home}
+FIXTURES={fixtures}
+HOST_ARCH=x86_64
+QBZD_UPSTREAM_REPO=yet-another-quentin/qbzd
+QBZD_INSTALLED_BY_FXROUTE=1
+QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
+QBZD_BINARY_PATH="$HOME/.local/bin/qbzd"
+QBZD_BINARY_SHA256={old_sha}
+QBZD_INSTALLED_VERSION=1.0.0
+QBZD_BINARY_IDENTITY_CHANGED=0
+QBZD_BINARY_UPDATED=0
+QBZD_PRESENT_BEFORE=0
+QOBUZ_PROVIDER_STATUS=''
+install_qbzd_binary
+"$HOME/.local/bin/qbzd" --version
+printf 'version=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_BINARY_UPDATED"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("updating to v1.0.1", result.stdout)
+            self.assertIn("qbzd 1.0.1", result.stdout)
+            self.assertIn("version=1.0.1 updated=1", result.stdout)
+
+    def test_qobuz_up_to_date_binary_is_kept_without_download(self):
+        body = extract_function(self.install, "install_qbzd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            (fixtures / "release.json").write_text('{"tag_name": "v1.0.1", "assets": []}')
+            target_home = root / "home"
+            owned_dir = target_home / ".local" / "bin"
+            owned_dir.mkdir(parents=True)
+            current_binary = owned_dir / "qbzd"
+            current_binary.write_text('#!/bin/sh\necho "qbzd 1.0.1"\n')
+            current_binary.chmod(0o755)
+            current_sha = hashlib.sha256(current_binary.read_bytes()).hexdigest()
+            harness = f"""
+set -Eeuo pipefail
+{extract_function(self.install, "qbzd_arch_for_host")}
+{extract_function(self.install, "qbzd_binary_path")}
+{self._provider_upstream_helpers()}
+{body}
+{self._github_curl_stub()}
+github_stable_release_json() {{ cat "$FIXTURES/release.json"; }}
+run_cmd() {{ "$@"; }}
+run_as_target_user() {{ "$@"; }}
+pass() {{ printf 'pass:%s\\n' "$*"; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+HOME={target_home}
+FIXTURES={fixtures}
+HOST_ARCH=x86_64
+QBZD_UPSTREAM_REPO=yet-another-quentin/qbzd
+QBZD_INSTALLED_BY_FXROUTE=1
+QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
+QBZD_BINARY_PATH="$HOME/.local/bin/qbzd"
+QBZD_BINARY_SHA256={current_sha}
+QBZD_INSTALLED_VERSION=1.0.1
+QBZD_BINARY_IDENTITY_CHANGED=0
+QBZD_BINARY_UPDATED=0
+QBZD_PRESENT_BEFORE=0
+QOBUZ_PROVIDER_STATUS=''
+install_qbzd_binary
+printf 'version=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_BINARY_UPDATED"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("already up to date (v1.0.1)", result.stdout)
+            self.assertIn("version=1.0.1 updated=0", result.stdout)
+
+    def test_provider_upstream_resolution_is_shared_and_version_free(self):
+        for helper in (
+            "github_stable_release_json",
+            "github_release_tag_name",
+            "github_release_asset_digest",
+            "normalize_release_tag",
+            "provider_binary_version",
+            "verify_github_payload",
+        ):
+            extract_function(self.install, helper)
+        for provider_fn in ("install_spotifyd_binary", "install_qbzd_binary"):
+            body = extract_function(self.install, provider_fn)
+            self.assertIn("github_stable_release_json", body)
+            self.assertIn("releases/download/${upstream_tag}/", body)
+            self.assertIn("verify_github_payload", body)
+            self.assertIn("already up to date", body)
+            self.assertIn("updating to ${upstream_tag}", body)
 
     def test_qobuz_install_survives_a_failed_qbzd_download(self):
         """A transient prebuilt-download failure must not abort the installer.
@@ -928,11 +1186,32 @@ printf 'caller-tolerated status=<%s>\\n' "$QOBUZ_PROVIDER_STATUS"
             )
             self.assertNotEqual(result.returncode, 0)
 
-    def test_tidal_is_an_optional_python_dependency(self):
+    def test_tidal_tracks_the_current_stable_upstream(self):
         self.assertNotIn("tidalapi", self.base_requirements)
-        self.assertIn("tidalapi==0.8.11", self.tidal_requirements)
+        self.assertIn("tidalapi", self.tidal_requirements)
+        self.assertNotRegex(self.tidal_requirements, r"tidalapi\s*==")
         self.assertIn("requirements-tidal.txt", self.install)
         self.assertIn("PKCE", self.install)
+        body = extract_function(self.install, "ensure_tidal_dependency")
+        self.assertIn("install --upgrade", body)
+        self.assertNotIn("0.8.11", body)
+        self.assertIn("update check failed", body)
+
+    def test_install_state_records_upstream_provider_versions(self):
+        state_body = extract_function(self.install, "write_install_state")
+        ownership_body = extract_function(self.install, "load_provider_ownership_state")
+        for field in (
+            '"installed_version": "${SPOTIFYD_INSTALLED_VERSION}"',
+            '"installed_version": "${QBZD_INSTALLED_VERSION}"',
+            '"installed_version": "${TIDAL_INSTALLED_VERSION}"',
+        ):
+            self.assertIn(field, state_body)
+        for field in (
+            "providers.spotifyd.installed_version",
+            "providers.qobuz.installed_version",
+            "providers.tidal.installed_version",
+        ):
+            self.assertIn(field, ownership_body)
 
     def test_install_state_records_provider_ownership(self):
         for name in (

@@ -1,3 +1,6 @@
 # Optional TIDAL provider dependency.
 # The existing FXRoute provider owns PKCE/device-flow session handling.
-tidalapi==0.8.11
+# No version is pinned here: pip resolves the current stable tidalapi from
+# PyPI at install time, so install, reinstall and update all use the same
+# current upstream source without an FXRoute code change.
+tidalapi

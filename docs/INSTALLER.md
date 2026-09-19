@@ -60,28 +60,34 @@ session.
 | Provider | Release or package | Supported host | Installer result |
 | --- | --- | --- | --- |
 | Spotify Desktop | Native `spotify-client` on apt; `com.spotify.Client` Flatpak otherwise | x86_64 with X11 or Wayland desktop session | Installs the official client, keyring/Secret-Service support, and optional autostart integration |
-| spotifyd | v0.4.2 full/MPRIS release; FXRoute ARM64 prebuilt v1 for aarch64 | x86_64 with a compatible runtime; aarch64 with the FXRoute artifact; armv7 where the release runtime is available | Installs `~/.local/bin/spotifyd`, a user service, and a minimal MPRIS/PipeWire-Pulse config with fixed Zeroconf TCP port 4444 |
-| Qobuz/qbzd | v2.0.2 standalone build | amd64, aarch64 | Installs `~/.local/bin/qbzd`, Avahi/mDNS support, the ALSA→PipeWire bridge (`pipewire-alsa`, from trixie-backports where that stack is active), `qconnect.volume_mode=locked`, Qobuz Connect auto-connect (`qconnect.startup_mode=on`, device name untouched), audio output routing (`audio.backend=pipewire`, `audio.device=fxroute_dsp_sink`, `audio.skip_sink_switch=true`), and a `qbzd run` user service |
-| TIDAL | `tidalapi==0.8.11` in the FXRoute venv | Any supported FXRoute Python host | Adds the optional dependency used by FXRoute's existing PKCE login flow |
+| spotifyd | Current stable upstream release (`Spotifyd/spotifyd`, full/MPRIS build) | x86_64, aarch64, or armv7 with a compatible runtime | Installs `~/.local/bin/spotifyd`, a user service, and a minimal MPRIS/PipeWire-Pulse config with fixed Zeroconf TCP port 4444 |
+| Qobuz/qbzd | Current stable upstream release (`yet-another-quentin/qbzd`, MIT fork of the discontinued `vicrodh/qbz`) | amd64, aarch64 | Installs `~/.local/bin/qbzd`, Avahi/mDNS support, the ALSA→PipeWire bridge (`pipewire-alsa`, from trixie-backports where that stack is active), `qconnect.volume_mode=locked`, Qobuz Connect auto-connect (`qconnect.startup_mode=on`, device name untouched), audio output routing (`audio.backend=pipewire`, `audio.device=fxroute_dsp_sink`, `audio.skip_sink_switch=true`), and a `qbzd run` user service |
+| TIDAL | Current stable `tidalapi` from PyPI in the FXRoute venv | Any supported FXRoute Python host | Adds the optional dependency used by FXRoute's existing PKCE login flow |
+
+Provider versions are never pinned: a fresh install resolves the current
+stable upstream release (GitHub latest stable release for spotifyd/qbzd,
+PyPI for `tidalapi`), and rerunning the install — from the command line or
+via the Settings → Providers Update button — updates an FXRoute-owned
+installation to a newer upstream release in place, without uninstalling
+first. Checksums are verified against the checksum sidecar or digest
+published with the same upstream release. Foreign (not FXRoute-owned)
+binaries are preserved untouched. The original `vicrodh/qbz` upstream was
+discontinued; qbzd now tracks its maintained MIT-licensed fork
+(`yet-another-quentin/qbzd`), which publishes the same `qbzd` daemon under
+the `qbzd-linux-<arch>` release asset names.
 
 The base installer supports apt, dnf, zypper, and pacman. Unsupported
 architectures are reported without downloading or building replacement
 provider binaries.
 
-The v0.4.2 aarch64 release binary is not compatible with Debian 13/Trixie: it
-requires the obsolete `libssl.so.1.1` and `libcrypto.so.1.1`, which Debian 13
-does not provide. For aarch64 the installer downloads the versioned FXRoute
-artifact from the `spotifyd-arm64-v1` release and verifies its pinned
-SHA-256 before extracting it. The artifact uses the same full/MPRIS provider
-features as the upstream release and is built against OpenSSL 3 and glibc
-2.35; the build provenance and runtime dependencies are documented in
-[`docs/SPOTIFYD-ARM64-BUILD.md`](SPOTIFYD-ARM64-BUILD.md). The installed binary
-is checked with `ldd`, recorded like any FXRoute-owned binary (path + sha256 in
-install state), and the service is enabled normally. If the artifact download,
-checksum, or runtime check fails, spotifyd is recorded as unavailable and an
-FXRoute-owned service is disabled, exactly like the release-binary failure
-path. The installer never installs end-of-life OpenSSL 1.1 packages and never
-builds spotifyd on the target host.
+Every upstream spotifyd architecture (including aarch64) uses the official
+full/MPRIS release asset, verified against the `.sha512` sidecar published
+with the same release. The installed binary is checked with `ldd`, recorded
+like any FXRoute-owned binary (upstream version, path + sha256 in install
+state), and the service is enabled normally. If the download, checksum, or
+runtime check fails, spotifyd is recorded as unavailable and an
+FXRoute-owned service is disabled. The installer never installs end-of-life
+OpenSSL 1.1 packages and never builds spotifyd on the target host.
 
 ## First Run
 
