@@ -30,6 +30,38 @@ LINK_VERIFY_POLL_SECONDS = 0.05
 LINK_SETTLE_SECONDS = 0.25
 
 
+def iter_pw_link_pairs(listing: str) -> list[tuple[str, str]]:
+    """Parse `pw-link -l` into ``(source_port, target_port)`` pairs.
+
+    Current PipeWire lists a tree: a header port line followed by
+    ``|-> target`` (outgoing) or ``|<- source`` (incoming) lines. Older
+    versions print single ``source -> target (id: N)`` lines; both shapes
+    are accepted so verification works across hosts.
+    """
+    pairs: list[tuple[str, str]] = []
+    current = ""
+    for raw_line in (listing or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("|->"):
+            target = line[3:].strip()
+            if current and target:
+                pairs.append((current, target))
+        elif line.startswith("|<-"):
+            source = line[3:].strip()
+            if current and source:
+                pairs.append((source, current))
+        elif "->" in line:
+            left, _, right = line.partition("->")
+            right = right.split("(id:")[0].strip()
+            if left.strip() and right:
+                pairs.append((left.strip(), right))
+        else:
+            current = line.split("(id:")[0].strip()
+    return pairs
+
+
 def freeze_expected_native_context(
     *,
     measurement_scope: str,
@@ -147,9 +179,8 @@ class MeasurementRouting:
     ) -> dict[str, float | None]:
         """Poll `pw-link -l` until every expected pair appears, or time out.
 
-        ``expected`` holds ``(source_port, target_port, label)`` triples. A
-        pair matches when one listing line contains both port names (robust
-        to column order and ``(id: N)`` suffixes). Returns
+        ``expected`` holds ``(source_port, target_port, label)`` triples,
+        matched exactly against parsed link pairs. Returns
         ``{label: elapsed_seconds}`` with ``None`` for pairs never observed.
         Never raises: the caller owns mic-fatal versus reference-lenient.
         """
@@ -160,11 +191,11 @@ class MeasurementRouting:
             try:
                 completed = self._run(["pw-link", "-l"], capture_output=True,
                                       text=True, timeout=3)
-                lines = (completed.stdout or "").splitlines() if completed.returncode == 0 else []
+                pairs = iter_pw_link_pairs(completed.stdout) if completed.returncode == 0 else []
             except Exception:
-                lines = []
+                pairs = []
             for label, (src, dst) in list(pending.items()):
-                if any(src in line and dst in line for line in lines):
+                if (src, dst) in pairs:
                     found[label] = round(time.monotonic() - start, 3)
                     del pending[label]
             if pending:
@@ -902,23 +933,9 @@ class MeasurementRouting:
                 nodes_of_interest.add(node[: -len(".monitor")])
             else:
                 nodes_of_interest.add(f"{node}.monitor")
-        for line in (completed.stdout or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split("->")
-            if len(parts) != 2:
-                continue
-            in_port = parts[0].strip()
-            out_port = parts[1].strip()
-            # strip optional (id: ...)
-            link_id = None
-            if "(id:" in out_port:
-                out_port, _, link_id_part = out_port.partition("(id:")
-                out_port = out_port.strip()
-                link_id = link_id_part.strip().rstrip(")").strip()
-            in_node = in_port.rsplit(":", 1)[0] if ":" in in_port else ""
-            out_node = out_port.rsplit(":", 1)[0] if ":" in out_port else ""
+        for src_port, dst_port in iter_pw_link_pairs(completed.stdout):
+            in_node = src_port.rsplit(":", 1)[0] if ":" in src_port else ""
+            out_node = dst_port.rsplit(":", 1)[0] if ":" in dst_port else ""
             # Only links incident to this record node are stale candidates;
             # taps to other nodes (keeper streams, user monitors) survive.
             # The far side must be a measurement source: the mic source, a
@@ -932,19 +949,8 @@ class MeasurementRouting:
             if (far_node not in nodes_of_interest
                     and not far_node.endswith(".monitor")):
                 continue
-            unlinked = False
-            if link_id and link_id.isdigit():
-                try:
-                    self._run(
-                        ["pw-link", "-d", link_id],
-                        capture_output=True, text=True, timeout=3,
-                    )
-                    unlinked = True
-                except Exception:
-                    pass
-            if not unlinked:
-                self._store._disconnect_link(out_port, in_port)
-            removed.append(f"{out_port} -> {in_port}")
+            self._store._disconnect_link(dst_port, src_port)
+            removed.append(f"{dst_port} -> {src_port}")
         if removed:
             logger.info("Cleaned up %d stale fxroute link(s)", len(removed))
             time.sleep(0.1)

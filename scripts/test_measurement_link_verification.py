@@ -21,7 +21,35 @@ from measurement.store import MeasurementStore
 
 
 def link_line(src, dst, link_id=42):
+    """Legacy single-line listing shape (older PipeWire)."""
     return f"{src} -> {dst} (id: {link_id})"
+
+
+def tree_block(src, dst):
+    """Current tree listing shape (ground truth from .104)."""
+    return f"{src}\n  |-> {dst}"
+
+
+class PairParserTests(unittest.TestCase):
+    def test_tree_pairs(self):
+        listing = "\n".join([
+            "fxroute_dsp_sink:monitor_FR",
+            "  |-> fxroute-measure-record-jo:input_FL",
+            "alsa_output:playback_AUX0",
+            "  |<- fxroute_dsp:output_1",
+        ])
+        from measurement.routing import iter_pw_link_pairs
+        self.assertEqual(iter_pw_link_pairs(listing), [
+            ("fxroute_dsp_sink:monitor_FR", "fxroute-measure-record-jo:input_FL"),
+            ("fxroute_dsp:output_1", "alsa_output:playback_AUX0"),
+        ])
+
+    def test_legacy_pairs(self):
+        from measurement.routing import iter_pw_link_pairs
+        self.assertEqual(
+            iter_pw_link_pairs(link_line("a:out", "b:in", 7)),
+            [("a:out", "b:in")])
+        self.assertEqual(iter_pw_link_pairs(""), [])
 
 
 class LinkVerificationTests(unittest.TestCase):
@@ -73,15 +101,16 @@ class LinkVerificationTests(unittest.TestCase):
 
     def test_links_appearing_late_proceed(self):
         """Links materializing after a few polls proceed with evidence."""
-        result = self._link(listing=("", link_line("fxroute_dsp_sink.monitor:monitor_FL", "record:input_FL")
-                                     + "\n" + link_line("mic:capture_FL", "record:input_FR")))
+        result = self._link(listing=("", tree_block(
+            "fxroute_dsp_sink.monitor:monitor_FL", "record:input_FL") + "\n" + tree_block(
+            "mic:capture_FL", "record:input_FR")))
         verified = result.get("link_verified") or {}
         self.assertEqual(len(verified), 2)
         self.assertTrue(all(isinstance(value, float) for value in verified.values()))
 
     def test_missing_reference_only_warns(self):
         """A missing monitor link warns (analysis still runs); mic is fatal."""
-        result = self._link(listing=(link_line("mic:capture_FL", "record:input_FR"),) * 3)
+        result = self._link(listing=(tree_block("mic:capture_FL", "record:input_FR"),) * 3)
         self.assertIn("link_warning", result)
         self.assertIn("reference", result["link_warning"])
 
@@ -94,37 +123,41 @@ class CleanupScopingTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.store = MeasurementStore(home=pathlib.Path(self._tmp.name))
         self.routing = self.store._routing
-        self.disconnected = []
 
     def cleanup(self, listing):
         def fake_run(cmd, **kwargs):
             if cmd[:2] == ["pw-link", "-l"]:
                 return SimpleNamespace(returncode=0, stdout=listing)
-            if cmd[:2] == ["pw-link", "-d"]:
-                self.disconnected.append(tuple(cmd[2:]))
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
             raise AssertionError(f"unexpected command {cmd}")
 
-        with patch.object(self.routing, "_run", side_effect=fake_run):
-            return self.routing._cleanup_fxroute_links(
+        disconnected = []
+
+        def fake_disconnect(dst, src):
+            disconnected.append((dst, src))
+            return True
+
+        with patch.object(self.routing, "_run", side_effect=fake_run), \
+             patch.object(self.store, "_disconnect_link", side_effect=fake_disconnect):
+            removed = self.routing._cleanup_fxroute_links(
                 source_node_name="mic", record_node_name="record")
+        return removed, disconnected
 
     def test_stale_pair_links_are_removed(self):
-        removed = self.cleanup("\n".join([
-            link_line("mic:capture_FL", "record:input_FR"),
-            link_line("fxroute_dsp_sink.monitor:monitor_FL", "record:input_FL"),
+        removed, disconnected = self.cleanup("\n".join([
+            tree_block("mic:capture_FL", "record:input_FR"),
+            tree_block("fxroute_dsp_sink.monitor:monitor_FL", "record:input_FL"),
         ]))
-        self.assertEqual(len(self.disconnected), 2)
+        self.assertEqual(len(disconnected), 2)
         self.assertEqual(len(removed), 2)
 
     def test_keeper_and_foreign_links_survive(self):
         """Links touching the mic source but another record node are kept."""
-        removed = self.cleanup("\n".join([
-            link_line("mic:capture_FL", "record:input_FR", 7),
-            link_line("mic:capture_FL", "keeper:input_AUX0", 9),
-            link_line("other:out", "elsewhere:in", 11),
+        removed, disconnected = self.cleanup("\n".join([
+            tree_block("mic:capture_FL", "record:input_FR"),
+            tree_block("mic:capture_FL", "keeper:input_AUX0"),
+            tree_block("other:out", "elsewhere:in"),
         ]))
-        self.assertEqual(self.disconnected, [("7",)])
+        self.assertEqual(disconnected, [("record:input_FR", "mic:capture_FL")])
         self.assertEqual(len(removed), 1)
 
 
