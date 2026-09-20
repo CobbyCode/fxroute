@@ -157,4 +157,16 @@ for (const id of ['effects-crossover-card', 'effects-crossover-tabs', 'effects-c
 }
 assert.doesNotMatch(indexSource, /id="effects-crossover-starter"/, 'starter button is gone: first valid configs autofill');
 assert.match(indexSource, /Link L\/R/);
+// Way tabs and the L/R link share one row above the graph; no separate
+// actions row below Trim remains.
+assert.match(indexSource, /class="crossover-tabrow"/);
+assert.doesNotMatch(indexSource, /crossover-actions/);
+{
+    const tabrow = indexSource.indexOf('class="crossover-tabrow"');
+    const tabs = indexSource.indexOf('id="effects-crossover-tabs"');
+    const link = indexSource.indexOf('id="effects-crossover-link"');
+    const graph = indexSource.indexOf('id="effects-crossover-graph"');
+    assert.ok(tabrow >= 0 && tabrow < tabs && tabs < link && link < graph,
+        'order must read tab row, way tabs, link, graph');
+}
 console.log('crossover frontend tests: ok');

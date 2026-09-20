@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.250">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.251">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -575,7 +575,12 @@
                                 <p id="effects-crossover-summary">Configure speaker ways.</p>
                             </div>
                             <div class="effects-stack">
-                                <div id="effects-crossover-tabs" class="crossover-tabs" role="tablist" aria-label="Speaker ways"></div>
+                                <div class="crossover-tabrow">
+                                    <div id="effects-crossover-tabs" class="crossover-tabs" role="tablist" aria-label="Speaker ways"></div>
+                                    <label class="crossover-link-label" for="effects-crossover-link">
+                                        <input type="checkbox" id="effects-crossover-link" checked> Link L/R
+                                    </label>
+                                </div>
                                 <div class="effects-subwoofer-preview-wrap">
                                     <canvas id="effects-crossover-graph" class="crossover-graph effects-subwoofer-preview" width="600" height="136" role="img" aria-label="Crossover filter response"></canvas>
                                 </div>
@@ -648,11 +653,6 @@
                                             </select>
                                         </div>
                                     </div>
-                                </div>
-                                <div class="crossover-actions">
-                                    <label class="crossover-link-label" for="effects-crossover-link">
-                                        <input type="checkbox" id="effects-crossover-link" checked> Link L/R
-                                    </label>
                                 </div>
                                 <div id="effects-crossover-feedback" class="effects-extras-feedback" aria-live="polite"></div>
                             </div>

@@ -1045,6 +1045,22 @@ select.url-input {
     gap: 0.4rem;
     margin-bottom: 0.6rem;
 }
+/* Way tabs and the L/R link share one row above the graph; the link stays
+   right-aligned and wraps below the tabs on narrow screens. */
+.crossover-tabrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.9rem;
+    margin-bottom: 0.6rem;
+}
+.crossover-tabrow > .crossover-tabs {
+    flex: 1 1 auto;
+    margin-bottom: 0;
+}
+.crossover-tabrow > .crossover-link-label {
+    flex: 0 0 auto;
+}
 .crossover-tab {
     padding: 0.35rem 0.7rem;
     border: 1px solid var(--border);
@@ -1092,12 +1108,6 @@ select.url-input {
     min-width: 0;
     max-width: 100%;
     text-align: center;
-}
-.crossover-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    margin-bottom: 0.4rem;
 }
 .crossover-link-label {
     display: flex;
