@@ -6,7 +6,8 @@ At max-width:760px .effects-subwoofer-controls is intentionally reduced to a
 single column; the 761-1100px tablet rule uses two columns, so:
 
   ≤760px -> 1 column, 761-1100px -> 2 columns,
-  >1100px -> 2 equal cards (2.1) or 3 equal cards (2.2, Dual-Mono and Stereo).
+  >1100px -> 2 cards (2.1) or 3 cards (2.2, Dual-Mono and Stereo) sharing
+  one equal-width track each while hugging their own content height.
 
 Runs the real rendered page (static server + stubbed audio API) in headless
 Chromium. Skips cleanly when playwright or a browser is not available.
@@ -144,29 +145,33 @@ def _run():
                     geometry["selectRight"] <= geometry["groupRight"] + 1,
                 )
 
-            # 2.2 pins the third equal card: Dual-Mono and Stereo show
-            # Global + Sub 1 + Sub 2 in three equal columns on desktop.
+            # 2.2 pins the third card: Dual-Mono and Stereo show Global + Sub 1
+            # + Sub 2 in three equal-width columns on desktop. Cards hug
+            # their own content instead of stretching to one height.
             three_col = page.evaluate("""
                 (() => {
                     const card = document.querySelector('.effects-card-subwoofer');
                     card.classList.add('is-subwoofer-22');
                     // Without a catalog the Sub 2 group starts hidden; unhide
-                    // it for the width comparison so all three cards measure.
+                    // it for the comparison so all three cards measure.
                     const hidden = [...document.querySelectorAll('.effects-subwoofer-sub2-field.hidden')];
                     hidden.forEach((el) => el.classList.remove('hidden'));
                     const n = getComputedStyle(document.querySelector('.effects-subwoofer-controls'))
                         .gridTemplateColumns.trim().split(/\\s+/).length;
-                    const groups = [...document.querySelectorAll(
+                    const rects = [...document.querySelectorAll(
                         '.effects-subwoofer-global-group, .effects-subwoofer-sub1-group, .effects-subwoofer-sub2-group')]
-                        .map((el) => Math.round(el.getBoundingClientRect().width));
+                        .map((el) => el.getBoundingClientRect());
                     hidden.forEach((el) => el.classList.add('hidden'));
                     card.classList.remove('is-subwoofer-22');
-                    return { n, groups };
+                    return { n, widths: rects.map((r) => Math.round(r.width)),
+                             heights: rects.map((r) => Math.round(r.height)) };
                 })()
             """)
-            check(f"2.2 desktop uses 3 equal cards ({three_col})", three_col["n"] == 3)
+            check(f"2.2 desktop uses 3 columns ({three_col})", three_col["n"] == 3)
             check(f"2.2 cards share one width ({three_col})",
-                  max(three_col["groups"]) - min(three_col["groups"]) <= 2)
+                  max(three_col["widths"]) - min(three_col["widths"]) <= 2)
+            check(f"2.2 cards are not stretched to one height ({three_col})",
+                  max(three_col["heights"]) - min(three_col["heights"]) > 4)
 
             # Timing row spans the full width below the cards.
             timing = page.evaluate("""
@@ -185,16 +190,19 @@ def _run():
             # link switch only for a true Stereo sub pair. The per-side
             # blocks and the link start hidden (no Stereo pair routed) and
             # each block carries Frequency, Type, Slope and Main highpass.
-            # Unlinked Stereo serves one side at a time through the Sub L /
-            # Sub R tabs, so the tabs start hidden as well.
+            # The tab row (Link plus, while unlinked, the Sub L / Sub R tabs)
+            # sits above the graph like the speaker-way tabs; the side blocks
+            # carry no extra side heading.
             layout = page.evaluate("""
                 (() => {
                     const card = document.querySelector('.effects-card-subwoofer');
                     const shared = document.querySelector('#effects-subwoofer-shared-crossover');
                     const sides = ['left', 'right'].map((side) =>
                         document.querySelector(`#effects-subwoofer-${side}-crossover`));
+                    const tabrow = document.querySelector('#effects-subwoofer-tabrow');
                     const link = document.querySelector('#effects-subwoofer-link-wrap');
                     const tabs = document.querySelector('#effects-subwoofer-side-tabs');
+                    const preview = document.querySelector('#effects-subwoofer-preview');
                     const cardRect = card.getBoundingClientRect();
                     const fields = (row) => row.querySelectorAll('input[type=number], select').length;
                     return {
@@ -205,9 +213,18 @@ def _run():
                         sideFields: sides.map(fields),
                         sideRight: sides.map((row) => row.getBoundingClientRect().right),
                         cardRight: cardRect.right,
+                        tabrowHidden: tabrow.classList.contains('hidden'),
                         linkHidden: link.classList.contains('hidden'),
+                        linkInTabrow: link.parentElement === tabrow,
                         tabsHidden: tabs.classList.contains('hidden'),
+                        tabsInTabrow: tabs.parentElement === tabrow,
                         tabCount: tabs.querySelectorAll('[data-sub-side]').length,
+                        tabrowAboveGraph: tabrow.compareDocumentPosition(preview)
+                            & Node.DOCUMENT_POSITION_FOLLOWING ? true : false,
+                        sideLabels: document.querySelectorAll(
+                            '.effects-subwoofer-crossover-side-label').length,
+                        linkInGlobalCard: !!document.querySelector(
+                            '#effects-subwoofer-global-group #effects-subwoofer-link-wrap'),
                     };
                 })()
             """)
@@ -222,6 +239,13 @@ def _run():
             check("the L/R link switch starts hidden", layout["linkHidden"] is True)
             check("the Sub L / Sub R tabs exist and start hidden",
                   layout["tabsHidden"] is True and layout["tabCount"] == 2)
+            check("the tab row starts hidden (no Stereo pair routed)",
+                  layout["tabrowHidden"] is True)
+            check("link and tabs live in the tab row above the graph",
+                  layout["linkInTabrow"] is True and layout["tabsInTabrow"] is True
+                  and layout["tabrowAboveGraph"] is True)
+            check("no side headings inside the crossover blocks and no link in the Global card",
+                  layout["sideLabels"] == 0 and layout["linkInGlobalCard"] is False)
 
             page.close()
             browser.close()

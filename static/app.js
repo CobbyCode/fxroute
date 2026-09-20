@@ -750,16 +750,14 @@ const elements = {
     effectsSubwooferRouting: document.getElementById('effects-subwoofer-routing'),
     effectsSubwooferModeBadge: document.getElementById('effects-subwoofer-mode-badge'),
     effectsSubwooferPreview: document.getElementById('effects-subwoofer-preview'),
-    effectsSubwooferGlobalGroup: document.getElementById('effects-subwoofer-global-group'),
     effectsSubwooferGlobalLabel: document.getElementById('effects-subwoofer-global-label'),
+    effectsSubwooferTabRow: document.getElementById('effects-subwoofer-tabrow'),
     effectsSubwooferSideTabs: document.getElementById('effects-subwoofer-side-tabs'),
     effectsSubwooferTabLeft: document.getElementById('effects-subwoofer-tab-left'),
     effectsSubwooferTabRight: document.getElementById('effects-subwoofer-tab-right'),
     effectsSubwooferSharedCrossover: document.getElementById('effects-subwoofer-shared-crossover'),
     effectsSubwooferLeftCrossover: document.getElementById('effects-subwoofer-left-crossover'),
     effectsSubwooferRightCrossover: document.getElementById('effects-subwoofer-right-crossover'),
-    effectsSubwooferLeftLabel: document.getElementById('effects-subwoofer-left-label'),
-    effectsSubwooferRightLabel: document.getElementById('effects-subwoofer-right-label'),
     effectsSubwooferLinkWrap: document.getElementById('effects-subwoofer-link-wrap'),
     effectsSubwooferLink: document.getElementById('effects-subwoofer-link'),
     effectsSubwooferFrequencyNumber: document.getElementById('effects-subwoofer-frequency-number'),
@@ -15178,14 +15176,16 @@ function renderSubwooferPanel() {
     const splitSides = crossoverLayout.stereo && crossoverLayout.link === false;
     const selectedSide = subwooferSelectedSide();
     elements.effectsSubwooferCard?.classList.toggle('is-crossover-split', splitSides);
-    elements.effectsSubwooferGlobalGroup?.classList.toggle('is-crossover-split', splitSides);
     // Coupled layouts (2.1, Dual-Mono, linked Stereo) share one crossover
     // block. An unlinked Stereo pair serves a single side at a time: the
-    // tabs pick it, the other side's block stays hidden but keeps its stored
-    // values for the save.
+    // tabs above the graph pick it, the other side's block stays hidden but
+    // keeps its stored values for the save.
     elements.effectsSubwooferSharedCrossover?.classList.toggle('hidden', splitSides);
     elements.effectsSubwooferLeftCrossover?.classList.toggle('hidden', !splitSides || selectedSide !== 'left');
     elements.effectsSubwooferRightCrossover?.classList.toggle('hidden', !splitSides || selectedSide !== 'right');
+    // The tab row mirrors the speaker tile: Link L/R plus, while unlinked,
+    // the Sub L / Sub R tabs sit above the graph instead of inside a card.
+    elements.effectsSubwooferTabRow?.classList.toggle('hidden', !crossoverLayout.stereo);
     elements.effectsSubwooferSideTabs?.classList.toggle('hidden', !splitSides);
     if (elements.effectsSubwooferTabLeft) {
         const active = splitSides && selectedSide === 'left';
@@ -15298,14 +15298,8 @@ function renderSubwooferCrossover(layout) {
     }
     const roles = routedSubwooferView().roles || [];
     const labels = { left: roles[0], right: roles[1] };
-    if (elements.effectsSubwooferLeftLabel) {
-        elements.effectsSubwooferLeftLabel.textContent = labels.left
-            ? outputSystemModule().roleLabel(labels.left) : 'Sub L';
-    }
-    if (elements.effectsSubwooferRightLabel) {
-        elements.effectsSubwooferRightLabel.textContent = labels.right
-            ? outputSystemModule().roleLabel(labels.right) : 'Sub R';
-    }
+    // The tabs above the graph carry the side names; the single visible
+    // crossover block needs no extra side heading.
     if (elements.effectsSubwooferTabLeft) {
         elements.effectsSubwooferTabLeft.textContent = labels.left
             ? outputSystemModule().roleLabel(labels.left) : 'Sub L';

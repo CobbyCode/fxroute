@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.246">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.247">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -680,16 +680,21 @@
                                 <span id="effects-subwoofer-mode-badge" class="effects-subwoofer-mode-badge">Stereo</span>
                             </div>
                             <div class="effects-stack effects-subwoofer-stack">
+                                <div class="effects-subwoofer-tabrow hidden" id="effects-subwoofer-tabrow">
+                                    <label class="crossover-link-label hidden" id="effects-subwoofer-link-wrap" for="effects-subwoofer-link">
+                                        <input type="checkbox" id="effects-subwoofer-link" checked> Link L/R
+                                    </label>
+                                    <div class="effects-subwoofer-side-tabs hidden" id="effects-subwoofer-side-tabs" role="tablist" aria-label="Sub side">
+                                        <button type="button" class="sub-side-tab is-active" id="effects-subwoofer-tab-left" data-sub-side="left" role="tab" aria-selected="true">Sub L</button>
+                                        <button type="button" class="sub-side-tab" id="effects-subwoofer-tab-right" data-sub-side="right" role="tab" aria-selected="false">Sub R</button>
+                                    </div>
+                                </div>
                                 <div class="effects-subwoofer-preview-wrap">
                                     <canvas id="effects-subwoofer-preview" class="effects-subwoofer-preview" width="560" height="160" role="img" aria-label="Crossover preview"></canvas>
                                 </div>
                                 <div class="effects-subwoofer-controls">
                                     <div class="effects-subwoofer-control-group effects-subwoofer-global-group" id="effects-subwoofer-global-group">
                                         <div class="effects-subwoofer-group-label" id="effects-subwoofer-global-label">Global</div>
-                                        <div class="effects-subwoofer-side-tabs hidden" id="effects-subwoofer-side-tabs" role="tablist" aria-label="Sub side">
-                                            <button type="button" class="sub-side-tab is-active" id="effects-subwoofer-tab-left" data-sub-side="left" role="tab" aria-selected="true">Sub L</button>
-                                            <button type="button" class="sub-side-tab" id="effects-subwoofer-tab-right" data-sub-side="right" role="tab" aria-selected="false">Sub R</button>
-                                        </div>
                                         <div class="effects-subwoofer-crossover-block" id="effects-subwoofer-shared-crossover">
                                             <div class="field-group">
                                                 <label for="effects-subwoofer-frequency-number">Crossover</label>
@@ -719,7 +724,6 @@
                                             </div>
                                         </div>
                                         <div class="effects-subwoofer-crossover-block is-side hidden" id="effects-subwoofer-left-crossover">
-                                            <div class="effects-subwoofer-crossover-side-label" id="effects-subwoofer-left-label">Sub L</div>
                                             <div class="field-group">
                                                 <label for="effects-subwoofer-left-frequency">Crossover</label>
                                                 <div class="delay-input-wrap">
@@ -748,7 +752,6 @@
                                             </div>
                                         </div>
                                         <div class="effects-subwoofer-crossover-block is-side hidden" id="effects-subwoofer-right-crossover">
-                                            <div class="effects-subwoofer-crossover-side-label" id="effects-subwoofer-right-label">Sub R</div>
                                             <div class="field-group">
                                                 <label for="effects-subwoofer-right-frequency">Crossover</label>
                                                 <div class="delay-input-wrap">
@@ -776,9 +779,6 @@
                                                 </select>
                                             </div>
                                         </div>
-                                        <label class="crossover-link-label hidden" id="effects-subwoofer-link-wrap" for="effects-subwoofer-link">
-                                            <input type="checkbox" id="effects-subwoofer-link" checked> Link L/R
-                                        </label>
                                     </div>
                                     <div class="effects-subwoofer-control-group effects-subwoofer-channel-group effects-subwoofer-sub1-group">
                                         <div id="effects-subwoofer-sub1-group-label" class="effects-subwoofer-group-label">Subwoofer</div>
@@ -1748,7 +1748,7 @@
     <script src="/static/output_state.js?v=0.9.12"></script>
     <script src="/static/crossover.js?v=0.9.6"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.202"></script>
+    <script src="/static/app.js?v=0.9.203"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

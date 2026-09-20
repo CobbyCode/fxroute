@@ -5975,11 +5975,11 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 .effects-subwoofer-controls {
     display: grid;
-    /* 2.1: Global + Sub as two equal cards. 2.2 (Dual-Mono and Stereo) adds
-       the third card below via the is-subwoofer-22 rule. Equal tracks plus
-       stretch keep the cards equally wide and equally high. */
+    /* 2.1: Global + Sub as two equal-width cards. 2.2 (Dual-Mono and
+       Stereo) adds the third card via the is-subwoofer-22 rule. Cards hug
+       their own content (start): no forced equal height, no whitespace. */
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: stretch;
+    align-items: start;
     gap: 0.75rem;
     width: min(100%, 1100px);
     margin: 0 auto;
@@ -6004,28 +6004,31 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     display: grid;
     /* Same principle as the channel groups: tracks hug their content and
        the leftover width becomes even spacing, so controls can neither
-       overlap nor clip at any card width. One stacked column: the label,
-       the side tabs (unlinked Stereo only), the single crossover block and
-       the link switch. */
+       overlap nor clip at any card width. One stacked column: the label and
+       the single crossover block (shared, or the selected side while a
+       Stereo pair is unlinked). */
     grid-template-columns: minmax(0, 1fr);
     justify-items: center;
     align-items: end;
     gap: 0.7rem;
 }
 
-/* Unlinked Stereo keeps the three-card row: the Global card serves one side
-   at a time via the tabs instead of two large parallel crossover rows. */
-.effects-subwoofer-global-group.is-crossover-split {
-    grid-column: auto;
+/* Tab row above the graph, mirroring the speaker-way tabs: Link L/R plus,
+   while a Stereo pair is unlinked, the Sub L / Sub R selector. */
+.effects-subwoofer-tabrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.9rem;
+    width: min(100%, 1100px);
+    margin: 0 auto;
 }
 
 /* Sub L / Sub R selector for an unlinked Stereo pair. Same tab language as
    the speaker-way tabs. */
 .effects-subwoofer-side-tabs {
-    grid-column: 1 / -1;
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
     gap: 0.4rem;
 }
 
@@ -6060,18 +6063,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 .effects-subwoofer-crossover-block.is-side {
     grid-template-columns: repeat(2, auto);
-}
-
-.effects-subwoofer-crossover-side-label {
-    grid-column: 1 / -1;
-    color: var(--text-secondary);
-    font-size: 0.78rem;
-    font-weight: 700;
-}
-
-.effects-subwoofer-global-group > .crossover-link-label {
-    grid-column: 1 / -1;
-    justify-content: center;
 }
 
 .effects-subwoofer-channel-group {
