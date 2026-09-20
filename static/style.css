@@ -4827,9 +4827,12 @@ select.url-input {
 }
 
 /* Bottom status line: kept visually apart from the action blocks so
-   running/cancelled messages read as panel status, not as part of one row. */
+   running/cancelled messages read as panel status, not as part of one row.
+   The top margin sums the section list gap and the section divider margin
+   (0.5rem + 0.35rem), so Calibration above it keeps exactly the same
+   button → divider distance as the other three sections. */
 #measurement-setup-status {
-    margin-top: 0.6rem;
+    margin-top: calc(0.5rem + 0.35rem);
     padding-top: 0.6rem;
     border-top: 1px solid var(--border);
 }

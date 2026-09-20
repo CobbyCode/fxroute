@@ -96,6 +96,10 @@ assert.match(measurementCss, /\.measurement-workflow-speaker-row[\s\S]*?grid-tem
 assert.match(measurementCss, /\.measurement-workflow-heading[\s\S]*?align-items:\s*flex-end/);
 assert.match(measurementCss, /#measurement-speaker-align-status:empty/);
 assert.match(measurementCss, /#measurement-speaker-align-results:empty/);
+// Calibration keeps the same button → divider distance as the other
+// sections: the status line margin sums the section list gap and the
+// section divider margin.
+assert.match(measurementCss, /#measurement-setup-status[\s\S]*?margin-top:\s*calc\(0\.5rem \+ 0\.35rem\)/);
 assert.match(responsiveCss, /\.measurement-workflow-speaker-row[\s\S]*?flex-direction:\s*column/);
 assert.match(responsiveCss, /\.measurement-workflow-speaker-buttons[\s\S]*?flex:\s*1 1 0/);
 assert.doesNotMatch(index, /measurement-workflow-speaker-cancel/);
