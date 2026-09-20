@@ -101,6 +101,39 @@ def _run():
                 n = column_count()
                 check(f"[{width}px] subwoofer controls 1 column (got {n})", n == 1)
 
+            # Mobile trim mirror (narrowest phone): Level + Align share one
+            # row, Polarity sits centered below spanning the full width —
+            # no full-row stacking per control, no overflow.
+            page.set_viewport_size({"width": 390, "height": 900})
+            page.wait_for_timeout(80)
+            trim = page.evaluate("""
+                (() => {
+                    const box = (el) => { const b = el.getBoundingClientRect();
+                        return { x: Math.round(b.x), top: Math.round(b.top),
+                                 right: Math.round(b.right), width: Math.round(b.width) }; };
+                    const group = document.querySelector('.effects-subwoofer-sub1-group');
+                    const lvl = box(document.querySelector('#effects-subwoofer-level').closest('.stepper-control'));
+                    const aln = box(document.querySelector('#effects-subwoofer-delay').closest('.stepper-control'));
+                    const pol = box(document.querySelector('#effects-subwoofer-polarity'));
+                    const g = box(group);
+                    const pcs = getComputedStyle(group.querySelector('.effects-subwoofer-polarity-field')).gridColumn;
+                    return { lvl, aln, pol, g, pcs };
+                })()
+            """)
+            check(f"[390px] Level + Align share one row ({trim})",
+                  abs(trim["lvl"]["top"] - trim["aln"]["top"]) <= 2)
+            check(f"[390px] real gap between the steppers ({trim})",
+                  trim["aln"]["x"] - trim["lvl"]["right"] >= 4)
+            check(f"[390px] Polarity spans the full row below ({trim})",
+                  trim["pcs"] == "1 / -1" and trim["pol"]["top"] > trim["aln"]["top"])
+            check(f"[390px] Polarity centered ({trim})",
+                  abs((trim["g"]["x"] + trim["g"]["width"] / 2) - (trim["pol"]["x"] + trim["pol"]["width"] / 2)) <= 2)
+            check(f"[390px] no control overflows the card ({trim})",
+                  trim["lvl"]["x"] >= trim["g"]["x"] - 1
+                  and trim["aln"]["right"] <= trim["g"]["right"] + 1
+                  and trim["pol"]["right"] <= trim["g"]["right"] + 1
+                  and trim["pol"]["x"] >= trim["g"]["x"] - 1)
+
             # Tablet 761-1100px: two columns unchanged.
             for width in (761, 900, 1100):
                 page.set_viewport_size({"width": width, "height": 900})
