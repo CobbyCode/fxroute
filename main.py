@@ -1419,6 +1419,33 @@ def _run_debug_command(args: list[str], timeout: float = 2.0) -> dict:
         return {"returncode": -1, "stdout": "", "stderr": str(exc)}
 
 
+def _sub_output_targets(runtime_config: dict, *, output_key: str, hardware_ports: list) -> dict:
+    """Expected (engine port, hardware port) edge per sub side for the dump.
+
+    Engine output ports follow the plan layout, not the hardware channel
+    order: with crossover ways the sub signals can sit on any index (e.g.
+    signals 5/6 for the hardware ports 3/4 in a 2-way layout).  Deriving the
+    edge from the plan keeps the dump honest for every layout; contracts
+    without a plan keep the historic positional guess (engine output 3/4 to
+    hardware ports 3/4).
+    """
+    routes = {int(signal): str(port) for signal, port in (runtime_config.get("output_routes") or ())}
+    layout = list(runtime_config.get("layout") or ())
+    device = str(runtime_config.get("output_key") or output_key or "")
+    targets = {"left": None, "right": None}
+    if layout and routes and device:
+        for index, channel in enumerate(layout, 1):
+            role = str((channel or {}).get("role") or "")
+            port = routes.get(index)
+            if role in SUB_ROLES and port:
+                targets[side_for_role(role)] = (f"fxroute_dsp:output_{index}", f"{device}:{port}")
+        return targets
+    for side, index in (("left", 3), ("right", 4)):
+        if index <= len(hardware_ports) and device:
+            targets[side] = (f"fxroute_dsp:output_{index}", f"{device}:{hardware_ports[index - 1]}")
+    return targets
+
+
 async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> dict:
     overview = get_audio_output_overview()
     output_mode = overview.get("output_mode") or {}
@@ -1438,14 +1465,13 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
 
     pw_links = await asyncio.to_thread(_run_debug_command, ["pw-link", "-l"], 2.0)
     link_text = pw_links.get("stdout", "")
+
     sink_monitor_left = "fxroute_dsp_sink:monitor_FL"
     sink_monitor_right = "fxroute_dsp_sink:monitor_FR"
     dsp_in_left = "fxroute_dsp:input_1"
     dsp_in_right = "fxroute_dsp:input_2"
     dsp_out_1 = "fxroute_dsp:output_1"
     dsp_out_2 = "fxroute_dsp:output_2"
-    dsp_out_3 = "fxroute_dsp:output_3"
-    dsp_out_4 = "fxroute_dsp:output_4"
     # Read the hardware side back through the same port list the DSP links
     # against, so the dump never reports a playback_FL/FR topology the device
     # does not actually expose (e.g. playback_AUX0…).  That list is the
@@ -1459,15 +1485,15 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
     hw_targets = [f"{output_key}:{port}" for port in hardware_ports[:4]] if output_key else []
     hw_fl = hw_targets[0] if len(hw_targets) > 0 else ""
     hw_fr = hw_targets[1] if len(hw_targets) > 1 else ""
-    hw_rl = hw_targets[2] if len(hw_targets) > 2 else ""
-    hw_rr = hw_targets[3] if len(hw_targets) > 3 else ""
+    sub_targets = _sub_output_targets(snapshot.get("config") or {},
+                                     output_key=output_key, hardware_ports=hardware_ports)
     links = {
         "sink_to_dsp_left": _contains_link(link_text, sink_monitor_left, dsp_in_left),
         "sink_to_dsp_right": _contains_link(link_text, sink_monitor_right, dsp_in_right),
         "dsp_main_left_to_hw": bool(hw_fl) and _contains_link(link_text, dsp_out_1, hw_fl),
         "dsp_main_right_to_hw": bool(hw_fr) and _contains_link(link_text, dsp_out_2, hw_fr),
-        "dsp_sub_left_to_hw": bool(hw_rl) and _contains_link(link_text, dsp_out_3, hw_rl),
-        "dsp_sub_right_to_hw": bool(hw_rr) and _contains_link(link_text, dsp_out_4, hw_rr),
+        "dsp_sub_left_to_hw": bool(sub_targets["left"]) and _contains_link(link_text, *sub_targets["left"]),
+        "dsp_sub_right_to_hw": bool(sub_targets["right"]) and _contains_link(link_text, *sub_targets["right"]),
         "direct_source_left_to_hw": bool(hw_fl) and any(
             _contains_link(link_text, f"{node}:output_FL", hw_fl) for node in ("mpv", "spotify")
         ),
@@ -4951,26 +4977,38 @@ def _crossover_bass_highpass(mode_config: dict, topology: dict, role: str) -> di
             "frequency_hz": int(round(frequency))}
 
 
+def _crossover_way_required(role: str) -> tuple[str, ...]:
+    """Directions a crossover way defines: Low its low-pass, High its high-pass."""
+    if role.endswith("low"):
+        return ("lowpass",)
+    if role.endswith("high"):
+        return ("highpass",)
+    return ("highpass", "lowpass")
+
+
+def _crossover_way_complete(role: str, role_settings: dict) -> bool:
+    """Whether every direction of the way is stored (any Off direction is not)."""
+    return all(role_settings.get(kind) is not None for kind in _crossover_way_required(role))
+
+
 def _crossover_way_points(role: str, role_settings: dict, sample_rate_hz: int,
                           point_count: int = 180, extra_highpass: dict | None = None) -> list | None:
     """Evaluate one way's crossover filters to log-spaced magnitude points.
 
-    Returns None when the way is incomplete (a required filter is missing),
-    mirroring the activation rule in the processing plan. Only crossover
-    filters shape this curve; area-bank PEQ/FIR correction is visualized in
-    the measurement graph instead. ``extra_highpass`` carries the shared
-    bass high-pass from the subwoofer tile; it never satisfies the required
-    stored filter, it only shapes the running curve.
+    Returns None only when a stored filter cannot be evaluated. A cleared
+    (Off) direction is a valid operating state and simply contributes no
+    filter, so the curve shows the band the way actually runs; whether all
+    required directions are set is reported separately as ``complete``.
+    Only crossover filters shape this curve; area-bank PEQ/FIR correction is
+    visualized in the measurement graph instead. ``extra_highpass`` carries
+    the shared bass high-pass from the subwoofer tile; it never satisfies a
+    stored way filter, it only shapes the running curve.
     """
     try:
-        required = ("lowpass",) if role.endswith("low") else ("highpass",) if role.endswith("high") \
-            else ("highpass", "lowpass")
         sections = []
         for kind in ("highpass", "lowpass"):
             definition = role_settings.get(kind)
             if definition is None:
-                if kind in required:
-                    return None
                 continue
             sections.extend(design_crossover(
                 {"kind": kind, "family": definition["family"],
@@ -5024,7 +5062,7 @@ async def get_audio_output_state_crossover_response():
         ways[role] = {
             "filters": {"highpass": settings["highpass"], "lowpass": settings["lowpass"]},
             "derived_highpass": dict(bass_highpass) if bass_highpass else None,
-            "complete": points is not None,
+            "complete": _crossover_way_complete(role, settings),
             "points": points,
         }
     return {"status": "ok", "revision": state["revision"], "mode": mode,

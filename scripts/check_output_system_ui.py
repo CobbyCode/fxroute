@@ -278,6 +278,20 @@ def main() -> int:
             # High-pass and low-pass keep independent type/slope per filter.
             page.locator("[data-crossover-way='left_mid']").click()
             page.wait_for_timeout(400)
+            # Off is a valid operating state: it is named in the header and the
+            # way keeps its real (here: unrealized) band instead of the plan
+            # refusing to compile.
+            off_summary = page.locator("#effects-crossover-summary").inner_text()
+            check(f"cleared direction is named in the header ({off_summary})",
+                  off_summary.endswith("Low-pass off"))
+            off_way = page.evaluate(
+                """fetch('/api/audio/output-state/crossover-response')
+                    .then(r => r.json())
+                    .then(j => JSON.stringify({ complete: j.ways.left_mid.complete,
+                        points: (j.ways.left_mid.points || []).length }))""")
+            check(f"cleared way stays evaluated ({off_way})",
+                  '"complete":false' in off_way.replace(" ", "") and
+                  int(off_way.split('"points":')[1].rstrip("}")) > 100)
             page.evaluate(
                 """(() => {
                     const hi = document.getElementById('effects-crossover-slope-highpass');

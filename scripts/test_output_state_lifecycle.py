@@ -417,12 +417,14 @@ class ApplyLifecycleTests(unittest.TestCase):
     def test_first_valid_head_after_broken_draft_activates(self):
         """Invalid -> valid fast-path commits must reach the running DSP.
 
-        Enabling crossover leaves ways without required filters, so the head
-        cannot compile and the engine keeps serving the stale graph.  The
-        commit that supplies the last missing filter makes the head
-        activatable for the first time: it must sync the new plan instead of
-        persisting a valid head while reporting "not-activatable" (which
-        would leave every later edit looking like the first audible change).
+        A bank pointing at a preset that no longer exists keeps the head
+        uncompilable without touching the topology, so the engine keeps
+        serving the stale graph.  The commit that supplies a usable preset
+        makes the head activatable for the first time: it must sync the new
+        plan instead of persisting a valid head while reporting
+        "not-activatable" (which would leave every later edit looking like
+        the first audible change).  A way direction left at Off keeps the
+        draft uncompilable for no other reason than the missing preset.
         """
         from audio.output_state import set_crossover
         service, manager = self.service, self.manager
@@ -442,14 +444,19 @@ class ApplyLifecycleTests(unittest.TestCase):
             routed = service.commit(
                 set_output_processing(routed, "stereo", role, **filt),
                 expected_revision=routed["revision"])
-        with self.assertRaises(ValueError):
-            service.compile_plan(routed, output_key="A", channels=4,
+        # Left_low stays without its high-pass: Off is valid, so only the
+        # missing Global preset keeps this draft from compiling.
+        broken = copy.deepcopy(routed)
+        broken["modes"]["stereo"]["banks"]["global"]["preset"] = "Removed preset"
+        broken = service.commit(broken, expected_revision=routed["revision"])
+        with self.assertRaises(FileNotFoundError):
+            service.compile_plan(broken, output_key="A", channels=4,
                                  sample_rate_hz=48000)
         with lifecycle_context(service, manager, self.runtime):
             result = asyncio.run(main.apply_audio_output_state(FakeRequest({
-                "expected_revision": routed["revision"],
-                "mutation": {"kind": "set_processing", "mode": "stereo",
-                             "role": "right_high", "highpass": highpass},
+                "expected_revision": broken["revision"],
+                "mutation": {"kind": "set_bank_preset", "mode": "stereo",
+                             "bank_id": "global", "preset": "Neutral"},
             })))
         self.assertTrue(result["live_applied"])
         self.assertIsNone(result["live_reason"])

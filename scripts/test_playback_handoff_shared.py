@@ -1306,7 +1306,8 @@ if __name__ == "__main__":
 class RuntimeStateDumpTests(unittest.IsolatedAsyncioTestCase):
     """The debug runtime dump reports the native DSP topology."""
 
-    def _dump(self, mode: str, link_text: str, *, direct_bypass: bool = False):
+    def _dump(self, mode: str, link_text: str, *, direct_bypass: bool = False,
+              config: dict | None = None):
         overview = {
             "output_mode": {
                 "mode": mode,
@@ -1324,9 +1325,11 @@ class RuntimeStateDumpTests(unittest.IsolatedAsyncioTestCase):
                 return {"returncode": 0, "stdout": ""}
             return {"returncode": 0, "stdout": link_text}
 
+        runtime_config = {"sample_rate": 48000, **(config or {})}
+
         class FakeRuntime:
             def snapshot(self):
-                return {"helper_pid": 42, "config": {"sample_rate": 48000}}
+                return {"helper_pid": 42, "config": runtime_config}
 
         with patch.object(main, "get_audio_output_overview", return_value=overview), \
              patch.object(main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}), \
@@ -1356,6 +1359,48 @@ class RuntimeStateDumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("helper_main_left_to_hw", links)
         self.assertEqual(state["api_mode"], "subwoofer-2.1")
         self.assertEqual(state["hardware_output"], OUTPUT_KEY)
+
+    def test_plan_layout_sub_signals_drive_the_sub_link_flags(self):
+        """Sub links follow the plan layout, not the hardware port order.
+
+        A 2-way crossover layout runs the subs on engine outputs 5/6 while
+        their hardware ports are 3/4: the historic positional guess named
+        outputs 3/4 and reported a healthy graph as unlinked.
+        """
+        layout = [{"role": "left_low"}, {"role": "left_high"}, {"role": "right_low"},
+                  {"role": "right_high"}, {"role": "sub_l"}, {"role": "sub_r"}]
+        output_routes = [[1, "playback_AUX0"], [2, "playback_AUX1"], [3, "playback_AUX4"],
+                         [4, "playback_AUX5"], [5, "playback_AUX2"], [6, "playback_AUX3"]]
+        plan_config = {"output_routes": output_routes, "layout": layout}
+        # A graph that stops after the main ways leaves both subs unlinked.
+        unlinked = (
+            "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1\n"
+            "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2\n"
+            f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_AUX0\n"
+            f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_AUX1\n"
+            f"fxroute_dsp:output_3 -> {OUTPUT_KEY}:playback_AUX4\n"
+            f"fxroute_dsp:output_4 -> {OUTPUT_KEY}:playback_AUX5\n"
+        )
+        state = self._dump("subwoofer-2.2-stereo", unlinked, config=plan_config)
+        self.assertFalse(state["links"]["dsp_sub_left_to_hw"])
+        self.assertFalse(state["links"]["dsp_sub_right_to_hw"])
+
+        link_text = (
+            "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1\n"
+            "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2\n"
+            f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_AUX0\n"
+            f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_AUX1\n"
+            f"fxroute_dsp:output_3 -> {OUTPUT_KEY}:playback_AUX4\n"
+            f"fxroute_dsp:output_4 -> {OUTPUT_KEY}:playback_AUX5\n"
+            f"fxroute_dsp:output_5 -> {OUTPUT_KEY}:playback_AUX2\n"
+            f"fxroute_dsp:output_6 -> {OUTPUT_KEY}:playback_AUX3\n"
+        )
+        state = self._dump("subwoofer-2.2-stereo", link_text, config=plan_config)
+        links = state["links"]
+        self.assertTrue(links["dsp_sub_left_to_hw"])
+        self.assertTrue(links["dsp_sub_right_to_hw"])
+        self.assertTrue(links["dsp_sub_to_hw_present"])
+        self.assertTrue(links["sub_output_channel_linked"])
 
     def test_stereo_dump_reports_main_chain_without_sub_links(self):
         link_text = (

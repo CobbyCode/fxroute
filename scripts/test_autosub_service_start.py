@@ -268,6 +268,29 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((kwargs["left_fc"], kwargs["right_fc"]), (60, 120))
         self.assertEqual(kwargs["left_scan_delays"], left_grid)
 
+    async def test_dual_mono_ignores_stale_per_side_crossover_overrides(self):
+        """Sub 1/2 stay on the shared crossover even with leftover side values."""
+        from audio.output_state import set_bass_management
+        state = self.seed(["sub1", "sub2", "right_low", "left_low", "right_high", "left_high"],
+                          mode="crossover")
+        state = set_bass_management(state, "stereo-sub", sub_link=False,
+                                    sub_filters={"left": {"family": "bessel", "slope_db_oct": 12,
+                                                          "frequency_hz": 55},
+                                                 "right": {"family": "linkwitz-riley",
+                                                           "slope_db_oct": 48, "frequency_hz": 130}})
+        self.store.commit(state, expected_revision=state["revision"])
+        job = (await self.request())["job"]
+        self.assertEqual(job["mode"], "subwoofer-2.2")
+        # No per-side split exists for Dual-Mono, so the job never carries one.
+        self.assertNotIn("crossover_hz_by_side", job)
+        for slot, alignment, level, polarity in (("sub1", 11, -12, "invert"),
+                                                 ("sub2", -15, -16, "normal")):
+            self.assertEqual(job["original_config_snapshot"]["subwoofers"][slot], {
+                "alignment_ms": alignment, "level_db": level, "polarity": polarity,
+                "crossover_frequency_hz": 90, "crossover_family": "linkwitz-riley",
+                "crossover_slope_db_oct": 24})
+        await self.workers[0]
+
     async def test_three_port_single_sub_is_supported(self):
         self.seed(["main_l", "main_r", "sub2"])
         job = (await self.request())["job"]

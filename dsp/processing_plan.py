@@ -53,13 +53,15 @@ def _bass_crossover(bass: dict, role: str, sub_mode: str) -> dict:
     return bass_crossover_for_side(bass, side_for_role(role))
 
 
-def _crossover_filters(crossover_enabled: bool, role: str, processing: dict, bass: dict,
+def _crossover_filters(role: str, processing: dict, bass: dict,
                        has_subs: bool, sub_mode: str) -> list[dict]:
-    if crossover_enabled and role not in SUB_ROLES:
-        way = role.split("_", 1)[1]
-        required = ("lowpass",) if way == "low" else ("highpass",) if way == "high" else ("highpass", "lowpass")
-        if any(processing[kind] is None for kind in required):
-            raise ValueError(f"Crossover way {role} requires {' and '.join(required)}")
+    """Crossover filters of one role; a cleared direction stays absent.
+
+    Off is a valid operating state: a way whose filter was cleared simply
+    runs without a filter in that direction instead of making the whole
+    plan uncompilable. Cleared directions are reported by the crossover
+    response so the UI can show them as deliberate, not as an error.
+    """
     filters = [{"kind": kind, **processing[kind]} for kind in ("highpass", "lowpass") if processing[kind] is not None]
     if has_subs and (role in SUB_ROLES or bass["main_highpass_enabled"]):
         # The sub low-pass and the Main high-pass it implies share the mode's
@@ -99,7 +101,7 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
     outputs = []
     for role in topology.roles:
         settings = processing[role]
-        filters = _crossover_filters(config["crossover_enabled"], role, settings,
+        filters = _crossover_filters(role, settings,
                                      config["bass_management"], bool(topology.sub_roles),
                                      topology.sub_mode)
         if any(item["frequency_hz"] >= sample_rate_hz / 2 for item in filters):

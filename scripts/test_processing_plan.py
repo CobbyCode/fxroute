@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Global/area separation and role-addressed processing plans using real presets."""
 
-import copy
 import sys
 import tempfile
 import unittest
@@ -160,14 +159,30 @@ class ProcessingPlanTests(unittest.TestCase):
                           filters[role])
         self.assertNotIn("bessel", [definition["family"] for definition in filters["sub2"]])
 
+    def test_cleared_way_direction_stays_a_valid_plan(self):
+        """Type Off is an operating state: the way runs without that filter."""
+        state = self.crossover_state()
+        state["modes"]["stereo-sub"]["processing"]["left_high"]["highpass"] = None
+        filters = self.crossover_by_role(state)
+        self.assertEqual(filters["left_high"], [])
+        # The untouched side and the way's remaining direction stay as stored.
+        self.assertEqual(filters["right_high"], [{"kind": "highpass", **crossover_filter(2500)}])
+        self.assertEqual(filters["left_low"], [{"kind": "lowpass", **crossover_filter(300)}])
+
+    def test_cleared_direction_keeps_the_sub_crossover_highpass(self):
+        """An Off way direction does not drop the derived sub cross-over."""
+        state = self.sub_crossover_state(["sub1", "sub2"], frequency_hz=90,
+                                         family="butterworth", slope_db_oct=36)
+        state["modes"]["stereo-sub"]["processing"]["left_low"]["lowpass"] = None
+        filters = self.crossover_by_role(state)
+        self.assertEqual(filters["left_low"],
+                         [{"kind": "highpass", "family": "butterworth", "slope_db_oct": 36,
+                           "frequency_hz": 90}])
+
     def test_incomplete_unprotected_and_above_nyquist_plans_are_rejected(self):
         state = self.crossover_state()
         with self.assertRaises(ValueError):
             self.compile(state, channels=4)
-        missing = copy.deepcopy(state)
-        missing["modes"]["stereo-sub"]["processing"]["left_high"]["highpass"] = None
-        with self.assertRaises(ValueError):
-            self.compile(missing)
         with self.assertRaises(ValueError):
             self.compile(state, rate=4000)
         with self.assertRaises(ValueError):

@@ -136,9 +136,9 @@ Autogain and Loudness can run together; the limiter stays the final stage.
 - **Stereo** — mains only (Main L/R, or Low/Low-Mid/Mid/High L/R when Crossover is On)
 - **Stereo + Sub** — mains plus subwoofers, derived from routing: one Sub role is one mono sub, two Sub roles (Sub 1+2) are two mono subs, Sub L+R is a stereo sub pair
 
-**Crossover** is an independent On/Off switch, not a mode. Off routes Main L/R; On replaces Main with Low / Low-Mid / Mid / High per side (2-, 3- or 4-way from routing). Sub roles stay available in both positions.
+**Crossover** is an independent On/Off switch, not a mode. Off routes Main L/R; On replaces Main with Low / Low-Mid / Mid / High per side (2-, 3- or 4-way from routing). Sub roles stay available in both positions. Each way direction carries its own **Type** and **Slope**; **Type = Off** clears that filter and the way then runs without it — the setup stays active, the header names the open direction, and the preview draws the band the way really runs.
 
-The **Subwoofer** card on the DSP page shows the routed subs, a crossover preview, the crossover frequency (40–200 Hz, LR24), the main highpass, and per-sub level, alignment, and polarity. Derived Main/Sub delays are shown for reference. Subwoofer routing needs an output device with enough channels.
+The **Subwoofer** card on the DSP page shows the routed subs, a crossover preview, the crossover frequency (40–200 Hz) with filter type and slope, the main highpass, and per-sub level, alignment, and polarity. One shared crossover covers 2.1 and 2.2 Dual-Mono (Sub 1+2). A stereo sub pair (Sub L+R) follows the shared values while **Link L/R** is on; with the link off each side keeps its own frequency, type, and slope together with its own main highpass. Derived Main/Sub delays are shown for reference. Subwoofer routing needs an output device with enough channels.
 
 There is one **Output Routing**: it assigns Main, Crossover ways and Sub roles to hardware outputs. Each output carries one role or stays silent (Off); one role may feed several outputs. Assignments are stored per device and per mode (Stereo / Stereo + Sub) and survive tier changes: outputs that do not exist in the active tier keep their saved assignment and are marked inactive until the tier returns.
 

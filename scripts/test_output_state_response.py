@@ -92,14 +92,22 @@ class WayResponseTests(unittest.TestCase):
         self.assertEqual(mid["filters"]["highpass"]["frequency_hz"], 300)
         self.assertEqual(mid["filters"]["lowpass"]["frequency_hz"], 2500)
 
-    def test_incomplete_way_reports_null_points(self):
+    def test_cleared_way_direction_reports_its_real_band(self):
+        """Type Off is a valid state: the way draws the band it really runs."""
         state = self.service.load()
         state["modes"]["stereo-sub"]["processing"]["left_high"]["highpass"] = None
         self.service._deps.store.commit(state, expected_revision=1)
         payload = self.fetch()
         high = payload["ways"]["left_high"]
         self.assertFalse(high["complete"])
-        self.assertIsNone(high["points"])
+        self.assertIsNone(high["filters"]["highpass"])
+        points = dict(high["points"])
+        self.assertGreater(len(points), 100)
+        # Without any filter the way runs flat across the whole range.
+        self.assertAlmostEqual(points[min(points)], 0.0, delta=0.2)
+        self.assertAlmostEqual(points[max(points)], 0.0, delta=0.2)
+        # The way's own low-pass direction is untouched on the Low side.
+        self.assertTrue(payload["ways"]["left_low"]["complete"])
 
     def test_stereo_mode_has_no_ways(self):
         from audio.output_state import set_crossover

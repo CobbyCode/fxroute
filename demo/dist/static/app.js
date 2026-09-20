@@ -4071,8 +4071,8 @@ function renderCrossoverTile() {
     for (const kind of ['highpass', 'lowpass']) {
         const derived = kind === 'highpass' ? derivedHighpass : null;
         const definition = settings[kind] || derived || {};
-        // An unstored filter displays Off; saving it writes nothing. Clearing
-        // a filter the DSP requires stays fail-closed on the backend.
+        // An unstored filter displays Off; saving it writes nothing. Off is a
+        // valid operating state: that direction runs without a filter.
         const displayFamily = definition.family || 'off';
         const displaySlope = definition.slope_db_oct ?? null;
         const familyEl = kind === 'highpass' ? elements.effectsCrossoverFamilyHighpass : elements.effectsCrossoverFamilyLowpass;
@@ -4128,8 +4128,15 @@ function renderCrossoverTile() {
         const base = wayCount
             ? `${wayCount}-Way Stereo System`
             : 'Configure speaker ways in Output Routing first.';
-        elements.effectsCrossoverSummary.textContent = summaryBass && wayCount
-            ? `${base} · Sub HPF ${summaryBass.frequency_hz} Hz` : base;
+        const parts = [base];
+        if (summaryBass && wayCount) parts.push(`Sub HPF ${summaryBass.frequency_hz} Hz`);
+        // A cleared direction is a valid Off state; name it here instead of
+        // leaving only an empty Type select as its trace.
+        const cleared = applicable
+            .filter((kind) => !settings[kind] && !(kind === 'highpass' && derivedHighpass))
+            .map((kind) => (kind === 'highpass' ? 'High-pass off' : 'Low-pass off'));
+        parts.push(...cleared);
+        elements.effectsCrossoverSummary.textContent = parts.join(' · ');
     }
     if (elements.effectsCrossoverLink) {
         elements.effectsCrossoverLink.checked = state.crossover.linkLR !== false;
@@ -4164,8 +4171,7 @@ function collectCrossoverWayMutation() {
     const wayCount = modeConfig.topology?.way_count || 0;
     const build = (kind, previous, enabled, freqEl, familyEl, slopeEl) => {
         if (!enabled) return previous ?? null;
-        // Off clears the filter; clearing a filter the DSP requires stays
-        // fail-closed on the backend.
+        // Off clears the filter; the way then runs open in that direction.
         if (familyEl?.value === 'off') return null;
         const raw = freqEl ? freqEl.value : '';
         const family = familyEl?.value || previous?.family || 'linkwitz-riley';
@@ -15494,8 +15500,11 @@ function drawCrossoverResponse(canvas, ways, activeRole) {
     ctx.textAlign = 'start';
     const drawWay = (role, color, lineWidth) => {
         const entry = (ways || {})[role];
-        const points = entry && entry.complete && Array.isArray(entry.points) ? entry.points : null;
+        const points = entry && Array.isArray(entry.points) ? entry.points : null;
         if (!points || points.length < 2) return;
+        // A way with a cleared (Off) direction keeps its real curve, drawn
+        // dashed so the open band is visible in the graph as well.
+        ctx.setLineDash(entry.complete === false ? [6, 4] : []);
         ctx.beginPath();
         let started = false;
         for (const point of points) {
@@ -15508,10 +15517,14 @@ function drawCrossoverResponse(canvas, ways, activeRole) {
             else ctx.lineTo(x, y);
             started = true;
         }
-        if (!started) return;
+        if (!started) {
+            ctx.setLineDash([]);
+            return;
+        }
         ctx.strokeStyle = color;
         ctx.lineWidth = lineWidth;
         ctx.stroke();
+        ctx.setLineDash([]);
     };
     ordered.filter((role) => role !== activeRole)
         .forEach((role) => drawWay(role, 'rgba(107,114,128,0.85)', 1.5));

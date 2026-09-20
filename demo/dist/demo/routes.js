@@ -2300,20 +2300,20 @@
                 const derivedHighpass = derivedHighpassFor(role);
                 const way = role.split('_').slice(1).join('_');
                 const required = way === 'low' ? ['lowpass'] : way === 'high' ? ['highpass'] : ['highpass', 'lowpass'];
+                // Off is a valid direction: the curve shows the band the way
+                // actually runs, complete only marks a fully set way.
                 const complete = required.every(kind => settings[kind]);
-                if (complete) {
-                    for (let index = 0; index < 180; index += 1) {
-                        const frequency = 20 * Math.pow(1000, index / 179);
-                        let level = 0;
-                        if (settings.highpass) level += demoCrossoverDb(frequency, settings.highpass, 'highpass');
-                        if (settings.lowpass) level += demoCrossoverDb(frequency, settings.lowpass, 'lowpass');
-                        if (derivedHighpass) level += demoCrossoverDb(frequency, derivedHighpass, 'highpass');
-                        points.push([Math.round(frequency * 1000) / 1000, Math.round(level * 1000) / 1000]);
-                    }
+                for (let index = 0; index < 180; index += 1) {
+                    const frequency = 20 * Math.pow(1000, index / 179);
+                    let level = 0;
+                    if (settings.highpass) level += demoCrossoverDb(frequency, settings.highpass, 'highpass');
+                    if (settings.lowpass) level += demoCrossoverDb(frequency, settings.lowpass, 'lowpass');
+                    if (derivedHighpass) level += demoCrossoverDb(frequency, derivedHighpass, 'highpass');
+                    points.push([Math.round(frequency * 1000) / 1000, Math.round(level * 1000) / 1000]);
                 }
                 ways[role] = { filters: { highpass: settings.highpass, lowpass: settings.lowpass },
                     derived_highpass: derivedHighpass ? { ...derivedHighpass } : null,
-                    complete, points: complete ? points : null };
+                    complete, points };
             }
             return j({ status: 'ok', revision: catalog.revision, mode: catalog.active_mode,
                 crossover_enabled: config.crossover_enabled,
