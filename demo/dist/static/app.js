@@ -59,6 +59,7 @@ window.FXRouteMeasurementFlows?.init({
     hasActiveMeasurementJob,
     measurementModeReady,
     normalizeMeasurementInputChannelSelections,
+    getSelectedMeasurementInputChannelCount,
     getAutoSubTargetCurveSnapshot,
     flushSubwooferSettingsBeforeMeasurement,
     postRuntimeDebugSnapshot,

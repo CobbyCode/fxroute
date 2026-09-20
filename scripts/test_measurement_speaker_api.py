@@ -85,6 +85,19 @@ class SpeakerApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(kwargs["dry_run"])
         self.assertEqual(kwargs["reference_input_channel"], "2")
 
+    async def test_start_forwards_per_side_reference_channels(self):
+        response = await self.client.post("/api/speaker-align/start", json={
+            "side": "right", "input_id": "mic", "reference_input_channel": "7",
+            "reference_input_channel_left": "7", "reference_input_channel_right": "8",
+            "reference_id": "interface:input-8:upstream",
+            "microphone_position_id": "seat-1-fixed", "dry_run": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        _, side, kwargs = self.fake.calls[0]
+        self.assertEqual(side, "right")
+        self.assertEqual(kwargs["reference_input_channel"], "7")
+        self.assertEqual(kwargs["reference_input_channel_left"], "7")
+        self.assertEqual(kwargs["reference_input_channel_right"], "8")
+
     async def test_start_validation_is_400(self):
         self.fake.start_result = ValueError("Speaker Align side must be left or right")
         response = await self.client.post("/api/speaker-align/start", json={"side": "center"})

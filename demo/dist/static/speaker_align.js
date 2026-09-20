@@ -22,6 +22,7 @@
 
     function buildSpeakerAlignPayload({
         side, inputId, micChannel, referenceChannel,
+        referenceChannelLeft, referenceChannelRight,
         referenceId, microphonePositionId, dryRun,
     }) {
         const normalizedSide = trimmed(side);
@@ -46,6 +47,8 @@
             input_id: normalizedInput,
             mic_input_channel: trimmed(micChannel) || '1',
             reference_input_channel: normalizedRefChannel,
+            reference_input_channel_left: trimmed(referenceChannelLeft),
+            reference_input_channel_right: trimmed(referenceChannelRight),
             reference_id: normalizedReference,
             microphone_position_id: normalizedPosition,
             dry_run: dryRun === true,

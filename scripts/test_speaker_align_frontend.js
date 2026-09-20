@@ -61,14 +61,15 @@ async function main() {
     }
     const flows = context.window.FXRouteMeasurementFlows;
     const response = job => ({ ok: true, json: async () => ({ job }) });
+    const speakerApi = { startSpeakerAlign: async payload => {
+        calls.push(payload);
+        assert.equal(elements.measurementSpeakerAlignLeftBtn.disabled, true);
+        assert.equal(elements.measurementSpeakerAlignRightBtn.disabled, true);
+        return response({ id: 'alignment', side: payload.side, status: 'queued' });
+    }, pollSpeakerAlignJob: async () => response({ id: 'alignment', side: 'right', status: 'committed', result }) };
     flows.init({ getState: () => state, getElements: () => elements, measurementModeReady: () => true,
         getActiveMeasurementKind: () => state.measurement.activeMeasurementKind,
-        api: { startSpeakerAlign: async payload => {
-            calls.push(payload);
-            assert.equal(elements.measurementSpeakerAlignLeftBtn.disabled, true);
-            assert.equal(elements.measurementSpeakerAlignRightBtn.disabled, true);
-            return response({ id: 'alignment', side: payload.side, status: 'queued' });
-        }, pollSpeakerAlignJob: async () => response({ id: 'alignment', side: 'right', status: 'committed', result }) },
+        api: speakerApi,
     });
     flows.syncSpeakerAlignButton();
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), false);
@@ -85,10 +86,26 @@ async function main() {
     assert.match(elements.measurementSpeakerAlignResults.innerHTML, /3\.000/);
     assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.021/);
     assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.250/);
+    // Per-side loopback references (Scarlett 7 left / 8 right): a right run
+    // must carry the right loopback, never the shared/left one.
+    state.measurement.selectedReferenceInputChannel = '7';
+    state.measurement.selectedReferenceInputChannelLeft = '7';
+    state.measurement.selectedReferenceInputChannelRight = '8';
+    state.measurement.speakerAlignInFlight = false;
+    state.measurement.startInFlight = false;
+    state.measurement.activeMeasurementKind = '';
+    state.measurement.activeJobId = '';
+    flows.init({ getSelectedMeasurementInputChannelCount: () => 18, api: speakerApi });
+    await flows.startSpeakerAlign('right');
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].reference_input_channel, '7');
+    assert.equal(calls[1].reference_input_channel_left, '7');
+    assert.equal(calls[1].reference_input_channel_right, '8');
+    assert.equal(calls[1].reference_id, 'mic-1:ch8:upstream');
     state.outputSystem.catalog.modes.stereo.selected_bank = 'all';
     flows.syncSpeakerAlignButton();
     await flows.startSpeakerAlign('left');
-    assert.equal(calls.length, 1, 'Hidden alignment must not be startable');
+    assert.equal(calls.length, 2, 'Hidden alignment must not be startable');
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), true);
     console.log('Speaker alignment UI flow: passed');
 }

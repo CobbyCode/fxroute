@@ -413,6 +413,35 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
             await self.acquire(microphone_position_id="other-seat")
         self.assertEqual(self.captures_started, 0)
 
+    async def test_per_side_reference_channels_reach_start_measurement(self):
+        # Scarlett loopbacks 7 (left) / 8 (right) must arrive untouched at
+        # the capture registration of every way.
+        self.store._discover_capture_inputs = lambda: [{
+            "id": "mic", "label": "Mic", "node_name": self.node_name, "node_serial": "serial-9",
+            "channels": 18, "sample_rate": RATE, "available": True,
+        }]
+        seen = []
+        original = self.store.start_measurement
+
+        async def spy(**kwargs):
+            seen.append({key: kwargs.get(key) for key in (
+                "reference_input_channel", "reference_input_channel_left",
+                "reference_input_channel_right")})
+            return await original(**kwargs)
+
+        self.store.start_measurement = spy
+        try:
+            await self.acquire(reference_input_channel="7",
+                               reference_input_channel_left="7",
+                               reference_input_channel_right="8")
+        finally:
+            self.store.start_measurement = original
+        self.assertEqual(len(seen), 2)
+        for entry in seen:
+            self.assertEqual(entry, {"reference_input_channel": "7",
+                                     "reference_input_channel_left": "7",
+                                     "reference_input_channel_right": "8"})
+
 
 if __name__ == "__main__":
     unittest.main()

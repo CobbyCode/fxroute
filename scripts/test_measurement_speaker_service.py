@@ -266,6 +266,24 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(job["result"]["committed_revision"])
         self.assertFalse(self.session.committed)
 
+    async def test_per_side_reference_channels_reach_acquire(self):
+        # Scarlett loopbacks 7 (left) / 8 (right): the right run must record
+        # the right loopback, never the shared/left one.
+        service, job_id = self.start(side="right", reference_input_channel="7",
+                                     reference_input_channel_left="7",
+                                     reference_input_channel_right="8",
+                                     dry_run=True)
+        params = service.status(job_id)["params"]
+        self.assertEqual(params["reference_input_channel"], "7")
+        self.assertEqual(params["reference_input_channel_left"], "7")
+        self.assertEqual(params["reference_input_channel_right"], "8")
+        job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "trial-done")
+        acquired = self.acquire_calls[0]
+        self.assertEqual(acquired["reference_input_channel"], "7")
+        self.assertEqual(acquired["reference_input_channel_left"], "7")
+        self.assertEqual(acquired["reference_input_channel_right"], "8")
+
     async def test_dry_run_confirms_without_committing(self):
         service, job_id = self.start(dry_run=True)
         job = await self.wait_terminal(service, job_id)

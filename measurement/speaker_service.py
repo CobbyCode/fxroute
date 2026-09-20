@@ -193,6 +193,8 @@ class SpeakerAlignService:
 
     def start(self, side: str, *, input_id: str, mic_input_channel: str | int | None = "1",
               reference_input_channel: str | int | None,
+              reference_input_channel_left: str | int | None = None,
+              reference_input_channel_right: str | int | None = None,
               reference_id: str, microphone_position_id: str,
               sweep_profile: dict[str, float] | None = None,
               dry_run: bool = False) -> str:
@@ -231,6 +233,8 @@ class SpeakerAlignService:
             "params": {
                 "input_id": input_id, "mic_input_channel": mic_input_channel,
                 "reference_input_channel": reference_input_channel,
+                "reference_input_channel_left": reference_input_channel_left,
+                "reference_input_channel_right": reference_input_channel_right,
                 "reference_id": reference_id, "microphone_position_id": microphone_position_id,
                 "sweep_profile": deepcopy(sweep_profile) if sweep_profile else None,
                 "output_key": context["output_key"], "channels": context["channels"],
@@ -374,6 +378,8 @@ class SpeakerAlignService:
                 alignment, input_id=params["input_id"],
                 mic_input_channel=params["mic_input_channel"],
                 reference_input_channel=params["reference_input_channel"],
+                reference_input_channel_left=params.get("reference_input_channel_left"),
+                reference_input_channel_right=params.get("reference_input_channel_right"),
                 reference_id=params["reference_id"],
                 microphone_position_id=params["microphone_position_id"],
                 sweep_profile=deepcopy(params["sweep_profile"]),
@@ -390,6 +396,8 @@ class SpeakerAlignService:
                     alignment, input_id=params["input_id"],
                     mic_input_channel=params["mic_input_channel"],
                     reference_input_channel=params["reference_input_channel"],
+                    reference_input_channel_left=params.get("reference_input_channel_left"),
+                    reference_input_channel_right=params.get("reference_input_channel_right"),
                     reference_id=params["reference_id"],
                     microphone_position_id=params["microphone_position_id"],
                     sweep_profile=deepcopy(params["sweep_profile"]),

@@ -28,6 +28,7 @@
         hasActiveMeasurementJob: () => false,
         measurementModeReady: () => false,
         normalizeMeasurementInputChannelSelections: () => {},
+        getSelectedMeasurementInputChannelCount: () => 1,
         getAutoSubTargetCurveSnapshot: () => null,
         flushSubwooferSettingsBeforeMeasurement: async () => {},
         postRuntimeDebugSnapshot: async () => {},
@@ -600,6 +601,19 @@ function readSpeakerAlignPayload(side) {
     deps.normalizeMeasurementInputChannelSelections();
     const referenceChannel = deps.getMeasurementReferenceWarning() ? ''
         : (measurementState.selectedReferenceInputChannel || '');
+    // Per-side loopback references, mirroring manual sweeps: a right sweep
+    // must record the right loopback (e.g. input 8), never the shared/left
+    // one, or the reference comes back silent and the run cannot qualify.
+    const splitReferences = typeof deps.getSelectedMeasurementInputChannelCount === 'function'
+        && deps.getSelectedMeasurementInputChannelCount() >= 3;
+    const referenceChannelLeft = splitReferences
+        ? (measurementState.selectedReferenceInputChannelLeft || '') : '';
+    const referenceChannelRight = splitReferences
+        ? (measurementState.selectedReferenceInputChannelRight || '') : '';
+    // The identity names the channel actually recorded for this side.
+    const sideReferenceChannel = (splitReferences && (referenceChannelLeft || referenceChannelRight))
+        ? (String(side) === 'right' ? referenceChannelRight : referenceChannelLeft)
+        : referenceChannel;
     if (typeof SpeakerAlign.buildSpeakerAlignPayload !== 'function') {
         throw new Error('Speaker Align support is unavailable');
     }
@@ -608,7 +622,9 @@ function readSpeakerAlignPayload(side) {
         inputId: measurementState.selectedInputId,
         micChannel: measurementState.selectedMicInputChannel || '1',
         referenceChannel,
-        referenceId: SpeakerAlign.defaultReferenceId(measurementState.selectedInputId, referenceChannel),
+        referenceChannelLeft,
+        referenceChannelRight,
+        referenceId: SpeakerAlign.defaultReferenceId(measurementState.selectedInputId, sideReferenceChannel),
         microphonePositionId: `${side}-fixed-${Date.now()}`,
         dryRun: false,
     });
