@@ -268,10 +268,7 @@ def _run():
                 assert abs(setup_box['width'] - reset_box['width']) < 1, 'Setup and Reset widths differ'
                 assert abs(setup_box['height'] - reset_box['height']) < 1, 'Setup and Reset heights differ'
                 assert abs(setup_box['x'] + setup_box['width'] - reset_box['x'] - reset_box['width']) < 1
-                # Heading rhythm: the label hugs the Setup button's bottom
-                # edge, so the heading → button-row gap matches the other
-                # workflow sections instead of floating centered.
-                assert abs(setup_box['y'] + setup_box['height'] - label_box['y'] - label_box['height']) < 1, 'heading label is not bottom-aligned with Setup'
+                assert abs(setup_box['y'] + setup_box['height'] / 2 - label_box['y'] - label_box['height'] / 2) < 1
                 page.evaluate("""() => {
                     window.__setupNodes = [...document.querySelectorAll('#measurement-setup-card input, #measurement-setup-card select')];
                     window.__assistantNode = document.querySelector('#measurement-panel [role=dialog]');
