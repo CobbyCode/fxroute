@@ -1367,8 +1367,9 @@ class RuntimeStateDumpTests(unittest.IsolatedAsyncioTestCase):
         their hardware ports are 3/4: the historic positional guess named
         outputs 3/4 and reported a healthy graph as unlinked.
         """
-        layout = [{"role": "left_low"}, {"role": "left_high"}, {"role": "right_low"},
-                  {"role": "right_high"}, {"role": "sub_l"}, {"role": "sub_r"}]
+        # Production layout rows carry the role under "name" (layout_from_plan).
+        layout = [{"name": "left_low"}, {"name": "left_high"}, {"name": "right_low"},
+                  {"name": "right_high"}, {"name": "sub_l"}, {"name": "sub_r"}]
         output_routes = [[1, "playback_AUX0"], [2, "playback_AUX1"], [3, "playback_AUX4"],
                          [4, "playback_AUX5"], [5, "playback_AUX2"], [6, "playback_AUX3"]]
         plan_config = {"output_routes": output_routes, "layout": layout}

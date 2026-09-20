@@ -1435,7 +1435,7 @@ def _sub_output_targets(runtime_config: dict, *, output_key: str, hardware_ports
     targets = {"left": None, "right": None}
     if layout and routes and device:
         for index, channel in enumerate(layout, 1):
-            role = str((channel or {}).get("role") or "")
+            role = str((channel or {}).get("role") or (channel or {}).get("name") or "")
             port = routes.get(index)
             if role in SUB_ROLES and port:
                 targets[side_for_role(role)] = (f"fxroute_dsp:output_{index}", f"{device}:{port}")

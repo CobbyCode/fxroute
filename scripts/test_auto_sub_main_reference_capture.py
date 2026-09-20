@@ -107,7 +107,17 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                     "measurement_channel": side, "sample_rate": 48_000,
                 }
 
-            job = {"auto_gain": {"available": False, "reason": "gain not implemented"}}
+            # Service jobs map only the slots the mode actually has: a 2.1
+            # system has one sub slot, so references must not claim sub2.
+            role_map = {"sub1": "left"} if mode == OUTPUT_MODE_SUBWOOFER_21 else {"sub1": "left", "sub2": "right"}
+            job = {
+                "auto_gain": {"available": False, "reason": "gain not implemented"},
+                "output_state_context": {
+                    "mode": mode, "revision": 1, "output_key": "mock", "channels": 4,
+                    "sub_role_map": role_map, "sub_mute_mask": [1] * len(role_map),
+                },
+            }
+            expected_slots = tuple(slot for slot in ("sub1", "sub2") if slot in role_map)
             with patch.object(autosub.measurement, "_measure_auto_sub_candidate", side_effect=fake_measure):
                 await autosub_measurement._capture_auto_sub_main_references(
                     job=job, fc=80, input_id="mic", mic_input_channel="1",
@@ -118,7 +128,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(calls), 2)
             self.assertEqual([call["channel"] for call in calls], ["left", "right"])
             self.assertTrue(all(call["exact_sub_mute"] for call in calls))
-            self.assertTrue(all(call["active_subs"] == ("sub1", "sub2") for call in calls))
+            self.assertTrue(all(call["active_subs"] == expected_slots for call in calls))
             self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_start_hz"] == 10.0 for call in calls))
             self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_end_hz"] == 22_000.0 for call in calls))
             self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_seconds"] == 11.0 for call in calls))
