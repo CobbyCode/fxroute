@@ -4123,7 +4123,9 @@ function renderCrossoverTile() {
         elements.effectsCrossoverPolarity.disabled = busy;
     }
     const wayCount = modeConfig.topology?.way_count || 0;
-    const summaryBass = mod.bassHighpass ? mod.bassHighpass(bass, subRoles) : null;
+    // The bass high-pass is per side for an unlinked stereo sub pair, so the
+    // active way decides which side's crossover the header shows.
+    const summaryBass = mod.bassHighpass ? mod.bassHighpass(bass, subRoles, active) : null;
     if (elements.effectsCrossoverSummary) {
         const base = wayCount
             ? `${wayCount}-Way Stereo System`

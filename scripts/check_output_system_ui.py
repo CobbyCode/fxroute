@@ -357,6 +357,35 @@ def main() -> int:
             level = page.evaluate("fetch('/api/audio/output-state').then(r => r.json()).then(j => j.modes[j.active_mode].processing.sub_l.level_db)")
             check("sub tile saves routed Sub L", level == -6)
 
+            # An unlinked stereo sub pair gives every way its own side of the
+            # bass high-pass: the header must show the active way's side.
+            page.evaluate("""(async () => {
+                const j = await fetch('/api/audio/output-state').then(r => r.json());
+                const mode = j.active_mode;
+                const processing = {};
+                for (const role of ['sub_l', 'sub_r']) {
+                    const s = j.modes[mode].processing[role];
+                    processing[role] = { level_db: s.level_db, alignment_ms: s.alignment_ms,
+                                         polarity: s.polarity };
+                }
+                return applyOutputSystemMutation('set_subwoofers', {
+                    mode, frequency_hz: 80, main_highpass_enabled: true,
+                    family: 'linkwitz-riley', slope_db_oct: 24, sub_link: false,
+                    sub_filters: { left: { family: 'butterworth', slope_db_oct: 12, frequency_hz: 60 },
+                                   right: { family: 'linkwitz-riley', slope_db_oct: 48, frequency_hz: 120 } },
+                    processing,
+                }, false, { quiet: true });
+            })()""")
+            page.wait_for_timeout(1300)
+            page.locator("[data-crossover-way='left_low']").click()
+            page.wait_for_timeout(500)
+            left_summary = page.locator("#effects-crossover-summary").inner_text()
+            check(f"left way shows its own sub HPF ({left_summary})", left_summary.endswith("Sub HPF 60 Hz"))
+            page.locator("[data-crossover-way='right_low']").click()
+            page.wait_for_timeout(500)
+            right_summary = page.locator("#effects-crossover-summary").inner_text()
+            check(f"right way shows its own sub HPF ({right_summary})", right_summary.endswith("Sub HPF 120 Hz"))
+
             page.evaluate("toggleSettingsPanel(true)")
             pick('#settings-crossover-select', 'off')
             page.wait_for_timeout(700)
