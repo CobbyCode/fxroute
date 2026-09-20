@@ -90,10 +90,10 @@ assert.match(measurementCss, /\.measurement-workflow-speaker-buttons/);
 assert.match(measurementCss, /\.measurement-workflow-speaker-buttons[\s\S]*?width:\s*190px/);
 assert.match(measurementCss, /\.measurement-workflow-speaker-row[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
 // Shared vertical rhythm (heading → buttons → divider): label and Setup
-// share one midline, every section uses the same 0.75rem heading gap, and
+// share one top edge, every section uses the same 0.75rem heading gap, and
 // idle speaker-align status/results collapse instead of reserving phantom
 // flex gaps below the buttons.
-assert.match(measurementCss, /\.measurement-workflow-heading[\s\S]*?align-items:\s*center/);
+assert.match(measurementCss, /\.measurement-workflow-heading[\s\S]*?align-items:\s*flex-start/);
 assert.match(measurementCss, /\.measurement-workflow-section[\s\S]*?gap:\s*0\.75rem/);
 assert.match(measurementCss, /#measurement-speaker-align-status:empty/);
 assert.match(measurementCss, /#measurement-speaker-align-results:empty/);

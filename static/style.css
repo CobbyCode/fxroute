@@ -4568,9 +4568,10 @@ select.url-input {
 
 .measurement-workflow-heading {
     display: flex;
-    /* Label and Setup share one midline; the row below (section gap) sets
-       the uniform heading → button distance. */
-    align-items: center;
+    /* Tops flush: label and Setup share one top edge on desktop and
+       mobile; the row below (section gap) sets the uniform heading →
+       button distance in every section. */
+    align-items: flex-start;
     justify-content: space-between;
     gap: 0.75rem;
 }

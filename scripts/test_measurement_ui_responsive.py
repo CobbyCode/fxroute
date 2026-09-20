@@ -268,7 +268,8 @@ def _run():
                 assert abs(setup_box['width'] - reset_box['width']) < 1, 'Setup and Reset widths differ'
                 assert abs(setup_box['height'] - reset_box['height']) < 1, 'Setup and Reset heights differ'
                 assert abs(setup_box['x'] + setup_box['width'] - reset_box['x'] - reset_box['width']) < 1
-                assert abs(setup_box['y'] + setup_box['height'] / 2 - label_box['y'] - label_box['height'] / 2) < 1
+                # Shared headline: label and Setup tops sit on one edge.
+                assert abs(setup_box['y'] - label_box['y']) < 1, 'heading label and Setup tops are not flush'
                 page.evaluate("""() => {
                     window.__setupNodes = [...document.querySelectorAll('#measurement-setup-card input, #measurement-setup-card select')];
                     window.__assistantNode = document.querySelector('#measurement-panel [role=dialog]');
