@@ -6132,7 +6132,8 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-subwoofer-derived-delays {
-    /* Timing row below the cards across the full width. */
+    /* Below the cards across the full width; on wide desktop tucked under
+       the sub cards instead (see the min-width rule below). */
     grid-column: 1 / -1;
     align-self: stretch;
     min-width: 0;
@@ -6145,6 +6146,29 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     font-size: 0.74rem;
     font-weight: 600;
     line-height: 1.25;
+}
+
+/* Wide desktop, 2.2 only (the timing readout stays hidden in 2.1): the
+   sub cards are shorter than Global's 2x2 block, so the timing tucks into
+   that free space — under Sub 1 + Sub 2 with its bottom edge on Global's
+   bottom — instead of costing another full row. */
+@media (min-width: 1101px) {
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-global-group {
+        grid-row: 1 / span 2;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group {
+        grid-column: 2;
+        grid-row: 1;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
+        grid-column: 3;
+        grid-row: 1;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-derived-delays {
+        grid-column: 2 / -1;
+        grid-row: 2;
+        align-self: end;
+    }
 }
 
 .effects-subwoofer-derived-delays span {

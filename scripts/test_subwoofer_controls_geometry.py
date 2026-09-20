@@ -173,18 +173,37 @@ def _run():
             check(f"2.2 cards are not stretched to one height ({three_col})",
                   max(three_col["heights"]) - min(three_col["heights"]) > 4)
 
-            # Timing row spans the full width below the cards.
+            # Desktop 2.2: the timing readout tucks under the sub cards
+            # (columns 2-3, second row) with its bottom edge on Global's
+            # bottom instead of costing another full row.
             timing = page.evaluate("""
                 (() => {
                     const card = document.querySelector('.effects-card-subwoofer');
                     card.classList.add('is-subwoofer-22');
-                    const style = getComputedStyle(document.querySelector('#effects-subwoofer-derived-delays'));
+                    const delayed = document.querySelector('#effects-subwoofer-derived-delays');
+                    const wasHidden = delayed.classList.contains('hidden');
+                    if (wasHidden) delayed.classList.remove('hidden');
+                    // Snapshot everything before restoring classes:
+                    // the computed style is live and would re-resolve.
+                    const style = getComputedStyle(delayed);
+                    const column = style.gridColumn;
+                    const row = style.gridRow;
+                    const t = delayed.getBoundingClientRect();
+                    const g = document.querySelector('.effects-subwoofer-global-group').getBoundingClientRect();
+                    const s = document.querySelector('.effects-subwoofer-sub1-group').getBoundingClientRect();
+                    if (wasHidden) delayed.classList.add('hidden');
                     card.classList.remove('is-subwoofer-22');
-                    return { column: style.gridColumn };
+                    return { column, row,
+                             bottomDelta: Math.round(t.bottom - g.bottom),
+                             belowSubs: Math.round(t.top - s.bottom) };
                 })()
             """)
-            check(f"timing row spans the full width ({timing})",
-                  timing["column"] == "1 / -1")
+            check(f"timing tucks under the sub cards ({timing})",
+                  timing["column"] == "2 / -1" and str(timing["row"]).startswith("2"))
+            check(f"timing bottom edge meets Global bottom ({timing})",
+                  abs(timing["bottomDelta"]) <= 2)
+            check(f"timing sits below the sub cards ({timing})",
+                  timing["belowSubs"] >= 0)
 
             # Single shared crossover plus one block per side, and the L/R
             # link switch only for a true Stereo sub pair. The per-side
