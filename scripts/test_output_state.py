@@ -13,8 +13,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_state import (
-    default_output_state, referenced_presets, routing_for_device, select_bank,
-    set_crossover, set_mode_routing, switch_mode, validate_output_state,
+    bass_crossover_for_side, default_output_state, referenced_presets,
+    routing_for_device, select_bank, set_bass_management, set_crossover,
+    set_mode_routing, shared_bass_crossover, switch_mode, validate_output_state,
 )
 from audio.output_state_store import OutputStateStore, StateConflictError
 
@@ -27,6 +28,51 @@ PRO = "alsa_output.usb-Test-00.pro-output-0"
 def crossover_state(state, device, assignments):
     state = set_crossover(state, "stereo-sub", True)
     return set_mode_routing(state, "stereo-sub", device, assignments)
+
+
+class BassCrossoverTests(unittest.TestCase):
+    """The sub crossover resolves per side only for an unlinked Stereo pair."""
+
+    def setUp(self):
+        state = set_mode_routing(default_output_state(), "stereo-sub", USB,
+                                 ["main_l", "main_r", "sub_l", "sub_r"])
+        self.bass = state["modes"]["stereo-sub"]["bass_management"]
+
+    def test_shared_crossover_drives_both_sides_while_linked(self):
+        bass = set_bass_management(default_output_state(), "stereo-sub",
+                                   frequency_hz=70, family="butterworth", slope_db_oct=36)
+        bass = bass["modes"]["stereo-sub"]["bass_management"]
+        for side in ("left", "right"):
+            self.assertEqual(bass_crossover_for_side(bass, side),
+                             {"family": "butterworth", "slope_db_oct": 36, "frequency_hz": 70})
+        self.assertEqual(shared_bass_crossover(bass), bass_crossover_for_side(bass, "left"))
+
+    def test_unlinked_pair_uses_its_own_side_filters(self):
+        left = {"family": "bessel", "slope_db_oct": 18, "frequency_hz": 60}
+        right = {"family": "butterworth", "slope_db_oct": 12, "frequency_hz": 120}
+        state = set_bass_management(default_output_state(), "stereo-sub", sub_link=False,
+                                    sub_filters={"left": left, "right": right})
+        bass = state["modes"]["stereo-sub"]["bass_management"]
+        self.assertEqual(bass_crossover_for_side(bass, "left"), left)
+        self.assertEqual(bass_crossover_for_side(bass, "right"), right)
+        # A missing side override falls back to the shared values.
+        self.assertEqual(bass_crossover_for_side({**bass, "sub_filters": {"left": left}}, "right"),
+                         shared_bass_crossover(bass))
+        # Re-linking hides the overrides without discarding them.
+        linked = set_bass_management(state, "stereo-sub", sub_link=True)
+        self.assertEqual(linked["modes"]["stereo-sub"]["bass_management"]["sub_filters"],
+                         {"left": left, "right": right})
+
+    def test_clearing_an_override_and_partial_shape_edits(self):
+        state = set_bass_management(default_output_state(), "stereo-sub", sub_link=False,
+                                    sub_filters={"left": {"family": "bessel", "slope_db_oct": 12,
+                                                           "frequency_hz": 50}})
+        cleared = set_bass_management(state, "stereo-sub", sub_filters={"left": None})
+        self.assertEqual(cleared["modes"]["stereo-sub"]["bass_management"]["sub_filters"], {})
+        for kwargs in ({"family": "bessel"}, {"slope_db_oct": 12},
+                       {"sub_filters": {"center": None}}, {"sub_filters": []}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                set_bass_management(state, "stereo-sub", **kwargs)
 
 
 class OutputStateTests(unittest.TestCase):
@@ -117,10 +163,41 @@ class OutputStateTests(unittest.TestCase):
                 state["modes"]["stereo-sub"]["processing"]["left_low"]["lowpass"] = definition
                 validate_output_state(state)
 
+    def test_bass_crossover_family_slope_and_side_overrides_are_validated(self):
+        state = crossover_state(default_output_state(), "A", WAYS)
+        bass = state["modes"]["stereo-sub"]["bass_management"]
+        for family, slopes in (("linkwitz-riley", range(12, 73, 12)),
+                               ("butterworth", range(6, 73, 6)), ("bessel", range(6, 73, 6))):
+            for slope in slopes:
+                bass["family"], bass["slope_db_oct"] = family, slope
+                validate_output_state(state)
+        invalid = [
+            {"family": "LR24"},
+            {"family": "linkwitz-riley", "slope_db_oct": 18},
+            {"family": "bessel", "slope_db_oct": 78},
+            {"family": "butterworth", "slope_db_oct": True},
+        ]
+        for patch in invalid:
+            with self.subTest(patch=patch), self.assertRaises(ValueError):
+                validate_output_state({**state, "modes": {
+                    **state["modes"],
+                    "stereo-sub": {**state["modes"]["stereo-sub"],
+                                   "bass_management": {**bass, **patch}}}})
+        for patch in ({"sub_link": 1}, {"sub_filters": {"center": {
+                "family": "bessel", "slope_db_oct": 12, "frequency_hz": 80}}},
+                {"sub_filters": {"left": {"family": "bessel", "slope_db_oct": 12,
+                                          "frequency_hz": 20}}},
+                {"frequency_hz": 20}):
+            with self.subTest(patch=patch), self.assertRaises(ValueError):
+                validate_output_state({**state, "modes": {
+                    **state["modes"],
+                    "stereo-sub": {**state["modes"]["stereo-sub"],
+                                   "bass_management": {**bass, **patch}}}})
+
     def test_malformed_state_never_silently_discards_settings(self):
         base = crossover_state(default_output_state(), "A", WAYS)
         for path, value in (
-            (("version",), 3), (("revision",), True), (("active_mode",), "surround"),
+            (("version",), 4), (("revision",), True), (("active_mode",), "surround"),
             (("modes", "stereo", "selected_bank"), "missing"),
             (("modes", "stereo", "banks", "global", "typo"), 1),
             (("modes", "stereo-sub", "processing", "left_low", "level_db"), float("inf")),

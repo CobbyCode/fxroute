@@ -12,17 +12,39 @@ from audio.output_topology import MAIN_ROLES, MODES, derive_topology, roles_for_
 from dsp.banks import BankState
 
 SCHEMA = "fxroute.output-state"
-VERSION = 2
+VERSION = 3
 FILTER_SLOPES = {
     "linkwitz-riley": tuple(range(12, 73, 12)),
     "butterworth": tuple(range(6, 73, 6)),
     "bessel": tuple(range(6, 73, 6)),
 }
 
+# Shared sub crossover defaults: Linkwitz-Riley 24 dB/oct, the classic
+# bass-management alignment. A stereo sub pair is coupled until unlinked.
+BASS_FILTER_DEFAULT = {"family": "linkwitz-riley", "slope_db_oct": 24}
+SUB_SIDES = ("left", "right")
+BASS_FIELDS = ("frequency_hz", "main_highpass_enabled", "family", "slope_db_oct",
+               "sub_link", "sub_filters")
+
+
+FILTER_LABELS = {"linkwitz-riley": "LR", "butterworth": "BW", "bessel": "BS"}
+
+
+def filter_label(family: str, slope_db_oct: object) -> str:
+    """Short display label for a filter shape, e.g. LR24, BW12, BS18."""
+    return f"{FILTER_LABELS.get(family, str(family))}{slope_db_oct}"
+
 
 def default_processing() -> dict:
     return {"highpass": None, "lowpass": None, "level_db": 0.0,
             "alignment_ms": 0.0, "polarity": "normal"}
+
+
+def default_bass_management() -> dict:
+    return {"frequency_hz": 80, "main_highpass_enabled": True,
+            "family": BASS_FILTER_DEFAULT["family"],
+            "slope_db_oct": BASS_FILTER_DEFAULT["slope_db_oct"],
+            "sub_link": True, "sub_filters": {}}
 
 
 def default_output_state() -> dict:
@@ -33,7 +55,7 @@ def default_output_state() -> dict:
             "routing": {}, "crossover_enabled": False, "selected_bank": "global",
             "banks": {role: BankState().to_dict() for role in ("global", *roles)},
             "processing": {role: default_processing() for role in roles},
-            "bass_management": {"frequency_hz": 80, "main_highpass_enabled": True},
+            "bass_management": default_bass_management(),
             "extras": {},
         }
     return {"schema": SCHEMA, "version": VERSION, "revision": 0,
@@ -67,17 +89,48 @@ def _validate_json(value: object) -> None:
         raise ValueError("State values must be JSON-compatible")
 
 
+def _validate_family_slope(family: object, slope: object, label: str) -> None:
+    if not isinstance(family, str) or family not in FILTER_SLOPES:
+        raise ValueError(f"Unsupported {label} filter family")
+    if type(slope) is not int or slope not in FILTER_SLOPES[family]:
+        raise ValueError(f"Unsupported {label} family/slope combination")
+
+
 def validate_filter(payload: object) -> None:
     if payload is None:
         return
     _object_fields(payload, {"family", "slope_db_oct", "frequency_hz"}, "Crossover filter")
-    family = payload["family"]
-    if not isinstance(family, str) or family not in FILTER_SLOPES:
-        raise ValueError("Unsupported crossover filter family")
-    slope = payload["slope_db_oct"]
-    if type(slope) is not int or slope not in FILTER_SLOPES[family]:
-        raise ValueError("Unsupported crossover family/slope combination")
+    _validate_family_slope(payload["family"], payload["slope_db_oct"], "crossover")
     _finite_range(payload["frequency_hz"], 20, 20000, "Crossover frequency")
+
+
+def validate_bass_filter(payload: object) -> None:
+    """Sub crossover filter: a way's families/slopes at subwoofer frequencies."""
+    _object_fields(payload, {"family", "slope_db_oct", "frequency_hz"}, "Sub crossover filter")
+    _validate_family_slope(payload["family"], payload["slope_db_oct"], "sub crossover")
+    _finite_range(payload["frequency_hz"], 40, 200, "Sub crossover frequency")
+
+
+def shared_bass_crossover(bass: dict) -> dict:
+    """The mode's shared sub crossover: Mono, Dual-Mono and coupled Stereo."""
+    return {"family": bass["family"], "slope_db_oct": bass["slope_db_oct"],
+            "frequency_hz": bass["frequency_hz"]}
+
+
+def bass_crossover_for_side(bass: dict, side: str) -> dict:
+    """Effective sub crossover filter for one side of an unlinked stereo pair.
+
+    Only a true Left/Right sub pair resolves per side; dual-mono and mono
+    systems always run the shared crossover. A side without a stored
+    override falls back to the shared values.
+    """
+    if side not in SUB_SIDES:
+        raise ValueError("Sub crossover side must be left or right")
+    if not bass["sub_link"]:
+        override = bass["sub_filters"].get(side)
+        if override is not None:
+            return copy.deepcopy(override)
+    return shared_bass_crossover(bass)
 
 
 def _validate_processing(payload: object) -> None:
@@ -141,10 +194,21 @@ def validate_output_state(payload: object) -> dict:
             if any(role != "off" and role not in banks for role in roles):
                 raise ValueError("Every assigned role requires an area bank")
         bass = config["bass_management"]
-        _object_fields(bass, {"frequency_hz", "main_highpass_enabled"}, "Bass management")
+        _object_fields(bass, set(BASS_FIELDS), "Bass management")
         _finite_range(bass["frequency_hz"], 40, 200, "Sub crossover frequency")
         if type(bass["main_highpass_enabled"]) is not bool:
             raise ValueError("Main high-pass enabled must be a boolean")
+        _validate_family_slope(bass["family"], bass["slope_db_oct"], "sub crossover")
+        if type(bass["sub_link"]) is not bool:
+            raise ValueError("Sub L/R link must be a boolean")
+        overrides = bass["sub_filters"]
+        if not isinstance(overrides, dict) or any(side not in SUB_SIDES for side in overrides):
+            raise ValueError("Sub crossover overrides must be keyed by left and right")
+        for side, definition in overrides.items():
+            try:
+                validate_bass_filter(definition)
+            except ValueError as exc:
+                raise ValueError(f"Sub crossover override {side}: {exc}") from exc
         if not isinstance(config["extras"], dict):
             raise ValueError("Global helpers must be an object")
     return copy.deepcopy(payload)
@@ -295,7 +359,11 @@ def set_output_processing(state: dict, mode: str, role: str, *, highpass: object
 
 
 def set_bass_management(state: dict, mode: str, *, frequency_hz: float | None = None,
-                        main_highpass_enabled: bool | None = None) -> dict:
+                        main_highpass_enabled: bool | None = None,
+                        family: str | None = None, slope_db_oct: int | None = None,
+                        sub_link: bool | None = None,
+                        sub_filters: dict | None = None) -> dict:
+    """Edit the mode's sub crossover; a per-side override accepts None to clear."""
     result = validate_output_state(state)
     roles_for_mode(mode)
     bass = result["modes"][mode]["bass_management"]
@@ -303,6 +371,23 @@ def set_bass_management(state: dict, mode: str, *, frequency_hz: float | None = 
         bass["frequency_hz"] = frequency_hz
     if main_highpass_enabled is not None:
         bass["main_highpass_enabled"] = main_highpass_enabled
+    if family is not None or slope_db_oct is not None:
+        if family is None or slope_db_oct is None:
+            raise ValueError("Sub crossover type and slope must be set together")
+        bass["family"] = family
+        bass["slope_db_oct"] = slope_db_oct
+    if sub_link is not None:
+        bass["sub_link"] = sub_link
+    if sub_filters is not None:
+        if not isinstance(sub_filters, dict):
+            raise ValueError("Sub crossover overrides must be an object keyed by side")
+        for side, definition in sub_filters.items():
+            if side not in SUB_SIDES:
+                raise ValueError("Sub crossover overrides must be keyed by left and right")
+            if definition is None:
+                bass["sub_filters"].pop(side, None)
+            else:
+                bass["sub_filters"][side] = definition
     return validate_output_state(result)
 
 

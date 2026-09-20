@@ -16,6 +16,11 @@
 const WAY_ORDER = ['left_low', 'left_low_mid', 'left_mid', 'left_high',
     'right_low', 'right_low_mid', 'right_mid', 'right_high'];
 const SUB_ROLES = ['sub_l', 'sub_r', 'sub1', 'sub2'];
+const FAMILY_PREFIXES = { 'linkwitz-riley': 'LR', butterworth: 'BW', bessel: 'BS' };
+
+function filterLabel(family, slope) {
+    return `${FAMILY_PREFIXES[family] || String(family || '')}${slope}`;
+}
 
 function esc(value) {
     return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -41,22 +46,60 @@ function mirrorRole(role) {
     return null;
 }
 
+function sideForRole(role) {
+    const name = String(role || '');
+    return (name === 'sub_l' || name === 'main_l' || name.startsWith('left_')) ? 'left' : 'right';
+}
+
+function isStereoSubPair(subRoles) {
+    const subs = Array.isArray(subRoles) ? subRoles : [];
+    return subs.includes('sub_l') && subs.includes('sub_r');
+}
+
+// The mode's shared sub crossover. Mono, Dual-Mono and a coupled Stereo pair
+// all run exactly these values.
+function sharedBassCrossover(bass) {
+    const source = bass || {};
+    return {
+        family: source.family || 'linkwitz-riley',
+        slope_db_oct: Number(source.slope_db_oct) || 24,
+        frequency_hz: Number(source.frequency_hz) || 80,
+    };
+}
+
+// Effective sub crossover of one side. Only an unlinked Stereo pair resolves
+// to its own stored side filter; a side without an override (and every other
+// sub layout) keeps the shared values.
+function bassCrossoverForSide(bass, side) {
+    const source = bass || {};
+    const shared = sharedBassCrossover(bass);
+    if (source.sub_link !== false) return shared;
+    const override = (source.sub_filters || {})[side];
+    if (!override) return shared;
+    return { family: override.family, slope_db_oct: override.slope_db_oct,
+        frequency_hz: override.frequency_hz };
+}
+
 // Shared bass high-pass from the subwoofer tile: with routed subs and Main
-// highpass on, the DSP runs every speaker way through an LR24 high-pass at
-// the sub crossover. Only the Low way has no stored high-pass of its own,
-// so only there is the derived filter displayed.
-function bassHighpass(bass, subRoles) {
+// highpass on, the DSP runs every speaker way through the sub crossover
+// (type and slope included) as a high-pass. Only the Low way has no stored
+// high-pass of its own, so only there is the derived filter displayed.
+function bassHighpass(bass, subRoles, role) {
     const subs = Array.isArray(subRoles) ? subRoles.filter(Boolean) : [];
     if (!subs.length) return null;
     if (!bass || bass.main_highpass_enabled !== true) return null;
-    const frequency = Math.round(Number(bass.frequency_hz));
+    const crossover = isStereoSubPair(subs)
+        ? bassCrossoverForSide(bass, sideForRole(role))
+        : sharedBassCrossover(bass);
+    const frequency = Math.round(Number(crossover.frequency_hz));
     if (!Number.isFinite(frequency) || frequency < 40 || frequency > 200) return null;
-    return { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: frequency };
+    return { family: crossover.family, slope_db_oct: crossover.slope_db_oct,
+        frequency_hz: frequency };
 }
 
 function derivedHighpassForRole(role, bass, subRoles) {
     if (!isLowWayRole(role)) return null;
-    return bassHighpass(bass, subRoles);
+    return bassHighpass(bass, subRoles, role);
 }
 
 function applicableFilters(role, context) {
@@ -144,6 +187,23 @@ function starterFrequency(wayCount, role, kind) {
     return null;
 }
 
+// Cutoff-normalized magnitude of one crossover shape, in dB. Butterworth is
+// |H| = 1/sqrt(1+u^(2N)); Linkwitz-Riley cascades two halves and lands at
+// -6 dB on the cutoff; Bessel shares the asymptote and is painted with the
+// Butterworth knee. The exact digital sections live in dsp/crossover.py;
+// this only paints the tile preview.
+function crossoverMagnitudeDb(definition, frequency_hz, kind) {
+    const shape = definition || {};
+    const cutoff = Math.max(1, Number(shape.frequency_hz) || 80);
+    const order = Math.max(1, Math.round((Number(shape.slope_db_oct) || 24) / 6));
+    const hz = Math.max(1e-3, Number(frequency_hz) || cutoff);
+    const ratio = Math.max(1e-9, kind === 'highpass' ? cutoff / hz : hz / cutoff);
+    if (shape.family === 'butterworth' || shape.family === 'bessel') {
+        return -10 * Math.log10(1 + Math.pow(ratio, 2 * order));
+    }
+    return -20 * Math.log10(1 + Math.pow(ratio, order));
+}
+
 function renderWayTabs(tabs, roles, activeRole, onSelect) {
     if (!tabs) return;
     const html = roles.map((role) => {
@@ -165,10 +225,16 @@ function renderWayTabs(tabs, roles, activeRole, onSelect) {
     return {
         WAY_ORDER,
         SUB_ROLES,
+        FAMILY_PREFIXES,
+        filterLabel,
         esc,
         orderedWays,
         isLowWayRole,
         mirrorRole,
+        sideForRole,
+        isStereoSubPair,
+        sharedBassCrossover,
+        bassCrossoverForSide,
         bassHighpass,
         derivedHighpassForRole,
         applicableFilters,
@@ -179,6 +245,7 @@ function renderWayTabs(tabs, roles, activeRole, onSelect) {
         clampAlignmentMs,
         clampFrequencyHz,
         starterFrequency,
+        crossoverMagnitudeDb,
         renderWayTabs,
     };
 });

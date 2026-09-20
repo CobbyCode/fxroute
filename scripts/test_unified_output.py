@@ -87,14 +87,14 @@ class UnifiedOutputTests(unittest.TestCase):
             path.write_text(json.dumps(old))
             store = OutputStateStore(path)
             upgraded = store.load()
-            self.assertEqual(upgraded['version'], 2)
+            self.assertEqual(upgraded['version'], 3)
             self.assertEqual(upgraded['revision'], 12)
             self.assertEqual(upgraded['active_mode'], 'stereo-sub')
             self.assertNotIn('crossover', upgraded['modes'])
             self.assertTrue(upgraded['modes']['stereo-sub']['crossover_enabled'])
             self.assertEqual(upgraded['modes']['stereo-sub']['processing']['sub1']['alignment_ms'], 3)
             self.assertEqual(store.commit(upgraded, expected_revision=12)['revision'], 13)
-            self.assertEqual(store.load()['version'], 2)
+            self.assertEqual(store.load()['version'], 3)
 
     def test_crossover_compiles_and_measurement_targets_follow_active_roles(self):
         from measurement.target import freeze_measurement_target

@@ -16,7 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from audio.output_state import default_output_state, set_mode_routing, switch_mode
+from audio.output_state import (default_bass_management, default_output_state,
+                                set_mode_routing, switch_mode)
 from audio.samplerate.overview import (
     _derived_output_mode,
     _derived_output_mode_from_head,
@@ -24,12 +25,18 @@ from audio.samplerate.overview import (
 )
 
 
-def head_with(mode, key, roles, *, frequency_hz=80, highpass=True, subs=None):
+def head_with(mode, key, roles, *, frequency_hz=80, highpass=True, subs=None,
+              family=None, slope_db_oct=None, sub_link=None, sub_filters=None):
     state = switch_mode(set_mode_routing(
         default_output_state(), mode, key, ["main_l", "main_r", *roles]), mode)
     spec = state["modes"][mode]
-    spec["bass_management"] = {"frequency_hz": frequency_hz,
+    spec["bass_management"] = {**default_bass_management(),
+                               "frequency_hz": frequency_hz,
                                "main_highpass_enabled": highpass}
+    for key, value in (("family", family), ("slope_db_oct", slope_db_oct),
+                       ("sub_link", sub_link), ("sub_filters", sub_filters)):
+        if value is not None:
+            spec["bass_management"][key] = value
     for role, settings in (subs or {}).items():
         spec["processing"][role].update(settings)
     return state
@@ -74,6 +81,38 @@ class DerivedModeTests(unittest.TestCase):
         head = head_with("stereo-sub", "dev", ["sub_l", "sub_r"])
         payload = _derived_output_mode(head, "dev")
         self.assertEqual(payload["mode"], "subwoofer-2.2-stereo")
+
+    def test_crossover_type_and_slope_are_reported(self):
+        head = head_with("stereo-sub", "dev", ["sub1"], frequency_hz=90,
+                         family="butterworth", slope_db_oct=36)
+        sub = _derived_output_mode(head, "dev")["subwoofer"]
+        self.assertEqual(sub["crossover_frequency_hz"], 90)
+        self.assertEqual(sub["slope"], "BW36")
+
+    def test_unlinked_stereo_pair_reports_its_own_side_crossovers(self):
+        head = head_with("stereo-sub", "dev", ["sub_l", "sub_r"],
+                         sub_link=False,
+                         sub_filters={
+                             "left": {"family": "bessel", "slope_db_oct": 18, "frequency_hz": 60},
+                             "right": {"family": "butterworth", "slope_db_oct": 24, "frequency_hz": 120}})
+        payload = _derived_output_mode(head, "dev")
+        self.assertEqual(payload["crossover_frequency_hz"], 60)
+        self.assertEqual(payload["slope"], "BS18")
+        self.assertEqual(payload["subwoofers"]["sub1"]["crossover_frequency_hz"], 60)
+        self.assertEqual(payload["subwoofers"]["sub1"]["slope"], "BS18")
+        self.assertEqual(payload["subwoofers"]["sub2"]["crossover_frequency_hz"], 120)
+        self.assertEqual(payload["subwoofers"]["sub2"]["slope"], "BW24")
+
+    def test_dual_mono_keeps_the_shared_crossover_for_both_slots(self):
+        head = head_with("stereo-sub", "dev", ["sub1", "sub2"], frequency_hz=70,
+                         sub_link=False,
+                         sub_filters={"left": {"family": "bessel", "slope_db_oct": 12,
+                                                "frequency_hz": 60}})
+        payload = _derived_output_mode(head, "dev")
+        self.assertEqual(payload["mode"], "subwoofer-2.2")
+        self.assertEqual(payload["crossover_frequency_hz"], 70)
+        self.assertEqual(payload["subwoofers"]["sub1"]["crossover_frequency_hz"], 70)
+        self.assertEqual(payload["subwoofers"]["sub2"]["crossover_frequency_hz"], 70)
 
     def test_unusable_heads_fall_back(self):
         self.assertIsNone(_derived_output_mode(None, "dev"))

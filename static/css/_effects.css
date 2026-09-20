@@ -485,11 +485,55 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     display: grid;
     /* Same principle as the channel groups: tracks hug their content and
        the leftover width becomes even spacing, so controls can neither
-       overlap nor clip at any card width. */
+       overlap nor clip at any card width. One stacked column: the label,
+       the shared crossover block and (unlinked Stereo) the two side rows. */
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    align-items: end;
+    gap: 0.7rem;
+}
+
+.effects-subwoofer-global-group.is-crossover-split {
+    grid-column: 1 / -1;
+}
+
+/* Two-line crossover area: Frequency/Type on the first row, Slope/Main
+   highpass on the second. An unlinked Stereo pair hides the shared block and
+   shows one such row per side instead. */
+.effects-subwoofer-crossover-block {
+    grid-column: 1 / -1;
+    display: grid;
     grid-template-columns: repeat(2, auto);
     justify-content: space-evenly;
     align-items: end;
     gap: 0.7rem;
+    width: 100%;
+}
+
+.effects-subwoofer-crossover-block.is-side {
+    grid-template-columns: repeat(4, auto);
+}
+
+.effects-subwoofer-crossover-side-label {
+    grid-column: 1 / -1;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.effects-subwoofer-global-group > .crossover-link-label {
+    grid-column: 1 / -1;
+    justify-content: center;
+}
+
+/* Split Stereo: the side rows own the full width, so both Sub trim groups
+   share the row below without leaving the Global column empty. */
+.effects-card-subwoofer.is-crossover-split .effects-subwoofer-sub1-group {
+    grid-column: 1 / span 4;
+}
+
+.effects-card-subwoofer.is-crossover-split .effects-subwoofer-sub2-group {
+    grid-column: 5 / -1;
 }
 
 .effects-subwoofer-channel-group {

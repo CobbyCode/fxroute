@@ -750,8 +750,27 @@ const elements = {
     effectsSubwooferRouting: document.getElementById('effects-subwoofer-routing'),
     effectsSubwooferModeBadge: document.getElementById('effects-subwoofer-mode-badge'),
     effectsSubwooferPreview: document.getElementById('effects-subwoofer-preview'),
+    effectsSubwooferGlobalGroup: document.getElementById('effects-subwoofer-global-group'),
+    effectsSubwooferGlobalLabel: document.getElementById('effects-subwoofer-global-label'),
+    effectsSubwooferSharedCrossover: document.getElementById('effects-subwoofer-shared-crossover'),
+    effectsSubwooferLeftCrossover: document.getElementById('effects-subwoofer-left-crossover'),
+    effectsSubwooferRightCrossover: document.getElementById('effects-subwoofer-right-crossover'),
+    effectsSubwooferLeftLabel: document.getElementById('effects-subwoofer-left-label'),
+    effectsSubwooferRightLabel: document.getElementById('effects-subwoofer-right-label'),
+    effectsSubwooferLinkWrap: document.getElementById('effects-subwoofer-link-wrap'),
+    effectsSubwooferLink: document.getElementById('effects-subwoofer-link'),
     effectsSubwooferFrequencyNumber: document.getElementById('effects-subwoofer-frequency-number'),
+    effectsSubwooferFamily: document.getElementById('effects-subwoofer-family'),
+    effectsSubwooferSlope: document.getElementById('effects-subwoofer-slope'),
     effectsSubwooferMainHighpass: document.getElementById('effects-subwoofer-main-highpass'),
+    effectsSubwooferLeftFrequency: document.getElementById('effects-subwoofer-left-frequency'),
+    effectsSubwooferLeftFamily: document.getElementById('effects-subwoofer-left-family'),
+    effectsSubwooferLeftSlope: document.getElementById('effects-subwoofer-left-slope'),
+    effectsSubwooferLeftMainHighpass: document.getElementById('effects-subwoofer-left-main-highpass'),
+    effectsSubwooferRightFrequency: document.getElementById('effects-subwoofer-right-frequency'),
+    effectsSubwooferRightFamily: document.getElementById('effects-subwoofer-right-family'),
+    effectsSubwooferRightSlope: document.getElementById('effects-subwoofer-right-slope'),
+    effectsSubwooferRightMainHighpass: document.getElementById('effects-subwoofer-right-main-highpass'),
     effectsSubwooferLevelLabel: document.getElementById('effects-subwoofer-level-label'),
     effectsSubwooferLevel: document.getElementById('effects-subwoofer-level'),
     effectsSubwooferDelayLabel: document.getElementById('effects-subwoofer-delay-label'),
@@ -1693,8 +1712,48 @@ function setupSettingsActions() {
     renderSettingsPanel();
 }
 
+// Sub crossover families, mirroring the backend FILTER_SLOPES keys. The
+// authoritative slope lists come from catalog.capabilities.filter_families;
+// this table only guards drafts before the catalog is available.
+const SUB_CROSSOVER_FAMILIES = ['linkwitz-riley', 'butterworth', 'bessel'];
+
+function defaultSubCrossoverSlope(family) {
+    return family === 'linkwitz-riley' ? 24 : 12;
+}
+
+function clampSubCrossoverFrequency(value) {
+    return Math.max(40, Math.min(200, Math.round(Number(value) || 80)));
+}
+
+// Normalize one sub crossover shape (shared or per-side) against the optional
+// fallback: unknown families and non-6-dB slopes fall back instead of reaching
+// the backend, which rejects them fail-closed.
+function normalizeSubCrossoverShape(input = {}, fallback = {}) {
+    const family = SUB_CROSSOVER_FAMILIES.includes(String(input.family))
+        ? String(input.family) : (fallback.family || 'linkwitz-riley');
+    const rawSlope = Math.round(Number(input.slope_db_oct));
+    const slope = Number.isFinite(rawSlope) && rawSlope >= 6 && rawSlope <= 72 && rawSlope % 6 === 0
+        ? rawSlope : (Number(fallback.slope_db_oct) || defaultSubCrossoverSlope(family));
+    return { family, slope_db_oct: slope,
+        frequency_hz: clampSubCrossoverFrequency(input.frequency_hz ?? fallback.frequency_hz) };
+}
+
+// Shared crossover plus the per-side view the subwoofer tile renders.
+function subCrossoverSettings(view, fallback = {}) {
+    const source = view?.crossover || {};
+    const shared = normalizeSubCrossoverShape(source, { family: fallback.family,
+        slope_db_oct: fallback.slope_db_oct, frequency_hz: fallback.frequency_hz });
+    const side = (key) => normalizeSubCrossoverShape(source[key], shared);
+    return { ...shared, link: source.link !== false, stereo: !!source.stereo,
+        left: side('left'), right: side('right') };
+}
+
 function normalizeSubwooferSettings(input = {}) {
     const frequency = Math.max(40, Math.min(200, Math.round(Number(input.crossover_frequency_hz ?? input.crossoverFrequencyHz ?? 80) || 80)));
+    const shape = normalizeSubCrossoverShape({
+        family: input.family ?? input.crossover_family,
+        slope_db_oct: input.slope_db_oct ?? input.crossover_slope_db_oct,
+        frequency_hz: frequency });
     // -80 dB floor: 2.2 AutoSub mutes inactive subs to -80 (backend and DSP
     // runtime accept -80..12 for 2.2; 2.1 persists clamp to -24 server-side,
     // so a wider frontend clamp converges on save instead of silently
@@ -1705,12 +1764,25 @@ function normalizeSubwooferSettings(input = {}) {
     const roundedAlignment = Math.round(alignment * 100) / 100;
     return {
         crossover_frequency_hz: frequency,
-        slope: 'LR24',
+        slope: `${familyPrefix(shape.family)}${shape.slope_db_oct}`,
+        family: shape.family,
+        slope_db_oct: shape.slope_db_oct,
         main_highpass_enabled: input.main_highpass_enabled ?? input.mainHighpassEnabled ?? true ? true : false,
         sub_level_db: Math.round(level * 10) / 10,
         sub_alignment_ms: roundedAlignment,
         sub_polarity: polarity,
+        sub_link: input.sub_link !== false,
+        left_crossover: normalizeSubCrossoverShape(input.left_crossover, shape),
+        right_crossover: normalizeSubCrossoverShape(input.right_crossover, shape),
     };
+}
+
+function familyPrefix(family) {
+    return { 'linkwitz-riley': 'LR', butterworth: 'BW', bessel: 'BS' }[family] || String(family || '');
+}
+
+function subCrossoverLabel(shape) {
+    return `${familyPrefix(shape?.family)}${shape?.slope_db_oct}`;
 }
 
 function normalizeSingleSubwooferSettings(input = {}) {
@@ -1741,6 +1813,8 @@ function getSubwooferGlobalSettings(outputMode = {}, fallback = {}) {
         ...(fallback || {}),
         ...(outputMode.subwoofer || {}),
         crossover_frequency_hz: outputMode.crossover_frequency_hz ?? outputMode.subwoofer?.crossover_frequency_hz ?? fallback?.crossover_frequency_hz,
+        family: outputMode.crossover?.family ?? fallback?.family,
+        slope_db_oct: outputMode.crossover?.slope_db_oct ?? fallback?.slope_db_oct,
         main_highpass_enabled: outputMode.main_highpass_enabled ?? outputMode.subwoofer?.main_highpass_enabled ?? fallback?.main_highpass_enabled,
         sub_level_db: outputMode.subwoofers?.sub1?.level_db ?? outputMode.subwoofer?.sub_level_db ?? fallback?.sub_level_db,
         sub_alignment_ms: outputMode.subwoofers?.sub1?.alignment_ms ?? outputMode.subwoofer?.sub_alignment_ms ?? fallback?.sub_alignment_ms,
@@ -1756,13 +1830,47 @@ function normalizeSubwoofersSettings(subwoofers = {}, fallbackSubwoofer = {}) {
     };
 }
 
+function readSubCrossoverShape(frequencyEl, familyEl, slopeEl, fallback) {
+    return normalizeSubCrossoverShape({
+        frequency_hz: frequencyEl?.value, family: familyEl?.value,
+        slope_db_oct: slopeEl?.value,
+    }, fallback);
+}
+
+// Crossover draft of the current mode: the shared shape, or one shape per side
+// while a Stereo sub pair is unlinked. A coupled pair mirrors the shared values
+// into both side overrides so a later unlink starts from what is audible now.
+function collectSubCrossoverDraft() {
+    const layout = subCrossoverSettings(routedSubwooferView());
+    const shared = readSubCrossoverShape(elements.effectsSubwooferFrequencyNumber,
+        elements.effectsSubwooferFamily, elements.effectsSubwooferSlope, layout);
+    const linked = elements.effectsSubwooferLink
+        ? !!elements.effectsSubwooferLink.checked : layout.link !== false;
+    const split = layout.stereo && !linked;
+    const left = split ? readSubCrossoverShape(elements.effectsSubwooferLeftFrequency,
+        elements.effectsSubwooferLeftFamily, elements.effectsSubwooferLeftSlope, layout.left) : shared;
+    const right = split ? readSubCrossoverShape(elements.effectsSubwooferRightFrequency,
+        elements.effectsSubwooferRightFamily, elements.effectsSubwooferRightSlope, layout.right) : shared;
+    return {
+        ...shared,
+        sub_link: !split,
+        sub_filters: { left: { ...left }, right: { ...right } },
+    };
+}
+
 function collectSubwooferSettings() {
+    const crossover = collectSubCrossoverDraft();
     return normalizeSubwooferSettings({
-        crossover_frequency_hz: elements.effectsSubwooferFrequencyNumber?.value || 80,
-        main_highpass_enabled: (elements.effectsSubwooferMainHighpass?.value || 'on') !== 'off',
+        crossover_frequency_hz: crossover.frequency_hz,
+        family: crossover.family,
+        slope_db_oct: crossover.slope_db_oct,
+        main_highpass_enabled: subMainHighpassEnabled(),
         sub_level_db: elements.effectsSubwooferLevel?.value || 0,
         sub_alignment_ms: elements.effectsSubwooferDelay?.value || 0,
         sub_polarity: elements.effectsSubwooferPolarity?.value || 'normal',
+        sub_link: crossover.sub_link,
+        left_crossover: crossover.sub_filters.left,
+        right_crossover: crossover.sub_filters.right,
     });
 }
 
@@ -8721,13 +8829,20 @@ function setupEffectsActions() {
 
     [
         elements.effectsSubwooferFrequencyNumber,
+        elements.effectsSubwooferFamily,
+        elements.effectsSubwooferSlope,
+        elements.effectsSubwooferLeftFrequency,
+        elements.effectsSubwooferLeftFamily,
+        elements.effectsSubwooferLeftSlope,
+        elements.effectsSubwooferRightFrequency,
+        elements.effectsSubwooferRightFamily,
+        elements.effectsSubwooferRightSlope,
         elements.effectsSubwooferLevel,
         elements.effectsSubwooferDelay,
         elements.effectsSubwooferPolarity,
         elements.effectsSubwooferSub2Level,
         elements.effectsSubwooferSub2Delay,
         elements.effectsSubwooferSub2Polarity,
-        elements.effectsSubwooferMainHighpass,
     ].forEach(el => {
         if (!el) return;
         el.addEventListener('focus', () => _activeEditing.add(el));
@@ -8740,9 +8855,52 @@ function setupEffectsActions() {
             saveSubwooferDebounced(0);
         });
     });
+    // A family switch can invalidate the stored slope (a 24 dB/oct
+    // Linkwitz-Riley has no Butterworth/Bessel counterpart at 6 dB steps
+    // beyond the shared multiples), so the slope list follows it.
+    const subFamilySwitched = (familyEl, slopeEl) => {
+        if (!familyEl || !slopeEl) return;
+        const slopes = subCrossoverSlopes(familyEl.value);
+        const wanted = Math.round(Number(slopeEl.value) || 0) || 24;
+        const chosen = slopes.includes(wanted) ? wanted
+            : slopes.reduce((best, slope) => (Math.abs(slope - wanted) < Math.abs(best - wanted) ? slope : best), slopes[0]);
+        const html = slopes.map((slope) => `<option value="${slope}">${slope}</option>`).join('');
+        if (slopeEl.innerHTML !== html) slopeEl.innerHTML = html;
+        slopeEl.value = String(chosen);
+    };
+    for (const [familyEl, slopeEl] of [
+        [elements.effectsSubwooferFamily, elements.effectsSubwooferSlope],
+        [elements.effectsSubwooferLeftFamily, elements.effectsSubwooferLeftSlope],
+        [elements.effectsSubwooferRightFamily, elements.effectsSubwooferRightSlope],
+    ]) {
+        if (familyEl) familyEl.addEventListener('change', () => subFamilySwitched(familyEl, slopeEl));
+    }
+    // The Main highpass switch is one global flag; its side copies mirror it.
+    for (const el of [elements.effectsSubwooferMainHighpass,
+        elements.effectsSubwooferLeftMainHighpass, elements.effectsSubwooferRightMainHighpass]) {
+        if (!el) continue;
+        el.addEventListener('change', () => {
+            applySubMainHighpass(el.value !== 'off');
+            saveSubwooferDebounced(0);
+        });
+    }
+    if (elements.effectsSubwooferLink) {
+        elements.effectsSubwooferLink.addEventListener('change', () => {
+            // A checkbox has no blur to end its edit, so the toggle guards
+            // itself until the debounced save released it: the render must not
+            // flip it back to the stored link state in the meantime.
+            _activeEditing.add(elements.effectsSubwooferLink);
+            renderSubwooferPanel();
+            saveSubwooferDebounced(0);
+        });
+    }
     if (elements.effectsSubwooferPreview) {
         let draggingCrossover = false;
+        // While a Stereo pair is unlinked the plot carries one curve per side,
+        // so a single dragged cutoff has no unique target: the drag is off.
+        const splitPreview = () => elements.effectsSubwooferCard?.classList.contains('is-crossover-split') === true;
         const updateFromPointer = (event, commit = false) => {
+            if (splitPreview()) return;
             const rect = elements.effectsSubwooferPreview.getBoundingClientRect();
             const layout = getSubwooferPreviewLayout(rect.width || 560, rect.height || 132);
             const plotW = Math.max(1, layout.plotW);
@@ -14970,11 +15128,22 @@ function renderSubwooferPanel() {
         ? getSubwooferGlobalSettings(outputMode, outputMode.subwoofer || {})
         : normalizeSubwooferSettings(outputMode.subwoofer || {});
     const subwoofers = normalizeSubwoofersSettings(outputMode.subwoofers || {}, subwoofer);
+    const crossoverLayout = subCrossoverSettings(outputMode, subwoofer);
+    const splitSides = crossoverLayout.stereo && crossoverLayout.link === false;
+    elements.effectsSubwooferCard?.classList.toggle('is-crossover-split', splitSides);
+    elements.effectsSubwooferGlobalGroup?.classList.toggle('is-crossover-split', splitSides);
+    elements.effectsSubwooferSharedCrossover?.classList.toggle('hidden', splitSides);
+    elements.effectsSubwooferLeftCrossover?.classList.toggle('hidden', !splitSides);
+    elements.effectsSubwooferRightCrossover?.classList.toggle('hidden', !splitSides);
+    elements.effectsSubwooferLinkWrap?.classList.toggle('hidden', !crossoverLayout.stereo);
+    renderSubwooferCrossover(crossoverLayout);
     if (elements.effectsSubwooferRouting) {
-        const frequency = subwoofer.crossover_frequency_hz ?? 80;
-        const slope = subwoofer.slope || 'LR24';
         const hpf = (subwoofer.main_highpass_enabled ?? true) ? 'on' : 'off';
-        elements.effectsSubwooferRouting.textContent = `Crossover ${frequency} Hz · ${slope} · Main HPF ${hpf}`;
+        elements.effectsSubwooferRouting.textContent = splitSides
+            ? `Sub L ${subCrossoverLabel(crossoverLayout.left)} @ ${crossoverLayout.left.frequency_hz} Hz`
+                + ` · Sub R ${subCrossoverLabel(crossoverLayout.right)} @ ${crossoverLayout.right.frequency_hz} Hz`
+                + ` · Main HPF ${hpf}`
+            : `Crossover ${crossoverLayout.frequency_hz} Hz · ${subCrossoverLabel(crossoverLayout)} · Main HPF ${hpf}`;
     }
     if (elements.effectsSubwooferModeBadge) {
         elements.effectsSubwooferModeBadge.textContent = outputSystemModule().subModeLabel(outputMode.sub_mode);
@@ -14991,12 +15160,7 @@ function renderSubwooferPanel() {
     if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = `${secondLabel || 'Sub 2'} polarity`;
     elements.effectsSubwooferSub2Fields?.forEach(field => field.classList.toggle('hidden', !is22Mode));
     elements.effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
-    if (elements.effectsSubwooferFrequencyNumber && !_activeEditing.has(elements.effectsSubwooferFrequencyNumber)) {
-        elements.effectsSubwooferFrequencyNumber.value = String(subwoofer.crossover_frequency_hz);
-    }
-    if (elements.effectsSubwooferMainHighpass && !_activeEditing.has(elements.effectsSubwooferMainHighpass)) {
-        elements.effectsSubwooferMainHighpass.value = subwoofer.main_highpass_enabled ? 'on' : 'off';
-    }
+    applySubMainHighpass(subwoofer.main_highpass_enabled !== false);
     if (elements.effectsSubwooferLevel && !_activeEditing.has(elements.effectsSubwooferLevel)) {
         elements.effectsSubwooferLevel.value = String(subwoofer.sub_level_db);
     }
@@ -15020,13 +15184,97 @@ function renderSubwooferPanel() {
         if (elements.effectsSubwooferDdSub1) elements.effectsSubwooferDdSub1.textContent = formatSubwooferDelayMs(outputMode.derived_sub1_delay_ms);
         if (elements.effectsSubwooferDdSub2) elements.effectsSubwooferDdSub2.textContent = formatSubwooferDelayMs(outputMode.derived_sub2_delay_ms);
     }
-    scheduleSubwooferPreviewDraw(subwoofer);
+    // The plot paints the shared curve, or one curve per side while a Stereo
+    // pair is unlinked. The catalog view carries the split only as a link
+    // flag, so hand the resolved per-side shapes to the preview.
+    scheduleSubwooferPreviewDraw({
+        ...subwoofer,
+        sub_link: !splitSides,
+        left_crossover: crossoverLayout.left,
+        right_crossover: crossoverLayout.right,
+    });
+}
+
+function subCrossoverSlopes(family) {
+    const slopes = state.outputSystem?.catalog?.capabilities?.filter_families?.[family];
+    if (Array.isArray(slopes) && slopes.length) return slopes.slice();
+    return family === 'linkwitz-riley'
+        ? [12, 24, 36, 48, 60, 72]
+        : [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72];
+}
+
+// Paint one crossover shape into its Frequency/Type/Slope controls. The Main
+// highpass switch is a single global flag, so every visible copy shows it.
+function applySubCrossoverShape(frequencyEl, familyEl, slopeEl, shape) {
+    if (frequencyEl && !_activeEditing.has(frequencyEl)) {
+        frequencyEl.value = String(shape.frequency_hz);
+    }
+    if (familyEl) {
+        const html = SUB_CROSSOVER_FAMILIES.map((family) =>
+            `<option value="${family}"${family === shape.family ? ' selected' : ''}>${familyLabel(family)}</option>`).join('');
+        if (familyEl.innerHTML !== html) familyEl.innerHTML = html;
+        if (familyEl.value !== shape.family) familyEl.value = shape.family;
+    }
+    if (slopeEl) {
+        const slopes = subCrossoverSlopes(shape.family);
+        const html = slopes.map((slope) =>
+            `<option value="${slope}"${slope === shape.slope_db_oct ? ' selected' : ''}>${slope}</option>`).join('');
+        if (slopeEl.innerHTML !== html) slopeEl.innerHTML = html;
+        if (String(slopeEl.value) !== String(shape.slope_db_oct)) slopeEl.value = String(shape.slope_db_oct);
+    }
+}
+
+function renderSubwooferCrossover(layout) {
+    applySubCrossoverShape(elements.effectsSubwooferFrequencyNumber,
+        elements.effectsSubwooferFamily, elements.effectsSubwooferSlope, layout);
+    applySubCrossoverShape(elements.effectsSubwooferLeftFrequency,
+        elements.effectsSubwooferLeftFamily, elements.effectsSubwooferLeftSlope, layout.left);
+    applySubCrossoverShape(elements.effectsSubwooferRightFrequency,
+        elements.effectsSubwooferRightFamily, elements.effectsSubwooferRightSlope, layout.right);
+    if (elements.effectsSubwooferLink && !_activeEditing.has(elements.effectsSubwooferLink)) {
+        elements.effectsSubwooferLink.checked = layout.link !== false;
+    }
+    const roles = routedSubwooferView().roles || [];
+    const labels = { left: roles[0], right: roles[1] };
+    if (elements.effectsSubwooferLeftLabel) {
+        elements.effectsSubwooferLeftLabel.textContent = labels.left
+            ? outputSystemModule().roleLabel(labels.left) : 'Sub L';
+    }
+    if (elements.effectsSubwooferRightLabel) {
+        elements.effectsSubwooferRightLabel.textContent = labels.right
+            ? outputSystemModule().roleLabel(labels.right) : 'Sub R';
+    }
+}
+
+// The Main highpass is one global flag; its per-side copies stay in sync.
+function applySubMainHighpass(enabled) {
+    for (const el of [elements.effectsSubwooferMainHighpass,
+        elements.effectsSubwooferLeftMainHighpass, elements.effectsSubwooferRightMainHighpass]) {
+        if (el && !_activeEditing.has(el)) el.value = enabled ? 'on' : 'off';
+    }
+}
+
+function subMainHighpassEnabled() {
+    const el = elements.effectsSubwooferMainHighpass
+        || elements.effectsSubwooferLeftMainHighpass || elements.effectsSubwooferRightMainHighpass;
+    return (el?.value || 'on') !== 'off';
 }
 
 function clearSubwooferActiveEditing() {
     [
         elements.effectsSubwooferFrequencyNumber,
+        elements.effectsSubwooferFamily,
+        elements.effectsSubwooferSlope,
+        elements.effectsSubwooferLeftFrequency,
+        elements.effectsSubwooferLeftFamily,
+        elements.effectsSubwooferLeftSlope,
+        elements.effectsSubwooferRightFrequency,
+        elements.effectsSubwooferRightFamily,
+        elements.effectsSubwooferRightSlope,
+        elements.effectsSubwooferLink,
         elements.effectsSubwooferMainHighpass,
+        elements.effectsSubwooferLeftMainHighpass,
+        elements.effectsSubwooferRightMainHighpass,
         elements.effectsSubwooferLevel,
         elements.effectsSubwooferDelay,
         elements.effectsSubwooferPolarity,
@@ -15070,14 +15318,19 @@ function drawSubwooferPreview(subwoofer) {
     const maxHz = 300;
     const minDb = -18;
     const maxDb = 0;
-    const crossover = settings.crossover_frequency_hz;
+    const mod = crossoverModule();
+    const sharedShape = { family: settings.family, slope_db_oct: settings.slope_db_oct,
+        frequency_hz: settings.crossover_frequency_hz };
+    // An unlinked Stereo pair paints both sides: the left one solid, the right
+    // one dimmed. Anything coupled, Mono or Dual-Mono paints the shared shape.
+    const shapes = settings.sub_link === false
+        ? [{ shape: settings.left_crossover, alpha: 1 }, { shape: settings.right_crossover, alpha: 0.42 }]
+        : [{ shape: sharedShape, alpha: 1 }];
     const xForHz = (hz) => pad.left + ((Math.log10(hz) - Math.log10(minHz)) / (Math.log10(maxHz) - Math.log10(minHz))) * plotW;
     const yForDb = (db) => pad.top + ((maxDb - db) / (maxDb - minDb)) * plotH;
-    const responseDb = (hz, highpass) => {
-        const ratio = highpass ? hz / crossover : crossover / hz;
-        const magnitude = 1 / Math.sqrt(1 + Math.pow(ratio, -8));
-        return 20 * Math.log10(Math.max(0.001, magnitude));
-    };
+    const responseDb = (shape, hz, highpass) => (mod?.crossoverMagnitudeDb
+        ? mod.crossoverMagnitudeDb(shape, hz, highpass ? 'highpass' : 'lowpass')
+        : -20 * Math.log10(1 + Math.pow(Math.max(1e-9, highpass ? shape.frequency_hz / hz : hz / shape.frequency_hz), 4)));
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#08111f';
     ctx.fillRect(0, 0, width, height);
@@ -15115,12 +15368,13 @@ function drawSubwooferPreview(subwoofer) {
         ctx.fillText(`${hz} Hz`, xForHz(hz), height - 8);
     });
     ctx.textAlign = 'start';
-    const drawCurve = (highpass, color) => {
+    const drawCurve = (shape, highpass, color, alpha) => {
+        ctx.globalAlpha = alpha;
         ctx.beginPath();
         for (let i = 0; i <= 160; i += 1) {
             const t = i / 160;
             const hz = Math.pow(10, Math.log10(minHz) + t * (Math.log10(maxHz) - Math.log10(minHz)));
-            const db = responseDb(hz, highpass) + (highpass ? 0 : settings.sub_level_db || 0);
+            const db = responseDb(shape, hz, highpass) + (highpass ? 0 : settings.sub_level_db || 0);
             const x = xForHz(hz);
             const y = yForDb(Math.max(minDb, Math.min(maxDb, db)));
             if (i === 0) ctx.moveTo(x, y);
@@ -15129,31 +15383,38 @@ function drawSubwooferPreview(subwoofer) {
         ctx.strokeStyle = color;
         ctx.lineWidth = 3;
         ctx.stroke();
+        ctx.globalAlpha = 1;
     };
-    drawCurve(false, '#6ee7b7');
-    if (settings.main_highpass_enabled) drawCurve(true, '#93c5fd');
-    const markerX = xForHz(crossover);
-    ctx.strokeStyle = 'rgba(255,255,255,0.72)';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(markerX, pad.top);
-    ctx.lineTo(markerX, pad.top + plotH);
-    ctx.stroke();
-    ctx.fillStyle = '#e5e7eb';
+    for (const { shape, alpha } of shapes) {
+        drawCurve(shape, false, '#6ee7b7', alpha);
+        if (settings.main_highpass_enabled) drawCurve(shape, true, '#93c5fd', alpha);
+    }
     ctx.font = '600 11px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const markerLabel = `${crossover} Hz`;
-    const markerLabelWidth = ctx.measureText(markerLabel).width + 12;
-    const markerLabelX = Math.max(pad.left + markerLabelWidth / 2 + 2, Math.min(pad.left + plotW - markerLabelWidth / 2 - 2, markerX));
-    const markerLabelY = pad.top + plotH * 0.72;
-    ctx.fillStyle = 'rgba(12,18,28,0.82)';
-    ctx.fillRect(markerLabelX - markerLabelWidth / 2, markerLabelY - 9, markerLabelWidth, 18);
-    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(markerLabelX - markerLabelWidth / 2, markerLabelY - 9, markerLabelWidth, 18);
-    ctx.fillStyle = '#e5e7eb';
-    ctx.fillText(markerLabel, markerLabelX, markerLabelY);
+    shapes.forEach(({ shape, alpha }, index) => {
+        const crossover = Number(shape?.frequency_hz) || settings.crossover_frequency_hz;
+        const markerX = xForHz(crossover);
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = 'rgba(255,255,255,0.72)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(markerX, pad.top);
+        ctx.lineTo(markerX, pad.top + plotH);
+        ctx.stroke();
+        const markerLabel = `${crossover} Hz`;
+        const markerLabelWidth = ctx.measureText(markerLabel).width + 12;
+        const markerLabelX = Math.max(pad.left + markerLabelWidth / 2 + 2, Math.min(pad.left + plotW - markerLabelWidth / 2 - 2, markerX));
+        const markerLabelY = index === 0 ? pad.top + plotH * 0.72 : pad.top + plotH * 0.72 + 20;
+        ctx.fillStyle = 'rgba(12,18,28,0.82)';
+        ctx.fillRect(markerLabelX - markerLabelWidth / 2, markerLabelY - 9, markerLabelWidth, 18);
+        ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(markerLabelX - markerLabelWidth / 2, markerLabelY - 9, markerLabelWidth, 18);
+        ctx.fillStyle = '#e5e7eb';
+        ctx.fillText(markerLabel, markerLabelX, markerLabelY);
+        ctx.globalAlpha = 1;
+    });
     ctx.textAlign = 'start';
 }
 
@@ -15359,14 +15620,22 @@ function beginSubwooferSave(pending) {
     run.then(
         () => {
             if (_subwooferSavePromise === run) _subwooferSavePromise = null;
+            releaseSubwooferLinkGuard();
             setSubwooferFeedback('Saved', 'success');
         },
         (error) => {
             if (_subwooferSavePromise === run) _subwooferSavePromise = null;
+            releaseSubwooferLinkGuard();
             setSubwooferFeedback(error?.message || 'Subwoofer settings save failed', 'error');
         },
     );
     return run;
+}
+
+// The link checkbox is the one subwoofer control without a blur event, so its
+// render guard ends with the save that carried the toggle.
+function releaseSubwooferLinkGuard() {
+    if (elements.effectsSubwooferLink) _activeEditing.delete(elements.effectsSubwooferLink);
 }
 
 function createPendingSubwooferSave(mode, settings, signature) {
@@ -15418,6 +15687,11 @@ function saveSubwooferDebounced(delayMs = SUBWOOFER_COMMIT_DEBOUNCE_MS) {
     const bass = controls.subwoofer || controls;
     const subs = controls.subwoofers || { sub1: subwoofer21ToSub22Sub(bass) };
     const settings = { mode, frequency_hz: bass.crossover_frequency_hz,
+        family: bass.family, slope_db_oct: bass.slope_db_oct,
+        sub_link: bass.sub_link !== false,
+        // Both side overrides always travel along: a coupled save mirrors the
+        // shared shape so a later unlink starts from the audible values.
+        sub_filters: { left: bass.left_crossover, right: bass.right_crossover },
         main_highpass_enabled: bass.main_highpass_enabled,
         processing: Object.fromEntries(routedSubwooferView().roles.map((role, index) => [role, subs[`sub${index + 1}`]])) };
     const signature = JSON.stringify(settings);

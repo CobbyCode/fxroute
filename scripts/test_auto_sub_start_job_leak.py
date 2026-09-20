@@ -81,6 +81,8 @@ class FakeStore:
 
 
 class FakeSession:
+    has_active_jobs = False
+
     def capture_entry_epoch(self):
         return 123
 

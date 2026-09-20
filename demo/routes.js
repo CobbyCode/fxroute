@@ -351,6 +351,23 @@
     }
     const defaultProcessing = () => ({ highpass: null, lowpass: null, level_db: 0.0, alignment_ms: 0.0, polarity: 'normal' });
     const lr24 = (frequency_hz) => ({ family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz });
+    const defaultBassManagement = () => ({ frequency_hz: 80, main_highpass_enabled: true,
+        family: 'linkwitz-riley', slope_db_oct: 24, sub_link: true, sub_filters: {} });
+    // Mirror of the backend rule: Mono, Dual-Mono and a coupled Stereo pair run
+    // the shared sub crossover; only an unlinked Stereo pair resolves per side.
+    const bassCrossoverForSide = (bass, side, stereo) => {
+        const source = bass || {};
+        const shared = { family: source.family || 'linkwitz-riley',
+            slope_db_oct: source.slope_db_oct || 24, frequency_hz: source.frequency_hz };
+        if (!stereo || source.sub_link !== false) return shared;
+        const override = (source.sub_filters || {})[side];
+        if (!override) return shared;
+        return { family: override.family, slope_db_oct: override.slope_db_oct, frequency_hz: override.frequency_hz };
+    };
+    const subSideForRole = (role) => {
+        const name = String(role || '');
+        return (name.startsWith('left_') || name === 'main_l' || name === 'sub_l') ? 'left' : 'right';
+    };
     const outputStateStore = {
         revision: 1,
         active_mode: 'stereo',
@@ -360,7 +377,7 @@
                 selected_bank: 'global',
                 banks: { global: neutralBank(), main_l: neutralBank(), main_r: neutralBank() },
                 processing: { main_l: defaultProcessing(), main_r: defaultProcessing() },
-                bass_management: { frequency_hz: 80, main_highpass_enabled: true },
+                bass_management: defaultBassManagement(),
                 extras: {},
                 routing: {},
             },
@@ -369,7 +386,7 @@
                 selected_bank: 'global',
                 banks: { global: neutralBank(), main_l: neutralBank(), main_r: neutralBank(), sub1: neutralBank() },
                 processing: { main_l: defaultProcessing(), main_r: defaultProcessing(), sub1: defaultProcessing() },
-                bass_management: { frequency_hz: 80, main_highpass_enabled: true },
+                bass_management: defaultBassManagement(),
                 extras: {},
                 routing: {},
             },
@@ -2215,7 +2232,20 @@
                 if (!mutation.processing || JSON.stringify(Object.keys(mutation.processing).sort()) !== JSON.stringify(roles.slice().sort())) {
                     return fail('Sub settings must describe exactly the routed sub roles');
                 }
-                config.bass_management = { frequency_hz: mutation.frequency_hz, main_highpass_enabled: mutation.main_highpass_enabled };
+                config.bass_management = { ...config.bass_management,
+                    frequency_hz: mutation.frequency_hz ?? config.bass_management.frequency_hz,
+                    main_highpass_enabled: mutation.main_highpass_enabled ?? config.bass_management.main_highpass_enabled };
+                for (const key of ['family', 'slope_db_oct', 'sub_link']) {
+                    if (mutation[key] !== undefined && mutation[key] !== null) config.bass_management[key] = mutation[key];
+                }
+                if (mutation.sub_filters !== undefined && mutation.sub_filters !== null) {
+                    if (typeof mutation.sub_filters !== 'object') return fail('Sub crossover overrides must be an object keyed by side');
+                    for (const [side, definition] of Object.entries(mutation.sub_filters)) {
+                        if (side !== 'left' && side !== 'right') return fail('Sub crossover overrides must be keyed by left and right');
+                        if (definition === null) delete config.bass_management.sub_filters[side];
+                        else config.bass_management.sub_filters[side] = { ...definition };
+                    }
+                }
                 for (const role of roles) Object.assign(config.processing[role], mutation.processing[role]);
             } else if (mutation.kind === 'set_bass') {
                 if (mutation.frequency_hz !== undefined && mutation.frequency_hz !== null) {
@@ -2224,6 +2254,11 @@
                 if (typeof mutation.main_highpass_enabled === 'boolean') {
                     config.bass_management.main_highpass_enabled = mutation.main_highpass_enabled;
                 }
+                if (mutation.family !== undefined && mutation.family !== null && mutation.slope_db_oct !== undefined && mutation.slope_db_oct !== null) {
+                    config.bass_management.family = mutation.family;
+                    config.bass_management.slope_db_oct = mutation.slope_db_oct;
+                }
+                if (typeof mutation.sub_link === 'boolean') config.bass_management.sub_link = mutation.sub_link;
             } else if (mutation.kind === 'set_extras') {
                 if (typeof mutation.extras !== 'object' || mutation.extras === null) {
                     return fail('extras must be an object');
@@ -2244,20 +2279,25 @@
             const catalog = outputStateCatalog();
             const ways = {};
             const config = catalog.modes[catalog.active_mode];
-            // Shared bass high-pass from the subwoofer tile: with routed
-            // subs and Main highpass on, every speaker way runs through an
-            // LR24 high-pass at the sub crossover (mirrors the backend plan).
+            // Sub crossover high-pass from the subwoofer tile: with routed
+            // subs and Main highpass on, every speaker way runs through the
+            // sub crossover, type and slope included (mirrors the backend
+            // plan). A true Stereo pair resolves per side while unlinked.
             const bass = config.bass_management || {};
             const hasSubs = (config.topology.sub_roles || []).length > 0;
-            const bassFreq = Number(bass.frequency_hz);
-            const derivedHighpass = (hasSubs && bass.main_highpass_enabled === true
-                && Number.isFinite(bassFreq) && bassFreq >= 40 && bassFreq <= 200)
-                ? { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: Math.round(bassFreq) }
-                : null;
+            const stereoPair = config.topology.sub_mode === 'stereo';
+            const derivedHighpassFor = (role) => {
+                if (!hasSubs || bass.main_highpass_enabled !== true) return null;
+                const shape = bassCrossoverForSide(bass, subSideForRole(role), stereoPair);
+                const frequency = Number(shape.frequency_hz);
+                if (!Number.isFinite(frequency) || frequency < 40 || frequency > 200) return null;
+                return { family: shape.family, slope_db_oct: shape.slope_db_oct, frequency_hz: Math.round(frequency) };
+            };
             for (const [role, settings] of Object.entries(catalog.modes[catalog.active_mode].processing)) {
                 if (!config.crossover_enabled || !config.topology.roles.includes(role)) continue;
                 if (!role.startsWith('left_') && !role.startsWith('right_')) continue;
                 const points = [];
+                const derivedHighpass = derivedHighpassFor(role);
                 const way = role.split('_').slice(1).join('_');
                 const required = way === 'low' ? ['lowpass'] : way === 'high' ? ['highpass'] : ['highpass', 'lowpass'];
                 const complete = required.every(kind => settings[kind]);

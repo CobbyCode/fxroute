@@ -108,7 +108,7 @@ class SubCandidateStateTests(Fixture, unittest.TestCase):
         config = expected["modes"]["stereo-sub"]
         config["processing"]["sub1"].update(alignment_ms=-3.5, polarity="invert")
         config["processing"]["sub_r"]["level_db"] = -4
-        config["bass_management"] = {"frequency_hz": 95, "main_highpass_enabled": False}
+        config["bass_management"].update(frequency_hz=95, main_highpass_enabled=False)
         self.assertEqual(result, expected)
         result["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Direct"
         self.assertEqual(base["modes"]["stereo-sub"]["banks"]["sub1"]["preset"], "Room")

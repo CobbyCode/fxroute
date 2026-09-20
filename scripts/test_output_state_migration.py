@@ -9,8 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from audio.output_state import routing_for_device
-from audio.output_state_migration import migrate_legacy_output_state
+from audio.output_state import (default_bass_management, default_output_state,
+                                routing_for_device, validate_output_state)
+from audio.output_state_migration import migrate_legacy_output_state, upgrade_output_state
 from audio.output_topology import derive_topology
 
 
@@ -54,7 +55,9 @@ class OutputStateMigrationTests(unittest.TestCase):
         before = copy.deepcopy(mode)
         result = self.migrate(mode)
         stereo = result["modes"]["stereo-sub"]
-        self.assertEqual(stereo["bass_management"], {"frequency_hz": 110, "main_highpass_enabled": False})
+        self.assertEqual(stereo["bass_management"],
+                         {**default_bass_management(), "frequency_hz": 110,
+                          "main_highpass_enabled": False})
         self.assertEqual(stereo["processing"]["sub_l"]["level_db"], -3)
         self.assertEqual(stereo["processing"]["sub_l"]["alignment_ms"], -2.5)
         self.assertEqual(stereo["processing"]["sub_l"]["polarity"], "invert")
@@ -84,6 +87,39 @@ class OutputStateMigrationTests(unittest.TestCase):
                 self.migrate({"mode": "stereo"}, routing)
         with self.assertRaises(ValueError):
             self.migrate({"mode": "future"})
+
+
+class VersionTwoUpgradeTests(unittest.TestCase):
+    """Version two stored only the crossover frequency and the Main HPF switch."""
+
+    def stored(self):
+        state = default_output_state()
+        state["version"] = 2
+        for config in state["modes"].values():
+            config["bass_management"] = {"frequency_hz": 95, "main_highpass_enabled": False}
+        return state
+
+    def test_every_mode_gains_the_shared_defaults(self):
+        upgraded = upgrade_output_state(self.stored())
+        self.assertEqual(upgraded["version"], 3)
+        for mode, config in upgraded["modes"].items():
+            with self.subTest(mode=mode):
+                self.assertEqual(config["bass_management"],
+                                 {**default_bass_management(), "frequency_hz": 95,
+                                  "main_highpass_enabled": False})
+
+    def test_unknown_fields_still_fail_closed(self):
+        state = self.stored()
+        state["modes"]["stereo"]["bass_management"]["typo"] = 1
+        with self.assertRaises(ValueError):
+            upgrade_output_state(state)
+        state = self.stored()
+        with self.assertRaises(ValueError):
+            upgrade_output_state({**state, "modes": {"stereo": state["modes"]["stereo"]}})
+
+    def test_current_version_roundtrips_unchanged(self):
+        state = default_output_state()
+        self.assertEqual(upgrade_output_state(state), validate_output_state(state))
 
 
 if __name__ == "__main__":

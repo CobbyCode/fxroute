@@ -70,6 +70,7 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = RuntimeBoundary()
         self.session = SimpleNamespace(capture_entry_epoch=lambda: 42,
                                        measurement_rate=96000,
+                                       has_active_jobs=False,
                                        active_auto_sub_job_id=None)
         self.overview = {
             "selected_output": {"key": "dev", "channels": 4, "active_rate": 44100},
@@ -120,7 +121,7 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         state = set_mode_routing(set_crossover(default_output_state(), target, crossover_enabled), target, "dev", roles)
         state = switch_mode(state, target)
         active = state["modes"][target]
-        active["bass_management"] = {"frequency_hz": 90, "main_highpass_enabled": False}
+        active["bass_management"].update(frequency_hz=90, main_highpass_enabled=False)
         for role, delay, level, polarity in (("sub_l", 3, -4, "invert"),
                                              ("sub_r", -7, -8, "normal"),
                                              ("sub1", 11, -12, "invert"),
@@ -182,6 +183,7 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
             "sub_mute_mask": 4})
         self.assertEqual(job["original_config_snapshot"]["subwoofer"], {
             "crossover_frequency_hz": 90, "main_highpass_enabled": False,
+            "crossover_family": "linkwitz-riley", "crossover_slope_db_oct": 24,
             "sub_alignment_ms": 3, "sub_level_db": -4, "sub_polarity": "invert"})
         self.assertEqual(job["original_alignment_ms"], 3)
         self.assertEqual(job["crossover_hz"], 90)
@@ -203,9 +205,14 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["mode"], "subwoofer-2.2")
         self.assertEqual(job["original_sub1_alignment_ms"], -7)
         self.assertEqual(job["original_sub2_alignment_ms"], 11)
+        # Dual-Mono shares one crossover: both slots carry the same shape.
         self.assertEqual(job["original_config_snapshot"]["subwoofers"], {
-            "sub1": {"alignment_ms": -7, "level_db": -8, "polarity": "normal"},
-            "sub2": {"alignment_ms": 11, "level_db": -12, "polarity": "invert"}})
+            "sub1": {"alignment_ms": -7, "level_db": -8, "polarity": "normal",
+                     "crossover_frequency_hz": 90, "crossover_family": "linkwitz-riley",
+                     "crossover_slope_db_oct": 24},
+            "sub2": {"alignment_ms": 11, "level_db": -12, "polarity": "invert",
+                     "crossover_frequency_hz": 90, "crossover_family": "linkwitz-riley",
+                     "crossover_slope_db_oct": 24}})
         await self.workers[0]
         self.assertEqual(self.dispatched[0][0], "_run_auto_sub_22_optimize")
 
@@ -221,6 +228,45 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["scan_delays"]["right_sub"][4], -7)
         await self.workers[0]
         self.assertEqual(self.dispatched[0][0], "_run_auto_sub_22_stereo_optimize")
+
+    async def test_unlinked_stereo_pair_optimizes_each_side_crossover(self):
+        from audio.output_state import set_bass_management
+        state = self.seed(["sub_l", "right_high", "left_low", "sub_r", "right_low", "left_high"],
+                          mode="crossover")
+        left = {"family": "bessel", "slope_db_oct": 12, "frequency_hz": 60}
+        right = {"family": "butterworth", "slope_db_oct": 36, "frequency_hz": 120}
+        self.store.commit(set_bass_management(state, "stereo-sub", sub_link=False,
+                                              sub_filters={"left": left, "right": right}),
+                          expected_revision=state["revision"])
+        job = (await self.request())["job"]
+        self.assertEqual(job["mode"], "subwoofer-2.2-stereo")
+        snapshot = job["original_config_snapshot"]
+        self.assertEqual(job["crossover_hz_by_side"], {"left": 60, "right": 120, "shared": 90})
+        self.assertEqual(snapshot["subwoofers"]["sub1"], {
+            "alignment_ms": 3, "level_db": -4, "polarity": "invert",
+            "crossover_frequency_hz": 60, "crossover_family": "bessel",
+            "crossover_slope_db_oct": 12})
+        self.assertEqual(snapshot["subwoofers"]["sub2"], {
+            "alignment_ms": -7, "level_db": -8, "polarity": "normal",
+            "crossover_frequency_hz": 120, "crossover_family": "butterworth",
+            "crossover_slope_db_oct": 36})
+        self.assertEqual(snapshot["crossover_frequency_hz"], 90)
+        # Each side scans on its own frequency grid, so the coarse steps differ.
+        left_grid = job["scan_delays"]["left_sub"]
+        right_grid = job["scan_delays"]["right_sub"]
+        # Delays are rounded to 0.01 ms, so a step matches within that slack.
+        self.assertAlmostEqual(left_grid[1] - left_grid[0], start._auto_sub_step_ms(60), delta=0.02)
+        self.assertAlmostEqual(right_grid[1] - right_grid[0], start._auto_sub_step_ms(120), delta=0.02)
+        self.assertNotEqual(left_grid, right_grid)
+        self.assertAlmostEqual(job["fine_scan"]["left_step_ms"],
+                               start._auto_sub_step_ms(60) / 4.0, places=3)
+        self.assertAlmostEqual(job["fine_scan"]["right_step_ms"],
+                               start._auto_sub_step_ms(120) / 4.0, places=3)
+        self.assertIn("Right Sub", job["message"])
+        await self.workers[0]
+        kwargs = self.dispatched[0][1]
+        self.assertEqual((kwargs["left_fc"], kwargs["right_fc"]), (60, 120))
+        self.assertEqual(kwargs["left_scan_delays"], left_grid)
 
     async def test_three_port_single_sub_is_supported(self):
         self.seed(["main_l", "main_r", "sub2"])
@@ -373,7 +419,8 @@ class RunnerOwnerEntryTests(unittest.IsolatedAsyncioTestCase):
         job_id = "entry-job"
         job = {"id": job_id, "status": "preparing", "cancel_requested": False,
                "output_state_context": {"revision": 1}}
-        session = SimpleNamespace(active_auto_sub_job_id=None, measurement_rate=96000)
+        session = SimpleNamespace(active_auto_sub_job_id=None, measurement_rate=96000,
+                                  has_active_jobs=False)
 
         async def register(job_id, *, entry_epoch):
             self.assertEqual(entry_epoch, 42)

@@ -143,6 +143,41 @@ def _run():
                     geometry["selectRight"] <= geometry["groupRight"] + 1,
                 )
 
+            # Two-line crossover area: one shared row plus one row per side,
+            # and the L/R link switch only for a true Stereo sub pair. The
+            # per-side rows and the link start hidden (no Stereo pair routed)
+            # and each row carries Frequency, Type, Slope and Main highpass.
+            layout = page.evaluate("""
+                (() => {
+                    const card = document.querySelector('.effects-card-subwoofer');
+                    const shared = document.querySelector('#effects-subwoofer-shared-crossover');
+                    const sides = ['left', 'right'].map((side) =>
+                        document.querySelector(`#effects-subwoofer-${side}-crossover`));
+                    const link = document.querySelector('#effects-subwoofer-link-wrap');
+                    const cardRect = card.getBoundingClientRect();
+                    const fields = (row) => row.querySelectorAll('input[type=number], select').length;
+                    return {
+                        sharedHidden: shared.classList.contains('hidden'),
+                        sharedFields: fields(shared),
+                        sharedRight: shared.getBoundingClientRect().right,
+                        sideHidden: sides.map((row) => row.classList.contains('hidden')),
+                        sideFields: sides.map(fields),
+                        sideRight: sides.map((row) => row.getBoundingClientRect().right),
+                        cardRight: cardRect.right,
+                        linkHidden: link.classList.contains('hidden'),
+                    };
+                })()
+            """)
+            check(f"shared crossover row is visible and complete ({layout})",
+                  layout["sharedHidden"] is False and layout["sharedFields"] == 4)
+            check("the shared row stays inside the card",
+                  layout["sharedRight"] <= layout["cardRight"] + 1)
+            check("both per-side rows exist, complete and start hidden",
+                  layout["sideFields"] == [4, 4] and layout["sideHidden"] == [True, True])
+            check("per-side rows stay inside the card",
+                  all(right <= layout["cardRight"] + 1 for right in layout["sideRight"]))
+            check("the L/R link switch starts hidden", layout["linkHidden"] is True)
+
             page.close()
             browser.close()
     finally:

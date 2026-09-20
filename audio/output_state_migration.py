@@ -6,7 +6,8 @@ from __future__ import annotations
 import copy
 
 from audio.output_routing import device_key
-from audio.output_state import default_output_state, default_processing, set_mode_routing, validate_output_state
+from audio.output_state import (BASS_FIELDS, default_bass_management, default_output_state,
+                                default_processing, set_mode_routing, validate_output_state)
 from audio.output_topology import MAX_CHANNELS, SUB_ROLES, roles_for_mode
 from audio.samplerate.persistence import _normalize_subwoofer_config, _normalize_subwoofer_22_config
 from dsp.banks import BankState
@@ -78,12 +79,43 @@ def migrate_legacy_output_state(*, mode: dict, routing: dict, active_preset: str
         subs = {"sub1": {"level_db": normalized["sub_level_db"],
                          "alignment_ms": normalized["sub_alignment_ms"],
                          "polarity": normalized["sub_polarity"]}} if name == "subwoofer-2.1" else {}
-    stereo["bass_management"] = {"frequency_hz": normalized["crossover_frequency_hz"],
+    stereo["bass_management"] = {**default_bass_management(),
+                                  "frequency_hz": normalized["crossover_frequency_hz"],
                                   "main_highpass_enabled": normalized["main_highpass_enabled"]}
     for role, settings in subs.items():
         stereo["banks"].setdefault(role, BankState().to_dict())
         stereo["processing"][role] = {**default_processing(), **settings}
     return validate_output_state(state)
+
+
+def _defaulted_bass_management(bass: object) -> dict:
+    """Fill a stored pre-v3 bass block with the shared crossover defaults.
+
+    Versions one and two stored only the sub crossover frequency and the
+    Main high-pass switch, always running a fixed Linkwitz-Riley 24 dB/oct
+    at a shared frequency. Every mode therefore gains the same shape and the
+    coupled stereo link; no per-side override is invented. Unknown or
+    malformed fields still fail closed.
+    """
+    if not isinstance(bass, dict) or set(bass) - set(BASS_FIELDS):
+        raise ValueError("Invalid stored bass management")
+    upgraded = default_bass_management()
+    upgraded.update(bass)
+    return upgraded
+
+
+def _upgrade_v2_bass_management(payload: dict) -> dict:
+    """Give a version-two document the shared sub crossover defaults."""
+    result = copy.deepcopy(payload)
+    result["version"] = 3
+    modes = result.get("modes")
+    if not isinstance(modes, dict):
+        raise ValueError("Invalid version-two output state")
+    for config in modes.values():
+        if not isinstance(config, dict):
+            raise ValueError("Invalid version-two output state")
+        config["bass_management"] = _defaulted_bass_management(config.get("bass_management"))
+    return validate_output_state(result)
 
 
 def upgrade_output_state(payload: dict) -> dict:
@@ -94,6 +126,8 @@ def upgrade_output_state(payload: dict) -> dict:
     routing or DSP. Loading does not write; the next revision-checked commit
     atomically persists the upgraded document.
     """
+    if isinstance(payload, dict) and payload.get("version") == 2:
+        return _upgrade_v2_bass_management(payload)
     if not isinstance(payload, dict) or payload.get("version") != 1:
         return validate_output_state(payload)
     if (set(payload) != {"schema", "version", "revision", "active_mode", "modes", "legacy"}
@@ -119,6 +153,7 @@ def upgrade_output_state(payload: dict) -> dict:
         # active configuration. Old stereo was allowed to route sub roles.
         candidate = default_output_state()
         config["crossover_enabled"] = enabled
+        config["bass_management"] = _defaulted_bass_management(config.get("bass_management"))
         candidate["modes"]["stereo-sub"] = config
         validate_output_state(candidate)
         old_allowed = roles_for_mode("stereo-sub", crossover_enabled=enabled)

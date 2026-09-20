@@ -849,14 +849,23 @@ def _auto_sub_log_interpolate_points(
 def _analyze_auto_sub_main_target_anchor(
     *, target_curve: dict[str, Any] | None, main_references: dict[str, Any] | None,
     crossover_hz: int, main_highpass_enabled: bool,
+    side_crossover_hz: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Build immutable Main/Target alignment diagnostics; never calculate Gain."""
+    """Build immutable Main/Target alignment diagnostics; never calculate Gain.
+
+    An unlinked Stereo sub pair crosses over per side, so ``side_crossover_hz``
+    carries each side's effective frequency and every reference is checked
+    against its own side instead of the shared job value.
+    """
+    frequencies = {side: int((side_crossover_hz or {}).get(side, crossover_hz))
+                   for side in ("left", "right")}
     diagnostics: dict[str, Any] = {
         "status": "unavailable",
         "reason": None,
         "method": "calibrated Main-only points with log-frequency Target interpolation",
         "gain_calculated": False,
         "crossover_frequency_hz": int(crossover_hz),
+        "side_crossover_frequency_hz": dict(frequencies),
         "main_highpass_enabled": bool(main_highpass_enabled),
         "reference_band_hz": [LEVEL_REFERENCE_MIN_HZ, LEVEL_REFERENCE_MAX_HZ],
         "criteria": {
@@ -893,12 +902,12 @@ def _analyze_auto_sub_main_target_anchor(
             normalized_by_db = float(reference.get("normalized_by_db"))
             if not math.isfinite(normalized_by_db):
                 raise ValueError(f"Main-only {side} normalization metadata is invalid")
-            if int(reference.get("crossover_frequency_hz")) != int(crossover_hz):
+            if int(reference.get("crossover_frequency_hz")) != frequencies[side]:
                 raise ValueError(f"Main-only {side} crossover does not match the AutoSub job")
             if bool(reference.get("main_highpass_enabled")) != bool(main_highpass_enabled):
                 raise ValueError(f"Main-only {side} Main-HP state does not match the AutoSub job")
             sample_rate = float(reference.get("sample_rate"))
-            if not math.isfinite(sample_rate) or sample_rate <= 2.0 * float(crossover_hz):
+            if not math.isfinite(sample_rate) or sample_rate <= 2.0 * float(frequencies[side]):
                 raise ValueError(f"Main-only {side} sample-rate metadata is invalid")
             sample_rates[side] = sample_rate
             if not isinstance(points, list) or len(points) < 2:
@@ -1070,9 +1079,13 @@ def _auto_sub_stereo_probe_plan(
     *, correction_plan: dict[str, Any], gain_after: dict[str, Any],
     gain_deltas: dict[str, float], accepted_step1_sides: dict[str, bool],
     after_points: dict[str, list[list[float]]], target_curve: dict[str, Any] | None,
-    anchor: dict[str, Any] | None, crossover_hz: int,
+    anchor: dict[str, Any] | None, crossover_hz: int | dict[str, int],
 ) -> dict[str, Any]:
-    """Plan one bounded Stereo-only probe when only the >6 dB correction limit failed."""
+    """Plan one bounded Stereo-only probe when only the >6 dB correction limit failed.
+
+    ``crossover_hz`` is the shared crossover, or a per-side mapping for an
+    unlinked Stereo sub pair, so each side's corridor band follows its own filter.
+    """
     result: dict[str, Any] = {"available": False, "deltas_db": {}, "channels": {}, "reason": None}
     if correction_plan.get("reason") != "Measured final Gain correction is implausible":
         result["reason"] = "Stereo probe requires only the >6 dB correction limit to have failed"
@@ -1093,7 +1106,9 @@ def _auto_sub_stereo_probe_plan(
             )
             corridor = _auto_sub_stereo_corridor_violation(
                 points=after_points.get(side) or [], target_curve=target_curve, anchor=anchor,
-                crossover_hz=crossover_hz, direction=raw_correction,
+                crossover_hz=(int(crossover_hz.get(side, crossover_hz.get("shared", 80)))
+                              if isinstance(crossover_hz, dict) else int(crossover_hz)),
+                direction=raw_correction,
             )
             eligible = bool(direction_clear and corridor.get("available") and corridor.get("relevant"))
             result["channels"][side] = {
@@ -1148,9 +1163,22 @@ def _auto_sub_target_residual_raw_db(
 
 def _calculate_auto_sub_gain(
     *, mode: str, target_curve: dict[str, Any] | None, anchor: dict[str, Any] | None,
-    winner_curves: dict[str, list[list[float]]], crossover_hz: int,
+    winner_curves: dict[str, list[list[float]]], crossover_hz: int | dict[str, int],
 ) -> dict[str, Any]:
-    """Calculate bounded diagnostic Gain from calibrated accepted-winner curves."""
+    """Calculate bounded diagnostic Gain from calibrated accepted-winner curves.
+
+    ``crossover_hz`` is the shared crossover, or a per-channel mapping (with a
+    ``shared`` fallback) for an unlinked Stereo sub pair whose sides cross over
+    at different frequencies.
+    """
+    def channel_crossover(channel: str) -> int:
+        if not isinstance(crossover_hz, dict):
+            return int(crossover_hz)
+        value = crossover_hz.get(channel, crossover_hz.get("shared"))
+        if value is None:
+            raise ValueError(f"AutoSub Gain requires a crossover frequency for {channel}")
+        return int(value)
+
     result: dict[str, Any] = {
         "available": False, "gain_calculated": False, "applied": False,
         "method": "fixed 1/1-octave moving-median smoothing of Winner and anchored Target; median Target-minus-Winner deviation",
@@ -1159,7 +1187,8 @@ def _calculate_auto_sub_gain(
     }
     try:
         for channel, points in winner_curves.items():
-            raw_gain, mad, usable = _auto_sub_target_residual_raw_db(points, target_curve, anchor, crossover_hz)
+            raw_gain, mad, usable = _auto_sub_target_residual_raw_db(
+                points, target_curve, anchor, channel_crossover(channel))
             bounded = min(6.0, max(-6.0, raw_gain))
             coverage_octaves = math.log2(usable[-1][0] / usable[0][0])
             confidence = "high" if len(usable) >= 24 and coverage_octaves >= 1.5 and mad <= 1.5 else (
@@ -1677,8 +1706,14 @@ async def _capture_auto_sub_main_references(
     auto_sub_rate: int,
     output_mode: str,
     original_config_snapshot: dict[str, Any],
+    side_fc: dict[str, int] | None = None,
 ) -> None:
-    """Capture exactly one L and one R Main-only reference before candidate scans."""
+    """Capture exactly one L and one R Main-only reference before candidate scans.
+
+    Each side records and validates its own effective crossover frequency, so an
+    unlinked Stereo sub pair with different Left/Right crossovers stays valid.
+    """
+    frequencies = {side: int((side_fc or {}).get(side, fc)) for side in ("left", "right")}
     subwoofer = original_config_snapshot.get("subwoofer") if isinstance(original_config_snapshot.get("subwoofer"), dict) else {}
     sub1 = _auto_sub_22_sub(original_config_snapshot, "sub1")
     sub2 = _auto_sub_22_sub(original_config_snapshot, "sub2")
@@ -1694,6 +1729,7 @@ async def _capture_auto_sub_main_references(
         "status": "running",
         "exact_sub_mute": True,
         "crossover_frequency_hz": int(fc),
+        "side_crossover_frequency_hz": dict(frequencies),
         "main_highpass_enabled": main_highpass_enabled,
         "left": {"status": "pending"},
         "right": {"status": "pending"},
@@ -1711,7 +1747,7 @@ async def _capture_auto_sub_main_references(
             candidate_index=index,
             total=2,
             stage="main_reference",
-            fc=fc,
+            fc=frequencies[side],
             input_id=input_id,
             channel=side,
             mic_input_channel=mic_input_channel,
@@ -1742,7 +1778,7 @@ async def _capture_auto_sub_main_references(
             "channel": side,
             "measurement_channel": result.get("measurement_channel"),
             "sample_rate": result.get("sample_rate"),
-            "crossover_frequency_hz": int(fc),
+            "crossover_frequency_hz": frequencies[side],
             "main_highpass_enabled": main_highpass_enabled,
             "exact_sub_mute": bool(result.get("exact_sub_mute")),
         }
@@ -1763,6 +1799,7 @@ async def _capture_auto_sub_main_references(
         main_references=job.get("main_references"),
         crossover_hz=fc,
         main_highpass_enabled=main_highpass_enabled,
+        side_crossover_hz=frequencies,
     )
     if job["main_target_anchor"].get("status") == "ready":
         job["auto_gain"] = {

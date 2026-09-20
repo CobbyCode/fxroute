@@ -23,24 +23,44 @@ from dsp.effects_extras import merge_effects_extras_from_json
 from dsp.runtime import DSPRuntimeConfig
 
 
+def _block(text: str, start_marker: str, end_marker: str) -> str:
+    start = text.index(start_marker)
+    return text[start:text.index(end_marker, start)]
+
+
 def _check_highpass_guard() -> None:
     text = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
-    guarded = [
-        "effectsSubwooferFrequencyNumber",
-        "effectsSubwooferMainHighpass",
-        "effectsSubwooferLevel",
-        "effectsSubwooferDelay",
-        "effectsSubwooferPolarity",
-        "effectsSubwooferSub2Level",
-        "effectsSubwooferSub2Delay",
-        "effectsSubwooferSub2Polarity",
-    ]
-    for name in guarded:
-        needle = f"_activeEditing.has(elements.{name})"
-        assert needle in text, f"missing _activeEditing guard for {name}"
-    # Highpass-Render darf nicht guard-los schreiben.
-    assert "if (elements.effectsSubwooferMainHighpass && !_activeEditing.has(elements.effectsSubwooferMainHighpass))" in text
-    print("highpass select has _activeEditing guard like the other 7: ok")
+    # Frequency/type/slope of the shared and both per-side groups are painted
+    # by one shape renderer; it skips a control the user is editing, so the
+    # render can never overwrite a value before its save ran.
+    for control in ("effectsSubwooferFrequencyNumber", "effectsSubwooferLeftFrequency",
+                    "effectsSubwooferRightFrequency"):
+        assert f"applySubCrossoverShape(elements.{control}," in text, f"{control} is not shape-rendered"
+    assert "if (frequencyEl && !_activeEditing.has(frequencyEl))" in text
+    # Level/alignment/polarity keep their own per-control guards.
+    for name in ("effectsSubwooferLevel", "effectsSubwooferDelay", "effectsSubwooferPolarity",
+                 "effectsSubwooferSub2Level", "effectsSubwooferSub2Delay",
+                 "effectsSubwooferSub2Polarity"):
+        assert f"!_activeEditing.has(elements.{name})" in text, f"missing _activeEditing guard for {name}"
+    # The global Main high-pass flag paints all three copies under the guard.
+    main_highpass = _block(text, "function applySubMainHighpass(", "function subMainHighpassEnabled(")
+    assert "!_activeEditing.has(el)" in main_highpass
+    for name in ("effectsSubwooferMainHighpass", "effectsSubwooferLeftMainHighpass",
+                 "effectsSubwooferRightMainHighpass"):
+        assert f"elements.{name}" in main_highpass, f"{name} is not repainted by the shared flag"
+    # Every subwoofer control (shared, per-side, level and the link switch) is
+    # released from the guard after its save, so edits do not stick forever.
+    released = _block(text, "function clearSubwooferActiveEditing()", "function getSubwooferPreviewLayout(")
+    for name in ("effectsSubwooferFrequencyNumber", "effectsSubwooferFamily", "effectsSubwooferSlope",
+                 "effectsSubwooferLeftFrequency", "effectsSubwooferLeftFamily", "effectsSubwooferLeftSlope",
+                 "effectsSubwooferRightFrequency", "effectsSubwooferRightFamily",
+                 "effectsSubwooferRightSlope", "effectsSubwooferLink", "effectsSubwooferMainHighpass",
+                 "effectsSubwooferLeftMainHighpass", "effectsSubwooferRightMainHighpass",
+                 "effectsSubwooferLevel", "effectsSubwooferDelay", "effectsSubwooferPolarity",
+                 "effectsSubwooferSub2Level", "effectsSubwooferSub2Delay",
+                 "effectsSubwooferSub2Polarity"):
+        assert f"elements.{name}," in released, f"{name} is never released from the render guard"
+    print("all subwoofer controls render under the _activeEditing guard: ok")
 
 
 def _check_polarity() -> None:

@@ -1623,6 +1623,18 @@
             grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
+        /* Mobile: both crossover blocks wrap into two columns, so a side row
+           never overflows the single-column stack. */
+        .effects-subwoofer-crossover-block,
+        .effects-subwoofer-crossover-block.is-side {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .effects-card-subwoofer.is-crossover-split .effects-subwoofer-sub1-group,
+        .effects-card-subwoofer.is-crossover-split .effects-subwoofer-sub2-group {
+            grid-column: 1;
+        }
+
         /* 2.2 mode pins Sub 1/Sub 2 to base-grid columns with (0,3,0)
            specificity; re-reset them (and the derived-delays row) so the
            single-column stack carries no implicit extra tracks. */

@@ -11,8 +11,9 @@ import copy
 from collections.abc import Callable
 
 from audio.output_routing import device_key
-from audio.output_state import routing_for_device, validate_output_state
-from audio.output_topology import SUB_ROLES, derive_topology
+from audio.output_state import (bass_crossover_for_side, routing_for_device,
+                                shared_bass_crossover, validate_output_state)
+from audio.output_topology import SUB_ROLES, derive_topology, side_for_role
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
 from dsp.banks import BankState
 
@@ -41,7 +42,19 @@ def _input_routes(role: str, sub_mode: str) -> list[dict]:
     return [{"input": 0 if left else 1, "gain": 1.0}]
 
 
-def _crossover_filters(crossover_enabled: bool, role: str, processing: dict, bass: dict, has_subs: bool) -> list[dict]:
+def _bass_crossover(bass: dict, role: str, sub_mode: str) -> dict:
+    """Range the sub crossover filter for one role.
+
+    Only a true Left/Right sub pair resolves per side; Mono and Dual-Mono
+    always run the shared crossover, so their two subs cannot drift apart.
+    """
+    if sub_mode != "stereo":
+        return shared_bass_crossover(bass)
+    return bass_crossover_for_side(bass, side_for_role(role))
+
+
+def _crossover_filters(crossover_enabled: bool, role: str, processing: dict, bass: dict,
+                       has_subs: bool, sub_mode: str) -> list[dict]:
     if crossover_enabled and role not in SUB_ROLES:
         way = role.split("_", 1)[1]
         required = ("lowpass",) if way == "low" else ("highpass",) if way == "high" else ("highpass", "lowpass")
@@ -49,9 +62,10 @@ def _crossover_filters(crossover_enabled: bool, role: str, processing: dict, bas
             raise ValueError(f"Crossover way {role} requires {' and '.join(required)}")
     filters = [{"kind": kind, **processing[kind]} for kind in ("highpass", "lowpass") if processing[kind] is not None]
     if has_subs and (role in SUB_ROLES or bass["main_highpass_enabled"]):
+        # The sub low-pass and the Main high-pass it implies share the mode's
+        # crossover filter, type and slope included.
         filters.append({"kind": "lowpass" if role in SUB_ROLES else "highpass",
-                        "family": "linkwitz-riley", "slope_db_oct": 24,
-                        "frequency_hz": bass["frequency_hz"]})
+                        **_bass_crossover(bass, role, sub_mode)})
     return filters
 
 
@@ -85,7 +99,9 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
     outputs = []
     for role in topology.roles:
         settings = processing[role]
-        filters = _crossover_filters(config["crossover_enabled"], role, settings, config["bass_management"], bool(topology.sub_roles))
+        filters = _crossover_filters(config["crossover_enabled"], role, settings,
+                                     config["bass_management"], bool(topology.sub_roles),
+                                     topology.sub_mode)
         if any(item["frequency_hz"] >= sample_rate_hz / 2 for item in filters):
             raise ValueError(f"Crossover frequency for {role} must be below Nyquist")
         outputs.append({

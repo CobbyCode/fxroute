@@ -25,9 +25,12 @@ function deferred() {
 
 function makeContext(applyImpl) {
     const feedbackEl = { textContent: '', className: '' };
+    const linkEl = { checked: true };
+    const activeEditing = new Set([linkEl]);
     const context = {
         state: { outputSystem: { catalog: { active_mode: 'stereo-sub' } } },
-        elements: { effectsSubwooferFeedback: feedbackEl },
+        elements: { effectsSubwooferFeedback: feedbackEl, effectsSubwooferLink: linkEl },
+        _activeEditing: activeEditing,
         window: { clearTimeout, setTimeout },
         applyOutputSystemMutation: applyImpl,
         console,
@@ -37,8 +40,9 @@ function makeContext(applyImpl) {
     vm.runInContext(extract(/function setSubwooferFeedback\([^]*?\n\}/, 'setSubwooferFeedback'), context);
     vm.runInContext(extract(/let _subwooferSavePromise = null;/, 'save promise'), context);
     vm.runInContext(extract(/let _subwooferLastRequestedSignature = '';?/, 'last signature'), context);
+    vm.runInContext(extract(/function releaseSubwooferLinkGuard\(\)[^]*?\n\}/, 'link guard'), context);
     vm.runInContext(extract(/function beginSubwooferSave\(pending\)[^]*?\n\}/, 'beginSubwooferSave'), context);
-    return { context, feedbackEl };
+    return { context, feedbackEl, activeEditing, linkEl };
 }
 
 function startSave(context, pending) {
@@ -53,21 +57,24 @@ const pending = { mode: 'stereo-sub', settings: { mode: 'stereo-sub' }, signatur
     // 1. Success: Applying… while the commit is in flight, then Saved.
     {
         const gate = deferred();
-        const { context, feedbackEl } = makeContext(() => gate.promise);
+        const { context, feedbackEl, activeEditing, linkEl } = makeContext(() => gate.promise);
         const run = startSave(context, pending);
         await tick();
         assert.equal(feedbackEl.textContent, 'Applying…');
+        // The in-flight link toggle stays guarded until the save landed.
+        assert.equal(activeEditing.has(linkEl), true);
         gate.resolve({ revision: 9 });
         assert.deepEqual(await run, { revision: 9 });
         await tick();
         assert.equal(feedbackEl.textContent, 'Saved');
         assert.match(feedbackEl.className, /success/);
+        assert.equal(activeEditing.has(linkEl), false);
         assert.equal(vm.runInContext('_subwooferSavePromise', context), null);
     }
     // 2. Rejection: error message + error class, promise cleared.
     {
         const gate = deferred();
-        const { context, feedbackEl } = makeContext(() => gate.promise);
+        const { context, feedbackEl, activeEditing, linkEl } = makeContext(() => gate.promise);
         const run = startSave(context, pending);
         await tick();
         assert.equal(feedbackEl.textContent, 'Applying…');
@@ -76,6 +83,9 @@ const pending = { mode: 'stereo-sub', settings: { mode: 'stereo-sub' }, signatur
         await tick();
         assert.match(feedbackEl.textContent, /boom-423/);
         assert.match(feedbackEl.className, /error/);
+        // A failed save must release the guard too, or the tile would stay
+        // un-editable.
+        assert.equal(activeEditing.has(linkEl), false);
         assert.equal(vm.runInContext('_subwooferSavePromise', context), null);
     }
     // 3. Superseded (null result): error state, rejection surfaces.

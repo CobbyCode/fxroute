@@ -10,7 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from audio.output_state import default_output_state, select_bank, set_crossover, set_mode_routing, switch_mode
+from audio.output_state import (default_output_state, select_bank, set_bass_management,
+                                set_crossover, set_mode_routing, switch_mode)
 from dsp.persistence import DSPPresetStore
 from dsp.processing_plan import compile_processing_plan
 
@@ -116,6 +117,48 @@ class ProcessingPlanTests(unittest.TestCase):
         self.assertEqual(plan["global"]["extras"], {})
         self.assertTrue(plan["outputs"][0]["bank"]["bypass"])
         self.assertEqual(plan["outputs"][0]["crossover"], [{"kind": "lowpass", **crossover_filter(300)}])
+
+    def sub_crossover_state(self, subs, **bass):
+        routing = [f"{side}_{way}" for side in ("left", "right") for way in ("low", "mid", "high")] + list(subs)
+        state = set_mode_routing(self.crossover_state(), "stereo-sub", "A", routing)
+        return set_bass_management(state, "stereo-sub", **bass)
+
+    def crossover_by_role(self, state):
+        plan = self.compile(state, channels=8)
+        return {row["role"]: row["crossover"] for row in plan["outputs"]}
+
+    def test_sub_crossover_type_and_slope_reach_subs_and_ways(self):
+        filters = self.crossover_by_role(self.sub_crossover_state(
+            ["sub1", "sub2"], frequency_hz=90, family="butterworth", slope_db_oct=36))
+        sub_lowpass = {"kind": "lowpass", "family": "butterworth", "slope_db_oct": 36, "frequency_hz": 90}
+        main_highpass = {"kind": "highpass", "family": "butterworth", "slope_db_oct": 36, "frequency_hz": 90}
+        self.assertEqual(filters["sub1"], [sub_lowpass])
+        self.assertEqual(filters["sub2"], [sub_lowpass])
+        self.assertEqual(filters["left_low"], [{"kind": "lowpass", **crossover_filter(300)}, main_highpass])
+        self.assertEqual(filters["right_low"], [{"kind": "lowpass", **crossover_filter(300)}, main_highpass])
+
+    def test_unlinked_stereo_pair_runs_per_side_crossover(self):
+        left = {"family": "bessel", "slope_db_oct": 18, "frequency_hz": 60}
+        right = {"family": "linkwitz-riley", "slope_db_oct": 48, "frequency_hz": 120}
+        filters = self.crossover_by_role(self.sub_crossover_state(
+            ["sub_l", "sub_r"], sub_link=False, sub_filters={"left": left, "right": right}))
+        self.assertEqual(filters["sub_l"], [{"kind": "lowpass", **left}])
+        self.assertEqual(filters["sub_r"], [{"kind": "lowpass", **right}])
+        self.assertEqual(filters["left_low"], [{"kind": "lowpass", **crossover_filter(300)},
+                                                {"kind": "highpass", **left}])
+        self.assertEqual(filters["right_low"], [{"kind": "lowpass", **crossover_filter(300)},
+                                                 {"kind": "highpass", **right}])
+
+    def test_dual_mono_keeps_both_subs_on_the_shared_crossover(self):
+        shared = {"family": "butterworth", "slope_db_oct": 12, "frequency_hz": 70}
+        overrides = {"left": {"family": "bessel", "slope_db_oct": 18, "frequency_hz": 60},
+                     "right": {"family": "linkwitz-riley", "slope_db_oct": 48, "frequency_hz": 120}}
+        filters = self.crossover_by_role(self.sub_crossover_state(
+            ["sub1", "sub2"], **shared, sub_link=False, sub_filters=overrides))
+        for role in ("sub1", "sub2", "left_low", "right_low"):
+            self.assertIn({"kind": "lowpass" if role.startswith("sub") else "highpass", **shared},
+                          filters[role])
+        self.assertNotIn("bessel", [definition["family"] for definition in filters["sub2"]])
 
     def test_incomplete_unprotected_and_above_nyquist_plans_are_rejected(self):
         state = self.crossover_state()

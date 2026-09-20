@@ -923,6 +923,7 @@ def _persist_auto_sub_job_snapshot(job: dict[str, Any], job_id: str) -> None:
             "status": job.get("status"),
             "message": job.get("message"),
             "crossover_hz": job.get("crossover_hz"),
+            "crossover_hz_by_side": job.get("crossover_hz_by_side"),
             "step_ms": job.get("step_ms"),
             "original_alignment_ms": job.get("original_alignment_ms"),
             "original_sub1_alignment_ms": job.get("original_sub1_alignment_ms"),

@@ -15,7 +15,9 @@ sys.path.insert(0, str(ROOT))
 
 import main
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
+from audio.output_state import (default_bass_management, default_output_state,
+                                set_bass_management, set_crossover, set_mode_routing,
+                                switch_mode)
 from audio.output_state_store import OutputStateStore
 from dsp.manager import DSPManager
 
@@ -108,9 +110,9 @@ class WayResponseTests(unittest.TestCase):
         self.assertFalse(payload["crossover_enabled"])
         self.assertEqual(payload["ways"], {})
 
-    def _commit_sub_crossover_state(self, main_highpass_enabled=True):
-        from audio.output_state import (set_bass_management, set_mode_routing)
-        assignments = ["left_low", "right_low", "left_high", "right_high", "sub_l", "sub_r"]
+    def _commit_sub_crossover_state(self, main_highpass_enabled=True, assignments=None, **bass):
+        assignments = assignments or ["left_low", "right_low", "left_high", "right_high",
+                                      "sub_l", "sub_r"]
         state = set_mode_routing(self.service.load(), "stereo-sub", "A", assignments)
         proc = state["modes"]["stereo-sub"]["processing"]
         for role in ("left_low", "right_low"):
@@ -121,15 +123,17 @@ class WayResponseTests(unittest.TestCase):
             proc[role]["highpass"] = {"family": "linkwitz-riley", "slope_db_oct": 24,
                                       "frequency_hz": 2000}
             proc[role]["lowpass"] = None
-        state = set_bass_management(state, "stereo-sub", frequency_hz=80,
-                                    main_highpass_enabled=main_highpass_enabled)
+        options = {"frequency_hz": 80, "main_highpass_enabled": main_highpass_enabled}
+        options.update(bass)
+        state = set_bass_management(state, "stereo-sub", **options)
         return self.service._deps.store.commit(state, expected_revision=1)
 
     def test_sub_bass_highpass_shapes_low_way(self):
         self._commit_sub_crossover_state(main_highpass_enabled=True)
         payload = self.fetch()
         self.assertEqual(payload["bass_management"],
-                         {"frequency_hz": 80, "main_highpass_enabled": True})
+                         {**default_bass_management(), "frequency_hz": 80,
+                          "main_highpass_enabled": True})
         self.assertEqual(sorted(payload["sub_roles"]), ["sub_l", "sub_r"])
         low = payload["ways"]["left_low"]
         self.assertTrue(low["complete"])
@@ -142,6 +146,51 @@ class WayResponseTests(unittest.TestCase):
         self.assertLess(points[min(points)], -20.0)
         nearest = min(points, key=lambda hz: abs(math.log(hz / 80.0)))
         self.assertAlmostEqual(points[nearest], -6.0206, delta=0.6)
+
+    def test_crossover_type_and_slope_shape_the_low_way(self):
+        self._commit_sub_crossover_state(main_highpass_enabled=True,
+                                         family="butterworth", slope_db_oct=12)
+        payload = self.fetch()
+        low = payload["ways"]["left_low"]
+        self.assertEqual(low["derived_highpass"],
+                         {"family": "butterworth", "slope_db_oct": 12, "frequency_hz": 80})
+        points = dict(low["points"])
+        nearest = min(points, key=lambda hz: abs(math.log(hz / 80.0)))
+        # A 12 dB/oct Butterworth high-pass sits at -3 dB on its cutoff and
+        # rolls off far more slowly than the LR24 it replaces.
+        self.assertAlmostEqual(points[nearest], -3.0103, delta=0.6)
+        # Two octaves below the cutoff a 12 dB/oct Butterworth is at ~-24 dB,
+        # where the LR24 it replaces sits far deeper.
+        self.assertAlmostEqual(points[min(points)], -24.1, delta=1.5)
+
+    def test_unlinked_stereo_ways_get_their_own_side_highpass(self):
+        self._commit_sub_crossover_state(
+            main_highpass_enabled=True, sub_link=False,
+            sub_filters={
+                "left": {"family": "bessel", "slope_db_oct": 12, "frequency_hz": 60},
+                "right": {"family": "butterworth", "slope_db_oct": 24, "frequency_hz": 120}})
+        payload = self.fetch()
+        self.assertEqual(payload["ways"]["left_low"]["derived_highpass"],
+                         {"family": "bessel", "slope_db_oct": 12, "frequency_hz": 60})
+        self.assertEqual(payload["ways"]["left_high"]["derived_highpass"],
+                         {"family": "bessel", "slope_db_oct": 12, "frequency_hz": 60})
+        self.assertEqual(payload["ways"]["right_low"]["derived_highpass"],
+                         {"family": "butterworth", "slope_db_oct": 24, "frequency_hz": 120})
+
+    def test_dual_mono_ways_share_the_crossover(self):
+        # Dual-Mono has no sides: an unlinked override must stay unused.
+        self._commit_sub_crossover_state(
+            main_highpass_enabled=True, sub_link=False,
+            assignments=["left_low", "left_high", "right_low", "right_high",
+                         "sub1", "sub2"],
+            sub_filters={"left": {"family": "bessel", "slope_db_oct": 12,
+                                   "frequency_hz": 60}})
+        payload = self.fetch()
+        for role in ("left_low", "right_low"):
+            with self.subTest(role=role):
+                self.assertEqual(payload["ways"][role]["derived_highpass"],
+                                 {"family": "linkwitz-riley", "slope_db_oct": 24,
+                                  "frequency_hz": 80})
 
     def test_sub_highpass_off_leaves_low_way_full_range(self):
         self._commit_sub_crossover_state(main_highpass_enabled=False)

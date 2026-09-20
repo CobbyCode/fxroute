@@ -10,6 +10,7 @@ import json
 import logging
 
 from audio.output_ports import hardware_playback_port_fallback_from_mode
+from audio.output_state import bass_crossover_for_side, shared_bass_crossover
 from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
@@ -81,7 +82,12 @@ def _auto_sub_output_device(overview: dict) -> tuple[str, int]:
 
 
 def _auto_sub_runner_snapshot(state: dict, topology) -> tuple[dict, dict]:
-    """Project frozen role settings into the existing algorithm's logical slots."""
+    """Project frozen role settings into the existing algorithm's logical slots.
+
+    The crossover shape (type, slope, frequency) travels with the snapshot: a
+    true Left/Right sub pair carries its own side values, while Mono and
+    Dual-Mono systems carry the shared crossover for both slots.
+    """
     path = optimizer_path(topology)
     algorithm_mode = {"single-sub": OUTPUT_MODE_SUBWOOFER_21,
                       "dual-sub": OUTPUT_MODE_SUBWOOFER_22,
@@ -89,11 +95,24 @@ def _auto_sub_runner_snapshot(state: dict, topology) -> tuple[dict, dict]:
     role_map = {f"sub{index + 1}": role for index, role in enumerate(topology.sub_roles)}
     active = state["modes"][state["active_mode"]]
     bass = active["bass_management"]
-    common = {"crossover_frequency_hz": bass["frequency_hz"],
-              "main_highpass_enabled": bass["main_highpass_enabled"]}
+
+    def shape(definition: dict) -> dict:
+        return {"crossover_frequency_hz": definition["frequency_hz"],
+                "crossover_family": definition["family"],
+                "crossover_slope_db_oct": definition["slope_db_oct"]}
+
+    shared = shape(shared_bass_crossover(bass))
+    if topology.sub_mode == "stereo":
+        sides = {"sub1": shape(bass_crossover_for_side(bass, "left")),
+                 "sub2": shape(bass_crossover_for_side(bass, "right"))}
+    else:
+        sides = {"sub1": shared, "sub2": shared}
+    common = {**shared, "main_highpass_enabled": bass["main_highpass_enabled"]}
     subs = {slot: {field: active["processing"][role][field]
                    for field in ("alignment_ms", "level_db", "polarity")}
             for slot, role in role_map.items()}
+    for slot, values in subs.items():
+        values.update(sides[slot])
     first = subs["sub1"]
     snapshot = {"mode": algorithm_mode, **common, "subwoofer": {
         **common, "sub_alignment_ms": first["alignment_ms"],
@@ -169,6 +188,16 @@ async def start_auto_sub_optimize(
 
         config = original_config_snapshot["subwoofer"]
         fc = config["crossover_frequency_hz"]
+        # A true Stereo pair may cross over per side; Mono and Dual-Mono always
+        # share one crossover, so both sides keep the shared frequency.
+        side_fc = {side: fc for side in ("left", "right")}
+        if output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO:
+            for slot, side in (("sub1", "left"), ("sub2", "right")):
+                definition = (original_config_snapshot.get("subwoofers") or {}).get(slot)
+                if isinstance(definition, dict):
+                    side_fc[side] = int(definition.get("crossover_frequency_hz", fc))
+        side_step_ms = {side: _auto_sub_step_ms(frequency)
+                        for side, frequency in side_fc.items()}
         current_alignment = config["sub_alignment_ms"]
         current_sub2_alignment = original_config_snapshot.get("subwoofers", {}).get("sub2", {}).get("alignment_ms", 0.0)
         original_polarity = config["sub_polarity"]
@@ -272,23 +301,35 @@ async def start_auto_sub_optimize(
         )
 
         if output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO:
-            fine_step_ms = step_ms / 4.0
+            left_step = side_step_ms["left"]
+            right_step = side_step_ms["right"]
+            # Each side scans around its own crossover: the step follows the
+            # side frequency, so an unlinked pair never shares a scan grid.
+            left_scan_delays: list[float] = []
             right_scan_delays: list[float] = []
             for s in range(-coarse_steps, coarse_steps + 1):
-                delay = _auto_sub_clamped_delay(current_sub2_alignment + s * step_ms)
+                left_delay = _auto_sub_clamped_delay(current_alignment + s * left_step)
+                if not left_scan_delays or abs(left_delay - left_scan_delays[-1]) > 0.05:
+                    left_scan_delays.append(left_delay)
+                delay = _auto_sub_clamped_delay(current_sub2_alignment + s * right_step)
                 if not right_scan_delays or abs(delay - right_scan_delays[-1]) > 0.05:
                     right_scan_delays.append(delay)
             job["message"] = (
-                f"Auto Sub Optimize 2.2 Stereo Bass: Left Sub {len(scan_delays)} coarse, "
-                f"Left fine up to 6, Right Sub {len(right_scan_delays)} coarse, Right fine up to 6 @ {fc} Hz"
+                f"Auto Sub Optimize 2.2 Stereo Bass: Left Sub {len(left_scan_delays)} coarse, "
+                f"Left fine up to 6 @ {side_fc['left']} Hz, Right Sub {len(right_scan_delays)} coarse, "
+                f"Right fine up to 6 @ {side_fc['right']} Hz"
             )
-            job["scan_delays"] = {"left_sub": scan_delays, "right_sub": right_scan_delays}
+            job["scan_delays"] = {"left_sub": left_scan_delays, "right_sub": right_scan_delays}
+            job["crossover_hz_by_side"] = {"left": side_fc["left"], "right": side_fc["right"],
+                                           "shared": fc}
             job["fine_scan"] = {
                 "enabled": True,
                 "triggered": False,
                 "status": "pending",
                 "reason": "2.2 Stereo Bass optimizes Left and Right Sub separately with per-side fine scans",
-                "fine_step_ms": fine_step_ms,
+                "fine_step_ms": step_ms / 4.0,
+                "left_step_ms": left_step / 4.0,
+                "right_step_ms": right_step / 4.0,
                 "left": {"status": "pending", "candidates": []},
                 "right": {"status": "pending", "candidates": []},
             }
@@ -300,9 +341,11 @@ async def start_auto_sub_optimize(
                 calibration_ref=calibration_ref,
                 calibration_filename=calibration_filename,
                 calibration_bytes=calibration_bytes,
-                left_scan_delays=scan_delays,
+                left_scan_delays=left_scan_delays,
                 right_scan_delays=right_scan_delays,
                 fc=fc,
+                left_fc=side_fc["left"],
+                right_fc=side_fc["right"],
                 original_config_snapshot=original_config_snapshot,
                 entry_epoch=entry_epoch,
             )

@@ -15,6 +15,34 @@
 const OUTPUT_MODES = ['stereo', 'stereo-sub'];
 const MUTATION_KINDS = ['set_routing', 'switch_mode', 'select_bank', 'set_bank_preset',
     'switch_all_banks', 'set_crossover', 'set_subwoofers', 'set_processing', 'set_extras'];
+const FAMILY_LABELS = { 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' };
+const FAMILY_PREFIXES = { 'linkwitz-riley': 'LR', butterworth: 'BW', bessel: 'BS' };
+const SUB_SIDES = ['left', 'right'];
+
+function filterLabel(family, slope) {
+    return `${FAMILY_PREFIXES[family] || String(family || '')}${slope}`;
+}
+
+function normalizedCrossover(definition, fallback) {
+    const source = definition || {};
+    const family = FAMILY_LABELS[source.family] ? source.family : (fallback?.family || 'linkwitz-riley');
+    return {
+        family,
+        slope_db_oct: Number(source.slope_db_oct) || fallback?.slope_db_oct || 24,
+        frequency_hz: Number(source.frequency_hz) || fallback?.frequency_hz || 80,
+    };
+}
+
+// Effective sub crossover of one side. Mono, Dual-Mono and a coupled Stereo
+// pair run the shared filter; only an unlinked Stereo pair resolves per side.
+function bassCrossoverForSide(bass, side, stereo) {
+    const source = bass || {};
+    const shared = normalizedCrossover(null, {
+        family: source.family, slope_db_oct: source.slope_db_oct, frequency_hz: source.frequency_hz });
+    if (!stereo || source.sub_link !== false || !SUB_SIDES.includes(side)) return shared;
+    const override = (source.sub_filters || {})[side];
+    return override ? normalizedCrossover(override, shared) : shared;
+}
 
 function esc(value) {
     return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -83,14 +111,26 @@ function subwooferView(catalog) {
     const first = processing[roles[0]] || {};
     const offset = Math.max(0, ...(topology.roles || []).map(role => -(processing[role]?.alignment_ms || 0)));
     const bass = config?.bass_management || {};
+    const stereo = topology.sub_mode === 'stereo';
+    const shared = bassCrossoverForSide(bass, 'left', false);
+    const left = bassCrossoverForSide(bass, 'left', stereo);
+    const right = bassCrossoverForSide(bass, 'right', stereo);
     return {
         mode: { mono: 'subwoofer-2.1', 'dual-mono': 'subwoofer-2.2', stereo: 'subwoofer-2.2-stereo' }[topology.sub_mode] || 'stereo',
         roles, sub_mode: topology.sub_mode || 'none',
-        subwoofer: { crossover_frequency_hz: bass.frequency_hz ?? 80, slope: 'LR24',
+        subwoofer: { crossover_frequency_hz: shared.frequency_hz,
+            slope: filterLabel(shared.family, shared.slope_db_oct),
+            family: shared.family, slope_db_oct: shared.slope_db_oct,
             main_highpass_enabled: bass.main_highpass_enabled ?? true,
             sub_level_db: first.level_db || 0, sub_alignment_ms: first.alignment_ms || 0,
             sub_polarity: first.polarity || 'normal' },
         subwoofers: { sub1: first, sub2: processing[roles[1]] || {} },
+        // Shared and per-side sub crossover; the link switch is only offered
+        // for a true Stereo sub pair.
+        crossover: { ...shared, label: filterLabel(shared.family, shared.slope_db_oct),
+            link: bass.sub_link !== false, stereo,
+            left, right, left_label: filterLabel(left.family, left.slope_db_oct),
+            right_label: filterLabel(right.family, right.slope_db_oct) },
         derived_main_delay_ms: offset,
         derived_sub1_delay_ms: offset + (first.alignment_ms || 0),
         derived_sub2_delay_ms: offset + (processing[roles[1]]?.alignment_ms || 0),
@@ -338,6 +378,10 @@ function renderBankSelector(select, catalog, mode) {
         modeLabel,
         modeSelectorVisible,
         subModeLabel,
+        FAMILY_LABELS,
+        SUB_SIDES,
+        filterLabel,
+        bassCrossoverForSide,
         subwooferView,
         topologySummary,
         summedRoleIds,

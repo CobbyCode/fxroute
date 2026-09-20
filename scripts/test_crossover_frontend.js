@@ -45,6 +45,34 @@ assert.deepEqual(Crossover.applicableFilters('left_low', { bass: bass80, subRole
 assert.deepEqual(Crossover.applicableFilters('left_mid', { bass: bass80, subRoles: ['sub1'] }),
     ['highpass', 'lowpass']);
 
+// Type/slope travel with the sub crossover, and only a true Stereo pair
+// resolves per side while it is unlinked; Dual-Mono stays on the shared one.
+const shaped = { frequency_hz: 90, main_highpass_enabled: true, family: 'butterworth', slope_db_oct: 36 };
+assert.equal(Crossover.filterLabel('butterworth', 36), 'BW36');
+assert.deepEqual(Crossover.bassHighpass(shaped, ['sub1']),
+    { family: 'butterworth', slope_db_oct: 36, frequency_hz: 90 });
+const unlinked = { ...shaped, sub_link: false, sub_filters: {
+    left: { family: 'bessel', slope_db_oct: 18, frequency_hz: 60 } } };
+assert.deepEqual(Crossover.bassCrossoverForSide(unlinked, 'left'),
+    { family: 'bessel', slope_db_oct: 18, frequency_hz: 60 });
+// No right override: that side falls back to the shared crossover.
+assert.deepEqual(Crossover.bassCrossoverForSide(unlinked, 'right'),
+    { family: 'butterworth', slope_db_oct: 36, frequency_hz: 90 });
+assert.deepEqual(Crossover.bassHighpass(unlinked, ['sub_l', 'sub_r'], 'left_low'),
+    { family: 'bessel', slope_db_oct: 18, frequency_hz: 60 });
+assert.deepEqual(Crossover.bassHighpass(unlinked, ['sub_l', 'sub_r'], 'right_high'),
+    { family: 'butterworth', slope_db_oct: 36, frequency_hz: 90 });
+assert.equal(Crossover.sideForRole('sub_l'), 'left');
+assert.equal(Crossover.sideForRole('sub_r'), 'right');
+// A coupled pair and a Dual-Mono pair both keep the shared crossover, even
+// when the stored state still carries side overrides from an earlier unlink.
+assert.deepEqual(Crossover.bassHighpass({ ...unlinked, sub_link: true }, ['sub_l', 'sub_r'], 'left_low'),
+    { family: 'butterworth', slope_db_oct: 36, frequency_hz: 90 });
+assert.deepEqual(Crossover.bassHighpass(unlinked, ['sub1', 'sub2'], 'left_low'),
+    { family: 'butterworth', slope_db_oct: 36, frequency_hz: 90 });
+assert.deepEqual(Crossover.sharedBassCrossover(unlinked),
+    { family: 'butterworth', slope_db_oct: 36, frequency_hz: 90 });
+
 assert.deepEqual(Crossover.slopesForFamily('linkwitz-riley', CAPS), [12, 24, 36, 48, 60, 72]);
 assert.deepEqual(Crossover.slopesForFamily('nope', CAPS), []);
 

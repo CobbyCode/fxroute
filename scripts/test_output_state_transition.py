@@ -12,8 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_service import MeasurementActiveError, OutputService, OutputServiceDeps
 from audio.output_state import (
-    default_output_state, set_bank_preset, set_bass_management, set_crossover, set_mode_extras,
-    set_mode_routing, set_output_processing, switch_mode, select_bank,
+    default_bass_management, default_output_state, set_bank_preset, set_bass_management,
+    set_crossover, set_mode_extras, set_mode_routing, set_output_processing, switch_mode,
+    select_bank,
 )
 from audio.output_state_migration import migrate_legacy_output_state
 from audio.output_state_store import OutputStateStore, StateConflictError
@@ -79,7 +80,8 @@ class ServiceMutationTests(unittest.TestCase):
         self.assertEqual((processing["level_db"], processing["alignment_ms"], processing["polarity"]),
                          (-4.5, -2.0, "invert"))
         self.assertEqual(result["modes"]["stereo-sub"]["bass_management"],
-                         {"frequency_hz": 90, "main_highpass_enabled": False})
+                         {**default_bass_management(), "frequency_hz": 90,
+                          "main_highpass_enabled": False})
         self.assertEqual(result["modes"]["stereo-sub"]["extras"], {"headroom": {"enabled": True}})
 
     def test_stale_revision_conflict_preserves_committed_bytes(self):

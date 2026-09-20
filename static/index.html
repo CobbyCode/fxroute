@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.244">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.245">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -671,26 +671,97 @@
                                     <canvas id="effects-subwoofer-preview" class="effects-subwoofer-preview" width="560" height="160" role="img" aria-label="Crossover preview"></canvas>
                                 </div>
                                 <div class="effects-subwoofer-controls">
-                                    <div class="effects-subwoofer-control-group effects-subwoofer-global-group">
-                                        <div class="effects-subwoofer-group-label">Global</div>
-                                        <div class="field-group">
-                                            <label for="effects-subwoofer-frequency-number">Crossover</label>
-                                            <div class="delay-input-wrap">
-                                                <div class="stepper-control">
-                                                    <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease crossover frequency">&minus;</button>
-                                                    <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
-                                                    <span class="stepper-unit" aria-hidden="true">Hz</span>
-                                                    <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase crossover frequency">+</button>
+                                    <div class="effects-subwoofer-control-group effects-subwoofer-global-group" id="effects-subwoofer-global-group">
+                                        <div class="effects-subwoofer-group-label" id="effects-subwoofer-global-label">Global</div>
+                                        <div class="effects-subwoofer-crossover-block" id="effects-subwoofer-shared-crossover">
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-frequency-number">Crossover</label>
+                                                <div class="delay-input-wrap">
+                                                    <div class="stepper-control">
+                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease crossover frequency">&minus;</button>
+                                                        <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
+                                                        <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase crossover frequency">+</button>
+                                                    </div>
                                                 </div>
                                             </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-family">Type</label>
+                                                <select id="effects-subwoofer-family" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                            </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-slope">Slope dB/oct</label>
+                                                <select id="effects-subwoofer-slope" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
+                                            </div>
+                                            <div class="field-group effects-subwoofer-highpass-field">
+                                                <label for="effects-subwoofer-main-highpass">Main highpass</label>
+                                                <select id="effects-subwoofer-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
+                                                    <option value="on" selected>On</option>
+                                                    <option value="off">Off</option>
+                                                </select>
+                                            </div>
                                         </div>
-                                        <div class="field-group effects-subwoofer-highpass-field">
-                                            <label for="effects-subwoofer-main-highpass">Main highpass</label>
-                                            <select id="effects-subwoofer-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
-                                                <option value="on" selected>On</option>
-                                                <option value="off">Off</option>
-                                            </select>
+                                        <div class="effects-subwoofer-crossover-block is-side hidden" id="effects-subwoofer-left-crossover">
+                                            <div class="effects-subwoofer-crossover-side-label" id="effects-subwoofer-left-label">Sub L</div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-left-frequency">Crossover</label>
+                                                <div class="delay-input-wrap">
+                                                    <div class="stepper-control">
+                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease left sub crossover frequency">&minus;</button>
+                                                        <input type="number" id="effects-subwoofer-left-frequency" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
+                                                        <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase left sub crossover frequency">+</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-left-family">Type</label>
+                                                <select id="effects-subwoofer-left-family" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                            </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-left-slope">Slope dB/oct</label>
+                                                <select id="effects-subwoofer-left-slope" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
+                                            </div>
+                                            <div class="field-group effects-subwoofer-highpass-field">
+                                                <label for="effects-subwoofer-left-main-highpass">Main highpass</label>
+                                                <select id="effects-subwoofer-left-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
+                                                    <option value="on" selected>On</option>
+                                                    <option value="off">Off</option>
+                                                </select>
+                                            </div>
                                         </div>
+                                        <div class="effects-subwoofer-crossover-block is-side hidden" id="effects-subwoofer-right-crossover">
+                                            <div class="effects-subwoofer-crossover-side-label" id="effects-subwoofer-right-label">Sub R</div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-right-frequency">Crossover</label>
+                                                <div class="delay-input-wrap">
+                                                    <div class="stepper-control">
+                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease right sub crossover frequency">&minus;</button>
+                                                        <input type="number" id="effects-subwoofer-right-frequency" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
+                                                        <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase right sub crossover frequency">+</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-right-family">Type</label>
+                                                <select id="effects-subwoofer-right-family" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                            </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-right-slope">Slope dB/oct</label>
+                                                <select id="effects-subwoofer-right-slope" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
+                                            </div>
+                                            <div class="field-group effects-subwoofer-highpass-field">
+                                                <label for="effects-subwoofer-right-main-highpass">Main highpass</label>
+                                                <select id="effects-subwoofer-right-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
+                                                    <option value="on" selected>On</option>
+                                                    <option value="off">Off</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <label class="crossover-link-label hidden" id="effects-subwoofer-link-wrap" for="effects-subwoofer-link">
+                                            <input type="checkbox" id="effects-subwoofer-link" checked> Link L/R
+                                        </label>
                                     </div>
                                     <div class="effects-subwoofer-control-group effects-subwoofer-channel-group effects-subwoofer-sub1-group">
                                         <div id="effects-subwoofer-sub1-group-label" class="effects-subwoofer-group-label">Subwoofer</div>
@@ -1658,10 +1729,10 @@
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
     <script src="/static/speaker_align.js?v=0.9.4"></script>
     <script src="/static/measurement_flows.js?v=0.9.28"></script>
-    <script src="/static/output_state.js?v=0.9.11"></script>
-    <script src="/static/crossover.js?v=0.9.5"></script>
+    <script src="/static/output_state.js?v=0.9.12"></script>
+    <script src="/static/crossover.js?v=0.9.6"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.197"></script>
+    <script src="/static/app.js?v=0.9.198"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

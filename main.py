@@ -355,7 +355,9 @@ from audio.output_ports import hardware_playback_port_fallback_from_mode
 from audio.output_service import MeasurementActiveError, OutputService, OutputServiceDeps
 from audio.output_state import (
     FILTER_SLOPES,
+    bass_crossover_for_side,
     roles_for_mode,
+    shared_bass_crossover,
     routing_for_device,
     select_bank,
     set_bank_preset,
@@ -368,7 +370,7 @@ from audio.output_state import (
     validate_output_state,
 )
 from audio.output_state_store import OutputStateStore, StateConflictError
-from audio.output_topology import MODES, SUB_ROLES, derive_topology
+from audio.output_topology import MODES, SUB_ROLES, derive_topology, side_for_role
 from audio.filter_banks import bank_catalog, resolve_bank, selected_bank, summarize_banks
 from audio.output_state import switch_all_banks
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
@@ -4192,7 +4194,8 @@ def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: i
         mode = _require_state_mode(args.get("mode"))
         return lambda state: set_crossover(state, mode, args.get("enabled"))
     if kind == "set_subwoofers":
-        args = strict({"mode", "frequency_hz", "main_highpass_enabled", "processing"})
+        args = strict({"mode", "frequency_hz", "main_highpass_enabled", "processing",
+                       "family", "slope_db_oct", "sub_link", "sub_filters"})
         mode = _require_state_mode(args.get("mode"))
 
         def update_subwoofers(state):
@@ -4200,8 +4203,11 @@ def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: i
             processing = args.get("processing")
             if not isinstance(processing, dict) or set(processing) != set(topology["sub_roles"]):
                 raise ValueError("Sub settings must describe exactly the routed sub roles")
-            result = set_bass_management(state, mode, frequency_hz=args.get("frequency_hz"),
-                                         main_highpass_enabled=args.get("main_highpass_enabled"))
+            result = set_bass_management(
+                state, mode, frequency_hz=args.get("frequency_hz"),
+                main_highpass_enabled=args.get("main_highpass_enabled"),
+                family=args.get("family"), slope_db_oct=args.get("slope_db_oct"),
+                sub_link=args.get("sub_link"), sub_filters=args.get("sub_filters"))
             for role, settings in processing.items():
                 if not isinstance(settings, dict) or set(settings) != {"level_db", "alignment_ms", "polarity"}:
                     raise ValueError("Sub settings require level, alignment and polarity")
@@ -4918,25 +4924,30 @@ async def _apply_audio_output_state_body(body: dict):
     }
 
 
-def _crossover_bass_highpass(mode_config: dict, topology: dict) -> dict | None:
-    """Shared bass high-pass the DSP adds on top of stored way filters.
+def _crossover_bass_highpass(mode_config: dict, topology: dict, role: str) -> dict | None:
+    """Sub crossover high-pass the DSP adds on top of stored way filters.
 
     Mirrors ``dsp.processing_plan._crossover_filters``: with routed subs and
-    ``main_highpass_enabled`` every speaker way runs through an LR24
-    high-pass at the sub crossover frequency. The speaker tile must show
-    the same curve, so the response endpoint reuses this definition.
+    ``main_highpass_enabled`` every speaker way runs through the sub
+    crossover, its type and slope included. A true Stereo sub pair resolves
+    per side while unlinked; Mono and Dual-Mono run the shared crossover.
+    The speaker tile must show the same curve, so the response endpoint
+    reuses this definition.
     """
     bass = (mode_config or {}).get("bass_management") or {}
     sub_roles = (topology or {}).get("sub_roles") or []
     if not sub_roles or bass.get("main_highpass_enabled") is not True:
         return None
     try:
-        frequency = float(bass.get("frequency_hz"))
-    except (TypeError, ValueError):
+        definition = (bass_crossover_for_side(bass, side_for_role(role))
+                      if (topology or {}).get("sub_mode") == "stereo"
+                      else shared_bass_crossover(bass))
+        frequency = float(definition["frequency_hz"])
+    except (TypeError, ValueError, KeyError):
         return None
     if not 40 <= frequency <= 200:
         return None
-    return {"family": "linkwitz-riley", "slope_db_oct": 24,
+    return {"family": definition["family"], "slope_db_oct": definition["slope_db_oct"],
             "frequency_hz": int(round(frequency))}
 
 
@@ -5003,12 +5014,12 @@ async def get_audio_output_state_crossover_response():
     output_key, channels = _output_state_device(overview)
     topology = _output_state_topology(state, mode, output_key, channels)
     mode_config = state["modes"][mode]
-    bass_highpass = _crossover_bass_highpass(mode_config, topology)
     for role, settings in mode_config["processing"].items():
         if not topology["crossover_enabled"] or role not in topology["roles"]:
             continue
         if not (role.startswith("left_") or role.startswith("right_")):
             continue
+        bass_highpass = _crossover_bass_highpass(mode_config, topology, role)
         points = _crossover_way_points(role, settings, rate, extra_highpass=bass_highpass)
         ways[role] = {
             "filters": {"highpass": settings["highpass"], "lowpass": settings["lowpass"]},

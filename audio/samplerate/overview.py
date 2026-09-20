@@ -66,7 +66,8 @@ def _derived_output_mode(
         return None
     try:
         from audio.output_routing import device_key
-        from audio.output_state import routing_for_device
+        from audio.output_state import (bass_crossover_for_side, filter_label,
+                                        routing_for_device, shared_bass_crossover)
     except ImportError:
         return None
     mode = head.get("active_mode")
@@ -92,11 +93,23 @@ def _derived_output_mode(
     processing = processing if isinstance(processing, Mapping) else {}
     bass = spec.get("bass_management")
     bass = bass if isinstance(bass, Mapping) else {}
-    try:
-        frequency = max(40, min(200, int(round(_finite_or(bass.get("frequency_hz"), 80)))))
-    except (TypeError, ValueError):
-        frequency = 80
     highpass = bool(bass.get("main_highpass_enabled", True))
+    stereo_pair = bool(set(subs) & {"sub_l", "sub_r"})
+
+    def crossover(side: str) -> dict[str, Any]:
+        """Effective crossover of one side; only a Stereo pair resolves per side."""
+        try:
+            if stereo_pair:
+                definition = bass_crossover_for_side(dict(bass), side)
+            else:
+                definition = shared_bass_crossover(dict(bass))
+            frequency = max(40, min(200, int(round(_finite_or(definition["frequency_hz"], 80)))))
+        except (KeyError, TypeError, ValueError):
+            return {"crossover_frequency_hz": 80, "slope": "LR24"}
+        return {"crossover_frequency_hz": frequency,
+                "slope": filter_label(definition["family"], definition["slope_db_oct"])}
+
+    left, right = crossover("left"), crossover("right")
     if not subs:
         return {"mode": OUTPUT_MODE_STEREO,
                 "subwoofer": _normalize_subwoofer_config(None)}
@@ -105,26 +118,22 @@ def _derived_output_mode(
         return {
             "mode": OUTPUT_MODE_SUBWOOFER_21,
             "subwoofer": {
-                "crossover_frequency_hz": frequency,
-                "slope": "LR24",
+                **left,
                 "main_highpass_enabled": highpass,
                 "sub_level_db": max(-24.0, min(12.0, settings["level_db"])),
                 "sub_alignment_ms": settings["alignment_ms"],
                 "sub_polarity": settings["polarity"],
             },
         }
-    label = (OUTPUT_MODE_SUBWOOFER_22_STEREO
-             if set(subs) & {"sub_l", "sub_r"}
-             else OUTPUT_MODE_SUBWOOFER_22)
+    label = OUTPUT_MODE_SUBWOOFER_22_STEREO if stereo_pair else OUTPUT_MODE_SUBWOOFER_22
     first, second = subs[0], subs[1]
     return {
         "mode": label,
-        "crossover_frequency_hz": frequency,
-        "slope": "LR24",
+        **left,
         "main_highpass_enabled": highpass,
         "subwoofers": {
-            "sub1": _derived_sub_settings(processing, first),
-            "sub2": _derived_sub_settings(processing, second),
+            "sub1": {**_derived_sub_settings(processing, first), **left},
+            "sub2": {**_derived_sub_settings(processing, second), **right},
         },
     }
 

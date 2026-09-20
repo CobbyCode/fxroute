@@ -24,6 +24,13 @@ def roles_for_mode(mode: str, *, crossover_enabled: bool = False) -> tuple[str, 
     return (SPEAKER_ROLES if crossover_enabled else MAIN_ROLES) + (SUB_ROLES if mode == "stereo-sub" else ())
 
 
+def side_for_role(role: str) -> str:
+    """Input side a role belongs to (sub1/sub2 sum both sides, main is L/R)."""
+    if role in ("left_low", "main_l", "sub_l") or str(role).startswith("left_"):
+        return "left"
+    return "right"
+
+
 def validate_assignments(mode: str, assignments: object, *, crossover_enabled: bool = False) -> tuple[str, ...]:
     allowed = (*roles_for_mode(mode, crossover_enabled=crossover_enabled), "off")
     if not isinstance(assignments, (list, tuple)) or len(assignments) > MAX_CHANNELS:
