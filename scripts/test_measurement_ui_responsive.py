@@ -309,7 +309,7 @@ def _run():
                 assert not page.locator("#measurement-sweep-menu").is_visible()
                 page.locator("#measurement-auto-sub-group").evaluate("element => element.classList.remove('hidden')")
                 labels = page.locator(".measurement-workflow-label").all_text_contents()
-                assert labels[:4] == ["Measurements", "Subwoofer", "Speaker Align", "Calibration"]
+                assert labels[:4] == ["Measurements", "Subwoofer", "Speaker Auto Alignment", "Calibration"]
                 checks += 4
 
                 page.locator("#measurement-sweep-toggle").click()
@@ -384,7 +384,8 @@ def _run():
                 page.locator('[data-sweep-side="stereo"]').click()
                 checks += 4
 
-                page.locator("#measurement-sweep-toggle").click()
+                # The side chips keep the menu open (selection, not action),
+                # so the toggle click above left it open for the repeat run.
                 page.locator("#measurement-repeat-start").click()
                 _wait_for_call(page, "start", "/api/measurements/lr-repeat/start")
                 _cancel_from_sweep_button(page)

@@ -13710,7 +13710,10 @@ function setupMeasurementActions() {
     }
     if (elements.measurementSweepMenu) {
         elements.measurementSweepMenu.addEventListener('click', (event) => {
-            if (event.target.closest('button')) setMeasurementSweepMenuOpen(false);
+            // A side chip only narrows the single sweep: keep the menu open so
+            // the user can still read the area note and press Run. Only the
+            // action buttons (Start, Repeat, Advanced) close it.
+            if (event.target.closest('#measurement-sweep-start, #measurement-repeat-start, #measurement-hybrid-open')) setMeasurementSweepMenuOpen(false);
         });
         document.addEventListener('click', (event) => {
             if (!elements.measurementSweepMenu.classList.contains('hidden')

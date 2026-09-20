@@ -284,6 +284,21 @@ def main() -> int:
                     hi.value = '48'; hi.dispatchEvent(new Event('change', { bubbles: true }));
                 })()""")
             page.wait_for_timeout(1500)
+            # The cleared low-pass is Off, so its Frequency/Slope controls are
+            # disabled: picking a type is what re-enables it, and the starter
+            # frequency fills the still empty cutoff. Only then the slope is
+            # edited, proving the two filters keep independent settings.
+            page.evaluate(
+                """(() => {
+                    const fam = document.getElementById('effects-crossover-family-lowpass');
+                    fam.value = 'linkwitz-riley'; fam.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            rebuilt = page.evaluate(
+                """fetch('/api/audio/output-state').then(r => r.json())
+                    .then(j => JSON.stringify(j.modes[j.active_mode].processing.left_mid.lowpass))""")
+            check(f"type pick re-enables the cleared low-pass ({rebuilt})",
+                  '"frequency_hz":2500' in rebuilt)
             page.evaluate(
                 """(() => {
                     const lo = document.getElementById('effects-crossover-slope-lowpass');
