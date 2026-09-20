@@ -273,6 +273,8 @@ def _run():
                         tabCount: tabs.querySelectorAll('[data-sub-side]').length,
                         tabrowAboveGraph: tabrow.compareDocumentPosition(preview)
                             & Node.DOCUMENT_POSITION_FOLLOWING ? true : false,
+                        tabsBeforeLink: !!(tabs.compareDocumentPosition(link)
+                            & Node.DOCUMENT_POSITION_FOLLOWING),
                         sideLabels: document.querySelectorAll(
                             '.effects-subwoofer-crossover-side-label').length,
                         linkInGlobalCard: !!document.querySelector(
@@ -299,6 +301,8 @@ def _run():
             check("link and tabs live in the tab row above the graph",
                   layout["linkInTabrow"] is True and layout["tabsInTabrow"] is True
                   and layout["tabrowAboveGraph"] is True)
+            check("tabs come before the link, like the speaker tab row",
+                  layout["tabsBeforeLink"] is True)
             check("no side headings inside the crossover blocks and no link in the Global card",
                   layout["sideLabels"] == 0 and layout["linkInGlobalCard"] is False)
             check("sub cards use short Trim-style labels (name lives in the card header)",

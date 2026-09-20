@@ -512,6 +512,14 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     margin: 0 auto;
 }
 
+/* Same split as the crossover tab row: tabs left, link right. */
+.effects-subwoofer-tabrow > .effects-subwoofer-side-tabs {
+    flex: 1 1 auto;
+}
+.effects-subwoofer-tabrow > .crossover-link-label {
+    flex: 0 0 auto;
+}
+
 /* Sub L / Sub R selector for an unlinked Stereo pair. Same tab language as
    the speaker-way tabs. */
 .effects-subwoofer-side-tabs {
