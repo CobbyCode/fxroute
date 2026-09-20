@@ -166,7 +166,11 @@
 
 .measurement-workflow-heading {
     display: flex;
-    align-items: center;
+    /* Bottom-aligned: the Setup button stretches this row far beyond the
+       micro-label, so centering would float the label and widen the
+       heading → button gap. Bottom alignment keeps the label 0.5rem above
+       the buttons like every other section heading. */
+    align-items: flex-end;
     justify-content: space-between;
     gap: 0.75rem;
 }
@@ -398,6 +402,14 @@
     align-items: center;
     gap: 0.55rem;
     min-width: 0;
+}
+
+/* Idle speaker-align status/results collapse: without this the section's
+   flex gaps reserve two phantom rows below the buttons even while empty,
+   breaking the shared heading → buttons → divider rhythm. */
+#measurement-speaker-align-status:empty,
+#measurement-speaker-align-results:empty {
+    display: none;
 }
 
 #measurement-sweep-start,

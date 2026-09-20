@@ -89,6 +89,13 @@ assert.doesNotMatch(flows, /then repeat to verify/);
 assert.match(measurementCss, /\.measurement-workflow-speaker-buttons/);
 assert.match(measurementCss, /\.measurement-workflow-speaker-buttons[\s\S]*?width:\s*190px/);
 assert.match(measurementCss, /\.measurement-workflow-speaker-row[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
+// Shared vertical rhythm (heading → buttons → divider): the heading row is
+// bottom-aligned so the Setup button cannot float the Measurements label,
+// and idle speaker-align status/results collapse instead of reserving
+// phantom flex gaps below the buttons.
+assert.match(measurementCss, /\.measurement-workflow-heading[\s\S]*?align-items:\s*flex-end/);
+assert.match(measurementCss, /#measurement-speaker-align-status:empty/);
+assert.match(measurementCss, /#measurement-speaker-align-results:empty/);
 assert.match(responsiveCss, /\.measurement-workflow-speaker-row[\s\S]*?flex-direction:\s*column/);
 assert.match(responsiveCss, /\.measurement-workflow-speaker-buttons[\s\S]*?flex:\s*1 1 0/);
 assert.doesNotMatch(index, /measurement-workflow-speaker-cancel/);
