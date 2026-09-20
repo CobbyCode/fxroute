@@ -6068,18 +6068,34 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-subwoofer-channel-group {
     grid-column: auto;
     display: grid;
-    /* One principle for every field: tracks hug their content (steppers and
-       selects keep their compact fixed sizes) and the leftover width becomes
-       even spacing between the columns. Nothing can overlap or clip, no
-       per-control track sizing, and Sub 1 / Sub 2 share the class and stay
-       symmetric. Headings and controls share one center axis (field-group
-       centering below). */
+    /* Three columns like the speaker Trim group: one control per
+       auto-sized column (Level / Align / Polarity), evenly spread with a
+       calm horizontal gap so the steppers never touch. Sub 1 / Sub 2 share
+       the class and stay symmetric; headings and controls share one center
+       axis (field-group centering below). */
     grid-template-columns: repeat(3, auto);
     justify-content: space-evenly;
     align-items: end;
-    gap: 0.8rem;
+    gap: 0.55rem 0.9rem;
     background: rgba(8, 47, 73, 0.2);
     border-color: rgba(110, 231, 183, 0.26);
+}
+
+/* Wide desktop is the tightest fit (three ~360px cards): trim the value
+   field and the polarity select inside the sub cards only, so the even
+   columns keep a real gap without touching or clipping. Touch layouts keep
+   their own sizing (max-width rules below stay untouched). */
+@media (min-width: 1101px) {
+    .effects-subwoofer-channel-group {
+        padding-left: 0.6rem;
+        padding-right: 0.6rem;
+    }
+    #tab-effects .effects-subwoofer-channel-group .stepper-control .stepper-input {
+        width: 2.9rem;
+    }
+    #tab-effects .effects-subwoofer-channel-group select.effects-subwoofer-polarity-select {
+        width: min(100%, 3.5rem);
+    }
 }
 
 .effects-subwoofer-sub2-group {

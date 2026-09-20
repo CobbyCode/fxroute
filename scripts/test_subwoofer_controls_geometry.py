@@ -225,6 +225,9 @@ def _run():
                             '.effects-subwoofer-crossover-side-label').length,
                         linkInGlobalCard: !!document.querySelector(
                             '#effects-subwoofer-global-group #effects-subwoofer-link-wrap'),
+                        subFieldLabels: [...document.querySelectorAll(
+                            '.effects-subwoofer-sub1-group .field-group label, .effects-subwoofer-sub2-group .field-group label')]
+                            .map((el) => el.textContent),
                     };
                 })()
             """)
@@ -246,6 +249,8 @@ def _run():
                   and layout["tabrowAboveGraph"] is True)
             check("no side headings inside the crossover blocks and no link in the Global card",
                   layout["sideLabels"] == 0 and layout["linkInGlobalCard"] is False)
+            check("sub cards use short Trim-style labels (name lives in the card header)",
+                  layout["subFieldLabels"] == ["Level", "Align", "Polarity"] * 2)
 
             page.close()
             browser.close()

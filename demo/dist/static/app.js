@@ -15212,14 +15212,16 @@ function renderSubwooferPanel() {
         elements.effectsSubwooferModeBadge.classList.toggle('is-active', true);
     }
     const [firstLabel, secondLabel] = outputMode.roles.map(outputSystemModule().roleLabel);
-    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = `${firstLabel} level`;
-    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = `${firstLabel} alignment`;
-    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = `${firstLabel} polarity`;
+    // The sub name lives in the card header; the three controls keep the
+    // short Trim-style labels so they never wrap.
+    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = 'Level';
+    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = 'Align';
+    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = 'Polarity';
     if (elements.effectsSubwooferSub1GroupLabel) elements.effectsSubwooferSub1GroupLabel.textContent = firstLabel;
     if (elements.effectsSubwooferSub2GroupLabel) elements.effectsSubwooferSub2GroupLabel.textContent = secondLabel || '';
-    if (elements.effectsSubwooferSub2LevelLabel) elements.effectsSubwooferSub2LevelLabel.textContent = `${secondLabel || 'Sub 2'} level`;
-    if (elements.effectsSubwooferSub2DelayLabel) elements.effectsSubwooferSub2DelayLabel.textContent = `${secondLabel || 'Sub 2'} alignment`;
-    if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = `${secondLabel || 'Sub 2'} polarity`;
+    if (elements.effectsSubwooferSub2LevelLabel) elements.effectsSubwooferSub2LevelLabel.textContent = 'Level';
+    if (elements.effectsSubwooferSub2DelayLabel) elements.effectsSubwooferSub2DelayLabel.textContent = 'Align';
+    if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = 'Polarity';
     elements.effectsSubwooferSub2Fields?.forEach(field => field.classList.toggle('hidden', !is22Mode));
     elements.effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
     applySubMainHighpass(subwoofer.main_highpass_enabled !== false);
