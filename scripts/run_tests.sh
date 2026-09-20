@@ -91,6 +91,7 @@ NATIVE_HELPER_BIN=""
 NATIVE_HELPER_TESTS=(
     "scripts/test_native_dsp_bank_chain.py"
     "scripts/test_native_dsp_control.py"
+    "scripts/test_native_dsp_convolver_float64.py"
     "scripts/test_native_dsp_convolver_sr_level.py"
     "scripts/test_native_dsp_effects.py"
     "scripts/test_native_dsp_filters.py"

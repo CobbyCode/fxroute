@@ -7,6 +7,7 @@ import logging
 import math
 import re
 import shutil
+import struct
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -22,7 +23,9 @@ def parse_wav_frames(path: Path) -> Dict[str, Any]:
     (native_dsp/dsp.c ``load_wav``) supports: PCM 16/24/32 bit and IEEE
     float 32 bit. Python's ``wave`` module is not usable here because it
     rejects IEEE float WAVs (format tag 3) — the measurement FIR export
-    writes exactly that.
+    writes exactly that. The parse is encoding-preserving; imports that
+    accept more (IEEE float 64 bit) normalize through
+    ``normalize_ir_frames`` before the kernel check.
     """
     raw = path.read_bytes()
     if len(raw) < 12 or raw[0:4] != b"RIFF" or raw[8:12] != b"WAVE":
@@ -77,6 +80,39 @@ def ensure_kernel_supported_ir(params: Dict[str, Any], name: str) -> None:
             f"IR WAV encoding is not kernel-supported: format {fmt} "
             f"with {bits} bits (need PCM 16/24/32 bit or IEEE float 32 bit): {name}"
         )
+
+
+def normalize_ir_frames(params: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """Downconvert an IEEE float64 WAV parse to the kernel's float32 encoding.
+
+    The native engine computes in float32 throughout, so a float64 import
+    carries no usable extra precision into playback; converting on import
+    keeps every stored kernel directly loadable. The conversion itself is a
+    plain IEEE round-to-nearest per sample (no gain/level change). Other
+    encodings pass through untouched. Returns a new dict when converting
+    (with ``converted`` set), otherwise the input dict.
+    """
+    if params.get("format") != 3 or params.get("bits") != 64:
+        return params
+    data = params.get("data") or b""
+    if len(data) % 8:
+        raise ValueError(f"IR WAV data is truncated: {name}")
+    count = len(data) // 8
+    if count <= 0:
+        raise ValueError(f"IR WAV file contains no audio frames: {name}")
+    doubles = struct.unpack(f"<{count}d", data)
+    try:
+        converted = struct.pack(f"<{count}f", *doubles)
+    except (struct.error, OverflowError) as exc:
+        raise ValueError(f"IR WAV samples exceed IEEE float32 range: {name}") from exc
+    normalized = dict(params)
+    normalized["format"] = 3
+    normalized["bits"] = 32
+    normalized["data"] = converted
+    normalized["samples"] = count
+    normalized["frames"] = count // params["channels"]
+    normalized["converted"] = True
+    return normalized
 
 
 def build_wav_bytes(channels: int, rate: int, bits: int, format_tag: int, data: bytes) -> bytes:
@@ -1410,9 +1446,13 @@ class DSPManager:
 
     @staticmethod
     def _validate_ir_file(path: Path) -> None:
-        """Ensure an IR file is a non-empty kernel-supported WAV."""
+        """Ensure an IR file is a non-empty kernel-supported WAV.
+
+        IEEE float64 counts as valid: it converts cleanly to float32 on
+        import, so anything passing here is (after conversion) loadable.
+        """
         try:
-            params = parse_wav_frames(path)
+            params = normalize_ir_frames(parse_wav_frames(path), path.name)
         except ValueError as exc:
             raise ValueError(f"Invalid IR file {path.name}: {exc}") from exc
         try:
@@ -1429,10 +1469,21 @@ class DSPManager:
         if not name.lower().endswith((".irs", ".wav")):
             raise ValueError("IR file must be .irs or .wav")
         # Validate before storing so invalid content never lands in irs_dir
-        # and can never reach the native convolver.
-        self._validate_ir_file(source)
+        # and can never reach the native convolver. Float64 sources are
+        # stored as float32 so the stored kernel is directly loadable.
+        try:
+            params = normalize_ir_frames(parse_wav_frames(source), name)
+            ensure_kernel_supported_ir(params, name)
+        except ValueError as exc:
+            raise ValueError(f"Invalid IR file {name}: {exc}") from exc
         destination = self.irs_dir / name
-        shutil.copyfile(source, destination)
+        if params.get("converted"):
+            destination.write_bytes(build_wav_bytes(
+                params["channels"], params["rate"], params["bits"],
+                params["format"], params["data"],
+            ))
+        else:
+            shutil.copyfile(source, destination)
         try:
             self._validate_ir_file(destination)
         except ValueError:
@@ -1459,8 +1510,13 @@ class DSPManager:
                        right_source_path: Path, right_filename: str,
                        merged_name: str) -> dict:
         del left_filename, right_filename
-        left = parse_wav_frames(left_source_path)
-        right = parse_wav_frames(right_source_path)
+        # Both sides normalize to the kernel encoding first, so float64
+        # sources (or mixed float64/float32 pairs) interleave into a plain
+        # float32 stereo kernel. Rate/channel matching still applies.
+        left = normalize_ir_frames(parse_wav_frames(left_source_path),
+                                   Path(left_source_path).name)
+        right = normalize_ir_frames(parse_wav_frames(right_source_path),
+                                    Path(right_source_path).name)
         if left["format"] != right["format"] or left["bits"] != right["bits"] \
                 or left["rate"] != right["rate"]:
             raise ValueError("Dual IR WAV formats must match")

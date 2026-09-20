@@ -9,6 +9,13 @@ the preset never existed — let alone appeared in the A/B list. The interleave
 now parses the RIFF chunks directly and preserves the source encoding, so
 float32 pairs produce a float32 stereo .irs kernel exactly like the ones the
 native loader (native_dsp/dsp.c load_wav) accepts.
+
+IEEE float64 sources convert cleanly to float32 on import (the engine
+computes in float32 throughout, so no usable precision reaches playback
+anyway): pure float64 pairs and mixed float64/float32 pairs both land as
+float32 stereo kernels, and single float64 uploads store converted. Samples
+beyond float32 range, rate/channel mismatches and non-kernel encodings
+(PCM 8 bit, stereo inputs, non-WAVE files) are still rejected fail-closed.
 """
 
 import struct
@@ -28,6 +35,8 @@ def wav_bytes(samples, bits=32, format_tag=3, rate=48000, channels=1):
     width = bits // 8
     if format_tag == 3 and bits == 32:
         payload = b"".join(struct.pack("<f", float(sample)) for sample in samples)
+    elif format_tag == 3 and bits == 64:
+        payload = b"".join(struct.pack("<d", float(sample)) for sample in samples)
     elif format_tag == 1 and bits == 16:
         payload = b"".join(struct.pack("<h", int(sample)) for sample in samples)
     elif format_tag == 1 and bits == 32:
@@ -118,25 +127,77 @@ class DualIrWavFormatTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "formats must match"):
             self.manager.upload_ir_pair(left, "l.wav", right, "r.wav", "Pair.irs")
 
+    def test_float64_pair_converts_to_float32_stereo_kernel(self):
+        # A 64-bit IEEE float pair lands as a plain float32 stereo kernel:
+        # sub-float32 precision rounds (0.1 is not exact in binary32) while
+        # exactly representable values survive bit-identically.
+        left_samples = [0.25, -0.5, 0.1, 1.0]
+        right_samples = [-1.0, 0.5, 1.0 / 3.0, 0.0]
+        left = self.write("l.wav", wav_bytes(left_samples, bits=64, format_tag=3))
+        right = self.write("r.wav", wav_bytes(right_samples, bits=64, format_tag=3))
+        result = self.manager.upload_ir_pair(left, "l.wav", right, "r.wav", "Pair64.irs")
+        self.assertEqual(result["name"], "Pair64.irs")
+        parsed = parse_wav_frames(self.manager.irs_dir / "Pair64.irs")
+        self.assertEqual(parsed["channels"], 2)
+        self.assertEqual(parsed["format"], 3)
+        self.assertEqual(parsed["bits"], 32)
+        self.assertEqual(parsed["rate"], 48000)
+        expected = b"".join(
+            struct.pack("<f", float(sample))
+            for pair in zip(left_samples, right_samples)
+            for sample in pair
+        )
+        self.assertEqual(parsed["data"], expected)
+        self.assertEqual(parsed["samples"], 8)
+
+    def test_mixed_float64_and_float32_pair_converts(self):
+        left = self.write("l.wav", wav_bytes([0.5, -0.25], bits=64, format_tag=3))
+        right = self.write("r.wav", wav_bytes([0.5, -0.25]))
+        self.manager.upload_ir_pair(left, "l.wav", right, "r.wav", "Mixed.irs")
+        parsed = parse_wav_frames(self.manager.irs_dir / "Mixed.irs")
+        self.assertEqual((parsed["channels"], parsed["format"], parsed["bits"]), (2, 3, 32))
+        self.assertEqual(parsed["data"], struct.pack("<4f", 0.5, 0.5, -0.25, -0.25))
+
+    def test_float64_out_of_range_is_rejected(self):
+        huge = self.write("huge.wav", wav_bytes([1e300], bits=64, format_tag=3))
+        normal = self.write("r.wav", wav_bytes([0.5]))
+        with self.assertRaisesRegex(ValueError, "float32 range"):
+            self.manager.upload_ir_pair(huge, "huge.wav", normal, "r.wav", "Huge.irs")
+        with self.assertRaisesRegex(ValueError, "float32 range"):
+            self.manager.upload_ir(huge, "huge.wav")
+        self.assertEqual(list(self.manager.irs_dir.iterdir()), [])
+
+    def test_float64_mono_upload_stores_converted_kernel(self):
+        source = self.write("room64.wav", wav_bytes([0.75, -0.125, 0.1], bits=64, format_tag=3))
+        source_bytes = source.read_bytes()
+        result = self.manager.upload_ir(source, "room64.wav")
+        self.assertEqual(result["name"], "room64.wav")
+        # The source file is untouched; the stored kernel is float32.
+        self.assertEqual(source.read_bytes(), source_bytes)
+        stored = self.manager.irs_dir / "room64.wav"
+        self.assertLess(stored.stat().st_size, len(source_bytes))
+        parsed = parse_wav_frames(stored)
+        self.assertEqual((parsed["channels"], parsed["format"], parsed["bits"]), (1, 3, 32))
+        self.assertEqual(parsed["data"], struct.pack("<3f", 0.75, -0.125, 0.1))
+
     def test_unsupported_encoding_is_rejected(self):
-        # float64 (format 3, 64 bits) is not kernel-supported.
-        payload = struct.pack("<d", 0.5)
-
-        def float64_wav():
-            return b"".join([
-                b"RIFF", (36 + len(payload)).to_bytes(4, "little"), b"WAVE",
-                b"fmt ", (16).to_bytes(4, "little"),
-                (3).to_bytes(2, "little"), (1).to_bytes(2, "little"),
-                (48000).to_bytes(4, "little"), (48000 * 8).to_bytes(4, "little"),
-                (8).to_bytes(2, "little"), (64).to_bytes(2, "little"),
-                b"data", len(payload).to_bytes(4, "little"),
-                payload,
-            ])
-
-        left = self.write("l.wav", float64_wav())
-        right = self.write("r.wav", float64_wav())
+        # PCM 8 bit is not kernel-supported (and never converts).
+        payload = bytes([128, 0, 255])
+        header = b"".join([
+            b"RIFF", (36 + len(payload)).to_bytes(4, "little"), b"WAVE",
+            b"fmt ", (16).to_bytes(4, "little"),
+            (1).to_bytes(2, "little"), (1).to_bytes(2, "little"),
+            (48000).to_bytes(4, "little"), (48000).to_bytes(4, "little"),
+            (1).to_bytes(2, "little"), (8).to_bytes(2, "little"),
+            b"data", len(payload).to_bytes(4, "little"),
+            payload,
+        ])
+        left = self.write("l.wav", header)
+        right = self.write("r.wav", header)
         with self.assertRaisesRegex(ValueError, "not kernel-supported"):
             self.manager.upload_ir_pair(left, "l.wav", right, "r.wav", "Pair.irs")
+        with self.assertRaisesRegex(ValueError, "not kernel-supported"):
+            self.manager.upload_ir(left, "l.wav")
 
     def test_non_wave_file_is_rejected(self):
         left = self.write("l.bin", b"not a wave file")
