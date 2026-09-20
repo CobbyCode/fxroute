@@ -463,11 +463,18 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 .effects-subwoofer-controls {
     display: grid;
-    grid-template-columns: minmax(148px, 1.08fr) minmax(112px, 0.78fr) repeat(6, minmax(92px, 1fr));
+    /* 2.1: Global + Sub as two equal cards. 2.2 (Dual-Mono and Stereo) adds
+       the third card below via the is-subwoofer-22 rule. Equal tracks plus
+       stretch keep the cards equally wide and equally high. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: stretch;
     gap: 0.75rem;
     width: min(100%, 1100px);
     margin: 0 auto;
+}
+
+.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .effects-subwoofer-control-group {
@@ -481,25 +488,54 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-subwoofer-global-group {
-    grid-column: 1 / span 2;
+    grid-column: auto;
     display: grid;
     /* Same principle as the channel groups: tracks hug their content and
        the leftover width becomes even spacing, so controls can neither
        overlap nor clip at any card width. One stacked column: the label,
-       the shared crossover block and (unlinked Stereo) the two side rows. */
+       the side tabs (unlinked Stereo only), the single crossover block and
+       the link switch. */
     grid-template-columns: minmax(0, 1fr);
     justify-items: center;
     align-items: end;
     gap: 0.7rem;
 }
 
+/* Unlinked Stereo keeps the three-card row: the Global card serves one side
+   at a time via the tabs instead of two large parallel crossover rows. */
 .effects-subwoofer-global-group.is-crossover-split {
+    grid-column: auto;
+}
+
+/* Sub L / Sub R selector for an unlinked Stereo pair. Same tab language as
+   the speaker-way tabs. */
+.effects-subwoofer-side-tabs {
     grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.4rem;
+}
+
+.sub-side-tab {
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.sub-side-tab.is-active {
+    border-color: var(--accent);
+    color: var(--text);
 }
 
 /* Two-line crossover area: Frequency/Type on the first row, Slope/Main
-   highpass on the second. An unlinked Stereo pair hides the shared block and
-   shows one such row per side instead. */
+   highpass on the second. Shared and per-side blocks share the layout so
+   the card keeps its height when the tabs switch sides. */
 .effects-subwoofer-crossover-block {
     grid-column: 1 / -1;
     display: grid;
@@ -511,7 +547,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-subwoofer-crossover-block.is-side {
-    grid-template-columns: repeat(4, auto);
+    grid-template-columns: repeat(2, auto);
 }
 
 .effects-subwoofer-crossover-side-label {
@@ -526,18 +562,8 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     justify-content: center;
 }
 
-/* Split Stereo: the side rows own the full width, so both Sub trim groups
-   share the row below without leaving the Global column empty. */
-.effects-card-subwoofer.is-crossover-split .effects-subwoofer-sub1-group {
-    grid-column: 1 / span 4;
-}
-
-.effects-card-subwoofer.is-crossover-split .effects-subwoofer-sub2-group {
-    grid-column: 5 / -1;
-}
-
 .effects-subwoofer-channel-group {
-    grid-column: 3 / -1;
+    grid-column: auto;
     display: grid;
     /* One principle for every field: tracks hug their content (steppers and
        selects keep their compact fixed sizes) and the leftover width becomes
@@ -551,14 +577,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     gap: 0.8rem;
     background: rgba(8, 47, 73, 0.2);
     border-color: rgba(110, 231, 183, 0.26);
-}
-
-.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group {
-    grid-column: 3 / span 3;
-}
-
-.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
-    grid-column: 6 / span 3;
 }
 
 .effects-subwoofer-sub2-group {
@@ -595,7 +613,8 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-subwoofer-derived-delays {
-    grid-column: 3 / -1;
+    /* Timing row below the cards across the full width. */
+    grid-column: 1 / -1;
     align-self: stretch;
     min-width: 0;
     padding: 0.48rem 0.65rem;

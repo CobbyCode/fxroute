@@ -752,6 +752,9 @@ const elements = {
     effectsSubwooferPreview: document.getElementById('effects-subwoofer-preview'),
     effectsSubwooferGlobalGroup: document.getElementById('effects-subwoofer-global-group'),
     effectsSubwooferGlobalLabel: document.getElementById('effects-subwoofer-global-label'),
+    effectsSubwooferSideTabs: document.getElementById('effects-subwoofer-side-tabs'),
+    effectsSubwooferTabLeft: document.getElementById('effects-subwoofer-tab-left'),
+    effectsSubwooferTabRight: document.getElementById('effects-subwoofer-tab-right'),
     effectsSubwooferSharedCrossover: document.getElementById('effects-subwoofer-shared-crossover'),
     effectsSubwooferLeftCrossover: document.getElementById('effects-subwoofer-left-crossover'),
     effectsSubwooferRightCrossover: document.getElementById('effects-subwoofer-right-crossover'),
@@ -8892,6 +8895,16 @@ function setupEffectsActions() {
             saveSubwooferDebounced(0);
         });
     }
+    // Unlinked Stereo: the Sub L / Sub R tabs pick which side the single
+    // crossover block serves. No save: the stored per-side values only change
+    // through the block's own controls or the graph drag.
+    for (const tab of [elements.effectsSubwooferTabLeft, elements.effectsSubwooferTabRight]) {
+        if (!tab) continue;
+        tab.addEventListener('click', () => {
+            setSubwooferSelectedSide(tab.dataset.subSide);
+            renderSubwooferPanel();
+        });
+    }
     if (elements.effectsSubwooferLink) {
         elements.effectsSubwooferLink.addEventListener('change', () => {
             // A checkbox has no blur to end its edit, so the toggle guards
@@ -8904,11 +8917,16 @@ function setupEffectsActions() {
     }
     if (elements.effectsSubwooferPreview) {
         let draggingCrossover = false;
-        // While a Stereo pair is unlinked the plot carries one curve per side,
-        // so a single dragged cutoff has no unique target: the drag is off.
         const splitPreview = () => elements.effectsSubwooferCard?.classList.contains('is-crossover-split') === true;
+        // Graph drag serves the shared crossover, or the currently selected
+        // side while a Stereo pair is unlinked.
+        const dragTargetFrequencyInput = () => {
+            if (!splitPreview()) return elements.effectsSubwooferFrequencyNumber;
+            return subwooferSelectedSide() === 'right'
+                ? elements.effectsSubwooferRightFrequency
+                : elements.effectsSubwooferLeftFrequency;
+        };
         const updateFromPointer = (event, commit = false) => {
-            if (splitPreview()) return;
             const rect = elements.effectsSubwooferPreview.getBoundingClientRect();
             const layout = getSubwooferPreviewLayout(rect.width || 560, rect.height || 132);
             const plotW = Math.max(1, layout.plotW);
@@ -8916,13 +8934,15 @@ function setupEffectsActions() {
             const minHz = 20;
             const maxHz = 300;
             const hz = Math.round(Math.pow(10, Math.log10(minHz) + t * (Math.log10(maxHz) - Math.log10(minHz))));
-            if (elements.effectsSubwooferFrequencyNumber) elements.effectsSubwooferFrequencyNumber.value = String(hz);
+            const target = dragTargetFrequencyInput();
+            if (target) target.value = String(Math.max(40, Math.min(200, hz)));
             if (commit) saveSubwooferDebounced(0);
             else updateSubwooferDraftFromControls();
         };
         elements.effectsSubwooferPreview.addEventListener('pointerdown', (event) => {
             draggingCrossover = true;
-            if (elements.effectsSubwooferFrequencyNumber) _activeEditing.add(elements.effectsSubwooferFrequencyNumber);
+            const target = dragTargetFrequencyInput();
+            if (target) _activeEditing.add(target);
             elements.effectsSubwooferPreview.setPointerCapture?.(event.pointerId);
             updateFromPointer(event, false);
         });
@@ -8933,11 +8953,13 @@ function setupEffectsActions() {
             if (!draggingCrossover) return;
             draggingCrossover = false;
             updateFromPointer(event, true);
-            if (elements.effectsSubwooferFrequencyNumber) _activeEditing.delete(elements.effectsSubwooferFrequencyNumber);
+            const target = dragTargetFrequencyInput();
+            if (target) _activeEditing.delete(target);
         });
         elements.effectsSubwooferPreview.addEventListener('pointercancel', () => {
             draggingCrossover = false;
-            if (elements.effectsSubwooferFrequencyNumber) _activeEditing.delete(elements.effectsSubwooferFrequencyNumber);
+            const target = dragTargetFrequencyInput();
+            if (target) _activeEditing.delete(target);
         });
         if ('ResizeObserver' in window) {
             const resizeObserver = new ResizeObserver(() => requestSubwooferPreviewRedrawFromState());
@@ -15112,6 +15134,19 @@ function formatSubwooferDelayMs(value) {
     return Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00';
 }
 
+// Unlinked Stereo pair: which side the single crossover block and the graph
+// drag currently serve. UI-only, never persisted; defaults to left and is
+// clamped on every render so a stale value can never hide both sides.
+let _subwooferSelectedSide = 'left';
+
+function subwooferSelectedSide() {
+    return _subwooferSelectedSide === 'right' ? 'right' : 'left';
+}
+
+function setSubwooferSelectedSide(side) {
+    _subwooferSelectedSide = side === 'right' ? 'right' : 'left';
+}
+
 function repaintCrossoverGraph() {
     ensureOutputSystemBoxes();
     const canvas = elements.effectsCrossoverGraph;
@@ -15141,11 +15176,27 @@ function renderSubwooferPanel() {
     const subwoofers = normalizeSubwoofersSettings(outputMode.subwoofers || {}, subwoofer);
     const crossoverLayout = subCrossoverSettings(outputMode, subwoofer);
     const splitSides = crossoverLayout.stereo && crossoverLayout.link === false;
+    const selectedSide = subwooferSelectedSide();
     elements.effectsSubwooferCard?.classList.toggle('is-crossover-split', splitSides);
     elements.effectsSubwooferGlobalGroup?.classList.toggle('is-crossover-split', splitSides);
+    // Coupled layouts (2.1, Dual-Mono, linked Stereo) share one crossover
+    // block. An unlinked Stereo pair serves a single side at a time: the
+    // tabs pick it, the other side's block stays hidden but keeps its stored
+    // values for the save.
     elements.effectsSubwooferSharedCrossover?.classList.toggle('hidden', splitSides);
-    elements.effectsSubwooferLeftCrossover?.classList.toggle('hidden', !splitSides);
-    elements.effectsSubwooferRightCrossover?.classList.toggle('hidden', !splitSides);
+    elements.effectsSubwooferLeftCrossover?.classList.toggle('hidden', !splitSides || selectedSide !== 'left');
+    elements.effectsSubwooferRightCrossover?.classList.toggle('hidden', !splitSides || selectedSide !== 'right');
+    elements.effectsSubwooferSideTabs?.classList.toggle('hidden', !splitSides);
+    if (elements.effectsSubwooferTabLeft) {
+        const active = splitSides && selectedSide === 'left';
+        elements.effectsSubwooferTabLeft.classList.toggle('is-active', active);
+        elements.effectsSubwooferTabLeft.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
+    if (elements.effectsSubwooferTabRight) {
+        const active = splitSides && selectedSide === 'right';
+        elements.effectsSubwooferTabRight.classList.toggle('is-active', active);
+        elements.effectsSubwooferTabRight.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
     elements.effectsSubwooferLinkWrap?.classList.toggle('hidden', !crossoverLayout.stereo);
     renderSubwooferCrossover(crossoverLayout);
     if (elements.effectsSubwooferRouting) {
@@ -15255,6 +15306,14 @@ function renderSubwooferCrossover(layout) {
         elements.effectsSubwooferRightLabel.textContent = labels.right
             ? outputSystemModule().roleLabel(labels.right) : 'Sub R';
     }
+    if (elements.effectsSubwooferTabLeft) {
+        elements.effectsSubwooferTabLeft.textContent = labels.left
+            ? outputSystemModule().roleLabel(labels.left) : 'Sub L';
+    }
+    if (elements.effectsSubwooferTabRight) {
+        elements.effectsSubwooferTabRight.textContent = labels.right
+            ? outputSystemModule().roleLabel(labels.right) : 'Sub R';
+    }
 }
 
 // The Main highpass is one global flag; its per-side copies stay in sync.
@@ -15266,6 +15325,13 @@ function applySubMainHighpass(enabled) {
 }
 
 function subMainHighpassEnabled() {
+    const split = elements.effectsSubwooferCard?.classList.contains('is-crossover-split') === true;
+    if (split) {
+        const selected = subwooferSelectedSide() === 'right'
+            ? elements.effectsSubwooferRightMainHighpass
+            : elements.effectsSubwooferLeftMainHighpass;
+        if (selected) return (selected.value || 'on') !== 'off';
+    }
     const el = elements.effectsSubwooferMainHighpass
         || elements.effectsSubwooferLeftMainHighpass || elements.effectsSubwooferRightMainHighpass;
     return (el?.value || 'on') !== 'off';
@@ -15332,10 +15398,13 @@ function drawSubwooferPreview(subwoofer) {
     const mod = crossoverModule();
     const sharedShape = { family: settings.family, slope_db_oct: settings.slope_db_oct,
         frequency_hz: settings.crossover_frequency_hz };
-    // An unlinked Stereo pair paints both sides: the left one solid, the right
-    // one dimmed. Anything coupled, Mono or Dual-Mono paints the shared shape.
+    // An unlinked Stereo pair paints both sides: the selected one solid, the
+    // other one dimmed. Anything coupled, Mono or Dual-Mono paints the shared shape.
+    const selectedSide = subwooferSelectedSide();
     const shapes = settings.sub_link === false
-        ? [{ shape: settings.left_crossover, alpha: 1 }, { shape: settings.right_crossover, alpha: 0.42 }]
+        ? (selectedSide === 'right'
+            ? [{ shape: settings.right_crossover, alpha: 1 }, { shape: settings.left_crossover, alpha: 0.42 }]
+            : [{ shape: settings.left_crossover, alpha: 1 }, { shape: settings.right_crossover, alpha: 0.42 }])
         : [{ shape: sharedShape, alpha: 1 }];
     const xForHz = (hz) => pad.left + ((Math.log10(hz) - Math.log10(minHz)) / (Math.log10(maxHz) - Math.log10(minHz))) * plotW;
     const yForDb = (db) => pad.top + ((maxDb - db) / (maxDb - minDb)) * plotH;

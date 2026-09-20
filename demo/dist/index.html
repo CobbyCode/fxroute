@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.245">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.246">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -686,6 +686,10 @@
                                 <div class="effects-subwoofer-controls">
                                     <div class="effects-subwoofer-control-group effects-subwoofer-global-group" id="effects-subwoofer-global-group">
                                         <div class="effects-subwoofer-group-label" id="effects-subwoofer-global-label">Global</div>
+                                        <div class="effects-subwoofer-side-tabs hidden" id="effects-subwoofer-side-tabs" role="tablist" aria-label="Sub side">
+                                            <button type="button" class="sub-side-tab is-active" id="effects-subwoofer-tab-left" data-sub-side="left" role="tab" aria-selected="true">Sub L</button>
+                                            <button type="button" class="sub-side-tab" id="effects-subwoofer-tab-right" data-sub-side="right" role="tab" aria-selected="false">Sub R</button>
+                                        </div>
                                         <div class="effects-subwoofer-crossover-block" id="effects-subwoofer-shared-crossover">
                                             <div class="field-group">
                                                 <label for="effects-subwoofer-frequency-number">Crossover</label>
@@ -1744,7 +1748,7 @@
     <script src="/static/output_state.js?v=0.9.12"></script>
     <script src="/static/crossover.js?v=0.9.6"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.201"></script>
+    <script src="/static/app.js?v=0.9.202"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>
