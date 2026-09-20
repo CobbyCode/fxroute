@@ -1735,6 +1735,10 @@ async def _capture_auto_sub_main_references(
         "right": {"status": "pending"},
     }
     main_reference_sweep_profile = default_measurement_sweep_profile()
+    # Only mapped sub slots may be named active: a 2.1 system has one slot,
+    # so the reference sweeps must not claim a second sub that does not exist.
+    mapped_slots = ((job.get("output_state_context") or {}).get("sub_role_map") or {})
+    reference_active_subs = tuple(slot for slot in ("sub1", "sub2") if slot in mapped_slots) or ("sub1",)
     results: dict[str, dict[str, Any]] = {}
     for index, side in enumerate(("left", "right"), start=1):
         if _auto_sub_cancel_requested(job):
@@ -1766,7 +1770,7 @@ async def _capture_auto_sub_main_references(
             original_config_snapshot=original_config_snapshot,
             sub1_alignment_ms=left_delay,
             sub2_alignment_ms=right_delay,
-            active_subs=("sub1", "sub2"),
+            active_subs=reference_active_subs,
             exact_sub_mute=True,
         )
         results[side] = result
