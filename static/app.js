@@ -755,6 +755,7 @@ const elements = {
     effectsSubwooferSideTabs: document.getElementById('effects-subwoofer-side-tabs'),
     effectsSubwooferTabLeft: document.getElementById('effects-subwoofer-tab-left'),
     effectsSubwooferTabRight: document.getElementById('effects-subwoofer-tab-right'),
+    effectsSubwooferTabBoth: document.getElementById('effects-subwoofer-tab-both'),
     effectsSubwooferSharedCrossover: document.getElementById('effects-subwoofer-shared-crossover'),
     effectsSubwooferLeftCrossover: document.getElementById('effects-subwoofer-left-crossover'),
     effectsSubwooferRightCrossover: document.getElementById('effects-subwoofer-right-crossover'),
@@ -1649,6 +1650,10 @@ function setupSettingsActions() {
     if (elements.effectsCrossoverLink) {
         elements.effectsCrossoverLink.addEventListener('change', (event) => {
             state.crossover.linkLR = event.target.checked !== false;
+            // The link state shows directly on the tabs (merged vs. split),
+            // so the tile re-renders immediately instead of waiting for the
+            // next save or fetch.
+            renderCrossoverTile();
         });
     }
     if (elements.settingsSourceSelect) {
@@ -4041,10 +4046,17 @@ function renderCrossoverTile() {
     const catalogDerived = mod.derivedHighpassForRole
         ? mod.derivedHighpassForRole(active, bass, subRoles) : null;
     const derivedHighpass = (!settings.highpass && (catalogDerived || responseDerived)) || null;
+    // Linked pairs share one tab per way ("L/R · Low"); unlinked pairs go
+    // back to separate L/R tabs. The checkbox keeps its place regardless.
+    const linkedCrossover = state.crossover.linkLR !== false;
     mod.renderWayTabs(elements.effectsCrossoverTabs, roles, active, (role) => {
-        state.crossover.activeWay = role;
+        // A linked pair shares one tab carrying the canonical left role:
+        // re-picking the visible pair keeps the current side, otherwise the
+        // tab's role wins. Filters still mirror; trim stays per-way.
+        const mate = mod.mirrorRole ? mod.mirrorRole(state.crossover.activeWay) : null;
+        state.crossover.activeWay = (linkedCrossover && mate === role) ? state.crossover.activeWay : role;
         renderCrossoverTile();
-    });
+    }, linkedCrossover);
     if (elements.effectsCrossoverGraph) {
         drawCrossoverResponse(elements.effectsCrossoverGraph, response.ways, active);
     }
@@ -8895,11 +8907,13 @@ function setupEffectsActions() {
     }
     // Unlinked Stereo: the Sub L / Sub R tabs pick which side the single
     // crossover block serves. No save: the stored per-side values only change
-    // through the block's own controls or the graph drag.
-    for (const tab of [elements.effectsSubwooferTabLeft, elements.effectsSubwooferTabRight]) {
+    // through the block's own controls or the graph drag. The common Sub L/R
+    // tab (linked) selects nothing; it only re-affirms the coupled view.
+    for (const tab of [elements.effectsSubwooferTabLeft, elements.effectsSubwooferTabRight,
+        elements.effectsSubwooferTabBoth]) {
         if (!tab) continue;
         tab.addEventListener('click', () => {
-            setSubwooferSelectedSide(tab.dataset.subSide);
+            if (tab.dataset.subSide) setSubwooferSelectedSide(tab.dataset.subSide);
             renderSubwooferPanel();
         });
     }
@@ -15183,19 +15197,29 @@ function renderSubwooferPanel() {
     elements.effectsSubwooferSharedCrossover?.classList.toggle('hidden', splitSides);
     elements.effectsSubwooferLeftCrossover?.classList.toggle('hidden', !splitSides || selectedSide !== 'left');
     elements.effectsSubwooferRightCrossover?.classList.toggle('hidden', !splitSides || selectedSide !== 'right');
-    // The tab row mirrors the speaker tile: Link L/R plus, while unlinked,
-    // the Sub L / Sub R tabs sit above the graph instead of inside a card.
+    // The tab row mirrors the speaker tile: Link L/R plus the side tabs sit
+    // above the graph instead of inside a card. Linked stereo shows one
+    // common Sub L/R tab; unlinked shows Sub L and Sub R separately. The
+    // row stays populated either way, so the checkbox never moves.
     elements.effectsSubwooferTabRow?.classList.toggle('hidden', !crossoverLayout.stereo);
-    elements.effectsSubwooferSideTabs?.classList.toggle('hidden', !splitSides);
+    elements.effectsSubwooferSideTabs?.classList.toggle('hidden', !crossoverLayout.stereo);
+    const showBothSubTab = crossoverLayout.stereo && !splitSides;
     if (elements.effectsSubwooferTabLeft) {
         const active = splitSides && selectedSide === 'left';
+        elements.effectsSubwooferTabLeft.classList.toggle('hidden', !splitSides);
         elements.effectsSubwooferTabLeft.classList.toggle('is-active', active);
         elements.effectsSubwooferTabLeft.setAttribute('aria-selected', active ? 'true' : 'false');
     }
     if (elements.effectsSubwooferTabRight) {
         const active = splitSides && selectedSide === 'right';
+        elements.effectsSubwooferTabRight.classList.toggle('hidden', !splitSides);
         elements.effectsSubwooferTabRight.classList.toggle('is-active', active);
         elements.effectsSubwooferTabRight.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
+    if (elements.effectsSubwooferTabBoth) {
+        elements.effectsSubwooferTabBoth.classList.toggle('hidden', !showBothSubTab);
+        elements.effectsSubwooferTabBoth.classList.toggle('is-active', showBothSubTab);
+        elements.effectsSubwooferTabBoth.setAttribute('aria-selected', showBothSubTab ? 'true' : 'false');
     }
     elements.effectsSubwooferLinkWrap?.classList.toggle('hidden', !crossoverLayout.stereo);
     renderSubwooferCrossover(crossoverLayout);

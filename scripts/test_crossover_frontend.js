@@ -73,6 +73,57 @@ assert.deepEqual(Crossover.bassHighpass(unlinked, ['sub1', 'sub2'], 'left_low'),
 assert.deepEqual(Crossover.sharedBassCrossover(unlinked),
     { family: 'butterworth', slope_db_oct: 36, frequency_hz: 90 });
 
+// Linked way tabs: left/right pairs merge into one L/R tab per way;
+// single-sided ways keep their own tab.
+assert.equal(Crossover.wayKey('left_low_mid'), 'low_mid');
+assert.equal(Crossover.wayLabel('low'), 'Low');
+assert.equal(Crossover.wayLabel('low_mid'), 'Low Mid');
+assert.deepEqual(
+    Crossover.pairedWays(['left_low', 'left_high', 'right_low', 'right_high']),
+    [{ way: 'low', left: 'left_low', right: 'right_low' },
+     { way: 'high', left: 'left_high', right: 'right_high' }]);
+assert.deepEqual(
+    Crossover.pairedWays(['left_low', 'right_low', 'left_high']),
+    [{ way: 'low', left: 'left_low', right: 'right_low' },
+     { way: 'high', left: 'left_high', right: null }]);
+
+function stubTabs() {
+    return { innerHTML: '', dataset: {}, addEventListener() {} };
+}
+{
+    // Linked: two tabs for a 2-way pair, canonical left data values, and
+    // either counterpart counts as active.
+    const tabs = stubTabs();
+    Crossover.renderWayTabs(tabs,
+        ['left_low', 'left_high', 'right_low', 'right_high'], 'right_low', () => {}, true);
+    const buttons = tabs.innerHTML.match(/<button/g) || [];
+    assert.equal(buttons.length, 2);
+    assert.match(tabs.innerHTML, /L\/R · Low/);
+    assert.match(tabs.innerHTML, /L\/R · High/);
+    assert.match(tabs.innerHTML, /data-crossover-way="left_low"/);
+    assert.doesNotMatch(tabs.innerHTML, /data-crossover-way="right_low"/);
+    assert.match(tabs.innerHTML, /data-crossover-way="left_low" class="crossover-tab is-active"/);
+}
+{
+    // Linked with a single-sided way: pair tab plus lone L tab.
+    const tabs = stubTabs();
+    Crossover.renderWayTabs(tabs, ['left_low', 'right_low', 'left_high'], 'left_high', () => {}, true);
+    const buttons = tabs.innerHTML.match(/<button/g) || [];
+    assert.equal(buttons.length, 2);
+    assert.match(tabs.innerHTML, /L\/R · Low/);
+    assert.match(tabs.innerHTML, /L · High/);
+}
+{
+    // Unlinked render is unchanged: one tab per side.
+    const tabs = stubTabs();
+    Crossover.renderWayTabs(tabs,
+        ['left_low', 'left_high', 'right_low', 'right_high'], 'right_low', () => {}, false);
+    const buttons = tabs.innerHTML.match(/<button/g) || [];
+    assert.equal(buttons.length, 4);
+    assert.match(tabs.innerHTML, /R · Low/);
+    assert.match(tabs.innerHTML, /data-crossover-way="right_low" class="crossover-tab is-active"/);
+}
+
 assert.deepEqual(Crossover.slopesForFamily('linkwitz-riley', CAPS), [12, 24, 36, 48, 60, 72]);
 assert.deepEqual(Crossover.slopesForFamily('nope', CAPS), []);
 

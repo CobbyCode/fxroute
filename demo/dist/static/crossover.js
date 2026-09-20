@@ -51,6 +51,37 @@ function sideForRole(role) {
     return (name === 'sub_l' || name === 'main_l' || name.startsWith('left_')) ? 'left' : 'right';
 }
 
+// Way key after the side prefix: left_low_mid -> low_mid.
+function wayKey(role) {
+    return String(role || '').split('_').slice(1).join('_');
+}
+
+function wayLabel(way) {
+    return String(way || '').split('_').map((word) =>
+        (word === 'low_mid' ? 'Low-Mid' : word.charAt(0).toUpperCase() + word.slice(1))).join(' ');
+}
+
+// Linked view: one entry per way, pairing left/right roles. Order follows
+// first appearance (WAY_ORDER), so tabs read Low, Low-Mid, Mid, High. A way
+// routed on one side only keeps its single-sided entry.
+function pairedWays(roles) {
+    const pairs = [];
+    const index = new Map();
+    for (const role of roles || []) {
+        const way = wayKey(role);
+        if (!way) continue;
+        let pair = index.get(way);
+        if (!pair) {
+            pair = { way, left: null, right: null };
+            index.set(way, pair);
+            pairs.push(pair);
+        }
+        if (String(role).startsWith('left_') && !pair.left) pair.left = role;
+        else if (String(role).startsWith('right_') && !pair.right) pair.right = role;
+    }
+    return pairs;
+}
+
 function isStereoSubPair(subRoles) {
     const subs = Array.isArray(subRoles) ? subRoles : [];
     return subs.includes('sub_l') && subs.includes('sub_r');
@@ -204,21 +235,45 @@ function crossoverMagnitudeDb(definition, frequency_hz, kind) {
     return -20 * Math.log10(1 + Math.pow(ratio, order));
 }
 
-function renderWayTabs(tabs, roles, activeRole, onSelect) {
+function wayTabButton(role, text, selected) {
+    return `<button type="button" role="tab" aria-selected="${selected}" data-crossover-way="${esc(role)}" class="crossover-tab${selected ? ' is-active' : ''}">${text}</button>`;
+}
+
+// Linked pairs share one tab ("L/R · Low") carrying the canonical left
+// role; a way routed on one side only keeps its single-sided tab.
+function renderWayTabs(tabs, roles, activeRole, onSelect, linked) {
     if (!tabs) return;
-    const html = roles.map((role) => {
-        const label = role.split('_').slice(1).map((w) => (w === 'low_mid' ? 'Low-Mid' : w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
-        const side = role.startsWith('left_') ? 'L' : 'R';
-        return `<button type="button" role="tab" aria-selected="${role === activeRole}" data-crossover-way="${esc(role)}" class="crossover-tab${role === activeRole ? ' is-active' : ''}">${side} · ${esc(label)}</button>`;
-    }).join('');
+    let html;
+    if (linked) {
+        html = pairedWays(roles).map((pair) => {
+            if (pair.left && pair.right) {
+                const selected = activeRole === pair.left || activeRole === pair.right;
+                return wayTabButton(pair.left, `L/R · ${esc(wayLabel(pair.way))}`, selected);
+            }
+            const role = pair.left || pair.right;
+            const side = String(role).startsWith('left_') ? 'L' : 'R';
+            return wayTabButton(role, `${side} · ${esc(wayLabel(pair.way))}`, role === activeRole);
+        }).join('');
+    } else {
+        html = roles.map((role) => {
+            const label = role.split('_').slice(1).map((w) => (w === 'low_mid' ? 'Low-Mid' : w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
+            const side = role.startsWith('left_') ? 'L' : 'R';
+            return wayTabButton(role, `${side} · ${esc(label)}`, role === activeRole);
+        }).join('');
+    }
     if (tabs.innerHTML !== html) tabs.innerHTML = html;
-    if (typeof onSelect === 'function' && !tabs.dataset.crossoverBound) {
-        tabs.dataset.crossoverBound = '1';
-        tabs.addEventListener('click', (event) => {
-            const button = event.target && event.target.closest
-                ? event.target.closest('[data-crossover-way]') : null;
-            if (button) onSelect(button.dataset.crossoverWay);
-        });
+    if (typeof onSelect === 'function') {
+        // The click listener binds once; it delegates to the latest render's
+        // callback so toggles (link on/off) never act on a stale closure.
+        tabs._crossoverOnSelect = onSelect;
+        if (!tabs.dataset.crossoverBound) {
+            tabs.dataset.crossoverBound = '1';
+            tabs.addEventListener('click', (event) => {
+                const button = event.target && event.target.closest
+                    ? event.target.closest('[data-crossover-way]') : null;
+                if (button && tabs._crossoverOnSelect) tabs._crossoverOnSelect(button.dataset.crossoverWay);
+            });
+        }
     }
 }
 
@@ -229,6 +284,9 @@ function renderWayTabs(tabs, roles, activeRole, onSelect) {
         filterLabel,
         esc,
         orderedWays,
+        wayKey,
+        wayLabel,
+        pairedWays,
         isLowWayRole,
         mirrorRole,
         sideForRole,

@@ -215,12 +215,17 @@ def main() -> int:
                   and page.locator("#effects-compare-a").is_enabled()
                   and page.locator("#effects-compare-b").is_enabled()
                   and page.locator("#effects-compare-a option").count() > 1)
-            page.locator("[data-crossover-way='right_high']").click()
+            # Linked pairs share one tab per way (canonical left data role):
+            # the merged L/R tab activates like a single tab.
+            page.locator("[data-crossover-way='left_high']").click()
             page.wait_for_timeout(400)
-            check("way tab activates",
-                  page.locator("[data-crossover-way='right_high']").get_attribute("class")
+            check("merged way tab activates",
+                  page.locator("[data-crossover-way='left_high']").get_attribute("class")
                   is not None
-                  and "is-active" in (page.locator("[data-crossover-way='right_high']").get_attribute("class") or ""))
+                  and "is-active" in (page.locator("[data-crossover-way='left_high']").get_attribute("class") or ""))
+            check("linked pairs collapse to one tab per way",
+                  page.locator("[data-crossover-way='right_high']").count() == 0
+                  and "L/R" in (page.locator("[data-crossover-way='left_high']").inner_text() or ""))
 
             # Starter values apply automatically to the first valid
             # configuration: routing the six ways already seeded every
@@ -381,6 +386,19 @@ def main() -> int:
             page.wait_for_timeout(500)
             left_summary = page.locator("#effects-crossover-summary").inner_text()
             check(f"left way shows its own sub HPF ({left_summary})", left_summary.endswith("Sub HPF 60 Hz"))
+            # Unlinking the crossover splits the merged pair tabs again, so
+            # the right side becomes directly selectable.
+            page.evaluate(
+                """(() => {
+                    const link = document.getElementById('effects-crossover-link');
+                    if (link && link.checked) {
+                        link.checked = false;
+                        link.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                })()""")
+            page.wait_for_timeout(500)
+            check("unlink splits the pair tabs",
+                  page.locator("[data-crossover-way='right_low']").count() == 1)
             page.locator("[data-crossover-way='right_low']").click()
             page.wait_for_timeout(500)
             right_summary = page.locator("#effects-crossover-summary").inner_text()

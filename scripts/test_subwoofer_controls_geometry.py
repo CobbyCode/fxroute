@@ -271,6 +271,9 @@ def _run():
                         tabsHidden: tabs.classList.contains('hidden'),
                         tabsInTabrow: tabs.parentElement === tabrow,
                         tabCount: tabs.querySelectorAll('[data-sub-side]').length,
+                        bothTabText: document.querySelector('#effects-subwoofer-tab-both')?.textContent || '',
+                        bothTabHidden: document.querySelector('#effects-subwoofer-tab-both')
+                            ?.classList.contains('hidden') ?? true,
                         tabrowAboveGraph: tabrow.compareDocumentPosition(preview)
                             & Node.DOCUMENT_POSITION_FOLLOWING ? true : false,
                         tabsBeforeLink: !!(tabs.compareDocumentPosition(link)
@@ -296,6 +299,8 @@ def _run():
             check("the L/R link switch starts hidden", layout["linkHidden"] is True)
             check("the Sub L / Sub R tabs exist and start hidden",
                   layout["tabsHidden"] is True and layout["tabCount"] == 2)
+            check("the common Sub L/R tab exists for linked stereo",
+                  layout["bothTabText"] == "Sub L/R")
             check("the tab row starts hidden (no Stereo pair routed)",
                   layout["tabrowHidden"] is True)
             check("link and tabs live in the tab row above the graph",
