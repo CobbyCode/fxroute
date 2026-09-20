@@ -504,7 +504,6 @@ const elements = {
     effectsCrossoverDelay: document.getElementById('effects-crossover-delay'),
     effectsCrossoverPolarity: document.getElementById('effects-crossover-polarity'),
     effectsCrossoverLink: document.getElementById('effects-crossover-link'),
-    effectsCrossoverFeedback: document.getElementById('effects-crossover-feedback'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
@@ -15678,19 +15677,12 @@ function drawCrossoverResponse(canvas, ways, activeRole) {
     ctx.textAlign = 'start';
 }
 
-let _subwooferFeedbackTimer = null;
+// Tile status is error-only by design (no Applying/Saved hints): failures
+// stay visible, success stays silent.
 function setSubwooferFeedback(message, cls = '') {
     if (!elements.effectsSubwooferFeedback) return;
-    window.clearTimeout(_subwooferFeedbackTimer);
     elements.effectsSubwooferFeedback.textContent = message;
     elements.effectsSubwooferFeedback.className = 'effects-extras-feedback' + (cls ? ' ' + cls : '');
-    if (cls === 'success') {
-        _subwooferFeedbackTimer = window.setTimeout(() => {
-            if (!elements.effectsSubwooferFeedback) return;
-            elements.effectsSubwooferFeedback.textContent = '';
-            elements.effectsSubwooferFeedback.className = 'effects-extras-feedback';
-        }, 1400);
-    }
 }
 
 let _subwooferSaveTimer = null;
@@ -15711,7 +15703,6 @@ function beginSubwooferSave(pending) {
     const run = (async () => {
         if (previousSave) await previousSave;
         _subwooferLastRequestedSignature = pending.signature;
-        setSubwooferFeedback('Applying…');
         const catalog = state.outputSystem.catalog;
         if (!catalog || catalog.active_mode !== pending.mode) throw new Error('Output mode changed before sub settings commit');
         const result = await applyOutputSystemMutation('set_subwoofers', pending.settings, false);
@@ -15719,16 +15710,16 @@ function beginSubwooferSave(pending) {
         return result;
     })();
     _subwooferSavePromise = run;
-    // Terminal feedback belongs to the save itself: applyOutputSystemMutation
-    // only toasts and refetches, so without this the tile would stay on
-    // 'Applying…' forever after a successful commit. Saves run strictly
-    // sequentially (each awaits its predecessor before setting 'Applying…'),
-    // so an older run can never overwrite a newer run's feedback.
+    // Saves run strictly sequentially (each awaits its predecessor), so an
+    // older run can never overwrite a newer run's error feedback. Success
+    // stays silent; only failures report into the tile.
     run.then(
         () => {
             if (_subwooferSavePromise === run) _subwooferSavePromise = null;
             releaseSubwooferLinkGuard();
-            setSubwooferFeedback('Saved', 'success');
+            // Success stays silent, but clears a previous error so the tile
+            // never reports a failure the latest commit already fixed.
+            setSubwooferFeedback('');
         },
         (error) => {
             if (_subwooferSavePromise === run) _subwooferSavePromise = null;
@@ -15844,30 +15835,17 @@ function describeEffectsExtras(extras) {
     return parts.join(' • ');
 }
 
-function showEffectsExtrasFeedback(message, isSuccess = true) {
-    const feedbackEl = document.getElementById('effects-extras-feedback');
-    if (feedbackEl) {
-        feedbackEl.textContent = message;
-        feedbackEl.className = isSuccess ? 'effects-feedback success' : 'effects-feedback error';
-        feedbackEl.style.display = 'block';
-        window.clearTimeout(showEffectsExtrasFeedback._timer);
-        showEffectsExtrasFeedback._timer = window.setTimeout(() => {
-            feedbackEl.style.display = 'none';
-        }, 3200);
-    }
-}
-
 let _extrasDebounceTimer = null;
 let effectsExtrasSaveInFlight = false;
 let effectsExtrasPendingResave = false;
 function saveEffectsExtrasDebounced(delayMs = EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS) {
     window.clearTimeout(_extrasDebounceTimer);
     if (delayMs <= 0) {
-        _doSaveEffectsExtras('saving');
+        _doSaveEffectsExtras();
         return;
     }
     _extrasDebounceTimer = window.setTimeout(() => {
-        _doSaveEffectsExtras('saving');
+        _doSaveEffectsExtras();
     }, delayMs);
 }
 
@@ -15901,16 +15879,13 @@ function buildEffectsExtrasSaveBody(extras, serverExtras) {
     return body;
 }
 
-async function _doSaveEffectsExtras(phase) {
+async function _doSaveEffectsExtras() {
     if (effectsCompareLoadInFlight || effectsExtrasSaveInFlight) {
         effectsExtrasPendingResave = true;
         return;
     }
     effectsExtrasSaveInFlight = true;
     effectsExtrasPendingResave = false;
-    if (phase === 'saving') {
-        setEffectsExtrasFeedback('Saving…', '');
-    }
     const extras = collectEffectsExtras();
     const body = buildEffectsExtrasSaveBody(extras, state.dsp?.global_extras);
     try {
@@ -15938,7 +15913,6 @@ async function _doSaveEffectsExtras(phase) {
             bass_enhancer: { enabled: !!extras.bassEnabled, params: { amount: extras.bassAmount, harmonics: 8.5, scope: 100.0, blend: 0.0 } },
             tone_effect: { enabled: !!extras.toneEffectEnabled, mode: extras.toneEffectMode },
         };
-        setEffectsExtrasFeedback('Saved', 'success');
         renderEffects();
     } catch (error) {
         setEffectsExtrasFeedback('Failed', 'error');

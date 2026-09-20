@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
-// Subwoofer tile status lifecycle: Applying… -> Saved on commit,
-// Applying… -> error state on failure. Guards the regression where the
-// tile stayed on Applying… forever because no path ever set terminal
-// feedback after beginSubwooferSave resolved.
+// Subwoofer tile status lifecycle is error-only by design: no Applying… or
+// Saved hints are ever written; a failure reports its message persistently
+// and the next successful commit clears it again.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -36,7 +35,6 @@ function makeContext(applyImpl) {
         console,
     };
     vm.createContext(context);
-    vm.runInContext(extract(/let _subwooferFeedbackTimer = null;/, 'feedback timer'), context);
     vm.runInContext(extract(/function setSubwooferFeedback\([^]*?\n\}/, 'setSubwooferFeedback'), context);
     vm.runInContext(extract(/let _subwooferSavePromise = null;/, 'save promise'), context);
     vm.runInContext(extract(/let _subwooferLastRequestedSignature = '';?/, 'last signature'), context);
@@ -54,20 +52,22 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 const pending = { mode: 'stereo-sub', settings: { mode: 'stereo-sub' }, signature: '{"s":1}' };
 
 (async () => {
-    // 1. Success: Applying… while the commit is in flight, then Saved.
+    // 1. Success stays silent: no Applying… while in flight, no Saved hint
+    // on commit; the guard still releases and the promise clears.
     {
         const gate = deferred();
         const { context, feedbackEl, activeEditing, linkEl } = makeContext(() => gate.promise);
         const run = startSave(context, pending);
         await tick();
-        assert.equal(feedbackEl.textContent, 'Applying…');
+        assert.equal(feedbackEl.textContent, '');
+        assert.doesNotMatch(feedbackEl.className, /success|error/);
         // The in-flight link toggle stays guarded until the save landed.
         assert.equal(activeEditing.has(linkEl), true);
         gate.resolve({ revision: 9 });
         assert.deepEqual(await run, { revision: 9 });
         await tick();
-        assert.equal(feedbackEl.textContent, 'Saved');
-        assert.match(feedbackEl.className, /success/);
+        assert.equal(feedbackEl.textContent, '');
+        assert.doesNotMatch(feedbackEl.className, /success|error/);
         assert.equal(activeEditing.has(linkEl), false);
         assert.equal(vm.runInContext('_subwooferSavePromise', context), null);
     }
@@ -77,7 +77,7 @@ const pending = { mode: 'stereo-sub', settings: { mode: 'stereo-sub' }, signatur
         const { context, feedbackEl, activeEditing, linkEl } = makeContext(() => gate.promise);
         const run = startSave(context, pending);
         await tick();
-        assert.equal(feedbackEl.textContent, 'Applying…');
+        assert.equal(feedbackEl.textContent, '');
         gate.reject(new Error('boom-423'));
         await assert.rejects(run, /boom-423/);
         await tick();
@@ -97,20 +97,26 @@ const pending = { mode: 'stereo-sub', settings: { mode: 'stereo-sub' }, signatur
         assert.match(feedbackEl.textContent, /superseded/);
         assert.match(feedbackEl.className, /error/);
     }
-    // 4. Sequential saves: older run can never overwrite the newer feedback.
+    // 4. Sequential mixed outcome: a settled failure is followed by a
+    // fresh attempt (the chain resets once the promise clears); the newer
+    // success clears the older error, so the tile never reports a failure
+    // the latest commit fixed.
     {
-        const gate = deferred();
-        const { context, feedbackEl } = makeContext(() => gate.promise);
+        const firstGate = deferred();
+        const secondGate = deferred();
+        let calls = 0;
+        const { context, feedbackEl } = makeContext(() => (++calls === 1 ? firstGate.promise : secondGate.promise));
         const first = startSave(context, pending);
-        const second = startSave(context, pending);
         await tick();
-        assert.equal(feedbackEl.textContent, 'Applying…');
-        gate.resolve({ revision: 10 });
-        await first;
+        firstGate.reject(new Error('boom-first'));
+        await assert.rejects(first, /boom-first/);
+        await tick();
+        assert.match(feedbackEl.textContent, /boom-first/);
+        const second = startSave(context, pending);
+        secondGate.resolve({ revision: 10 });
         await second;
         await tick();
-        assert.equal(feedbackEl.textContent, 'Saved');
-        assert.match(feedbackEl.className, /success/);
+        assert.equal(feedbackEl.textContent, '');
     }
     console.log('subwoofer feedback tests passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });
