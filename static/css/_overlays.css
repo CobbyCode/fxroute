@@ -251,7 +251,8 @@
     width: min(100%, 9rem);
     min-width: 0;
     max-width: 100%;
-    text-align: center;
+    /* Left-aligned like every other app select, closed and open. */
+    text-align: left;
 }
 .crossover-link-label {
     display: flex;

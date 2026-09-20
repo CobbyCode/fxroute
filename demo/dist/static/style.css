@@ -1107,7 +1107,8 @@ select.url-input {
     width: min(100%, 9rem);
     min-width: 0;
     max-width: 100%;
-    text-align: center;
+    /* Left-aligned like every other app select, closed and open. */
+    text-align: left;
 }
 .crossover-link-label {
     display: flex;
@@ -6204,21 +6205,21 @@ select.url-input::-webkit-scrollbar-thumb:hover {
    Main highpass cap (5.2rem) fits the widest option ("On"/"Off") with room
    beside the native arrow on Android, where the narrower cap clipped "On".
    The polarity selects keep the tighter 4.2rem cap beside the single-letter
-   "N"/"I" values. Centered text keeps the boxes calm between heading and
-   native arrow. The select type selectors are load-bearing: #tab-effects
+   "N"/"I" values. Left-aligned text like every other app select, closed
+   and open. The select type selectors are load-bearing: #tab-effects
    .url-input (equal specificity, later in the file) would otherwise keep
    width:100% alive and stretch the selects back across their grid tracks. */
 #tab-effects select.effects-subwoofer-compact-select {
     width: min(100%, 5.2rem);
     min-width: 0;
     max-width: 100%;
-    text-align: center;
+    text-align: left;
 }
 #tab-effects select.effects-subwoofer-polarity-select {
     width: min(100%, 4.2rem);
     min-width: 0;
     max-width: 100%;
-    text-align: center;
+    text-align: left;
 }
 
 .effects-filter-import-area.is-busy {

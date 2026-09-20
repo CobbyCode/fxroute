@@ -307,6 +307,18 @@ def _run():
                   layout["sideLabels"] == 0 and layout["linkInGlobalCard"] is False)
             check("sub cards use short Trim-style labels (name lives in the card header)",
                   layout["subFieldLabels"] == ["Level", "Align", "Polarity"] * 2)
+            # Dropdown alignment: Type, Slope, Polarity and Main highpass
+            # read left-aligned like every other app select.
+            align = page.evaluate("""(() => {
+                const out = {};
+                for (const id of ['effects-subwoofer-family', 'effects-subwoofer-slope',
+                                  'effects-subwoofer-main-highpass', 'effects-subwoofer-polarity']) {
+                    out[id] = getComputedStyle(document.getElementById(id)).textAlign;
+                }
+                return out;
+            })()""")
+            check(f"sub selects left-aligned ({align})",
+                  len(align) == 4 and all(v in ('left', 'start') for v in align.values()))
 
             page.close()
             browser.close()
