@@ -464,6 +464,10 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.release_recovery = asyncio.Event()
         self.rollback_ramp_error = False
         self.gain_commands = []
+        self.engine_gain = 0.0
+        # When set, the engine reports this gain instead of accepting the last
+        # write, i.e. a gain control whose effect never lands.
+        self.gain_readback = None
         self.bytes_before = self.path.read_bytes()
 
         async def sync(config, text, *, initial_output_gain_db):
@@ -472,9 +476,15 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
             await self.runtime.set_output_gain_db(initial_output_gain_db)
 
         async def control(command, *, reply):
+            if command == "gain db get":
+                # The engine's own readback, the authority on the operating gain.
+                if self.gain_readback is not None:
+                    return f"{self.gain_readback:.9g}"
+                return f"{self.engine_gain:.9g}"
             gain = float(command.removeprefix("gain db "))
             if self.rollback_ramp_error and len(self.syncs) == 2 and gain > -30:
                 raise RuntimeError("rollback ramp failed")
+            self.engine_gain = gain
             self.gain_commands.append(gain)
             return "ok"
 
@@ -503,6 +513,11 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
             guarded_stage=self.runtime.guarded_rebuild_rendered, readback=readback,
             guard_db=-30, **self.context)
 
+    def set_engine_gain(self, value):
+        """Set the engine's gain and this process's record of it together."""
+        self.engine_gain = value
+        self.runtime._output_gain_db = value
+
     def assert_restored(self, gain):
         snapshot = self.runtime.snapshot()
         self.assertTrue(snapshot["active"])
@@ -520,7 +535,7 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
                 self.syncs.clear()
                 self.gain_commands.clear()
                 self.settles = [asyncio.Event() for _ in range(3)]
-                self.runtime._output_gain_db = gain
+                self.set_engine_gain(gain)
                 self.release_recovery.set()
                 task = asyncio.create_task(self.stager.stage(sub_delays={"sub1": 5}))
                 with self.assertLogs("dsp.runtime", level="ERROR"):
@@ -534,7 +549,7 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
                 self.assert_restored(gain)
 
     async def test_stage_and_recovery_never_exceed_captured_pretransition_gain(self):
-        self.runtime._output_gain_db = -12.0
+        self.set_engine_gain(-12.0)
         self.release_recovery.set()
         task = asyncio.create_task(self.stager.stage(sub_delays={"sub1": 5}))
         with self.assertLogs("dsp.runtime", level="ERROR"):
@@ -552,7 +567,7 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.runtime._can_hot_update = lambda config: True
         for delay, gain in ((5, -12.0), (6, -40.0)):
             with self.subTest(gain=gain):
-                self.runtime._output_gain_db = gain
+                self.set_engine_gain(gain)
                 self.gain_commands.clear()
                 result = await asyncio.wait_for(
                     self.stager.stage(sub_delays={"sub1": delay}), 2)
@@ -576,7 +591,7 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.stager._readback = readback
         for gain in (-12.0, -40.0):
             with self.subTest(gain=gain):
-                self.runtime._output_gain_db = gain
+                self.set_engine_gain(gain)
                 self.syncs.clear()
                 self.gain_commands.clear()
                 with self.assertRaisesRegex(RuntimeError, "candidate readback failed"):
@@ -585,7 +600,7 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(self.syncs), 2)
 
     async def test_existing_caller_default_ramps_forward_and_rollback_to_zero(self):
-        self.runtime._output_gain_db = -12.0
+        self.set_engine_gain(-12.0)
         await self.runtime.guarded_rebuild_rendered(
             self.stager._current.target, previous=self.initial,
             guard_db=-30.0, apply_candidate=lambda: None,
@@ -616,16 +631,13 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(self.gain_commands, [])
 
     async def test_failed_gain_restoration_is_reported_even_with_matching_identity(self):
-        self.runtime._output_gain_db = -12.0
+        self.set_engine_gain(-12.0)
         self.release_recovery.set()
-
-        async def ignored_ramp(start, target):
-            pass
-
-        self.runtime.ramp_output_gain_db = ignored_ramp
         task = asyncio.create_task(self.stager.stage(sub_delays={"sub1": 5}))
         with self.assertLogs("dsp.runtime", level="ERROR"):
             await asyncio.wait_for(self.settles[0].wait(), 2)
+            # The guard no longer comes back: the engine keeps reporting it.
+            self.gain_readback = -30.0
             task.cancel()
             await asyncio.wait_for(self.settles[1].wait(), 2)
             task.cancel()
@@ -646,17 +658,20 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.path.read_bytes(), self.bytes_before)
 
     async def test_further_cancel_waits_for_recovery_gain_restoration(self):
-        self.runtime._output_gain_db = -12.0
+        self.set_engine_gain(-12.0)
         task = asyncio.create_task(self.stager.stage(sub_delays={"sub1": 5}))
         with self.assertLogs("dsp.runtime", level="ERROR"):
             await asyncio.wait_for(self.settles[0].wait(), 2)
             task.cancel()
             await asyncio.wait_for(self.settles[1].wait(), 2)
+            # The guard is reported again, so the caller must still recover.
+            self.gain_readback = -30.0
             task.cancel()
             await asyncio.wait_for(self.settles[2].wait(), 2)
         task.cancel()
         await self.asyncio_sleep(0)
         self.assertFalse(task.done())
+        self.gain_readback = None
         self.release_recovery.set()
         with self.assertRaises(asyncio.CancelledError):
             await asyncio.wait_for(task, 2)
@@ -668,13 +683,15 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(self.settles[0].wait(), 2)
             task.cancel()
             await asyncio.wait_for(self.settles[1].wait(), 2)
+            # The guard is reported again, so the caller must still recover.
+            self.gain_readback = -30.0
             task.cancel()
             await asyncio.wait_for(self.settles[2].wait(), 2)
             winner = self.service.commit(self.candidate(sub_delays={"sub1": 9}),
                                          expected_revision=1)
             fingerprint, plan = self.compile(winner)
             self.runtime._config = self.build_target(plan, fingerprint=fingerprint).config
-            self.runtime._output_gain_db = -7.0
+            self.set_engine_gain(-7.0)
             commands = list(self.gain_commands)
             syncs = list(self.syncs)
             winner_bytes = self.path.read_bytes()
@@ -687,8 +704,73 @@ class RealGuardedRecoveryTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.syncs, syncs)
         self.assertEqual(self.path.read_bytes(), winner_bytes)
 
+    async def test_failed_transition_does_not_leave_the_engine_on_the_guard(self):
+        """A rollback whose ramp fails must still return to the operating gain."""
+        self.set_engine_gain(-12.0)
+        ramps = []
+
+        async def ramp(start, target, **kwargs):
+            # The candidate never reaches its ramp (before_ramp fails first), so
+            # every ramp call here is the rollback's.
+            ramps.append((start, target))
+            raise RuntimeError("rollback ramp failed")
+
+        self.runtime.ramp_output_gain_db = ramp
+
+        async def fail():
+            raise RuntimeError("stage failed")
+
+        with self.assertLogs("dsp.runtime", level="ERROR"):
+            with self.assertRaisesRegex(RuntimeError, "stage failed"):
+                await self.runtime.guarded_rebuild_rendered(
+                    self.initial, previous=self.initial, guard_db=-30.0,
+                    ramp_target_db=-12.0, rollback_ramp_target_db=-12.0,
+                    apply_candidate=lambda: None, apply_previous=lambda: None,
+                    before_ramp=fail, settle_seconds=0.0)
+        self.assertEqual(self.engine_gain, -12.0)
+        self.assertEqual(await self.runtime.read_output_gain_db(), -12.0)
+        self.assertEqual(self.runtime.snapshot()["output_gain_db"], -12.0)
+
+    async def test_stale_guard_target_cannot_pin_the_output_low(self):
+        """A caller reading the guard back as the operating gain must not latch it."""
+        self.set_engine_gain(-12.0)
+        with self.assertLogs("dsp.runtime", level="WARNING") as logs:
+            await self.runtime.guarded_rebuild_rendered(
+                self.initial, previous=self.initial, guard_db=-30.0,
+                ramp_target_db=-30.0, rollback_ramp_target_db=-30.0,
+                apply_candidate=lambda: None, apply_previous=lambda: None,
+                settle_seconds=0.0)
+        self.assertEqual(self.runtime.snapshot()["output_gain_db"], -12.0)
+        self.assertEqual(await self.runtime.read_output_gain_db(), -12.0)
+        self.assertEqual(self.gain_commands[-1], -12.0)
+        self.assertIn("below the engine's operating gain",
+                      "\n".join(record.getMessage() for record in logs.records))
+
+    async def test_readback_replaces_a_recorded_gain_the_engine_disagrees_with(self):
+        """A record left on the guard is corrected from the engine, not trusted."""
+        self.engine_gain = 0.0
+        self.runtime._output_gain_db = -30.0
+        await self.runtime.guarded_rebuild_rendered(
+            self.initial, previous=self.initial, guard_db=-30.0,
+            apply_candidate=lambda: None, apply_previous=lambda: None,
+            settle_seconds=0.0)
+        self.assertEqual(self.runtime.snapshot()["output_gain_db"], 0.0)
+        self.assertEqual(self.engine_gain, 0.0)
+
+    async def test_readback_rejects_a_reply_it_cannot_use(self):
+        self.set_engine_gain(-12.0)
+        for reply in ("not a number\n", "-120\n", "1\n"):
+            with self.subTest(reply=reply):
+                async def control(command, *, reply, answer=reply):
+                    return answer if command == "gain db get" else "ok"
+
+                self.runtime._control = control
+                with self.assertRaisesRegex(RuntimeError, "gain readback"):
+                    await self.runtime.read_output_gain_db()
+                self.assertEqual(self.runtime.snapshot()["output_gain_db"], -12.0)
+
     async def test_rollback_ramp_failure_restores_original_gain(self):
-        self.runtime._output_gain_db = -12.0
+        self.set_engine_gain(-12.0)
         self.rollback_ramp_error = True
         self.release_recovery.set()
         # Let rollback settle finish, then fail its real gain-control command.

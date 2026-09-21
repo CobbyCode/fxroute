@@ -46,6 +46,9 @@ HELPER_STDERR_TAIL_LIMIT = 64 * 1024
 # buffer, so the reader requests one extra byte and treats a full buffer as
 # truncation instead of parsing a partial payload.
 CONTROL_REPLY_MAX_BYTES = 4096
+# The engine prints its gain with %.9g, so two readings of the same level may
+# still differ in the last printed digit.
+OUTPUT_GAIN_TOLERANCE_DB = 1e-6
 logger = logging.getLogger(__name__)
 
 
@@ -680,6 +683,32 @@ class DSPRuntime:
         self._output_gain_db = value
         return value
 
+    async def read_output_gain_db(self) -> float:
+        """Return the gain the engine really renders, and adopt it as ours.
+
+        ``gain db get`` is the engine's own readback.  Without it the recorded
+        gain can only ever echo what this process last sent, so a transition
+        that failed between its duck and its ramp would leave the guard behind
+        as the level every later transition reads as the operating gain.
+        """
+        reply = (await self._control("gain db get", reply=True)).strip()
+        try:
+            value = float(reply)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Native DSP gain readback is not a number: {reply!r}") from exc
+        if not math.isfinite(value) or not -80.0 <= value <= 0.0:
+            raise RuntimeError(
+                f"Native DSP gain readback is out of range: {reply!r}")
+        recorded = self._output_gain_db
+        if (type(recorded) not in (int, float) or not math.isfinite(recorded)
+                or abs(float(recorded) - value) > OUTPUT_GAIN_TOLERANCE_DB):
+            logger.warning(
+                "Native DSP engine gain %.9g dB differs from the recorded %s; "
+                "adopting the engine value", value, recorded)
+        self._output_gain_db = value
+        return value
+
     async def ramp_output_gain_db(self, start_db: float, target_db: float, *,
                                   step_db: float = 3.0,
                                   interval_seconds: float = 0.006) -> None:
@@ -757,6 +786,73 @@ class DSPRuntime:
                     logger.exception("Native DSP guarded transition rollback failed")
                 raise
 
+    async def _operating_output_gain_db(self) -> float:
+        """The level in effect before a transition ducks the output.
+
+        Read from the engine while it answers: the return level has to be the
+        gain the output really carries, not this process's record of what it
+        last sent, or a guard left behind by an earlier failed transition would
+        be ramped back to as if it were the operating level.
+        """
+        if self._control_socket is None:
+            return max(-80.0, min(0.0, float(self._output_gain_db)))
+        return await self.read_output_gain_db()
+
+    def _guard_return_gain_db(self, requested_db: float,
+                              operating_gain_db: float, name: str) -> float:
+        """Return the level a transition path should leave the output on.
+
+        The guard exists to keep the output quiet during the graph swap, so the
+        duck must not outlive the transition: a requested target below the gain
+        the engine already had is a stale reading (typically a caller that read
+        the guard back as the operating gain), and following it would pin the
+        output low for good.  The higher of the two wins.
+        """
+        requested = float(requested_db)
+        if requested < operating_gain_db - OUTPUT_GAIN_TOLERANCE_DB:
+            logger.warning(
+                "Native DSP %s %.9g dB is below the engine's operating gain %.9g dB; "
+                "returning to the operating gain", name, requested, operating_gain_db)
+            return operating_gain_db
+        return requested
+
+    async def _settle_output_gain_db(self, target_db: float) -> None:
+        """Put the output back on this path's return level and let the engine confirm it.
+
+        Runs on every exit of a guarded transition, success or failure, so the
+        duck can neither survive a failed rollback nor go unnoticed.  Never
+        raises: the caller may already be unwinding an error.
+        """
+        if self._control_socket is None:
+            self._output_gain_db = float(target_db)
+            return
+        try:
+            await self.set_output_gain_db(target_db)
+            actual = await self.read_output_gain_db()
+        except Exception:
+            logger.exception(
+                "Native DSP operating gain %.9g dB could not be confirmed by the engine",
+                target_db)
+            return
+        if abs(actual - float(target_db)) > OUTPUT_GAIN_TOLERANCE_DB:
+            logger.warning(
+                "Native DSP operating gain restore did not land: requested %.9g dB, "
+                "engine reports %.9g dB", target_db, actual)
+
+    async def _settle_output_gain_db_cancellation_safe(self, target_db: float) -> None:
+        """Restore the operating gain even while this task is being cancelled.
+
+        A cancellation that skipped the restore would leave the output at the
+        guard level, which is the state that must not survive.
+        """
+        settle = asyncio.create_task(self._settle_output_gain_db(target_db))
+        while not settle.done():
+            try:
+                await asyncio.shield(settle)
+            except asyncio.CancelledError:
+                continue
+        settle.result()
+
     async def guarded_rebuild_rendered(self, new: PlannedSyncTarget, *,
                                        previous: PlannedSyncTarget,
                                        guard_db: float,
@@ -772,8 +868,12 @@ class DSPRuntime:
         Unlike the overview form, the previous target is an explicit
         parameter: no durable source can re-derive it, so the caller owns
         both documents.  ``ramp_target_db`` / ``rollback_ramp_target_db``
-        set the post-transition operating gain (default 0 dB); a rollback
-        may restore a different gain than the candidate path intended.
+        bound the post-transition operating gain (default 0 dB); a rollback
+        may restore a different gain than the candidate path intended.  Neither
+        may leave the output below the gain the engine reported before the
+        duck: that level is read back from the engine rather than taken from
+        this process's record, and every exit path returns to the higher of the
+        two and verifies it through the engine again.
         """
         for name, target in (("ramp_target_db", ramp_target_db),
                              ("rollback_ramp_target_db", rollback_ramp_target_db)):
@@ -785,6 +885,12 @@ class DSPRuntime:
         hot_update = self._can_hot_update(new.config)
         settle_seconds = 0.0 if hot_update else settle_seconds
         async with self._measurement_scope_lock:
+            # Read the real level before the duck; every exit path returns to it.
+            operating_gain = await self._operating_output_gain_db()
+            ramp_return = self._guard_return_gain_db(
+                ramp_target_db, operating_gain, "ramp_target_db")
+            rollback_return = self._guard_return_gain_db(
+                rollback_ramp_target_db, operating_gain, "rollback_ramp_target_db")
             if self._control_socket is not None:
                 await self.set_output_gain_db(guard)
             try:
@@ -795,11 +901,14 @@ class DSPRuntime:
                     await asyncio.sleep(settle_seconds)
                 if before_ramp:
                     await before_ramp()
-                await self.ramp_output_gain_db(guard, float(ramp_target_db))
+                await self.ramp_output_gain_db(guard, ramp_return)
+                await self._settle_output_gain_db(ramp_return)
                 apply_candidate()
             except BaseException:
+                rollback_applied = False
                 try:
                     apply_previous()
+                    rollback_applied = True
                     async with self._lock:
                         await self._run_sync(previous.config, previous.text,
                                              initial_output_gain_db=guard)
@@ -807,9 +916,14 @@ class DSPRuntime:
                         await asyncio.sleep(settle_seconds)
                     if before_rollback_ramp:
                         await before_rollback_ramp()
-                    await self.ramp_output_gain_db(guard, float(rollback_ramp_target_db))
+                    await self.ramp_output_gain_db(guard, rollback_return)
                 except BaseException:
                     logger.exception("Native DSP guarded transition rollback failed")
+                finally:
+                    # A vetoed rollback (apply_previous raised) leaves the state
+                    # to its newer owner, including this gain.
+                    if rollback_applied:
+                        await self._settle_output_gain_db_cancellation_safe(rollback_return)
                 raise
 
     async def sync(self, overview: dict[str, Any], *, initial_output_gain_db: float = 0.0,
