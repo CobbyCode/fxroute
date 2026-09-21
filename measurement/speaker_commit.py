@@ -355,8 +355,8 @@ class SpeakerAlignSession:
         async with self._lock:
             return await self._commit_unlocked(candidate_state, cancel_requested)
 
-    async def confirm_and_commit(self, *, acquire: Callable[[], Awaitable[list[dict]]],
-                                 alignment: Any, proposal: dict,
+    async def confirm_and_commit(self, *, confirm: Callable[[], Awaitable[dict]],
+                                 proposal: dict,
                                  live_target: dict,
                                  cancel_requested: Callable[[], bool] | None = None,
                                  acquire_timeout_seconds: float | None = None,
@@ -364,21 +364,24 @@ class SpeakerAlignSession:
                                  max_gain_spread_db: float | None = None) -> dict:
         """Trial-stage, acoustically confirm, and commit — or restore.
 
-        This session's lock covers stage, acquisition, verification and
+        This session's lock covers stage, measurement, verification and
         commit, so two trials on the same session cannot interleave (graph
         ownership across sessions stays the caller's, per the module
-        contract). A failed measurement restores the start rendering and
-        returns ``confirmed: False`` without committing; errors restore
-        (shielded against cancellation) and re-raise. A cancel-vetoed
-        commit leaves the session uncommitted with the candidate still
-        staged: the caller must ``restore_start()`` on that path. After
-        commit the runtime shows the committed rendering and the session
-        retires.
+        contract). ``confirm`` measures the staged rendering and returns the
+        post-apply verification document for the same frozen alignment: one
+        shared take per speaker side, so a staged way delay cannot cancel
+        itself out of the residual the way per-way references do. A failed
+        measurement restores the start rendering and returns
+        ``confirmed: False`` without committing; errors restore (shielded
+        against cancellation) and re-raise. A cancel-vetoed commit leaves the
+        session uncommitted with the candidate still staged: the caller must
+        ``restore_start()`` on that path. After commit the runtime shows the
+        committed rendering and the session retires.
         """
         async with self._lock:
             self._require_uncommitted()
-            if not callable(acquire):
-                raise ValueError("Speaker Align trial requires an acquire boundary")
+            if not callable(confirm):
+                raise ValueError("Speaker Align trial requires a confirm boundary")
             if not isinstance(proposal, dict):
                 raise ValueError("Speaker Align trial requires a proposal")
             if not isinstance(proposal.get("candidate_state"), dict):
@@ -401,9 +404,9 @@ class SpeakerAlignSession:
                         or not math.isfinite(acquire_timeout_seconds)
                         or not 0 < acquire_timeout_seconds <= 600):
                     raise ValueError("Speaker Align acquire timeout must be within (0, 600] seconds")
-                inner = acquire
+                inner = confirm
 
-                async def acquire():  # noqa: F811 — timeout wrapper replaces the boundary
+                async def confirm():  # noqa: F811 — timeout wrapper replaces the boundary
                     return await asyncio.wait_for(inner(), acquire_timeout_seconds)
             verify_options = {}
             if max_residual_ms is not None:
@@ -414,10 +417,7 @@ class SpeakerAlignSession:
             try:
                 if cancel_requested is not None and cancel_requested():
                     raise asyncio.CancelledError("Speaker Align trial was cancelled")
-                captures = await acquire()
-                if cancel_requested is not None and cancel_requested():
-                    raise asyncio.CancelledError("Speaker Align trial was cancelled")
-                confirmation = alignment.propose(captures, live_target=live_target)
+                confirmation = await confirm()
                 if cancel_requested is not None and cancel_requested():
                     raise asyncio.CancelledError("Speaker Align trial was cancelled")
                 check = verify_confirmation(proposal, confirmation, **verify_options)

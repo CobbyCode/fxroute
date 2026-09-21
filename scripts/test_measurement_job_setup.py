@@ -8,7 +8,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
 from measurement.store import MeasurementStore
+from measurement.target import freeze_measurement_target, narrow_measured_target, target_output_mask
+
+
+def crossover_state():
+    state = default_output_state()
+    routes = [f"{side}_{way}" for side in ("right", "left") for way in ("high", "low")]
+    routes += ["sub1", "left_low"]
+    state = set_mode_routing(set_crossover(state, "stereo-sub", True), "stereo-sub", "dev", routes)
+    state = switch_mode(state, "stereo-sub")
+    state["revision"] = 7
+    processing = state["modes"]["stereo-sub"]["processing"]
+    for side in ("left", "right"):
+        processing[f"{side}_low"]["lowpass"] = {
+            "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000}
+        processing[f"{side}_high"]["highpass"] = {
+            "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000}
+    return state, len(routes)
 
 
 class MeasurementJobSetupTests(unittest.IsolatedAsyncioTestCase):
@@ -198,6 +216,69 @@ class MeasurementJobSetupTests(unittest.IsolatedAsyncioTestCase):
                     calibration_filename=None, calibration_bytes=None, calibration_ref=None,
                     measurement_scope="active-chain", job_prefix="measurement-job-",
                 )
+
+    def test_narrowing_a_frozen_target_keeps_its_identity(self):
+        state, channels = crossover_state()
+        target = freeze_measurement_target(
+            state, bank_id="global", output_key="dev", channels=channels,
+            sample_rate_hz=48_000, fingerprint="frozen-plan")
+        self.assertEqual(target["measured_roles"], target["roles"])
+        narrowed = narrow_measured_target(target, roles=["left_low", "left_high"])
+        self.assertEqual(narrowed["measured_roles"], ["left_low", "left_high"])
+        self.assertEqual(narrowed["roles"], target["roles"])
+        self.assertEqual(narrowed["revision"], target["revision"])
+        self.assertEqual(narrowed["processing_fingerprint"], "frozen-plan")
+        # The narrowed target mutes every role of the other side, and the global
+        # target is left untouched.
+        ordered = target["roles"]
+        mask = target_output_mask(narrowed, roles=ordered)
+        self.assertNotEqual(mask, 0)
+        for index, role in enumerate(ordered):
+            self.assertEqual(bool(mask & (1 << index)), not role.startswith("left_"))
+        self.assertEqual(target_output_mask(target, roles=ordered), 0)
+        self.assertEqual(target["measured_roles"], target["roles"])
+
+    def test_narrowing_rejects_unknown_or_legacy_targets(self):
+        state, channels = crossover_state()
+        target = freeze_measurement_target(
+            state, bank_id="global", output_key="dev", channels=channels,
+            sample_rate_hz=48_000, fingerprint="frozen-plan")
+        with self.assertRaisesRegex(ValueError, "no longer routed"):
+            narrow_measured_target(target, roles=["left_mid"])
+        with self.assertRaisesRegex(ValueError, "distinct role names"):
+            narrow_measured_target(target, roles=["left_low", "left_low"])
+        with self.assertRaisesRegex(ValueError, "frozen target document"):
+            narrow_measured_target({"legacy": True}, roles=["left_low"])
+        with self.assertRaises(ValueError):
+            narrow_measured_target(["left_low"], roles=["left_low"])
+
+    def test_frozen_target_replaces_the_provider_and_is_rate_checked(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            store = MeasurementStore(home=Path(tempdir))
+            state, channels = crossover_state()
+            target = freeze_measurement_target(
+                state, bank_id="global", output_key="dev", channels=channels,
+                sample_rate_hz=48_000, fingerprint="frozen-plan")
+            narrowed = narrow_measured_target(target, roles=["left_low", "left_high"])
+            calls = []
+            store.measurement_target_provider = lambda bank, rate: calls.append((bank, rate)) or target
+            job = {"measurement_scope": "active-chain",
+                   "input": {"measurement_sample_rate": 48_000}}
+
+            frozen = store._freeze_measurement_job_target(job, "", narrowed)
+            self.assertEqual(calls, [])
+            self.assertEqual(frozen["measurement_target"], narrowed)
+            self.assertEqual(frozen["measurement_bank"], "global")
+            self.assertEqual(frozen["output_mask"],
+                             target_output_mask(narrowed, roles=target["roles"]))
+            # Without a pre-frozen target the provider keeps resolving the area.
+            self.assertEqual(store._freeze_measurement_job_target(job, "left_low")["measurement_target"],
+                             target)
+            self.assertEqual(calls, [("left_low", 48_000)])
+            with self.assertRaisesRegex(ValueError, "input's rate"):
+                store._freeze_measurement_job_target(job, "", {**narrowed, "sample_rate_hz": 96_000})
+            with self.assertRaisesRegex(ValueError, "bank id"):
+                store._freeze_measurement_job_target(job, "", {**narrowed, "bank_id": ""})
 
     async def test_selected_measurement_rate_is_stored_on_job(self):
         with tempfile.TemporaryDirectory() as tempdir:

@@ -109,15 +109,14 @@ class FakeSession:
     def measurement_context(self):
         return {}
 
-    async def confirm_and_commit(self, *, acquire, alignment, proposal,
+    async def confirm_and_commit(self, *, confirm, proposal,
                                  live_target, cancel_requested=None, **options):
-        from measurement.speaker_apply import apply_and_confirm, verify_confirmation
+        from measurement.speaker_apply import verify_confirmation
         self.calls.append("confirm_and_commit")
-        # The trial re-acquires through the same injected boundary the
-        # service passed in, so a hanging second acquisition is visible.
+        # The trial measures through the same injected boundary the service
+        # passed in, so a hanging verification take is visible.
         await self.stage_candidate(proposal["candidate_state"])
-        captures = await acquire()
-        confirmation = alignment.propose(captures, live_target=live_target)
+        confirmation = await confirm()
         check = verify_confirmation(proposal, confirmation)
         await self.restore_start()
         if not check["confirmed"]:
@@ -137,6 +136,9 @@ class ServiceFixture:
         self.second_arrivals = (500, 500)
         self.acquire_calls = []
         self.acquire_queue = []
+        self.confirm_calls = []
+        self.confirm_queue = []
+        self.verification_provenance = {"job_ids": ["verify-1"]}
         self.commit_fails = False
         self.session = FakeSession(self)
         self.live_revision_bump = 0
@@ -165,13 +167,34 @@ class ServiceFixture:
             if isinstance(behaviour, BaseException):
                 raise behaviour
             return behaviour
-        arrivals = self.first_arrivals if len(self.acquire_calls) == 1 else self.second_arrivals
-        return {"captures": captures_for(alignment, arrivals),
+        return {"captures": captures_for(alignment, self.first_arrivals),
                 "provenance": {"job_ids": [f"job-{len(self.acquire_calls)}"]}}
+
+    def confirmation_document(self, alignment):
+        """A proposal-shaped verification document; the DSP is tested elsewhere."""
+        request = alignment.verification_request()
+        return {
+            "start_revision": request["measurement_target"]["revision"],
+            "processing_fingerprint": request["measurement_target"]["processing_fingerprint"],
+            "arrival_ms": {role: float(self.second_arrivals[index]) * 1000.0 / RATE
+                           for index, role in enumerate(request["roles"])},
+            "way_levels_db": {role: 0.0 for role in request["roles"]},
+        }
+
+    async def confirm(self, alignment, **kwargs):
+        self.confirm_calls.append(deepcopy(kwargs))
+        if self.confirm_queue:
+            behaviour = self.confirm_queue.pop(0)
+            if isinstance(behaviour, BaseException):
+                raise behaviour
+            return behaviour
+        return {"confirmation": self.confirmation_document(alignment),
+                "provenance": dict(self.verification_provenance)}
 
     def service(self, **overrides):
         options = dict(get_state=lambda: deepcopy(self.state), describe=self.describe,
-                       acquire=self.acquire, create_session=lambda start_state, **ctx: self.session,
+                       acquire=self.acquire, confirm=self.confirm,
+                       create_session=lambda start_state, **ctx: self.session,
                        freeze_live=self.freeze_live)
         options.update(overrides)
         return SpeakerAlignService(**options)
@@ -283,6 +306,10 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(acquired["reference_input_channel"], "7")
         self.assertEqual(acquired["reference_input_channel_left"], "7")
         self.assertEqual(acquired["reference_input_channel_right"], "8")
+        verified = self.confirm_calls[0]
+        self.assertEqual(verified["reference_input_channel"], "7")
+        self.assertEqual(verified["reference_input_channel_left"], "7")
+        self.assertEqual(verified["reference_input_channel_right"], "8")
 
     async def test_dry_run_confirms_without_committing(self):
         service, job_id = self.start(dry_run=True)
@@ -482,12 +509,20 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["status"], "failed")
         self.assertIn("commit failed", job["error"])
 
-    async def test_second_acquire_failure_fails_the_job(self):
-        self.acquire_queue = [self.good_result(), RuntimeError("second sweep lost")]
+    async def test_verification_failure_fails_the_job(self):
+        self.confirm_queue = [RuntimeError("verification sweep lost")]
         service, job_id = self.start()
         job = await service.wait_for(job_id)
         self.assertEqual(job["status"], "failed")
-        self.assertIn("second sweep lost", job["error"])
+        self.assertIn("verification sweep lost", job["error"])
+        self.assertFalse(self.session.committed)
+
+    async def test_verification_input_chain_change_fails_the_job(self):
+        self.verification_provenance = {"job_ids": ["verify-1"], "mic_channel": 2}
+        service, job_id = self.start()
+        job = await service.wait_for(job_id)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("input chain changed", job["error"])
         self.assertFalse(self.session.committed)
 
     async def test_worker_rejects_rebased_state_without_sweep(self):

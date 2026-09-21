@@ -2,11 +2,12 @@
 """One-at-a-time Speaker Align application jobs without hardware ownership.
 
 This service composes the shipped measurement boundaries — frozen
-``SpeakerAlignment`` planning, serial way acquisition, ``propose``, and the
-trial/commit session — behind a small async job lifecycle. It never touches
-hardware itself: acquisition, runtime staging and persistence arrive through
-injected callables, so the whole flow is testable with fast doubles and the
-composition root wires the real store and session later. No HTTP lives here.
+``SpeakerAlignment`` planning, serial way acquisition, ``propose``, the shared
+per-side verification take and the trial/commit session — behind a small async
+job lifecycle. It never touches hardware itself: acquisition, verification,
+runtime staging and persistence arrive through injected callables, so the
+whole flow is testable with fast doubles and the composition root wires the
+real store and session later. No HTTP lives here.
 
 Only one job may be active at a time (the measurement graph is
 single-owner). Request validation raises synchronously before any job
@@ -25,6 +26,7 @@ from contextlib import nullcontext
 from typing import Any, Callable
 from uuid import uuid4
 
+from measurement.speaker_acquisition import input_chain_key
 from measurement.speaker_align import SpeakerAlignment
 from measurement.speaker_apply import apply_and_confirm
 
@@ -91,6 +93,14 @@ def _summarize_check(check: dict[str, Any]) -> dict[str, Any]:
         summary["gain_tolerance_db"] = float(check["gain_tolerance_db"])
     if isinstance(check.get("after_way_levels_db"), dict):
         summary["after_way_levels_db"] = dict(check["after_way_levels_db"])
+    # How far each way's own arrival stood above its neighbours in the shared
+    # take: the evidence that the residual could be told apart at all.
+    isolation = check.get("way_isolation_db")
+    if isinstance(isolation, dict):
+        summary["way_isolation_db"] = {
+            role: (None if value is None else float(value)) for role, value in isolation.items()}
+    if check.get("isolation_margin_db") is not None:
+        summary["isolation_margin_db"] = float(check["isolation_margin_db"])
     return _jsonable(summary)
 
 
@@ -113,6 +123,7 @@ class SpeakerAlignService:
     def __init__(self, *, get_state: Callable[[], dict],
                  describe: Callable[[dict], dict],
                  acquire: Callable[..., Any],
+                 confirm: Callable[..., Any],
                  create_session: Callable[..., Any],
                  freeze_live: Callable[..., dict],
                  on_committed: Callable[[dict], Any] | None = None,
@@ -120,7 +131,8 @@ class SpeakerAlignService:
                  check_available: Callable[[], None] | None = None,
                  input_keeper: Callable[[str, dict], Any] | None = None):
         for name, bound in (("get_state", get_state), ("describe", describe),
-                            ("acquire", acquire), ("create_session", create_session),
+                            ("acquire", acquire), ("confirm", confirm),
+                            ("create_session", create_session),
                             ("freeze_live", freeze_live)):
             if not callable(bound):
                 raise ValueError(f"Speaker Align service requires a {name} boundary")
@@ -131,6 +143,7 @@ class SpeakerAlignService:
         self._get_state = get_state
         self._describe = describe
         self._acquire = acquire
+        self._confirm = confirm
         self._create_session = create_session
         self._freeze_live = freeze_live
         self._on_committed = on_committed
@@ -391,8 +404,9 @@ class SpeakerAlignService:
                 first["captures"], live_target=live_target, cancel_requested=probe)
             self._note(job_id, "confirming", "Confirming alignment acoustically…")
 
-            async def reacquire() -> list[dict]:
-                second = await self._acquire(
+            async def confirm() -> dict:
+                """One shared take per side; the residual is a real acoustic offset."""
+                verification = await self._confirm(
                     alignment, input_id=params["input_id"],
                     mic_input_channel=params["mic_input_channel"],
                     reference_input_channel=params["reference_input_channel"],
@@ -405,16 +419,15 @@ class SpeakerAlignService:
                     expected_native_context=session.measurement_context(),
                     on_progress=lambda role, index, count: self._note(
                         job_id, "confirming", f"Verifying {role.replace('_', ' ')} ({index}/{count})…"))
-                before_input = {key: value for key, value in first.get("provenance", {}).items() if key != "job_ids"}
-                after_input = {key: value for key, value in second.get("provenance", {}).items() if key != "job_ids"}
-                if before_input != after_input:
+                if input_chain_key(first.get("provenance")) != input_chain_key(
+                        (verification or {}).get("provenance")):
                     raise ValueError("Speaker Align input chain changed before verification")
-                return second["captures"]
+                return verification["confirmation"]
 
             if dry_run:
                 outcome = await apply_and_confirm(
                     stage=session.stage_candidate, restore=session.restore_start,
-                    acquire=reacquire, alignment=alignment, proposal=proposal,
+                    confirm=confirm, proposal=proposal,
                     live_target=live_target, cancel_requested=probe)
                 check = _summarize_check(outcome["check"])
                 self._finish(
@@ -427,7 +440,7 @@ class SpeakerAlignService:
                             "committed_revision": None, "dry_run": True})
                 return
             outcome = await session.confirm_and_commit(
-                acquire=reacquire, alignment=alignment, proposal=proposal,
+                confirm=confirm, proposal=proposal,
                 live_target=live_target, cancel_requested=probe)
             check = _summarize_check(outcome["check"])
             if not check["confirmed"]:

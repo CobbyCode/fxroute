@@ -18,7 +18,11 @@ from dsp.crossover import design_crossover
 from measurement.hybrid import build_complex_response
 from measurement.analyzer import MeasurementAnalyzer
 from measurement.speaker_align import SpeakerAlignment, require_timing_reference
-from measurement.target import REFERENCE_TAP_INGRESS, freeze_measurement_target
+from measurement.target import (
+    REFERENCE_TAP_INGRESS,
+    freeze_measurement_target,
+    target_output_mask,
+)
 
 
 RATE = 48000
@@ -131,6 +135,157 @@ def native_captures(alignment, *, slope, rate=RATE, detect_arrival=True):
                 direct_arrival_index=timing["direct_arrival_index"], direct_confidence=timing["confidence"],
             )
     return captures
+
+
+def shared_take(alignment, state, arrivals_ms=None, *, rates=None, level_spread_db=0.0):
+    """One take in which every way of the side plays its own band at once.
+
+    Each way contributes the causal crossover response the engine renders,
+    placed at its own total arrival; way level differences come from an IR gain.
+    """
+    processing = state["modes"]["stereo-sub"]["processing"]
+    roles = [request["role"] for request in alignment.capture_requests()]
+    arrivals_ms = arrivals_ms or {role: float(index) for index, role in enumerate(roles)}
+    rates = rates or {}
+    samples = 8192
+    # Real captures place the sweep well inside the take: keep the same head
+    # room so no way's kernel is truncated at the buffer start.
+    origin_samples = 1024
+    frequencies = np.fft.rfftfreq(samples, 1.0 / RATE)
+    z = np.exp(-2j * np.pi * frequencies / RATE)
+    spectrum = np.zeros_like(frequencies, dtype=complex)
+    for role in roles:
+        spectrum = spectrum + way_spectrum(
+            processing, role, z, frequencies,
+            origin_samples * 1000.0 / RATE + arrivals_ms[role], rates.get(role, 1.0))
+    take = copy.deepcopy(captures_for(alignment)[0])
+    take["measurement_target"] = alignment.verification_request()["measurement_target"]
+    take["impulse_response"] = np.fft.irfft(spectrum, n=samples)
+    return take
+
+
+def way_spectrum(processing, role, z, frequencies, arrival_ms, rate_factor):
+    response = np.ones_like(frequencies, dtype=complex)
+    for kind in ("highpass", "lowpass"):
+        spec = processing[role].get(kind)
+        if spec is None:
+            continue
+        for b0, b1, b2, _, a1, a2 in design_crossover({**spec, "kind": kind}, RATE):
+            response = response * (b0 + b1 * z + b2 * z * z) / (1 + a1 * z + a2 * z * z)
+    delay = int(round(arrival_ms * RATE / 1000.0))
+    return rate_factor * response * np.exp(-2j * np.pi * frequencies * delay / RATE)
+
+
+class SideConfirmationTests(unittest.TestCase):
+    """Speaker Align judges its side from one shared take on one time base."""
+
+    def setUp(self):
+        self.state, channels = state_for()
+        self.alignment, self.live = alignment_for(self.state, channels)
+
+    def take(self, **kwargs):
+        return shared_take(self.alignment, self.state, **kwargs)
+
+    def test_verification_request_measures_only_this_side(self):
+        request = self.alignment.verification_request()
+        self.assertEqual(request["side"], "left")
+        self.assertEqual(request["roles"], ["left_low", "left_high"])
+        self.assertEqual(request["reference_tap"], REFERENCE_TAP_INGRESS)
+        target = request["measurement_target"]
+        self.assertEqual(target["measured_roles"], ["left_low", "left_high"])
+        self.assertEqual(target["roles"], self.alignment.capture_requests()[0]["measurement_target"]["roles"])
+        self.assertEqual(target["revision"], 7)
+        self.assertEqual(target["processing_fingerprint"], "frozen-plan")
+        # Only this side plays: every other routed role stays muted, so the
+        # shared take mutes strictly less than a single way's planning take.
+        self.assertEqual(request["output_mask"], target_output_mask(target, roles=target["roles"]))
+        self.assertNotEqual(request["output_mask"], 0)
+        per_way = [capture["output_mask"] for capture in self.alignment.capture_requests()]
+        for mask in per_way:
+            self.assertEqual(request["output_mask"] & ~mask, 0)
+        self.assertNotEqual(request["output_mask"], per_way[0])
+
+    def test_confirmation_reports_the_shared_take_offset(self):
+        document = self.alignment.confirmation(
+            self.take(arrivals_ms={"left_low": 7.5417, "left_high": 0.0}))
+        self.assertEqual(set(document["arrival_ms"]), {"left_low", "left_high"})
+        spread = max(document["arrival_ms"].values()) - min(document["arrival_ms"].values())
+        self.assertAlmostEqual(spread, 7.5417, delta=0.05)
+        self.assertTrue(document["band_limited"])
+        self.assertEqual(document["start_revision"], 7)
+        self.assertEqual(document["processing_fingerprint"], "frozen-plan")
+        for margin in document["way_isolation_db"].values():
+            self.assertIsNotNone(margin)
+
+    def test_compensated_shared_take_reads_as_aligned(self):
+        document = self.alignment.confirmation(
+            self.take(arrivals_ms={"left_low": 7.5417, "left_high": 7.5417}))
+        spread = max(document["arrival_ms"].values()) - min(document["arrival_ms"].values())
+        self.assertLessEqual(spread, 0.02)
+        self.assertEqual(set(document["way_isolation_db"].values()), {None})
+
+    def test_confirmation_rejects_takes_that_are_not_this_side(self):
+        def mutate(mutator):
+            take = self.take()
+            mutator(take)
+            return take
+
+        def pop_mic_pos(take):
+            take["microphone_position_id"] = "other-position"
+
+        def change_target(take):
+            take["measurement_target"] = self.alignment.capture_requests()[0]["measurement_target"]
+
+        def change_tap(take):
+            take["reference_tap"] = "host-monitor"
+
+        def change_origin(take):
+            take["time_reference"] = "host-reference"
+
+        def change_rate(take):
+            take["analysis"]["sample_rate"] = RATE // 2
+
+        def downgrade_quality(take):
+            take["analysis"]["quality_checks"] = {
+                "status": "fail", "items": [{"level": "error", "message": "silent"}]}
+
+        def clip_mic(take):
+            take["analysis"]["peak_dbfs"] = 0.0
+
+        def clip_reference(take):
+            take["analysis"]["reference_path"]["clipped"] = True
+
+        def fallback_reference(take):
+            take["analysis"]["reference_path"]["electrical_reference_fallback"] = True
+
+        def host_reference(take):
+            take["analysis"]["reference_path"]["electrical_reference_used"] = False
+
+        for label, mutator in (("position", pop_mic_pos), ("target", change_target),
+                               ("tap", change_tap), ("origin", change_origin),
+                               ("rate", change_rate), ("quality", downgrade_quality),
+                               ("mic clip", clip_mic), ("reference clip", clip_reference),
+                               ("fallback", fallback_reference), ("host reference", host_reference)):
+            with self.subTest(rejected=label), self.assertRaises(ValueError):
+                self.alignment.confirmation(mutate(mutator))
+
+    def test_confirmation_rejects_a_take_without_an_impulse_response(self):
+        take = self.take()
+        take["impulse_response"] = np.zeros(4096)
+        with self.assertRaises(ValueError):
+            self.alignment.confirmation(take)
+        with self.assertRaises(ValueError):
+            self.alignment.confirmation({})
+
+    def test_way_level_spread_is_reported_but_not_a_timing_decision(self):
+        document = self.alignment.confirmation(
+            self.take(arrivals_ms={"left_low": 0.0, "left_high": 0.0},
+                      rates={"left_low": 2.0, "left_high": 1.0}))
+        levels = document["way_levels_db"]
+        self.assertAlmostEqual(levels["left_low"], 0.0, delta=0.5)
+        self.assertAlmostEqual(levels["left_high"], -6.0, delta=1.0)
+        spread = max(document["arrival_ms"].values()) - min(document["arrival_ms"].values())
+        self.assertLessEqual(spread, 0.02)
 
 
 class ComplexOriginTests(unittest.TestCase):

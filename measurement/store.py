@@ -500,12 +500,18 @@ class MeasurementStore:
         }
         return {"job": job, "channel": normalized_channel}
 
-    def _freeze_measurement_job_target(self, job: dict[str, Any], measurement_bank: str) -> dict[str, Any]:
+    def _freeze_measurement_job_target(self, job: dict[str, Any], measurement_bank: str,
+                                       target: dict[str, Any] | None = None) -> dict[str, Any]:
         """Freeze the area target and derive its output mute mask at job creation.
 
         Without an injected provider the job keeps its legacy shape (no target,
         no masking).  With one, a missing or unrouted area fails the request
         before any sweep is played instead of capturing the wrong outputs.
+
+        ``target`` is an owner-internal pre-frozen document (one speaker side's
+        shared verification sweep).  It replaces the provider resolution but
+        still has to describe this job's own input chain, so a rate mismatch
+        fails the request before any sweep is played.
 
         Raw helper sweeps (Auto-Sub optimize, SPL calibration) are exempt: they
         bypass the active chain and drive their own isolation, so an editing
@@ -518,6 +524,19 @@ class MeasurementStore:
             return {}
         input_info = job.get("input") if isinstance(job.get("input"), dict) else {}
         rate = input_info.get("measurement_sample_rate") or input_info.get("sample_rate")
+        if target is not None:
+            # Validates the measured-role shape on the way to the mask the
+            # capture path consumes, and pins the target to this input.
+            mask = target_output_mask(target, roles=target.get("roles") or [])
+            bank_id = target.get("bank_id")
+            if not isinstance(bank_id, str) or not bank_id:
+                raise ValueError("Frozen measurement target carries no bank id")
+            target_rate = target.get("sample_rate_hz")
+            if type(rate) is int and target_rate != rate:
+                raise ValueError(
+                    f"Frozen measurement target rate {target_rate!r} is not this input's rate {rate!r}"
+                )
+            return {"measurement_bank": bank_id, "measurement_target": target, "output_mask": mask}
         target = provider(str(measurement_bank or ""), int(rate) if type(rate) is int else 0)
         return {
             "measurement_bank": target["bank_id"],
@@ -578,6 +597,7 @@ class MeasurementStore:
         measurement_role: str = "",
         skip_pre_sweep_diagnostics: bool = False,
         measurement_bank: str = "",
+        frozen_target: dict[str, Any] | None = None,
         expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         expected_native_output_mode: str | None = None,
         expected_plan_fingerprint: str | None = None,
@@ -632,7 +652,7 @@ class MeasurementStore:
             "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
             "_skip_pre_sweep_diagnostics": bool(skip_pre_sweep_diagnostics),
         })
-        job.update(self._freeze_measurement_job_target(job, measurement_bank))
+        job.update(self._freeze_measurement_job_target(job, measurement_bank, frozen_target))
         job.update({f"_{key}": value for key, value in expected.items()})
         if capture_evidence is not None:
             capture_evidence._bind(job["id"])

@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget
-from measurement.speaker_acquisition import acquire_speaker_captures
+from measurement.speaker_acquisition import acquire_speaker_captures, verify_speaker_alignment
 from measurement.speaker_align import SpeakerAlignment
 from measurement.speaker_commit import SpeakerAlignSession
 from measurement.speaker_service import (
@@ -141,6 +141,7 @@ def build_speaker_align_service(
     describe_device: Callable[[dict], dict],
     get_measurement_rate: Callable[[], int],
     capture_runner: Callable[..., Awaitable[dict]] | None = None,
+    verification_runner: Callable[..., Awaitable[dict]] | None = None,
     get_measurement_session: Callable[[], Any] | None = None,
     build_release_adapter: Callable[..., Any] | None = None,
     prepare_measurement: Callable[..., Awaitable[Any]] | None = None,
@@ -167,7 +168,9 @@ def build_speaker_align_service(
     if output_service is None or dsp_manager is None:
         raise ValueError("Speaker Align composition requires output and DSP services")
     runner = capture_runner or acquire_speaker_captures
-    if measurement_store is None and runner is acquire_speaker_captures:
+    verifier = verification_runner or verify_speaker_alignment
+    if measurement_store is None and (runner is acquire_speaker_captures
+                                      or verifier is verify_speaker_alignment):
         raise ValueError("Speaker Align composition requires a measurement store")
     for name, bound in (("get_native_runtime", get_native_runtime),
                         ("describe_device", describe_device),
@@ -214,6 +217,27 @@ def build_speaker_align_service(
                       expected_native_context: dict | None = None,
                       on_progress: Callable | None = None) -> dict:
         return await runner(
+            measurement_store, alignment, input_id=input_id,
+            mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
+            reference_input_channel_left=reference_input_channel_left,
+            reference_input_channel_right=reference_input_channel_right,
+            reference_id=reference_id, microphone_position_id=microphone_position_id,
+            sweep_profile=sweep_profile, cancel_requested=cancel_requested,
+            expected_native_context=expected_native_context, on_progress=on_progress)
+
+    async def confirm(alignment: SpeakerAlignment, *, input_id: str,
+                      mic_input_channel: str | int | None,
+                      reference_input_channel: str | int | None,
+                      reference_input_channel_left: str | int | None = None,
+                      reference_input_channel_right: str | int | None = None,
+                      reference_id: str, microphone_position_id: str,
+                      sweep_profile: dict | None,
+                      cancel_requested: Callable[[], bool] | None = None,
+                      expected_native_context: dict | None = None,
+                      on_progress: Callable | None = None) -> dict:
+        """One shared verification take per side plus its confirmation document."""
+        return await verifier(
             measurement_store, alignment, input_id=input_id,
             mic_input_channel=mic_input_channel,
             reference_input_channel=reference_input_channel,
@@ -321,7 +345,7 @@ def build_speaker_align_service(
             await session.register_speaker_align_release_adapter(adapter)
 
     return SpeakerAlignService(
-        get_state=get_state, describe=describe, acquire=acquire,
+        get_state=get_state, describe=describe, acquire=acquire, confirm=confirm,
         create_session=create_session, freeze_live=freeze_live,
         on_committed=on_committed, job_scope=job_scope, check_available=check_available,
         input_keeper=input_keeper)

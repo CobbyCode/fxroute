@@ -34,6 +34,7 @@ __all__ = [
     "attach_measurement_target",
     "freeze_measurement_target",
     "measurement_target_from_context",
+    "narrow_measured_target",
     "require_commit_target",
     "summed_role_ids",
     "sweep_output_masks",
@@ -147,15 +148,41 @@ def target_output_mask(target: dict, *, roles: Sequence[str]) -> int:
     """Return the engine output mute mask for this target.
 
     ``roles`` is the ordered active role list of the running plan (engine
-    output index order).  Bit ``n`` mutes engine output ``n``.  Global targets
-    return 0; area targets mute every output whose role is not measured, so a
-    fanned-out measured role keeps all of its physical ports audible.
+    output index order).  Bit ``n`` mutes engine output ``n``.  A Global target
+    that measures every active role returns 0; one narrowed to a role set
+    (one speaker side's shared verification sweep) mutes every role it does
+    not measure, exactly like an area target, so a fanned-out measured role
+    keeps all of its physical ports audible.
     """
     measured = _measured_roles(target)
     ordered = _engine_roles(roles, measured)
-    if target.get("bank_id") == GLOBAL_BANK_ID:
+    if target.get("bank_id") == GLOBAL_BANK_ID and len(measured) == len(ordered):
         return 0
     return sum(1 << index for index, role in enumerate(ordered) if role not in measured)
+
+
+def narrow_measured_target(target: dict, *, roles: Sequence[str]) -> dict:
+    """Return a copy of ``target`` that measures only ``roles``.
+
+    A Speaker Align shared verification sweep plays every way of one speaker
+    side at once: the narrowed target keeps the frozen schema, device,
+    revision and processing identity while its measured roles -- and with them
+    its mute mask -- narrow to that side.  A Global target keeps measuring
+    through the complete active chain.
+    """
+    if not isinstance(target, dict) or target.get("legacy"):
+        raise ValueError("A narrowed measurement target needs a frozen target document")
+    ordered = _engine_roles(target.get("roles") or [], target.get("measured_roles") or [])
+    wanted = [str(role) for role in roles]
+    if not wanted or len(set(wanted)) != len(wanted):
+        raise ValueError("A narrowed measurement target needs distinct role names")
+    missing = [role for role in wanted if role not in ordered]
+    if missing:
+        raise ValueError(
+            f"Narrowed measurement target role is no longer routed: {', '.join(sorted(missing))}")
+    narrowed = copy.deepcopy(target)
+    narrowed["measured_roles"] = [role for role in ordered if role in set(wanted)]
+    return narrowed
 
 
 def summed_role_ids(roles: Sequence[str]) -> set[str]:

@@ -274,6 +274,15 @@ class SpeakerServiceHookTests(unittest.IsolatedAsyncioTestCase):
             return {"captures": self.captures_for(alignment, (96, 240)),
                     "provenance": {}}
 
+        async def confirm(alignment, **kwargs):
+            request = alignment.verification_request()
+            return {"confirmation": {
+                        "start_revision": request["measurement_target"]["revision"],
+                        "processing_fingerprint": request["measurement_target"]["processing_fingerprint"],
+                        "arrival_ms": {role: 0.0 for role in request["roles"]},
+                        "way_levels_db": {role: 0.0 for role in request["roles"]}},
+                    "provenance": {}}
+
         def create_session(start_state, **kwargs):
             class Session:
                 async def stage_candidate(self, candidate):
@@ -298,6 +307,7 @@ class SpeakerServiceHookTests(unittest.IsolatedAsyncioTestCase):
             describe=lambda state: {"output_key": "dev", "channels": 6,
                                     "sample_rate_hz": RATE, "fingerprint": "frozen-plan"},
             acquire=acquire,
+            confirm=confirm,
             create_session=create_session,
             freeze_live=lambda state, **ctx: freeze_measurement_target(
                 state, bank_id="global", output_key=ctx["output_key"],
@@ -412,6 +422,7 @@ class SpeakerCompositionTests(unittest.IsolatedAsyncioTestCase):
                                            "hardware_ports": ["a", "b"]},
             get_measurement_rate=lambda: RATE,
             capture_runner=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no capture")),
+            verification_runner=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no verification")),
             get_measurement_session=lambda: Session(),
             build_release_adapter=factory)
         self.assertIsNotNone(service._on_committed)
@@ -447,7 +458,8 @@ class SpeakerCompositionTests(unittest.IsolatedAsyncioTestCase):
             describe_device=lambda state: {"output_key": "dev", "channels": 2,
                                            "hardware_ports": ["a", "b"]},
             get_measurement_rate=lambda: RATE,
-            capture_runner=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no capture")))
+            capture_runner=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no capture")),
+            verification_runner=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no verification")))
         self.assertIsNone(service._on_committed)
 
 

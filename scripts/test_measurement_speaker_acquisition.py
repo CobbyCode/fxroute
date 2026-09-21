@@ -18,7 +18,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
-from measurement.speaker_acquisition import acquire_speaker_captures
+from measurement.speaker_acquisition import acquire_speaker_captures, verify_speaker_alignment
 from measurement.speaker_align import SpeakerAlignment
 from measurement.store import MeasurementStore
 from measurement.target import REFERENCE_TAP_INGRESS, freeze_measurement_target
@@ -185,6 +185,14 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         options.update(overrides)
         return await acquire_speaker_captures(self.store, self.alignment, **options)
 
+    async def verify(self, **overrides):
+        options = dict(input_id="mic", mic_input_channel="1", reference_input_channel="2",
+                       reference_id=REFERENCE_ID, microphone_position_id=POSITION_ID,
+                       sweep_profile={"sweep_seconds": 0.68, "lead_in_seconds": 0.34,
+                                      "tail_seconds": 0.18})
+        options.update(overrides)
+        return await verify_speaker_alignment(self.store, self.alignment, **options)
+
     async def test_serial_ways_propose_start_relative_delays(self):
         result = await self.acquire()
         captures = result["captures"]
@@ -218,6 +226,79 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(
             candidate["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"], 5.0, delta=0.3)
         self.assertEqual(proposal["reference_role"], "left_high")
+
+    async def test_verification_runs_one_shared_take_for_the_whole_side(self):
+        self.use_scarlett_input()
+        self.er_carrier_for_capture = lambda _index: 7
+        progress = []
+        result = await self.verify(
+            reference_input_channel="7", reference_input_channel_left="7",
+            reference_input_channel_right="8",
+            on_progress=lambda role, index, count: progress.append((role, index, count)))
+        # One sweep for the side, not one per way, and it plays exactly the
+        # side's ways: every other routed role stays muted.
+        self.assertEqual(self.captures_started, 1)
+        self.assertEqual(len(self.store._jobs), 1)
+        request = self.alignment.verification_request()
+        self.assertEqual(self.masks, [request["output_mask"]])
+        self.assertEqual(progress, [("left_ways", 1, 1)])
+        confirmation = result["confirmation"]
+        self.assertEqual(set(confirmation["arrival_ms"]), {"left_low", "left_high"})
+        self.assertEqual(confirmation["start_revision"], 7)
+        self.assertEqual(confirmation["processing_fingerprint"], "frozen-plan")
+        self.assertIn("way_isolation_db", confirmation)
+        self.assertIn("way_levels_db", confirmation)
+        provenance = result["provenance"]
+        self.assertEqual(provenance["reference_id"], REFERENCE_ID)
+        self.assertEqual(provenance["microphone_position_id"], POSITION_ID)
+        self.assertEqual(provenance["electrical_reference_channel"], 7)
+        self.assertEqual(provenance["reference_node"], "capture_1")
+        self.assertEqual(len(provenance["job_ids"]), 1)
+
+    async def test_verification_target_is_the_narrowed_side_plan(self):
+        self.use_scarlett_input()
+        self.er_carrier_for_capture = lambda _index: 7
+        seen = []
+        original = self.store.start_measurement
+
+        async def spy(**kwargs):
+            seen.append(kwargs)
+            return await original(**kwargs)
+
+        self.store.start_measurement = spy
+        try:
+            await self.verify(reference_input_channel="7",
+                              reference_input_channel_left="7",
+                              reference_input_channel_right="8")
+        finally:
+            self.store.start_measurement = original
+        self.assertEqual(len(seen), 1)
+        request = self.alignment.verification_request()
+        self.assertEqual(seen[0]["frozen_target"], request["measurement_target"])
+        self.assertEqual(seen[0]["channel"], "left")
+        self.assertEqual(seen[0]["mic_input_channel"], "1")
+        self.assertEqual(seen[0]["reference_candidate_channels"], ["7", "8"])
+        self.assertIsInstance(seen[0]["capture_evidence"], object)
+
+    async def test_verification_reference_must_be_electrical(self):
+        self.use_scarlett_input()
+        # No loopback carries the reference: the store's host-timing fallback
+        # must fail this take before any confirmation.
+        self.er_carrier_for_capture = lambda _index: 0
+        with self.assertRaisesRegex(RuntimeError, "electrical reference"):
+            await self.verify(reference_input_channel="7",
+                              reference_input_channel_left="7",
+                              reference_input_channel_right="8")
+        self.assertEqual(self.captures_started, 2)
+        self.assertEqual(len(self.store._jobs), 1)
+
+    async def test_verification_identities_must_match_the_frozen_requests(self):
+        for options in ({"reference_id": "other:input"},
+                        {"microphone_position_id": "other-seat"}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                await self.verify(**options)
+        self.assertEqual(self.captures_started, 0)
+        self.assertEqual(self.store._jobs, {})
 
     async def test_host_reference_is_captured_in_the_same_stream_as_input_one(self):
         result = await self.acquire(reference_input_channel="")

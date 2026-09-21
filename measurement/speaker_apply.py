@@ -69,15 +69,21 @@ def verify_confirmation(
 ) -> dict[str, Any]:
     """Decide from measured evidence whether the staged candidate confirmed.
 
-    Both arguments are ``SpeakerAlignment.propose`` outputs: ``baseline``
-    from the pre-apply acquisition, ``confirmation`` from the post-apply
-    re-acquisition of the same frozen alignment. Time residual and gain
-    spread are verified jointly: ways must measure time-aligned and their
-    passband levels must agree within the gain tolerance. Malformed or
-    rebased input raises ``ValueError``; a merely unconvincing measurement
-    returns ``confirmed: False``.
+    ``baseline`` is the planning ``SpeakerAlignment.propose`` output, whose
+    arrivals were measured per way, and ``confirmation`` is the post-apply
+    document of one shared per-side verification take. That take's arrivals
+    are band-limited way arrivals on a single capture time base, so the
+    residual is a real acoustic low/high offset instead of the per-way
+    microphone-minus-own-reference difference a staged way delay cancels out
+    of. The residual is judged from the confirmation take alone; the
+    baseline's spread stays as the before-value. Time residual and gain spread
+    are verified jointly: ways must measure time-aligned and their passband
+    levels must agree within the gain tolerance. Malformed or rebased input
+    raises ``ValueError``; a merely unconvincing measurement returns
+    ``confirmed: False``.
     """
     from measurement.alignment_backend import MAX_VERIFIED_GAIN_SPREAD_DB
+    from measurement.speaker_verification import MIN_WAY_ISOLATION_DB
     if max_gain_spread_db is None:
         max_gain_spread_db = MAX_VERIFIED_GAIN_SPREAD_DB
     if not isinstance(baseline, dict) or not isinstance(confirmation, dict):
@@ -104,6 +110,25 @@ def verify_confirmation(
         reasons.append(
             f"residual {residual_ms:.3f} ms exceeds {max_residual_ms:.3f} ms: ways still misaligned"
         )
+    # A shared take separates the side's ways by their own bands. When one way
+    # is so far below its neighbour that its band is really the neighbour's
+    # leak, its arrival is not its own and the residual would read as aligned
+    # whatever the rendering does: report that instead of confirming.
+    isolation = confirmation.get("way_isolation_db")
+    weakest_isolation_db: float | None = None
+    if isinstance(isolation, dict) and set(isolation) == set(after):
+        margins = [_finite(value, "way isolation") for value in isolation.values()
+                   if value is not None]
+        if margins:
+            weakest_isolation_db = min(margins)
+            if weakest_isolation_db < MIN_WAY_ISOLATION_DB:
+                reasons.append(
+                    f"way isolation {weakest_isolation_db:.3f} dB is below "
+                    f"{MIN_WAY_ISOLATION_DB:.3f} dB: the shared take cannot "
+                    "separate the ways"
+                )
+    elif isolation is not None:
+        raise ValueError("Speaker Align confirmation isolation evidence names different ways")
     before_levels = baseline.get("way_levels_db") or {}
     after_levels = confirmation.get("after_way_levels_db", confirmation.get("way_levels_db")) or {}
     gain_spread_db: float | None = None
@@ -135,6 +160,9 @@ def verify_confirmation(
         "gain_spread_db": gain_spread_db,
         "before_gain_spread_db": before_gain_spread_db,
         "gain_tolerance_db": max_gain_spread_db,
+        "way_isolation_db": dict(isolation) if isinstance(isolation, dict) else None,
+        "isolation_margin_db": weakest_isolation_db,
+        "isolation_tolerance_db": MIN_WAY_ISOLATION_DB,
     }
     if isinstance(after_levels, dict) and after_levels:
         result["after_way_levels_db"] = {role: float(after_levels[role]) for role in after_levels}
@@ -145,8 +173,7 @@ async def apply_and_confirm(
     *,
     stage: Callable[[dict[str, Any]], Awaitable[Any]],
     restore: Callable[[], Awaitable[None]],
-    acquire: Callable[[], Awaitable[list[dict[str, Any]]]],
-    alignment: Any,
+    confirm: Callable[[], Awaitable[dict[str, Any]]],
     proposal: dict[str, Any],
     live_target: dict[str, Any],
     cancel_requested: Callable[[], bool] | None = None,
@@ -155,19 +182,20 @@ async def apply_and_confirm(
 ) -> dict[str, Any]:
     """Trial-stage a proposal, confirm it acoustically, always restore.
 
-    ``acquire`` returns post-apply captures in ``propose`` shape (the serial
-    acquisition adapter produces exactly that). ``live_target`` must be freshly
-    frozen for the proposal's area: the output state is never persisted here,
-    so its revision still matches after staging. ``max_residual_ms``
-    overrides the confirmation gate for hardware
-    qualification; defaults to the module gate. A failed measurement
-    returns ``confirmed: False``; errors re-raise after restore, except a
-    failing restore itself surfaces loudly (chained onto the original error
-    as context). A stage failure runs no restore (the stage boundary owns
-    atomicity); every later path restores shielded against cancellation
-    before returning or raising.
+    ``confirm`` measures the staged rendering and returns the post-apply
+    verification document for the same frozen alignment (one shared take per
+    speaker side, so the residual cannot cancel itself out the way per-way
+    references do). ``live_target`` must be freshly frozen for the proposal's
+    area: the output state is never persisted here, so its revision still
+    matches after staging. ``max_residual_ms`` overrides the confirmation gate
+    for hardware qualification; defaults to the module gate. A failed
+    measurement returns ``confirmed: False``; errors re-raise after restore,
+    except a failing restore itself surfaces loudly (chained onto the original
+    error as context). A stage failure runs no restore (the stage boundary owns
+    atomicity); every later path restores shielded against cancellation before
+    returning or raising.
     """
-    for label, bound in (("stage", stage), ("restore", restore), ("acquire", acquire)):
+    for label, bound in (("stage", stage), ("restore", restore), ("confirm", confirm)):
         if not callable(bound):
             raise ValueError(f"Speaker Align trial requires a {label} boundary")
     if not isinstance(live_target, dict):
@@ -195,9 +223,7 @@ async def apply_and_confirm(
     receipt = await stage(deepcopy(candidate_state))
     try:
         _check_cancel(cancel_requested)
-        captures = await acquire()
-        _check_cancel(cancel_requested)
-        confirmation = alignment.propose(captures, live_target=live_target)
+        confirmation = await confirm()
         _check_cancel(cancel_requested)
         check = verify_confirmation(proposal, confirmation, **verify_options)
     except asyncio.CancelledError:

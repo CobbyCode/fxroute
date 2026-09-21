@@ -334,12 +334,11 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         session = self.session()
         aligned = captures_for(self.alignment, (500, 500))
 
-        async def acquire():
-            return copy.deepcopy(aligned)
+        async def confirm():
+            return self.alignment.propose(copy.deepcopy(aligned), live_target=self.live)
 
         result = await session.confirm_and_commit(
-            acquire=acquire, alignment=self.alignment, proposal=self.proposal,
-            live_target=self.live)
+            confirm=confirm, proposal=self.proposal, live_target=self.live)
         self.assertTrue(result["confirmed"])
         self.assertEqual(result["committed"]["revision"], self.base["revision"] + 1)
         self.assertTrue(session.committed)
@@ -348,12 +347,11 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         session = self.session()
         misaligned = captures_for(self.alignment, (500, 548))
 
-        async def acquire():
-            return copy.deepcopy(misaligned)
+        async def confirm():
+            return self.alignment.propose(copy.deepcopy(misaligned), live_target=self.live)
 
         result = await session.confirm_and_commit(
-            acquire=acquire, alignment=self.alignment, proposal=self.proposal,
-            live_target=self.live)
+            confirm=confirm, proposal=self.proposal, live_target=self.live)
         self.assertFalse(result["confirmed"])
         self.assertNotIn("committed", result)
         self.assertEqual(self.service.load()["revision"], self.base["revision"])
@@ -364,13 +362,13 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         release = threading.Event()
         loop = asyncio.get_running_loop()
 
-        async def hanging_acquire():
+        async def hanging_confirm():
             loop.call_soon_threadsafe(entered.set)
             await asyncio.to_thread(release.wait, 10)
-            return []
+            return {}
 
         worker = asyncio.create_task(session.confirm_and_commit(
-            acquire=hanging_acquire, alignment=self.alignment, proposal=self.proposal,
+            confirm=hanging_confirm, proposal=self.proposal,
             live_target=self.live, acquire_timeout_seconds=0.05))
         try:
             async with asyncio.timeout(10):
@@ -393,13 +391,12 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         stale = copy.deepcopy(self.live)
         stale["revision"] += 1
 
-        async def acquire():
-            self.fail("stale envelope must not reach acquisition")
+        async def confirm():
+            self.fail("stale envelope must not reach the confirmation take")
 
         with self.assertRaisesRegex(ValueError, "stale"):
             await session.confirm_and_commit(
-                acquire=acquire, alignment=self.alignment, proposal=self.proposal,
-                live_target=stale)
+                confirm=confirm, proposal=self.proposal, live_target=stale)
         self.assertEqual(self.stage_calls, [])
         self.assertIsNone(self.runtime["fingerprint"])
         self.assertFalse(session.committed)
@@ -407,13 +404,12 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
     async def test_malformed_proposal_fails_before_stage(self):
         session = self.session()
 
-        async def acquire():
-            self.fail("malformed envelope must not reach acquisition")
+        async def confirm():
+            self.fail("malformed envelope must not reach the confirmation take")
 
         with self.assertRaisesRegex(ValueError, "proposal"):
             await session.confirm_and_commit(
-                acquire=acquire, alignment=self.alignment,
-                proposal="not-a-proposal", live_target=self.live)
+                confirm=confirm, proposal="not-a-proposal", live_target=self.live)
         self.assertEqual(self.stage_calls, [])
 
     async def test_concurrent_sessions_commit_only_once(self):
@@ -423,19 +419,18 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         second_session = self.session()
         order = []
 
-        async def slow_acquire():
+        async def slow_confirm():
             order.append("acquire-start")
             await asyncio.sleep(0.05)
             order.append("acquire-done")
-            return copy.deepcopy(captures_for(self.alignment, (500, 500)))
+            return self.alignment.propose(
+                copy.deepcopy(captures_for(self.alignment, (500, 500))), live_target=self.live)
 
         first, second = await asyncio.gather(
             first_session.confirm_and_commit(
-                acquire=slow_acquire, alignment=self.alignment, proposal=self.proposal,
-                live_target=self.live),
+                confirm=slow_confirm, proposal=self.proposal, live_target=self.live),
             second_session.confirm_and_commit(
-                acquire=slow_acquire, alignment=self.alignment, proposal=self.proposal,
-                live_target=self.live),
+                confirm=slow_confirm, proposal=self.proposal, live_target=self.live),
             return_exceptions=True)
         revisions = sorted(
             result["committed"]["revision"] for result in (first, second)
@@ -447,23 +442,23 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
     async def test_committed_session_starts_no_second_trial(self):
         session = self.session()
 
-        async def aligned_acquire():
-            return copy.deepcopy(captures_for(self.alignment, (500, 500)))
+        async def aligned_confirm():
+            return self.alignment.propose(
+                copy.deepcopy(captures_for(self.alignment, (500, 500))), live_target=self.live)
 
         first = await session.confirm_and_commit(
-            acquire=aligned_acquire, alignment=self.alignment, proposal=self.proposal,
-            live_target=self.live)
+            confirm=aligned_confirm, proposal=self.proposal, live_target=self.live)
         self.assertTrue(first["confirmed"])
         calls = []
 
-        async def counting_acquire():
-            calls.append("acquire")
-            return copy.deepcopy(captures_for(self.alignment, (500, 500)))
+        async def counting_confirm():
+            calls.append("confirm")
+            return self.alignment.propose(
+                copy.deepcopy(captures_for(self.alignment, (500, 500))), live_target=self.live)
 
         with self.assertRaisesRegex(RuntimeError, "committed"):
             await session.confirm_and_commit(
-                acquire=counting_acquire, alignment=self.alignment, proposal=self.proposal,
-                live_target=self.live)
+                confirm=counting_confirm, proposal=self.proposal, live_target=self.live)
         self.assertEqual(calls, [])
         self.assertEqual(self.service.load()["revision"], self.base["revision"] + 1)
 

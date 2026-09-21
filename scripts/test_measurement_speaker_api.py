@@ -234,6 +234,7 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
 
         native = Native()
         calls = {"n": 0}
+        verifications = {"n": 0}
 
         def lowpass_kernel(cutoff):
             offsets = np.arange(-256, 257, dtype=float)
@@ -281,13 +282,27 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
                 })
             return {"captures": captures, "provenance": {"job_ids": ["composed"]}}
 
+        async def verification_runner(store_arg, alignment, **kwargs):
+            self.assertIs(store_arg, None)
+            verifications["n"] += 1
+            request = alignment.verification_request()
+            return {
+                "confirmation": {
+                    "start_revision": request["measurement_target"]["revision"],
+                    "processing_fingerprint": request["measurement_target"]["processing_fingerprint"],
+                    "arrival_ms": {role: 0.0 for role in request["roles"]},
+                    "way_levels_db": {role: 0.0 for role in request["roles"]}},
+                "provenance": {"job_ids": ["composed-verify"]},
+            }
+
         service = build_speaker_align_service(
             output_service=output_service, measurement_store=None, dsp_manager=manager,
             get_native_runtime=lambda: native,
             describe_device=lambda state: {"output_key": "dev", "channels": 6,
                                            "hardware_ports": list(ports)},
             get_measurement_rate=lambda: rate,
-            capture_runner=capture_runner)
+            capture_runner=capture_runner,
+            verification_runner=verification_runner)
         self.assertIsInstance(service, SpeakerAlignService)
         job_id = service.start(
             "left", input_id="mic", reference_input_channel="2",
@@ -296,7 +311,9 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
         job = await service.wait_for(job_id, timeout_seconds=30)
         self.assertEqual(job["status"], "committed", job)
         self.assertEqual(job["result"]["committed_revision"], head["revision"] + 1)
-        self.assertEqual(calls["n"], 2)
+        # One planning capture per way plus one shared verification take.
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(verifications["n"], 1)
         self.assertEqual(output_service.load()["revision"], head["revision"] + 1)
 
 

@@ -173,8 +173,11 @@ def _crossover_correction_db(processing: dict | None, frequency_hz: float,
     return 20.0 * math.log10(max(abs(total), 1e-12))
 
 
-def _octave_smooth(values: list[tuple[float, float]], *, octaves: float = SMOOTHING_OCTAVES) -> list[float]:
-    """Moving-median smooth levels in log frequency (robust to narrow peaks)."""
+def octave_smooth(values: list[tuple[float, float]], *, octaves: float = SMOOTHING_OCTAVES) -> list[float]:
+    """Moving-median smooth levels in log frequency (robust to narrow peaks).
+
+    Shared by the per-way level estimate and the shared verification take.
+    """
     half = 2.0 ** (octaves / 2.0)
     smoothed = []
     for frequency, _ in values:
@@ -212,7 +215,7 @@ def estimate_way_level(capture: dict, passband: tuple[float, float],
     span_octaves = math.log2(high_hz / low_hz)
     if span_octaves < MIN_PASSBAND_OCTAVES:
         raise ValueError("Alignment passband is too narrow for a robust level")
-    smoothed = _octave_smooth(inside)
+    smoothed = octave_smooth(inside)
     level_db = float(statistics.median(smoothed))
     mad_db = float(statistics.median(abs(value - level_db) for value in smoothed))
     if not math.isfinite(level_db) or not math.isfinite(mad_db):

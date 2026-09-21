@@ -12,7 +12,13 @@ import numpy as np
 
 from audio.output_state import validate_output_state
 from measurement.constants import CAPTURE_CLIP_FAIL_DBFS
-from measurement.target import REFERENCE_TAP_INGRESS, freeze_measurement_target, target_output_mask
+from measurement.speaker_verification import side_confirmation
+from measurement.target import (
+    REFERENCE_TAP_INGRESS,
+    freeze_measurement_target,
+    narrow_measured_target,
+    target_output_mask,
+)
 
 MIN_CONFIDENCE = 0.75
 
@@ -84,6 +90,7 @@ class SpeakerAlignment:
         config = self._state["modes"][self._state["active_mode"]]
         if not config["crossover_enabled"]:
             raise ValueError("Speaker Align requires crossover speaker ways")
+        self._side = side
         self._reference_id = _identity(reference_id, "upstream reference")
         self._position_id = _identity(microphone_position_id, "microphone position")
         context = dict(output_key=output_key, channels=channels,
@@ -111,6 +118,77 @@ class SpeakerAlignment:
     def capture_requests(self) -> list[dict]:
         """Serial per-way requests in configured low-to-high role order."""
         return copy.deepcopy(self._requests)
+
+    def verification_request(self) -> dict:
+        """The one shared verification take of this side.
+
+        Every way of the side plays the same sweep at once while the rest of
+        the plan stays muted, so the take carries one acoustic time base for
+        the whole side.  The target narrows to this side's roles; nothing here
+        maps a side, a way or an output to a loopback channel.
+        """
+        if len(self._roles) < 2:
+            raise ValueError("Speaker Align verification needs at least two speaker ways")
+        target = narrow_measured_target(self._target, roles=self._roles)
+        return {
+            "side": self._side,
+            "channel": self._side,
+            "roles": list(self._roles),
+            "measurement_target": target,
+            "output_mask": target_output_mask(target, roles=target["roles"]),
+            "reference_id": self._reference_id,
+            "microphone_position_id": self._position_id,
+            "reference_tap": REFERENCE_TAP_INGRESS,
+        }
+
+    def confirmation(self, take: dict) -> dict:
+        """Judge one shared verification take of this side acoustically.
+
+        The take is gated like every other Speaker Align evidence: same frozen
+        target and reference, same microphone position, an unshifted
+        deconvolved sweep, usable quality, no clipping and an admitted
+        electrical reference.  The residual then comes from the side's own
+        band-limited arrivals on that take's single time base -- never from a
+        per-way reference peak, which moves with the delay under test.
+        """
+        request = self.verification_request()
+        if not isinstance(take, dict):
+            raise ValueError("Speaker Align verification requires one shared take")
+        if take.get("measurement_target") != request["measurement_target"]:
+            raise ValueError("Speaker Align verification take measured different roles or processing")
+        if (take.get("reference_id") != self._reference_id
+                or take.get("reference_tap") != REFERENCE_TAP_INGRESS):
+            raise ValueError("Speaker Align verification take lost its upstream reference")
+        if take.get("microphone_position_id") != self._position_id:
+            raise ValueError("Speaker Align verification microphone position changed")
+        if take.get("time_reference") != "deconvolved-sweep-origin":
+            raise ValueError("Speaker Align verification IR origin must be the unshifted deconvolved sweep")
+        analysis = take.get("analysis") or {}
+        if analysis.get("sample_rate") != self._rate:
+            raise ValueError("Speaker Align verification capture sample rate changed")
+        quality = analysis.get("quality_checks") or {}
+        if (quality.get("status") not in ("pass", "warn")
+                or not isinstance(quality.get("items"), list)
+                or any(item.get("level") == "error" for item in quality["items"])):
+            raise ValueError("Speaker Align verification capture quality is not usable")
+        if _finite(analysis.get("peak_dbfs"), "verification microphone peak") >= CAPTURE_CLIP_FAIL_DBFS:
+            raise ValueError("Speaker Align verification microphone capture clipped")
+        reference = analysis.get("reference_path") or {}
+        if (reference.get("clipped") is not False
+                or _finite(reference.get("peak_dbfs"), "verification reference peak") >= CAPTURE_CLIP_FAIL_DBFS):
+            raise ValueError("Speaker Align verification reference capture clipped")
+        if reference.get("electrical_reference_used") is not True:
+            raise ValueError("Speaker Align verification requires the electrical reference")
+        require_timing_reference(analysis, take.get("reference_node"))
+        processing = self._state["modes"][self._state["active_mode"]]["processing"]
+        return side_confirmation(
+            impulse_response=take.get("impulse_response"),
+            processing=processing,
+            roles=self._roles,
+            sample_rate_hz=self._rate,
+            start_revision=self._target["revision"],
+            processing_fingerprint=self._target["processing_fingerprint"],
+        )
 
     def _require_live_target(self, live_target: dict) -> None:
         if live_target != self._target:
