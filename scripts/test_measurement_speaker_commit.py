@@ -15,6 +15,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import speaker_take_test_support as takes
 from audio.output_service import OutputService, OutputServiceDeps
 from audio.output_state import default_output_state, set_mode_routing, switch_mode, validate_output_state, set_crossover
 from audio.output_state_store import OutputStateStore, StateConflictError
@@ -46,6 +47,20 @@ def crossover_state():
             "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000,
         }
     return validate_output_state(state)
+
+
+def planning_from(alignment, arrivals):
+    """One shared planning take at the given per-way sample offsets."""
+    roles = [request["role"] for request in alignment.capture_requests()]
+    return takes.planning_document(
+        alignment, {role: arrivals[index] * 1000.0 / RATE for index, role in enumerate(roles)})
+
+
+def confirmation_from(alignment, arrivals):
+    """One shared verification take at the given per-way sample offsets."""
+    roles = [request["role"] for request in alignment.capture_requests()]
+    return takes.confirmation_document(
+        alignment, {role: arrivals[index] * 1000.0 / RATE for index, role in enumerate(roles)})
 
 
 def lowpass_kernel(cutoff):
@@ -126,7 +141,8 @@ class SessionFixture:
             sample_rate_hz=RATE, fingerprint="frozen-plan",
         )
         self.proposal = self.alignment.propose(
-            captures_for(self.alignment, (96, 240)), live_target=self.live)
+            captures_for(self.alignment, (96, 240)),
+            planning=planning_from(self.alignment, (96, 240)), live_target=self.live)
 
     def build_target(self, plan, *, fingerprint):
         layout = self.service.compile_layout(plan)
@@ -332,10 +348,8 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         from measurement.speaker_apply import apply_and_confirm
 
         session = self.session()
-        aligned = captures_for(self.alignment, (500, 500))
-
         async def confirm():
-            return self.alignment.propose(copy.deepcopy(aligned), live_target=self.live)
+            return confirmation_from(self.alignment, (500, 500))
 
         result = await session.confirm_and_commit(
             confirm=confirm, proposal=self.proposal, live_target=self.live)
@@ -345,10 +359,8 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_unconfirmed_trial_never_commits(self):
         session = self.session()
-        misaligned = captures_for(self.alignment, (500, 548))
-
         async def confirm():
-            return self.alignment.propose(copy.deepcopy(misaligned), live_target=self.live)
+            return confirmation_from(self.alignment, (500, 548))
 
         result = await session.confirm_and_commit(
             confirm=confirm, proposal=self.proposal, live_target=self.live)
@@ -423,8 +435,7 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
             order.append("acquire-start")
             await asyncio.sleep(0.05)
             order.append("acquire-done")
-            return self.alignment.propose(
-                copy.deepcopy(captures_for(self.alignment, (500, 500))), live_target=self.live)
+            return confirmation_from(self.alignment, (500, 500))
 
         first, second = await asyncio.gather(
             first_session.confirm_and_commit(
@@ -443,8 +454,7 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         session = self.session()
 
         async def aligned_confirm():
-            return self.alignment.propose(
-                copy.deepcopy(captures_for(self.alignment, (500, 500))), live_target=self.live)
+            return confirmation_from(self.alignment, (500, 500))
 
         first = await session.confirm_and_commit(
             confirm=aligned_confirm, proposal=self.proposal, live_target=self.live)
@@ -453,8 +463,7 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
 
         async def counting_confirm():
             calls.append("confirm")
-            return self.alignment.propose(
-                copy.deepcopy(captures_for(self.alignment, (500, 500))), live_target=self.live)
+            return confirmation_from(self.alignment, (500, 500))
 
         with self.assertRaisesRegex(RuntimeError, "committed"):
             await session.confirm_and_commit(

@@ -12,7 +12,9 @@ import unittest
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import speaker_take_test_support as takes
 from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
 from measurement.speaker_align import SpeakerAlignment
 from measurement.speaker_apply import (
@@ -54,6 +56,26 @@ def alignment_and_live(state):
         sample_rate_hz=RATE, fingerprint="frozen-plan",
     )
     return alignment, live
+
+
+def planning_from(alignment, arrivals):
+    """One shared planning take at the given per-way sample offsets."""
+    roles = [request["role"] for request in alignment.capture_requests()]
+    return takes.planning_document(
+        alignment, {role: arrivals[index] * 1000.0 / RATE for index, role in enumerate(roles)})
+
+
+def confirmation_from(alignment, arrivals):
+    """One shared verification take at the given per-way sample offsets."""
+    roles = [request["role"] for request in alignment.capture_requests()]
+    return takes.confirmation_document(
+        alignment, {role: arrivals[index] * 1000.0 / RATE for index, role in enumerate(roles)})
+
+
+def planned(alignment, live, arrivals, captures):
+    """A proposal whose relative delays come from one shared planning take."""
+    return alignment.propose(
+        captures, planning=planning_from(alignment, arrivals), live_target=live)
 
 
 def lowpass_kernel(cutoff):
@@ -105,36 +127,34 @@ class VerifyConfirmationTests(unittest.TestCase):
     def setUp(self):
         self.state = crossover_state()
         self.alignment, self.live = alignment_and_live(self.state)
-        self.baseline = self.alignment.propose(
-            captures_for(self.alignment, (96, 240)), live_target=self.live)
+        self.baseline = planned(self.alignment, self.live, (96, 240),
+                                captures_for(self.alignment, (96, 240)))
 
     def test_aligned_confirmation_confirms(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         check = verify_confirmation(self.baseline, confirmation)
         self.assertTrue(check["confirmed"])
         self.assertAlmostEqual(check["max_residual_ms"], 0.0, delta=0.05)
         self.assertEqual(len(check["pairs"]), 1)
 
     def test_residual_offset_rejects(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 548)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 548))
         check = verify_confirmation(self.baseline, confirmation)
         self.assertFalse(check["confirmed"])
         self.assertGreater(check["max_residual_ms"], MAX_CONFIRMED_RESIDUAL_MS)
         self.assertIn("residual", check["reasons"][0])
 
     def test_confirmation_reports_measured_arrivals_and_limit(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         check = verify_confirmation(self.baseline, confirmation)
         self.assertEqual(check["before_spread_ms"], 3.0)
-        self.assertEqual(check["after_arrival_ms"], {"left_low": 500 / 48, "left_high": 500 / 48})
+        # The shared take reports each way's arrival relative to the earliest
+        # way of that same take; here both ways arrive together.
+        self.assertEqual(check["after_arrival_ms"], {"left_low": 0.0, "left_high": 0.0})
         self.assertEqual(check["tolerance_ms"], 0.25)
 
     def test_unseparable_shared_take_is_not_confirmed(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         tampered = deepcopy(confirmation)
         tampered["way_isolation_db"] = {"left_low": 3.0, "left_high": 30.0}
         check = verify_confirmation(self.baseline, tampered)
@@ -145,8 +165,7 @@ class VerifyConfirmationTests(unittest.TestCase):
         self.assertEqual(check["way_isolation_db"], {"left_low": 3.0, "left_high": 30.0})
 
     def test_coincident_ways_need_no_isolation_margin(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         tampered = deepcopy(confirmation)
         tampered["way_isolation_db"] = {"left_low": None, "left_high": None}
         check = verify_confirmation(self.baseline, tampered)
@@ -154,32 +173,28 @@ class VerifyConfirmationTests(unittest.TestCase):
         self.assertIsNone(check["isolation_margin_db"])
 
     def test_isolation_evidence_naming_other_ways_is_rejected(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         tampered = deepcopy(confirmation)
         tampered["way_isolation_db"] = {"left_low": 30.0, "right_high": 30.0}
         with self.assertRaisesRegex(ValueError, "isolation"):
             verify_confirmation(self.baseline, tampered)
 
     def test_predicted_zero_delays_cannot_hide_a_measured_residual(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 548)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 548))
         tampered = deepcopy(confirmation)
         tampered["added_delay_ms"] = {"left_low": 0, "left_high": 0}
         check = verify_confirmation(self.baseline, tampered)
         self.assertFalse(check["confirmed"])
 
     def test_rebased_confirmation_is_rejected(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         tampered = deepcopy(confirmation)
         tampered["start_revision"] += 1
         with self.assertRaisesRegex(ValueError, "revision"):
             verify_confirmation(self.baseline, tampered)
 
     def test_mismatched_ways_are_rejected(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         tampered = deepcopy(confirmation)
         tampered["arrival_ms"].pop("left_high")
         with self.assertRaisesRegex(ValueError, "ways"):
@@ -194,8 +209,7 @@ class VerifyConfirmationTests(unittest.TestCase):
             verify_confirmation(baseline, confirmation)
 
     def test_missing_revision_fails_closed(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         baseline = deepcopy(self.baseline)
         del baseline["start_revision"]
         del confirmation["start_revision"]
@@ -203,8 +217,7 @@ class VerifyConfirmationTests(unittest.TestCase):
             verify_confirmation(baseline, confirmation)
 
     def test_none_fingerprint_fails_closed(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         baseline = deepcopy(self.baseline)
         baseline["processing_fingerprint"] = None
         confirmation["processing_fingerprint"] = None
@@ -212,24 +225,21 @@ class VerifyConfirmationTests(unittest.TestCase):
             verify_confirmation(baseline, confirmation)
 
     def test_nan_residual_is_rejected(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         tampered = deepcopy(confirmation)
         tampered["arrival_ms"]["left_low"] = float("nan")
         with self.assertRaisesRegex(ValueError, "finite"):
             verify_confirmation(self.baseline, tampered)
 
     def test_foreign_speaker_ways_are_rejected(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         tampered = deepcopy(confirmation)
         tampered["arrival_ms"]["right_high"] = tampered["arrival_ms"].pop("left_high")
         with self.assertRaisesRegex(ValueError, "ways"):
             verify_confirmation(self.baseline, tampered)
 
     def test_missing_arrival_evidence_is_rejected(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         tampered = deepcopy(confirmation)
         del tampered["arrival_ms"]
         with self.assertRaisesRegex(ValueError, "ways"):
@@ -242,8 +252,7 @@ class VerifyConfirmationTests(unittest.TestCase):
             verify_confirmation(self.baseline, "not-a-proposal")
 
     def test_numpy_float_residual_is_accepted(self):
-        confirmation = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500))
         tampered = deepcopy(confirmation)
         tampered["arrival_ms"] = {
             role: np.float64(value) for role, value in tampered["arrival_ms"].items()}
@@ -329,12 +338,11 @@ class VerifyThreeWayTests(unittest.TestCase):
     def setUp(self):
         self.state = crossover_state_3way()
         self.alignment, self.live = alignment_and_live_3way(self.state)
-        self.baseline = self.alignment.propose(
-            captures_for_3way(self.alignment, (96, 144, 240)), live_target=self.live)
+        self.baseline = planned(self.alignment, self.live, (96, 144, 240),
+                                captures_for_3way(self.alignment, (96, 144, 240)))
 
     def test_three_way_aligned_confirmation_confirms(self):
-        confirmation = self.alignment.propose(
-            captures_for_3way(self.alignment, (500, 500, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 500, 500))
         check = verify_confirmation(self.baseline, confirmation)
         self.assertTrue(check["confirmed"])
         self.assertEqual(len(check["pairs"]), 2)
@@ -342,8 +350,7 @@ class VerifyThreeWayTests(unittest.TestCase):
                          [["left_low", "left_mid"], ["left_mid", "left_high"]])
 
     def test_three_way_middle_way_residual_rejects(self):
-        confirmation = self.alignment.propose(
-            captures_for_3way(self.alignment, (500, 548, 500)), live_target=self.live)
+        confirmation = confirmation_from(self.alignment, (500, 548, 500))
         check = verify_confirmation(self.baseline, confirmation)
         self.assertFalse(check["confirmed"])
         self.assertEqual(check["max_residual_ms"], 1.0)
@@ -381,13 +388,11 @@ class ApplyAndConfirmTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.state = crossover_state()
         self.alignment, self.live = alignment_and_live(self.state)
-        self.baseline = self.alignment.propose(
-            captures_for(self.alignment, (96, 240)), live_target=self.live)
+        self.baseline = planned(self.alignment, self.live, (96, 240),
+                                captures_for(self.alignment, (96, 240)))
         # The confirmation boundary returns the shared verification document.
-        self.aligned = self.alignment.propose(
-            captures_for(self.alignment, (500, 500)), live_target=self.live)
-        self.offset = self.alignment.propose(
-            captures_for(self.alignment, (500, 548)), live_target=self.live)
+        self.aligned = confirmation_from(self.alignment, (500, 500))
+        self.offset = confirmation_from(self.alignment, (500, 548))
 
     async def run_trial(self, doubles, **overrides):
         options = dict(stage=doubles.stage, restore=doubles.restore,

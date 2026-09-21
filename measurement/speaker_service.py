@@ -71,6 +71,12 @@ def _summarize_proposal(proposal: dict[str, Any]) -> dict[str, Any]:
         summary["way_levels_db"] = dict(proposal["way_levels_db"])
     if isinstance(proposal.get("added_gain_db"), dict):
         summary["added_gain_db"] = dict(proposal["added_gain_db"])
+    # How far each way's arrival stood above its neighbours in the shared
+    # planning take: the evidence the planned delay could be told apart at all.
+    if isinstance(proposal.get("planning_isolation_db"), dict):
+        summary["planning_isolation_db"] = dict(proposal["planning_isolation_db"])
+    if isinstance(proposal.get("arrival_source"), str):
+        summary["arrival_source"] = proposal["arrival_source"]
     return _jsonable(summary)
 
 
@@ -402,7 +408,8 @@ class SpeakerAlignService:
                 on_progress=lambda role, index, count: self._note(
                     job_id, "acquiring", f"Measuring {role.replace('_', ' ')} ({index}/{count})…"))
             proposal = alignment.propose(
-                first["captures"], live_target=live_target, cancel_requested=probe)
+                first["captures"], planning=first["planning"],
+                live_target=live_target, cancel_requested=probe)
             self._note(job_id, "confirming", "Confirming alignment acoustically…")
 
             async def confirm() -> dict:

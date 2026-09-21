@@ -12,7 +12,9 @@ import unittest
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import speaker_take_test_support as takes
 from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
 from dsp.crossover import design_crossover
 from measurement.hybrid import build_complex_response
@@ -60,6 +62,29 @@ def alignment_for(state=None, channels=None, *, side="left", rate=RATE):
         sample_rate_hz=rate, fingerprint="frozen-plan",
     )
     return alignment, live
+
+
+def planning_for(alignment, arrivals=(96, 240), *, rate=RATE, **take_options):
+    """Planning take whose way arrivals are the given sample offsets.
+
+    The suite expresses its intent in samples (as the per-way captures do), so
+    the shared take is placed on the same offsets; the returned document is the
+    real one ``SpeakerAlignment.planning`` produces.
+    """
+    roles = [request["role"] for request in alignment.capture_requests()]
+    return takes.planning_document(
+        alignment,
+        {role: arrivals[index] * 1000.0 / rate for index, role in enumerate(roles)},
+        sample_rate_hz=rate, **take_options)
+
+
+def proposal_for(alignment, live, arrivals=(96, 240), *, cutoffs=(2000,), rate=RATE,
+                 **take_options):
+    """A proposal whose delays are planned from a shared take, not per way."""
+    return alignment.propose(
+        captures_for(alignment, arrivals, cutoffs=cutoffs),
+        planning=planning_for(alignment, arrivals, rate=rate, **take_options),
+        live_target=live)
 
 
 def lowpass(cutoff):
@@ -205,6 +230,41 @@ class SideConfirmationTests(unittest.TestCase):
             self.assertEqual(request["output_mask"] & ~mask, 0)
         self.assertNotEqual(request["output_mask"], per_way[0])
 
+    def test_planning_request_measures_only_this_side(self):
+        planning = self.alignment.planning_request()
+        verification = self.alignment.verification_request()
+        self.assertEqual(planning["side"], "left")
+        self.assertEqual(planning["roles"], ["left_low", "left_high"])
+        # Planning and verification read the same side, the same way: only the
+        # take's role in the run differs, so both use one shared time base.
+        self.assertEqual(planning["measurement_target"], verification["measurement_target"])
+        self.assertEqual(planning["output_mask"], verification["output_mask"])
+        self.assertNotEqual(planning["output_mask"], self.alignment.capture_requests()[0]["output_mask"])
+
+    def test_planning_take_plans_the_offset_it_measured(self):
+        document = self.alignment.planning(self.take(arrivals_ms={"left_low": 0.0, "left_high": 7.5417}))
+        self.assertEqual(set(document["arrival_ms"]), {"left_low", "left_high"})
+        spread = max(document["arrival_ms"].values()) - min(document["arrival_ms"].values())
+        self.assertAlmostEqual(spread, 7.5417, delta=0.05)
+        # Applying exactly that spread lands the ways together.
+        landed = self.alignment.confirmation(
+            self.take(arrivals_ms={"left_low": spread, "left_high": 7.5417}))
+        residual = max(landed["arrival_ms"].values()) - min(landed["arrival_ms"].values())
+        self.assertLessEqual(residual, 0.02)
+
+    def test_planned_offset_survives_level_spread_and_reflections(self):
+        """The offset is a band arrival, not a property of the take's artifacts."""
+        geometry = {"left_low": 0.0, "left_high": 7.5417}
+        for options in ({"gains_db": {"left_low": 6.0, "left_high": -6.0}},
+                        {"reflections": [(0.0035, 0.7)]},
+                        {"gains_db": {"left_low": -9.0, "left_high": 3.0},
+                         "reflections": [(0.006, 0.5), (0.011, -0.4)]}):
+            with self.subTest(options=options):
+                document = takes.planning_document(self.alignment, geometry, **options)
+                arrivals = document["arrival_ms"]
+                self.assertAlmostEqual(max(arrivals.values()) - min(arrivals.values()),
+                                       7.5417, delta=0.05)
+
     def test_confirmation_reports_the_shared_take_offset(self):
         document = self.alignment.confirmation(
             self.take(arrivals_ms={"left_low": 7.5417, "left_high": 0.0}))
@@ -333,9 +393,13 @@ class RoutingAndProposalTests(unittest.TestCase):
         alignment, live = alignment_for(state, channels)
         captures = captures_for(alignment)
         original_ir = captures[0]["impulse_response"].copy()
-        proposal = alignment.propose(captures, live_target=live)
-        self.assertEqual(proposal["arrival_ms"], {"left_low": 2.0, "left_high": 5.0})
+        proposal = alignment.propose(
+            captures, planning=planning_for(alignment), live_target=live)
+        # The shared take reports arrivals relative to its earliest way; the
+        # planned delays are the same max-minus-arrival as before.
+        self.assertEqual(proposal["arrival_ms"], {"left_low": 0.0, "left_high": 3.0})
         self.assertEqual(proposal["added_delay_ms"], {"left_low": 3.0, "left_high": 0.0})
+        self.assertEqual(proposal["arrival_source"], "shared-planning-take")
         expected = copy.deepcopy(original)
         expected["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 1.0
         self.assertEqual(proposal["candidate_state"], expected)
@@ -344,30 +408,38 @@ class RoutingAndProposalTests(unittest.TestCase):
         self.assertEqual(proposal["reference_role"], "left_high")
 
     def test_three_and_four_ways_follow_configured_roles_and_latest_arrival(self):
+        # The shared take locates a way only as well as that way's own band
+        # allows. The widest band here (0-300 Hz) has a ~80-sample lobe, so the
+        # low way's arrival is reproduced to a few samples rather than exactly:
+        # its delay is asserted at that resolution. The fixture spacing is wider
+        # than every band's own lobe, so no arrival sits inside a neighbour's.
         for ways, cutoffs, arrivals, delays in (
-            (("low", "mid", "high"), (300, 2500), (96, 144, 240), (3.0, 2.0, 0.0)),
-            (("low", "low_mid", "mid", "high"), (300, 1000, 3000), (96, 144, 192, 240), (3.0, 2.0, 1.0, 0.0)),
+            (("low", "mid", "high"), (300, 2500), (96, 336, 576), (10.0, 5.0, 0.0)),
+            (("low", "low_mid", "mid", "high"), (300, 1000, 3000),
+             (96, 336, 576, 816), (15.0, 10.0, 5.0, 0.0)),
         ):
             with self.subTest(ways=ways):
                 state, channels = state_for(ways, cutoffs)
                 alignment, live = alignment_for(state, channels, side="right")
-                proposal = alignment.propose(captures_for(alignment, arrivals, cutoffs=cutoffs), live_target=live)
-                self.assertEqual(proposal["added_delay_ms"], dict(zip((f"right_{way}" for way in ways), delays)))
-                self.assertEqual(list(proposal["arrival_ms"]), [f"right_{way}" for way in ways])
+                proposal = proposal_for(alignment, live, arrivals, cutoffs=cutoffs)
+                roles = [f"right_{way}" for way in ways]
+                self.assertEqual(list(proposal["arrival_ms"]), roles)
+                for role, delay in zip(roles, delays):
+                    self.assertAlmostEqual(proposal["added_delay_ms"][role], delay, delta=0.1)
 
     def test_equal_arrivals_produce_an_unchanged_candidate(self):
         state, channels = state_for()
         alignment, live = alignment_for(state, channels)
-        result = alignment.propose(captures_for(alignment, (144, 144)), live_target=live)
+        result = proposal_for(alignment, live, (144, 144))
         self.assertEqual(result["candidate_state"], state)
 
     def test_frozen_start_is_detached_and_proposals_never_accumulate(self):
         state, channels = state_for()
         alignment, live = alignment_for(state, channels)
         state["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 20
-        first = alignment.propose(captures_for(alignment), live_target=live)
+        first = proposal_for(alignment, live)
         first["candidate_state"]["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 30
-        second = alignment.propose(captures_for(alignment), live_target=live)
+        second = proposal_for(alignment, live)
         self.assertEqual(second["candidate_state"]["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"], 3.0)
 
     def test_causal_lr12_and_lr24_with_real_arrival_detection(self):
@@ -382,7 +454,9 @@ class RoutingAndProposalTests(unittest.TestCase):
                     if slope == 12:
                         state["modes"]["stereo-sub"]["processing"]["left_high"]["polarity"] = "invert"
                     alignment, live = alignment_for(state, channels, rate=rate)
-                    proposal = alignment.propose(native_captures(alignment, slope=slope, rate=rate), live_target=live)
+                    proposal = alignment.propose(
+                        native_captures(alignment, slope=slope, rate=rate),
+                        planning=planning_for(alignment, rate=rate), live_target=live)
                     # Known acoustic offset is 144 samples; small peak-detector
                     # quantization/group delay is admitted, not a whole cycle.
                     self.assertAlmostEqual(proposal["added_delay_ms"]["left_low"], 144000 / rate, delta=0.06)
@@ -396,7 +470,8 @@ class RoutingAndProposalTests(unittest.TestCase):
                 stability="host-reference", capture_mode="dual-channel",
                 timing_applied_to_mic=True, start_score=1.0, end_score=1.0, ir_sharpness_db=48.0)
             capture["reference_node"] = REFERENCE_TAP_INGRESS
-        result = alignment.propose(captures, live_target=live)
+        result = alignment.propose(
+            captures, planning=planning_for(alignment, (240, 96)), live_target=live)
         self.assertEqual(result["reference_role"], "left_low")
         self.assertEqual(result["added_delay_ms"], {"left_low": 0.0, "left_high": 3.0})
 
@@ -406,7 +481,8 @@ class RoutingAndProposalTests(unittest.TestCase):
         alignment, live = alignment_for(state, channels)
         captures = captures_for(alignment, cutoffs=(400,))
         captures[1]["impulse_response"] *= -0.05
-        result = alignment.propose(captures, live_target=live)
+        result = alignment.propose(
+            captures, planning=planning_for(alignment), live_target=live)
         expected = copy.deepcopy(state)
         expected["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 3
         self.assertEqual(result["candidate_state"], expected)
@@ -495,7 +571,8 @@ class BandLimitedReferenceProposalTests(unittest.TestCase):
         captures = captures_for(self.alignment)
         for capture in captures:
             capture["analysis"]["reference_path"].update(reference_overrides)
-        return captures, self.alignment.propose(captures, live_target=self.live)
+        return captures, self.alignment.propose(
+            captures, planning=planning_for(self.alignment), live_target=self.live)
 
     def test_band_limited_reference_below_the_old_confidence_floor_still_aligns(self):
         _, proposal = self.align_with(confidence=0.62, ir_sharpness_db=37.4,
@@ -515,10 +592,11 @@ class RejectionTests(unittest.TestCase):
     def setUp(self):
         self.alignment, self.live = alignment_for()
         self.captures = captures_for(self.alignment)
+        self.planning = planning_for(self.alignment)
 
     def assert_rejected(self, text):
         with self.assertRaisesRegex(ValueError, text):
-            self.alignment.propose(self.captures, live_target=self.live)
+            self.alignment.propose(self.captures, planning=self.planning, live_target=self.live)
 
     def test_host_reference_from_a_downstream_node_is_rejected(self):
         for capture in self.captures:
@@ -575,15 +653,47 @@ class RejectionTests(unittest.TestCase):
                 self.captures[0][field] = value
                 self.assert_rejected("IR|origin")
 
-    def test_invalid_or_unconfident_arrival_indices_are_rejected(self):
+    def test_per_way_direct_arrival_metadata_no_longer_plans_or_blocks(self):
+        """The shared take plans the delays; a per-way early-candidate pick cannot.
+
+        The per-way path used to take each way's delay from that one capture's
+        own direct-arrival estimate and to reject the run when the estimate was
+        not confident. Both outcomes came from one take's noise and lobe
+        structure, not from the way's arrival on the side's common time base, so
+        neither may veto the plan nor move it.
+        """
+        baseline = self.alignment.propose(
+            self.captures, planning=self.planning, live_target=self.live)
+        self.assertEqual(baseline["added_delay_ms"], {"left_low": 3.0, "left_high": 0.0})
         for change in ({"direct_arrival_index": -1}, {"reference_peak_index": 5000},
                        {"direct_arrival_index": 100.5}, {"direct_confidence": 0.1},
                        {"direct_confidence": float("nan")},
                        {"timing_source": "independent-peak-zero"}):
             with self.subTest(change=change):
-                self.captures = captures_for(self.alignment)
-                self.captures[0]["analysis"]["impulse_response"].update(change)
-                self.assert_rejected("arrival|timing")
+                captures = captures_for(self.alignment)
+                captures[0]["analysis"]["impulse_response"].update(change)
+                proposal = self.alignment.propose(
+                    captures, planning=self.planning, live_target=self.live)
+                self.assertEqual(proposal["added_delay_ms"], baseline["added_delay_ms"])
+                self.assertEqual(proposal["arrival_source"], "shared-planning-take")
+
+    def test_planning_take_shape_is_gated(self):
+        for planning in (None, {}, {"arrival_ms": {"left_low": 0.0}},
+                         {"arrival_ms": {"left_low": 0.0, "left_high": 3.0}}):
+            with self.subTest(planning=planning):
+                with self.assertRaisesRegex(ValueError, "planning"):
+                    self.alignment.propose(
+                        self.captures, planning=planning, live_target=self.live)
+
+    def test_planning_take_that_cannot_separate_the_ways_fails_closed(self):
+        """A take whose bands cannot resolve the ways plans nothing, not a guess."""
+        state, channels = state_for(("low", "low_mid", "mid", "high"), (300, 1000, 3000))
+        alignment, live = alignment_for(state, channels, side="right")
+        arrivals = (96, 144, 192, 240)
+        with self.assertRaisesRegex(ValueError, "cannot separate the ways"):
+            alignment.propose(
+                captures_for(alignment, arrivals, cutoffs=(300, 1000, 3000)),
+                planning=planning_for(alignment, arrivals), live_target=live)
 
     def test_changed_capture_identity_is_rejected(self):
         for field, value in (("reference_id", "other-input"), ("microphone_position_id", "moved"),
@@ -622,7 +732,8 @@ class RejectionTests(unittest.TestCase):
                 return calls >= cancel_on
 
             with self.subTest(cancel_on=cancel_on), self.assertRaises(asyncio.CancelledError):
-                self.alignment.propose(self.captures, live_target=self.live, cancel_requested=cancelled)
+                self.alignment.propose(self.captures, planning=self.planning,
+                                       live_target=self.live, cancel_requested=cancelled)
 
     def test_out_of_range_candidate_is_rejected_instead_of_clamped(self):
         state, channels = state_for()

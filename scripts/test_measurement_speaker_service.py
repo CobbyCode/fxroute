@@ -12,7 +12,9 @@ import unittest
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import speaker_take_test_support as takes
 from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
 from measurement.speaker_align import SpeakerAlignment
 from measurement.speaker_service import (
@@ -49,6 +51,13 @@ def lowpass_kernel(cutoff):
     sigma = np.sqrt(2 * np.log(2)) * RATE / (2 * np.pi * cutoff)
     kernel = np.exp(-0.5 * (offsets / sigma) ** 2)
     return kernel / np.sum(kernel)
+
+
+def planning_for(alignment, arrivals):
+    """One shared planning take at the given per-way sample offsets."""
+    roles = [request["role"] for request in alignment.capture_requests()]
+    return takes.planning_document(
+        alignment, {role: arrivals[index] * 1000.0 / RATE for index, role in enumerate(roles)})
 
 
 def captures_for(alignment, arrivals):
@@ -168,6 +177,7 @@ class ServiceFixture:
                 raise behaviour
             return behaviour
         return {"captures": captures_for(alignment, self.first_arrivals),
+                "planning": planning_for(alignment, self.first_arrivals),
                 "provenance": {"job_ids": [f"job-{len(self.acquire_calls)}"]}}
 
     def confirmation_document(self, alignment):
@@ -354,6 +364,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             fingerprint="frozen-plan", reference_id="interface:input-2:upstream",
             microphone_position_id="seat-1-fixed")
         return {"captures": captures_for(alignment, (96, 240)),
+                "planning": planning_for(alignment, (96, 240)),
                 "provenance": {"job_ids": ["job-1"]}}
 
     async def test_second_start_while_running_is_rejected(self):

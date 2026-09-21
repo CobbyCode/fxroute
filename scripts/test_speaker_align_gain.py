@@ -12,7 +12,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scripts.test_speaker_align import alignment_for, captures_for, state_for
+from scripts.test_speaker_align import alignment_for, captures_for, planning_for, state_for
 from measurement.speaker_apply import verify_confirmation
 
 
@@ -66,7 +66,8 @@ class GainProposalTests(unittest.TestCase):
         state, channels = state_for()
         alignment, live = alignment_for(state, channels)
         captures = with_levels(alignment, captures_for(alignment), (-12.0, -8.0))
-        proposal = alignment.propose(captures, live_target=live)
+        proposal = alignment.propose(
+            captures, planning=planning_for(alignment), live_target=live)
         self.assertAlmostEqual(proposal["way_levels_db"]["left_low"], -12.0, delta=0.15)
         self.assertAlmostEqual(proposal["way_levels_db"]["left_high"], -8.0, delta=0.15)
         self.assertAlmostEqual(proposal["added_gain_db"]["left_low"], 2.0, delta=0.15)
@@ -78,18 +79,22 @@ class GainProposalTests(unittest.TestCase):
         self.assertEqual(proposal["added_delay_ms"], {"left_low": 3.0, "left_high": 0.0})
 
     def test_three_and_four_way_gains(self):
+        # Way spacing is wider than every band's own lobe, the same fixture rule
+        # the timing suite uses: the shared planning take must be able to
+        # separate the ways before the gains are proposed.
         for ways, cutoffs, arrivals, levels, expected in (
-            (("low", "mid", "high"), (300, 2500), (96, 144, 240), (-12.0, -10.0, -8.0),
+            (("low", "mid", "high"), (300, 2500), (96, 336, 576), (-12.0, -10.0, -8.0),
              {"right_low": 2.0, "right_mid": 0.0, "right_high": -2.0}),
-            (("low", "low_mid", "mid", "high"), (300, 1000, 3000), (96, 144, 192, 240),
-             (-13.0, -11.0, -9.0, -7.0),
+            (("low", "low_mid", "mid", "high"), (300, 1000, 3000),
+             (96, 336, 576, 816), (-13.0, -11.0, -9.0, -7.0),
              {"right_low": 3.0, "right_low_mid": 1.0, "right_mid": -1.0, "right_high": -3.0}),
         ):
             with self.subTest(ways=ways):
                 state, channels = state_for(ways, cutoffs)
                 alignment, live = alignment_for(state, channels, side="right")
                 captures = with_levels(alignment, captures_for(alignment, arrivals, cutoffs=cutoffs), levels)
-                proposal = alignment.propose(captures, live_target=live)
+                proposal = alignment.propose(
+                    captures, planning=planning_for(alignment, arrivals), live_target=live)
                 for role, gain in expected.items():
                     self.assertAlmostEqual(proposal["added_gain_db"][role], gain, delta=0.2)
 
@@ -99,7 +104,8 @@ class GainProposalTests(unittest.TestCase):
         captures = with_levels(alignment, captures_for(alignment), (-10.0, -10.0))
         # One outlier point must not move the median.
         captures[0]["analysis"]["review_points"][0][1] = 30.0
-        proposal = alignment.propose(captures, live_target=live)
+        proposal = alignment.propose(
+            captures, planning=planning_for(alignment), live_target=live)
         self.assertAlmostEqual(proposal["added_gain_db"]["left_low"], 0.0, delta=0.5)
         # Narrow vs wide way with same level must agree (no total-energy bias).
         self.assertAlmostEqual(proposal["way_levels_db"]["left_low"],
@@ -112,7 +118,7 @@ class GainProposalTests(unittest.TestCase):
         captures[1]["analysis"].pop("review_points", None)
         captures[1]["analysis"].pop("trusted_points", None)
         with self.assertRaises(ValueError):
-            alignment.propose(captures, live_target=live)
+            alignment.propose(captures, planning=planning_for(alignment), live_target=live)
 
 
 class GainVerificationTests(unittest.TestCase):
@@ -126,7 +132,8 @@ class GainVerificationTests(unittest.TestCase):
         state, channels = state_for()
         alignment, live = alignment_for(state, channels)
         baseline = alignment.propose(
-            with_levels(alignment, captures_for(alignment), (-12.0, -8.0)), live_target=live)
+            with_levels(alignment, captures_for(alignment), (-12.0, -8.0)),
+            planning=planning_for(alignment), live_target=live)
         check = verify_confirmation(baseline, self.confirmation_with_levels(
             baseline, {"left_low": -10.0, "left_high": -10.2}))
         self.assertTrue(check["confirmed"])
@@ -141,7 +148,8 @@ class GainVerificationTests(unittest.TestCase):
         state, channels = state_for()
         alignment, live = alignment_for(state, channels)
         baseline = alignment.propose(
-            with_levels(alignment, captures_for(alignment), (-12.0, -8.0)), live_target=live)
+            with_levels(alignment, captures_for(alignment), (-12.0, -8.0)),
+            planning=planning_for(alignment), live_target=live)
         check = verify_confirmation(baseline, self.confirmation_with_levels(
             baseline, {"left_low": -10.0, "left_high": -12.5}))
         self.assertTrue(check["confirmed"])
@@ -155,7 +163,8 @@ class GainVerificationTests(unittest.TestCase):
         state, channels = state_for()
         alignment, live = alignment_for(state, channels)
         baseline = alignment.propose(
-            with_levels(alignment, captures_for(alignment), (-12.0, -8.0)), live_target=live)
+            with_levels(alignment, captures_for(alignment), (-12.0, -8.0)),
+            planning=planning_for(alignment), live_target=live)
         confirmation = self.confirmation_with_levels(baseline, {"left_low": -10.0, "left_high": -10.0})
         confirmation["arrival_ms"] = {"left_low": 0.0, "left_high": 7.5417}
         check = verify_confirmation(baseline, confirmation)

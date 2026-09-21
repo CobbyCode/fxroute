@@ -8,7 +8,9 @@ from copy import deepcopy
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import speaker_take_test_support as takes
 from measurement.speaker_api import build_speaker_align_service, configure_speaker_align
 from measurement.speaker_service import (
     SpeakerAlignBusyError,
@@ -280,7 +282,11 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
                         },
                     },
                 })
-            return {"captures": captures, "provenance": {"job_ids": ["composed"]}}
+            return {"captures": captures,
+                    "planning": takes.planning_document(
+                        alignment, {request["role"]: arrivals[index] * 1000.0 / rate
+                                    for index, request in enumerate(alignment.capture_requests())}),
+                    "provenance": {"job_ids": ["composed"]}}
 
         async def verification_runner(store_arg, alignment, **kwargs):
             self.assertIs(store_arg, None)
@@ -311,7 +317,8 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
         job = await service.wait_for(job_id, timeout_seconds=30)
         self.assertEqual(job["status"], "committed", job)
         self.assertEqual(job["result"]["committed_revision"], head["revision"] + 1)
-        # One planning capture per way plus one shared verification take.
+        # One acquisition (its shared planning take plus both ways) plus one
+        # shared verification take.
         self.assertEqual(calls["n"], 1)
         self.assertEqual(verifications["n"], 1)
         self.assertEqual(output_service.load()["revision"], head["revision"] + 1)

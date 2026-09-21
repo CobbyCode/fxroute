@@ -267,11 +267,20 @@ class SpeakerServiceHookTests(unittest.IsolatedAsyncioTestCase):
             })
         return captures
 
+    def planning_for(self, alignment, arrivals):
+        """One shared planning take at the given per-way sample offsets."""
+        import speaker_take_test_support as takes
+        roles = [request["role"] for request in alignment.capture_requests()]
+        return takes.planning_document(
+            alignment, {role: arrivals[index] * 1000.0 / RATE
+                        for index, role in enumerate(roles)})
+
     def make_service(self, **overrides):
         state = self.crossover_state()
 
         async def acquire(alignment, **kwargs):
             return {"captures": self.captures_for(alignment, (96, 240)),
+                    "planning": self.planning_for(alignment, (96, 240)),
                     "provenance": {}}
 
         async def confirm(alignment, **kwargs):

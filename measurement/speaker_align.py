@@ -1,5 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""One speaker's start-relative timing proposal from unshifted capture evidence."""
+"""One speaker's start-relative timing proposal from unshifted capture evidence.
+
+The relative way delays are planned from one shared take of the side: every way
+plays at once, the rest of the plan muted, and each way's arrival is read from
+its own isolated band on that take's single capture time base. Planning every
+way from its own take instead would decide the delay from one direct-arrival
+pick per way, which is a property of that take's noise and lobe structure
+rather than of the way's arrival. ``planning_request``/``planning`` produce and
+read that take; ``verification_request``/``confirmation`` do the same for the
+post-apply proof, unchanged.
+"""
 
 from __future__ import annotations
 
@@ -119,16 +129,15 @@ class SpeakerAlignment:
         """Serial per-way requests in configured low-to-high role order."""
         return copy.deepcopy(self._requests)
 
-    def verification_request(self) -> dict:
-        """The one shared verification take of this side.
+    def _side_take_request(self, label: str) -> dict:
+        """One shared take of this side: every way of the side plays at once.
 
-        Every way of the side plays the same sweep at once while the rest of
-        the plan stays muted, so the take carries one acoustic time base for
-        the whole side.  The target narrows to this side's roles; nothing here
-        maps a side, a way or an output to a loopback channel.
+        The rest of the plan stays muted, so the take carries one acoustic time
+        base for the whole side.  The target narrows to this side's roles;
+        nothing here maps a side, a way or an output to a loopback channel.
         """
         if len(self._roles) < 2:
-            raise ValueError("Speaker Align verification needs at least two speaker ways")
+            raise ValueError(f"Speaker Align {label} needs at least two speaker ways")
         target = narrow_measured_target(self._target, roles=self._roles)
         return {
             "side": self._side,
@@ -141,45 +150,63 @@ class SpeakerAlignment:
             "reference_tap": REFERENCE_TAP_INGRESS,
         }
 
-    def confirmation(self, take: dict) -> dict:
-        """Judge one shared verification take of this side acoustically.
+    def planning_request(self) -> dict:
+        """The one shared planning take of this side.
 
-        The take is gated like every other Speaker Align evidence: same frozen
-        target and reference, same microphone position, an unshifted
-        deconvolved sweep, usable quality, no clipping and an admitted
-        electrical reference.  The residual then comes from the side's own
-        band-limited arrivals on that take's single time base -- never from a
-        per-way reference peak, which moves with the delay under test.
+        The relative way delays are planned from a single take in which every
+        way of the side plays at once, so the low/high offset comes from one
+        capture time base instead of from one direct-arrival decision per way.
         """
-        request = self.verification_request()
+        return self._side_take_request("planning")
+
+    def verification_request(self) -> dict:
+        """The one shared verification take of this side."""
+        return self._side_take_request("verification")
+
+    def _side_take(self, take: object, *, request: dict, label: str,
+                   require_electrical: bool = False) -> None:
+        """Gate one shared side take: identity, quality, reference, no clipping.
+
+        The same gate for planning and verification, so both read the same kind
+        of evidence: the frozen target and reference, the microphone position,
+        an unshifted deconvolved sweep, usable quality, no clipping and a
+        reference the store admits. ``require_electrical`` is the verification
+        gate: the post-apply proof needs the electrical reference, while the
+        planning take keeps the per-way admission, where a host/ingress monitor
+        reference is legitimate evidence for a microphone-only setup.
+        """
         if not isinstance(take, dict):
-            raise ValueError("Speaker Align verification requires one shared take")
+            raise ValueError(f"Speaker Align {label} requires one shared take")
         if take.get("measurement_target") != request["measurement_target"]:
-            raise ValueError("Speaker Align verification take measured different roles or processing")
+            raise ValueError(f"Speaker Align {label} take measured different roles or processing")
         if (take.get("reference_id") != self._reference_id
                 or take.get("reference_tap") != REFERENCE_TAP_INGRESS):
-            raise ValueError("Speaker Align verification take lost its upstream reference")
+            raise ValueError(f"Speaker Align {label} take lost its upstream reference")
         if take.get("microphone_position_id") != self._position_id:
-            raise ValueError("Speaker Align verification microphone position changed")
+            raise ValueError(f"Speaker Align {label} microphone position changed")
         if take.get("time_reference") != "deconvolved-sweep-origin":
-            raise ValueError("Speaker Align verification IR origin must be the unshifted deconvolved sweep")
+            raise ValueError(
+                f"Speaker Align {label} IR origin must be the unshifted deconvolved sweep")
         analysis = take.get("analysis") or {}
         if analysis.get("sample_rate") != self._rate:
-            raise ValueError("Speaker Align verification capture sample rate changed")
+            raise ValueError(f"Speaker Align {label} capture sample rate changed")
         quality = analysis.get("quality_checks") or {}
         if (quality.get("status") not in ("pass", "warn")
                 or not isinstance(quality.get("items"), list)
                 or any(item.get("level") == "error" for item in quality["items"])):
-            raise ValueError("Speaker Align verification capture quality is not usable")
-        if _finite(analysis.get("peak_dbfs"), "verification microphone peak") >= CAPTURE_CLIP_FAIL_DBFS:
-            raise ValueError("Speaker Align verification microphone capture clipped")
+            raise ValueError(f"Speaker Align {label} capture quality is not usable")
+        if _finite(analysis.get("peak_dbfs"), f"{label} microphone peak") >= CAPTURE_CLIP_FAIL_DBFS:
+            raise ValueError(f"Speaker Align {label} microphone capture clipped")
         reference = analysis.get("reference_path") or {}
         if (reference.get("clipped") is not False
-                or _finite(reference.get("peak_dbfs"), "verification reference peak") >= CAPTURE_CLIP_FAIL_DBFS):
-            raise ValueError("Speaker Align verification reference capture clipped")
-        if reference.get("electrical_reference_used") is not True:
-            raise ValueError("Speaker Align verification requires the electrical reference")
+                or _finite(reference.get("peak_dbfs"), f"{label} reference peak") >= CAPTURE_CLIP_FAIL_DBFS):
+            raise ValueError(f"Speaker Align {label} reference capture clipped")
+        if require_electrical and reference.get("electrical_reference_used") is not True:
+            raise ValueError(f"Speaker Align {label} requires the electrical reference")
         require_timing_reference(analysis, take.get("reference_node"))
+
+    def _side_arrivals(self, take: dict) -> dict:
+        """Band-limited way arrivals of one shared take, on its one time base."""
         processing = self._state["modes"][self._state["active_mode"]]["processing"]
         return side_confirmation(
             impulse_response=take.get("impulse_response"),
@@ -190,11 +217,44 @@ class SpeakerAlignment:
             processing_fingerprint=self._target["processing_fingerprint"],
         )
 
+    def planning(self, take: dict) -> dict:
+        """Read the side's relative way arrivals from the shared planning take.
+
+        Returns the same document shape as ``confirmation``: band-limited
+        arrivals of every way of this side on the take's single capture time
+        base, plus the isolation margin each arrival had against the neighbours
+        in the same band. Nothing here decides whether the take is good enough
+        to plan from; ``propose`` gates the isolation, like
+        ``verify_confirmation`` gates the confirmation's.
+        """
+        request = self.planning_request()
+        self._side_take(take, request=request, label="planning")
+        return self._side_arrivals(take)
+
+    def confirmation(self, take: dict) -> dict:
+        """Judge one shared verification take of this side acoustically.
+
+        The residual comes from the side's own band-limited arrivals on that
+        take's single time base -- never from a per-way reference peak, which
+        moves with the delay under test.
+        """
+        request = self.verification_request()
+        self._side_take(take, request=request, label="verification", require_electrical=True)
+        return self._side_arrivals(take)
+
     def _require_live_target(self, live_target: dict) -> None:
         if live_target != self._target:
             raise ValueError("Speaker Align target is stale; revision, device and processing must match")
 
-    def _capture_evidence(self, capture: dict, request: dict) -> tuple[np.ndarray, int, int]:
+    def _require_way_capture(self, capture: dict, request: dict) -> None:
+        """Gate one way's own capture: target, reference, quality, no clipping.
+
+        Timing is deliberately not read here any more.  The relative way delays
+        come from the shared planning take, so a band-limited way's per-take
+        direct-arrival estimate can neither veto the alignment nor move the
+        planned delay: its own early candidates are a lobe decision of that one
+        take, not the way's arrival on the side's common time base.
+        """
         role = request["role"]
         if capture.get("measurement_target") != request["measurement_target"]:
             raise ValueError(f"Speaker Align capture target differs for {role}")
@@ -223,29 +283,59 @@ class SpeakerAlignment:
                 or _finite(reference.get("peak_dbfs"), "reference peak") >= CAPTURE_CLIP_FAIL_DBFS):
             raise ValueError("Speaker Align reference capture clipped")
         require_timing_reference(analysis, capture.get("reference_node"))
-        timing = analysis.get("impulse_response") or {}
-        if (timing.get("timing_source") != "direct_arrival_minus_reference_peak"
-                or not MIN_CONFIDENCE <= _finite(timing.get("direct_confidence"), "arrival confidence") <= 1):
-            raise ValueError(f"Speaker Align direct arrival timing is not confident for {role}")
-        arrival = timing.get("direct_arrival_index")
-        origin = timing.get("reference_peak_index")
-        if any(type(index) is not int or not 0 <= index < ir.size for index in (arrival, origin)):
-            raise ValueError("Speaker Align arrival/reference timing indices must be inside the IR")
-        if arrival < origin:
-            raise ValueError("Speaker Align acoustic arrival precedes the upstream reference")
-        return ir, arrival, origin
 
-    def propose(self, captures: Sequence[dict], *, live_target: dict,
+    def _planning_arrivals(self, planning: object, *, cancel_requested=None) -> dict:
+        """Per-way arrivals of the shared planning take, or fail closed.
+
+        An arrival from a band the side's neighbouring way owns is not this
+        way's arrival, so a take that cannot separate the ways must abort the
+        plan instead of guessing a delay from it. Two arrivals inside one lobe
+        are one event and report no margin; that is the aligned case, not an
+        ambiguity.
+        """
+        from measurement.speaker_verification import MIN_WAY_ISOLATION_DB
+        if not isinstance(planning, dict):
+            raise ValueError("Speaker Align planning requires one shared planning take")
+        roles = set(self._roles)
+        arrivals = planning.get("arrival_ms")
+        isolation = planning.get("way_isolation_db")
+        if not isinstance(arrivals, dict) or set(arrivals) != roles:
+            raise ValueError("Speaker Align planning take must carry exactly this side's ways")
+        if not isinstance(isolation, dict) or set(isolation) != roles:
+            raise ValueError("Speaker Align planning take carries no isolation evidence")
+        margins = []
+        for role in self._roles:
+            _check_cancel(cancel_requested)
+            margin = isolation[role]
+            if margin is not None:
+                margins.append((role, _finite(margin, "planning way isolation")))
+            _finite(arrivals[role], "planning arrival")
+        weakest = min(margins, key=lambda item: item[1]) if margins else None
+        if weakest is not None and weakest[1] < MIN_WAY_ISOLATION_DB:
+            raise ValueError(
+                f"Speaker Align planning take cannot separate the ways: "
+                f"{weakest[0]} isolation {weakest[1]:.3f} dB is below "
+                f"{MIN_WAY_ISOLATION_DB:.3f} dB"
+            )
+        return {role: float(arrivals[role]) for role in self._roles}
+
+    def propose(self, captures: Sequence[dict], *, planning: dict, live_target: dict,
                 cancel_requested: Callable[[], bool] | None = None) -> dict:
         """Add max(arrival)-arrival delays and equalize way gains in passbands.
 
-        Timing stays level-independent (arrival detection only). Gain is the
-        robust median level inside each way's usable crossover passband, never
-        a single point and never total energy across differently wide ways.
-        Captures without response points keep levels unchanged (legacy unit
-        shape); captures with points on every way propose start-relative
-        level corrections equalizing the side to its median way level.
-        Polarity is never altered.
+        The relative way delays come from one shared planning take of this side
+        (``planning_request`` / ``planning``): both ways play into one capture
+        time base and each arrival is read from its own isolated band, so the
+        plan cannot be decided by a per-take direct-arrival pick, and a take
+        that cannot separate the ways plans nothing. The per-way captures keep
+        their job as level, reference-quality and provenance evidence; their
+        own direct-arrival metadata is never read.  Timing stays
+        level-independent (arrival detection only). Gain is the robust median
+        level inside each way's usable crossover passband, never a single point
+        and never total energy across differently wide ways.  Captures without
+        response points keep levels unchanged (legacy unit shape); captures
+        with points on every way propose start-relative level corrections
+        equalizing the side to its median way level. Polarity is never altered.
         """
         from measurement.alignment_backend import estimate_way_level, propose_way_gains, way_passband
         _check_cancel(cancel_requested)
@@ -254,12 +344,13 @@ class SpeakerAlignment:
         if len(roles) != len(self._roles) or set(roles) != set(self._roles):
             raise ValueError("Speaker Align requires exactly one capture of every speaker way")
         by_role = {capture["role"]: capture for capture in captures}
-        arrivals = {}
         for request in self._requests:
             _check_cancel(cancel_requested)
-            role = request["role"]
-            _, arrival, origin = self._capture_evidence(by_role[role], request)
-            arrivals[role] = (arrival - origin) * 1000.0 / self._rate
+            self._require_way_capture(by_role[request["role"]], request)
+        arrivals = self._planning_arrivals(planning, cancel_requested=cancel_requested)
+        isolation = {
+            role: planning["way_isolation_db"][role] for role in self._roles
+        }
         reference_role = max(arrivals, key=arrivals.get)
         latest = arrivals[reference_role]
         delays = {role: latest - arrival for role, arrival in arrivals.items()}
@@ -299,5 +390,7 @@ class SpeakerAlignment:
         _check_cancel(cancel_requested)
         return {"candidate_state": candidate, "arrival_ms": arrivals, "added_delay_ms": delays,
                 "way_levels_db": way_levels, "added_gain_db": added_gains,
-                "reference_role": reference_role, "start_revision": self._target["revision"],
+                "reference_role": reference_role, "arrival_source": "shared-planning-take",
+                "planning_isolation_db": isolation,
+                "start_revision": self._target["revision"],
                 "processing_fingerprint": self._target["processing_fingerprint"]}

@@ -16,7 +16,9 @@ from unittest.mock import patch
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import speaker_take_test_support as takes
 from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
 from measurement.speaker_acquisition import acquire_speaker_captures, verify_speaker_alignment
 from measurement.speaker_align import SpeakerAlignment
@@ -52,6 +54,19 @@ def alignment_for(state):
         fingerprint="frozen-plan", reference_id=REFERENCE_ID,
         microphone_position_id=POSITION_ID,
     )
+
+
+def planning_for(alignment, arrivals):
+    """A shared planning take whose ways carry the given sample offsets.
+
+    The capture fake below renders one acoustic event per take (the sweep at
+    one delay), so a shared take in this harness cannot separate two ways: the
+    way geometry a proposal plans from is supplied here instead. The delay
+    planning itself is covered end to end in ``test_speaker_align``.
+    """
+    roles = [request["role"] for request in alignment.capture_requests()]
+    return takes.planning_document(
+        alignment, {role: arrivals[index] * 1000.0 / RATE for index, role in enumerate(roles)})
 
 
 def live_global_target(state):
@@ -197,8 +212,9 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         result = await self.acquire()
         captures = result["captures"]
         self.assertEqual([capture["role"] for capture in captures], ["left_low", "left_high"])
-        self.assertEqual(self.captures_started, 2)
-        self.assertEqual(len(self.store._jobs), 2)
+        # One shared planning take first, then one take per way.
+        self.assertEqual(self.captures_started, 3)
+        self.assertEqual(len(self.store._jobs), 3)
         for capture, request in zip(captures, self.requests):
             self.assertEqual(capture["measurement_target"], request["measurement_target"])
             self.assertEqual(capture["reference_id"], REFERENCE_ID)
@@ -206,9 +222,12 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(capture["reference_tap"], REFERENCE_TAP_INGRESS)
             self.assertEqual(capture["time_reference"], "deconvolved-sweep-origin")
             self.assertGreater(capture["impulse_response"].size, RATE)
-        # Each way is isolated by its own frozen canonical mask, low to high.
-        self.assertEqual(self.masks, [request["output_mask"] for request in self.requests])
+        # The planning take plays the whole side, then each way is isolated by
+        # its own frozen canonical mask, low to high.
+        planning_mask = self.alignment.planning_request()["output_mask"]
+        self.assertEqual(self.masks, [planning_mask] + [r["output_mask"] for r in self.requests])
         self.assertNotEqual(self.masks[0], self.masks[1])
+        self.assertNotEqual(self.masks[1], self.masks[2])
         provenance = result["provenance"]
         self.assertEqual(provenance["microphone_node"], "capture_1")
         self.assertEqual(provenance["microphone_serial"], "serial-9")
@@ -217,9 +236,11 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         # the observed reference node is that shared input, not a monitor.
         self.assertEqual(provenance["reference_node"], "capture_1")
         self.assertEqual(provenance["sample_rate_hz"], RATE)
-        self.assertEqual(len(provenance["job_ids"]), 2)
-        proposal = self.alignment.propose(captures, live_target=live_global_target(self.state))
-        # Injected 240-sample acoustic offset between the ways at 48 kHz.
+        self.assertEqual(len(provenance["job_ids"]), 3)
+        proposal = self.alignment.propose(
+            captures, planning=planning_for(self.alignment, (96, 336)),
+            live_target=live_global_target(self.state))
+        # 240-sample acoustic offset between the ways at 48 kHz.
         self.assertAlmostEqual(proposal["added_delay_ms"]["left_low"], 5.0, delta=0.3)
         self.assertAlmostEqual(proposal["added_delay_ms"]["left_high"], 0.0, delta=0.3)
         candidate = proposal["candidate_state"]
@@ -304,7 +325,9 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         result = await self.acquire(reference_input_channel="")
         self.assertEqual(result["provenance"]["reference_node"], REFERENCE_TAP_INGRESS)
         self.assertIsNone(result["provenance"]["electrical_reference_channel"])
-        proposal = self.alignment.propose(result["captures"], live_target=live_global_target(self.state))
+        proposal = self.alignment.propose(
+            result["captures"], planning=planning_for(self.alignment, (96, 336)),
+            live_target=live_global_target(self.state))
         self.assertAlmostEqual(proposal["added_delay_ms"]["left_low"], 5.0, delta=0.3)
 
     async def test_staged_candidate_context_reaches_every_capture_preflight(self):
@@ -322,7 +345,7 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.store._routing._build_pre_sweep_state_snapshot = lambda **kw: contexts.append(kw["playback_route"]) or {}
         self.store._routing._build_measurement_playback_route = lambda *args, **kw: {"route": "test", **kw}
         await self.acquire(expected_native_context=expected)
-        self.assertEqual(len(contexts), 2)
+        self.assertEqual(len(contexts), 3)
         for context in contexts:
             self.assertEqual(context["expected_plan_fingerprint"], "candidate-plan")
             self.assertEqual(context["expected_native_layout"], expected["expected_native_layout"])
@@ -407,13 +430,20 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.captures_started, 1)
 
     async def test_failed_way_reports_its_job_error(self):
+        original = self.store._persistence._build_measurement_from_analysis
+        calls = {"n": 0}
+
         def fail(*args, **kwargs):
-            raise RuntimeError("result construction failed")
+            # The shared planning take runs first; the failing take is a way's.
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise RuntimeError("result construction failed")
+            return original(*args, **kwargs)
 
         self.store._persistence._build_measurement_from_analysis = fail
         with self.assertRaisesRegex(RuntimeError, "left_low"):
             await self.acquire()
-        self.assertEqual(self.captures_started, 1)
+        self.assertEqual(self.captures_started, 2)
 
     async def test_provenance_carries_session_binding(self):
         result = await self.acquire()
@@ -425,11 +455,11 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         # in the same take per way and the admitted channel follows the capture
         # evidence instead of the speaker side, without a second sweep.
         self.use_scarlett_input()
-        self.er_carrier_for_capture = lambda index: 7 if index == 1 else 8
+        self.er_carrier_for_capture = lambda index: 7 if index <= 2 else 8
         result = await self.acquire(reference_input_channel="7",
                                     reference_input_channel_left="7",
                                     reference_input_channel_right="8")
-        self.assertEqual(self.captures_started, 2)
+        self.assertEqual(self.captures_started, 3)
         captures = result["captures"]
         self.assertEqual([capture["role"] for capture in captures], ["left_low", "left_high"])
         self.assertEqual(
@@ -449,7 +479,9 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tuple(provenance["electrical_reference_candidates"]), (7, 8))
         self.assertEqual(provenance["electrical_reference_channels_by_role"],
                          {"left_low": 7, "left_high": 8})
-        proposal = self.alignment.propose(captures, live_target=live_global_target(self.state))
+        proposal = self.alignment.propose(
+            captures, planning=planning_for(self.alignment, (96, 336)),
+            live_target=live_global_target(self.state))
         self.assertAlmostEqual(proposal["added_delay_ms"]["left_low"], 5.0, delta=0.3)
 
     async def test_silent_first_candidate_uses_the_second_in_the_same_take(self):
@@ -458,7 +490,7 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         result = await self.acquire(reference_input_channel="7",
                                     reference_input_channel_left="7",
                                     reference_input_channel_right="8")
-        self.assertEqual(self.captures_started, 2)
+        self.assertEqual(self.captures_started, 3)
         self.assertEqual(
             [capture["analysis"]["reference_path"]["electrical_reference_input_channel"]
              for capture in result["captures"]], [8, 8])
@@ -502,8 +534,8 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.after_attempt = lambda analysis: analysis["clock"].update(end_score=0.8)
         self.store._capture_policy._should_keep_electrical_reference = lambda *args: True
         result = await self.acquire()
-        self.assertEqual(self.captures_started, 2)
-        self.assertEqual(len(self.store._jobs), 2)
+        self.assertEqual(self.captures_started, 3)
+        self.assertEqual(len(self.store._jobs), 3)
         for capture in result["captures"]:
             reference = capture["analysis"]["reference_path"]
             self.assertTrue(reference["electrical_reference_used"])
@@ -605,7 +637,7 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
                                reference_input_channel_right="8")
         finally:
             self.store.start_measurement = original
-        self.assertEqual(len(seen), 2)
+        self.assertEqual(len(seen), 3)
         for entry in seen:
             self.assertEqual(entry, {"reference_input_channel": "7",
                                      "reference_input_channel_left": "7",
