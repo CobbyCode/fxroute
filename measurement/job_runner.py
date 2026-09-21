@@ -240,6 +240,27 @@ class MeasurementJobRunner:
             self.processes.setdefault(job_id, []).append(process)
             return process
 
+    def forget_process(self, job_id: str,
+                       process: subprocess.Popen[str] | None = None) -> None:
+        """Drop already stopped and reaped children from the registry.
+
+        Measurement jobs clear their own key when the run ends, but a
+        long-lived owner such as the input keeper registers under
+        ``keeper:<node>`` and would otherwise keep a dead ``Popen``
+        reference for the life of the app. A key that owns no process is
+        removed entirely so the registry cannot grow.
+        """
+        with self.process_lock:
+            items = self.processes.get(job_id)
+            if items is None:
+                return
+            if process is None:
+                items.clear()
+            else:
+                self.processes[job_id] = [item for item in items if item is not process]
+            if not self.processes.get(job_id):
+                self.processes.pop(job_id, None)
+
     def _set_cancelled(self, job: dict[str, Any], *, status: str = "cancelled") -> None:
         job["status"] = status
         job["updated_at"] = self._utc_now()

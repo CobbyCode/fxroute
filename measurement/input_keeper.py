@@ -56,6 +56,21 @@ def reap_keeper_process(process: Any, *, timeout: float = KEEPER_STOP_TIMEOUT_SE
         logger.warning("Input keeper process was not reaped after SIGKILL", exc_info=True)
 
 
+def _forget_keeper_process(store: Any, owner_id: str, process: Any) -> None:
+    """Unregister a reaped keeper so no dead Popen reference stays behind.
+
+    The keeper owns its own registry key, so nothing else would ever remove
+    it. Stores without the seam (test doubles) are tolerated.
+    """
+    forget = getattr(store, "_forget_job_process", None)
+    if not callable(forget):
+        return
+    try:
+        forget(owner_id, process)
+    except Exception:
+        logger.warning("Input keeper process registry cleanup failed", exc_info=True)
+
+
 def _keeper_node_name(owner: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", str(owner or "").strip()).strip("-")
     return f"{KEEPER_NODE_PREFIX}-{slug or 'job'}"[:64]
@@ -72,9 +87,10 @@ def _mic_channel_index(value: object, channel_count: int) -> int:
 class InputKeeper:
     """Own one keeper stream; ``active`` mirrors the spawned process."""
 
-    def __init__(self, *, node_name: str, process: Any):
+    def __init__(self, *, node_name: str, process: Any, release: Any = None):
         self.node_name = node_name
         self._process = process
+        self._release = release
         self.active = True
 
     def stop(self) -> None:
@@ -89,6 +105,10 @@ class InputKeeper:
         # Reap unconditionally: a keeper that exited on its own is still a
         # defunct child until someone waits for it.
         reap_keeper_process(self._process)
+        # Then drop it from the process registry: a reaped keeper must not
+        # remain a dead Popen reference.
+        if callable(self._release):
+            self._release()
 
 
 @asynccontextmanager
@@ -136,7 +156,9 @@ async def input_keeper_scope(
     ]
     owner_id = f"keeper:{node_name}"
     process = store._start_job_process(owner_id, command)
-    keeper = InputKeeper(node_name=node_name, process=process)
+    keeper = InputKeeper(
+        node_name=node_name, process=process,
+        release=lambda: _forget_keeper_process(store, owner_id, process))
     try:
         deadline = time.monotonic() + KEEPER_PORT_DISCOVERY_TIMEOUT_SECONDS
         keeper_inputs: list[str] = []

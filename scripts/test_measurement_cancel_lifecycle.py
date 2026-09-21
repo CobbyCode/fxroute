@@ -417,5 +417,55 @@ class MeasurementCancelLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(store.get_job(job_id)["status"], "cancelled")
 
 
+class MeasurementProcessRegistryTests(unittest.TestCase):
+    """Long-lived owners must not leave dead Popen references behind.
+
+    A measurement job clears its own registry key when it ends, but an owner
+    registered under its own key (the input keeper uses ``keeper:<node>``)
+    has to unregister itself once its child is stopped and reaped.
+    """
+
+    def make_store(self):
+        tempdir = tempfile.TemporaryDirectory(prefix="process-registry-")
+        self.addCleanup(tempdir.cleanup)
+        with patch.dict("os.environ", {"XDG_CONFIG_HOME": tempdir.name,
+                                       "XDG_STATE_HOME": tempdir.name}):
+            return MeasurementStore(home=Path(tempdir.name))
+
+    class Process:
+        def __init__(self):
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+    def test_forget_process_drops_only_the_named_child(self):
+        store = self.make_store()
+        first, second = self.Process(), self.Process()
+        store._job_processes["keeper:job"] = [first, second]
+
+        store._job_runner.forget_process("keeper:job", first)
+
+        self.assertEqual(store._job_processes["keeper:job"], [second])
+
+    def test_forget_process_removes_the_key_when_empty(self):
+        store = self.make_store()
+        process = self.Process()
+        store._job_processes["keeper:job"] = [process]
+
+        store._job_runner.forget_process("keeper:job", process)
+
+        self.assertNotIn("keeper:job", store._job_processes)
+
+    def test_forget_process_tolerates_unknown_key_and_repeats(self):
+        store = self.make_store()
+        store._job_runner.forget_process("keeper:missing")
+        store._job_runner.forget_process("keeper:missing", self.Process())
+        store._job_processes["keeper:job"] = [self.Process()]
+        store._job_runner.forget_process("keeper:job")
+        store._job_runner.forget_process("keeper:job")
+        self.assertNotIn("keeper:job", store._job_processes)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

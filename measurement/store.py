@@ -829,6 +829,11 @@ class MeasurementStore:
     def _start_job_process(self, job_id: str, command: list[str]) -> subprocess.Popen[str]:
         return self._job_runner.start_process(job_id, command)
 
+    def _forget_job_process(self, job_id: str,
+                            process: subprocess.Popen[str] | None = None) -> None:
+        """Drop a stopped/reaped child so no dead Popen stays registered."""
+        self._job_runner.forget_process(job_id, process)
+
     def _measurement_job_task_done(self, job_id: str, task: asyncio.Task[Any]) -> None:
         self._job_runner._task_done(job_id, task)
 

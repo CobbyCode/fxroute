@@ -18,7 +18,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from measurement.input_keeper import input_keeper_scope, reap_keeper_process
+from measurement.input_keeper import (KEEPER_NODE_PREFIX, input_keeper_scope,
+                                      reap_keeper_process)
 
 RATE = 48000
 
@@ -67,6 +68,13 @@ class KeeperFixture:
         }]
         store._measurement_inputs_with_sample_rate = lambda inputs: inputs
         return store
+
+    def wire_registered(self, store, process):
+        """Wire spawn so the double is registered like a real child is."""
+        def spawn(job_id, command):
+            store._job_runner.processes.setdefault(job_id, []).append(process)
+            return process
+        return self.wire(store, spawn=spawn)
 
     def wire(self, store, *, verify_result=None, spawn=None):
         """Fake hardware-facing calls; keep store/routing/persistence real."""
@@ -154,6 +162,49 @@ class KeeperLifecycleTests(KeeperFixture, unittest.IsolatedAsyncioTestCase):
                                       owner="speaker-reap"):
             pass
         self.assertEqual(process.signals, [])
+        self.assertEqual(process.reaps, 1)
+
+    async def test_scope_unregisters_reaped_keeper_from_process_registry(self):
+        store = self.make_store(self)
+        process = ProcessDouble()
+        self.wire_registered(store, process)
+        async with input_keeper_scope(store, input_id="mic", mic_input_channel="1",
+                                      owner="speaker-registry"):
+            owner_id = f"keeper:{KEEPER_NODE_PREFIX}-speaker-registry"
+            self.assertEqual(store._job_processes[owner_id], [process])
+        self.assertEqual(process.reaps, 1)
+        self.assertNotIn(owner_id, store._job_processes)
+
+    async def test_repeated_runs_leave_no_dead_registry_entries(self):
+        store = self.make_store(self)
+        for run in range(3):
+            process = ProcessDouble()
+            self.wire_registered(store, process)
+            async with input_keeper_scope(store, input_id="mic", mic_input_channel="1",
+                                          owner=f"speaker-run-{run}"):
+                pass
+            self.assertEqual(process.reaps, 1)
+        self.assertEqual(store._job_processes, {})
+
+    async def test_registry_is_cleaned_when_the_scope_raises(self):
+        store = self.make_store(self)
+        process = ProcessDouble()
+        self.wire_registered(store, process)
+        store._routing._verify_record_links = lambda expected, **kw: {
+            label: None for _, _, label in expected}
+        with self.assertRaisesRegex(RuntimeError, "keeper"):
+            async with input_keeper_scope(store, input_id="mic", mic_input_channel="1",
+                                          owner="speaker-failed"):
+                pass
+        self.assertEqual(process.reaps, 1)
+        self.assertEqual(store._job_processes, {})
+
+    async def test_stop_without_release_callback_still_reaps(self):
+        from measurement.input_keeper import InputKeeper
+        process = ProcessDouble()
+        keeper = InputKeeper(node_name="fxroute-input-keeper-plain", process=process)
+        keeper.stop()
+        self.assertEqual(process.signals, ["terminate"])
         self.assertEqual(process.reaps, 1)
 
     async def test_unknown_input_fails_before_spawn(self):
