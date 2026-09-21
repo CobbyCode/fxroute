@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from typing import Any
@@ -27,6 +28,32 @@ logger = logging.getLogger(__name__)
 KEEPER_NODE_PREFIX = "fxroute-input-keeper"
 KEEPER_PORT_DISCOVERY_TIMEOUT_SECONDS = 4.0
 KEEPER_PORT_DISCOVERY_POLL_SECONDS = 0.1
+KEEPER_STOP_TIMEOUT_SECONDS = 2.0
+KEEPER_KILL_TIMEOUT_SECONDS = 2.0
+
+
+def reap_keeper_process(process: Any, *, timeout: float = KEEPER_STOP_TIMEOUT_SECONDS) -> None:
+    """Wait for a stopped keeper so no defunct child stays in the process table.
+
+    ``terminate()`` only signals: without the wait the keeper remains a zombie
+    under the app until the app itself exits. A keeper that ignores SIGTERM is
+    killed and reaped as well. Objects without a real child are tolerated.
+    """
+    try:
+        process.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:
+        return
+    try:
+        process.kill()
+    except Exception:
+        logger.warning("Input keeper process could not be killed", exc_info=True)
+    try:
+        process.wait(timeout=KEEPER_KILL_TIMEOUT_SECONDS)
+    except Exception:
+        logger.warning("Input keeper process was not reaped after SIGKILL", exc_info=True)
 
 
 def _keeper_node_name(owner: str) -> str:
@@ -59,6 +86,9 @@ class InputKeeper:
                 self._process.terminate()
         except Exception:
             pass
+        # Reap unconditionally: a keeper that exited on its own is still a
+        # defunct child until someone waits for it.
+        reap_keeper_process(self._process)
 
 
 @asynccontextmanager

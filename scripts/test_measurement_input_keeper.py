@@ -8,6 +8,7 @@ suspend/resume cycle can slip the mic timing by an ALSA period mid-run.
 
 import asyncio
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,9 +18,40 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from measurement.input_keeper import input_keeper_scope
+from measurement.input_keeper import input_keeper_scope, reap_keeper_process
 
 RATE = 48000
+
+
+class ProcessDouble:
+    """pw-record double exposing the lifecycle calls the keeper uses."""
+
+    def __init__(self, *, running=True, ignore_sigterm=False):
+        self._running = running
+        self._ignore_sigterm = ignore_sigterm
+        self.returncode: int | None = None if running else 0
+        self.signals: list[str] = []
+        self.reaps = 0
+
+    def poll(self):
+        return None if self._running else self.returncode
+
+    def terminate(self):
+        self.signals.append("terminate")
+        if not self._ignore_sigterm:
+            self._running = False
+            self.returncode = -15
+
+    def kill(self):
+        self.signals.append("kill")
+        self._running = False
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        if self._running:
+            raise subprocess.TimeoutExpired("pw-record", timeout)
+        self.reaps += 1
+        return self.returncode
 
 
 class KeeperFixture:
@@ -50,6 +82,7 @@ class KeeperFixture:
                 return spawn(job_id, command)
             return SimpleNamespace(returncode=None, poll=lambda: None,
                                    terminate=lambda: created.append(("terminate", job_id)),
+                                   wait=lambda timeout=None: created.append(("reap", job_id)),
                                    communicate=lambda **kw: ("", ""))
 
         store._start_job_process = fake_spawn
@@ -60,6 +93,29 @@ class KeeperFixture:
             store._routing._verify_record_links = lambda expected, **kw: verify_result
         store._routing._cleanup_fxroute_links = lambda **kw: []
         return created
+
+
+class KeeperReapTests(unittest.TestCase):
+    """A stopped keeper must be waited for, not just signalled.
+
+    ``terminate()`` alone leaves the child defunct under the app until it
+    exits; one leaked keeper per speaker run is exactly that bug.
+    """
+
+    def test_reap_waits_for_a_stopped_process(self):
+        process = ProcessDouble(running=False)
+        reap_keeper_process(process)
+        self.assertEqual(process.reaps, 1)
+        self.assertEqual(process.signals, [])
+
+    def test_reap_kills_a_process_that_ignores_sigterm(self):
+        process = ProcessDouble(ignore_sigterm=True)
+        reap_keeper_process(process)
+        self.assertEqual(process.signals, ["kill"])
+        self.assertEqual(process.reaps, 1)
+
+    def test_reap_tolerates_objects_without_wait(self):
+        reap_keeper_process(SimpleNamespace(returncode=0))
 
 
 class KeeperLifecycleTests(KeeperFixture, unittest.IsolatedAsyncioTestCase):
@@ -78,6 +134,27 @@ class KeeperLifecycleTests(KeeperFixture, unittest.IsolatedAsyncioTestCase):
             owner_id = f"keeper:{keeper.node_name}"
         self.assertFalse(keeper.active)
         self.assertIn(("terminate", owner_id), created)
+        self.assertIn(("reap", owner_id), created)
+
+    async def test_hold_and_release_reaps_the_keeper_process(self):
+        store = self.make_store(self)
+        process = ProcessDouble()
+        self.wire(store, spawn=lambda job_id, command: process)
+        async with input_keeper_scope(store, input_id="mic", mic_input_channel="1",
+                                      owner="speaker-reap"):
+            self.assertTrue(process.poll() is None)
+        self.assertEqual(process.signals, ["terminate"])
+        self.assertEqual(process.reaps, 1)
+
+    async def test_keeper_that_exited_on_its_own_is_still_reaped(self):
+        store = self.make_store(self)
+        process = ProcessDouble(running=False)
+        self.wire(store, spawn=lambda job_id, command: process)
+        async with input_keeper_scope(store, input_id="mic", mic_input_channel="1",
+                                      owner="speaker-reap"):
+            pass
+        self.assertEqual(process.signals, [])
+        self.assertEqual(process.reaps, 1)
 
     async def test_unknown_input_fails_before_spawn(self):
         store = self.make_store(self)
