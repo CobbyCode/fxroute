@@ -1001,6 +1001,10 @@ class MeasurementStore:
             mic_source_node_name=source_node_name,
             requested_channel=playback_channel,
         )
+        # A bank measurement plays one deliberately band-limited way, so its
+        # reference timing has to be judged on the registers that way actually
+        # plays; a single sweep plays the whole band and stays unchanged.
+        band_limited_reference = bool(str(job.get("measurement_bank") or "").strip())
         electrical_reference = None
         if use_electrical_reference:
             electrical_reference = {
@@ -1013,6 +1017,7 @@ class MeasurementStore:
                 "electrical_reference_input_channel": electrical_reference_channel_index + 1,
                 "channel_indexes": list(electrical_reference_channel_indexes),
                 "channels": [channel_index + 1 for channel_index in electrical_reference_channel_indexes],
+                "band_limited_reference": band_limited_reference,
             }
         sweep_meta = self._write_sweep_file(
             playback_path,

@@ -143,6 +143,11 @@ class HostCaptureRunner:
             reference_capture, electrical_reference_channel_index, capture_channels
         )
         has_electrical_reference = bool(capture_reference_channel_indexes)
+        # A deliberately band-limited way (bank measurement, Speaker-Align way)
+        # is timed on the registers it actually plays.
+        band_limited_reference = bool(
+            reference_capture.get("band_limited_reference") if isinstance(reference_capture, dict) else False
+        )
         # Temporary phase instrumentation (no logic impact): monotonic marks
         # around each spawn/link/wait/teardown/analysis step to locate the
         # remaining per-sweep overhead. Emitted as one HOSTCAP-PHASES line.
@@ -460,6 +465,7 @@ class HostCaptureRunner:
                 reference_channel_label=candidate_label,
                 is_21_dsp_active=is_21_active,
                 measurement_role=measurement_role,
+                band_limited_reference=band_limited_reference,
                 **({"timing_ir_receiver": _receive_candidate_ir} if timing_ir_receiver is not None else {}),
             )
 

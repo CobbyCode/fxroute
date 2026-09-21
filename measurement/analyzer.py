@@ -54,14 +54,19 @@ from measurement.constants import (
     SWEEP_TIMING_ANCHOR_LAYOUT,
     SWEEP_TIMING_ANCHOR_SECONDS,
     SWEEP_TIMING_CENTRAL_ANCHORS,
+    SWEEP_TIMING_BAND_PRESENT_MIN_SCORE,
+    SWEEP_TIMING_BAND_PRESENT_RELATIVE_DB,
+    SWEEP_TIMING_BAND_REGION_ANCHORS,
     SWEEP_TIMING_CLUSTER_REJECT_SAMPLES,
     SWEEP_TIMING_EDGE_ANCHORS,
     SWEEP_TIMING_EDGE_INSET_SECONDS,
+    SWEEP_TIMING_END_REGION_ANCHORS,
     SWEEP_TIMING_MAX_ABS_PPM,
     SWEEP_TIMING_MIN_ANCHOR_SCORE,
     SWEEP_TIMING_MIN_COMPENSATION_PPM,
     SWEEP_TIMING_MULTI_ANCHOR_SECONDS,
     SWEEP_TIMING_SEARCH_SECONDS,
+    SWEEP_TIMING_START_REGION_ANCHORS,
     TRUSTED_MAX_HZ,
     TRUSTED_MIN_HZ,
 )
@@ -261,8 +266,16 @@ class MeasurementAnalyzer:
         timing_override: dict[str, Any] | None = None,
         is_21_dsp_active: bool = False,
         measurement_role: str = "",
+        band_limited_reference: bool = False,
         timing_ir_receiver: Callable[[np.ndarray, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        """Analyze one capture.
+
+        ``band_limited_reference`` marks a capture of a single way whose
+        playback is deliberately band limited (a Speaker-Align way or a bank
+        measurement).  Its reference timing is then judged on the sweep
+        registers that way actually plays; every other capture is unchanged.
+        """
         sample_rate, raw_signal = self._store._load_wav_array(capture_path)
         signal = self._store._select_analysis_channel(raw_signal, channel=channel, channel_index=analysis_channel_index)
         timing_signal = self._store._select_analysis_channel(raw_signal, channel=channel, channel_index=reference_channel_index)
@@ -294,6 +307,7 @@ class MeasurementAnalyzer:
                 coarse_start,
                 sample_rate,
                 allow_drift_compensation=allow_drift_compensation,
+                band_limited=band_limited_reference,
             )
         else:
             timing = {
@@ -322,6 +336,8 @@ class MeasurementAnalyzer:
                 "anchor_seconds": float(timing_override.get("anchor_seconds") or 0.0),
                 "start_score": float(timing_override.get("start_score") or 0.0),
                 "end_score": float(timing_override.get("end_score") or 0.0),
+                "band_limited_reference": bool(band_limited_reference),
+                "region_anchor_sources": deepcopy(timing_override.get("region_anchor_sources") or {}),
                 "anchor_strategy": str(timing_override.get("anchor_strategy") or "timing override"),
                 "anchor_matches": deepcopy(timing_override.get("anchor_matches") or []),
                 "drift_compensation_policy": str(
@@ -550,6 +566,8 @@ class MeasurementAnalyzer:
                 "anchor_matches": timing.get("anchor_matches") or [],
                 "start_score": round(float(timing["start_score"]), 5),
                 "end_score": round(float(timing["end_score"]), 5),
+                "band_limited_reference": bool(timing.get("band_limited_reference")),
+                "region_anchor_sources": timing.get("region_anchor_sources") or {},
                 "selected_lag": timing.get("selected_lag"),
                 "timing_channel": reference_channel_label,
             },
@@ -857,6 +875,7 @@ class MeasurementAnalyzer:
         sample_rate: int,
         *,
         allow_drift_compensation: bool = True,
+        band_limited: bool = False,
     ) -> dict[str, Any]:
         edge_anchor_samples = min(
             reference_sweep.size // 2,
@@ -933,6 +952,10 @@ class MeasurementAnalyzer:
                     "score": float(peak["score"]),
                     "raw_score": float(peak["raw_score"]),
                     "polarity": float(peak["polarity"]),
+                    # Level of this register in the capture: the played band and
+                    # the recording's noise floor decide whether the register
+                    # exists at all, independently of the correlation.
+                    "level_dbfs": self._anchor_window_level_dbfs(signal, observed_start, anchor_samples),
                 }
             )
 
@@ -941,6 +964,7 @@ class MeasurementAnalyzer:
             reference_sweep_samples=reference_sweep.size,
             sample_rate=sample_rate,
             allow_drift_compensation=allow_drift_compensation,
+            band_limited=band_limited,
         )
         aligned_start = int(fit["aligned_start"])
         observed_sweep_samples = int(fit["observed_sweep_samples"])
@@ -982,10 +1006,21 @@ class MeasurementAnalyzer:
             "anchor_seconds": anchor_samples / sample_rate,
             "start_score": float(fit["start_score"]),
             "end_score": float(fit["end_score"]),
+            "band_limited_reference": bool(band_limited),
+            "region_anchor_sources": deepcopy(fit.get("region_anchor_sources") or {}),
             "anchor_strategy": str(fit.get("anchor_strategy") or "multi-anchor weighted fit"),
             "drift_compensation_policy": str(fit.get("drift_compensation_policy") or "auto"),
             "anchor_matches": fit["anchor_matches"],
         }
+
+    @staticmethod
+    def _anchor_window_level_dbfs(signal: np.ndarray, start: int, length: int) -> float:
+        """RMS level of one anchor window in the capture (dBFS, floor -200)."""
+        window = signal[max(0, start):max(0, start) + max(1, length)]
+        if window.size == 0:
+            return -200.0
+        rms = float(np.sqrt(np.mean(np.square(window.astype(np.float64)))))
+        return 20.0 * math.log10(max(rms, 1e-10))
 
     def _build_sweep_timing_anchors(
         self,
@@ -1019,6 +1054,7 @@ class MeasurementAnalyzer:
         reference_sweep_samples: int,
         sample_rate: int,
         allow_drift_compensation: bool = True,
+        band_limited: bool = False,
     ) -> dict[str, Any]:
         if len(matches) < 2:
             raise RuntimeError("Sweep timing fit did not have enough anchors")
@@ -1044,13 +1080,28 @@ class MeasurementAnalyzer:
             central_start = float(raw_intercept)
             central_residual = 0.0
 
+        levels = np.array(
+            [float(item.get("level_dbfs") if item.get("level_dbfs") is not None else -200.0)
+             for item in matches],
+            dtype=np.float64,
+        )
+        loudest_level = float(np.max(levels)) if levels.size else -200.0
         fit_candidate_mask = np.zeros(offsets.size, dtype=bool)
         diagnostic_rows: list[dict[str, Any]] = []
+        band_present_flags: list[bool] = []
         for index, item in enumerate(matches):
             name = str(item["name"])
             score = float(item.get("score") or 0.0)
             polarity = int(-1 if float(item.get("polarity") or 1.0) < 0 else 1)
             coarse_residual = float(item.get("residual_samples") or 0.0)
+            # A register the capture does not reproduce carries neither sweep
+            # correlation nor sweep level; that is evidence about the played
+            # band, not about the reference quality.
+            band_present = bool(
+                score >= SWEEP_TIMING_BAND_PRESENT_MIN_SCORE
+                and float(levels[index]) >= loudest_level + SWEEP_TIMING_BAND_PRESENT_RELATIVE_DB
+            )
+            band_present_flags.append(band_present)
             reasons: list[str] = []
             if polarity < 0:
                 reasons.append("negative_polarity")
@@ -1083,6 +1134,8 @@ class MeasurementAnalyzer:
                     "accepted": accepted,
                     "rejected": not accepted,
                     "reject_reasons": reasons,
+                    "band_present": bool(band_present),
+                    "anchor_level_dbfs": round(float(levels[index]), 2),
                     "used_for_fit": accepted,
                 }
             )
@@ -1122,8 +1175,13 @@ class MeasurementAnalyzer:
         fitted_all_residuals = observed - (intercept + slope * offsets)
 
         inlier_mask = fit_candidate_mask
-        start_score = self._aggregate_anchor_region_score(matches, inlier_mask, region="start")
-        end_score = self._aggregate_anchor_region_score(matches, inlier_mask, region="end")
+        reproduced_indexes = [index for index, present in enumerate(band_present_flags) if present]
+        start_indexes, start_source = self._region_anchor_indexes(
+            matches, reproduced_indexes=reproduced_indexes, region="start", band_limited=band_limited)
+        end_indexes, end_source = self._region_anchor_indexes(
+            matches, reproduced_indexes=reproduced_indexes, region="end", band_limited=band_limited)
+        start_score = self._aggregate_anchor_region_score(matches, inlier_mask, indexes=start_indexes)
+        end_score = self._aggregate_anchor_region_score(matches, inlier_mask, indexes=end_indexes)
         anchor_matches = []
         for index, item in enumerate(matches):
             fitted_expected_start = float(intercept + slope * offsets[index])
@@ -1154,6 +1212,11 @@ class MeasurementAnalyzer:
             "drift_compensation_policy": drift_compensation_policy,
             "start_score": float(start_score),
             "end_score": float(end_score),
+            "region_anchor_sources": {
+                "start": start_source,
+                "end": end_source,
+                "band_limited": bool(band_limited),
+            },
             "anchor_matches": anchor_matches,
         }
 
@@ -1180,31 +1243,67 @@ class MeasurementAnalyzer:
             return "end-edge" if name.endswith("inner") else "end-body"
         return "central"
 
-    def _aggregate_anchor_region_score(
+    @staticmethod
+    def _region_anchor_labels(region: str) -> set[str]:
+        return SWEEP_TIMING_START_REGION_ANCHORS if region == "start" else SWEEP_TIMING_END_REGION_ANCHORS
+
+    def _region_anchor_indexes(
         self,
+        matches: list[dict[str, Any]],
+        *,
+        reproduced_indexes: list[int],
+        region: str,
+        band_limited: bool,
+    ) -> tuple[list[int], str]:
+        """Pick the anchors that judge the start (or end) alignment of this take.
+
+        Every ordinary capture uses its whole region register set, exactly as
+        before.  A capture of one deliberately band-limited way reproduces
+        only part of the sweep, and a missing register is absent by design:
+        judging the reference there would report the missing band as a bad
+        reference.  Such a take is judged on the registers it actually
+        reproduces, and when a whole region is missing the reproduced registers
+        at the same end of the sweep stand in for it.
+        """
+        labels = self._region_anchor_labels(region)
+        label_indexes = [
+            index for index, item in enumerate(matches) if str(item.get("name")) in labels
+        ]
+        if not band_limited:
+            return label_indexes, "registers"
+        reproduced_in_region = [index for index in label_indexes if index in set(reproduced_indexes)]
+        if reproduced_in_region:
+            return reproduced_in_region, "reproduced-registers"
+        if not reproduced_indexes:
+            return [], "no-reproduced-register"
+        ordered = sorted(reproduced_indexes)
+        if region == "start":
+            return ordered[:SWEEP_TIMING_BAND_REGION_ANCHORS], "earliest-reproduced-registers"
+        return ordered[-SWEEP_TIMING_BAND_REGION_ANCHORS:], "latest-reproduced-registers"
+
+    @staticmethod
+    def _aggregate_anchor_region_score(
         matches: list[dict[str, Any]],
         inlier_mask: np.ndarray,
         *,
-        region: str,
+        indexes: list[int],
     ) -> float:
-        if region == "start":
-            labels = {"start-inner", "start-body", "mid-low"}
-        else:
-            labels = {"mid-high", "end-body", "end-inner"}
+        """Mean of the two best scores among the given anchors.
 
-        def collect_scores(valid_labels: set[str], only_inliers: bool = True) -> list[float]:
+        Inliers win; when none of the chosen anchors is an inlier the region
+        still reports its best available correlation, which is what the
+        existing thresholds and their messages expect.
+        """
+
+        def collect(only_inliers: bool) -> list[float]:
             values = []
-            for index, item in enumerate(matches):
-                if str(item.get("name")) not in valid_labels:
-                    continue
+            for index in indexes:
                 if only_inliers and not bool(inlier_mask[index]):
                     continue
-                values.append(float(item.get("score") or 0.0))
+                values.append(float(matches[index].get("score") or 0.0))
             return values
 
-        region_scores = collect_scores(labels, only_inliers=True)
-        if not region_scores:
-            region_scores = collect_scores(labels, only_inliers=False)
+        region_scores = collect(True) or collect(False)
         if not region_scores:
             return 0.0
         region_scores.sort(reverse=True)
