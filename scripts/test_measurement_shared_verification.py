@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dsp.crossover import design_crossover
 from measurement.speaker_verification import (
     MIN_WAY_ISOLATION_DB,
+    ARRIVAL_LOBE_MAX_MS,
     band_arrival,
     band_level,
     side_confirmation,
@@ -197,12 +198,19 @@ class SharedVerificationResidualTests(unittest.TestCase):
             self.assertGreater(band["lobe_samples"], 0)
 
     def test_a_way_too_quiet_to_locate_is_reported_by_its_level(self):
-        # 40 dB down, the quiet way's isolated band is really the neighbour's
-        # leak: its arrival collapses onto the neighbour's, so the take has to
-        # be caught by the level spread, never confirmed.
+        # 40 dB down, the quiet way's isolated band is mostly the neighbour's
+        # leak: either its arrival collapses onto the neighbour's lobe (no
+        # isolation margin at all) or it stands only marginally apart. The
+        # residual then cannot stand alone, so the take reports the level
+        # spread as evidence instead of confirming silently.
         document, residual = residual_ms(synthetic_take(GEOMETRY_MS, gains_db={"left_high": -40.0}))
-        self.assertLessEqual(residual, 0.02)
+        margin = document["way_isolation_db"]["left_high"]
+        self.assertTrue(margin is None or margin < MIN_WAY_ISOLATION_DB, margin)
         self.assertGreater(abs(document["way_levels_db"]["left_high"]), 20.0)
+        if margin is None:
+            # A collapsed arrival: the residual gate is blind here, which is
+            # exactly why the level evidence has to be reported.
+            self.assertLessEqual(residual, 0.02)
 
     def test_barely_separable_way_is_reported_by_its_isolation(self):
         # A 12 dB quieter low way is still located on its own arrival, but only
@@ -292,6 +300,40 @@ class ArrivalEstimatorTests(unittest.TestCase):
         arrival = band_arrival(self.band((1000, 1e-3), (5000, 1.0)), sample_rate_hz=RATE)
         self.assertEqual(arrival["arrival_index"], 5000)
         self.assertNotEqual(arrival["onset_index"], 1000)
+
+    def test_a_near_tie_resolves_to_the_leading_lobe_either_way(self):
+        """Two lobes within a fraction of a dB are one arrival, not a coin flip.
+
+        Real takes carried the way's second lobe 0.03-0.37 dB from the first,
+        so the strongest energy picked whichever the take's noise made louder
+        and the planned delay flipped by that distance. The leading lobe is the
+        same physical arrival in both cases.
+        """
+        louder_later = band_arrival(self.band((1000, 10 ** -0.005), (1057, 1.0)),
+                                    sample_rate_hz=RATE)
+        louder_earlier = band_arrival(self.band((1000, 1.0), (1057, 10 ** -0.005)),
+                                      sample_rate_hz=RATE)
+        self.assertEqual(louder_later["arrival_index"], 1000)
+        self.assertEqual(louder_earlier["arrival_index"], 1000)
+        self.assertLess(louder_later["onset_index"], 1000)
+
+    def test_a_leading_lobe_far_quieter_than_the_peak_keeps_the_peak(self):
+        """Real takes put the neighbouring structure 5.2 dB or more down."""
+        arrival = band_arrival(self.band((1000, 10 ** -0.3), (1057, 1.0)),
+                               sample_rate_hz=RATE)
+        self.assertEqual(arrival["arrival_index"], 1057)
+
+    def test_a_leading_shoulder_without_a_null_stays_one_lobe(self):
+        values = np.zeros(8192)
+        for index in range(1000, 1058):
+            values[index] = 0.9 + 0.1 * (index - 1000) / 57.0
+        self.assertEqual(band_arrival(values, sample_rate_hz=RATE)["arrival_index"], 1057)
+
+    def test_a_leading_lobe_outside_the_lobe_window_keeps_the_peak(self):
+        reach = int(ARRIVAL_LOBE_MAX_MS * RATE / 1000.0)
+        arrival = band_arrival(self.band((1000, 0.9), (1000 + reach + 100, 1.0)),
+                               sample_rate_hz=RATE)
+        self.assertEqual(arrival["arrival_index"], 1000 + reach + 100)
 
     def test_threshold_must_be_a_fraction(self):
         for threshold in (0.0, 1.0, -0.2, float("inf")):

@@ -48,6 +48,8 @@ from measurement.alignment_backend import (
 )
 
 __all__ = [
+    "ARRIVAL_LEADING_MARGIN_DB",
+    "ARRIVAL_LEADING_NULL_DB",
     "ARRIVAL_LOBE_MAX_MS",
     "ARRIVAL_SMOOTHING_SECONDS",
     "ARRIVAL_THRESHOLD_RELATIVE",
@@ -70,6 +72,19 @@ ARRIVAL_THRESHOLD_RELATIVE = 0.10
 ARRIVAL_SMOOTHING_SECONDS = 0.0002
 # Two arrivals this close are the same arrival: nothing to separate then.
 ARRIVAL_LOBE_MAX_MS = 50.0
+# A way's band can carry two lobes within a fraction of a decibel of each other
+# and separated by a null: every real take measured so far put the low way's
+# second lobe 0.03 to 0.37 dB from the first. The strongest energy then flips
+# between those two lobes from take to take, and a planned or residual delay
+# with it, while the leading lobe is the same physical arrival every time. A
+# lobe pair inside this margin therefore resolves to the earlier one. The margin
+# stays tight on purpose: the band's own ringing (2.7 dB down in synthetic
+# takes) and the way's next real structure (5.2 dB or more down in real ones)
+# must not be mistaken for a near tie.
+ARRIVAL_LEADING_MARGIN_DB = 1.0
+# Two lobes only count as two arrivals when a null this deep separates them: a
+# mere shoulder belongs to the same lobe.
+ARRIVAL_LEADING_NULL_DB = 6.0
 # A way's own arrival must stand this far above what the side's other ways
 # leave in the same isolated band. Two ways of one crossover overlap by an
 # octave, so a way that is far quieter than its neighbour cannot be located in
@@ -179,6 +194,34 @@ def way_band_impulse_response(
     return np.array(isolated[: ir.size], dtype=np.float64)
 
 
+def _leading_lobe(energy: np.ndarray, peak_index: int, reach: int) -> int:
+    """The earlier of two comparable lobes, or the peak when there is only one.
+
+    Walks back from the band's strongest energy and returns the earliest local
+    maximum that is within ``ARRIVAL_LEADING_MARGIN_DB`` of it *and* separated
+    from it by a null of at least ``ARRIVAL_LEADING_NULL_DB``. A near-tie then
+    resolves to the leading arrival instead of to whichever lobe the take's
+    noise made marginally louder; a band whose leading structure is far quieter
+    than its peak keeps that peak.
+    """
+    margin = 10.0 ** (ARRIVAL_LEADING_MARGIN_DB / 10.0)
+    null_ratio = 10.0 ** (-ARRIVAL_LEADING_NULL_DB / 10.0)
+    peak_energy = float(energy[peak_index])
+    leading = peak_index
+    start = max(1, peak_index - reach)
+    for index in range(start, peak_index):
+        if float(energy[index]) * margin < peak_energy:
+            continue
+        if not (energy[index] >= energy[index - 1] and energy[index] >= energy[index + 1]):
+            continue
+        between = energy[index + 1: peak_index]
+        if between.size == 0 or float(between.min()) > null_ratio * float(energy[index]):
+            continue
+        leading = index
+        break
+    return leading
+
+
 def band_arrival(
     band: object,
     *,
@@ -189,10 +232,12 @@ def band_arrival(
     """Return the arrival of one isolated band on the take's time base.
 
     The band is zero-phase around its way's real arrival, so the arrival is the
-    strongest energy of the isolated band. The first significant energy
+    strongest energy of the isolated band, resolved to the earlier lobe of a
+    near-tie (see ``_leading_lobe``) so one arrival cannot flip between two
+    lobes that are within a fraction of a decibel. The first significant energy
     (``onset_index``) is reported next to it for diagnosis: it can sit closer to
     a leading reflection or a leaked neighbour lobe, which is exactly why it
-    does not decide the arrival. ``lobe_samples`` is how long that strongest
+    does not decide the arrival. ``lobe_samples`` is how long the strongest
     energy stays above the same threshold, i.e. the time resolution of this
     arrival: two arrivals closer than that are the same event.
     """
@@ -216,7 +261,7 @@ def band_arrival(
     stop = min(values.size, peak_index + reach)
     trailing = np.flatnonzero(energy[peak_index:stop] < threshold * peak_energy)
     return {
-        "arrival_index": peak_index,
+        "arrival_index": _leading_lobe(energy, peak_index, reach),
         "onset_index": int(crossings[0]) if crossings.size else peak_index,
         "lobe_samples": int(trailing[0]) if trailing.size else stop - peak_index,
     }
