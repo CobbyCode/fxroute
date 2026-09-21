@@ -319,6 +319,7 @@ class MeasurementStore:
         calibration_filename: str | None,
         reference_input_channel_left: str | int | None = None,
         reference_input_channel_right: str | int | None = None,
+        reference_candidate_channels: list[str | int] | tuple[str | int, ...] | None = None,
         calibration_bytes: bytes | None,
         calibration_ref: str | None,
         measurement_scope: str,
@@ -423,6 +424,31 @@ class MeasurementStore:
             )
         )
 
+        # Opt-in multi-channel reference capture: every configured loopback
+        # candidate is recorded in one take and the capture evidence decides
+        # which one carries the sweep.  The list is never filtered by side, and
+        # the legacy single fields keep mirroring its first entry so older
+        # readers still see one primary channel.
+        reference_candidate_input_channels: list[int] = []
+        for value in (reference_candidate_channels or ()):
+            raw_candidate = str(value if value is not None else "").strip()
+            if not raw_candidate:
+                continue
+            candidate_index = self._parse_optional_input_channel_index(
+                raw_candidate,
+                channel_count=input_channel_count,
+                field_name="reference_candidate_channels",
+            )
+            if candidate_index is None or candidate_index == mic_input_channel_index:
+                continue
+            if candidate_index + 1 not in reference_candidate_input_channels:
+                reference_candidate_input_channels.append(candidate_index + 1)
+        if reference_candidate_input_channels:
+            if reference_input_channel_left_index is None:
+                reference_input_channel_left_index = reference_candidate_input_channels[0] - 1
+            if reference_input_channel_right_index is None:
+                reference_input_channel_right_index = reference_candidate_input_channels[0] - 1
+
         calibration_meta = self._file_store.resolve_calibration_meta(
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
@@ -431,6 +457,25 @@ class MeasurementStore:
         normalized_scope = self._normalize_measurement_scope(measurement_scope)
         now = self._utc_now()
         job_id = f"{job_prefix}{uuid4().hex[:12]}"
+        job_input_channels: dict[str, Any] = {
+            "mic": mic_input_channel_index + 1,
+            "electrical_reference": (
+                reference_input_channel_left_index + 1
+                if reference_input_channel_left_index is not None
+                else (reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None)
+            ),
+            "electrical_reference_left": (
+                reference_input_channel_left_index + 1 if reference_input_channel_left_index is not None else None
+            ),
+            "electrical_reference_right": (
+                reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None
+            ),
+            "reference_disabled_reason": reference_disabled_reason,
+            "reference_disabled_reason_left": reference_disabled_reason_left,
+            "reference_disabled_reason_right": reference_disabled_reason_right,
+        }
+        if reference_candidate_input_channels:
+            job_input_channels["electrical_reference_candidates"] = reference_candidate_input_channels
         job = {
             "id": job_id,
             "status": "queued",
@@ -446,23 +491,7 @@ class MeasurementStore:
                 "measurement_sample_rate": selected_input.get("measurement_sample_rate"),
                 "supported_rates": selected_input.get("supported_rates", []),
             },
-            "input_channels": {
-                "mic": mic_input_channel_index + 1,
-                "electrical_reference": (
-                    reference_input_channel_left_index + 1
-                    if reference_input_channel_left_index is not None
-                    else (reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None)
-                ),
-                "electrical_reference_left": (
-                    reference_input_channel_left_index + 1 if reference_input_channel_left_index is not None else None
-                ),
-                "electrical_reference_right": (
-                    reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None
-                ),
-                "reference_disabled_reason": reference_disabled_reason,
-                "reference_disabled_reason_left": reference_disabled_reason_left,
-                "reference_disabled_reason_right": reference_disabled_reason_right,
-            },
+            "input_channels": job_input_channels,
             "calibration": calibration_meta or {"filename": "", "applied": False},
             "scope_note": MEASUREMENT_SCOPE_NOTE,
             "measurement_scope": normalized_scope,
@@ -539,6 +568,7 @@ class MeasurementStore:
         reference_input_channel: str | int | None = "",
         reference_input_channel_left: str | int | None = None,
         reference_input_channel_right: str | int | None = None,
+        reference_candidate_channels: list[str | int] | tuple[str | int, ...] | None = None,
         calibration_filename: str | None = None,
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
@@ -573,6 +603,7 @@ class MeasurementStore:
             reference_input_channel=reference_input_channel,
             reference_input_channel_left=reference_input_channel_left,
             reference_input_channel_right=reference_input_channel_right,
+            reference_candidate_channels=reference_candidate_channels,
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
@@ -895,7 +926,10 @@ class MeasurementStore:
 
         sample_rate = int(selected_input.get("measurement_sample_rate") or selected_input.get("sample_rate") or MEASUREMENT_DEFAULT_SAMPLE_RATE)
         repeat_profile = job.get("capture_profile") == "lr-repeat"
-        resolved_electrical_reference_input_channel = self._resolve_electrical_reference_input_channel(input_channels, channel)
+        resolved_electrical_reference_input_channels = self._resolve_electrical_reference_input_channels(input_channels, channel)
+        resolved_electrical_reference_input_channel = (
+            resolved_electrical_reference_input_channels[0] if resolved_electrical_reference_input_channels else None
+        )
         er_preavg_requested = repeat_profile and resolved_electrical_reference_input_channel is not None
         # Default L/R Repeat intentionally uses the same full sweep profile as
         # Single Sweep. This keeps Acoustic-only Repeat, ER Repeat, and Single
@@ -932,7 +966,26 @@ class MeasurementStore:
             else None
         )
         use_electrical_reference = electrical_reference_channel_index is not None and electrical_reference_channel_index != mic_input_channel_index
-        capture_channels = max(2, mic_input_channel_index + 1, (electrical_reference_channel_index + 1) if use_electrical_reference else 2)
+        # One simultaneous take can carry several configured loopback channels;
+        # the store's electrical-reference evaluation then admits the channel
+        # that actually carries the sweep. Outside that mode the list holds the
+        # legacy single per-side reference and nothing changes.
+        electrical_reference_channel_indexes = (
+            [
+                channel_index
+                for channel_index in (
+                    max(0, candidate - 1) for candidate in resolved_electrical_reference_input_channels
+                )
+                if channel_index != mic_input_channel_index
+            ]
+            if use_electrical_reference
+            else []
+        )
+        capture_channels = max(
+            2,
+            mic_input_channel_index + 1,
+            (max(electrical_reference_channel_indexes) + 1) if electrical_reference_channel_indexes else 2,
+        )
         capture_path = self.captures_dir / f"{job_id}.wav"
         playback_path = self.playbacks_dir / f"{job_id}.wav"
         source_node_name = str(selected_input.get("node_name") or "").strip()
@@ -958,6 +1011,8 @@ class MeasurementStore:
                 "mic_channel_label": f"input_{mic_input_channel_index + 1}_mic",
                 "mic_input_channel": mic_input_channel_index + 1,
                 "electrical_reference_input_channel": electrical_reference_channel_index + 1,
+                "channel_indexes": list(electrical_reference_channel_indexes),
+                "channels": [channel_index + 1 for channel_index in electrical_reference_channel_indexes],
             }
         sweep_meta = self._write_sweep_file(
             playback_path,
@@ -1004,6 +1059,7 @@ class MeasurementStore:
                 "job_id": job_id,
                 "owner_job_id": owner_job_id,
                 "mic_source_node_name": source_node_name,
+                "select_reference_candidate": self._select_electrical_reference_candidate,
                 "channel": playback_channel,
                 "capture_path": capture_path,
                 "playback_path": playback_path,
@@ -1054,7 +1110,12 @@ class MeasurementStore:
             calibration=calibration_result,
             input_channels={
                 "mic": mic_input_channel_index + 1,
-                "electrical_reference": electrical_reference_channel_index + 1 if use_electrical_reference else None,
+                "electrical_reference": (
+                    capture_info.get("electrical_reference_input_channel")
+                    if isinstance(capture_info, dict)
+                    and capture_info.get("electrical_reference_input_channel") is not None
+                    else (electrical_reference_channel_index + 1 if use_electrical_reference else None)
+                ),
                 "electrical_reference_left": input_channels.get("electrical_reference_left"),
                 "electrical_reference_right": input_channels.get("electrical_reference_right"),
                 "reference_disabled_reason": self._electrical_reference_disabled_reason(input_channels, channel),
@@ -1271,6 +1332,96 @@ class MeasurementStore:
         reference_path["stability"] = "stable"
         analysis["reference_path"] = reference_path
         return {"usable": True, "warning": ""}
+
+    @staticmethod
+    def _reference_candidate_rank(candidate: dict[str, Any]) -> tuple[float, float, float, float]:
+        """Order usable reference candidates by the evidence they carry.
+
+        Confidence is the store's own blend (min of alignment and
+        sharpness/60) and therefore the primary criterion; alignment, IR
+        sharpness and reference level are the tie-breakers.  Equal tuples keep
+        the first candidate, i.e. the lower input channel.
+        """
+        reference = (candidate.get("analysis") or {}).get("reference_path") or {}
+
+        def _number(value: Any, default: float) -> float:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return default
+            return number if math.isfinite(number) else default
+
+        return (
+            _number(reference.get("confidence"), 0.0),
+            min(_number(reference.get("start_score"), 0.0), _number(reference.get("end_score"), 0.0)),
+            _number(reference.get("ir_sharpness_db"), 0.0),
+            _number(reference.get("peak_dbfs"), -120.0),
+        )
+
+    @staticmethod
+    def _reference_candidate_evidence(candidate: dict[str, Any]) -> dict[str, Any]:
+        """Describe one judged reference candidate as JSON-safe evidence."""
+        analysis = candidate.get("analysis") if isinstance(candidate.get("analysis"), dict) else {}
+        reference = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+
+        def _rounded(value: Any) -> float | None:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return round(number, 6) if math.isfinite(number) else None
+
+        return {
+            "input_channel": int(candidate.get("channel_index") or 0) + 1,
+            "usable": bool(candidate.get("usable")),
+            "warning": str(candidate.get("warning") or ""),
+            "analysis_error": str(candidate.get("error") or "") or None,
+            "confidence": _rounded(reference.get("confidence")),
+            "alignment_score": _rounded(reference.get("alignment_score")),
+            "ir_sharpness_db": _rounded(reference.get("ir_sharpness_db")),
+            "peak_dbfs": _rounded(reference.get("peak_dbfs")),
+            "clipped": bool(reference.get("clipped")),
+        }
+
+    def _select_electrical_reference_candidate(self, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        """Admit the electrical reference channel of one simultaneous take.
+
+        Every candidate is judged by ``_evaluate_electrical_reference_status``,
+        the same evaluation a single-reference capture has always used, so a
+        take recording several configured loopback channels is admitted exactly
+        as if each channel had been captured alone.  The usable candidate with
+        the best reference evidence wins; without a usable candidate the first
+        analyzed one is returned unchanged, so the existing rejection and host
+        monitor fallback stay in charge.  The chosen channel stays visible
+        through its own analysis and capture info, and every sibling's verdict
+        is recorded next to it for the job record.
+        """
+        judged: list[dict[str, Any]] = []
+        for candidate in candidates:
+            analysis = candidate.get("analysis")
+            if not isinstance(analysis, dict):
+                judged.append({
+                    **candidate, "usable": False,
+                    "warning": str(candidate.get("error") or "candidate analysis unavailable"),
+                })
+                continue
+            status = self._evaluate_electrical_reference_status(analysis)
+            judged.append({
+                **candidate, "usable": bool(status["usable"]),
+                "warning": str(status.get("warning") or ""),
+            })
+        usable = [candidate for candidate in judged if candidate["usable"]]
+        if usable:
+            chosen = max(usable, key=self._reference_candidate_rank)
+        else:
+            analyzed = [candidate for candidate in judged if isinstance(candidate.get("analysis"), dict)]
+            chosen = analyzed[0] if analyzed else judged[0]
+        reference_path = (chosen.get("analysis") or {}).get("reference_path")
+        if isinstance(reference_path, dict):
+            reference_path["electrical_reference_candidates"] = [
+                self._reference_candidate_evidence(candidate) for candidate in judged
+            ]
+        return chosen
 
     def _should_keep_active_22_dsp_electrical_reference(
         self,
@@ -1609,6 +1760,34 @@ class MeasurementStore:
         except (TypeError, ValueError):
             return None
         return parsed if parsed >= 1 else None
+
+    @classmethod
+    def _resolve_electrical_reference_input_channels(
+        cls,
+        input_channels: dict[str, Any],
+        channel: str | None,
+    ) -> list[int]:
+        """Return the ordered 1-based electrical reference candidates of one capture.
+
+        An explicit candidate list (one simultaneous take over several configured
+        loopback channels) wins and is de-duplicated, never filtered by side: the
+        channel that carries the sweep is decided from the capture evidence, not
+        from the speaker side.  Every other job keeps the legacy single per-side
+        reference, so the manual sweep path is unchanged.
+        """
+        configured = input_channels.get("electrical_reference_candidates")
+        if isinstance(configured, (list, tuple)) and configured:
+            candidates: list[int] = []
+            for value in configured:
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed >= 1 and parsed not in candidates:
+                    candidates.append(parsed)
+            return candidates
+        single = cls._resolve_electrical_reference_input_channel(input_channels, channel)
+        return [single] if single is not None else []
 
     @classmethod
     def _electrical_reference_disabled_reason(

@@ -123,6 +123,82 @@ class MeasurementJobSetupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolve(legacy, "right"), 4)
         self.assertIsNone(resolve({"mic": 1, "electrical_reference": None}, "left"))
 
+    def test_candidate_resolver_keeps_every_configured_loopback_channel(self):
+        resolve = MeasurementStore._resolve_electrical_reference_input_channels
+        # An explicit candidate list is never filtered by side: which channel
+        # carries the sweep is decided from the capture evidence.
+        self.assertEqual(resolve({"electrical_reference_candidates": [7, 8, 7]}, "left"), [7, 8])
+        self.assertEqual(resolve({"electrical_reference_candidates": [8]}, "right"), [8])
+        self.assertEqual(resolve({"electrical_reference_candidates": ("8", 7)}, "right"), [8, 7])
+        self.assertEqual(resolve({"electrical_reference_candidates": ["x", 0, 7]}, "left"), [7])
+        # Without candidates the legacy single per-side reference is unchanged.
+        split = {"mic": 1, "electrical_reference": 2, "electrical_reference_left": 2, "electrical_reference_right": 3}
+        self.assertEqual(resolve(split, "right"), [3])
+        self.assertEqual(resolve({"mic": 1, "electrical_reference": 4}, "left"), [4])
+        self.assertEqual(resolve({"electrical_reference_candidates": []}, "left"), [])
+        self.assertEqual(resolve({"mic": 1, "electrical_reference": None}, "left"), [])
+
+    async def test_candidate_channels_are_stored_for_one_simultaneous_take(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            store = MeasurementStore(home=Path(tempdir))
+            store._discover_capture_inputs = lambda: [{
+                "id": "mic", "label": "Mic", "node_serial": "serial-1", "node_name": "capture_1",
+                "channels": 18, "sample_rate": 48_000, "available": True,
+            }]
+            store._measurement_inputs_with_sample_rate = lambda inputs: inputs
+
+            setup = await store._prepare_measurement_job_setup(
+                input_id="mic", input_key="", mic_input_channel="1", reference_input_channel="7",
+                reference_input_channel_left="7", reference_input_channel_right="8",
+                reference_candidate_channels=["7", "8"],
+                calibration_filename=None, calibration_bytes=None, calibration_ref=None,
+                measurement_scope="active-chain", job_prefix="measurement-job-",
+            )
+
+            channels = setup["job"]["input_channels"]
+            self.assertEqual(channels["electrical_reference_candidates"], [7, 8])
+            self.assertEqual(channels["electrical_reference"], 7)
+            self.assertEqual(channels["electrical_reference_left"], 7)
+            self.assertEqual(channels["electrical_reference_right"], 8)
+
+    async def test_candidate_channel_matching_the_microphone_is_dropped(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            store = MeasurementStore(home=Path(tempdir))
+            store._discover_capture_inputs = lambda: [{
+                "id": "mic", "label": "Mic", "node_serial": "serial-1", "node_name": "capture_1",
+                "channels": 18, "sample_rate": 48_000, "available": True,
+            }]
+            store._measurement_inputs_with_sample_rate = lambda inputs: inputs
+
+            setup = await store._prepare_measurement_job_setup(
+                input_id="mic", input_key="", mic_input_channel="7", reference_input_channel="",
+                reference_candidate_channels=["7", "8"],
+                calibration_filename=None, calibration_bytes=None, calibration_ref=None,
+                measurement_scope="active-chain", job_prefix="measurement-job-",
+            )
+
+            channels = setup["job"]["input_channels"]
+            self.assertEqual(channels["electrical_reference_candidates"], [8])
+            self.assertEqual(channels["mic"], 7)
+            self.assertEqual(channels["electrical_reference"], 8)
+
+    async def test_out_of_range_candidate_channel_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            store = MeasurementStore(home=Path(tempdir))
+            store._discover_capture_inputs = lambda: [{
+                "id": "mic", "label": "Mic", "node_serial": "serial-1", "node_name": "capture_1",
+                "channels": 2, "sample_rate": 48_000, "available": True,
+            }]
+            store._measurement_inputs_with_sample_rate = lambda inputs: inputs
+
+            with self.assertRaisesRegex(ValueError, "reference_candidate_channels"):
+                await store._prepare_measurement_job_setup(
+                    input_id="mic", input_key="", mic_input_channel="1", reference_input_channel="",
+                    reference_candidate_channels=["7"],
+                    calibration_filename=None, calibration_bytes=None, calibration_ref=None,
+                    measurement_scope="active-chain", job_prefix="measurement-job-",
+                )
+
     async def test_selected_measurement_rate_is_stored_on_job(self):
         with tempfile.TemporaryDirectory() as tempdir:
             store = MeasurementStore(home=Path(tempdir))

@@ -36,6 +36,68 @@ class HostCaptureRunner:
     def __init__(self, store):
         self._store = store
 
+    @staticmethod
+    def _reference_channel_indexes(
+        reference_capture: dict[str, Any],
+        electrical_reference_channel_index: int | None,
+        capture_channels: int,
+    ) -> list[int]:
+        """Return the reference channel indexes this take records.
+
+        A capture request may carry several configured loopback channels, which
+        are then all recorded in one take so the capture evidence can decide
+        which one carries the sweep; otherwise the legacy single reference
+        channel is used unchanged.
+        """
+        configured = reference_capture.get("channel_indexes") if isinstance(reference_capture, dict) else None
+        if isinstance(configured, (list, tuple)) and configured:
+            indexes: list[int] = []
+            for value in configured:
+                try:
+                    index = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= index < capture_channels and index not in indexes:
+                    indexes.append(index)
+            return sorted(indexes)
+        if electrical_reference_channel_index is None:
+            return []
+        return [int(electrical_reference_channel_index)]
+
+    @staticmethod
+    def _select_reference_candidate(
+        analyze: Callable[[int, str], dict[str, Any]],
+        indexes: list[int],
+        select_reference_candidate: Callable[[list[dict[str, Any]]], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Analyze every recorded reference channel and admit the store's choice.
+
+        An unusable candidate — a loopback half that does not carry this way's
+        playback, for example — must not abort the take: its failure is kept as
+        that candidate's verdict, and only a take whose every candidate failed
+        re-raises, so the existing host-timing fallback still runs.
+        """
+        candidates: list[dict[str, Any]] = []
+        for index in indexes:
+            label = f"input_{index + 1}_electrical_reference"
+            try:
+                candidate_analysis = analyze(index, label)
+            except Exception as exc:
+                candidates.append({
+                    "channel_index": index, "channel_label": label, "analysis": None,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                continue
+            candidates.append({
+                "channel_index": index, "channel_label": label, "analysis": candidate_analysis,
+            })
+        if not any(isinstance(candidate.get("analysis"), dict) for candidate in candidates):
+            raise RuntimeError(
+                "No electrical reference candidate could be analyzed: "
+                + "; ".join(str(candidate.get("error") or "") for candidate in candidates)
+            )
+        return select_reference_candidate(candidates)
+
     def execute(
         self,
         *,
@@ -63,6 +125,7 @@ class HostCaptureRunner:
         calibration_curve: tuple[np.ndarray, np.ndarray] | None,
         mic_input_channel_index: int,
         electrical_reference_channel_index: int | None = None,
+        select_reference_candidate: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
         skip_pre_sweep_diagnostics: bool = False,
         expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         expected_native_output_mode: str | None = None,
@@ -73,6 +136,13 @@ class HostCaptureRunner:
         record_node_name = f"fxroute-measure-record-{job_id}"
         play_node_name = f"fxroute-measure-play-{job_id}"
         sample_count = int(round(sample_rate * record_duration_seconds))
+        # One take may record several configured loopback channels; the whole
+        # take is judged per candidate afterwards.  Without a candidate list
+        # this is exactly the legacy single reference channel.
+        capture_reference_channel_indexes = self._reference_channel_indexes(
+            reference_capture, electrical_reference_channel_index, capture_channels
+        )
+        has_electrical_reference = bool(capture_reference_channel_indexes)
         # Temporary phase instrumentation (no logic impact): monotonic marks
         # around each spawn/link/wait/teardown/analysis step to locate the
         # remaining per-sweep overhead. Emitted as one HOSTCAP-PHASES line.
@@ -129,7 +199,7 @@ class HostCaptureRunner:
         # the channel count (3 -> FL,FR,LFE; 5 -> FL,FR,FC,SL,SR; ...), so the
         # input_<position> ports are not derivable from the index alone. An
         # explicit AUX map makes every position a stable input_AUX<n>.
-        if electrical_reference_channel_index is not None and store._pw_record_supports_option("--channel-map"):
+        if has_electrical_reference and store._pw_record_supports_option("--channel-map"):
             record_command.extend(["--channel-map", pw_record_channel_map(capture_channels)])
         if store._pw_record_supports_option("--container"):
             record_command.extend(["--container", "wav"])
@@ -209,7 +279,7 @@ class HostCaptureRunner:
         record_process = store._start_job_process(owner_job_id, record_command)
         monitored_channel_index = store._recorded_mic_channel_index(
             mic_input_channel_index,
-            has_electrical_reference=electrical_reference_channel_index is not None,
+            has_electrical_reference=has_electrical_reference,
         )
         level_monitor_stop = threading.Event()
         level_monitor_thread = threading.Thread(
@@ -230,11 +300,11 @@ class HostCaptureRunner:
                 source_node_name=mic_source_node_name,
                 record_node_name=record_node_name,
             )
-            if electrical_reference_channel_index is not None:
+            if capture_reference_channel_indexes:
                 link_diagnostics = store._routing._link_capture_channels_to_record_stream(
                     source_node_name=mic_source_node_name,
                     record_node_name=record_node_name,
-                    channel_indices=sorted({mic_input_channel_index, electrical_reference_channel_index}),
+                    channel_indices=sorted({mic_input_channel_index, *capture_reference_channel_indexes}),
                 )
             else:
                 link_diagnostics = store._routing._link_host_reference_capture(
@@ -366,13 +436,18 @@ class HostCaptureRunner:
         reference_channel_label = str(reference_capture.get("channel_label") or "reference")
         analysis_channel_index = store._recorded_mic_channel_index(
             mic_input_channel_index,
-            has_electrical_reference=electrical_reference_channel_index is not None,
+            has_electrical_reference=has_electrical_reference,
         )
-        reference_channel_index = electrical_reference_channel_index if electrical_reference_channel_index is not None else 0
+        reference_channel_index = capture_reference_channel_indexes[0] if capture_reference_channel_indexes else 0
         store._update_measurement_job_message(owner_job_id, "Processing measurement…")
-        try:
-            is_21_active = any(bool(snap.get("processes")) for snap in helper_process_snapshots)
-            analysis = store._analyzer._analyze_sweep_capture(
+        is_21_active = any(bool(snap.get("processes")) for snap in helper_process_snapshots)
+        received_ir: dict[int, tuple[np.ndarray, dict[str, Any]]] = {}
+
+        def _receive_candidate_ir(candidate_ir: np.ndarray, candidate_analysis: dict[str, Any]) -> None:
+            received_ir[id(candidate_analysis)] = (candidate_ir, candidate_analysis)
+
+        def _analyze_reference(candidate_channel_index: int, candidate_label: str) -> dict[str, Any]:
+            return store._analyzer._analyze_sweep_capture(
                 capture_path,
                 expected_sample_rate=sample_rate,
                 channel=channel,
@@ -380,13 +455,25 @@ class HostCaptureRunner:
                 inverse_sweep=sweep_meta["inverse_sweep"],
                 calibration_curve=calibration_curve,
                 capture_label="Host-local capture",
-                reference_channel_index=reference_channel_index,
+                reference_channel_index=candidate_channel_index,
                 analysis_channel_index=analysis_channel_index,
-                reference_channel_label=reference_channel_label,
+                reference_channel_label=candidate_label,
                 is_21_dsp_active=is_21_active,
                 measurement_role=measurement_role,
-                **({"timing_ir_receiver": timing_ir_receiver} if timing_ir_receiver is not None else {}),
+                **({"timing_ir_receiver": _receive_candidate_ir} if timing_ir_receiver is not None else {}),
             )
+
+        try:
+            if len(capture_reference_channel_indexes) > 1 and callable(select_reference_candidate):
+                chosen_reference = self._select_reference_candidate(
+                    _analyze_reference, capture_reference_channel_indexes, select_reference_candidate
+                )
+            else:
+                chosen_reference = {
+                    "channel_index": reference_channel_index,
+                    "channel_label": reference_channel_label,
+                    "analysis": _analyze_reference(reference_channel_index, reference_channel_label),
+                }
         except Exception:
             helper_process_snapshots.append(store._snapshot_fxroute_21_helper_processes("after-capture-analysis-failure"))
             logger.exception(
@@ -396,27 +483,37 @@ class HostCaptureRunner:
                 helper_process_snapshots[-1].get("processes"),
             )
             raise
+        analysis = chosen_reference["analysis"]
+        chosen_reference_channel_index = int(chosen_reference["channel_index"])
+        reference_channel_label = str(chosen_reference["channel_label"])
+        reference_candidate_channels = [index + 1 for index in capture_reference_channel_indexes]
+        if timing_ir_receiver is not None:
+            # Evidence carries the admitted candidate only: the take may hold
+            # several reference channels, the analysis is the chosen one.
+            chosen_ir = received_ir.get(id(analysis))
+            if chosen_ir is not None:
+                timing_ir_receiver(chosen_ir[0], chosen_ir[1])
         analysis["method"] = (
             "inverse log-sweep deconvolution with electrical reference input timing"
-            if electrical_reference_channel_index is not None
+            if has_electrical_reference
             else "inverse log-sweep deconvolution with host-reference dual-channel capture"
         )
         phase["analysed"] = time.monotonic()
         analysis_clock = analysis.get("clock") if isinstance(analysis.get("clock"), dict) else {}
         analysis_clock.update({
             "timing_channel": reference_channel_label,
-            "reference_capture_mode": "electrical-input" if electrical_reference_channel_index is not None else "dual-channel",
+            "reference_capture_mode": "electrical-input" if has_electrical_reference else "dual-channel",
             "reference_channel": reference_channel_label,
         })
         analysis["clock"] = analysis_clock
         reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
         reference_path.update({
             "timing_applied_to_mic": True,
-            "capture_mode": "electrical-input" if electrical_reference_channel_index is not None else "dual-channel",
+            "capture_mode": "electrical-input" if has_electrical_reference else "dual-channel",
             "mic_input_channel": mic_input_channel_index + 1,
-            "electrical_reference_input_channel": electrical_reference_channel_index + 1 if electrical_reference_channel_index is not None else None,
+            "electrical_reference_input_channel": chosen_reference_channel_index + 1 if has_electrical_reference else None,
         })
-        if electrical_reference_channel_index is not None:
+        if has_electrical_reference:
             impulse_meta = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
             reference_path.update({
                 "timing_status": "electrical-reference-candidate",
@@ -546,9 +643,10 @@ class HostCaptureRunner:
                 "input_node": mic_source_node_name,
                 "microphone_node": mic_source_node_name,
                 "mic_input_channel": mic_input_channel_index + 1,
-                "electrical_reference_input_channel": electrical_reference_channel_index + 1 if electrical_reference_channel_index is not None else None,
+                "electrical_reference_input_channel": chosen_reference_channel_index + 1 if has_electrical_reference else None,
+                "electrical_reference_candidate_channels": reference_candidate_channels or None,
                 "reference_node": str(reference_capture.get("source_node_name") or ""),
-                "reference_channel": str(reference_capture.get("channel_label") or "reference"),
+                "reference_channel": reference_channel_label,
                 "reference_path": str(capture_path),
                 "record_node": record_node_name,
                 "routing_diagnostics": routing_diagnostics,

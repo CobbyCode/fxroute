@@ -5,15 +5,20 @@ This adapter drives one ``CaptureEvidence`` owner per frozen
 ``SpeakerAlignment`` request, strictly serially, and returns propose-ready
 captures. It never stages, applies or commits anything.
 
-Attestation limits, stated plainly: software can prove that every way was
-captured through the same observed microphone input, electrical-reference
-input channel and reference node at the same rate, with the same frozen
-target the alignment was planned from. It cannot prove physical wiring or
-that the microphone stayed fixed. The caller supplies the session's upstream
-``reference_id`` and ``microphone_position_id`` as the operator's assertion;
-the adapter binds those IDs to the observed common input and rejects any
-change between ways. Only stable electrical-reference evidence is admitted;
-fallback, tolerated and acoustic-only timing fail fast before the next way.
+Each way records the configured electrical-reference candidate channels in a
+single take; the store's electrical-reference evaluation then admits the
+channel that actually carries that way, and the admitted channel is kept in
+the capture evidence and provenance. Attestation limits, stated plainly:
+software can prove that every way was captured through the same observed
+microphone input, the same configured reference candidate set and the same
+reference node at the same rate, with the same frozen target the alignment was
+planned from. It cannot prove physical wiring or that the microphone stayed
+fixed, and the admitted loopback channel may legitimately differ between ways.
+The caller supplies the session's upstream ``reference_id`` and
+``microphone_position_id`` as the operator's assertion; the adapter binds those
+IDs to the observed common input and rejects any change between ways. Only
+stable electrical-reference evidence is admitted; fallback, tolerated and
+acoustic-only timing fail fast before the next way.
 Quality, confidence, overlap and staleness-at-proposal-time remain
 ``SpeakerAlignment.propose`` gates; this adapter is acquisition, not
 authorization.
@@ -35,6 +40,22 @@ def _session_identity(value: object, label: str) -> str:
     return value
 
 
+def _reference_candidate_channels(*values: str | int | None) -> list[str]:
+    """List the distinct configured loopback channels that may carry the sweep.
+
+    Every candidate is recorded in the same capture and the store's
+    electrical-reference evaluation decides which channel actually carries the
+    way.  Nothing here maps a side, a way or an output role to a specific
+    input channel.
+    """
+    candidates: list[str] = []
+    for value in values:
+        token = str(value).strip() if value is not None else ""
+        if token and token not in candidates:
+            candidates.append(token)
+    return candidates
+
+
 def _job_input_key(job: dict[str, Any], role: str) -> tuple:
     """Identify the capture input chain a job was started with.
 
@@ -44,11 +65,16 @@ def _job_input_key(job: dict[str, Any], role: str) -> tuple:
     """
     input_info = job.get("input") if isinstance(job.get("input"), dict) else {}
     channels = job.get("input_channels") if isinstance(job.get("input_channels"), dict) else {}
+    candidate_channels = channels.get("electrical_reference_candidates")
     key = (
         input_info.get("node_name"),
         input_info.get("node_serial"),
         channels.get("mic"),
-        channels.get("electrical_reference"),
+        (
+            tuple(candidate_channels)
+            if isinstance(candidate_channels, (list, tuple)) and candidate_channels
+            else channels.get("electrical_reference")
+        ),
         input_info.get("measurement_sample_rate") or input_info.get("sample_rate"),
     )
     # A missing electrical reference is legitimate (acoustic-only path) and is
@@ -87,7 +113,10 @@ async def acquire_speaker_captures(
     """
     reference_id = _session_identity(reference_id, "upstream reference")
     microphone_position_id = _session_identity(microphone_position_id, "microphone position")
-    electrical_requested = reference_input_channel is not None and bool(str(reference_input_channel).strip())
+    reference_candidate_channels = _reference_candidate_channels(
+        reference_input_channel, reference_input_channel_left, reference_input_channel_right
+    )
+    electrical_requested = bool(reference_candidate_channels)
     if getattr(store, "measurement_target_provider", None) is None:
         raise ValueError("Speaker Align acquisition requires a measurement target provider")
     requests = alignment.capture_requests()
@@ -105,6 +134,9 @@ async def acquire_speaker_captures(
     captures: list[dict[str, Any]] = []
     provenance: dict[str, Any] | None = None
     expected_key: tuple | None = None
+    # Admitted loopback channel per role; the real channel of every way stays
+    # visible even when the ways differ.
+    channels_by_role: dict[str, Any] = {}
     for way_index, request in enumerate(requests):
         role = request["role"]
         if cancel_requested is not None and cancel_requested():
@@ -118,6 +150,7 @@ async def acquire_speaker_captures(
             reference_input_channel=reference_input_channel,
             reference_input_channel_left=reference_input_channel_left,
             reference_input_channel_right=reference_input_channel_right,
+            reference_candidate_channels=reference_candidate_channels,
             channel=request["channel"],
             measurement_bank=role,
             sweep_profile=dict(sweep_profile) if sweep_profile else None,
@@ -184,24 +217,35 @@ async def acquire_speaker_captures(
         except ValueError as exc:
             raise RuntimeError(f"Speaker Align {role} reference failed (electrical reference or ingress monitor): {exc}") from exc
         finished_input = finished.get("input") if isinstance(finished.get("input"), dict) else {}
+        observed_candidate_channels = capture_info.get("electrical_reference_candidate_channels")
+        if not observed_candidate_channels:
+            observed_candidate_channels = list(reference_candidate_channels) or None
+        elif isinstance(observed_candidate_channels, list):
+            observed_candidate_channels = tuple(observed_candidate_channels)
         observed = {
             "microphone_node": capture_info.get("microphone_node"),
             "microphone_serial": finished_input.get("node_serial"),
             "mic_channel": capture_info.get("mic_input_channel"),
+            "electrical_reference_candidates": observed_candidate_channels,
             "electrical_reference_channel": capture_info.get("electrical_reference_input_channel"),
             "reference_node": capture_info.get("reference_node"),
             "sample_rate_hz": analysis.get("sample_rate"),
         }
+        if observed["electrical_reference_channel"] is not None:
+            channels_by_role[role] = observed["electrical_reference_channel"]
         # Fail closed before comparing: two ways both missing a field must
         # never attest sameness of nothing.
         missing = [name for name, value in observed.items() if value is None
-                   and (name != "electrical_reference_channel" or electrical_requested)]
+                   and (name not in ("electrical_reference_channel", "electrical_reference_candidates")
+                        or electrical_requested)]
         if missing:
             raise RuntimeError(
                 f"Speaker Align capture for {role} is missing {', '.join(missing)}; "
                 "refusing to attest an incomplete input chain"
             )
         if provenance is None:
+            # ``electrical_reference_channel`` stays the first way's admitted
+            # channel; the per-role map below carries the rest.
             provenance = {
                 **observed,
                 "reference_id": reference_id,
@@ -209,7 +253,14 @@ async def acquire_speaker_captures(
                 "job_ids": [job_id],
             }
         else:
-            differing = [name for name in observed if observed[name] != provenance[name]]
+            # The chosen loopback channel is per-way evidence, not an identity: a
+            # two-way speaker can carry its low way on one loopback half and its
+            # high way on the other, so only the configured candidate set has to
+            # stay identical between ways.
+            differing = [
+                name for name in observed
+                if name != "electrical_reference_channel" and observed[name] != provenance[name]
+            ]
             if differing:
                 raise RuntimeError(
                     f"Speaker Align {'/'.join(differing)} changed between ways; "
@@ -227,4 +278,5 @@ async def acquire_speaker_captures(
             "impulse_response": evidence["impulse_response"],
             "analysis": analysis,
         })
+    provenance["electrical_reference_channels_by_role"] = channels_by_role
     return {"captures": captures, "provenance": provenance}

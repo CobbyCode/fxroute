@@ -94,6 +94,9 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.masks = []
         self.after_attempt = lambda analysis: None
         self.is_electrical = False
+        # Which 1-based input channel carries the electrical reference in each
+        # fake take.  The default mirrors the legacy 2-channel harness layout.
+        self.er_carrier_for_capture = lambda _index: 2
         # Only hardware-facing calls are replaced: real host/analyzer, retry
         # policy, store, persistence and task/mask lifecycle remain in the path.
         routing = self.store._routing
@@ -138,6 +141,11 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
 
         self.store._host_capture_runner.execute = execute
 
+    @staticmethod
+    def record_channel_count(command):
+        args = list(command)
+        return int(args[args.index("--channels") + 1]) if "--channels" in args else 2
+
     def spawn(self, job_id, command):
         if command[0] == "pw-record":
             self.captures_started += 1
@@ -148,9 +156,26 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
             delay = 240 * self.captures_started
             mic = np.zeros_like(reference)
             mic[delay:] = reference[:-delay] * 0.5
-            capture = np.column_stack([mic, reference] if self.is_electrical else [reference, mic])
+            if self.is_electrical:
+                # One take over every configured loopback candidate; only the
+                # carrier channel receives the reference signal.
+                channel_count = self.record_channel_count(command)
+                carrier_input = int(self.er_carrier_for_capture(self.captures_started))
+                capture = np.zeros((reference.size, channel_count))
+                capture[:, 0] = mic
+                if 1 <= carrier_input <= channel_count:
+                    capture[:, carrier_input - 1] = reference
+            else:
+                capture = np.column_stack([reference, mic])
             self.store._write_wav(Path(command[-1]), capture, rate)
         return SimpleNamespace(returncode=0, communicate=lambda **kw: ("", ""), poll=lambda: 0)
+
+    def use_scarlett_input(self):
+        """Report an 18-channel capture input so 8+ loopback channels exist."""
+        self.store._discover_capture_inputs = lambda: [{
+            "id": "mic", "label": "Mic", "node_name": self.node_name, "node_serial": "serial-9",
+            "channels": 18, "sample_rate": RATE, "available": True,
+        }]
 
     async def acquire(self, **overrides):
         options = dict(input_id="mic", reference_input_channel="2",
@@ -314,6 +339,62 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["provenance"]["reference_id"], REFERENCE_ID)
         self.assertEqual(result["provenance"]["microphone_position_id"], POSITION_ID)
 
+    async def test_per_way_loopback_carrier_is_admitted_from_one_take(self):
+        # Input 7 carries the low way, input 8 the high way.  Both are recorded
+        # in the same take per way and the admitted channel follows the capture
+        # evidence instead of the speaker side, without a second sweep.
+        self.use_scarlett_input()
+        self.er_carrier_for_capture = lambda index: 7 if index == 1 else 8
+        result = await self.acquire(reference_input_channel="7",
+                                    reference_input_channel_left="7",
+                                    reference_input_channel_right="8")
+        self.assertEqual(self.captures_started, 2)
+        captures = result["captures"]
+        self.assertEqual([capture["role"] for capture in captures], ["left_low", "left_high"])
+        self.assertEqual(
+            [capture["analysis"]["reference_path"]["electrical_reference_input_channel"]
+             for capture in captures], [7, 8])
+        for capture in captures:
+            reference = capture["analysis"]["reference_path"]
+            self.assertTrue(reference["electrical_reference_used"])
+            self.assertEqual(
+                [item["input_channel"] for item in reference["electrical_reference_candidates"]],
+                [7, 8])
+            self.assertNotIn("electrical_reference_fallback", reference)
+        # The configured candidate set stays identical between ways; the admitted
+        # channel is per-way evidence and never an attestation.  Each real channel
+        # is kept for its own role.
+        provenance = result["provenance"]
+        self.assertEqual(tuple(provenance["electrical_reference_candidates"]), (7, 8))
+        self.assertEqual(provenance["electrical_reference_channels_by_role"],
+                         {"left_low": 7, "left_high": 8})
+        proposal = self.alignment.propose(captures, live_target=live_global_target(self.state))
+        self.assertAlmostEqual(proposal["added_delay_ms"]["left_low"], 5.0, delta=0.3)
+
+    async def test_silent_first_candidate_uses_the_second_in_the_same_take(self):
+        self.use_scarlett_input()
+        self.er_carrier_for_capture = lambda index: 8
+        result = await self.acquire(reference_input_channel="7",
+                                    reference_input_channel_left="7",
+                                    reference_input_channel_right="8")
+        self.assertEqual(self.captures_started, 2)
+        self.assertEqual(
+            [capture["analysis"]["reference_path"]["electrical_reference_input_channel"]
+             for capture in result["captures"]], [8, 8])
+        self.assertEqual(result["provenance"]["electrical_reference_channels_by_role"],
+                         {"left_low": 8, "left_high": 8})
+
+    async def test_take_without_any_usable_candidate_keeps_the_host_fallback(self):
+        self.use_scarlett_input()
+        self.er_carrier_for_capture = lambda index: 0
+        with self.assertRaisesRegex(RuntimeError, "electrical reference"):
+            await self.acquire(reference_input_channel="7",
+                               reference_input_channel_left="7",
+                               reference_input_channel_right="8")
+        # The rejected reference take plus its host-timing fallback, first way only.
+        self.assertEqual(self.captures_started, 2)
+        self.assertEqual(len(self.store._jobs), 1)
+
     async def test_incomplete_capture_input_fails_closed_and_drained(self):
         original = self.store.start_measurement
 
@@ -425,10 +506,8 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
     async def test_per_side_reference_channels_reach_start_measurement(self):
         # Scarlett loopbacks 7 (left) / 8 (right) must arrive untouched at
         # the capture registration of every way.
-        self.store._discover_capture_inputs = lambda: [{
-            "id": "mic", "label": "Mic", "node_name": self.node_name, "node_serial": "serial-9",
-            "channels": 18, "sample_rate": RATE, "available": True,
-        }]
+        self.use_scarlett_input()
+        self.er_carrier_for_capture = lambda _index: 7
         seen = []
         original = self.store.start_measurement
 
