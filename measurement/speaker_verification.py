@@ -48,7 +48,7 @@ from measurement.alignment_backend import (
 )
 
 __all__ = [
-    "ARRIVAL_COINCIDENT_MS",
+    "ARRIVAL_LOBE_MAX_MS",
     "ARRIVAL_SMOOTHING_SECONDS",
     "ARRIVAL_THRESHOLD_RELATIVE",
     "ISOLATION_POWER",
@@ -69,7 +69,7 @@ ISOLATION_POWER = 2.0
 ARRIVAL_THRESHOLD_RELATIVE = 0.10
 ARRIVAL_SMOOTHING_SECONDS = 0.0002
 # Two arrivals this close are the same arrival: nothing to separate then.
-ARRIVAL_COINCIDENT_MS = 0.05
+ARRIVAL_LOBE_MAX_MS = 50.0
 # A way's own arrival must stand this far above what the side's other ways
 # leave in the same isolated band. Two ways of one crossover overlap by an
 # octave, so a way that is far quieter than its neighbour cannot be located in
@@ -192,7 +192,9 @@ def band_arrival(
     strongest energy of the isolated band. The first significant energy
     (``onset_index``) is reported next to it for diagnosis: it can sit closer to
     a leading reflection or a leaked neighbour lobe, which is exactly why it
-    does not decide the arrival.
+    does not decide the arrival. ``lobe_samples`` is how long that strongest
+    energy stays above the same threshold, i.e. the time resolution of this
+    arrival: two arrivals closer than that are the same event.
     """
     values = np.abs(np.asarray(band, dtype=np.float64))
     if values.ndim != 1 or values.size < 64 or not np.all(np.isfinite(values)):
@@ -208,10 +210,15 @@ def band_arrival(
     peak_index = int(np.argmax(energy))
     if not float(energy[peak_index]) > 0.0:
         raise ValueError("Speaker verification band is silent")
+    peak_energy = float(energy[peak_index])
     crossings = np.flatnonzero(power[: peak_index + 1] >= threshold * float(power[peak_index]))
+    reach = max(1, int(round(sample_rate_hz * ARRIVAL_LOBE_MAX_MS / 1000.0)))
+    stop = min(values.size, peak_index + reach)
+    trailing = np.flatnonzero(energy[peak_index:stop] < threshold * peak_energy)
     return {
         "arrival_index": peak_index,
         "onset_index": int(crossings[0]) if crossings.size else peak_index,
+        "lobe_samples": int(trailing[0]) if trailing.size else stop - peak_index,
     }
 
 
@@ -280,7 +287,7 @@ def side_confirmation(
     relative arrivals while their spread is exactly the residual the gate
     checks).    ``way_isolation_db`` holds, per way, the margin of its own arrival above
     what the side's other ways leave in the same isolated band, or ``None``
-    when no other way arrives at a different time.
+    when no other way arrives outside this way's own lobe.
     ``way_levels_db`` holds the same take's isolated passband levels relative to
     the loudest way; only their spread is a criterion, and the raw medians stay
     in ``bands`` for diagnosis.
@@ -315,17 +322,18 @@ def side_confirmation(
         role: round((band["arrival_index"] - earliest) * 1000.0 / sample_rate_hz, 6)
         for role, band in bands.items()
     }
-    # Isolation is only meaningful against a *different* arrival: ways that
-    # already sit together cannot be told apart in the shared band, and they do
-    # not have to be, because they agree.
-    coincident = int(round(sample_rate_hz * ARRIVAL_COINCIDENT_MS / 1000.0))
+    # Isolation is only meaningful against a *different* arrival: two arrivals
+    # inside this way's own lobe are one event, which is the state the trial
+    # wants anyway, so there is nothing to isolate. The lobe width is the
+    # resolution of the estimate itself, never a fixed distance.
     isolation_db: dict[str, float | None] = {}
     for role, band in bands.items():
         own_index = band["arrival_index"]
+        coincidence = int(band["lobe_samples"])
         distinct = [float(energy[role][other["arrival_index"]])
                     for other_role, other in bands.items()
                     if other_role != role
-                    and abs(other["arrival_index"] - own_index) > coincident]
+                    and abs(other["arrival_index"] - own_index) > coincidence]
         own = float(energy[role][own_index])
         isolation_db[role] = (round(10.0 * math.log10(max(own, 1e-300) / max(max(distinct), 1e-300)), 3)
                               if distinct else None)

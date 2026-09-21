@@ -76,11 +76,19 @@ def verify_confirmation(
     residual is a real acoustic low/high offset instead of the per-way
     microphone-minus-own-reference difference a staged way delay cancels out
     of. The residual is judged from the confirmation take alone; the
-    baseline's spread stays as the before-value. Time residual and gain spread
-    are verified jointly: ways must measure time-aligned and their passband
-    levels must agree within the gain tolerance. Malformed or rebased input
-    raises ``ValueError``; a merely unconvincing measurement returns
-    ``confirmed: False``.
+    baseline's spread stays as the before-value.
+
+    The time residual and the way isolation are the criteria: the ways must
+    measure time-aligned, and the take must be able to tell them apart. The
+    level spread is reported as evidence only, because the two documents carry
+    different quantities: a shared take measures every way's level inside one
+    take with one normalization, while the planning levels are calibrated per
+    take and their per-take reference moves by more than 10 dB between the
+    takes of the same session. Comparing those against one gain tolerance
+    would veto a trial whose levels the take cannot be blamed for.
+    ``max_gain_spread_db`` names the tolerance the reported spread is shown
+    against. Malformed or rebased input raises ``ValueError``; a merely
+    unconvincing measurement returns ``confirmed: False``.
     """
     from measurement.alignment_backend import MAX_VERIFIED_GAIN_SPREAD_DB
     from measurement.speaker_verification import MIN_WAY_ISOLATION_DB
@@ -133,25 +141,25 @@ def verify_confirmation(
     after_levels = confirmation.get("after_way_levels_db", confirmation.get("way_levels_db")) or {}
     gain_spread_db: float | None = None
     before_gain_spread_db: float | None = None
+    warnings: list[str] = []
     if isinstance(before_levels, dict) and isinstance(after_levels, dict) and set(before_levels) == set(after) and set(after_levels) == set(after):
-        try:
-            before_values = {role: _finite(before_levels[role], "baseline level") for role in after}
-            after_values = {role: _finite(after_levels[role], "confirmation level") for role in after}
-            # Legacy shape without response points reports all-zero levels;
-            # time alone decides then, gain trivially holds.
-            has_gain_evidence = any(abs(value) > 1e-9 for value in list(before_values.values()) + list(after_values.values()))
-            if has_gain_evidence:
-                before_gain_spread_db = max(before_values.values()) - min(before_values.values())
-                gain_spread_db = max(after_values.values()) - min(after_values.values())
-                if gain_spread_db > max_gain_spread_db:
-                    reasons.append(
-                        f"gain spread {gain_spread_db:.3f} dB exceeds {max_gain_spread_db:.3f} dB: ways differ in level"
-                    )
-        except ValueError:
-            raise
+        before_values = {role: _finite(before_levels[role], "baseline level") for role in after}
+        after_values = {role: _finite(after_levels[role], "confirmation level") for role in after}
+        # Legacy shape without response points reports all-zero levels;
+        # there is no level evidence to report then.
+        has_gain_evidence = any(abs(value) > 1e-9 for value in list(before_values.values()) + list(after_values.values()))
+        if has_gain_evidence:
+            before_gain_spread_db = max(before_values.values()) - min(before_values.values())
+            gain_spread_db = max(after_values.values()) - min(after_values.values())
+            if gain_spread_db > max_gain_spread_db:
+                warnings.append(
+                    f"level spread {gain_spread_db:.3f} dB exceeds {max_gain_spread_db:.3f} dB: "
+                    "the staged level correction did not land exactly"
+                )
     result = {
         "confirmed": not reasons,
         "reasons": reasons,
+        "warnings": warnings,
         "max_residual_ms": residual_ms,
         "before_spread_ms": max(before.values()) - min(before.values()),
         "after_arrival_ms": after,

@@ -116,22 +116,51 @@ class GainProposalTests(unittest.TestCase):
 
 
 class GainVerificationTests(unittest.TestCase):
-    def test_gain_spread_verification(self):
+    def confirmation_with_levels(self, baseline, levels):
+        confirmation = dict(baseline)
+        confirmation["arrival_ms"] = {"left_low": 5.0, "left_high": 5.0}
+        confirmation["way_levels_db"] = levels
+        return confirmation
+
+    def test_gain_spread_is_reported_as_evidence(self):
         state, channels = state_for()
         alignment, live = alignment_for(state, channels)
         baseline = alignment.propose(
             with_levels(alignment, captures_for(alignment), (-12.0, -8.0)), live_target=live)
-        # Confirmation after staging: both ways measure -10 dB.
-        confirmation = dict(baseline)
-        confirmation["arrival_ms"] = {"left_low": 5.0, "left_high": 5.0}
-        confirmation["way_levels_db"] = {"left_low": -10.0, "left_high": -10.2}
-        check = verify_confirmation(baseline, confirmation)
+        check = verify_confirmation(baseline, self.confirmation_with_levels(
+            baseline, {"left_low": -10.0, "left_high": -10.2}))
         self.assertTrue(check["confirmed"])
         self.assertAlmostEqual(check["gain_spread_db"], 0.2, delta=0.01)
-        confirmation["way_levels_db"] = {"left_low": -10.0, "left_high": -12.5}
+        self.assertEqual(check["warnings"], [])
+
+    def test_gain_spread_does_not_veto_the_timing_verdict(self):
+        # A shared take measures both ways inside one take, while the planning
+        # levels are calibrated per take: their reference moves by more than
+        # 10 dB between takes, so an unexpected spread is reported next to the
+        # verdict instead of failing a take whose timing did measure aligned.
+        state, channels = state_for()
+        alignment, live = alignment_for(state, channels)
+        baseline = alignment.propose(
+            with_levels(alignment, captures_for(alignment), (-12.0, -8.0)), live_target=live)
+        check = verify_confirmation(baseline, self.confirmation_with_levels(
+            baseline, {"left_low": -10.0, "left_high": -12.5}))
+        self.assertTrue(check["confirmed"])
+        self.assertAlmostEqual(check["gain_spread_db"], 2.5, delta=0.01)
+        self.assertAlmostEqual(check["before_gain_spread_db"], 4.0, delta=0.01)
+        self.assertEqual(check["gain_tolerance_db"], 2.0)
+        self.assertEqual(len(check["warnings"]), 1)
+        self.assertIn("level spread", check["warnings"][0])
+
+    def test_misaligned_timing_still_vetoes(self):
+        state, channels = state_for()
+        alignment, live = alignment_for(state, channels)
+        baseline = alignment.propose(
+            with_levels(alignment, captures_for(alignment), (-12.0, -8.0)), live_target=live)
+        confirmation = self.confirmation_with_levels(baseline, {"left_low": -10.0, "left_high": -10.0})
+        confirmation["arrival_ms"] = {"left_low": 0.0, "left_high": 7.5417}
         check = verify_confirmation(baseline, confirmation)
         self.assertFalse(check["confirmed"])
-        self.assertTrue(any("gain spread" in reason for reason in check["reasons"]))
+        self.assertIn("residual", check["reasons"][0])
 
 
 if __name__ == "__main__":

@@ -178,8 +178,23 @@ class SharedVerificationResidualTests(unittest.TestCase):
         self.assertEqual(document["way_isolation_db"], {"left_low": None, "left_high": None})
 
     def test_coincident_arrivals_are_not_reported_as_apart(self):
-        document, _ = residual_ms(synthetic_take({"left_low": 3.0, "left_high": 3.0002}))
+        # The real confirmed case: seven samples apart at 48 kHz. The wide low
+        # band cannot resolve that far inside its own lobe, so it reports no
+        # margin at all; the narrow high band may resolve it and then has to
+        # show a healthy margin, never a marginal one.
+        document, residual = residual_ms(synthetic_take({"left_low": 3.0, "left_high": 3.0 - 7 / 48.0}))
+        self.assertLessEqual(residual, 0.25)
         self.assertIsNone(document["way_isolation_db"]["left_low"])
+        high_margin = document["way_isolation_db"]["left_high"]
+        self.assertTrue(high_margin is None or high_margin > 20.0, high_margin)
+
+    def test_first_significant_energy_and_lobe_width_are_reported(self):
+        document, _ = residual_ms(synthetic_take(GEOMETRY_MS))
+        for role in ROLES:
+            band = document["bands"][role]
+            # A resolved arrival: the lobe is far shorter than the way offset.
+            self.assertLess(band["lobe_samples"], int(7.5417 * RATE / 1000.0))
+            self.assertGreater(band["lobe_samples"], 0)
 
     def test_a_way_too_quiet_to_locate_is_reported_by_its_level(self):
         # 40 dB down, the quiet way's isolated band is really the neighbour's

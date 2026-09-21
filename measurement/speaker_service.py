@@ -79,6 +79,7 @@ def _summarize_check(check: dict[str, Any]) -> dict[str, Any]:
     summary = {
         "confirmed": bool(check["confirmed"]),
         "reasons": [str(reason) for reason in check["reasons"]],
+        "warnings": [str(warning) for warning in check.get("warnings") or []],
         "max_residual_ms": float(check["max_residual_ms"]),
         "before_spread_ms": float(check["before_spread_ms"]),
         "after_arrival_ms": dict(check["after_arrival_ms"]),
