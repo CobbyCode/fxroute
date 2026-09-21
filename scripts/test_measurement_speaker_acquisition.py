@@ -332,13 +332,22 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get_job(job_id)["status"], "cancelled")
         self.assertTrue(self.store._job_tasks[job_id].done())
 
-    async def test_tolerated_reference_is_rejected(self):
+    async def test_tolerated_reference_is_accepted_without_upgrading_its_mark(self):
+        # The store keeps a marginal end anchor in the active 2.2 path and marks
+        # the reference "dsp-end-anchor-tolerated".  Acquisition must follow that
+        # verdict instead of demanding stability == "stable", and must not
+        # rewrite the mark it received.
         self.after_attempt = lambda analysis: analysis["clock"].update(end_score=0.8)
         self.store._capture_policy._should_keep_electrical_reference = lambda *args: True
-        with self.assertRaisesRegex(RuntimeError, "electrical reference"):
-            await self.acquire()
-        self.assertEqual(self.captures_started, 1)
-        self.assertEqual(len(self.store._jobs), 1)
+        result = await self.acquire()
+        self.assertEqual(self.captures_started, 2)
+        self.assertEqual(len(self.store._jobs), 2)
+        for capture in result["captures"]:
+            reference = capture["analysis"]["reference_path"]
+            self.assertTrue(reference["electrical_reference_used"])
+            self.assertEqual(reference["timing_status"], "electrical-reference")
+            self.assertEqual(reference["stability"], "dsp-end-anchor-tolerated")
+            self.assertNotIn("electrical_reference_fallback", reference)
 
     async def test_acoustic_only_capture_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "electrical reference"):

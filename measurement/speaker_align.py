@@ -35,12 +35,23 @@ def _check_cancel(cancel_requested: Callable[[], bool] | None) -> None:
 
 
 def require_timing_reference(analysis: dict, reference_node: str | None = None) -> None:
-    """Admit a stable electrical reference or the simultaneously recorded ingress."""
+    """Admit a store-accepted electrical reference or the simultaneously recorded ingress.
+
+    The electrical branch defers to the store's own verdict
+    (``MeasurementStore._evaluate_electrical_reference_status`` and its
+    tolerated active-2.2 twin): ``usable`` plus ``electrical_reference_used``
+    plus the electrical timing status is the admission, whatever stability
+    mark the store recorded.  No extra fixed confidence floor is applied there:
+    the store derived ``confidence = min(alignment_score, sharpness/60)`` from
+    its own 0.84 / 18 dB admission, so re-demanding 0.75 would implicitly
+    require 45 dB sharpness and reject every band-limited per-way reference the
+    store already accepted.  The ingress branch keeps its confidence gate:
+    there confidence is the arrival-detection score on a different scale.
+    """
     reference = analysis.get("reference_path") or {}
     electrical = (reference.get("usable") is True
                   and reference.get("electrical_reference_used") is True
-                  and reference.get("timing_status") == "electrical-reference"
-                  and reference.get("stability") == "stable")
+                  and reference.get("timing_status") == "electrical-reference")
     host = (reference_node == REFERENCE_TAP_INGRESS
             and reference.get("electrical_reference_used") is False
             and reference.get("timing_status") == "acoustic-only"
@@ -49,11 +60,16 @@ def require_timing_reference(analysis: dict, reference_node: str | None = None) 
             and reference.get("timing_applied_to_mic") is True
             and _finite(reference.get("start_score"), "reference start score") >= 0.90
             and _finite(reference.get("end_score"), "reference end score") >= 0.90
-            and _finite(reference.get("ir_sharpness_db"), "reference sharpness") >= 18.0)
-    if (reference.get("electrical_reference_fallback")
-            or not (electrical or host)
-            or not MIN_CONFIDENCE <= _finite(reference.get("confidence"), "reference confidence") <= 1):
+            and _finite(reference.get("ir_sharpness_db"), "reference sharpness") >= 18.0
+            and MIN_CONFIDENCE <= _finite(reference.get("confidence"), "reference confidence") <= 1)
+    if reference.get("electrical_reference_fallback") or not (electrical or host):
         raise ValueError("Speaker Align requires a stable, confident upstream reference")
+    if electrical:
+        # Sanity only: the store already decided the reference is usable.  A
+        # missing or out-of-range confidence is malformed evidence, not a
+        # band-limited one.
+        if not 0.0 <= _finite(reference.get("confidence"), "reference confidence") <= 1:
+            raise ValueError("Speaker Align reference confidence must be between 0 and 1")
 
 
 class SpeakerAlignment:

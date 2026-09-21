@@ -17,7 +17,7 @@ from audio.output_state import default_output_state, set_mode_routing, switch_mo
 from dsp.crossover import design_crossover
 from measurement.hybrid import build_complex_response
 from measurement.analyzer import MeasurementAnalyzer
-from measurement.speaker_align import SpeakerAlignment
+from measurement.speaker_align import SpeakerAlignment, require_timing_reference
 from measurement.target import REFERENCE_TAP_INGRESS, freeze_measurement_target
 
 
@@ -257,6 +257,105 @@ class RoutingAndProposalTests(unittest.TestCase):
         self.assertEqual(result["candidate_state"], expected)
 
 
+class TimingReferenceGateTests(unittest.TestCase):
+    """The gate must not re-decide what the store's ER evaluation already decided."""
+
+    def require(self, reference, reference_node=None):
+        require_timing_reference({"reference_path": dict(reference)}, reference_node)
+
+    def assert_rejected(self, reference, reference_node=None):
+        with self.assertRaisesRegex(ValueError, "reference"):
+            self.require(reference, reference_node)
+
+    @staticmethod
+    def electrical(**overrides):
+        return {
+            "usable": True, "electrical_reference_used": True,
+            "timing_status": "electrical-reference", "stability": "stable",
+            "confidence": 0.97, "clipped": False, "peak_dbfs": -9.0,
+            **overrides,
+        }
+
+    @staticmethod
+    def ingress(**overrides):
+        return {
+            "electrical_reference_used": False, "timing_status": "acoustic-only",
+            "stability": "host-reference", "capture_mode": "dual-channel",
+            "timing_applied_to_mic": True, "start_score": 1.0, "end_score": 1.0,
+            "ir_sharpness_db": 48.0, "confidence": 0.95,
+            **overrides,
+        }
+
+    def test_band_limited_reference_below_the_old_confidence_floor_is_admitted(self):
+        # A left_low/right_low way sweep is band-limited by its own crossover, so
+        # the electrical reference lands near 37-43 dB sharpness and confidence
+        # min(score, sharpness/60) lands near 0.62-0.72 while the store's own
+        # 0.84 alignment and 18 dB sharpness floors stay satisfied.
+        self.require(self.electrical(confidence=0.62, ir_sharpness_db=37.4,
+                                     start_score=0.96, end_score=0.95))
+
+    def test_plain_stable_reference_is_still_admitted(self):
+        self.require(self.electrical())
+
+    def test_tolerated_end_anchor_reference_is_admitted_like_the_store_does(self):
+        # store._mark_dsp_tolerated_electrical_reference_usable records an
+        # accepted ER with stability "dsp-end-anchor-tolerated".
+        self.require(self.electrical(stability="dsp-end-anchor-tolerated", confidence=0.72))
+
+    def test_fallback_unusable_or_malformed_reference_is_still_rejected(self):
+        for reference in (
+            self.electrical(electrical_reference_fallback=True),
+            self.electrical(electrical_reference_used=False),
+            self.electrical(usable=False),
+            self.electrical(timing_status="electrical-reference-fallback"),
+            self.electrical(timing_status="lr-repeat-unstable"),
+            self.electrical(confidence=float("nan")),
+            self.electrical(confidence=1.5),
+            self.electrical(confidence=None),
+        ):
+            with self.subTest(reference=reference):
+                self.assert_rejected(reference)
+
+    def test_ingress_reference_keeps_its_own_confidence_gate(self):
+        self.require(self.ingress(), REFERENCE_TAP_INGRESS)
+        for confidence in (0.5, 0.74, 1.5):
+            with self.subTest(confidence=confidence):
+                self.assert_rejected(self.ingress(confidence=confidence), REFERENCE_TAP_INGRESS)
+        # Unchanged host requirements: the ingress node, dual-channel capture
+        # and applied mic timing remain mandatory.
+        self.assert_rejected(self.ingress(), "hardware.monitor")
+        self.assert_rejected(self.ingress(capture_mode="electrical-input"), REFERENCE_TAP_INGRESS)
+        self.assert_rejected(self.ingress(timing_applied_to_mic=False), REFERENCE_TAP_INGRESS)
+        self.assert_rejected(self.ingress(start_score=0.5), REFERENCE_TAP_INGRESS)
+        self.assert_rejected(self.ingress(ir_sharpness_db=12.0), REFERENCE_TAP_INGRESS)
+
+
+class BandLimitedReferenceProposalTests(unittest.TestCase):
+    """End-to-end: a band-limited but store-accepted ER must still align."""
+
+    def setUp(self):
+        self.alignment, self.live = alignment_for()
+
+    def align_with(self, **reference_overrides):
+        captures = captures_for(self.alignment)
+        for capture in captures:
+            capture["analysis"]["reference_path"].update(reference_overrides)
+        return captures, self.alignment.propose(captures, live_target=self.live)
+
+    def test_band_limited_reference_below_the_old_confidence_floor_still_aligns(self):
+        _, proposal = self.align_with(confidence=0.62, ir_sharpness_db=37.4,
+                                      start_score=0.96, end_score=0.95)
+        self.assertEqual(proposal["added_delay_ms"], {"left_low": 3.0, "left_high": 0.0})
+
+    def test_tolerated_end_anchor_reference_still_aligns(self):
+        _, proposal = self.align_with(stability="dsp-end-anchor-tolerated", confidence=0.72)
+        self.assertEqual(proposal["added_delay_ms"], {"left_low": 3.0, "left_high": 0.0})
+
+    def test_stable_reference_is_still_accepted(self):
+        _, proposal = self.align_with()
+        self.assertEqual(proposal["added_delay_ms"], {"left_low": 3.0, "left_high": 0.0})
+
+
 class RejectionTests(unittest.TestCase):
     def setUp(self):
         self.alignment, self.live = alignment_for()
@@ -283,10 +382,10 @@ class RejectionTests(unittest.TestCase):
                 self.captures = invalid
                 self.assert_rejected("way|role")
 
-    def test_tolerated_fallback_or_low_confidence_reference_is_rejected(self):
-        for change in ({"stability": "dsp-end-anchor-tolerated"}, {"stability": "unstable"},
+    def test_fallback_unusable_or_malformed_reference_is_rejected(self):
+        for change in ({"stability": "unstable", "timing_status": "lr-repeat-unstable"},
                        {"electrical_reference_used": False}, {"usable": False},
-                       {"confidence": 0.1}, {"confidence": float("nan")},
+                       {"confidence": float("nan")}, {"confidence": 1.5},
                        {"electrical_reference_fallback": True}):
             with self.subTest(change=change):
                 self.captures = captures_for(self.alignment)
