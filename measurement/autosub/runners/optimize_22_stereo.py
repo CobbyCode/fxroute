@@ -40,6 +40,7 @@ from ..candidates import (
     _commit_auto_sub_service_winner,
 )
 from ..capture import AutoSubCaptureContext
+from ..gain_trial import _resolve_gain_trial_outcome, _unavailable_correction_verdict
 from ..deps import (
     _AUTO_SUB_JOBS,
     _auto_sub_cancel_requested,
@@ -1081,12 +1082,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 )
                 correction_deltas = stereo_probe_plan.get("deltas_db") or {}
                 if not stereo_probe_plan.get("available"):
-                    correction_verdict = {
-                        "accepted": False,
-                        "reason": correction_plan.get("reason"),
-                        "channels": {},
-                        "step1_retained": True,
-                    }
+                    correction_verdict = _unavailable_correction_verdict(correction_plan.get("reason"))
             if any(abs(value) > 0.0005 for value in correction_deltas.values()):
                 correction_snapshot = _auto_sub_22_snapshot_with_gain(
                     gain_snapshot, left_delta_db=correction_deltas.get("left", 0.0),
@@ -1217,8 +1213,8 @@ async def _run_auto_sub_22_stereo_optimize(
             "applied_correction_db": (correction_plan or {}).get("applied_deltas_db") or None,
             "correction_step_db": correction_deltas or None,
         })
-        decision = "accepted_step2" if correction_verdict and correction_verdict.get("accepted") else (
-            "accepted_step1" if step1_retained else "restored"
+        decision, result_reason = _resolve_gain_trial_outcome(
+            step1_retained, gain_verdict, correction_verdict,
         )
         if decision == "accepted_step2":
             if correction_verdict.get("stereo_probe"):
@@ -1235,15 +1231,6 @@ async def _run_auto_sub_22_stereo_optimize(
                     score_final_source["channels"][side] = copy.deepcopy(gain_after["channels"][side])
         else:
             score_final_source = job["auto_gain"]
-        result_reason = ((correction_verdict or gain_verdict) or {}).get("reason")
-        if (
-            decision == "accepted_step1" and correction_verdict
-            and not correction_verdict.get("accepted")
-            and "step1_retained" not in correction_verdict
-        ):
-            # The plain verdict reason reads like the retained Step-1 was
-            # rejected; make explicit which step the reason belongs to.
-            result_reason = f"Step-1 retained; step-2 correction rejected ({correction_verdict.get('reason')})"
         _auto_sub_gain_log_line("AUTOGAIN_RESULT", {
             "gain_final": {
                 "left": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
