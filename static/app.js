@@ -44,6 +44,7 @@ window.FXRouteMeasurementFlows?.init({
         startSpeakerAlign: (payload) => fetch('/api/speaker-align/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
         cancelSpeakerAlignJob: (jobId) => fetch(`/api/speaker-align/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
         pollSpeakerAlignJob: (jobId) => fetch(`/api/speaker-align/jobs/${encodeURIComponent(jobId)}`),
+        saveSpeakerAlignMeasurement: (payload) => fetch('/api/measurements/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
         startMeasurement: (formData) => fetch('/api/measurements/start', { method: 'POST', body: formData }),
         cancelMeasurementJob: (jobId) => fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
         pollMeasurementJob: (jobId) => fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`),
@@ -77,6 +78,7 @@ window.FXRouteMeasurementFlows?.init({
     setMeasurementAssistMode,
     escapeHtml,
     sleep,
+    fetchSavedMeasurements: () => fetchMeasurements(),
 });
 const MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS = MeasurementUI.MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS;
 const MEASUREMENT_JOB_CANCELLED_STATES = MeasurementUI.MEASUREMENT_JOB_CANCELLED_STATES;
@@ -673,6 +675,9 @@ const elements = {
     measurementSpeakerAlignGroup: document.getElementById('measurement-speaker-align-group'),
     measurementSpeakerAlignStatus: document.getElementById('measurement-speaker-align-status'),
     measurementSpeakerAlignResults: document.getElementById('measurement-speaker-align-results'),
+    measurementSpeakerAlignSaveBtn: document.getElementById('measurement-speaker-align-save'),
+    measurementSpeakerAlignSavedSelect: document.getElementById('measurement-speaker-align-saved'),
+    measurementSpeakerAlignOpenBtn: document.getElementById('measurement-speaker-align-open'),
     measurementHybridOpenBtn: document.getElementById('measurement-hybrid-open'),
     measurementHybridPanel: document.getElementById('measurement-hybrid-panel'),
     measurementHybridCloseBtn: document.getElementById('measurement-hybrid-close'),
@@ -12245,6 +12250,14 @@ async function handleSpeakerAlignResult(job) {
     return MeasurementFlows.handleSpeakerAlignResult(job);
 }
 
+async function saveSpeakerAlignRun(side) {
+    return MeasurementFlows.saveSpeakerAlignRun(side);
+}
+
+async function openSpeakerAlignRun() {
+    return MeasurementFlows.openSpeakerAlignRun();
+}
+
 function syncSubwooferControlsDuringAutoSub() {
     return MeasurementFlows.syncSubwooferControlsDuringAutoSub();
 }
@@ -13976,6 +13989,8 @@ function setupMeasurementActions() {
     elements.measurementSpeakerAlignLeftBtn?.addEventListener('click', () => { void startSpeakerAlign('left'); });
     elements.measurementSpeakerAlignRightBtn?.addEventListener('click', () => { void startSpeakerAlign('right'); });
     elements.measurementSpeakerAlignCancelBtn?.addEventListener('click', () => { void cancelSpeakerAlign(); });
+    elements.measurementSpeakerAlignSaveBtn?.addEventListener('click', () => { void saveSpeakerAlignRun(); });
+    elements.measurementSpeakerAlignOpenBtn?.addEventListener('click', () => { void openSpeakerAlignRun(); });
     if (elements.measurementSaveBtn) {
         elements.measurementSaveBtn.addEventListener('click', () => { void saveCurrentMeasurement(); });
     }

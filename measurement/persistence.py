@@ -509,7 +509,18 @@ class MeasurementPersistence:
         measurement_id = self._slugify(payload.get("id") or payload.get("name") or f"measurement-{uuid4().hex[:8]}")
         traces = self._normalize_traces(payload.get("traces") or [])
         review_traces = self._normalize_traces(payload.get("review_traces") or [])
-        if not traces:
+        measurement_kind = str(payload.get("measurement_kind") or "")
+        speaker_run = payload.get("speaker_align")
+        if speaker_run is None and isinstance(payload.get("analysis"), dict):
+            speaker_run = payload["analysis"].get("speaker_align")
+        # Time-domain Speaker Align runs carry no frequency obligation: the
+        # Before/After arrivals are the measurement. Frequency traces stay
+        # optional passthrough and are preserved when present.
+        is_speaker_run = (
+            measurement_kind == "speaker-align-run-v1"
+            and isinstance(speaker_run, dict)
+        )
+        if not traces and not is_speaker_run:
             raise ValueError("Measurement must include at least one trace with points")
 
         name = str(payload.get("name") or measurement_id).strip() or measurement_id
@@ -587,6 +598,9 @@ class MeasurementPersistence:
             result["analysis"] = payload["analysis"]
         if payload.get("autosub_meta") and isinstance(payload.get("autosub_meta"), dict):
             result["autosub_meta"] = payload["autosub_meta"]
+        if payload.get("speaker_align") and isinstance(payload.get("speaker_align"), dict):
+            from measurement.speaker_runs import validate_speaker_align_run
+            result["speaker_align"] = validate_speaker_align_run(payload["speaker_align"])
         if payload.get("audio_output_context") and isinstance(payload.get("audio_output_context"), dict):
             result["audio_output_context"] = payload["audio_output_context"]
         if isinstance(payload.get("measurement_target"), dict):

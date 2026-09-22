@@ -111,6 +111,79 @@ def _summarize_check(check: dict[str, Any]) -> dict[str, Any]:
     return _jsonable(summary)
 
 
+def _summarize_frequency(captures: Any) -> dict[str, Any]:
+    """Pass through per-way frequency points when the takes captured them.
+
+    Only finite [frequency, level] pairs survive; ways without points are
+    omitted so a timing-only run stays timing-only. Never includes IRs.
+    """
+    panels: dict[str, Any] = {}
+    if not isinstance(captures, (list, tuple)):
+        return panels
+    for capture in captures:
+        if not isinstance(capture, dict):
+            continue
+        role = capture.get("role")
+        analysis = capture.get("analysis")
+        if not isinstance(role, str) or not isinstance(analysis, dict):
+            continue
+        entry: dict[str, Any] = {}
+        for key in ("trusted_points", "review_points"):
+            points = analysis.get(key)
+            if not isinstance(points, (list, tuple)) or not points:
+                continue
+            cleaned: list[list[float]] = []
+            valid = True
+            for point in points:
+                if (not isinstance(point, (list, tuple)) or len(point) != 2
+                        or isinstance(point[0], bool) or isinstance(point[1], bool)):
+                    valid = False
+                    break
+                try:
+                    frequency = float(point[0])
+                    level = float(point[1])
+                except (TypeError, ValueError):
+                    valid = False
+                    break
+                if not math.isfinite(frequency) or not math.isfinite(level) or frequency <= 0:
+                    valid = False
+                    break
+                cleaned.append([frequency, level])
+            if valid and cleaned:
+                entry[key] = cleaned
+        if entry:
+            panels[str(role)] = entry
+    return _jsonable(panels)
+
+
+def _summarize_time_domain(proposal: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
+    """Shared ms-axis view: Before from planning, After from verification.
+
+    Pure derivation from the two stored take documents; never measures.
+    Both lanes share one window so the relative way offset before and
+    after the alignment is directly visible.
+    """
+    before = {str(role): float(value) for role, value in dict(proposal["arrival_ms"]).items()}
+    after = {str(role): float(value) for role, value in dict(check["after_arrival_ms"]).items()}
+    if set(before) != set(after):
+        raise ValueError("Speaker Align time domain needs the same ways before and after")
+    ways = sorted(before)
+    lowest = min(min(before.values()), min(after.values()))
+    highest = max(max(before.values()), max(after.values()))
+    span = highest - lowest
+    margin = max(0.25, span * 0.15)
+    return _jsonable({
+        "ways": ways,
+        "window_ms": [lowest - margin, highest + margin],
+        "before": {"source": "planning-take",
+                   "arrival_ms": {role: before[role] for role in ways},
+                   "spread_ms": max(before.values()) - min(before.values())},
+        "after": {"source": "verification-take",
+                  "arrival_ms": {role: after[role] for role in ways},
+                  "spread_ms": max(after.values()) - min(after.values())},
+    })
+
+
 def _session_identity(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise ValueError(f"Speaker Align service requires a {label} identity")
@@ -438,12 +511,18 @@ class SpeakerAlignService:
                     confirm=confirm, proposal=proposal,
                     live_target=live_target, cancel_requested=probe)
                 check = _summarize_check(outcome["check"])
+                summarized_proposal = _summarize_proposal(proposal)
                 self._finish(
                     job_id, "trial-done",
                     "Trial alignment confirmed without committing."
                     if check["confirmed"] else "Trial alignment did not confirm; nothing changed.",
                     result={"confirmed": check["confirmed"], "check": check,
-                            "proposal": _summarize_proposal(proposal),
+                            "proposal": summarized_proposal,
+                            "time_domain": _summarize_time_domain(summarized_proposal, check),
+                            "way_frequency": _summarize_frequency(first.get("captures")),
+                            "sample_rate_hz": context["sample_rate_hz"],
+                            "side": side,
+                            "params": _jsonable(params),
                             "provenance": _jsonable(first.get("provenance") or {}),
                             "committed_revision": None, "dry_run": True})
                 return
@@ -452,20 +531,32 @@ class SpeakerAlignService:
                 live_target=live_target, cancel_requested=probe)
             check = _summarize_check(outcome["check"])
             if not check["confirmed"]:
+                summarized_proposal = _summarize_proposal(proposal)
                 self._finish(
                     job_id, "unconfirmed",
                     "Alignment did not confirm acoustically; the start rendering was retained.",
                     result={"confirmed": False, "check": check,
-                            "proposal": _summarize_proposal(proposal),
+                            "proposal": summarized_proposal,
+                            "time_domain": _summarize_time_domain(summarized_proposal, check),
+                            "way_frequency": _summarize_frequency(first.get("captures")),
+                            "sample_rate_hz": context["sample_rate_hz"],
+                            "side": side,
+                            "params": _jsonable(params),
                             "provenance": _jsonable(first.get("provenance") or {}),
                             "committed_revision": None, "dry_run": False})
                 return
             committed = outcome.get("committed") or {}
+            summarized_proposal = _summarize_proposal(proposal)
             self._finish(
                 job_id, "committed",
                 f"Committed speaker alignment at revision {committed.get('revision')}.",
                 result={"confirmed": True, "check": check,
-                        "proposal": _summarize_proposal(proposal),
+                        "proposal": summarized_proposal,
+                        "time_domain": _summarize_time_domain(summarized_proposal, check),
+                        "way_frequency": _summarize_frequency(first.get("captures")),
+                        "sample_rate_hz": context["sample_rate_hz"],
+                        "side": side,
+                        "params": _jsonable(params),
                         "provenance": _jsonable(first.get("provenance") or {}),
                         "committed_revision": _jsonable(committed.get("revision")),
                         "dry_run": False})

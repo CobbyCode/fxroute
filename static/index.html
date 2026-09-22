@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.257">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.258">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -1148,6 +1148,16 @@
                                         </div>
                                         <p id="measurement-speaker-align-status" class="measurement-repeat-help" aria-live="polite"></p>
                                         <div id="measurement-speaker-align-results"></div>
+                                        <div class="measurement-workflow-speaker-row speaker-align-run-row">
+                                            <div class="measurement-workflow-speaker-buttons">
+                                                <button id="measurement-speaker-align-save" class="btn-secondary" type="button">Save align run</button>
+                                                <select id="measurement-speaker-align-saved" class="url-input speaker-align-run-select" aria-label="Saved align runs">
+                                                    <option value="">Saved align runs…</option>
+                                                </select>
+                                                <button id="measurement-speaker-align-open" class="btn-secondary" type="button">Open run</button>
+                                            </div>
+                                            <span class="measurement-repeat-help">Before: planning take · After: verification take · no extra sweep.</span>
+                                        </div>
                                     </div>
                                     <div class="measurement-workflow-section">
                                         <h4 class="measurement-workflow-label">Calibration</h4>
@@ -1729,14 +1739,14 @@
     <script src="/static/measurement_dsp.js?v=0.9.16"></script>
     <script src="/static/autosub_target.js?v=0.9.18"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.15"></script>
-    <script src="/static/measurement_ui.js?v=0.9.18"></script>
+    <script src="/static/measurement_ui.js?v=0.9.19"></script>
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
-    <script src="/static/speaker_align.js?v=0.9.6"></script>
-    <script src="/static/measurement_flows.js?v=0.9.30"></script>
+    <script src="/static/speaker_align.js?v=0.9.7"></script>
+    <script src="/static/measurement_flows.js?v=0.9.31"></script>
     <script src="/static/output_state.js?v=0.9.12"></script>
     <script src="/static/crossover.js?v=0.9.7"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.210"></script>
+    <script src="/static/app.js?v=0.9.211"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>
