@@ -70,6 +70,7 @@ from ..measurement import (
 from ..scoring import (
     _auto_sub_anchor_shifted_points,
     _auto_sub_applied_anchor_shift,
+    _auto_sub_attach_result_meta,
     _auto_sub_best_scan_result,
     _auto_sub_candidate_ledger,
     _auto_sub_delay_key,
@@ -79,7 +80,6 @@ from ..scoring import (
     _auto_sub_has_points,
     _auto_sub_rank_results,
     _auto_sub_remeasure_tiebreak,
-    _auto_sub_result_meta,
     _auto_sub_result_for_delay,
     _auto_sub_select_accepted_winner,
     _auto_sub_select_polarity_shared_winner,
@@ -1635,23 +1635,15 @@ async def _run_auto_sub_22_stereo_optimize(
             _stereo_offset_db,
         )
 
-        # Run's scored anchor offset (calibrated coords); the frontend combines
-        # it with each trace's display_offset_db to place the target exactly.
-        _target_anchor = job.get("main_target_anchor") if isinstance(job.get("main_target_anchor"), dict) else None
-        _tvo = _target_anchor.get("target_vertical_offset_db") if _target_anchor else None
-        _autosub_meta = _auto_sub_result_meta(
-            job, OUTPUT_MODE_SUBWOOFER_22_STEREO, {
+        _auto_sub_attach_result_meta(
+            job, baseline_measurement, confirmation_measurement,
+            mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, final_levels_db={
                 "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
                 "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
             },
-            target_vertical_offset_db=float(_tvo) if isinstance(_tvo, (int, float)) else None,
             final_delays_ms={"sub1": float(best_left), "sub2": float(best_right)},
             final_polarities={"sub1": selected_left_polarity, "sub2": selected_right_polarity},
         )
-        for _measurement in (baseline_measurement, confirmation_measurement):
-            if _measurement is not None:
-                _measurement["measurement_kind"] = "auto_sub"
-                _measurement["autosub_meta"] = _autosub_meta
 
         job["result"] = {
             "mode": OUTPUT_MODE_SUBWOOFER_22_STEREO,

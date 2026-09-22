@@ -60,12 +60,12 @@ from ..measurement import (
 )
 from ..scoring import (
     _auto_sub_anchor_adjusted_combined_sweep,
+    _auto_sub_attach_result_meta,
     _auto_sub_candidate_ledger,
     _auto_sub_display_anchor_reference_db,
     _auto_sub_gate_candidate_rows,
     _auto_sub_has_points,
     _auto_sub_measurement_from_sweep,
-    _auto_sub_result_meta,
     _auto_sub_result_for_delay,
     _auto_sub_shared_bass_offset,
     _score_auto_sub_combined_candidates,
@@ -913,23 +913,15 @@ async def _run_auto_sub_22_optimize(
             "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
             "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
         }
-        # Run's scored anchor offset (calibrated coords); the frontend combines
-        # it with each trace's display_offset_db to place the target exactly.
-        _target_anchor = job.get("main_target_anchor") if isinstance(job.get("main_target_anchor"), dict) else None
-        _tvo = _target_anchor.get("target_vertical_offset_db") if _target_anchor else None
-        _autosub_meta = _auto_sub_result_meta(
-            job, OUTPUT_MODE_SUBWOOFER_22, _final_levels,
-            target_vertical_offset_db=float(_tvo) if isinstance(_tvo, (int, float)) else None,
+        _auto_sub_attach_result_meta(
+            job, baseline_measurement, confirmation_measurement,
+            mode=OUTPUT_MODE_SUBWOOFER_22, final_levels_db=_final_levels,
             final_delays_ms={"sub1": float(stored_sub1), "sub2": float(stored_sub2)},
             final_polarities={
                 "sub1": str(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("polarity", "normal")),
                 "sub2": str(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("polarity", "normal")),
             },
         )
-        for _measurement in (baseline_measurement, confirmation_measurement):
-            if _measurement is not None:
-                _measurement["measurement_kind"] = "auto_sub"
-                _measurement["autosub_meta"] = _autosub_meta
         gate_suffix = {
             "alignment_reverted_balance_kept": "; final state regressed locally - incumbent pair kept at original levels",
             "reverted_to_original": "; final state regressed locally - original state restored",

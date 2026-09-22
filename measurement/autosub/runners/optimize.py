@@ -51,13 +51,13 @@ from ..measurement import (
 )
 from ..scoring import (
     _auto_sub_anchor_adjusted_combined_sweep,
+    _auto_sub_attach_result_meta,
     _auto_sub_best_scan_result,
     _auto_sub_candidate_ledger,
     _auto_sub_display_anchor_reference_db,
     _auto_sub_gate_candidate_rows,
     _auto_sub_has_points,
     _auto_sub_measurement_from_sweep,
-    _auto_sub_result_meta,
     _auto_sub_rank_results,
     _auto_sub_result_for_delay,
     _auto_sub_select_accepted_winner,
@@ -1047,20 +1047,12 @@ async def _run_auto_sub_optimize(
 
         _final_level = final_gain_level if auto_apply else original_level
         _final_delay = float(applied_delay if auto_apply else current_alignment)
-        # Run's scored anchor offset (calibrated coords); the frontend combines
-        # it with each trace's display_offset_db to place the target exactly.
-        _target_anchor = job.get("main_target_anchor") if isinstance(job.get("main_target_anchor"), dict) else None
-        _tvo = _target_anchor.get("target_vertical_offset_db") if _target_anchor else None
-        _autosub_meta = _auto_sub_result_meta(
-            job, OUTPUT_MODE_SUBWOOFER_21, {"sub": _final_level},
-            target_vertical_offset_db=float(_tvo) if isinstance(_tvo, (int, float)) else None,
+        _auto_sub_attach_result_meta(
+            job, baseline_measurement, confirmation_measurement,
+            mode=OUTPUT_MODE_SUBWOOFER_21, final_levels_db={"sub": _final_level},
             final_delays_ms={"sub": _final_delay},
             final_polarities={"sub": final_polarity},
         )
-        for _measurement in (baseline_measurement, confirmation_measurement):
-            if _measurement is not None:
-                _measurement["measurement_kind"] = "auto_sub"
-                _measurement["autosub_meta"] = _autosub_meta
 
         if gate_reverted_to_incumbent:
             winner = stored_winner
