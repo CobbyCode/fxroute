@@ -138,9 +138,17 @@ def main() -> int:
             check(f"crossover spans full width ({span})", span == '1 / -1')
             # Starter values applied themselves once the routing first became
             # a valid 3-way config: no click needed before the way tabs show.
+            # Link L/R is off by default: separate L/R tabs, Trim visible.
             page.wait_for_timeout(1200)
             tabs = page.locator("#effects-crossover-tabs button")
             check(f"six way tabs ({tabs.count()} found)", tabs.count() == 6)
+            check("link L/R off by default",
+                  not page.locator("#effects-crossover-link").is_checked())
+            check("unlinked shows side-specific trim",
+                  page.locator("#effects-crossover-trim-group").is_visible()
+                  and page.locator("#effects-crossover-level").is_visible()
+                  and page.locator("#effects-crossover-delay").is_visible()
+                  and page.locator("#effects-crossover-polarity").is_visible())
             check("crossover graph is a canvas",
                   page.evaluate("document.getElementById('effects-crossover-graph')?.tagName") == 'CANVAS')
             graph_box = page.locator("#effects-crossover-graph").bounding_box()
@@ -216,7 +224,21 @@ def main() -> int:
                   and page.locator("#effects-compare-b").is_enabled()
                   and page.locator("#effects-compare-a option").count() > 1)
             # Linked pairs share one tab per way (canonical left data role):
-            # the merged L/R tab activates like a single tab.
+            # the merged L/R tab activates like a single tab. Enabling Link
+            # hides the side-specific Trim (Level/Align/Polarity): only the
+            # shared crossover parameters stay visible.
+            page.evaluate(
+                """(() => {
+                    const link = document.getElementById('effects-crossover-link');
+                    if (link && !link.checked) {
+                        link.checked = true;
+                        link.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                })()""")
+            page.wait_for_timeout(500)
+            check("linked hides side-specific trim",
+                  not page.locator("#effects-crossover-trim-group").is_visible()
+                  and page.locator("#effects-crossover-frequency-highpass").is_visible())
             page.locator("[data-crossover-way='left_high']").click()
             page.wait_for_timeout(400)
             check("merged way tab activates",
@@ -240,9 +262,21 @@ def main() -> int:
             summary = page.locator("#effects-crossover-summary").inner_text()
             check(f"speaker header is compact ({summary})",
                   summary.startswith("3-Way Stereo System"))
-            # The L/R link is on by default; filter type offers Off.
-            check("link L/R checked by default",
-                  page.locator("#effects-crossover-link").is_checked())
+            # Filter type offers Off; Link was enabled above for the merged
+            # tabs, so disable it again for the per-side filter edits below.
+            page.evaluate(
+                """(() => {
+                    const link = document.getElementById('effects-crossover-link');
+                    if (link && link.checked) {
+                        link.checked = false;
+                        link.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                })()""")
+            page.wait_for_timeout(500)
+            check("unlinked shows side-specific trim again",
+                  page.locator("#effects-crossover-trim-group").is_visible())
+            check("link L/R off after explicit unlink",
+                  not page.locator("#effects-crossover-link").is_checked())
             families = page.locator("#effects-crossover-family-highpass option").all_text_contents()
             check(f"type offers Off first ({families})",
                   [t.strip() for t in families][:1] == ["Off"])

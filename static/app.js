@@ -167,7 +167,7 @@ let state = {
         activeWay: null,
         response: null,
         busy: false,
-        linkLR: true,
+        linkLR: false,
     },
     dsp: {
         available: false,
@@ -498,6 +498,7 @@ const elements = {
     effectsCrossoverFrequencyLowpass: document.getElementById('effects-crossover-frequency-lowpass'),
     effectsCrossoverHighpassGroup: document.getElementById('effects-crossover-highpass-group'),
     effectsCrossoverLowpassGroup: document.getElementById('effects-crossover-lowpass-group'),
+    effectsCrossoverTrimGroup: document.getElementById('effects-crossover-trim-group'),
     effectsCrossoverFamilyHighpass: document.getElementById('effects-crossover-family-highpass'),
     effectsCrossoverSlopeHighpass: document.getElementById('effects-crossover-slope-highpass'),
     effectsCrossoverFamilyLowpass: document.getElementById('effects-crossover-family-lowpass'),
@@ -1650,10 +1651,11 @@ function setupSettingsActions() {
     }
     if (elements.effectsCrossoverLink) {
         elements.effectsCrossoverLink.addEventListener('change', (event) => {
-            state.crossover.linkLR = event.target.checked !== false;
-            // The link state shows directly on the tabs (merged vs. split),
-            // so the tile re-renders immediately instead of waiting for the
-            // next save or fetch.
+            state.crossover.linkLR = event.target.checked === true;
+            // The link state shows directly on the tabs (merged vs. split)
+            // and on the Trim group (hidden while linked), so the tile
+            // re-renders immediately instead of waiting for the next save
+            // or fetch.
             renderCrossoverTile();
         });
     }
@@ -3644,7 +3646,8 @@ function routedSubwooferView() {
 
 function ensureOutputSystemBoxes() {
     if (!state.outputSystem) state.outputSystem = { catalog: null, busy: false };
-    if (!state.crossover) state.crossover = { activeWay: null, response: null, busy: false };
+    if (!state.crossover) state.crossover = { activeWay: null, response: null, busy: false, linkLR: false };
+    if (state.crossover.linkLR === undefined) state.crossover.linkLR = false;
 }
 
 async function fetchOutputSystemCatalog(force = false) {
@@ -4049,7 +4052,9 @@ function renderCrossoverTile() {
     const derivedHighpass = (!settings.highpass && (catalogDerived || responseDerived)) || null;
     // Linked pairs share one tab per way ("L/R · Low"); unlinked pairs go
     // back to separate L/R tabs. The checkbox keeps its place regardless.
-    const linkedCrossover = state.crossover.linkLR !== false;
+    // Link is off by default and couples only the crossover filters; Trim
+    // (Level/Align/Polarity) stays per-way and is hidden while linked.
+    const linkedCrossover = state.crossover.linkLR === true;
     mod.renderWayTabs(elements.effectsCrossoverTabs, roles, active, (role) => {
         // A linked pair shares one tab carrying the canonical left role:
         // re-picking the visible pair keeps the current side, otherwise the
@@ -4069,6 +4074,9 @@ function renderCrossoverTile() {
     }
     if (elements.effectsCrossoverLowpassGroup) {
         elements.effectsCrossoverLowpassGroup.style.display = showLowpass ? '' : 'none';
+    }
+    if (elements.effectsCrossoverTrimGroup) {
+        elements.effectsCrossoverTrimGroup.style.display = linkedCrossover ? 'none' : '';
     }
     if (elements.effectsCrossoverFrequencyHighpass && document.activeElement !== elements.effectsCrossoverFrequencyHighpass) {
         elements.effectsCrossoverFrequencyHighpass.value = settings.highpass?.frequency_hz
@@ -4155,7 +4163,7 @@ function renderCrossoverTile() {
         elements.effectsCrossoverSummary.textContent = parts.join(' · ');
     }
     if (elements.effectsCrossoverLink) {
-        elements.effectsCrossoverLink.checked = state.crossover.linkLR !== false;
+        elements.effectsCrossoverLink.checked = state.crossover.linkLR === true;
         elements.effectsCrossoverLink.disabled = busy;
     }
 }
@@ -4203,7 +4211,11 @@ function collectCrossoverWayMutation() {
         const slope = Number(slopeEl?.value || previous?.slope_db_oct || 24);
         return { family, slope_db_oct: slope, frequency_hz: readFreq(freqEl, previous?.frequency_hz ?? 1000) };
     };
-    return {
+    // Linked L/R maintains only the shared crossover filters. Trim
+    // (Level/Align/Polarity) stays per-way and hidden while linked, so it
+    // is omitted from the mutation and the backend keeps stored values.
+    const linked = state.crossover.linkLR === true;
+    const mutation = {
         kind: 'set_processing',
         mode: catalog.active_mode,
         role: active,
@@ -4213,22 +4225,26 @@ function collectCrossoverWayMutation() {
         lowpass: build('lowpass', current.lowpass, applicable.includes('lowpass'),
             elements.effectsCrossoverFrequencyLowpass,
             elements.effectsCrossoverFamilyLowpass, elements.effectsCrossoverSlopeLowpass),
-        level_db: mod.clampLevelDb(elements.effectsCrossoverLevel?.value ?? 0),
-        alignment_ms: mod.clampAlignmentMs(elements.effectsCrossoverDelay?.value ?? 0),
-        polarity: elements.effectsCrossoverPolarity?.value === 'invert' ? 'invert' : 'normal',
     };
+    if (!linked) {
+        mutation.level_db = mod.clampLevelDb(elements.effectsCrossoverLevel?.value ?? 0);
+        mutation.alignment_ms = mod.clampAlignmentMs(elements.effectsCrossoverDelay?.value ?? 0);
+        mutation.polarity = elements.effectsCrossoverPolarity?.value === 'invert' ? 'invert' : 'normal';
+    }
+    return mutation;
 }
 
 async function saveCrossoverWay() {
     const fields = collectCrossoverWayMutation();
     if (!fields) return;
     // The L/R link shares only the crossover filter values with the mirror
-    // way. Trim (level/align/polarity) stays per-way physical tuning.
+    // way. Trim (level/align/polarity) stays per-way physical tuning and is
+    // hidden while linked, so a linked save never touches it.
     const mod = crossoverModule();
     const catalog = state.outputSystem.catalog;
     const mirror = mod?.mirrorRole ? mod.mirrorRole(fields.role) : null;
     const mirrorProcessing = catalog?.modes?.[catalog.active_mode]?.processing || {};
-    const linked = state.crossover.linkLR !== false && mirror && mirror !== fields.role
+    const linked = state.crossover.linkLR === true && mirror && mirror !== fields.role
         && Object.prototype.hasOwnProperty.call(mirrorProcessing, mirror);
     state.crossover.busy = true;
     renderCrossoverTile();

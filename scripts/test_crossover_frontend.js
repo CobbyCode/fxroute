@@ -192,6 +192,17 @@ assert.match(appSource, /maybeApplyCrossoverStarters/);
 // L/R link mirrors only filter values, never trim.
 assert.match(appSource, /mirrorRole/);
 assert.match(indexSource, /Link L\/R/);
+// Link L/R is off by default: unchecked box, false initial state, and
+// strict true-checks so an unset state never links.
+assert.doesNotMatch(indexSource, /id="effects-crossover-link" checked/);
+assert.match(appSource, /linkLR:\s*false/);
+assert.match(appSource, /state\.crossover\.linkLR === true/);
+assert.doesNotMatch(appSource, /state\.crossover\.linkLR !== false/);
+// Trim stays side-specific and is hidden while linked: unlinked shows all
+// trim values, linked shows only the shared crossover parameters.
+assert.match(indexSource, /id="effects-crossover-trim-group"/);
+assert.match(appSource, /effectsCrossoverTrimGroup/);
+assert.match(appSource, /Trim[\s\S]*hidden while linked|hidden while linked/);
 // Filter type Off plus compact headers.
 assert.match(appSource, /off: 'Off'/);
 assert.match(appSource, /-Way Stereo System/);
@@ -201,6 +212,7 @@ for (const id of ['effects-crossover-card', 'effects-crossover-tabs', 'effects-c
     'effects-crossover-frequency-highpass', 'effects-crossover-frequency-lowpass',
     'effects-crossover-family-highpass', 'effects-crossover-slope-highpass',
     'effects-crossover-family-lowpass', 'effects-crossover-slope-lowpass',
+    'effects-crossover-trim-group',
     'effects-crossover-level',
     'effects-crossover-delay', 'effects-crossover-polarity', 'effects-crossover-link',
     'effects-crossover-summary']) {
@@ -212,6 +224,10 @@ assert.match(indexSource, /Link L\/R/);
 // actions row below Trim remains.
 assert.match(indexSource, /class="crossover-tabrow"/);
 assert.doesNotMatch(indexSource, /crossover-actions/);
+// A linked save carries only the shared crossover filters; trim fields are
+// added back only when unlinked.
+assert.match(appSource, /if\s*\(!linked\)\s*\{\s*\n.*mutation\.level_db/s);
+assert.match(appSource, /effectsCrossoverTrimGroup.*linkedCrossover \? 'none' : ''/);
 {
     const tabrow = indexSource.indexOf('class="crossover-tabrow"');
     const tabs = indexSource.indexOf('id="effects-crossover-tabs"');
