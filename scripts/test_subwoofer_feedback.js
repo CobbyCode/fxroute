@@ -2,19 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Subwoofer tile status lifecycle is error-only by design: no Applying… or
 // Saved hints are ever written; a failure reports its message persistently
-// and the next successful commit clears it again.
+// and the next successful commit clears it again. Runs against the real
+// static/subwoofer_ui.js save queue; app.js keeps a delegating wrapper.
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
-
-function extract(pattern, label) {
-    const match = source.match(pattern);
-    assert.ok(match, label);
-    return match[0];
-}
+const SubwooferUI = require('../static/subwoofer_ui.js');
 
 function deferred() {
     let resolve, reject;
@@ -26,26 +18,13 @@ function makeContext(applyImpl) {
     const feedbackEl = { textContent: '', className: '' };
     const linkEl = { checked: true };
     const activeEditing = new Set([linkEl]);
-    const context = {
-        state: { outputSystem: { catalog: { active_mode: 'stereo-sub' } } },
-        elements: { effectsSubwooferFeedback: feedbackEl, effectsSubwooferLink: linkEl },
-        _activeEditing: activeEditing,
-        window: { clearTimeout, setTimeout },
-        applyOutputSystemMutation: applyImpl,
-        console,
-    };
-    vm.createContext(context);
-    vm.runInContext(extract(/function setSubwooferFeedback\([^]*?\n\}/, 'setSubwooferFeedback'), context);
-    vm.runInContext(extract(/let _subwooferSavePromise = null;/, 'save promise'), context);
-    vm.runInContext(extract(/let _subwooferLastRequestedSignature = '';?/, 'last signature'), context);
-    vm.runInContext(extract(/function releaseSubwooferLinkGuard\(\)[^]*?\n\}/, 'link guard'), context);
-    vm.runInContext(extract(/function beginSubwooferSave\(pending\)[^]*?\n\}/, 'beginSubwooferSave'), context);
-    return { context, feedbackEl, activeEditing, linkEl };
-}
-
-function startSave(context, pending) {
-    context.pending = pending;
-    return vm.runInContext('beginSubwooferSave(pending)', context);
+    SubwooferUI.init({
+        getState: () => ({ outputSystem: { catalog: { active_mode: 'stereo-sub' } } }),
+        getElements: () => ({ effectsSubwooferFeedback: feedbackEl, effectsSubwooferLink: linkEl }),
+        getActiveEditing: () => activeEditing,
+        applyMutation: applyImpl,
+    });
+    return { feedbackEl, activeEditing, linkEl };
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -53,11 +32,11 @@ const pending = { mode: 'stereo-sub', settings: { mode: 'stereo-sub' }, signatur
 
 (async () => {
     // 1. Success stays silent: no Applying… while in flight, no Saved hint
-    // on commit; the guard still releases and the promise clears.
+    // on commit; the guard still releases.
     {
         const gate = deferred();
-        const { context, feedbackEl, activeEditing, linkEl } = makeContext(() => gate.promise);
-        const run = startSave(context, pending);
+        const { feedbackEl, activeEditing, linkEl } = makeContext(() => gate.promise);
+        const run = SubwooferUI.beginSubwooferSave(pending);
         await tick();
         assert.equal(feedbackEl.textContent, '');
         assert.doesNotMatch(feedbackEl.className, /success|error/);
@@ -69,13 +48,12 @@ const pending = { mode: 'stereo-sub', settings: { mode: 'stereo-sub' }, signatur
         assert.equal(feedbackEl.textContent, '');
         assert.doesNotMatch(feedbackEl.className, /success|error/);
         assert.equal(activeEditing.has(linkEl), false);
-        assert.equal(vm.runInContext('_subwooferSavePromise', context), null);
     }
-    // 2. Rejection: error message + error class, promise cleared.
+    // 2. Rejection: error message + error class.
     {
         const gate = deferred();
-        const { context, feedbackEl, activeEditing, linkEl } = makeContext(() => gate.promise);
-        const run = startSave(context, pending);
+        const { feedbackEl, activeEditing, linkEl } = makeContext(() => gate.promise);
+        const run = SubwooferUI.beginSubwooferSave(pending);
         await tick();
         assert.equal(feedbackEl.textContent, '');
         gate.reject(new Error('boom-423'));
@@ -86,33 +64,31 @@ const pending = { mode: 'stereo-sub', settings: { mode: 'stereo-sub' }, signatur
         // A failed save must release the guard too, or the tile would stay
         // un-editable.
         assert.equal(activeEditing.has(linkEl), false);
-        assert.equal(vm.runInContext('_subwooferSavePromise', context), null);
     }
     // 3. Superseded (null result): error state, rejection surfaces.
     {
-        const { context, feedbackEl } = makeContext(async () => null);
-        const run = startSave(context, pending);
+        const { feedbackEl } = makeContext(async () => null);
+        const run = SubwooferUI.beginSubwooferSave(pending);
         await assert.rejects(run, /superseded/);
         await tick();
         assert.match(feedbackEl.textContent, /superseded/);
         assert.match(feedbackEl.className, /error/);
     }
     // 4. Sequential mixed outcome: a settled failure is followed by a
-    // fresh attempt (the chain resets once the promise clears); the newer
-    // success clears the older error, so the tile never reports a failure
-    // the latest commit fixed.
+    // fresh attempt; the newer success clears the older error, so the tile
+    // never reports a failure the latest commit fixed.
     {
         const firstGate = deferred();
         const secondGate = deferred();
         let calls = 0;
-        const { context, feedbackEl } = makeContext(() => (++calls === 1 ? firstGate.promise : secondGate.promise));
-        const first = startSave(context, pending);
+        const { feedbackEl } = makeContext(() => (++calls === 1 ? firstGate.promise : secondGate.promise));
+        const first = SubwooferUI.beginSubwooferSave(pending);
         await tick();
         firstGate.reject(new Error('boom-first'));
         await assert.rejects(first, /boom-first/);
         await tick();
         assert.match(feedbackEl.textContent, /boom-first/);
-        const second = startSave(context, pending);
+        const second = SubwooferUI.beginSubwooferSave(pending);
         secondGate.resolve({ revision: 10 });
         await second;
         await tick();

@@ -29,25 +29,28 @@ def _block(text: str, start_marker: str, end_marker: str) -> str:
 
 
 def _check_highpass_guard() -> None:
-    text = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "static" / "subwoofer_ui.js").read_text()
+    app = (root / "static" / "app.js").read_text()
+    assert "FXRouteSubwooferUI" in app, "app.js must delegate subwoofer UI to the module"
     # Frequency/type/slope of the shared and both per-side groups are painted
     # by one shape renderer; it skips a control the user is editing, so the
     # render can never overwrite a value before its save ran.
     for control in ("effectsSubwooferFrequencyNumber", "effectsSubwooferLeftFrequency",
                     "effectsSubwooferRightFrequency"):
-        assert f"applySubCrossoverShape(elements.{control}," in text, f"{control} is not shape-rendered"
+        assert f"applySubCrossoverShape(deps.getElements().{control}," in text, f"{control} is not shape-rendered"
     assert "if (frequencyEl && !_activeEditing.has(frequencyEl))" in text
     # Level/alignment/polarity keep their own per-control guards.
     for name in ("effectsSubwooferLevel", "effectsSubwooferDelay", "effectsSubwooferPolarity",
                  "effectsSubwooferSub2Level", "effectsSubwooferSub2Delay",
                  "effectsSubwooferSub2Polarity"):
-        assert f"!_activeEditing.has(elements.{name})" in text, f"missing _activeEditing guard for {name}"
+        assert f"!_activeEditing.has(deps.getElements().{name})" in text, f"missing _activeEditing guard for {name}"
     # The global Main high-pass flag paints all three copies under the guard.
     main_highpass = _block(text, "function applySubMainHighpass(", "function subMainHighpassEnabled(")
     assert "!_activeEditing.has(el)" in main_highpass
     for name in ("effectsSubwooferMainHighpass", "effectsSubwooferLeftMainHighpass",
                  "effectsSubwooferRightMainHighpass"):
-        assert f"elements.{name}" in main_highpass, f"{name} is not repainted by the shared flag"
+        assert f"deps.getElements().{name}" in main_highpass, f"{name} is not repainted by the shared flag"
     # Every subwoofer control (shared, per-side, level and the link switch) is
     # released from the guard after its save, so edits do not stick forever.
     released = _block(text, "function clearSubwooferActiveEditing()", "function getSubwooferPreviewLayout(")
@@ -59,7 +62,7 @@ def _check_highpass_guard() -> None:
                  "effectsSubwooferLevel", "effectsSubwooferDelay", "effectsSubwooferPolarity",
                  "effectsSubwooferSub2Level", "effectsSubwooferSub2Delay",
                  "effectsSubwooferSub2Polarity"):
-        assert f"elements.{name}," in released, f"{name} is never released from the render guard"
+        assert f"deps.getElements().{name}," in released, f"{name} is never released from the render guard"
     print("all subwoofer controls render under the _activeEditing guard: ok")
 
 

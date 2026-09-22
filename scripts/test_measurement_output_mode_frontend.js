@@ -6,6 +6,12 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const MeasurementUI = require('../static/measurement_ui.js');
+const SubwooferUI = require('../static/subwoofer_ui.js');
+require('../static/output_state.js');
+
+if (typeof globalThis.window === 'undefined') globalThis.window = {};
+globalThis.window.setTimeout = globalThis.window.setTimeout || setTimeout;
+globalThis.window.clearTimeout = globalThis.window.clearTimeout || clearTimeout;
 
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
@@ -52,7 +58,7 @@ function extractApiFunction(name) {
     return extractFrom(apiSource, name);
 }
 
-function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {}) {
+function makeMeasurementContext({ fetchResponse = null, subSaveGate = null } = {}) {
     const fetchCalls = [];
     const saveCalls = [];
     const toasts = [];
@@ -120,6 +126,7 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         console,
         setTimeout,
         clearTimeout,
+        SubwooferUI,
         fetch: async (url) => {
             fetchCalls.push(url);
             return fetchResponse || {
@@ -128,18 +135,38 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
             };
         },
     };
+    // The real subwoofer save queue: a 2.1 tile whose commit the gate holds.
+    const subState = { outputSystem: { catalog: {
+        active_mode: 'stereo-sub', revision: 4,
+        modes: { 'stereo-sub': {
+            topology: { sub_mode: 'mono', sub_roles: ['sub1'] },
+            bass_management: {},
+            processing: { sub1: {} },
+        } },
+    } } };
+    const subInput = (value) => ({ value });
+    const subElements = {
+        effectsSubwooferFrequencyNumber: subInput('80'),
+        effectsSubwooferFamily: subInput('linkwitz-riley'),
+        effectsSubwooferSlope: subInput('24'),
+        effectsSubwooferLink: { checked: true },
+        effectsSubwooferMainHighpass: subInput('on'),
+        effectsSubwooferLevel: subInput('0'),
+        effectsSubwooferDelay: subInput('0'),
+        effectsSubwooferPolarity: subInput('normal'),
+    };
+    SubwooferUI.init({ getState: () => subState, getElements: () => subElements,
+        getActiveEditing: () => new Set(),
+        applyMutation: (...args) => {
+            saveCalls.push(args);
+            return subSaveGate ? subSaveGate.promise : Promise.resolve({ saved: true });
+        } });
     vm.createContext(context);
     vm.runInContext(`
-        let _subwooferPendingSave = null;
-        let _subwooferSavePromise = null;
-        function isSubwooferModeName(mode) {
-            return ['subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'].includes(mode);
+        function setPendingSave() { SubwooferUI.saveSubwooferDebounced(5); }
+        function flushSubwooferSettingsBeforeMeasurement() {
+            return SubwooferUI.flushSubwooferSettingsBeforeMeasurement();
         }
-        function routedSubwooferView() {
-            const mode = state.settings?.audioOutputs?.output_mode?.mode || 'stereo';
-            return { mode, roles: [] };
-        }
-        function setPendingSave(value) { _subwooferPendingSave = value; }
         function normalizeMeasurementInputChannelSelections() {}
         function getMeasurementReferenceWarning() { return false; }
         function appendMeasurementReferenceFields(formData) {
@@ -160,7 +187,6 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         }
         async function pollMeasurementJob() {}
         ${extractApiFunction('formatTransitionErrorDetail')}
-        ${extractFunction('flushSubwooferSettingsBeforeMeasurement')}
         ${extractFunction('requireConcreteFilterBank')}
         ${extractFunction('startHostMeasurement')}
         ${extractFunction('startLrRepeatMeasurement')}
@@ -168,7 +194,6 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         ${extractFunction('measurementBankSumsBothInputs')}
         ${extractFunction('syncMeasurementSummedSubTakeModes')}
     `, context);
-    context.setPendingSave(pendingSave);
     return {
         context, fetchCalls, saveCalls, state, toasts,
         get startForm() { return capturedStartForm; },
@@ -178,6 +203,8 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
 async function main() {
     assert.ok(/function\s+formatTransitionErrorDetail/.test(appSource), 'app.js must keep a formatTransitionErrorDetail wrapper');
     assert.ok(/FXRouteApi/.test(appSource), 'app.js wrapper must delegate to api.js');
+    assert.ok(/function\s+flushSubwooferSettingsBeforeMeasurement/.test(appSource), 'app.js must keep a flush wrapper');
+    assert.ok(/FXRouteSubwooferUI/.test(appSource), 'app.js flush must delegate to subwoofer_ui.js');
     const formatterContext = {};
     vm.createContext(formatterContext);
     vm.runInContext(extractApiFunction('formatTransitionErrorDetail'), formatterContext);
@@ -324,18 +351,23 @@ async function main() {
         'a result whose processing moved on is marked stale',
     );
 
-    // A still-debounced subwoofer edit is started exactly once and awaited
-    // before the measurement endpoint is reached.
-    let pendingStarts = 0;
-    const pending = {
-        start: () => {
-            pendingStarts += 1;
-            return Promise.resolve({ saved: true });
-        },
-    };
-    const pendingContext = makeMeasurementContext({ pendingSave: pending });
-    await pendingContext.context.startHostMeasurement();
-    assert.equal(pendingStarts, 1);
+    // A still-debounced subwoofer edit is committed exactly once through the
+    // real save queue, and the measurement endpoint is reached only after
+    // that commit landed.
+    let gateResolve = null;
+    const subSaveGate = { promise: new Promise((resolve) => { gateResolve = resolve; }) };
+    const pendingContext = makeMeasurementContext({ subSaveGate });
+    pendingContext.context.setPendingSave();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(pendingContext.saveCalls.length, 1, 'the debounced edit starts its commit');
+    assert.equal(pendingContext.saveCalls[0][0], 'set_subwoofers');
+    const started = pendingContext.context.startHostMeasurement();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(pendingContext.fetchCalls, [], 'measurement waits for the subwoofer commit');
+    gateResolve({ saved: true });
+    await started;
+    pendingContext.context.releaseSnapshot();
     assert.deepEqual(pendingContext.fetchCalls, ['/api/measurements/start']);
 
     // The actual measurement-start path must expose a structured transition

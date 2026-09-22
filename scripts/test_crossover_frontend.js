@@ -225,8 +225,9 @@ assert.match(crossoverUiSource, /if \(familyEl\?\.value === 'off'\) return null/
 assert.match(crossoverUiSource, /freqGroup.*kindOff \? 'none' : ''/s);
 assert.match(crossoverUiSource, /slopeGroup.*kindOff \? 'none' : ''/s);
 assert.match(crossoverUiSource, /-Way Stereo System/);
-assert.match(appSource, /Crossover \$/);
-assert.match(appSource, /Main HPF/);
+const subwooferUiSource = fs.readFileSync(path.join(repoRoot, 'static', 'subwoofer_ui.js'), 'utf8');
+assert.match(subwooferUiSource, /Crossover \$/);
+assert.match(subwooferUiSource, /Main HPF/);
 for (const id of ['effects-crossover-card', 'effects-crossover-tabs', 'effects-crossover-graph',
     'effects-crossover-frequency-highpass', 'effects-crossover-frequency-lowpass',
     'effects-crossover-frequency-highpass-group', 'effects-crossover-slope-highpass-group',

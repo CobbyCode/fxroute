@@ -25,7 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _check_sub_mute_minus80() -> None:
-    text = (ROOT / "static" / "app.js").read_text()
+    text = (ROOT / "static" / "subwoofer_ui.js").read_text()
+    app = (ROOT / "static" / "app.js").read_text()
+    assert "FXRouteSubwooferUI" in app, "app.js must delegate subwoofer UI to the module"
     assert "Math.max(-80, Math.min(12, Number(input.level_db" in text, \
         "normalizeSingleSubwooferSettings must keep the -80 mute floor"
     assert "Math.max(-80, Math.min(12, Number(input.sub_level_db" in text, \

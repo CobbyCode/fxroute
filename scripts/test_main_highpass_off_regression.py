@@ -117,11 +117,13 @@ def _check_22_off_roundtrip() -> None:
 
 def _check_frontend_draft_sync() -> None:
     root = Path(__file__).resolve().parents[1]
-    text = (root / "static" / "app.js").read_text()
+    app = (root / "static" / "app.js").read_text()
+    text = (root / "static" / "subwoofer_ui.js").read_text()
     # The sub tile saves through the single v2 state (no legacy output-mode POST):
     # routed roles map to set_subwoofers with exact sub processing.
     assert "set_subwoofers" in text, "sub tile must save via set_subwoofers"
     assert "routedSubwooferView" in text, "sub tile must read routed subs"
+    assert "FXRouteSubwooferUI" in app, "app.js must delegate subwoofer UI to the module"
     assert "subwooferView" in (root / "static" / "output_state.js").read_text(), \
         "sub view adapter missing"
     print("frontend sub save uses single v2 state: ok")
